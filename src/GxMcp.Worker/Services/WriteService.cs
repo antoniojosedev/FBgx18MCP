@@ -289,7 +289,20 @@ namespace GxMcp.Worker.Services
                     if (kb == null) return;
                     Logger.Info("[DEBUG-SAVE] Warming up persistence pipeline...");
                     dynamic tx = kb.BeginTransaction();
-                    tx.Commit();
+                    bool committed = false;
+                    try
+                    {
+                        tx.Commit();
+                        committed = true;
+                    }
+                    finally
+                    {
+                        if (!committed)
+                        {
+                            try { tx.Rollback(); } catch (Exception rbEx) { Logger.Debug("[DEBUG-SAVE] Warmup rollback failed: " + rbEx.Message); }
+                        }
+                        try { (tx as IDisposable)?.Dispose(); } catch { }
+                    }
                     _persistenceWarmupDone = true;
                     Logger.Info("[DEBUG-SAVE] Persistence warmup complete.");
                 }
@@ -541,7 +554,11 @@ namespace GxMcp.Worker.Services
                                 contentSet = true;
                             }
                         }
-                    } catch { }
+                    } catch (Exception ex) {
+                        // Surface the underlying error so the agent gets actionable feedback
+                        // instead of a generic "could not set content" downstream.
+                        Logger.Warn($"[DEBUG-SAVE] Content set failed for {target} ({partName}): {ex.Message}");
+                    }
                 }
 
                 if (!contentSet) {
@@ -617,6 +634,11 @@ namespace GxMcp.Worker.Services
                     string failureStage = "transaction";
                     string retryStrategy = "standard";
                     string lastSdkMessages = string.Empty;
+                    bool transactionCommitted = false;
+                    bool transactionFinished = false;
+                    string finalizeError = null;
+                    // Block KbWatcher from polling DesignModel.Objects while we're inside the tx.
+                    var writeGate = KbWatcherService.AcquireWriteGate();
 
                     try {
                         // 2. Checkout
@@ -624,7 +646,11 @@ namespace GxMcp.Worker.Services
                             var checkoutMethod = obj.GetType().GetMethod("Checkout", BindingFlags.Public | BindingFlags.Instance);
                             checkoutMethod?.Invoke(obj, null);
                             Logger.Debug("[DEBUG-SAVE] SDK Checkout invoked.");
-                        } catch { }
+                        } catch (Exception coEx) {
+                            // Checkout failure is usually benign (object not under VC), but
+                            // a hard error here can cascade into "object not editable" later.
+                            Logger.Debug("[DEBUG-SAVE] SDK Checkout skipped: " + coEx.Message);
+                        }
 
                         // 3. Save Part (CRITICAL: Save the part explicitly first)
                         failureStage = "part_save";
@@ -695,15 +721,44 @@ namespace GxMcp.Worker.Services
                         failureStage = "commit";
                         Logger.Info("[DEBUG-SAVE] Committing SDK Transaction...");
                         transaction.Commit();
+                        transactionCommitted = true;
+                        transactionFinished = true;
                         Logger.Info("[DEBUG-SAVE] SDK Transaction Committed.");
                     }
                     catch (Exception ex)
                     {
                         Logger.Error("[DEBUG-SAVE] SDK TRANSACTION ERROR: " + ex.ToString());
                         var issues = SdkDiagnosticsHelper.GetDiagnostics(obj);
-                        transaction.Rollback();
+                        // After a Commit-stage failure, the transaction may already be in a
+                        // half-finalized state where Rollback throws. Guard it so we still
+                        // return the structured error JSON instead of crashing the worker.
+                        if (!transactionCommitted)
+                        {
+                            try { transaction.Rollback(); }
+                            catch (Exception rbEx)
+                            {
+                                Logger.Warn("[DEBUG-SAVE] Rollback after error also failed: " + rbEx.Message);
+                                finalizeError = rbEx.Message;
+                            }
+                        }
+                        transactionFinished = true;
                         lastSdkMessages = string.IsNullOrWhiteSpace(lastSdkMessages) ? GetSdkMessagesSafe(part) : lastSdkMessages;
                         return CreateTransactionErrorResponse(target, partName, failureStage, ex, issues, retryStrategy, lastSdkMessages).ToString();
+                    }
+                    finally
+                    {
+                        // Defense in depth: ensure the transaction is never left undisposed,
+                        // even if Commit/Rollback escaped via a path we didn't anticipate.
+                        if (!transactionFinished && !transactionCommitted)
+                        {
+                            try { transaction.Rollback(); } catch { }
+                        }
+                        try { (transaction as IDisposable)?.Dispose(); } catch { }
+                        try { writeGate.Dispose(); } catch { }
+                        if (finalizeError != null)
+                        {
+                            Logger.Debug("[DEBUG-SAVE] Transaction finalize note: " + finalizeError);
+                        }
                     }
 
                     // FAST SAVE: Run heavy indexing in background

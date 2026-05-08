@@ -1,7 +1,7 @@
 {
   "GeneXus": {
     "InstallationPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus18",
-    "WorkerExecutable": "C:\\sistemas\\projetos\\GenexusMCP\\src\\GxMcp.Worker\\bin\\Debug\\GxMcp.Worker.exe"
+    "WorkerExecutable": "C:\\Projetos\\Genexus18MCP\\publish\\worker\\GxMcp.Worker.exe"
   },
   "Server": {
     "HttpPort": 5000,
@@ -13,7 +13,7 @@
     "Path": "logs"
   },
   "Environment": {
-    "KBPath": "C:\\KBs\\academicoLocal",
-    "GX_SHADOW_PATH": "c:\\sistemas\\projetos\\GenexusMCP\\.gx_mirror"
+    "KBPath": "C:\\KBs\\AcademicoHomolog1",
+    "GX_SHADOW_PATH": "C:\\Projetos\\Genexus18MCP\\.gx_mirror"
   }
 }

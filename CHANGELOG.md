@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.0.1 — 2026-05-08
+
+### Fixed
+- `WriteService` SDK transactions are now finalized in a `finally` block (Commit/Rollback/Dispose), preventing leaked transactions when commit-stage failures cascade into rollback-throws.
+- `KbWatcherService` no longer polls `DesignModel.Objects` mid-write. Writers acquire a shared gate (`AcquireWriteGate`) and the watcher skips its tick while a save is in flight — eliminates intermittent generic "Erro" messages caused by SDK collection races.
+- `PatchService` auto-rollback: when a fallback write reports success but verification mismatches, the original source is restored instead of leaving the file with the matched context deleted and the replacement missing (data loss).
+- `PropertyService` now wraps `SetPropertyValue` + `EnsureSave` + `Commit` in try/finally with explicit `Rollback` on failure, and surfaces the underlying setter exception in error messages.
+- `SdkDiagnosticsHelper.CreateIssueFromSdkMessage` switched from `dynamic` (RuntimeBinderException-per-miss, slow + lossy) to reflection with a per-`(Type, name)` accessor cache. Codes like `src0216` now reach the agent intact.
+- SDT field access now compiles: `WriteService` binds variables to SDTs via `ATTCUSTOMTYPE`.
+- `KBObject.Delete()` replaces `Objects.Remove()` (latter does not delete from the design model).
+
+### Added
+- `genexus_inspect` accepts `include=["controls"]` / `include=["events_repertoire"]` to enumerate WebForm controls and the events each control type accepts (cuts trial-and-error on event-name mistakes).
+- `InferSuggestion` heuristics for `src0216`-style "invalid property" errors on unbound variables, and "not a valid event" errors on controls.
+
+### Changed
+- `config.json` is now gitignored. Use `config.sample.json` as a template and copy it locally.
+- Scratch/debug artifacts under `scripts/_*` are gitignored.
+
 ## v2.0.0 — 2026-04-29
 
 ### Breaking changes

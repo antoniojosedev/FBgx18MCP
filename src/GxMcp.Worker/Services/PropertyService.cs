@@ -57,17 +57,29 @@ namespace GxMcp.Worker.Services
                 
                 using (var trans = obj.Model.KB.BeginTransaction())
                 {
-                    try {
-                        container.SetPropertyValue(propName, value);
-                    } catch {
-                        var pInfo = container.GetType().GetProperty(propName);
-                        if (pInfo != null && pInfo.CanWrite) pInfo.SetValue(container, value);
-                        else throw new Exception($"Property '{propName}' not found or not writable on {controlName ?? obj.Name}.");
+                    bool committed = false;
+                    try
+                    {
+                        try {
+                            container.SetPropertyValue(propName, value);
+                        } catch (Exception setEx) {
+                            var pInfo = container.GetType().GetProperty(propName);
+                            if (pInfo != null && pInfo.CanWrite) pInfo.SetValue(container, value);
+                            else throw new Exception($"Property '{propName}' not found or not writable on {controlName ?? obj.Name}. Underlying error: {setEx.Message}");
+                        }
+
+                        try { if (container != obj) container.Dirty = true; } catch { }
+                        obj.EnsureSave();
+                        trans.Commit();
+                        committed = true;
                     }
-                    
-                    try { if (container != obj) container.Dirty = true; } catch { }
-                    obj.EnsureSave();
-                    trans.Commit();
+                    finally
+                    {
+                        if (!committed)
+                        {
+                            try { trans.Rollback(); } catch (Exception rbEx) { Logger.Warn("[PROPERTY] Rollback failed: " + rbEx.Message); }
+                        }
+                    }
                 }
 
                 return "{\"status\": \"Success\"}";

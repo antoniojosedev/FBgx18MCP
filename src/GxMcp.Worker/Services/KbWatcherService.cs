@@ -9,6 +9,30 @@ namespace GxMcp.Worker.Services
 {
     public class KbWatcherService
     {
+        // Shared gate: WriteService increments while a save transaction is in flight,
+        // so the watcher can skip its tick instead of racing GetKeys against a live tx.
+        // Both sides go through the SDK's KB.DesignModel.Objects collection; concurrent
+        // access during writes was producing intermittent generic "Erro" messages.
+        private static int _activeWriteCount = 0;
+
+        public static IDisposable AcquireWriteGate()
+        {
+            Interlocked.Increment(ref _activeWriteCount);
+            return new WriteGate();
+        }
+
+        private sealed class WriteGate : IDisposable
+        {
+            private int _disposed;
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                    Interlocked.Decrement(ref _activeWriteCount);
+            }
+        }
+
+        public static bool IsWriteInProgress => Volatile.Read(ref _activeWriteCount) > 0;
+
         private readonly KbService _kbService;
         private DateTime _lastCheckTime;
         private bool _isRunning = false;
@@ -54,10 +78,19 @@ namespace GxMcp.Worker.Services
             {
                 try
                 {
-                    var kb = _kbService.GetKB();
-                    if (kb != null)
+                    if (IsWriteInProgress)
                     {
-                        CheckForChanges(kb);
+                        // Skip this tick: a save transaction is open; polling DesignModel.Objects
+                        // mid-transaction races the SDK and surfaces as random "Erro" later.
+                        Logger.Debug("KbWatcher: skipping tick (write in progress).");
+                    }
+                    else
+                    {
+                        var kb = _kbService.GetKB();
+                        if (kb != null)
+                        {
+                            CheckForChanges(kb);
+                        }
                     }
                 }
                 catch (Exception ex)

@@ -24,4 +24,15 @@
   <ItemGroup>
     <ProjectReference Include="..\\GxMcp.Worker\\GxMcp.Worker.csproj" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <GX_PATH Condition="'$(GX_PATH)' == ''">C:\Program Files (x86)\GeneXus\GeneXus18</GX_PATH>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Artech.Architecture.Common">
+      <HintPath>$(GX_PATH)\Artech.Architecture.Common.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
 </Project>

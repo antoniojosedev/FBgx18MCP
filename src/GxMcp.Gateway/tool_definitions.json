@@ -269,10 +269,13 @@
               "metadata",
               "variables",
               "signature",
-              "structure"
+              "structure",
+              "parts",
+              "controls",
+              "events_repertoire"
             ]
           },
-          "description": "Specific parts to include (defaults to all)."
+          "description": "Specific parts to include (defaults to all). Use 'controls' or 'events_repertoire' to list WebForm controls and the events each one accepts."
         },
         "type": {
           "type": "string",

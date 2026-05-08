@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -61,7 +62,7 @@ namespace GxMcp.Worker.Helpers
             catch { }
         }
 
-        private static JObject CreateIssueFromSdkMessage(KBObject obj, object msg, string partName = null)
+        internal static JObject CreateIssueFromSdkMessage(KBObject obj, object msg, string partName = null)
         {
             string msgText = msg.ToString();
             string msgCode = "SDK";
@@ -70,24 +71,29 @@ namespace GxMcp.Worker.Helpers
             int column = 1;
 
             try {
-                // Use reflection/dynamic to get properties from various SDK message types (OutputError, Message, etc.)
-                dynamic dMsg = msg;
-                try { msgText = dMsg.Text ?? dMsg.Description ?? msgText; } catch {}
-                try { msgCode = dMsg.ErrorCode ?? dMsg.Id ?? dMsg.Code ?? msgCode; } catch {}
-                
-                try {
-                    var position = dMsg.Position;
-                    if (position != null && position.GetType().Name.Contains("TextPosition")) {
-                        line = (int)position.Line;
-                        column = (int)position.Char;
-                    }
-                } catch {}
+                // Reflection over dynamic: SDK message types (OutputError, Message, ParserMessage, ...)
+                // shift between GeneXus updates. dynamic + null-coalescing on missing members throws
+                // RuntimeBinderException per call, which is slow and wipes out the actual code/text
+                // (e.g. src0216) when it does. Reflection lets us probe each candidate name explicitly.
+                Type t = msg.GetType();
+                string textValue = ReadStringMember(msg, t, "Text") ?? ReadStringMember(msg, t, "Description") ?? ReadStringMember(msg, t, "Message");
+                if (!string.IsNullOrEmpty(textValue)) msgText = textValue;
 
-                try {
-                    string lvl = dMsg.Level.ToString() ?? dMsg.Type.ToString() ?? "";
-                    if (lvl.Contains("Warn")) severity = "Warning";
-                    else if (lvl.Contains("Info")) severity = "Information";
-                } catch {}
+                string codeValue = ReadStringMember(msg, t, "ErrorCode") ?? ReadStringMember(msg, t, "Id") ?? ReadStringMember(msg, t, "Code");
+                if (!string.IsNullOrEmpty(codeValue)) msgCode = codeValue;
+
+                object position = ReadMember(msg, t, "Position");
+                if (position != null && position.GetType().Name.Contains("TextPosition")) {
+                    Type pt = position.GetType();
+                    object pl = ReadMember(position, pt, "Line");
+                    object pc = ReadMember(position, pt, "Char") ?? ReadMember(position, pt, "Column");
+                    if (pl is IConvertible) { try { line = Convert.ToInt32(pl); } catch {} }
+                    if (pc is IConvertible) { try { column = Convert.ToInt32(pc); } catch {} }
+                }
+
+                string lvl = (ReadMember(msg, t, "Level")?.ToString()) ?? (ReadMember(msg, t, "Type")?.ToString()) ?? "";
+                if (lvl.IndexOf("Warn", StringComparison.OrdinalIgnoreCase) >= 0) severity = "Warning";
+                else if (lvl.IndexOf("Info", StringComparison.OrdinalIgnoreCase) >= 0) severity = "Information";
             } catch { }
 
             // Heuristic for line numbers in plain text messages
@@ -108,9 +114,59 @@ namespace GxMcp.Worker.Helpers
             return issue;
         }
 
-        private static string InferSuggestion(string message)
+        // Per-(type,name) accessor cache. SDK message types are stable within a process,
+        // and GetDiagnostics fans out to ~9 ReadMember calls per message in tight loops —
+        // resolving the MemberInfo every time was burning cycles for no benefit.
+        // null sentinel means "no such member"; we still cache that result.
+        private static readonly ConcurrentDictionary<(Type, string), Func<object, object>> _accessorCache
+            = new ConcurrentDictionary<(Type, string), Func<object, object>>();
+
+        private static Func<object, object> ResolveAccessor((Type, string) key)
+        {
+            var (t, name) = key;
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic;
+            try
+            {
+                var prop = t.GetProperty(name, flags);
+                if (prop != null && prop.CanRead) return prop.GetValue;
+                var field = t.GetField(name, flags);
+                if (field != null) return field.GetValue;
+            }
+            catch { }
+            return null;
+        }
+
+        internal static object ReadMember(object instance, Type t, string name)
+        {
+            if (instance == null || t == null || string.IsNullOrEmpty(name)) return null;
+            var accessor = _accessorCache.GetOrAdd((t, name), ResolveAccessor);
+            if (accessor == null) return null;
+            try { return accessor(instance); }
+            catch { return null; }
+        }
+
+        internal static string ReadStringMember(object instance, Type t, string name)
+        {
+            object v = ReadMember(instance, t, name);
+            if (v == null) return null;
+            string s = v.ToString();
+            return string.IsNullOrEmpty(s) ? null : s;
+        }
+
+        internal static string InferSuggestion(string message)
         {
             string m = message.ToLower();
+            // Display/UI property used on a variable that isn't bound to a WebForm control.
+            // src0216: 'Visible' propriedade inválida — same applies to Class/Enabled/Caption.
+            bool mentionsDisplayProp = m.Contains("'visible'") || m.Contains("'class'") || m.Contains("'enabled'") || m.Contains("'caption'")
+                                     || m.Contains(".visible") || m.Contains(".class") || m.Contains(".enabled") || m.Contains(".caption");
+            bool mentionsInvalidProperty = m.Contains("propriedade inválida") || m.Contains("invalid property")
+                                         || m.Contains("propriedade invalida");
+            if (mentionsDisplayProp && mentionsInvalidProperty)
+                return "Display properties (.Visible, .Class, .Enabled, .Caption) only apply to variables bound to a WebForm control. Either drop the variable onto the form (gxAttribute) or remove the property assignment.";
+            // Click/event-not-valid on a control: cue the agent that not all controls expose every event.
+            if ((m.Contains("não é um evento válido") || m.Contains("not a valid event") || m.Contains("nao e um evento valido")))
+                return "This control does not expose that event. Use genexus_inspect with include=[\"controls\"] to see the valid event repertoire for each control type.";
             if (m.Contains("not defined") || m.Contains("não definida")) return "Check if the variable or attribute is properly declared in the Variables part or exists in the Transaction structure.";
             if (m.Contains("expected") || m.Contains("esperado")) return "Check for missing syntax elements like ENDIF, ENDFOR, or semicolons.";
             if (m.Contains("type mismatch") || m.Contains("incompatíveis")) return "The data types of the expressions don't match. Check if you're comparing a String with a Numeric.";

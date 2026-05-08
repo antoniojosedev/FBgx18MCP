@@ -417,6 +417,11 @@ namespace GxMcp.Worker.Services
                     try { result["uiStructure"] = _uiService.GetSimplifiedUIStructure(obj); } catch {}
                 }
 
+                // 5.1 Controls + valid events repertoire (opt-in: include=["controls"] or include=["events_repertoire"])
+                if (_uiService != null && (requested.Contains("controls") || requested.Contains("events_repertoire"))) {
+                    try { result["controls"] = _uiService.GetControlsRepertoire(obj); } catch {}
+                }
+
                 // 6. Metadata (Sync)
                 if (includeAll || requested.Contains("metadata")) result["wwpMetadata"] = GetWWPMetadata(obj);
 

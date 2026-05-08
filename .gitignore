@@ -35,3 +35,9 @@ out/
 
 # --- Extension Backend Deployment ---
 /src/nexus-ide/backend/
+
+# --- Local config (use config.sample.json as template) ---
+/config.json
+
+# --- Scratch / debug artifacts ---
+scripts/_*

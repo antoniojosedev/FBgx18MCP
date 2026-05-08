@@ -61,6 +61,81 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Static repertoire of events each WebForm control type exposes in GeneXus.
+        // Not exhaustive, but covers the practical surface so the agent doesn't have
+        // to learn legal suffixes by trial-and-error (cf. friction-session2 issue B).
+        private static readonly Dictionary<string, string[]> ControlEventRepertoire = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Button",        new[] { "Click" } },
+            { "ImageLoader",   new[] { "OnFileLoaded" } },
+            { "Image",         new[] { "Click" } },
+            { "TextBlock",     new[] { "Click" } },
+            { "Attribute",     new[] { "ControlValueChanged", "IsValid" } },
+            { "ComboBox",      new[] { "ControlValueChanged", "IsValid" } },
+            { "CheckBox",      new[] { "ControlValueChanged", "IsValid" } },
+            { "RadioButton",   new[] { "ControlValueChanged" } },
+            { "Grid",          new[] { "Load", "Refresh", "ItemClick", "LineSelected" } },
+            { "Tab",           new[] { "OnSelectedTabChange" } },
+            { "Group",         new[] { "Click" } },
+            { "Table",         new string[0]},
+            { "TableRow",      new string[0]},
+            { "TableCell",     new string[0]},
+            { "ErrorViewer",   new string[0]},
+        };
+
+        public JArray GetControlsRepertoire(KBObject obj)
+        {
+            var arr = new JArray();
+            try
+            {
+                WebFormPart part = null;
+                if (obj is WebPanel wbp) part = wbp.Parts.Get<WebFormPart>();
+                else if (obj is Transaction trn) part = trn.Parts.Get<WebFormPart>();
+                if (part == null || part.Document == null || part.Document.DocumentElement == null) return arr;
+
+                var tree = GxWebFormHelper.GetWebTagTree(obj, part.Document.DocumentElement);
+                if (tree == null || tree.Root == null) return arr;
+                CollectControls(tree, arr);
+            }
+            catch (Exception ex) { Logger.Debug("GetControlsRepertoire: " + ex.Message); }
+            return arr;
+        }
+
+        private void CollectControls(GxMcp.Worker.Helpers.Tree<IWebTag> node, JArray arr)
+        {
+            if (node == null) return;
+            IWebTag tag = node.Root;
+            if (tag != null)
+            {
+                string typeName = tag.Type.ToString();
+                string name = tag.ValStr("ControlName");
+                string controlType = tag.ValStr("ControlType");
+                string binding = tag.ValStr("Attribute") ?? tag.ValStr("Variable");
+                if (!string.IsNullOrEmpty(name) || !string.IsNullOrEmpty(binding))
+                {
+                    string key = !string.IsNullOrEmpty(controlType) && ControlEventRepertoire.ContainsKey(controlType) ? controlType : typeName;
+                    var events = new JArray();
+                    if (ControlEventRepertoire.TryGetValue(key, out string[] evs))
+                    {
+                        foreach (var e in evs) events.Add(e);
+                    }
+                    var entry = new JObject
+                    {
+                        ["name"] = name,
+                        ["type"] = typeName,
+                        ["controlType"] = controlType,
+                        ["dataBinding"] = binding,
+                        ["validEvents"] = events
+                    };
+                    arr.Add(entry);
+                }
+            }
+            if (node.Children != null)
+            {
+                foreach (var child in node.Children) CollectControls(child, arr);
+            }
+        }
+
         public JObject GetSimplifiedUIStructure(KBObject obj, WebFormPart part = null)
         {
             if (part == null) {

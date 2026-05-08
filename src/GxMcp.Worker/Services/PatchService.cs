@@ -201,15 +201,7 @@ namespace GxMcp.Worker.Services
                 string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
-                JObject writePayload;
-                try
-                {
-                    writePayload = JObject.Parse(writeResult);
-                }
-                catch
-                {
-                    writePayload = new JObject { ["status"] = "Error", ["error"] = writeResult };
-                }
+                JObject writePayload = ParseWriteResult(writeResult);
 
                 bool primaryWriteSuccess = string.Equals(writePayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                 bool persistedMatches = false;
@@ -226,15 +218,7 @@ namespace GxMcp.Worker.Services
                     {
                         // Fast path can report success before the physical source part is fully persisted.
                         string fallbackWrite = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
-                        JObject fallbackPayload;
-                        try
-                        {
-                            fallbackPayload = JObject.Parse(fallbackWrite);
-                        }
-                        catch
-                        {
-                            fallbackPayload = new JObject { ["status"] = "Error", ["error"] = fallbackWrite };
-                        }
+                        JObject fallbackPayload = ParseWriteResult(fallbackWrite);
 
                         bool fallbackSuccess = string.Equals(fallbackPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                         writePayload["fallbackWriteStatus"] = fallbackPayload["status"]?.ToString() ?? "Error";
@@ -257,6 +241,35 @@ namespace GxMcp.Worker.Services
                             {
                                 writePayload["status"] = "Error";
                                 writePayload["error"] = "Patch write verification mismatch after fallback write.";
+
+                                // Restore original source: without this, a fallback write that reports
+                                // success but fails verification leaves the matched context deleted and
+                                // the replacement missing (data loss).
+                                try
+                                {
+                                    string rollbackBody = originalSource.Replace("\n", Environment.NewLine);
+                                    string rollbackResult = _writeService.WriteObject(target, partName, rollbackBody, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
+                                    JObject rbPayload = ParseWriteResult(rollbackResult);
+                                    bool rbSuccess = string.Equals(rbPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
+                                    bool rbVerified = false;
+                                    if (rbSuccess)
+                                    {
+                                        rbVerified = VerifyPersistedSource(target, partName, typeFilter, originalSource, out _);
+                                    }
+                                    writePayload["autoRollbackStatus"] = rbSuccess ? (rbVerified ? "Restored" : "WriteSucceededVerifyFailed") : "Failed";
+                                    writePayload["error"] = rbVerified
+                                        ? "Patch write verification mismatch after fallback write. Original source restored — re-read and retry."
+                                        : "Patch write verification mismatch after fallback write. Auto-rollback could not be verified — re-read source to confirm state.";
+                                    if (rbVerified)
+                                    {
+                                        UpdateCachedSource(cacheKey, originalSource);
+                                    }
+                                }
+                                catch (Exception rbEx)
+                                {
+                                    writePayload["autoRollbackStatus"] = "Failed";
+                                    writePayload["autoRollbackError"] = rbEx.Message;
+                                }
                             }
                         }
                     }
@@ -292,15 +305,7 @@ namespace GxMcp.Worker.Services
                     }
 
                     string rollbackWrite = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
-                    JObject rollbackPayload;
-                    try
-                    {
-                        rollbackPayload = JObject.Parse(rollbackWrite);
-                    }
-                    catch
-                    {
-                        rollbackPayload = new JObject { ["status"] = "Error", ["error"] = rollbackWrite };
-                    }
+                    JObject rollbackPayload = ParseWriteResult(rollbackWrite);
 
                     bool rollbackSuccess = string.Equals(rollbackPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                     writePayload["rollbackStatus"] = rollbackPayload["status"]?.ToString() ?? "Error";
@@ -333,7 +338,8 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                writePayload["patchStatus"] = "Applied";
+                bool finalSuccess = string.Equals(writePayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
+                writePayload["patchStatus"] = finalSuccess ? "Applied" : "Failed";
                 writePayload["operation"] = normalizedOperation;
                 writePayload["expectedCount"] = expectedCount;
                 writePayload["matchCount"] = matchCount;
@@ -581,6 +587,12 @@ namespace GxMcp.Worker.Services
         {
             if (text == null) return string.Empty;
             return text.Replace("\r\n", "\n").Replace("\r", "\n").TrimEnd('\n');
+        }
+
+        private static JObject ParseWriteResult(string writeResult)
+        {
+            try { return JObject.Parse(writeResult); }
+            catch { return new JObject { ["status"] = "Error", ["error"] = writeResult }; }
         }
 
         private static string TryExtractError(string response)
