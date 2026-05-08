@@ -487,8 +487,20 @@ namespace GxMcp.Worker.Services
                         string firstError = valJson["errors"]?[0]?["description"]?.ToString()
                             ?? valJson["error"]?.ToString()
                             ?? "Validation failed.";
-                        Logger.Warn($"[AUTO-HEALING] Blocked invalid code for {target} ({partName}): {firstError}");
-                        return validationRes; // Return the error immediately to the LLM
+
+                        // If the SDK only returned a generic "Erro" with no diagnostics, the pre-flight
+                        // is uninformative. Fall through to the real save so the EnsureSave path can
+                        // throw with the full SDK message ("src0059: …", etc).
+                        bool isUninformative = string.Equals(firstError?.Trim(), "Erro", StringComparison.OrdinalIgnoreCase);
+                        if (isUninformative)
+                        {
+                            Logger.Warn($"[AUTO-HEALING] Pre-flight returned generic 'Erro' for {target} ({partName}); proceeding to real save for detailed diagnostics.");
+                        }
+                        else
+                        {
+                            Logger.Warn($"[AUTO-HEALING] Blocked invalid code for {target} ({partName}): {firstError}");
+                            return validationRes; // Return the error immediately to the LLM
+                        }
                     }
                 }
 
@@ -830,11 +842,13 @@ namespace GxMcp.Worker.Services
                             {
                                 newVar.Type = global::Artech.Genexus.Common.eDBType.GX_SDT;
                                 newVar.SetPropertyValue("DataType", targetObj.Key);
+                                try { newVar.SetPropertyValue("DataTypeString", targetObj.Name); } catch { }
                             }
                             else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
                             {
                                 newVar.Type = global::Artech.Genexus.Common.eDBType.GX_BUSCOMP;
                                 newVar.SetPropertyValue("DataType", targetObj.Key);
+                                try { newVar.SetPropertyValue("DataTypeString", targetObj.Name); } catch { }
                             }
                         }
                     }

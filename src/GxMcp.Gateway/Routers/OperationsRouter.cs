@@ -19,6 +19,16 @@ namespace GxMcp.Gateway.Routers
                         type = args?["type"]?.ToString()
                     };
 
+                case "genexus_delete_object":
+                    return new
+                    {
+                        module = "Object",
+                        action = "Delete",
+                        target = args?["name"]?.ToString(),
+                        type = args?["type"]?.ToString(),
+                        confirm = args?["confirm"]?.ToObject<bool?>() ?? false
+                    };
+
                 case "genexus_refactor":
                     return ConvertRefactorToolCall(args);
 

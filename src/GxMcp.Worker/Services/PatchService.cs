@@ -611,7 +611,19 @@ namespace GxMcp.Worker.Services
                 }
 
                 string source = null;
-                if (part is ISource sourcePart)
+                if (part is global::Artech.Genexus.Common.Parts.VariablesPart varPart)
+                {
+                    // Variables part is exposed via DSL serialization
+                    source = GxMcp.Worker.Helpers.VariableInjector.GetVariablesAsText(varPart);
+                }
+                else if (resolvedPart.Equals("Structure", StringComparison.OrdinalIgnoreCase) &&
+                         (obj is global::Artech.Genexus.Common.Objects.Transaction
+                          || obj is global::Artech.Genexus.Common.Objects.Table
+                          || obj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)))
+                {
+                    source = GxMcp.Worker.Helpers.StructureParser.SerializeToText(obj);
+                }
+                else if (part is ISource sourcePart)
                 {
                     source = sourcePart.Source;
                 }

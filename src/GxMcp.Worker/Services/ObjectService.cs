@@ -119,6 +119,39 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        public string DeleteObject(string target, string typeFilter, bool confirm)
+        {
+            try
+            {
+                var kb = _kbService.GetKB();
+                if (kb == null) return "{\"status\":\"Error\", \"error\":\"No KB open\"}";
+
+                if (!confirm)
+                {
+                    return "{\"status\":\"Error\", \"error\":\"Delete requires explicit confirm=true (irreversible operation).\"}";
+                }
+
+                var obj = FindObject(target, typeFilter);
+                if (obj == null) return HealingService.FormatNotFoundError(target, GetIndex());
+
+                string objName = obj.Name;
+                string objType = obj.TypeDescriptor?.Name ?? "Unknown";
+                Guid objGuid = obj.Guid;
+
+                Logger.Info(string.Format("Deleting Object: {0} ({1}, guid={2})", objName, objType, objGuid));
+
+                kb.DesignModel.Objects.Remove(obj);
+
+                Logger.Info(string.Format("Object deleted: {0} ({1})", objName, objType));
+                return "{\"status\":\"Success\", \"deleted\":\"" + CommandDispatcher.EscapeJsonString(objName) + "\", \"type\":\"" + CommandDispatcher.EscapeJsonString(objType) + "\"}";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("DeleteObject failed: " + ex.Message);
+                return "{\"status\":\"Error\", \"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+            }
+        }
+
         private static readonly Guid SDT_STRUCTURE_PART_GUID = Guid.Parse("8597371d-1941-4c12-9c17-48df9911e2f3");
 
         private static void InitializeSDTWithDefaultItem(KBObject sdt, string sdtName)

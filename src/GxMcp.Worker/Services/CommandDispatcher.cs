@@ -213,6 +213,7 @@ namespace GxMcp.Worker.Services
                     case "object":
                         if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString());
                         if (action == "Create") return _objectService.CreateObject(args?["type"]?.ToString(), target);
+                        if (action == "Delete") return _objectService.DeleteObject(target, args?["type"]?.ToString(), args?["confirm"]?.ToObject<bool?>() ?? false);
                         if (action == "ExportText")
                         {
                             return _objectService.ExportObjectToText(

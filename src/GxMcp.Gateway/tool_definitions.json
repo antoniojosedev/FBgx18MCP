@@ -499,6 +499,31 @@
     }
   },
   {
+    "name": "genexus_delete_object",
+    "description": "Deletes an object from the active Knowledge Base. Irreversible — requires confirm=true.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Object name to delete."
+        },
+        "type": {
+          "type": "string",
+          "description": "Optional object type to disambiguate (e.g., 'Procedure', 'SDT')."
+        },
+        "confirm": {
+          "type": "boolean",
+          "description": "Must be true to actually delete. Default false (returns error)."
+        }
+      },
+      "required": [
+        "name",
+        "confirm"
+      ]
+    }
+  },
+  {
     "name": "genexus_export_object",
     "description": "Exports a GeneXus object part to a text file on disk.",
     "inputSchema": {

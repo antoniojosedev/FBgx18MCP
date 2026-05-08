@@ -13,7 +13,7 @@ namespace GxMcp.Gateway
     {
         private static readonly HashSet<string> WriteTools = new HashSet<string>
         {
-            "genexus_edit", "genexus_create_object", "genexus_refactor",
+            "genexus_edit", "genexus_create_object", "genexus_delete_object", "genexus_refactor",
             "genexus_forge", "genexus_import_object"
         };
 
