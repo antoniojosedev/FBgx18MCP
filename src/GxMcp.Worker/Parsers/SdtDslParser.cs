@@ -125,6 +125,33 @@ namespace GxMcp.Worker.Parsers
                     return;
                 }
 
+                // Diagnostic: log the first item's full property set so we can see what's missing
+                try
+                {
+                    dynamic dsDbg = structure;
+                    dynamic rootDbg = null;
+                    try { rootDbg = dsDbg.Root; } catch { try { rootDbg = dsDbg.StructureRoot; } catch { } }
+                    if (rootDbg != null)
+                    {
+                        foreach (dynamic item in rootDbg.Items)
+                        {
+                            try
+                            {
+                                var itemType = ((object)item).GetType();
+                                var dump = new System.Text.StringBuilder();
+                                foreach (var prop in itemType.GetProperties())
+                                {
+                                    try { object val = prop.GetValue(item); if (val != null) dump.Append(prop.Name + "=" + val + "; "); } catch { }
+                                }
+                                Logger.Info("[SDT ITEM DUMP] " + obj.Name + "/" + item.Name + ": " + dump.ToString());
+                            }
+                            catch { }
+                            break;
+                        }
+                    }
+                }
+                catch { }
+
                 Logger.Info("[SDT PARSE] Begin parse for " + obj.Name + " using part " + structure.GetType().Name);
                 var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                                 .Where(l => !string.IsNullOrWhiteSpace(l))

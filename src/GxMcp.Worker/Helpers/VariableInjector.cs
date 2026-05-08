@@ -69,17 +69,13 @@ namespace GxMcp.Worker.Helpers
                     var sdtObj = ResolveTypeObject(part.Model, candidateName);
                     if (sdtObj != null && sdtObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
                     {
-                        v.Type = global::Artech.Genexus.Common.eDBType.GX_SDT;
-                        v.SetPropertyValue("DataType", sdtObj.Key);
-                        try { v.SetPropertyValue("DataTypeString", sdtObj.Name); } catch { }
+                        BindVariableToSdt(v, sdtObj);
                         Logger.Info($"Injected variable {name} bound to SDT {sdtObj.Name} (heuristic: prefix={sdtNamePrefix}, memberAccess={sdtMemberAccessHint})");
                         return v;
                     }
                     if (sdtObj is Transaction bc && bc.IsBusinessComponent)
                     {
-                        v.Type = global::Artech.Genexus.Common.eDBType.GX_BUSCOMP;
-                        v.SetPropertyValue("DataType", sdtObj.Key);
-                        try { v.SetPropertyValue("DataTypeString", sdtObj.Name); } catch { }
+                        BindVariableToBC(v, sdtObj);
                         Logger.Info($"Injected variable {name} bound to BC {sdtObj.Name}");
                         return v;
                     }
@@ -342,15 +338,11 @@ namespace GxMcp.Worker.Helpers
                                 v.DomainBasedOn = dom;
                             else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
                             {
-                                v.Type = global::Artech.Genexus.Common.eDBType.GX_SDT;
-                                v.SetPropertyValue("DataType", targetObj.Key);
-                                try { v.SetPropertyValue("DataTypeString", targetObj.Name); } catch { }
+                                BindVariableToSdt(v, targetObj);
                             }
                             else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
                             {
-                                v.Type = global::Artech.Genexus.Common.eDBType.GX_BUSCOMP;
-                                v.SetPropertyValue("DataType", targetObj.Key);
-                                try { v.SetPropertyValue("DataTypeString", targetObj.Name); } catch { }
+                                BindVariableToBC(v, targetObj);
                             }
                             Logger.Info($"Resolved variable {name} type to {targetObj.TypeDescriptor.Name}: {targetObj.Name}");
                         }
@@ -368,6 +360,108 @@ namespace GxMcp.Worker.Helpers
                 part.Variables.Remove(v);
                 Logger.Info($"Removed variable {v.Name} (no longer in text)");
             }
+        }
+
+        public static void BindVariableToSdt(global::Artech.Genexus.Common.Variable v, KBObject sdtObj)
+        {
+            Logger.Info($"[BindVariableToSdt] Binding {v.Name} -> SDT {sdtObj.Name} (Guid={sdtObj.Guid})");
+            v.Type = global::Artech.Genexus.Common.eDBType.GX_SDT;
+            v.SetPropertyValue("DataType", sdtObj.Key);
+            try { v.SetPropertyValue("DataTypeString", sdtObj.Name); } catch (Exception ex) { Logger.Warn("DataTypeString set failed: " + ex.Message); }
+
+            // GeneXus stores the actual structural type reference in ATTCUSTOMTYPE as
+            //   <AttType>:<StructureTypeReference><Type>{guid}</Type><Id>{id}</Id></StructureTypeReference>
+            // The expression-time field resolver follows this reference, not DataType.
+            // We construct it via reflection so the AttCustomType class doesn't need to be
+            // statically referenced.
+            try
+            {
+                var asm = sdtObj.GetType().Assembly;
+                Type customTypeT = null;
+                foreach (var loadedAsm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    try
+                    {
+                        foreach (var t in loadedAsm.GetTypes())
+                        {
+                            if (t.Name.Equals("AttCustomType", StringComparison.Ordinal))
+                            {
+                                customTypeT = t;
+                                Logger.Info("[BindVariableToSdt] AttCustomType found via scan: " + t.FullName + " in " + loadedAsm.GetName().Name);
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                    if (customTypeT != null) break;
+                }
+                if (customTypeT != null)
+                {
+                    var ctorsDump = string.Join("; ", customTypeT.GetConstructors().Select(c => "(" + string.Join(",", c.GetParameters().Select(pi => pi.ParameterType.FullName)) + ")"));
+                    var propsDump = string.Join(", ", customTypeT.GetProperties().Select(p => p.Name + ":" + p.PropertyType.Name));
+                    var fieldsDump = string.Join(", ", customTypeT.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Select(f => f.Name + ":" + f.FieldType.Name));
+                    Logger.Info("[BindVariableToSdt] AttCustomType ctors=[" + ctorsDump + "] props=[" + propsDump + "] fields=[" + fieldsDump + "]");
+
+                    // Real ctors: (), (string guid, int dataType), (string,int,string), (string,int,string,string)
+                    // dataType=254 = SDT enum; m_guid carries the SDT object guid string.
+                    object inst = null;
+                    Exception lastEx = null;
+
+                    // m_guid actually carries the object NAME (the GeneXus error "Reference X by name can't be saved"
+                    // surfaces when this field gets a guid string instead of a name).
+                    string nameForRef = sdtObj.Name;
+                    var ctorStrInt = customTypeT.GetConstructor(new Type[] { typeof(string), typeof(int) });
+                    if (ctorStrInt != null)
+                    {
+                        try { inst = ctorStrInt.Invoke(new object[] { nameForRef, 254 }); Logger.Info("[BindVariableToSdt] Built via ctor(name,254)"); }
+                        catch (Exception ex) { lastEx = ex; }
+                    }
+
+                    if (inst == null)
+                    {
+                        var ctor0 = customTypeT.GetConstructor(Type.EmptyTypes);
+                        if (ctor0 != null)
+                        {
+                            try
+                            {
+                                inst = ctor0.Invoke(null);
+                                customTypeT.GetProperty("Guid")?.SetValue(inst, nameForRef);
+                                customTypeT.GetProperty("DataType")?.SetValue(inst, 254);
+                            }
+                            catch (Exception ex) { lastEx = ex; }
+                        }
+                    }
+
+                    if (inst != null)
+                    {
+                        try
+                        {
+                            v.SetPropertyValue("ATTCUSTOMTYPE", inst);
+                            Logger.Info("[BindVariableToSdt] ATTCUSTOMTYPE set, inst.ToString='" + inst.ToString() + "', Guid=" + customTypeT.GetProperty("Guid")?.GetValue(inst));
+                        }
+                        catch (Exception ex) { Logger.Error("[BindVariableToSdt] SetPropertyValue ATTCUSTOMTYPE failed: " + ex.Message); }
+                    }
+                    else
+                    {
+                        Logger.Error("[BindVariableToSdt] Could not construct AttCustomType. LastEx=" + lastEx?.Message);
+                    }
+                }
+                else
+                {
+                    Logger.Warn("[BindVariableToSdt] AttCustomType type not found in assembly");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("BindVariableToSdt: ATTCUSTOMTYPE setup failed: " + ex.Message);
+            }
+        }
+
+        public static void BindVariableToBC(global::Artech.Genexus.Common.Variable v, KBObject bcObj)
+        {
+            v.Type = global::Artech.Genexus.Common.eDBType.GX_BUSCOMP;
+            v.SetPropertyValue("DataType", bcObj.Key);
+            try { v.SetPropertyValue("DataTypeString", bcObj.Name); } catch { }
         }
 
         public static bool TryParseDbType(string typeStr, out global::Artech.Genexus.Common.eDBType type)

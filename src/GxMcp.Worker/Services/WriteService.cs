@@ -840,15 +840,11 @@ namespace GxMcp.Worker.Services
                                 newVar.DomainBasedOn = dom;
                             else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
                             {
-                                newVar.Type = global::Artech.Genexus.Common.eDBType.GX_SDT;
-                                newVar.SetPropertyValue("DataType", targetObj.Key);
-                                try { newVar.SetPropertyValue("DataTypeString", targetObj.Name); } catch { }
+                                VariableInjector.BindVariableToSdt(newVar, targetObj);
                             }
                             else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
                             {
-                                newVar.Type = global::Artech.Genexus.Common.eDBType.GX_BUSCOMP;
-                                newVar.SetPropertyValue("DataType", targetObj.Key);
-                                try { newVar.SetPropertyValue("DataTypeString", targetObj.Name); } catch { }
+                                VariableInjector.BindVariableToBC(newVar, targetObj);
                             }
                         }
                     }
