@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.lennix1337/genexus",
+  "description": "GeneXus 18 MCP server for Claude, Cursor, and AI agents — read, edit, and analyze GeneXus knowledge base objects (transactions, web panels, procedures, SDTs) over the Model Context Protocol.",
+  "repository": {
+    "url": "https://github.com/lennix1337/Genexus18MCP",
+    "source": "github"
+  },
+  "version": "2.0.4",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "genexus-mcp",
+      "version": "2.0.4",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

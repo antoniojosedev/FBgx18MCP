@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.4 — 2026-05-09
+
+### Added
+- `package.json` now declares `mcpName: "io.github.lennix1337/genexus"` (verification marker for the official MCP Registry).
+- `server.json` at repo root — metadata for submission to https://registry.modelcontextprotocol.io.
+
 ## v2.0.3 — 2026-05-09
 
 ### Fixed
