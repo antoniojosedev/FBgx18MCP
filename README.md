@@ -1,8 +1,13 @@
-# GeneXus 18 MCP Server (Genexus18MCP)
+# GeneXus MCP Server — GeneXus 18 for Claude, Cursor, and AI Agents
 
+[![npm version](https://img.shields.io/npm/v/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
+[![npm downloads](https://img.shields.io/npm/dm/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
 [![MCP Badge](https://lobehub.com/badge/mcp/lennix1337-genexus18mcp?style=for-the-badge)](https://lobehub.com/mcp/lennix1337-genexus18mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance Model Context Protocol (MCP) server for GeneXus 18. It integrates native GeneXus SDK access via a .NET 8 gateway and a .NET Framework 4.8 worker, exposing direct read/write/analysis operations directly to AI Agents and IDEs.
+**GeneXus MCP Server** is a Model Context Protocol (MCP) server that exposes a GeneXus 18 knowledge base to AI agents — Claude Desktop, Claude Code, Cursor, and any MCP-compatible client. It lets the agent read, edit, analyze, and refactor GeneXus objects (transactions, web panels, procedures, SDTs, data providers) directly through the native GeneXus SDK, with a .NET 8 gateway over MCP/stdio and a .NET Framework 4.8 worker hosting the SDK.
+
+> **Search keywords:** GeneXus MCP · GeneXus 18 MCP · GeneXus AI · GeneXus Claude · Model Context Protocol GeneXus · GeneXus low-code AI agent
 
 ***
 

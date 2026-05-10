@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.0.2 — 2026-05-09
+
+### Changed
+- Discoverability / SEO: `package.json` now ships a `keywords[]` array (mcp, model-context-protocol, genexus, genexus-18, claude, cursor, ai-agent, low-code, …) and an expanded description for npm search.
+- README: SEO-tuned H1, added npm version/downloads badges, added explicit search-keyword list, and an opening paragraph that names the supported clients (Claude Desktop, Claude Code, Cursor) and the object kinds the agent can manipulate.
+
 ## v2.0.1 — 2026-05-08
 
 ### Fixed
