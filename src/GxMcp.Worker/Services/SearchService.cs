@@ -130,7 +130,24 @@ namespace GxMcp.Worker.Services
 
                 if (!string.IsNullOrEmpty(criteria.UsedByFilter))
                 {
-                    queryResults = queryResults.Where(e => 
+                    // Build the set of objects that reference the target via the inverted CalledBy index.
+                    // Multiple entries can share a name across types (e.g. Attribute:X and Domain:X), so collect all.
+                    var consumerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var t in index.Objects.Values)
+                    {
+                        if (!string.Equals(t.Name, criteria.UsedByFilter, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (t.CalledBy == null) continue;
+                        lock (t.CalledBy)
+                        {
+                            foreach (var c in t.CalledBy)
+                            {
+                                if (!string.IsNullOrEmpty(c)) consumerNames.Add(c);
+                            }
+                        }
+                    }
+
+                    queryResults = queryResults.Where(e =>
+                        consumerNames.Contains(e.Name) ||
                         (e.RootTable != null && string.Equals(e.RootTable, criteria.UsedByFilter, StringComparison.OrdinalIgnoreCase)) ||
                         (e.Calls != null && e.Calls.Exists(c => string.Equals(c, criteria.UsedByFilter, StringComparison.OrdinalIgnoreCase))) ||
                         (e.Tables != null && e.Tables.Exists(t => string.Equals(t, criteria.UsedByFilter, StringComparison.OrdinalIgnoreCase)))
