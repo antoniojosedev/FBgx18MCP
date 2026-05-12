@@ -196,7 +196,7 @@ graph LR
 
 - **Lazy worker**: the heavy .NET 4.8 worker only spins up on first command and shuts down after `WorkerIdleTimeoutMinutes` of inactivity to unlock build artifacts.
 - **Gateway reuse**: multiple IDE instances share one gateway via lease files at `%LOCALAPPDATA%\GenexusMCP\gateway-leases`.
-- **HTTP mode**: also available at `http://127.0.0.1:5000/mcp` with SSE. Header: `MCP-Protocol-Version: 2025-06-18`.
+- **HTTP mode**: also available at `http://127.0.0.1:5000/mcp` with SSE. Header: `MCP-Protocol-Version: 2025-11-25`.
 
 ---
 

@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
-using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Helpers;
@@ -13,7 +12,7 @@ namespace GxMcp.Worker.Services
     {
         private readonly IndexCacheService _indexCacheService;
         private readonly VectorService _vectorService = new VectorService();
-        private static readonly ConcurrentDictionary<string, string> _queryCache = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly BoundedStringCache _queryCache = new BoundedStringCache(512);
         private static DateTime _lastIndexTime = DateTime.MinValue;
 
         public SearchService(IndexCacheService indexCacheService)

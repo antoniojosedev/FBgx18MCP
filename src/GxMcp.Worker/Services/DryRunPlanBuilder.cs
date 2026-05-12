@@ -28,6 +28,15 @@ namespace GxMcp.Worker.Services
                 if (broken != null && broken.Count > 0)
                     plan.BrokenRefs.AddRange(broken);
             }
+            else
+            {
+                plan.Warnings.Add(new PlanWarning
+                {
+                    Code = "impactAnalysisUnavailable",
+                    Message = "Impact analysis was not run; brokenRefs may be incomplete.",
+                    Path = "/plan/brokenRefs"
+                });
+            }
 
             return plan;
         }

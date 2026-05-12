@@ -17,6 +17,8 @@ batch_buffer/
 cache/
 .gx_mirror/
 .tmp/
+.test-bin/
+.codex/
 
 # --- IDE & OS ---
 .vscode/

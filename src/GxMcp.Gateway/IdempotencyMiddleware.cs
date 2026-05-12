@@ -41,20 +41,20 @@ namespace GxMcp.Gateway
 
             var hash = HashPayload(args);
 
+            bool computed = false;
             var result = await _cache.GetOrCompute(_kbPath, tool, key, hash,
                 async () =>
                 {
+                    computed = true;
                     var raw = await next(toolCall).ConfigureAwait(false);
                     if ((bool?)raw["isError"] == true)
                         throw new ErrorNotCacheable(raw);
                     return raw;
                 }).ConfigureAwait(false);
 
-            // Tag idempotent on cache-hit (entry was already present before factory ran,
-            // or factory ran and stored it — do a second lookup to distinguish).
-            if (_cache.TryGet(_kbPath, tool, key, hash, out var existing) && existing != null)
+            if (!computed)
             {
-                var clone = (JObject)existing.DeepClone();
+                var clone = (JObject)result.DeepClone();
                 clone["meta"] = clone["meta"] as JObject ?? new JObject();
                 ((JObject)clone["meta"]!)["idempotent"] = true;
                 return clone;

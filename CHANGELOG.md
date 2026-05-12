@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.1.3 — 2026-05-12
+
+Hardening release for MCP protocol compatibility, release verification, and cache/idempotency correctness.
+
+### Changed
+- Gateway, smoke scripts, docs, and Nexus IDE now use `MCP-Protocol-Version: 2025-11-25`.
+- `genexus_query` result caching now uses a bounded LRU cache instead of an unbounded dictionary.
+- CI now runs Gateway tests with isolated output, Worker tests when the GeneXus SDK is present, and Nexus IDE compile/tests.
+- `scripts/test_all.ps1` now runs .NET tests with isolated output before the live MCP smoke.
+
+### Fixed
+- First successful write with `idempotencyKey` no longer reports `meta.idempotent=true`; only cache hits do.
+- `genexus_edit(dryRun=true)` now warns when impact analysis is unavailable so `brokenRefs` is not mistaken for complete.
+
 ## v2.1.2 — 2026-05-12
 
 Friction-fix release. Closes all 10 items from a real debug session report (`docs/issues/melhorias.md`), plus pulls in the build pipeline work that was on `main` but never tagged.

@@ -58,7 +58,6 @@ namespace GxMcp.Worker.Services
                     if (limit > 0 && scanned >= limit) break;
                     scanned++;
 
-                    KBObjectPartShim shim;
                     string xml;
                     try
                     {
@@ -159,7 +158,7 @@ namespace GxMcp.Worker.Services
 
         public List<BrokenRef> AnalyzeImpact(string targetName, string afterXml)
         {
-            // TODO Phase 3.5+: implement reference scan.
+            Logger.Warn("Impact analysis is not implemented; dryRun brokenRefs is advisory only.");
             return new List<BrokenRef>();
         }
 
@@ -179,6 +178,5 @@ namespace GxMcp.Worker.Services
             return missing;
         }
 
-        private class KBObjectPartShim { }
     }
 }

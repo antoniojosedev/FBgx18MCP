@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import { GxShadowService } from "../gxShadowService";
 import { DEFAULT_MCP_PORT } from "../constants";
 
-const MCP_PROTOCOL_VERSION = "2025-06-18";
+const MCP_PROTOCOL_VERSION = "2025-11-25";
 const SLOW_REQUEST_MS = 1200;
 
 export class GxGatewayClient {

@@ -25,6 +25,7 @@ namespace GxMcp.Gateway.Tests
             var r2 = await middleware.Invoke(req, Inner);
 
             Assert.Equal(1, calls);
+            Assert.Null(r1["meta"]?["idempotent"]);
             Assert.True((bool)r2["meta"]!["idempotent"]!);
         }
 

@@ -16,7 +16,7 @@ Validate against `/mcp`.
 
 Required baseline:
 
-- `MCP-Protocol-Version: 2025-06-18`
+- `MCP-Protocol-Version: 2025-11-25`
 - `initialize` before other MCP requests
 - `MCP-Session-Id` reused after initialization
 
@@ -47,7 +47,7 @@ If `/mcp` is returning protocol errors after initialization, verify that the cli
 
 ### Protocol-version mismatch
 
-If initialization fails, verify `MCP-Protocol-Version: 2025-06-18`.
+If initialization fails, verify `MCP-Protocol-Version: 2025-11-25`.
 
 ### Worker startup failure
 

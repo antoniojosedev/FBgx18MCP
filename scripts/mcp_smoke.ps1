@@ -17,7 +17,7 @@ function Invoke-Mcp {
     )
 
     $headers = @{
-        "MCP-Protocol-Version" = "2025-06-18"
+        "MCP-Protocol-Version" = "2025-11-25"
         "Content-Type" = "application/json"
     }
     if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
@@ -61,7 +61,7 @@ function Parse-ToolTextResult {
 Write-Host "[SMOKE] initialize"
 $initHeaders = $null
 $init = Invoke-Mcp -Method "initialize" -Params @{
-    protocolVersion = "2025-06-18"
+    protocolVersion = "2025-11-25"
     capabilities = @{}
     clientInfo = @{ name = "mcp-smoke"; version = "1.0.0" }
 } -ResponseHeaders ([ref]$initHeaders)

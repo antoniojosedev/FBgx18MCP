@@ -1,14 +1,26 @@
 # GeneXus MCP & Nexus IDE - Comprehensive Test Runner
 
 $hadFailures = $false
-$protocolVersion = "2025-06-18"
+$protocolVersion = "2025-11-25"
+$repoRoot = Split-Path -Parent $PSScriptRoot
 
 Write-Host "--- [1/3] Compiling Project ---" -ForegroundColor Cyan
 .\build.ps1
 if ($LASTEXITCODE -ne 0) { Write-Error "Build failed"; exit 1 }
 
+Write-Host "`n--- [1.5/3] Running .NET Unit Tests ---" -ForegroundColor Cyan
+dotnet test src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj -v minimal -p:BaseOutputPath="$repoRoot\.test-bin\gateway\"
+if ($LASTEXITCODE -ne 0) { $hadFailures = $true }
+
+if (Test-Path "C:\Program Files (x86)\GeneXus\GeneXus18\Artech.Architecture.Common.dll") {
+    dotnet test src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj -v minimal -p:BaseOutputPath="$repoRoot\.test-bin\worker\"
+    if ($LASTEXITCODE -ne 0) { $hadFailures = $true }
+} else {
+    Write-Host "GeneXus 18 SDK not found; skipping Worker.Tests." -ForegroundColor Yellow
+}
+
 Write-Host "`n--- [2/3] Running MCP Internal Unit Tests ---" -ForegroundColor Cyan
-$gwProcess = Start-Process -FilePath "C:\Projetos\GenexusMCP\publish\GxMcp.Gateway.exe" -WindowStyle Hidden -PassThru
+$gwProcess = Start-Process -FilePath (Join-Path $repoRoot "publish\GxMcp.Gateway.exe") -WindowStyle Hidden -PassThru
 Write-Host "Waiting for Gateway & Worker to initialize (SDK load)..."
 Start-Sleep -Seconds 15
 

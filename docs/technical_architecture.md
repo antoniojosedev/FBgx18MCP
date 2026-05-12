@@ -26,7 +26,7 @@ graph LR
 ### HTTP behavior
 
 - `initialize` is required before tool or resource calls.
-- Requests must use `MCP-Protocol-Version: 2025-06-18`.
+- Requests must use `MCP-Protocol-Version: 2025-11-25`.
 - Session-aware HTTP uses `MCP-Session-Id`.
 - `GET /mcp` is used for SSE notifications.
 - `DELETE /mcp` closes the session.

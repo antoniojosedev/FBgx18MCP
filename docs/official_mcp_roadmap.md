@@ -20,7 +20,7 @@ graph TD
 
 - `/mcp` is the official HTTP endpoint.
 - `initialize`, `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, `tools/call`, `resources/read`, and `prompts/get` are the expected workflow.
-- HTTP sessions use `MCP-Protocol-Version: 2025-06-18` and `MCP-Session-Id`.
+- HTTP sessions use `MCP-Protocol-Version: 2025-11-25` and `MCP-Session-Id`.
 
 ## Transport position
 

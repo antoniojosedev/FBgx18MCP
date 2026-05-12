@@ -31,7 +31,7 @@ To connect Claude Desktop, Copilot, Cursor, or another MCP-capable client, point
 Use:
 
 - `http://127.0.0.1:5000/mcp`
-- `MCP-Protocol-Version: 2025-06-18`
+- `MCP-Protocol-Version: 2025-11-25`
 
 Flow:
 

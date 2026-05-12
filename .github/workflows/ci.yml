@@ -30,8 +30,31 @@ jobs:
       - name: CLI tests
         run: npm test
 
+      - name: Install Nexus IDE deps
+        working-directory: src/nexus-ide
+        run: npm ci
+
+      - name: Nexus IDE compile
+        working-directory: src/nexus-ide
+        run: npm run compile
+
+      - name: Nexus IDE tests
+        working-directory: src/nexus-ide
+        run: npm test
+
       - name: Gateway tests
-        run: dotnet test src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj -v minimal
+        shell: pwsh
+        run: |
+          dotnet test src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj -v minimal -p:BaseOutputPath="$env:RUNNER_TEMP\gx-gateway-tests\"
+
+      - name: Worker tests
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\Program Files (x86)\GeneXus\GeneXus18\Artech.Architecture.Common.dll") {
+            dotnet test src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj -v minimal -p:BaseOutputPath="$env:RUNNER_TEMP\gx-worker-tests\"
+          } else {
+            Write-Host "GeneXus 18 SDK not installed on runner; skipping Worker.Tests."
+          }
 
       - name: LLM contract smoke
         shell: pwsh

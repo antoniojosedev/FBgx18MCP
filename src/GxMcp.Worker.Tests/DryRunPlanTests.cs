@@ -88,5 +88,19 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("+", diff);
             Assert.Contains("-", diff);
         }
+
+        [Fact]
+        public void BuildEnvelope_WhenImpactAnalysisUnavailable_AddsWarning()
+        {
+            string before = "<Object><Source>old</Source></Object>";
+            string after  = "<Object><Source>new</Source></Object>";
+
+            var env = DryRunPlanBuilder.BuildEnvelope("MyObj", before, after, "ops");
+
+            var warnings = (JArray)env["plan"]["warnings"];
+            Assert.Contains(warnings, item =>
+                item["code"]?.ToString() == "impactAnalysisUnavailable" &&
+                item["path"]?.ToString() == "/plan/brokenRefs");
+        }
     }
 }
