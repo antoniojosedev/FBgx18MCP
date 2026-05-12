@@ -1028,5 +1028,22 @@
         "action"
       ]
     }
+  },
+  {
+    "name": "genexus_search_source",
+    "description": "Semantic and regex search across Procedure/DataProvider/WebPanel/Transaction source code. Provide 'callee' to match call expressions by name (qualified like 'DPParametros.Udp' or unqualified like 'Udp'), optionally 'argMatches' (positional, e.g. {\"0\":\"373\"}) to constrain by literal args. Or provide 'pattern' as a regex. Both can combine.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "callee": { "type": "string", "description": "Method/function name to match. Qualified ('DPParametros.Udp') matches exactly; unqualified ('Udp') matches the trailing segment of any qualified callee." },
+        "argMatches": { "type": "object", "description": "Map of positional arg index (as string) to expected literal text. Quotes are normalized." },
+        "pattern": { "type": "string", "description": "Regex applied to lines. If both callee and pattern are given, line must also match pattern." },
+        "typeFilter": { "type": "string", "description": "Procedure | DataProvider | WebPanel | Transaction (default: all four)." },
+        "scope": { "type": "array", "items": { "type": "string" }, "description": "Parts to search: 'source' (default), 'rules', 'conditions', 'events'." },
+        "maxResults": { "type": "integer", "description": "Cap (default 50).", "default": 50 },
+        "caseSensitive": { "type": "boolean", "description": "Apply regex case-sensitive (default false).", "default": false },
+        "includeComments": { "type": "boolean", "description": "Include calls/text inside comments (default false).", "default": false }
+      }
+    }
   }
 ]

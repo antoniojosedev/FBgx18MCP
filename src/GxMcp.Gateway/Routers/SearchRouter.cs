@@ -22,6 +22,21 @@ namespace GxMcp.Gateway.Routers
                         domainFilter = args?["domainFilter"]?.ToString(),
                         exactMatch = args?["exactMatch"]?.ToObject<bool?>() ?? false,
                     };
+                case "genexus_search_source":
+                    return new
+                    {
+                        module = "Search",
+                        action = "SearchSource",
+                        target = "",
+                        callee = args?["callee"]?.ToString(),
+                        pattern = args?["pattern"]?.ToString(),
+                        typeFilter = args?["typeFilter"]?.ToString(),
+                        caseSensitive = args?["caseSensitive"]?.ToObject<bool?>() ?? false,
+                        includeComments = args?["includeComments"]?.ToObject<bool?>() ?? false,
+                        maxResults = args?["maxResults"]?.ToObject<int?>() ?? 50,
+                        scope = args?["scope"],
+                        argMatches = args?["argMatches"]
+                    };
                 case "genexus_list_objects":
                     return new
                     {

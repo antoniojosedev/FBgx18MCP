@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
@@ -25,6 +26,7 @@ namespace GxMcp.Worker.Services
         private readonly ValidationService _validationService;
         private readonly TestService _testService;
         private readonly SearchService _searchService;
+        private readonly SourceSearchService _sourceSearchService;
         private readonly WikiService _wikiService;
         private readonly HistoryService _historyService;
         private readonly VisualizerService _visualizerService;
@@ -70,6 +72,7 @@ namespace GxMcp.Worker.Services
             _layoutService = new LayoutService(_objectService);
             _validationService = new ValidationService(_kbService);
             _searchService = new SearchService(_indexCacheService);
+            _sourceSearchService = new SourceSearchService(_indexCacheService, _objectService);
             _versionControlService = new VersionControlService(_kbService);
             _dataInsightService = new DataInsightService(_kbService, _objectService, _navigationService, _patternAnalysisService);
             _writeService = new WriteService(_objectService);
@@ -194,6 +197,30 @@ namespace GxMcp.Worker.Services
                                 args?["limit"]?.ToObject<int?>() ?? 50,
                                 args?["exactMatch"]?.ToObject<bool?>() ?? false
                             );
+                        if (action == "SearchSource")
+                        {
+                            var criteria = new SourceSearchCriteria
+                            {
+                                Callee = args?["callee"]?.ToString(),
+                                Pattern = args?["pattern"]?.ToString(),
+                                TypeFilter = args?["typeFilter"]?.ToString(),
+                                CaseSensitive = args?["caseSensitive"]?.ToObject<bool?>() ?? false,
+                                IncludeComments = args?["includeComments"]?.ToObject<bool?>() ?? false,
+                                MaxResults = args?["maxResults"]?.ToObject<int?>() ?? 50
+                            };
+                            if (args?["scope"] is JArray scopeArr)
+                                criteria.Scope = scopeArr.Select(t => t.ToString()).ToList();
+                            if (args?["argMatches"] is JObject am)
+                            {
+                                criteria.ArgMatches = new Dictionary<int, string>();
+                                foreach (var prop in am.Properties())
+                                {
+                                    if (int.TryParse(prop.Name, out int idx))
+                                        criteria.ArgMatches[idx] = prop.Value?.ToString();
+                                }
+                            }
+                            return _sourceSearchService.SearchAsJson(criteria);
+                        }
                         break;
                     case "list":
                         if (action == "Objects")
