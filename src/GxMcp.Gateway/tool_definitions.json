@@ -1045,5 +1045,18 @@
         "includeComments": { "type": "boolean", "description": "Include calls/text inside comments (default false).", "default": false }
       }
     }
+  },
+  {
+    "name": "genexus_get_sql_for_navigation",
+    "description": "Generates SQL from a procedure/data-provider's resolved For Each navigation. Returns one SELECT per Level with bind-parameter placeholders (:VarName) where the source uses &Vars. Useful for cross-environment comparison (paste the SQL into a prod DBA console). Warnings field reports levels where OptimizedWhere couldn't be translated.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Procedure or DataProvider name." },
+        "levelNumber": { "type": "integer", "description": "Optional: emit SQL only for the given Level number (1-based)." },
+        "type": { "type": "string", "description": "Optional type filter." }
+      },
+      "required": ["name"]
+    }
   }
 ]

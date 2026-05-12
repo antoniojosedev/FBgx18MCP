@@ -32,6 +32,7 @@ namespace GxMcp.Worker.Services
         private readonly VisualizerService _visualizerService;
         private readonly HealthService _healthService;
         private readonly NavigationService _navigationService;
+        private readonly NavigationSqlService _navigationSqlService;
         private readonly LinterService _linterService;
         private readonly PatternService _patternService;
         private readonly PatchService _patchService;
@@ -63,6 +64,7 @@ namespace GxMcp.Worker.Services
             _objectService = new ObjectService(_kbService, _buildService);
             _assetService = new AssetService(_buildService);
             _navigationService = new NavigationService(_kbService);
+            _navigationSqlService = new NavigationSqlService(_navigationService);
             _listService = new ListService(_kbService, _indexCacheService);
             _uiService = new UIService(_kbService, _objectService);
             _analyzeService = new AnalyzeService(_kbService, _objectService, _indexCacheService, _navigationService, _uiService);
@@ -296,6 +298,11 @@ namespace GxMcp.Worker.Services
                     case "analyze":
                         var analyzeType = args?["type"]?.ToString();
                         if (action == "GetNavigation") return _navigationService.GetNavigation(target);
+                        if (action == "GetSqlForNavigation")
+                        {
+                            int? levelNumber = args?["levelNumber"]?.ToObject<int?>();
+                            return _navigationSqlService.Generate(target, levelNumber);
+                        }
                         if (action == "GetParameters") return _analyzeService.GetSignature(target, analyzeType);
                         if (action == "GetHierarchy") return _analyzeService.GetHierarchy(target, analyzeType);
                         if (action == "GetDataContext") return _dataInsightService.GetDataContext(target);

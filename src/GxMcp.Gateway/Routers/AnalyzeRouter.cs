@@ -55,6 +55,10 @@ namespace GxMcp.Gateway.Routers
                 case "genexus_get_navigation":
                     return new { module = "Analyze", action = "GetNavigation", target = target, type = type };
 
+                case "genexus_get_sql_for_navigation":
+                    int? levelNumber = args?["levelNumber"]?.ToObject<int?>();
+                    return new { module = "Analyze", action = "GetSqlForNavigation", target = target, levelNumber = levelNumber, type = type };
+
                 default:
                     return null;
             }

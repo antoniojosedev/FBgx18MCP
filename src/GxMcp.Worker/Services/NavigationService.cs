@@ -76,6 +76,28 @@ namespace GxMcp.Worker.Services
                     bool hasOptimization = optWhere != null && optWhere.Elements().Any();
                     levelObj["isOptimized"] = hasOptimization;
 
+                    var filters = new JArray();
+                    if (optWhere != null)
+                    {
+                        foreach (var f in optWhere.Elements())
+                        {
+                            var fObj = new JObject();
+                            fObj["element"] = f.Name.LocalName;
+                            // OptimizedWhere children typically wrap an attribute name + comparison + variable/value
+                            // We surface the raw inner text plus element name; downstream consumers can parse.
+                            fObj["expression"] = f.Value?.Trim();
+                            // Try to surface common sub-elements explicitly when present
+                            var attrEl = f.Element("Attribute");
+                            if (attrEl != null) fObj["attribute"] = attrEl.Value?.Trim();
+                            var opEl = f.Element("Operator");
+                            if (opEl != null) fObj["op"] = opEl.Value?.Trim();
+                            var valEl = f.Element("Value");
+                            if (valEl != null) fObj["value"] = valEl.Value?.Trim();
+                            filters.Add(fObj);
+                        }
+                    }
+                    levelObj["filters"] = filters;
+
                     levels.Add(levelObj);
                 }
 
