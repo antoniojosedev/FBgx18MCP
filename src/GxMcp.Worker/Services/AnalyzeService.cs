@@ -323,6 +323,34 @@ namespace GxMcp.Worker.Services
                 result["type"] = obj.TypeDescriptor.Name;
                 result["description"] = obj.Description;
 
+                // Attribute-specific: surface physical tables that host this attribute
+                if (obj is global::Artech.Genexus.Common.Objects.Attribute)
+                {
+                    try
+                    {
+                        var index = _indexCacheService.GetIndex();
+                        if (index.Objects.TryGetValue($"Attribute:{obj.Name}", out var entry) && entry != null)
+                        {
+                            var tablesArr = new JArray();
+                            if (entry.Tables != null)
+                            {
+                                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var t in entry.Tables)
+                                {
+                                    if (!string.IsNullOrWhiteSpace(t) && seen.Add(t))
+                                        tablesArr.Add(t);
+                                }
+                            }
+                            result["tables"] = tablesArr;
+                        }
+                        else
+                        {
+                            result["tables"] = new JArray();
+                        }
+                    }
+                    catch { /* swallow — keep response valid */ }
+                }
+
                 bool includeAll = (include == null || include.Count == 0);
                 HashSet<string> requested = includeAll ? new HashSet<string>() : new HashSet<string>(include.Select(i => i.ToString().ToLower()));
 
