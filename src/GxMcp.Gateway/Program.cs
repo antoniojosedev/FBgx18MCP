@@ -37,6 +37,7 @@ namespace GxMcp.Gateway
         private static HttpSessionRegistry _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(10));
         private static IdempotencyCache _idempotencyCache = new IdempotencyCache(15, 1000);
         private static readonly OperationTracker _operationTracker = new OperationTracker(TimeSpan.FromMinutes(60));
+        internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
         private static readonly TimeSpan _pendingRequestRetention = TimeSpan.FromMinutes(65);
         private static readonly string _logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gateway_debug.log");
@@ -857,7 +858,7 @@ namespace GxMcp.Gateway
             return 60000;
         }
 
-        internal static async Task<JObject?> ProcessMcpRequest(JObject request)
+        internal static async Task<JObject?> ProcessMcpRequest(JObject request, string sessionId = "stdio")
         {
             string? method = request["method"]?.ToString();
             var idToken = request["id"];
@@ -1255,6 +1256,11 @@ namespace GxMcp.Gateway
                         }
                     };
                 }
+
+                // Piggyback background_jobs: attach snapshot of running/unseen-completed jobs to _meta.
+                // Gated by PerfProfile.V1Enabled. Completions are marked seen so they surface exactly once.
+                if (PerfProfile.V1Enabled)
+                    McpRouter.PiggybackJobs(toolInnerResult, sessionId, JobRegistry);
 
                 // Wrap tool result in JSON-RPC envelope
                 return new JObject
@@ -1962,7 +1968,8 @@ namespace GxMcp.Gateway
                     string bodyBrief = body.Length > 100 ? body.Substring(0, 100) + "..." : body;
                     Log($"[HTTP] Received {method} (ID: {id}) - Body: {bodyBrief}");
 
-                    var response = await ProcessMcpRequest(requestObj);
+                    string httpSessionId = session?.Id ?? request.Headers["MCP-Session-Id"].FirstOrDefault() ?? "http";
+                    var response = await ProcessMcpRequest(requestObj, httpSessionId);
 
                     if (McpHttpProtocol.IsInitializeRequest(requestObj))
                     {

@@ -835,6 +835,29 @@ namespace GxMcp.Gateway
         }
 
         /// <summary>
+        /// Attaches a <c>_meta.background_jobs</c> snapshot to <paramref name="toolResult"/> when the session has
+        /// running or unseen-completed jobs in <paramref name="registry"/>. Marks completed jobs as seen so they
+        /// surface exactly once. No-ops when the snapshot is empty.
+        /// </summary>
+        internal static void PiggybackJobs(JObject toolResult, string sessionId, BackgroundJobRegistry registry)
+        {
+            var snapshot = registry.SnapshotForSession(sessionId);
+            if (snapshot.Count == 0) return;
+
+            var meta = (JObject?)toolResult["_meta"] ?? new JObject();
+            meta["background_jobs"] = new JArray(snapshot.Select(j => new JObject
+            {
+                ["id"] = j.Id,
+                ["status"] = j.Status,
+                ["summary"] = j.Summary,
+                ["completed_at"] = j.CompletedAt?.ToString("o"),
+                ["estimated_seconds"] = j.EstimatedSeconds
+            }));
+            toolResult["_meta"] = meta;
+            registry.MarkSeen(sessionId, snapshot.Select(j => j.Id));
+        }
+
+        /// <summary>
         /// Returns a terse error envelope containing only <c>message</c>, <c>code</c>, and <c>hint</c>.
         /// Stack traces and full SDK diagnostics are dropped by default. Pass <paramref name="verbose"/> = true
         /// (via the <c>verbose_errors</c> tool argument) to get the full original envelope.
