@@ -135,7 +135,7 @@ namespace GxMcp.Worker.Services
                         ));
                     }
 
-                    return Finalize(BuildPagedResponse(array, totalIndex, startIndex, pageSize).ToString());
+                    return Finalize(BuildPagedResponseInternal(array, totalIndex, startIndex, pageSize).ToString());
                 }
 
                 source = "runtime-sdk";
@@ -202,7 +202,7 @@ namespace GxMcp.Worker.Services
                     ));
                 }
 
-                return Finalize(BuildPagedResponse(array, totalRuntime, startRuntime, pageSizeRuntime).ToString());
+                return Finalize(BuildPagedResponseInternal(array, totalRuntime, startRuntime, pageSizeRuntime).ToString());
             }
             catch (Exception ex)
             {
@@ -211,7 +211,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private JObject BuildPagedResponse(JArray results, int total, int offset, int pageSize)
+        public JObject BuildPagedResponseInternal(JArray results, int total, int offset, int pageSize)
         {
             var response = new JObject();
             response["count"] = results.Count;
@@ -226,15 +226,102 @@ namespace GxMcp.Worker.Services
             }
             response["results"] = results;
 
-            var suggestion = BuildSuggestedNext(results);
-            if (suggestion != null)
+            var meta = new JObject();
+
+            // Handle empty results: determine and attach empty_reason
+            if (results.Count == 0)
             {
-                var meta = new JObject();
-                meta["suggested_next"] = suggestion;
+                string emptyReason = DetermineEmptyReason(total);
+                meta["empty_reason"] = emptyReason;
+            }
+            else
+            {
+                // Non-empty results: compute and attach aggregates
+                var aggregates = ComputeAggregates(results);
+                if (aggregates != null)
+                {
+                    meta["aggregates"] = aggregates;
+                }
+
+                // Add suggested_next if we have results
+                var suggestion = BuildSuggestedNext(results);
+                if (suggestion != null)
+                {
+                    meta["suggested_next"] = suggestion;
+                }
+            }
+
+            // Only attach _meta if it has content
+            if (meta.Count > 0)
+            {
                 response["_meta"] = meta;
             }
 
             return response;
+        }
+
+        private string DetermineEmptyReason(int total)
+        {
+            // If total is 0, no items match at all
+            if (total == 0)
+            {
+                // Check if KB is loaded by trying to get it
+                // In test contexts where _kbService is null, default to "no_matches"
+                if (_kbService != null)
+                {
+                    var kb = _kbService.GetKB();
+                    if (kb == null || kb.DesignModel == null || kb.DesignModel.Objects == null)
+                    {
+                        return "kb_not_loaded";
+                    }
+                }
+
+                // KB is loaded but no objects match (either no filter applied or filter matched nothing)
+                // We can't directly tell if a filter was applied from this context,
+                // so we default to "no_matches"
+                return "no_matches";
+            }
+
+            // total > 0 but results.Count == 0 means a filter was applied and filtered everything out
+            return "filtered_out";
+        }
+
+        private JObject ComputeAggregates(JArray items)
+        {
+            if (items == null || items.Count == 0)
+                return null;
+
+            var aggregates = new JObject();
+
+            // total: count of items in the current page result
+            aggregates["total"] = items.Count;
+
+            // by_type: group items by type and count each type
+            var typeGrouping = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in items.Cast<JObject>())
+            {
+                var type = item["type"]?.ToString() ?? "Unknown";
+                if (typeGrouping.ContainsKey(type))
+                {
+                    typeGrouping[type]++;
+                }
+                else
+                {
+                    typeGrouping[type] = 1;
+                }
+            }
+
+            var byTypeObj = new JObject();
+            foreach (var kvp in typeGrouping.OrderBy(x => x.Key))
+            {
+                byTypeObj[kvp.Key] = kvp.Value;
+            }
+            aggregates["by_type"] = byTypeObj;
+
+            // Note: modified_last_7d is skipped because IndexEntry does not have timestamp data
+            // and KBObject does not expose modification time through the public API
+
+            return aggregates;
         }
 
         public static JObject BuildSuggestedNext(JArray items)
@@ -260,6 +347,14 @@ namespace GxMcp.Worker.Services
         public static JObject BuildItemForTest(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
         {
             return BuildItemInternal(name, type, description, parent, module, path, parentPath, verbose);
+        }
+
+        // Test helper: allows tests to call BuildPagedResponse with mocked data
+        // Note: This uses null for _kbService, so DetermineEmptyReason will always return "no_matches" for empty results
+        public static JObject BuildPagedResponseForTest(JArray items, int total, int offset, int pageSize)
+        {
+            var svc = new ListService(null, null);
+            return svc.BuildPagedResponseInternal(items, total, offset, pageSize);
         }
 
         private JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
