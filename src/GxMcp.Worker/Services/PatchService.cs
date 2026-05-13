@@ -197,6 +197,13 @@ namespace GxMcp.Worker.Services
 
                 // 3. Write Back (re-normalize to CRLF for GeneXus)
                 string finalCode = updatedSource.Replace("\n", Environment.NewLine);
+                try
+                {
+                    string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
+                    System.IO.File.WriteAllText(System.IO.Path.Combine(baseDir, "last-patch-output.xml"), finalCode);
+                    Logger.Info("[PATCH] dumped TryReplace output (" + finalCode.Length + " chars) to last-patch-output.xml");
+                }
+                catch { }
                 var writeStopwatch = Stopwatch.StartNew();
                 string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
                 writeStopwatch.Stop();

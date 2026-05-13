@@ -1,5 +1,8 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Xml;
 using System.Xml.Linq;
 using Artech.Architecture.Common.Objects;
@@ -49,6 +52,8 @@ namespace GxMcp.Worker.Helpers
             }
 
             Logger.Info($"[LayoutFix] Found visual part for {obj.Name}: {part.TypeDescriptor?.Name} (GUID: {part.Type})");
+
+            WebFormSdkProbe.DumpOnce(part);
 
             // ELITE: If it's a ReportPart, we use the specialized ReportLayoutHelper.
             if (ReportLayoutHelper.IsReportPart(part) != null)
@@ -118,6 +123,12 @@ namespace GxMcp.Worker.Helpers
                 throw new ArgumentNullException(nameof(part));
             }
 
+            try
+            {
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
+                System.IO.File.WriteAllText(System.IO.Path.Combine(baseDir, "last-raw-input.xml"), xml ?? "");
+            }
+            catch { }
             string normalized = NormalizeEditableXmlInput(xml, part.TypeDescriptor?.Name);
 
             // ELITE: Support ReportPart persistence
@@ -128,6 +139,60 @@ namespace GxMcp.Worker.Helpers
                     throw new InvalidOperationException("Failed to write Report layout via reflection.");
                 }
                 return;
+            }
+
+            WebFormSdkProbe.DumpOnce(part);
+
+            string currentXml = null;
+            try
+            {
+                dynamic currentPart = part;
+                var rawXml = (currentPart.Document as XmlDocument)?.OuterXml;
+                if (!string.IsNullOrEmpty(rawXml))
+                {
+                    // Normalize through XDocument the SAME WAY ReadEditableXml does, so
+                    // currentXml is byte-for-byte comparable to the XML the PatchService
+                    // applied its diff to. Without this, raw OuterXml differs from the
+                    // formatted ReadEditableXml output and the structural diff trips on
+                    // empty-element / whitespace shape.
+                    currentXml = XDocument.Parse(rawXml, LoadOptions.PreserveWhitespace).ToString();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Info("[LayoutFix] Failed to read current Document.OuterXml: " + ex.GetType().Name + ": " + ex.Message);
+            }
+            if (string.IsNullOrEmpty(currentXml))
+            {
+                Logger.Info("[LayoutFix] currentXml is null/empty — delta detection will be skipped.");
+            }
+
+            var propertyDeltas = WebFormPropertyDeltaDetector.DetectSupportedPropertyDeltas(currentXml, normalized);
+            if (!propertyDeltas.IsSupported && !string.IsNullOrEmpty(currentXml))
+            {
+                try
+                {
+                    string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
+                    System.IO.File.WriteAllText(System.IO.Path.Combine(baseDir, "last-current.xml"), currentXml);
+                    System.IO.File.WriteAllText(System.IO.Path.Combine(baseDir, "last-updated.xml"), normalized);
+                    Logger.Info("[LayoutFix] Dumped current/updated XML to last-current.xml and last-updated.xml for diff inspection.");
+                }
+                catch { }
+            }
+            if (propertyDeltas.IsSupported && propertyDeltas.Deltas.Count > 0)
+            {
+                Logger.Info("[LayoutFix] Detected " + propertyDeltas.Deltas.Count + " property delta(s) — trying typed-property write via IWebTag.");
+                string failure;
+                if (WebFormTypedPropertyWriter.TryApply(part, propertyDeltas.Deltas, out failure))
+                {
+                    Logger.Info("[LayoutFix] Typed-property write succeeded; raw XML rewrite skipped.");
+                    return;
+                }
+                Logger.Info("[LayoutFix] Typed-property write rejected: " + failure + " — falling back to raw XML rewrite.");
+            }
+            else if (!propertyDeltas.IsSupported)
+            {
+                Logger.Info("[LayoutFix] Delta detector rejected diff: " + propertyDeltas.Reason + " — using raw XML rewrite.");
             }
 
             // CANONICAL IDE FLOW for WebFormPart (verified via SDK reflection):
@@ -235,5 +300,6 @@ namespace GxMcp.Worker.Helpers
             Logger.Info("[LayoutFix] No editable→stored conversion method found on " + type.FullName +
                         " — falling back to Document-only update (Form cache may stay stale).");
         }
+
     }
 }

@@ -136,13 +136,19 @@ namespace GxMcp.Gateway.Routers
                             };
                         }
                         // Legacy text-patch (string payload) — unchanged
+                        // The MCP tool exposes the replacement text as `patch` (per tool_definitions.json);
+                        // fall back to `content` for callers using the legacy alias.
                         return new {
                             module = "Patch",
                             action = "Apply",
                             target = target,
                             part = part,
                             operation = args?["operation"]?.ToString() ?? "Replace",
-                            content = args?["content"]?.ToString(),
+                            // Worker dispatcher reads request["payload"] for the replacement text
+                            // (see CommandDispatcher.cs:154 `payload = request["payload"]`). Using
+                            // `content` here was a silent bug that made the patch always invoke
+                            // `source.Replace(context, "")` — deleting the matched block.
+                            payload = (patchTok is JValue ? patchTok.ToString() : null) ?? args?["content"]?.ToString(),
                             context = args?["context"]?.ToString(),
                             expectedCount = args?["expectedCount"]?.ToObject<int?>() ?? 1,
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,

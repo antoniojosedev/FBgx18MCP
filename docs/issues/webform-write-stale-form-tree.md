@@ -1,6 +1,54 @@
 # WebForm write does not persist: `m_Document` clobbered by stale Form tree on save
 
-**Status:** open · **Component:** `GxMcp.Worker` / `WebFormXmlHelper` · **Severity:** blocks programmatic visual edits
+**Status:** in-progress (Hipótese A wired, awaits live verification) · **Component:** `GxMcp.Worker` / `WebFormXmlHelper` · **Severity:** blocks programmatic visual edits
+
+## Implementation status (2026-05-12, session 2)
+
+Two critical findings from this session:
+
+### 1. Gateway `content` vs `payload` bug (FIXED)
+
+`src/GxMcp.Gateway/Routers/ObjectRouter.cs:147` was emitting `content = …` for the
+legacy text-patch dispatch path, but `src/GxMcp.Worker/Services/CommandDispatcher.cs:154`
+reads the replacement text from `request["payload"]`. Result: every WebForm/Layout
+patch arrived at the worker with `content = null`, making `source.Replace(context, "")`
+DELETE the matched element instead of replacing it.
+
+Fix: route emits `payload = (patchTok is JValue ? patchTok.ToString() : null) ?? args["content"]`.
+The Patch operation now correctly modifies the element. Verify dumps in `last-current.xml` /
+`last-patch-output.xml` show the gxTextBlock retains its identity and the attribute changes
+land in `part.Document`.
+
+### 2. Hipótese A wired but save still clobbers (BLOCKED on cache)
+
+The canonical SDK path is now in place — `WebFormHelper.EnumerateWebTag(KBObject, XmlDocument)`,
+match by `id`, mutate the XmlElement that lives in `part.Document`, invalidate
+`m_PropertiesLoaded`/`m_Props`/`m_EditableToStoredNeeded`, sync `m_EditableContent`,
+bump `InvalidateLastModification`. Verify logs confirm `part.Document` holds the new value
+RIGHT BEFORE `obj.EnsureSave(true)` runs.
+
+After save, the persisted XML still shows the original value. The clobber happens
+deeper than the in-memory state we have access to — likely a `PropertyValueConverter` or
+`ScopedModelObjectCache` (seen as a field of `WebFormHelper+<GetPartControls>d__0` in the
+probe dump) at the KBModel level that the save lifecycle consults instead of m_Document.
+
+### Hipótese A — wired through the canonical SDK surface (probe-verified — see
+`webform-sdk-probe.log` in `publish/worker/`):
+
+- `WebFormPropertyDeltaDetector` — structural diff that captures any attribute change
+  on existing controls; rejects add/remove/move with a Reason that gets logged.
+- `WebFormTypedPropertyWriter` — enumerates `WebFormHelper.EnumerateWebTag(part)`,
+  matches by `tag.Node.Attributes["id"]` / `ControlName`, then invokes
+  `WebFormEditable.SetTagProperty(tag, tag.Properties, null, propName, value, ref changed, null)`.
+  On save, `WebFormPart.BeforeSaveKBObject` → `tag.SaveProperties()` writes the typed
+  Properties back into `m_Document` — exactly the SDK's own clobber site, now working
+  *for* us instead of against us.
+- `currentXml` for delta detection is normalized through `XDocument.Parse(...).ToString()`
+  so it byte-matches the `ReadEditableXml` baseline PatchService used.
+
+Live verification still pending (MCP genexus18 disconnected mid-session). Structural
+changes (add/remove/move controls) still fall back to the broken `EditableContent` path —
+Hipótese C (priming `AttributeVariableConverter` cache) remains untouched.
 
 ## Symptom
 
@@ -20,10 +68,10 @@ an existing TextBlock). Persisted XML reads back as the unchanged original.
 The `Artech.Genexus.Common.Parts.WebFormPart` (GeneXus 18.0.7) maintains **two parallel
 representations** of the form:
 
-| Storage | Field | Populated by | Read by |
-|---|---|---|---|
-| Raw XML | `XmlDocument m_Document` | `Document` getter/setter, `EditableContent` setter, `LoadXml` | `SerializeData` (via `Convert.ToByteArray(m_Document, this)`) |
-| Parsed tree | per-control `IWebTag` collection with typed `Properties` | `DeserializeDataFromDocument`, IDE control editors | `BeforeSaveKBObject` (via `IWebTag.SaveProperties`) |
+| Storage     | Field                                                    | Populated by                                                  | Read by                                                       |
+| ----------- | -------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
+| Raw XML     | `XmlDocument m_Document`                                 | `Document` getter/setter, `EditableContent` setter, `LoadXml` | `SerializeData` (via `Convert.ToByteArray(m_Document, this)`) |
+| Parsed tree | per-control `IWebTag` collection with typed `Properties` | `DeserializeDataFromDocument`, IDE control editors            | `BeforeSaveKBObject` (via `IWebTag.SaveProperties`)           |
 
 The save lifecycle, traced from IL:
 
@@ -47,7 +95,7 @@ All combinations of the following — none persist a change:
 - `EditableContent = newXml` (canonical IDE string setter; verified via IL that it does
   `set_Document(new XmlDocument().LoadXml(value)); m_EditableToStoredNeeded = true`)
 - `EditableToStored()` after either of the above — **throws `GxException: "Atributo desconhecido
-  'att:13937'"`** from
+'att:13937'"`** from
   `Artech.Genexus.Common.CustomTypes.AttributeVariableConverter.GetAttVarByName`. The lookup
   walks `att:NNNN` references and fails because the worker context's `KBModel` returns null for
   attribute IDs that exist in the KB (probably needs `KBModel.Resolve()` or equivalent priming
@@ -159,7 +207,7 @@ save would persist them correctly. This is the cleanest path if reachable.
 
 1. Open KB `AcademicoHomolog1` in GeneXus 18.0.7.
 2. Via MCP, call `genexus_edit name=ListaAtiCPAlunoUniGra part=WebForm mode=patch
-   verifyRollback=true` with any caption change on `TextBlockSaldoHoras`.
+verifyRollback=true` with any caption change on `TextBlockSaldoHoras`.
 3. Observe `Visual write verification failed` with diff at the deeply-nested td. Logs show
    `EditableToStored() threw: GxException: Atributo desconhecido 'att:13937'` if using
    the `EditableContent` + `EditableToStored` path.
@@ -184,8 +232,8 @@ property mutation on already-parsed controls).
 
 1. Reach for path **A** or **C** above.
 2. Add a `genexus_layout set_control_property` action that takes `controlId + propertyName +
-   value` and goes through `IWebTag.Properties` directly — even without solving the global
+value` and goes through `IWebTag.Properties` directly — even without solving the global
    write problem, this would let an LLM mutate properties on existing controls reliably.
 3. Build a small `WebFormControlMap` registry: `controlTagName → (xmlAttrName →
-   typedPropertyKey)`. Start with `gxTextBlock`, `gxAttribute`, `fieldset`, `IMG`,
+typedPropertyKey)`. Start with `gxTextBlock`, `gxAttribute`, `fieldset`, `IMG`,
    `simplegrid item`. Each entry is a few lines.
