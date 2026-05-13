@@ -73,6 +73,47 @@ namespace GxMcp.Worker.Services
             return string.Join(" | ", details);
         }
 
+        // Returns true when a message is the SDK's uninformative "Erro" / "Error" / "Erro, line: 1" fallback.
+        // Used to decide whether to upgrade an exception message with the part's GetSdkMessages() or diagnostics.
+        public static bool IsBareGenericError(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return true;
+            string trimmed = message.Trim();
+            if (string.Equals(trimmed, "Erro", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(trimmed, "Error", StringComparison.OrdinalIgnoreCase)) return true;
+            if (GenericLineErrorRegex.IsMatch(trimmed)) return true;
+            return false;
+        }
+
+        // Picks the most informative message available. When the SDK raises a bare "Erro" but
+        // part.GetSdkMessages() or SdkDiagnosticsHelper.GetDiagnostics returned the real text
+        // (e.g. "src0059: Esperando 'EndFor'..."), prefer that text. Otherwise return the
+        // original exception message unchanged.
+        public static string PreferDetailedMessage(string exceptionMessage, string sdkMessages, JArray issues)
+        {
+            string baseMessage = string.IsNullOrWhiteSpace(exceptionMessage) ? string.Empty : exceptionMessage.Trim();
+            if (!IsBareGenericError(baseMessage)) return baseMessage;
+
+            if (!string.IsNullOrWhiteSpace(sdkMessages))
+            {
+                string trimmed = sdkMessages.Trim();
+                if (!IsBareGenericError(trimmed)) return trimmed;
+            }
+
+            if (issues != null)
+            {
+                foreach (var issue in issues.OfType<JObject>())
+                {
+                    string description = issue["description"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(description)) continue;
+                    if (IsBareGenericError(description)) continue;
+                    return description.Trim();
+                }
+            }
+
+            return baseMessage;
+        }
+
         public static bool ShouldRetryWithoutPartSave(string partName, string exceptionMessage, string diagnosticText)
         {
             if (!IsLogicalSourcePart(partName))

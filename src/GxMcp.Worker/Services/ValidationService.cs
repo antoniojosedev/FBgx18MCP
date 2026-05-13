@@ -112,20 +112,41 @@ namespace GxMcp.Worker.Services
 
                         if (errors.Count == 0 && !string.IsNullOrEmpty(saveError))
                         {
-                            // Fallback: If no formal diagnostics but Save failed, create one from exception
+                            // Fallback: If no formal diagnostics but Save failed, create one from exception.
+                            // Friction-report #2: enrich a bare "Erro" with any GetSdkMessages / diagnostics
+                            // text we already collected so the caller doesn't get an opaque envelope.
+                            string enriched = WritePolicy.PreferDetailedMessage(saveError, localMsgs, issues);
                             var err = new JObject();
-                            err["description"] = saveError;
+                            err["description"] = enriched;
                             err["severity"] = "Error";
                             err["line"] = 1;
                             err["part"] = normalizedPartName;
+                            if (!string.Equals(enriched, saveError, StringComparison.Ordinal))
+                            {
+                                err["originalError"] = saveError;
+                            }
                             errors.Add(err);
                         }
 
                         if (errors.Count > 0)
                         {
+                            string topError = errors[0]["description"]?.ToString() ?? "Syntax Error";
+                            // If the very first error is still bare, scan the rest for a better message.
+                            if (WritePolicy.IsBareGenericError(topError))
+                            {
+                                foreach (var candidate in errors.OfType<JObject>())
+                                {
+                                    string desc = candidate["description"]?.ToString();
+                                    if (!string.IsNullOrWhiteSpace(desc) && !WritePolicy.IsBareGenericError(desc))
+                                    {
+                                        topError = desc;
+                                        break;
+                                    }
+                                }
+                            }
                             return new JObject {
                                 ["status"] = "Error",
-                                ["error"] = errors[0]["description"]?.ToString() ?? "Syntax Error",
+                                ["error"] = topError,
                                 ["errors"] = errors
                             }.ToString();
                         }

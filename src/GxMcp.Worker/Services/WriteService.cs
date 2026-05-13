@@ -357,11 +357,19 @@ namespace GxMcp.Worker.Services
 
         private static JObject CreateTransactionErrorResponse(string target, string partName, string stage, Exception ex, JArray issues, string retryStrategy, string sdkMessages)
         {
+            // Friction-report #2: if the SDK threw bare "Erro" but GetSdkMessages / GetDiagnostics
+            // produced the real message (e.g. "src0059: Esperando 'EndFor'..."), surface it as the
+            // top-level error instead of the uninformative exception text.
+            string enrichedError = WritePolicy.PreferDetailedMessage(ex.Message, sdkMessages, issues);
             var errorRes = new JObject
             {
                 ["status"] = "Error",
-                ["error"] = ex.Message
+                ["error"] = enrichedError
             };
+            if (!string.Equals(enrichedError, ex.Message ?? string.Empty, System.StringComparison.Ordinal))
+            {
+                errorRes["originalError"] = ex.Message;
+            }
 
             if (!string.IsNullOrWhiteSpace(target))
             {
@@ -778,14 +786,46 @@ namespace GxMcp.Worker.Services
                 catch (Exception saveEx)
                 {
                     Logger.Error("[DEBUG-SAVE] CRITICAL SDK EXCEPTION: " + saveEx.ToString());
-                    return "{\"error\": \"SDK Save failed: " + saveEx.Message + "\"}";
+                    return BuildEnrichedSaveError("SDK Save failed", saveEx, obj, target, partName).ToString();
                 }
             }
             catch (Exception ex)
             {
                 Logger.Error("[DEBUG-SAVE] OUTER EXCEPTION: " + ex.ToString());
-                return "{\"error\": \"" + ex.Message + "\"}";
+                // obj may not have been bound yet (exception before FindObject).
+                return BuildEnrichedSaveError(null, ex, null, target, partName).ToString();
             }
+        }
+
+        // Friction-report #2: when the bare-error catches fire (outside the transaction's own
+        // catch), still consult SdkDiagnosticsHelper + GetSdkMessages so an "Erro" exception
+        // doesn't escape to the agent unenriched.
+        private static JObject BuildEnrichedSaveError(string prefix, Exception ex, global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName)
+        {
+            JArray issues = null;
+            string sdkMsgs = null;
+            if (obj != null)
+            {
+                try { issues = SdkDiagnosticsHelper.GetDiagnostics(obj); } catch { }
+                try { sdkMsgs = obj.GetSdkMessages(); } catch { }
+            }
+            string baseMessage = ex?.Message ?? string.Empty;
+            string enriched = WritePolicy.PreferDetailedMessage(baseMessage, sdkMsgs, issues);
+            string display = string.IsNullOrEmpty(prefix) ? enriched : prefix + ": " + enriched;
+            var payload = new JObject
+            {
+                ["status"] = "Error",
+                ["error"] = display
+            };
+            if (!string.Equals(enriched, baseMessage, System.StringComparison.Ordinal))
+            {
+                payload["originalError"] = baseMessage;
+            }
+            if (!string.IsNullOrWhiteSpace(target)) payload["target"] = target;
+            if (!string.IsNullOrWhiteSpace(partName)) payload["part"] = partName;
+            if (!string.IsNullOrWhiteSpace(sdkMsgs)) payload["sdkMessages"] = sdkMsgs;
+            if (issues != null && issues.Count > 0) payload["issues"] = issues;
+            return payload;
         }
 
         private string CreateWriteError(
