@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Parts;
 using Artech.Architecture.Common.Services;
@@ -80,10 +81,14 @@ namespace GxMcp.Worker.Helpers
                         return v;
                     }
                 }
-                // If member access hint but no matching SDT found, skip injection — better to leave undeclared so the user notices
-                if (sdtMemberAccessHint && !sdtNamePrefix)
+                // Friction-report #3: when the source uses &Var.Field, the variable is structurally
+                // an SDT/BC reference. Falling through to the VARCHAR(100) default poisons subsequent
+                // validation with confusing "VARCHAR has no member 'Field'" errors. Skip the injection
+                // entirely so the agent gets a single clear "variable not declared" signal and can
+                // call genexus_add_variable with the correct SDT typeName.
+                if (sdtMemberAccessHint)
                 {
-                    Logger.Warn($"Variable {name} used with .Field access but no matching SDT/BC found. Skipping auto-inject.");
+                    Logger.Warn($"Variable {name} used with .Field access but no matching SDT/BC found in KB. Skipping auto-inject (will surface as undeclared variable; declare via genexus_add_variable typeName=<SDT>).");
                     return null;
                 }
             }
@@ -222,6 +227,43 @@ namespace GxMcp.Worker.Helpers
             {
                 object dts = v.GetPropertyValue("DataTypeString");
                 if (dts is string dtsStr && !string.IsNullOrEmpty(dtsStr)) return dtsStr;
+            }
+            catch { }
+
+            // Friction-report #4: BindVariableToSdt stores the structural reference in ATTCUSTOMTYPE
+            // (AttCustomType.Guid actually carries the SDT *name*, per the constructor comment).
+            // When DataTypeString isn't persisted (older KBs or read-only setter), this is the
+            // authoritative source — without it we serialize the bound SDT variable as "GX_SDT(4)".
+            try
+            {
+                object custom = v.GetPropertyValue("ATTCUSTOMTYPE");
+                if (custom != null)
+                {
+                    var ct = custom.GetType();
+                    string guidVal = ct.GetProperty("Guid")?.GetValue(custom) as string
+                                  ?? ct.GetField("Guid", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string
+                                  ?? ct.GetField("m_guid", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string;
+                    if (!string.IsNullOrEmpty(guidVal))
+                    {
+                        // First try as object name (the convention this codebase uses).
+                        if (model != null)
+                        {
+                            try
+                            {
+                                foreach (var candidate in model.Objects.GetByName(null, null, guidVal))
+                                {
+                                    if (candidate != null) return candidate.Name;
+                                }
+                            }
+                            catch { }
+                            // Could also be a stringified guid — fall through to TryGetObjectFromKey.
+                            var byKey = TryGetObjectFromKey(model, guidVal);
+                            if (byKey != null) return byKey.Name;
+                        }
+                        // No model lookup possible — surface the raw token rather than GX_SDT(4).
+                        return guidVal;
+                    }
+                }
             }
             catch { }
 
