@@ -68,8 +68,9 @@ namespace GxMcp.Gateway.Tests
 
             var (result, _) = guard.Apply(OversizedPayload(), "genexus_read", SomeArgs());
 
-            Assert.NotNull(result["_meta"]);
-            Assert.NotNull(result["_meta"]!["truncated"]);
+            Assert.IsType<JObject>(result["_meta"]);
+            Assert.IsType<JObject>(result["_meta"]!["truncated"]);
+            Assert.IsType<JObject>(result["_meta"]!["truncated"]!["follow_up"]);
         }
 
         [Fact]
@@ -88,12 +89,12 @@ namespace GxMcp.Gateway.Tests
         {
             var guard = new ResponseSizeGuard(maxBytes: 220_000);
             var payload = OversizedPayload(250_000);
+            long expectedSize = ResponseSizeGuard.ByteSize(payload);
 
             var (result, _) = guard.Apply(payload, "genexus_read", SomeArgs());
 
-            var originalSize = result["_meta"]!["truncated"]!["original_size"]?.Value<int>();
-            Assert.True(originalSize > 220_000,
-                $"original_size ({originalSize}) should exceed the cap");
+            var originalSize = result["_meta"]!["truncated"]!["original_size"]?.Value<long>();
+            Assert.Equal(expectedSize, originalSize);
         }
 
         [Fact]
@@ -162,7 +163,7 @@ namespace GxMcp.Gateway.Tests
         {
             var guard = new ResponseSizeGuard(maxBytes: 220_000);
 
-            var (result, truncated) = guard.Apply(OversizedPayload(), "genexus_list_objects", null!);
+            var (result, truncated) = guard.Apply(OversizedPayload(), "genexus_list_objects", null);
 
             Assert.True(truncated);
             var followArgs = (JObject)result["_meta"]!["truncated"]!["follow_up"]!["args"]!;
