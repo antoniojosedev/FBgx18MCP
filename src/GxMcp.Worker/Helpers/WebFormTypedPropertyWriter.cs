@@ -272,6 +272,46 @@ namespace GxMcp.Worker.Helpers
                 Logger.Info("[TypedWriter] failed to sync m_EditableContent: " + ex.Message);
             }
 
+            // CRITICAL: trigger Document property SETTER with a NEW XmlDocument instance.
+            // Direct field mutation (m_Document attribute writes) bypasses OnPropertyValueChanged,
+            // which is the SDK's hook for registering the entity in the active transaction's
+            // unit-of-work / dirty-set. Without that registration, SaveWithParent may serialize
+            // correct bytes but the KB persistence layer drops them because the entity wasn't
+            // enrolled in the commit batch.
+            //
+            // Cloning m_Document and re-assigning via the setter triggers OnPropertyValueChanged
+            // (which fires base.OnPropertyValueChanged → IPropertyBag notification → transaction
+            // dirty-set registration) WITHOUT setting m_EditableToStoredNeeded=true (that would
+            // cause EditableToStored to run on save and throw on unresolved att: refs).
+            try
+            {
+                var docNow = GetReadProperty(webFormPart, "Document") as XmlDocument;
+                if (docNow != null)
+                {
+                    var clone = (XmlDocument)docNow.Clone();
+                    var docProp = webFormPart.GetType().GetProperty("Document",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (docProp != null && docProp.CanWrite)
+                    {
+                        docProp.SetValue(webFormPart, clone, null);
+                        Logger.Info("[TypedWriter] Document property setter invoked (clone len=" + clone.OuterXml.Length + ") — fired OnPropertyValueChanged for UoW registration.");
+                        // Document setter sets m_FixPending=true & m_EditableContent=null. Re-sync m_EditableContent now.
+                        var ecField2 = webFormPart.GetType().GetField("m_EditableContent",
+                            BindingFlags.NonPublic | BindingFlags.Instance);
+                        ecField2?.SetValue(webFormPart, clone.OuterXml);
+                        // Setter does NOT set m_EditableToStoredNeeded but make doubly sure:
+                        var flag2 = webFormPart.GetType().GetField("m_EditableToStoredNeeded",
+                            BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (flag2 != null && flag2.FieldType == typeof(bool))
+                            flag2.SetValue(webFormPart, false);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Info("[TypedWriter] Document property setter threw: " + (ex.InnerException ?? ex).Message);
+            }
+
             return true;
         }
 

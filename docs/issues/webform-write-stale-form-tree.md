@@ -1,6 +1,90 @@
 # WebForm write does not persist: `m_Document` clobbered by stale Form tree on save
 
-**Status:** in-progress (Hipótese A wired, awaits live verification) · **Component:** `GxMcp.Worker` / `WebFormXmlHelper` · **Severity:** blocks programmatic visual edits
+**Status:** blocked on obfuscated SDK layer · **Component:** `GxMcp.Worker` / `WebFormXmlHelper` · **Severity:** blocks programmatic visual edits
+
+## Implementation status (2026-05-12, session 3 — wall hit at byte-persistence layer)
+
+Byte-level instrumentation around `obj.Save(ForceSave=true)` (see `WebFormSaveDiagnostics.cs`)
+proves the in-memory state is correct at every checkpoint AND the SDK Save lifecycle
+runs to completion. Despite this, disk state never changes.
+
+**Diagnostic log evidence (Saldo: → Saldo TESTE3:):**
+
+```
+[Diag/BEFORE-SAVE] m_Document     probe=Saldo TESTE3:    hash=80F8B687
+[Diag/BEFORE-SAVE] Document(prop) probe=Saldo TESTE3:    hash=80F8B687 sameRef=True
+[Diag/BEFORE-SAVE] SerializeData() bytes=36631 hash=A4A5D150 probe=Saldo TESTE3:
+[Diag/BEFORE-SAVE] part.Mode=Modified part.Modifications=Data,Property,Unknown part.Dirty=True
+[Diag/BEFORE-SAVE] obj.Mode=Modified  obj.PartsMode=Modified
+[Diag/BEFORE-SAVE] StructurePart present=False    ← OnBeforeSaveEntity early-returns; no clobber
+[VisualWrite] obj.Save(KBObjectSavePreferences{ForceSave=true}) completed.
+[Diag/AFTER-SAVE]  SerializeData() bytes=36631 hash=A4A5D150 probe=Saldo TESTE3:   ← still correct
+[Diag/AFTER-SAVE]  part.Mode=Unchanged  obj.Mode=Unchanged    ← InternalSave ran to line 521
+[DirectSave] part.TypeId=71 part.TypeVersionId=4
+[DirectSave] SaveModelEntityOutput(typeId=71, version=4, bytes=36631) completed.
+[BACKGROUND-FLUSH] Model.Commit() successful. KB.Commit() successful.
+```
+
+After worker kill (`Stop-Process -Force GxMcp.Worker`) + fresh `genexus_open_kb` +
+`genexus_read part=WebForm`: **disk still shows `Saldo:`**. The fresh-from-MDF read confirms
+nothing of the write reached the SQL Server data store.
+
+### What we proved this session
+
+1. **Property cache invalidation isn't the problem.** SerializeData bytes contain our
+   mutation both before and after save (same hash). No clobber happens during the save
+   lifecycle (StructurePart=False ⇒ `OnBeforeSaveEntity` early-returns at line 249706 of
+   `Artech.Genexus.Common.dll`).
+2. **Save lifecycle runs to completion.** `kbObject.Mode` flips Modified → Unchanged
+   (InternalSave line 521), confirming `PrepareSave` returned true and `PerformSave`
+   executed through `transaction.Commit()`.
+3. **Document property setter doesn't unblock it.** Cloning m_Document and reassigning
+   via the `Document` property setter fires `OnPropertyValueChanged` (adds `Property`
+   flag to `part.Modifications`), but disk state still unchanged.
+4. **Direct SaveModelEntityOutput bypass doesn't unblock it.** Calling
+   `webFormPart.SaveModelEntityOutput(71, 4, DateTime.UtcNow, freshBytes)` directly
+   (the entity-level primitive used by SaveWithParent internally) returns successfully
+   but bytes don't reach disk either.
+5. **Hard block:** `Artech.Udm.Framework.dll`, `Artech.Layers.BL.dll` ARE decompilable
+   (`Layers.BL` has full IL — `InternalSave/PrepareSave/PerformSave` visible), but
+   `Artech.Udm.Framework.dll` has method bodies stripped (`[MethodImpl(NoInlining)] {
+   }` shells; `mEqmoE9UxRmX9ogcto.M7EWM2ogCI()` decryptor pattern in static ctors).
+   `EntityManager.SaveWithParent`, `Entity.SaveModelEntityOutput`, and friends — the
+   actual byte→disk pipeline — cannot be traced via ILSpy.
+
+### Files added/modified this session
+
+- `src/GxMcp.Worker/Helpers/WebFormSaveDiagnostics.cs` (new) — `DumpState` logs
+  m_Document / Document(prop) / SerializeData bytes / Mode / Modifications / Dirty /
+  StructurePart presence at any checkpoint. `TryDirectSaveModelEntityOutput` is the
+  Hipótese-3 bypass attempt.
+- `src/GxMcp.Worker/Helpers/WebFormTypedPropertyWriter.cs` — added Document property
+  setter trigger at end of `TryApply` (clones m_Document, assigns via setter to fire
+  OnPropertyValueChanged) and syncs m_EditableContent / clears m_EditableToStoredNeeded.
+- `src/GxMcp.Worker/Services/WriteService.cs` — BEFORE-SAVE and AFTER-SAVE diagnostic
+  hooks around `obj.Save(prefs)`, plus `TryDirectSaveModelEntityOutput` after save.
+
+### Recommended follow-ups (in order of expected payoff)
+
+1. **Runtime IL capture of the obfuscated bodies.** Attach dnSpy or use a ClrMD-based
+   helper at runtime to dump the JIT-decrypted IL of `EntityManager.SaveWithParent`,
+   `Entity.SaveModelEntityOutput`, `KBStateManager.AcquireState`. The decryptor
+   (`mEqmoE9UxRmX9ogcto.M7EWM2ogCI`) runs at module load — by the time JIT compiles
+   these methods their IL exists in process memory.
+2. **ETW/SQL profiling.** Capture all SQL traffic during `obj.Save(ForceSave=true)` for
+   WebForm vs SDT. SDT writes work today; the SQL diff will show what extra/different
+   command WebForm needs.
+3. **Live IDE attach diff.** Attach dnSpy debugger to a running `Genexus.exe` IDE,
+   set a breakpoint inside SaveWithParent, modify a WebForm caption from the IDE,
+   and step through. Then repeat from the headless worker. Whatever branch the worker
+   takes that the IDE doesn't is the gate.
+4. **Workaround for users today:** until 1–3 yield, document that WebForm/Layout
+   programmatic edits via MCP are read-only-with-dry-run. Property edits on existing
+   controls via `genexus_layout set_property` continue to work (different code path,
+   not affected). Surface a clear "Use the IDE for WebForm structural changes"
+   error message in `WriteVisualPart` when the verify step fails.
+
+
 
 ## Implementation status (2026-05-12, session 2)
 

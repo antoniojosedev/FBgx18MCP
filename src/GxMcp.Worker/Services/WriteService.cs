@@ -993,6 +993,9 @@ namespace GxMcp.Worker.Services
                 {
                     WebFormXmlHelper.ApplyEditableXml(webFormPart, normalizedInput);
 
+                    // ── DIAGNOSTIC: byte-level state RIGHT BEFORE obj.Save ────────────────
+                    Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "BEFORE-SAVE");
+
                     try
                     {
                         webFormPart.Save();
@@ -1023,6 +1026,16 @@ namespace GxMcp.Worker.Services
                         Logger.Info("[VisualWrite] obj.Save(ForceSave) threw: " + inner.GetType().Name + ": " + inner.Message + " — falling back to EnsureSave.");
                         obj.EnsureSave(true);
                     }
+
+                    // ── DIAGNOSTIC: byte-level state RIGHT AFTER obj.Save ─────────────────
+                    Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "AFTER-SAVE");
+
+                    // ── BYPASS: Direct SaveModelEntityOutput ─────────────────────────────
+                    // The SDK's SaveWithParent path completes successfully and SerializeData()
+                    // returns the right bytes, but they don't reach disk. Try writing bytes
+                    // directly via Entity.SaveModelEntityOutput(outputTypeId, version, ts, bytes).
+                    Helpers.WebFormSaveDiagnostics.TryDirectSaveModelEntityOutput(webFormPart, obj);
+
                     transaction.Commit();
                     // Force synchronous flush so the data actually lands on disk before we re-read
                     // for verification. ScheduleFlush() default is timer-based and async — if the
