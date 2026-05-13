@@ -25,9 +25,13 @@ namespace GxMcp.Gateway.Routers
                         case "snapshots-restore": return new { module = "KB", action = "RestorePatternSnapshot", target = target, snapshotPath = args?["snapshotPath"]?.ToString() };
                         case "sync": return new { module = "Build", action = "Sync", target = target };
                         case "index": return new { module = "KB", action = "BulkIndex" };
-                        case "status": 
+                        case "status":
                             if (!string.IsNullOrEmpty(target))
-                                return new { module = "Build", action = "Status", target = target };
+                            {
+                                int? page = args?["page"]?.ToObject<int?>();
+                                int? pageSize = args?["pageSize"]?.ToObject<int?>() ?? args?["page_size"]?.ToObject<int?>();
+                                return new { module = "Build", action = "Status", target = target, page = page ?? 1, pageSize = pageSize ?? 50 };
+                            }
                             return new { module = "KB", action = "GetIndexStatus" };
                         case "result":
                             if (!string.IsNullOrEmpty(target))

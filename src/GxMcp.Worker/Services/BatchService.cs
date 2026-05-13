@@ -134,6 +134,44 @@ namespace GxMcp.Worker.Services
                 return "{\"error\":\"MultiEdit failed: " + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
+        /// <summary>
+        /// Builds a paginated payload for lifecycle status warnings.
+        /// Compatible with net48 (no Math.Clamp).
+        /// </summary>
+        public static JObject BuildStatusPayload(IList<string> warnings, int page, int pageSize)
+        {
+            // Clamp inputs
+            page = Math.Max(page, 1);
+            pageSize = Math.Min(Math.Max(pageSize, 1), 200);
+
+            int total = warnings == null ? 0 : warnings.Count;
+            int skip = (page - 1) * pageSize;
+            bool hasMore = skip + pageSize < total;
+
+            var sliced = new JArray();
+            if (warnings != null)
+            {
+                int end = Math.Min(skip + pageSize, total);
+                for (int i = skip; i < end; i++)
+                    sliced.Add(warnings[i]);
+            }
+
+            return new JObject
+            {
+                ["warnings"] = sliced,
+                ["_meta"] = new JObject
+                {
+                    ["pagination"] = new JObject
+                    {
+                        ["total"] = total,
+                        ["page"] = page,
+                        ["page_size"] = pageSize,
+                        ["has_more"] = hasMore
+                    }
+                }
+            };
+        }
+
         public string BatchRead(JArray items)
         {
             try

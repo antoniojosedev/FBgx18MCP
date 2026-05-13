@@ -186,7 +186,7 @@ namespace GxMcp.Worker.Services
             return _msbuildEncodingCached;
         }
 
-        public string GetStatus(string taskId)
+        public string GetStatus(string taskId, int page = 1, int pageSize = 50)
         {
             if (string.IsNullOrEmpty(taskId))
             {
@@ -199,7 +199,16 @@ namespace GxMcp.Worker.Services
                 {
                     if (status.Status == "Running" && status.StartedAt != default(DateTime))
                         status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-                    return JsonConvert.SerializeObject(status);
+
+                    // Serialize the status without the full warnings list, then inject paginated warnings
+                    var jo = JObject.FromObject(status, new JsonSerializer { NullValueHandling = NullValueHandling.Ignore });
+
+                    // Replace the flat warnings array with a paginated wrapper
+                    var paginatedWarnings = BatchService.BuildStatusPayload(status.Warnings, page, pageSize);
+                    jo["warnings"] = paginatedWarnings["warnings"];
+                    jo["_meta"] = paginatedWarnings["_meta"];
+
+                    return jo.ToString(Formatting.None);
                 }
             }
             return "{\"error\": \"Task ID not found\"}";

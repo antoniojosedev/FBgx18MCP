@@ -408,7 +408,10 @@ namespace GxMcp.Worker.Services
                         if (action == "GetLogicStructure") return _structureService.GetLogicStructure(target);
                         break;
                     case "build":
-                        if (action == "Status") return _buildService.GetStatus(target);
+                        if (action == "Status") return _buildService.GetStatus(
+                            target,
+                            args?["page"]?.ToObject<int?>() ?? 1,
+                            args?["pageSize"]?.ToObject<int?>() ?? 50);
                         if (action == "Cancel") return _buildService.Cancel(target);
                         return _buildService.Build(action, target);
                     case "validation":
