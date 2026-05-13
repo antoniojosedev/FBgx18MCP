@@ -914,8 +914,15 @@ namespace GxMcp.Worker.Services
                     || partName.Equals("TableStructure", StringComparison.OrdinalIgnoreCase)
                     || partName.Equals("SDTStructure", StringComparison.OrdinalIgnoreCase)
                     || partName.Equals("TrnStructure", StringComparison.OrdinalIgnoreCase);
-                if (isStructurePartAlias &&
-                        (obj.GetType().Name == "Transaction" || obj.GetType().Name == "Table" || obj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)))
+                // Friction-report #9b: use the SDK type test (is Table) instead of comparing
+                // GetType().Name as a string — subclassed/proxied Table instances were falling
+                // through to the generic part.SerializeToXml() branch and returning <Properties />.
+                bool isStructurableObject = obj is Transaction
+                    || obj is Table
+                    || string.Equals(obj.TypeDescriptor?.Name, "Table", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(obj.TypeDescriptor?.Name, "Transaction", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(obj.TypeDescriptor?.Name, "SDT", StringComparison.OrdinalIgnoreCase);
+                if (isStructurePartAlias && isStructurableObject)
                 {
                     string structureText = StructureParser.SerializeToText(obj);
                     ProcessTextResponse(structureText, result, client);
