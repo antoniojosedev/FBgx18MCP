@@ -1,5 +1,58 @@
 # Changelog
 
+## v2.1.6 — 2026-05-13
+
+Closes the remaining open items in `docs/mcp-friction-report-2026-05-08.md`
+(#2, #3, #4, #5, #6, #9a, #9b). v2.1.4 and v2.1.5 shipped the WebForm-write
+composition-pointer fix; this release wraps up the rest of the friction tail.
+
+### Fixed
+- **Bare `"Erro"` write failures now surface the real SDK diagnostic.** When
+  `obj.Save()` threw `"Erro"` without populating `OutputMessages`,
+  `genexus_edit mode=full` returned `{"error":"Erro","line":1}` while
+  `mode=patch` surfaced the actual `src0059: Esperando 'EndFor'...`. Both
+  write paths now consult `SdkDiagnosticsHelper.GetDiagnostics(obj)` and
+  `part.GetSdkMessages()` before falling back; the bare exception text is
+  preserved under `originalError` when enrichment fires. Friction-report #2.
+  (commit `a2a70cc`)
+- **SDT auto-inject no longer creates wrong-typed VARCHAR(100) fallbacks.**
+  When the source used `&Var.Field` and no SDT/BC name resolved, the
+  injector previously fell through to the VARCHAR(100) default, poisoning
+  later validation. It now skips injection so the agent gets a clean
+  "undeclared variable" signal and can call `genexus_add_variable
+  typeName=<SDT>` explicitly. Friction-report #3. (commit `3dadeb2`)
+- **Variables DSL emits the bound SDT name instead of `GX_SDT(4)`.** The
+  read-side resolver now probes `ATTCUSTOMTYPE` (where `BindVariableToSdt`
+  actually persists the structural reference) when the `DataTypeString`
+  fast-path is unavailable, so `&Foo : SdtFoo` surfaces correctly.
+  Friction-report #4. (commit `3dadeb2`)
+- **Patch post-write verification reads from a forced cache miss.**
+  `VerifyPersistedSource` now drops both `_sourceCache` and
+  `ObjectService._readCache` before its verify read, eliminating false
+  `persistedVerified=true` reports when the verification read hit a stale
+  cache entry. Friction-report #6. (commit `9d0394e`)
+- **`read part=TableStructure` returns the column DSL.** The structure-alias
+  dispatch in `ObjectService.ReadObjectSourceInternal` used a literal
+  `GetType().Name == "Table"` string check; subclassed/proxied Table
+  instances fell through to the generic `part.SerializeToXml()` path and
+  returned `<Properties />`. Now tests via `obj is Table` plus a
+  `TypeDescriptor.Name` check, so the existing `TableDslParser` runs.
+  Friction-report #9b. (commit `482bf48`)
+
+### Changed
+- **`genexus_query` auto-index nudge** surfaces under `_meta.autoIndexed` +
+  `_meta.indexStatus` (`starting` | `scanning` | `empty`), mirroring the rest
+  of the tool surface. The empty-index case now also kicks off the bulk
+  index instead of erroring out with `"Index empty."`. Friction-report #9a.
+  (commit `085b9e0`)
+
+### Verified already-closed
+- **Variables-part patch mode** has worked since `e10d382` —
+  `PatchService.ReadSourceFast` exposes the DSL via `GetVariablesAsText` and
+  the write back routes through `WriteService.WriteObject` →
+  `SetVariablesFromText`. Friction-report #5 closure noted in
+  `docs/mcp-friction-report-2026-05-08.md`.
+
 ## v2.1.3 — 2026-05-12
 
 Hardening release for MCP protocol compatibility, release verification, and cache/idempotency correctness.
