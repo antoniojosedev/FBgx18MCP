@@ -39,7 +39,17 @@ namespace GxMcp.Worker.Helpers
 
             // Pick the EnumerateWebTag overload that takes (KBObject, XmlDocument) so tags are rooted
             // in part.Document — the SAME document the SDK's BeforeSaveKBObject iterates.
-            var partDocForEnum = GetReadProperty(webFormPart, "Document") as XmlDocument;
+            // Access the m_Document FIELD (not the property) — the property may clone.
+            XmlDocument partDocForEnum = null;
+            try
+            {
+                var docField = webFormPart.GetType().GetField("m_Document",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                partDocForEnum = docField?.GetValue(webFormPart) as XmlDocument;
+            }
+            catch { }
+            if (partDocForEnum == null) partDocForEnum = GetReadProperty(webFormPart, "Document") as XmlDocument;
+            Logger.Info("[TypedWriter] m_Document field length=" + (partDocForEnum?.OuterXml.Length ?? -1));
             var partKbObj = GetReadProperty(webFormPart, "KBObject") ?? GetReadProperty(webFormPart, "ContainerObject") ?? GetReadProperty(webFormPart, "Parent") ?? GetReadProperty(webFormPart, "Container");
             MethodInfo enumerate = null;
             object[] enumArgs = null;
@@ -131,8 +141,8 @@ namespace GxMcp.Worker.Helpers
                 // `EnumerateWebTag` returns tags whose Node lives in an INTERNAL XmlDocument, not the
                 // live part.Document. Mutating tag.Node alone wouldn't propagate to what gets persisted.
                 // Find the matching element in part.Document by id/ControlName and mutate THAT instead.
-                var partDoc = GetReadProperty(webFormPart, "Document") as XmlDocument;
-                if (partDoc == null) { failure = "part.Document is null"; return false; }
+                var partDoc = partDocForEnum;
+                if (partDoc == null) { failure = "part m_Document is null"; return false; }
                 XmlElement node = FindElementInPartDoc(partDoc, controlName);
                 if (node == null) { failure = "no element id='" + controlName + "' (nor ControlName) in part.Document"; return false; }
 
@@ -175,9 +185,23 @@ namespace GxMcp.Worker.Helpers
             }
             catch { }
 
-            // NOTE: NOT calling DeserializeDataFromDocument — that path itself invokes
-            // tag.SaveProperties which can clobber our mutations if the typed model resolves
-            // values differently than what we wrote.
+            // Call EditableToStored to sync typed model from XML through the SDK's canonical converter.
+            // For pure attribute changes (no new att:NNNN references), this should not throw.
+            try
+            {
+                var etsByPart = webFormPart.GetType().GetMethod("EditableToStored",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                if (etsByPart != null)
+                {
+                    etsByPart.Invoke(webFormPart, null);
+                    Logger.Info("[TypedWriter] EditableToStored() invoked on WebFormPart.");
+                }
+            }
+            catch (Exception ex)
+            {
+                var inner = ex.InnerException ?? ex;
+                Logger.Info("[TypedWriter] EditableToStored() threw: " + inner.GetType().Name + ": " + inner.Message);
+            }
 
             // Clear the editable-to-stored pending flag so EnsureSave doesn't replay old m_EditableContent.
             try

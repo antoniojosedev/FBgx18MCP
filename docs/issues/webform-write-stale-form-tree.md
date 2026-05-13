@@ -19,7 +19,28 @@ The Patch operation now correctly modifies the element. Verify dumps in `last-cu
 `last-patch-output.xml` show the gxTextBlock retains its identity and the attribute changes
 land in `part.Document`.
 
-### 2. Hipótese A wired but save still clobbers (BLOCKED on cache)
+### 2. Persistence blocked at the SDK level (BLOCKED on dirty-flag / KBModel cache)
+
+Empirically confirmed in this session (with the gateway bug fixed so the patch actually
+reaches WriteVisualPart with the right XML):
+
+- `WebFormHelper.EnumerateWebTag(KBObject, XmlDocument)` returns tags that, depending on
+  the overload, may be rooted in a CLONE of `m_Document` instead of the field itself.
+  Accessing `m_Document` via reflection (vs the `Document` property) and mutating the
+  XmlElement attribute lands in the part's authoritative tree — `verify` reads the new
+  value back.
+- After `obj.EnsureSave(true) + transaction.Commit() + ScheduleFlush()`, the SAME `obj`
+  instance's `Document` still shows our mutation (length / hash confirm).
+- `_objectService.FindObject(target)` returns a DIFFERENT, separately-cached KBObject
+  whose `Document` still shows the original value. After a worker restart (which forces
+  a fresh disk read), the WebForm XML on disk is also unchanged.
+
+So the SDK's headless save lifecycle is not picking up our XmlNode-level mutations as
+"dirty". The typed-Property path (`tag.SetProperties(IDictionary)` / `WebFormEditable
+.SetTagProperty`) doesn't help either because their typed Property values for `Class`
+are resolved ClassReferences whose serialization round-trips back to the original GUID.
+
+### Hipótese A — wired through the canonical SDK surface (probe-verified — see
 
 The canonical SDK path is now in place — `WebFormHelper.EnumerateWebTag(KBObject, XmlDocument)`,
 match by `id`, mutate the XmlElement that lives in `part.Document`, invalidate

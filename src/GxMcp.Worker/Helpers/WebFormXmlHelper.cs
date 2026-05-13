@@ -123,12 +123,6 @@ namespace GxMcp.Worker.Helpers
                 throw new ArgumentNullException(nameof(part));
             }
 
-            try
-            {
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
-                System.IO.File.WriteAllText(System.IO.Path.Combine(baseDir, "last-raw-input.xml"), xml ?? "");
-            }
-            catch { }
             string normalized = NormalizeEditableXmlInput(xml, part.TypeDescriptor?.Name);
 
             // ELITE: Support ReportPart persistence
@@ -168,17 +162,6 @@ namespace GxMcp.Worker.Helpers
             }
 
             var propertyDeltas = WebFormPropertyDeltaDetector.DetectSupportedPropertyDeltas(currentXml, normalized);
-            if (!propertyDeltas.IsSupported && !string.IsNullOrEmpty(currentXml))
-            {
-                try
-                {
-                    string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
-                    System.IO.File.WriteAllText(System.IO.Path.Combine(baseDir, "last-current.xml"), currentXml);
-                    System.IO.File.WriteAllText(System.IO.Path.Combine(baseDir, "last-updated.xml"), normalized);
-                    Logger.Info("[LayoutFix] Dumped current/updated XML to last-current.xml and last-updated.xml for diff inspection.");
-                }
-                catch { }
-            }
             if (propertyDeltas.IsSupported && propertyDeltas.Deltas.Count > 0)
             {
                 Logger.Info("[LayoutFix] Detected " + propertyDeltas.Deltas.Count + " property delta(s) — trying typed-property write via IWebTag.");
