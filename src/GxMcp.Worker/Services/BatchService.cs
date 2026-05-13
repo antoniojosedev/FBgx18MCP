@@ -135,6 +135,44 @@ namespace GxMcp.Worker.Services
             }
         }
         /// <summary>
+        /// Builds a paginated payload for lifecycle result items (errors list).
+        /// Compatible with net48 (no Math.Clamp).
+        /// </summary>
+        public static JObject BuildResultPayload(IList<string> items, int page, int pageSize)
+        {
+            // Clamp inputs
+            page = Math.Max(page, 1);
+            pageSize = Math.Min(Math.Max(pageSize, 1), 200);
+
+            int total = items == null ? 0 : items.Count;
+            int skip = (page - 1) * pageSize;
+            bool hasMore = skip + pageSize < total;
+
+            var sliced = new JArray();
+            if (items != null)
+            {
+                int end = Math.Min(skip + pageSize, total);
+                for (int i = skip; i < end; i++)
+                    sliced.Add(items[i]);
+            }
+
+            return new JObject
+            {
+                ["items"] = sliced,
+                ["_meta"] = new JObject
+                {
+                    ["pagination"] = new JObject
+                    {
+                        ["total"] = total,
+                        ["page"] = page,
+                        ["page_size"] = pageSize,
+                        ["has_more"] = hasMore
+                    }
+                }
+            };
+        }
+
+        /// <summary>
         /// Builds a paginated payload for lifecycle status warnings.
         /// Compatible with net48 (no Math.Clamp).
         /// </summary>

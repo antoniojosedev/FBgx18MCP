@@ -35,7 +35,11 @@ namespace GxMcp.Gateway.Routers
                             return new { module = "KB", action = "GetIndexStatus" };
                         case "result":
                             if (!string.IsNullOrEmpty(target))
-                                return new { module = "Build", action = "Status", target = target };
+                            {
+                                int? page = args?["page"]?.ToObject<int?>();
+                                int? pageSize = args?["pageSize"]?.ToObject<int?>() ?? args?["page_size"]?.ToObject<int?>();
+                                return new { module = "Build", action = "Result", target = target, page = page ?? 1, pageSize = pageSize ?? 50 };
+                            }
                             return null;
                         default: return null;
                     }

@@ -412,6 +412,10 @@ namespace GxMcp.Worker.Services
                             target,
                             args?["page"]?.ToObject<int?>() ?? 1,
                             args?["pageSize"]?.ToObject<int?>() ?? 50);
+                        if (action == "Result") return _buildService.GetResult(
+                            target,
+                            args?["page"]?.ToObject<int?>() ?? 1,
+                            args?["pageSize"]?.ToObject<int?>() ?? 50);
                         if (action == "Cancel") return _buildService.Cancel(target);
                         return _buildService.Build(action, target);
                     case "validation":
