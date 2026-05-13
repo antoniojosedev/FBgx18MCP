@@ -1137,6 +1137,15 @@ namespace GxMcp.Gateway
 
                             bool isErr = resultObj["error"] != null || string.Equals(resultObj["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
 
+                            // TerseErrors: trim error envelopes to {message, code, hint} by default.
+                            // verbose_errors=true restores the full payload. Gated by PerfProfile.V1Enabled.
+                            // Runs BEFORE ResponseSizeGuard so the guard sees the trimmed (smaller) payload.
+                            if (isErr && PerfProfile.V1Enabled && finalResult is JObject errObj)
+                            {
+                                bool verbose = tArgs?["verbose_errors"]?.ToObject<bool?>() ?? false;
+                                finalResult = McpRouter.TrimErrorEnvelope(errObj, verbose);
+                            }
+
                             // ResponseSizeGuard: replace oversize JObject results with a truncation sentinel.
                             // Gated by PerfProfile.V1Enabled so it can be disabled via MCP_PERF_PROFILE=legacy.
                             if (!isErr && PerfProfile.V1Enabled && finalResult is JObject finalJObj)

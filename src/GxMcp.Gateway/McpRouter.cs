@@ -833,5 +833,23 @@ namespace GxMcp.Gateway
             }
             foreach (var name in toRemove) obj.Remove(name);
         }
+
+        /// <summary>
+        /// Returns a terse error envelope containing only <c>message</c>, <c>code</c>, and <c>hint</c>.
+        /// Stack traces and full SDK diagnostics are dropped by default. Pass <paramref name="verbose"/> = true
+        /// (via the <c>verbose_errors</c> tool argument) to get the full original envelope.
+        /// </summary>
+        internal static JObject TrimErrorEnvelope(JObject error, bool verbose)
+        {
+            if (verbose) return error; // pass-through
+            var trimmed = new JObject();
+            // first line of message only
+            var msg = error["message"]?.ToString() ?? error["error"]?.ToString() ?? "Unknown error";
+            var firstLine = msg.Split('\n')[0].Trim();
+            trimmed["message"] = firstLine;
+            if (error["code"] != null) trimmed["code"] = error["code"];
+            if (error["hint"] != null) trimmed["hint"] = error["hint"];
+            return trimmed;
+        }
     }
 }
