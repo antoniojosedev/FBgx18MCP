@@ -66,6 +66,7 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Data" />
     <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.Windows.Forms" />

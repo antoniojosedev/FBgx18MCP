@@ -167,15 +167,33 @@ namespace GxMcp.Worker.Services
                 else
                 {
                     attrName = ResolveCanonicalAttributeName(element, propertyName);
-                    previous = element.Attribute(attrName) != null ? element.Attribute(attrName).Value : null;
-                    element.SetAttributeValue(attrName, value ?? string.Empty);
+
+                    // gxTextBlock and other legacy controls authoritatively store the caption
+                    // as a CaptionExpression Tokens XML. Writing only a loose `Caption` attr
+                    // leaves the stale Tokens in place; on save the SDK re-emits from
+                    // CaptionExpression and the regenerated EntityVersion sibling wins
+                    // composition (root cause confirmed via SQL inspection of EntityVersion
+                    // rows on session 4's ListaAtiCPAlunoUniGra repro).
+                    if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) &&
+                        element.Attribute("CaptionExpression") != null)
+                    {
+                        attrName = "CaptionExpression";
+                        previous = element.Attribute(attrName)?.Value;
+                        element.SetAttributeValue(attrName, BuildConstantCaptionTokens(value ?? string.Empty));
+                        element.Attribute("Caption")?.Remove();
+                    }
+                    else
+                    {
+                        previous = element.Attribute(attrName) != null ? element.Attribute(attrName).Value : null;
+                        element.SetAttributeValue(attrName, value ?? string.Empty);
+                    }
                 }
 
                 string normalized = doc.ToString();
                 Logger.Info($"SetProperty: Target XML updated for {controlName}. attrName={attrName}. Current element attributes: {string.Join(", ", System.Linq.Enumerable.Select(element.Attributes(), a => a.Name.LocalName + "=" + a.Value))}");
                 Logger.Info($"SetProperty: New XML Sample (first 500 chars): " + (normalized.Length > 500 ? normalized.Substring(0, 500) : normalized));
                 
-                var persistError = PersistVisualXml(obj, contextResult, target, normalized);
+                var persistError = PersistVisualXml(obj, contextResult, target, normalized, compositionRepairToken: value);
                 if (persistError != null) return persistError;
 
                 var persistedObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target);
@@ -189,7 +207,14 @@ namespace GxMcp.Worker.Services
                 string persistedValue = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
                     ? persistedElement.Value
                     : (persistedElement.Attribute(attrName) != null ? persistedElement.Attribute(attrName).Value : null);
-                
+
+                // When we wrote a Tokens XML into CaptionExpression, compare against the
+                // CDATA payload, not the raw serialized XML.
+                if (string.Equals(attrName, "CaptionExpression", StringComparison.Ordinal))
+                {
+                    persistedValue = ExtractConstantCaptionFromTokens(persistedValue);
+                }
+
                 bool match = IsPersistedValueMatch(attrName, value, persistedValue);
                 bool isProcedure = string.Equals(obj.TypeDescriptor?.Name, "Procedure", StringComparison.OrdinalIgnoreCase);
 
@@ -211,6 +236,10 @@ namespace GxMcp.Worker.Services
                             persistedValue = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
                                 ? retryElement.Value
                                 : (retryElement.Attribute(attrName) != null ? retryElement.Attribute(attrName).Value : null);
+                            if (string.Equals(attrName, "CaptionExpression", StringComparison.Ordinal))
+                            {
+                                persistedValue = ExtractConstantCaptionFromTokens(persistedValue);
+                            }
                             match = IsPersistedValueMatch(attrName, value, persistedValue);
                         }
                     }
@@ -1193,11 +1222,20 @@ namespace GxMcp.Worker.Services
                 return FindElementByPath(doc, controlName);
             }
 
-            return doc
+            var match = doc
                 .Descendants()
                 .FirstOrDefault(el =>
                     string.Equals(Attr(el, "ControlName"), controlName, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(Attr(el, "InternalName"), controlName, StringComparison.OrdinalIgnoreCase));
+            if (match != null) return match;
+
+            // Fallback: legacy gxTextBlock / fieldset / table emit an `id` attribute instead of
+            // ControlName. Search those only after the canonical fields miss so we don't
+            // accidentally hijack a name when both forms coexist on different elements.
+            return doc
+                .Descendants()
+                .FirstOrDefault(el =>
+                    string.Equals(Attr(el, "id"), controlName, StringComparison.OrdinalIgnoreCase));
         }
 
         private static XElement FindElementByPath(XDocument doc, string path)
@@ -1311,6 +1349,33 @@ namespace GxMcp.Worker.Services
                    string.Equals(propertyName, "innertext", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(propertyName, "nodevalue", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(propertyName, "value", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string BuildConstantCaptionTokens(string value)
+        {
+            var tokens = new XElement("Tokens",
+                new XElement("Token",
+                    new XElement("Type", "Constant"),
+                    new XElement("Data", new XCData(value ?? string.Empty))));
+            return tokens.ToString(SaveOptions.DisableFormatting);
+        }
+
+        private static string ExtractConstantCaptionFromTokens(string captionExpression)
+        {
+            if (string.IsNullOrEmpty(captionExpression)) return string.Empty;
+            try
+            {
+                var tokens = XElement.Parse(captionExpression);
+                var data = tokens
+                    .Elements("Token")
+                    .Elements("Data")
+                    .FirstOrDefault();
+                return data?.Value ?? string.Empty;
+            }
+            catch
+            {
+                return captionExpression;
+            }
         }
 
         private static bool IsPersistedValueMatch(string propertyName, string expected, string actual)
@@ -1943,12 +2008,25 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string PersistVisualXml(KBObject obj, LayoutContextResult context, string target, string normalizedXml)
+        private string PersistVisualXml(KBObject obj, LayoutContextResult context, string target, string normalizedXml, string compositionRepairToken = null)
         {
             var kb = _objectService.GetKbService().GetKB();
             if (kb == null)
             {
                 return Models.McpResponse.Error("KB not opened", target, "Layout", "Open a Knowledge Base before writing visual metadata.");
+            }
+
+            // Snapshot pre-save EntityVersionId so the composition repair can identify rows
+            // that the upcoming Save() inserts. Only meaningful for WebForm surfaces today.
+            long preSaveMaxEntityVersionId = -1;
+            string kbPath = null;
+            if (context.Surface == VisualSurface.WebForm && !string.IsNullOrEmpty(compositionRepairToken))
+            {
+                try { kbPath = kb.Location; } catch { kbPath = null; }
+                if (!string.IsNullOrEmpty(kbPath))
+                {
+                    preSaveMaxEntityVersionId = WebFormCompositionRepair.SnapshotMaxEntityVersionId(obj, kbPath);
+                }
             }
 
             using (var transaction = kb.BeginTransaction())
@@ -2047,6 +2125,19 @@ namespace GxMcp.Worker.Services
 
                     obj.EnsureSave(true);
                     transaction.Commit();
+
+                    Logger.Info("[CompositionRepair] post-commit gate: surface=" + context.Surface +
+                                " tokenPresent=" + (!string.IsNullOrEmpty(compositionRepairToken)) +
+                                " preSaveMax=" + preSaveMaxEntityVersionId +
+                                " kbPathPresent=" + (!string.IsNullOrEmpty(kbPath)));
+                    if (context.Surface == VisualSurface.WebForm &&
+                        !string.IsNullOrEmpty(compositionRepairToken) &&
+                        preSaveMaxEntityVersionId >= 0 &&
+                        !string.IsNullOrEmpty(kbPath))
+                    {
+                        WebFormCompositionRepair.TryRepair(obj, kbPath, compositionRepairToken, preSaveMaxEntityVersionId);
+                    }
+
                     _objectService.MarkReadCacheDirty(obj, context.PartName ?? "Layout");
                     return null;
                 }

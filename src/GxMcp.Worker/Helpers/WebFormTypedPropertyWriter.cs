@@ -167,6 +167,55 @@ namespace GxMcp.Worker.Helpers
                 // Invalidate the tag's cached typed Properties so the next read reloads from the new XML.
                 InvalidateTagPropertyCache(tag, controlName);
 
+                // CANONICAL FIX (session 4): update the typed PropertiesObject via
+                // IWebTag.SetProperties(IDictionary). Direct XmlNode mutation alone leaves the
+                // typed model untouched; on Save the SDK serializes BOTH layers and inserts
+                // TWO EntityVersion rows for the WebFormPart — one from m_Document (our bytes)
+                // and one regenerated from the stale typed model (= original bytes). The
+                // EntityVersionComposition pointer at the parent WebPanel lands on the
+                // regenerated sibling, so reads return the original. By updating the typed
+                // model here, both serializations match and composition resolves correctly.
+                if (setPropertiesDict != null)
+                {
+                    try
+                    {
+                        var dict = new System.Collections.Hashtable();
+                        foreach (var d in kv.Value)
+                        {
+                            // Key is the XML attribute name; SetProperties handles the
+                            // attribute↔typed-property mapping internally (e.g.,
+                            // CaptionExpression → Caption with Tokens conversion).
+                            dict[d.PropertyName] = d.Value;
+                        }
+                        setPropertiesDict.Invoke(tag, new object[] { dict });
+                        Logger.Info("[TypedWriter] tag.SetProperties(IDictionary) invoked for '" + controlName + "' with " + dict.Count + " key(s).");
+                    }
+                    catch (Exception ex)
+                    {
+                        var inner = ex.InnerException ?? ex;
+                        Logger.Info("[TypedWriter] tag.SetProperties threw: " + inner.GetType().Name + ": " + inner.Message + " — falling back to SetTagProperty per-key.");
+
+                        // Fallback: WebFormEditable.SetTagProperty per key.
+                        try
+                        {
+                            var propsBag = GetReadProperty(tag, "Properties");
+                            foreach (var d in kv.Value)
+                            {
+                                if (propsBag == null) break;
+                                bool changed = false;
+                                var args = new object[] { tag, propsBag, null, d.PropertyName, (object)d.Value, changed, null };
+                                setTagProperty.Invoke(null, args);
+                                Logger.Info("[TypedWriter] SetTagProperty fallback: " + controlName + "." + d.PropertyName + " changed=" + args[5]);
+                            }
+                        }
+                        catch (Exception ex2)
+                        {
+                            var inner2 = ex2.InnerException ?? ex2;
+                            Logger.Info("[TypedWriter] SetTagProperty fallback also threw: " + inner2.GetType().Name + ": " + inner2.Message);
+                        }
+                    }
+                }
+
                 // Verify the mutation actually landed in part.Document by re-querying.
                 var verify = FindElementInPartDoc(partDoc, controlName);
                 foreach (var d in kv.Value)
