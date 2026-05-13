@@ -232,7 +232,8 @@ namespace GxMcp.Worker.Services
                                 args?["offset"]?.ToObject<int?>() ?? 0,
                                 args?["parent"]?.ToString(),
                                 args?["typeFilter"]?.ToString(),
-                                args?["parentPath"]?.ToString()
+                                args?["parentPath"]?.ToString(),
+                                args?["verbose"]?.ToObject<bool?>() ?? false
                             );
                         break;
                     case "read":

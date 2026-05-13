@@ -19,14 +19,14 @@ namespace GxMcp.Worker.Services
             _indexCacheService = indexCacheService;
         }
 
-        public string ListObjects(string filter, int limit, int offset, string parentFilter = null, string typeFilter = null, string parentPathFilter = null)
+        public string ListObjects(string filter, int limit, int offset, string parentFilter = null, string typeFilter = null, string parentPathFilter = null, bool verbose = false)
         {
             var sw = Stopwatch.StartNew();
             string source = "none";
             string Finalize(string response)
             {
                 sw.Stop();
-                Logger.Debug($"[ListService] source={source} limit={limit} offset={offset} parentPath='{parentPathFilter ?? ""}' parent='{parentFilter ?? ""}' typeFilter='{typeFilter ?? ""}' filter='{filter ?? ""}' elapsedMs={sw.ElapsedMilliseconds}");
+                Logger.Debug($"[ListService] source={source} limit={limit} offset={offset} parentPath='{parentPathFilter ?? ""}' parent='{parentFilter ?? ""}' typeFilter='{typeFilter ?? ""}' filter='{filter ?? ""}' verbose={verbose} elapsedMs={sw.ElapsedMilliseconds}");
                 return response;
             }
 
@@ -130,7 +130,8 @@ namespace GxMcp.Worker.Services
                             entry.Parent ?? string.Empty,
                             entry.Module ?? string.Empty,
                             entry.Path ?? string.Empty,
-                            entry.ParentPath ?? string.Empty
+                            entry.ParentPath ?? string.Empty,
+                            verbose
                         ));
                     }
 
@@ -196,7 +197,8 @@ namespace GxMcp.Worker.Services
                         item.Hierarchy.ParentName,
                         item.Hierarchy.ModuleName,
                         item.Hierarchy.Path,
-                        item.Hierarchy.ParentPath
+                        item.Hierarchy.ParentPath,
+                        verbose
                     ));
                 }
 
@@ -255,16 +257,43 @@ namespace GxMcp.Worker.Services
             };
         }
 
-        private JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath)
+        public static JObject BuildItemForTest(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
+        {
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, verbose);
+        }
+
+        private JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
+        {
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, verbose);
+        }
+
+        private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
         {
             var item = new JObject();
             item["name"] = name;
             item["type"] = type;
-            item["description"] = description;
-            item["parent"] = parent;
-            item["module"] = module;
-            item["path"] = path;
-            item["parentPath"] = parentPath;
+
+            // Check if we're in legacy mode (MCP_PERF_PROFILE=legacy means V1Enabled=false)
+            string perfProfile = Environment.GetEnvironmentVariable("MCP_PERF_PROFILE");
+            bool isLegacyMode = !string.IsNullOrWhiteSpace(perfProfile) &&
+                               string.Equals(perfProfile, "legacy", StringComparison.OrdinalIgnoreCase);
+
+            // In legacy mode, always return full shape for backward compatibility
+            if (isLegacyMode || verbose)
+            {
+                item["description"] = description;
+                item["parent"] = parent;
+                item["module"] = module;
+                item["path"] = path;
+                item["parentPath"] = parentPath;
+            }
+            else
+            {
+                // Minimal shape (4 fields): name, type, path, parent
+                item["path"] = path;
+                item["parent"] = parent;
+            }
+
             return item;
         }
 

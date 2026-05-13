@@ -48,6 +48,7 @@ namespace GxMcp.Gateway.Routers
                         parent = args?["parent"]?.ToString(),
                         parentPath = args?["parentPath"]?.ToString(),
                         typeFilter = args?["typeFilter"]?.ToString(),
+                        verbose = args?["verbose"]?.ToObject<bool?>() ?? false,
                     };
                 default:
                     return null;
