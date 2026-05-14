@@ -13,6 +13,7 @@ namespace GxMcp.Gateway
 {
     public class WorkerProcess
     {
+        public KbHandle Kb { get; }
         private Process? _process;
         private readonly Configuration _config;
         private readonly Channel<string> _commandChannel = Channel.CreateUnbounded<string>();
@@ -37,9 +38,10 @@ namespace GxMcp.Gateway
         public event Action<string>? OnRpcResponse;
         public event Action? OnWorkerExited;
 
-        public WorkerProcess(Configuration config)
+        public WorkerProcess(Configuration config, KbHandle kb)
         {
             _config = config;
+            Kb = kb;
             _workerIdleTimeout = TimeSpan.FromMinutes(Math.Max(1, _config.Server?.WorkerIdleTimeoutMinutes ?? 5));
             _writerTask = Task.Run(ProcessQueueAsync);
         }
@@ -387,7 +389,7 @@ namespace GxMcp.Gateway
                     CreateNoWindow = true
                 };
 
-                string kbPath = _config.Environment?.KBPath ?? string.Empty;
+                string kbPath = Kb.Path;
                 startInfo.Arguments = $"--kb \"{kbPath}\"";
                 startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = _config.GeneXus?.InstallationPath ?? string.Empty;
                 startInfo.EnvironmentVariables["GX_KB_PATH"] = kbPath;

@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.3.0 — 2026-05-14
+
+Multi-KB parallel support. One Gateway can now drive up to `Server.MaxOpenKbs`
+(default 3) concurrent KBs, each in its own Worker process. Cross-KB tool
+calls run in parallel — no serialization between KBs. Intra-KB calls remain
+serialized by the SDK's STA constraint, as before.
+
+### Added
+- **`WorkerPool`** (Gateway) — keyed by KB alias, LRU eviction when pool full,
+  idle timeout reuses existing `WorkerIdleTimeoutMinutes`.
+- **`KbResolver`** — maps `kb` tool arg (alias OR absolute path) to a
+  `KbHandle`. Default-KB fallback: 1 KB open → uses it; 0 open + `DefaultKb`
+  configured → opens it; 2+ open without `kb` → `KB_AMBIGUOUS` error.
+- **`kb` parameter** on every non-meta tool (28 tools). Optional; required
+  when more than one KB is open.
+- **`genexus_kb` meta-tool** — `action: list | open | close`. List shows
+  open KBs, configured `DefaultKb`, declared aliases, and `MaxOpenKbs`.
+- **Config schema:** `Environment.KBs[]` (alias+path) and
+  `Environment.DefaultKb`; `Server.MaxOpenKbs` (default 3).
+- **Backward-compat:** legacy `Environment.KBPath` auto-migrates to a single
+  `KBs[]` entry + `DefaultKb` at load time. Existing configs work unchanged.
+
+### Changed
+- `WorkerProcess` constructor now takes `(Configuration, KbHandle)`.
+- `KbService` static fields (`_kb`, `_kbLock`, `_isOpenInProgress`) become
+  instance fields — each Worker process holds one isolated KbService.
+- Idempotency cache is now scoped by the resolved KB path (was previously
+  the single `Environment.KBPath`).
+
+### Internal
+- `AsyncLocal<KbHandle?>` resolves the active KB at the top of
+  `ProcessMcpRequest` and propagates to `SendWorkerCommandAsync` without
+  threading new parameters through 7 call sites.
+
+Spec: `docs/superpowers/specs/2026-05-14-multi-kb-parallel-design.md`.
+Plan: `docs/superpowers/plans/2026-05-14-multi-kb-parallel.md`.
+
 ## v2.2.0 — 2026-05-13
 
 Coordinated perf & stability release closing the tools-disappear-mid-session

@@ -22,7 +22,26 @@ namespace GxMcp.Gateway
     class Program
     {
         private const string McpAxiSchemaVersion = "mcp-axi/2";
-        private static WorkerProcess? _worker;
+        private static WorkerPool? _workerPool;
+        private static KbResolver? _kbResolver;
+        // Set per-call at the top of ProcessMcpRequest; SendWorkerCommandAsync reads it
+        // to route the command to the correct WorkerProcess in the pool.
+        private static readonly AsyncLocal<KbHandle?> _currentKb = new AsyncLocal<KbHandle?>();
+        // Legacy single-worker accessor: returns the worker for the AsyncLocal KB if set,
+        // otherwise the worker for the DefaultKb (acquiring it lazily).
+        private static async Task<WorkerProcess> GetActiveWorkerAsync()
+        {
+            if (_workerPool == null) throw new InvalidOperationException("WorkerPool not initialised.");
+            KbHandle? kb = _currentKb.Value;
+            if (kb == null)
+            {
+                // Fall back to default for callers outside a tool-call context (warmup, etc.).
+                kb = _kbResolver!.Resolve(null, _workerPool.ListOpen());
+            }
+            return await _workerPool.AcquireAsync(kb, CancellationToken.None);
+        }
+        internal static WorkerPool? GetWorkerPool() => _workerPool;
+        internal static KbResolver? GetKbResolver() => _kbResolver;
         private sealed class PendingWorkerRequest
         {
             public TaskCompletionSource<string> CompletionSource { get; init; } = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -653,32 +672,20 @@ namespace GxMcp.Gateway
 
         private static void StartWorker(Configuration config)
         {
-            _worker = new WorkerProcess(config);
-            _worker.OnRpcResponse += HandleWorkerResponse;
-            _worker.OnWorkerExited += () => {
-                Log("Worker Process Exited. Notifying all pending requests...");
-                foreach (var kvp in _pendingRequests.ToArray())
-                {
-                    string id = kvp.Key;
-                    if (_pendingRequests.TryRemove(id, out var pending))
-                    {
-                        _operationTracker.MarkFailedByRequest(id, "GeneXus MCP Worker crashed/exited.");
-                        var errorJson = JsonConvert.SerializeObject(new { 
-                            jsonrpc = "2.0", 
-                            id = id, 
-                            error = new { code = -32603, message = "GeneXus MCP Worker crashed/exited." } 
-                        });
-                        pending.CompletionSource.TrySetResult(errorJson);
-                    }
-                }
+            _kbResolver = new KbResolver(config);
+            _workerPool = new WorkerPool(config);
+            _workerPool.OnRpcResponse += HandleWorkerResponse;
+            _workerPool.OnWorkerExited += (kb) => {
+                Log($"Worker for KB '{kb.Alias}' exited. Pending requests may be released by sweep.");
+                // Per-worker pending mapping not tracked in v1; rely on stale cleanup.
             };
         }
 
         private static void RestartWorker(Configuration config)
         {
-            if (_worker != null)
+            if (_workerPool != null)
             {
-                try { _worker.Stop(); } catch { }
+                try { _workerPool.StopAll(); } catch { }
             }
             // Clear cache on KB change
             _semanticCache.Clear();
@@ -783,7 +790,8 @@ namespace GxMcp.Gateway
             _pendingRequests[requestId] = pending;
 
             var workerRequest = BuildWorkerRpcRequest(workerCommand, requestId);
-            await _worker!.SendCommandAsync(workerRequest.ToString(Formatting.None));
+            var worker = await GetActiveWorkerAsync();
+            await worker.SendCommandAsync(workerRequest.ToString(Formatting.None));
 
             var completedTask = await Task.WhenAny(pending.CompletionSource.Task, Task.Delay(timeoutMs));
             if (completedTask == pending.CompletionSource.Task)
@@ -862,6 +870,43 @@ namespace GxMcp.Gateway
         {
             string? method = request["method"]?.ToString();
             var idToken = request["id"];
+
+            // Resolve KB once per request and stash in AsyncLocal so SendWorkerCommandAsync routes correctly.
+            // For non-tools/call methods the resolver falls back to DefaultKb.
+            if (_kbResolver != null && _workerPool != null)
+            {
+                try
+                {
+                    string? kbArg = null;
+                    if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var paramsObj = request["params"] as JObject;
+                        var argsObj = paramsObj?["arguments"] as JObject;
+                        kbArg = argsObj?["kb"]?.ToString();
+                        // Strip `kb` from worker-bound args (worker is single-KB scoped).
+                        argsObj?.Remove("kb");
+                    }
+                    _currentKb.Value = _kbResolver.Resolve(kbArg, _workerPool.ListOpen());
+                }
+                catch (KbResolutionException ex)
+                {
+                    return new JObject
+                    {
+                        ["jsonrpc"] = "2.0",
+                        ["id"] = idToken?.DeepClone(),
+                        ["error"] = new JObject
+                        {
+                            ["code"] = -32602,
+                            ["message"] = ex.Message,
+                            ["data"] = new JObject
+                            {
+                                ["code"] = ex.Code,
+                                ["openKbs"] = JArray.FromObject(_workerPool!.ListOpen().Select(k => k.Alias))
+                            }
+                        }
+                    };
+                }
+            }
 
             // Reject removed tools early with JSON-RPC -32601 + structured `data`
             if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase))
@@ -976,6 +1021,104 @@ namespace GxMcp.Gateway
                 string toolName = paramsObj?["name"]?.ToString() ?? "";
                 var args = paramsObj?["arguments"] as JObject;
 
+                // genexus_kb — meta-tool for managing the WorkerPool (list/open/close).
+                // Handled entirely in the Gateway; never reaches a Worker.
+                if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase))
+                {
+                    JObject payload;
+                    bool isError = false;
+                    try
+                    {
+                        if (_workerPool == null)
+                        {
+                            throw new InvalidOperationException("WorkerPool not initialised.");
+                        }
+
+                        string action = args?["action"]?.ToString()?.ToLowerInvariant() ?? "list";
+                        switch (action)
+                        {
+                            case "list":
+                                payload = new JObject
+                                {
+                                    ["openKbs"] = JArray.FromObject(_workerPool.ListOpen()
+                                        .Select(k => new { alias = k.Alias, path = k.Path })),
+                                    ["maxOpenKbs"] = _activeConfig?.Server?.MaxOpenKbs ?? 3,
+                                    ["defaultKb"] = _activeConfig?.Environment?.DefaultKb,
+                                    ["declaredKbs"] = JArray.FromObject(
+                                        (_activeConfig?.Environment?.KBs ?? new List<KbEntry>())
+                                            .Select(k => new { alias = k.Alias, path = k.Path }))
+                                };
+                                break;
+                            case "open":
+                            {
+                                string? alias = args?["alias"]?.ToString();
+                                string? path = args?["path"]?.ToString();
+                                KbHandle handleToOpen;
+                                if (!string.IsNullOrWhiteSpace(alias) && _activeConfig != null)
+                                {
+                                    handleToOpen = new KbResolver(_activeConfig).Resolve(alias, _workerPool.ListOpen());
+                                }
+                                else if (!string.IsNullOrWhiteSpace(path))
+                                {
+                                    string finalAlias = string.IsNullOrWhiteSpace(alias)
+                                        ? System.IO.Path.GetFileName(path!.TrimEnd('\\', '/')).ToLowerInvariant()
+                                        : alias!;
+                                    if (string.IsNullOrEmpty(finalAlias)) finalAlias = "adhoc";
+                                    handleToOpen = new KbHandle(finalAlias, path!);
+                                }
+                                else
+                                {
+                                    throw new ArgumentException("Provide 'alias' (for declared KBs) or 'path' (for ad-hoc).");
+                                }
+
+                                var w = await _workerPool.AcquireAsync(handleToOpen, CancellationToken.None);
+                                payload = new JObject
+                                {
+                                    ["opened"] = handleToOpen.Alias,
+                                    ["path"] = handleToOpen.Path,
+                                    ["workerPid"] = w == null ? null : (JToken?)null
+                                };
+                                break;
+                            }
+                            case "close":
+                            {
+                                string? alias = args?["alias"]?.ToString();
+                                if (string.IsNullOrWhiteSpace(alias))
+                                {
+                                    throw new ArgumentException("Missing 'alias' for action=close.");
+                                }
+                                bool closed = _workerPool.Close(alias!);
+                                payload = new JObject { ["closed"] = closed, ["alias"] = alias };
+                                break;
+                            }
+                            default:
+                                throw new ArgumentException($"Unknown action '{action}'. Use list|open|close.");
+                        }
+                    }
+                    catch (KbResolutionException ex)
+                    {
+                        isError = true;
+                        payload = new JObject { ["error"] = ex.Message, ["code"] = ex.Code };
+                    }
+                    catch (WorkerPoolFullException ex)
+                    {
+                        isError = true;
+                        payload = new JObject
+                        {
+                            ["error"] = ex.Message,
+                            ["code"] = "KB_POOL_FULL",
+                            ["openKbs"] = JArray.FromObject(ex.OpenKbs.Select(k => k.Alias))
+                        };
+                    }
+                    catch (Exception ex)
+                    {
+                        isError = true;
+                        payload = new JObject { ["error"] = ex.Message };
+                    }
+
+                    return BuildToolTextResponse(idToken, payload, isError, "genexus_kb", args);
+                }
+
                 if (string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
                 {
                     string? lifecycleAction = args?["action"]?.ToString();
@@ -1027,7 +1170,8 @@ namespace GxMcp.Gateway
                 }
 
                 // Idempotency middleware wraps the rest of the tool dispatch
-                string activeKbPath = _activeConfig?.Environment?.KBPath ?? "";
+                // Scope cache by the resolved KB so independent KBs don't share idempotency.
+                string activeKbPath = _currentKb.Value?.Path ?? _activeConfig?.Environment?.KBPath ?? "";
                 var idempotencyMiddleware = new IdempotencyMiddleware(_idempotencyCache, activeKbPath);
                 var toolCallParams = request["params"] as JObject ?? new JObject();
 
@@ -1454,9 +1598,9 @@ namespace GxMcp.Gateway
             {
                 try
                 {
-                    if (_worker == null)
+                    if (_workerPool == null)
                     {
-                        Log("[Warmup] Worker not available, skipping warmup.");
+                        Log("[Warmup] WorkerPool not available, skipping warmup.");
                         return;
                     }
 

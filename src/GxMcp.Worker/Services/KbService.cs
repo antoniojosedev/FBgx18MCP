@@ -21,9 +21,9 @@ namespace GxMcp.Worker.Services
         private static volatile bool _isIndexing = false;
         private static volatile string _currentStatus = "";
 
-        private static dynamic _kb;
-        private static bool _isOpenInProgress = false;
-        private static readonly object _kbLock = new object();
+        private dynamic _kb;
+        private bool _isOpenInProgress = false;
+        private readonly object _kbLock = new object();
 
         public KbService(IndexCacheService indexCacheService)
         {

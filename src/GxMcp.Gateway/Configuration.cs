@@ -99,7 +99,26 @@ namespace GxMcp.Gateway
                         config.Server.McpStdio = mcpStdioOverride;
                         Program.Log($"[Gateway] MCP stdio overridden by GX_MCP_STDIO={mcpStdioOverride}");
                     }
-                        
+
+                    // Legacy migration: Environment.KBPath without KBs[] synthesises one entry.
+                    if (config.Environment != null &&
+                        (config.Environment.KBs == null || config.Environment.KBs.Count == 0) &&
+                        !string.IsNullOrWhiteSpace(config.Environment.KBPath))
+                    {
+                        string legacyPath = config.Environment.KBPath!;
+                        string alias = Path.GetFileName(legacyPath.TrimEnd('\\', '/')).ToLowerInvariant();
+                        if (string.IsNullOrEmpty(alias)) alias = "default";
+                        config.Environment.KBs = new List<KbEntry>
+                        {
+                            new KbEntry { Alias = alias, Path = legacyPath }
+                        };
+                        if (string.IsNullOrWhiteSpace(config.Environment.DefaultKb))
+                        {
+                            config.Environment.DefaultKb = alias;
+                        }
+                        Program.Log($"[Gateway] Legacy KBPath migrated to KBs[{alias}], DefaultKb={alias}");
+                    }
+
                     return config;
                 }
                 catch (IOException)
@@ -157,6 +176,12 @@ namespace GxMcp.Gateway
         /// job_id immediately. Default: 20 seconds.
         /// </summary>
         public int BuildSyncThresholdSeconds { get; set; } = 20;
+        /// <summary>
+        /// Maximum number of KBs that may be open simultaneously. Each KB runs in a
+        /// dedicated Worker process. When exceeded, the oldest idle Worker is evicted
+        /// (LRU); if all are busy, the request fails with KB_POOL_FULL.
+        /// </summary>
+        public int MaxOpenKbs { get; set; } = 3;
     }
 
     public class LoggingConfig
@@ -169,5 +194,13 @@ namespace GxMcp.Gateway
     {
         public string? KBPath { get; set; }
         public string? GX_SHADOW_PATH { get; set; }
+        public string? DefaultKb { get; set; }
+        public List<KbEntry> KBs { get; set; } = new List<KbEntry>();
+    }
+
+    public class KbEntry
+    {
+        public string Alias { get; set; } = string.Empty;
+        public string Path { get; set; } = string.Empty;
     }
 }
