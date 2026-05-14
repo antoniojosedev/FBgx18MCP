@@ -11,6 +11,21 @@ namespace GxMcp.Worker.Services
     /// </summary>
     public sealed class JsonPatchService
     {
+        /// <summary>
+        /// Builds a post_state JObject containing a unified diff of before→after.
+        /// When verbose=true, also includes a slices array with the full after content.
+        /// </summary>
+        public static JObject BuildPostState(string before, string after, bool verbose)
+        {
+            string diffStr = DiffBuilder.UnifiedDiff(before, after, context: verbose ? 15 : 3);
+            var obj = new JObject { ["diff"] = diffStr };
+            if (verbose)
+            {
+                obj["slices"] = new JArray { new JObject { ["content"] = after } };
+            }
+            return obj;
+        }
+
         public string Apply(string xml, string rootName, JArray patch)
         {
             var json = ObjectJsonMapper.ToJson(xml);

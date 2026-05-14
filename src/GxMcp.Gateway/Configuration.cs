@@ -150,6 +150,13 @@ namespace GxMcp.Gateway
         public int WorkerIdleTimeoutMinutes { get; set; } = 5;
         public int IdempotencyTtlMinutes { get; set; } = 15;
         public int IdempotencyCacheSize { get; set; } = 1000;
+        /// <summary>
+        /// Lifecycle build requests whose estimated_seconds is below this threshold are
+        /// executed synchronously (fast-path) and return the build result directly.
+        /// Requests at or above the threshold are dispatched asynchronously and return a
+        /// job_id immediately. Default: 20 seconds.
+        /// </summary>
+        public int BuildSyncThresholdSeconds { get; set; } = 20;
     }
 
     public class LoggingConfig

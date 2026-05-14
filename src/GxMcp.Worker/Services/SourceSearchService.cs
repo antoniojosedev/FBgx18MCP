@@ -99,12 +99,28 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                return new JObject
+                var response = new JObject
                 {
                     ["count"] = produced,
                     ["truncated"] = produced >= c.MaxResults,
                     ["hits"] = hits
-                }.ToString();
+                };
+                if (hits.Count > 0 && hits[0] is JObject topHit)
+                {
+                    response["_meta"] = new JObject
+                    {
+                        ["suggested_next"] = new JObject
+                        {
+                            ["tool"] = "genexus_read",
+                            ["args"] = new JObject
+                            {
+                                ["name"] = topHit["objectName"]?.ToString(),
+                                ["type"] = topHit["type"]?.ToString()
+                            }
+                        }
+                    };
+                }
+                return response.ToString();
             }
             catch (Exception ex)
             {

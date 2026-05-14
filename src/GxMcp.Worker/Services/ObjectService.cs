@@ -719,6 +719,45 @@ namespace GxMcp.Worker.Services
             return ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize);
         }
 
+        /// <summary>
+        /// Read multiple named parts of an object in one call.
+        /// Returns a JSON object: { name, type, parts: { Source: "...", Variables: "..." } }
+        /// Parts that are not found or produce no source are silently omitted.
+        /// When requestedParts is null/empty the full default set is returned (backward-compatible).
+        /// </summary>
+        public string ReadObjectSourceParts(string target, IEnumerable<string> requestedParts, string typeFilter = null)
+        {
+            var obj = FindObject(target, typeFilter);
+            if (obj == null) return HealingService.FormatNotFoundError(target, GetIndex());
+
+            string[] partsToFetch = (requestedParts != null && requestedParts.Any())
+                ? requestedParts.Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p)).ToArray()
+                : new[] { "Source", "Rules", "Events", "Variables", "Documentation", "Help" };
+
+            var partsObj = new JObject();
+            foreach (var pName in partsToFetch)
+            {
+                try
+                {
+                    string partJson = ReadObjectSourceInternal(obj, pName, null, null, "mcp", false);
+                    var pObj = JObject.Parse(partJson);
+                    if (pObj["source"] != null)
+                        partsObj[pName] = pObj["source"];
+                    else if (pObj["error"] == null)
+                        // For XML/binary parts, include the raw response
+                        partsObj[pName] = pObj;
+                }
+                catch { /* skip parts that error */ }
+            }
+
+            return new JObject
+            {
+                ["name"] = obj.Name,
+                ["type"] = obj.TypeDescriptor?.Name,
+                ["parts"] = partsObj
+            }.ToString();
+        }
+
         public void MarkReadCacheDirty(KBObject obj, string partName = null)
         {
             if (obj == null)

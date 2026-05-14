@@ -1,0 +1,106 @@
+using Newtonsoft.Json.Linq;
+using Xunit;
+using GxMcp.Gateway.Routers;
+
+namespace GxMcp.Gateway.Tests
+{
+    /// <summary>
+    /// Task 5.1 — genexus_read parts= field-selection routing contract.
+    /// Verifies that the Gateway ObjectRouter converts the parts array into the
+    /// correct worker message (module=Read, action=ExtractParts) and that the
+    /// legacy single-part path is preserved when parts is absent/empty.
+    /// </summary>
+    public class FieldSelectionTests
+    {
+        private readonly ObjectRouter _router = new ObjectRouter();
+
+        // ── parts= present ────────────────────────────────────────────────────
+
+        [Fact]
+        public void Parts_NonEmpty_RoutesToExtractParts()
+        {
+            var args = JObject.Parse(
+                "{\"name\":\"Customer\",\"parts\":[\"Variables\"],\"type\":\"Transaction\"}");
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            Assert.NotNull(msg);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("Read", obj["module"]?.ToString());
+            Assert.Equal("ExtractParts", obj["action"]?.ToString());
+            Assert.Equal("Customer", obj["target"]?.ToString());
+            Assert.Equal("Transaction", obj["type"]?.ToString());
+
+            var partsArr = obj["parts"] as JArray;
+            Assert.NotNull(partsArr);
+            Assert.Single(partsArr!);
+            Assert.Equal("Variables", partsArr![0]?.ToString());
+        }
+
+        [Fact]
+        public void Parts_MultipleParts_AllPassedThrough()
+        {
+            var args = JObject.Parse(
+                "{\"name\":\"InvoiceProc\",\"parts\":[\"Source\",\"Variables\",\"Rules\"]}");
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("ExtractParts", obj["action"]?.ToString());
+            var partsArr = obj["parts"] as JArray;
+            Assert.NotNull(partsArr);
+            Assert.Equal(3, partsArr!.Count);
+        }
+
+        // ── parts= absent → legacy single-part path ────────────────────────
+
+        [Fact]
+        public void NoParts_RoutesToExtractSource()
+        {
+            var args = JObject.Parse(
+                "{\"name\":\"Customer\",\"part\":\"Source\"}");
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            Assert.NotNull(msg);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("Read", obj["module"]?.ToString());
+            Assert.Equal("ExtractSource", obj["action"]?.ToString());
+            Assert.Equal("Customer", obj["target"]?.ToString());
+        }
+
+        [Fact]
+        public void EmptyPartsArray_RoutesToExtractSource()
+        {
+            var args = JObject.Parse(
+                "{\"name\":\"Customer\",\"parts\":[]}");
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            var obj = JObject.FromObject(msg!);
+
+            // Empty array means "no selection" → fall back to legacy single-part
+            Assert.Equal("ExtractSource", obj["action"]?.ToString());
+        }
+
+        [Fact]
+        public void NullParts_RoutesToExtractSource()
+        {
+            var args = JObject.Parse(
+                "{\"name\":\"Customer\"}");
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("ExtractSource", obj["action"]?.ToString());
+        }
+
+        // ── parts= + targets= should use targets path (targets wins) ─────────
+
+        [Fact]
+        public void Targets_WithoutParts_RoutesToBatchRead()
+        {
+            var args = JObject.Parse(
+                "{\"targets\":[\"Proc1\",\"Proc2\"]}");
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("Batch", obj["module"]?.ToString());
+            Assert.Equal("BatchRead", obj["action"]?.ToString());
+        }
+    }
+}

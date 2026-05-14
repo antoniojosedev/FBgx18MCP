@@ -37,6 +37,7 @@ namespace GxMcp.Gateway
         private static HttpSessionRegistry _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(10));
         private static IdempotencyCache _idempotencyCache = new IdempotencyCache(15, 1000);
         private static readonly OperationTracker _operationTracker = new OperationTracker(TimeSpan.FromMinutes(60));
+        internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
         private static readonly TimeSpan _pendingRequestRetention = TimeSpan.FromMinutes(65);
         private static readonly string _logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gateway_debug.log");
@@ -857,7 +858,7 @@ namespace GxMcp.Gateway
             return 60000;
         }
 
-        internal static async Task<JObject?> ProcessMcpRequest(JObject request)
+        internal static async Task<JObject?> ProcessMcpRequest(JObject request, string sessionId = "stdio")
         {
             string? method = request["method"]?.ToString();
             var idToken = request["id"];
@@ -1001,6 +1002,28 @@ namespace GxMcp.Gateway
                     {
                         return BuildToolTextResponse(idToken, _operationTracker.BuildMetricsPayload(), isError: false, toolName: "genexus_lifecycle", toolArgs: args);
                     }
+
+                    // Long-poll intercept (Task 4.5): action=status + job_id (BackgroundJobRegistry)
+                    // wait_seconds is clamped [0,25]; 0 = immediate poll (default behaviour).
+                    if (string.Equals(lifecycleAction, "status", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string? jobId = McpRouter.ResolveJobId(args);
+                        if (!string.IsNullOrWhiteSpace(jobId))
+                        {
+                            // Check registry first; only route to the long-poll path when the job
+                            // is known to the registry. Unknown IDs fall through to the legacy
+                            // worker-side taskId status path for backward compatibility.
+                            var probe = JobRegistry.Get(jobId);
+                            if (probe != null)
+                            {
+                                int waitSeconds = Math.Min(Math.Max(args?["wait_seconds"]?.ToObject<int?>() ?? 0, 0), 25);
+                                JObject pollResult = await McpRouter.LongPollJob(JobRegistry, jobId, waitSeconds);
+                                bool isError = pollResult["error"] != null;
+                                return BuildToolTextResponse(idToken, pollResult, isError: isError, toolName: "genexus_lifecycle", toolArgs: args);
+                            }
+                            // Not in registry → fall through to existing worker-side status path (legacy taskId).
+                        }
+                    }
                 }
 
                 // Idempotency middleware wraps the rest of the tool dispatch
@@ -1056,6 +1079,142 @@ namespace GxMcp.Gateway
                             ["isError"] = false,
                             ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = whoami.ToString(Formatting.None) } }
                         };
+                    }
+
+                    // Async build intercept (Tasks 4.3 + 4.4):
+                    // build / rebuild actions go through path selection:
+                    //   - estimated_seconds < BuildSyncThresholdSeconds  → sync fast-path (fall through)
+                    //   - estimated_seconds >= BuildSyncThresholdSeconds  → async Task.Run, return job_id immediately
+                    if (string.Equals(tName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
+                        && (string.Equals(lcAction, "build", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        int estimatedSeconds = tArgs?["estimated_seconds"]?.ToObject<int?>()
+                                               ?? (string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase) ? 120 : 60);
+                        int threshold = _activeConfig?.Server?.BuildSyncThresholdSeconds ?? 20;
+
+                        if (!BuildPathSelector.UseSync(estimatedSeconds, threshold))
+                        {
+                            // --- ASYNC PATH (Task 4.3) ---
+                            // Register the job first, then fire-and-forget the actual build.
+                            // The worker call is synchronous over the JSON-RPC pipe, so we wrap
+                            // it in Task.Run so the gateway thread returns to the caller immediately.
+                            var job = JobRegistry.Start(sessionId, $"lifecycle/{lcAction}", estimatedSeconds);
+                            Log($"[AsyncBuild] Dispatching job={job.Id} action={lcAction} target={tArgs?["target"]?.ToString() ?? "(all)"} estimated={estimatedSeconds}s");
+
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    // Step 1: Kick off the build on the worker — returns {status:"Accepted", taskId:...}
+                                    var buildCmd = new JObject
+                                    {
+                                        ["module"] = "Build",
+                                        ["action"] = string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase)
+                                            ? "RebuildAll"
+                                            : "Build",
+                                        ["target"] = tArgs?["target"]?.ToString(),
+                                        ["client"] = "mcp"
+                                    };
+
+                                    JObject? ackEnvelope = await SendWorkerCommandAsync(
+                                        buildCmd,
+                                        60000,
+                                        $"Timeout starting async build (job={job.Id})",
+                                        env => env,
+                                        (_, correlationId) => new JObject { ["error"] = "Gateway timeout starting build.", ["correlationId"] = correlationId },
+                                        toolName: tName, toolArgs: tArgs, trackOperation: false);
+
+                                    JObject? ack = (ackEnvelope?["result"] as JObject) ?? ackEnvelope;
+                                    if (ack == null || ack["error"] != null)
+                                    {
+                                        JobRegistry.Complete(job.Id, false,
+                                            $"Build start failed: {ack?["error"]?.ToString() ?? "unknown error"}", ack);
+                                        return;
+                                    }
+
+                                    string? taskId = ack["taskId"]?.ToString();
+                                    if (string.IsNullOrEmpty(taskId))
+                                    {
+                                        // No taskId means the worker returned a synchronous result already
+                                        // (or an error response). Complete with what we have.
+                                        bool syncSuccess = !string.Equals(ack["status"]?.ToString(), "Error",
+                                            StringComparison.OrdinalIgnoreCase) && ack["error"] == null;
+                                        JobRegistry.Complete(job.Id, syncSuccess,
+                                            syncSuccess ? "Build completed (sync)" : $"Build error: {ack["error"]?.ToString() ?? "unknown"}",
+                                            ack);
+                                        return;
+                                    }
+
+                                    Log($"[AsyncBuild] job={job.Id} taskId={taskId} — polling status until terminal");
+
+                                    // Step 2: Poll worker Build/Status until status is terminal.
+                                    // Terminal states from BuildTaskStatus: Succeeded | Failed | Error | Cancelled.
+                                    JObject? finalStatus = null;
+                                    var hardCap = DateTime.UtcNow.AddMinutes(30);
+                                    while (DateTime.UtcNow < hardCap)
+                                    {
+                                        await Task.Delay(2000).ConfigureAwait(false);
+
+                                        var statusCmd = new JObject
+                                        {
+                                            ["module"] = "Build",
+                                            ["action"] = "Status",
+                                            ["target"] = taskId
+                                        };
+                                        JObject? statusEnv = await SendWorkerCommandAsync(
+                                            statusCmd,
+                                            30000,
+                                            $"Timeout polling build status (job={job.Id})",
+                                            env => env,
+                                            (_, correlationId) => new JObject { ["error"] = "Status poll timeout", ["correlationId"] = correlationId },
+                                            toolName: tName, toolArgs: tArgs, trackOperation: false);
+
+                                        finalStatus = (statusEnv?["result"] as JObject) ?? statusEnv;
+                                        string? s = finalStatus?["status"]?.ToString() ?? finalStatus?["Status"]?.ToString();
+                                        if (string.Equals(s, "Succeeded", StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(s, "Failed", StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(s, "Error", StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(s, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            break;
+                                        }
+                                    }
+
+                                    // Step 3: Complete the JobRegistry entry with the real final status.
+                                    string? finalState = finalStatus?["status"]?.ToString() ?? finalStatus?["Status"]?.ToString() ?? "Timeout";
+                                    bool success = string.Equals(finalState, "Succeeded", StringComparison.OrdinalIgnoreCase);
+                                    int errs = finalStatus?["errorCount"]?.ToObject<int?>() ?? finalStatus?["ErrorCount"]?.ToObject<int?>() ?? 0;
+                                    int warns = finalStatus?["warningCount"]?.ToObject<int?>() ?? finalStatus?["WarningCount"]?.ToObject<int?>() ?? 0;
+                                    string summary = success
+                                        ? $"Build succeeded: {warns} warnings, {errs} errors"
+                                        : $"Build {finalState}: {errs} errors, {warns} warnings";
+                                    JobRegistry.Complete(job.Id, success, summary, finalStatus);
+                                    Log($"[AsyncBuild] Completed job={job.Id} status={finalState} errors={errs} warnings={warns}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    JobRegistry.Complete(job.Id, false, $"Build exception: {ex.Message}");
+                                    Log($"[AsyncBuild] Exception in job={job.Id}: {ex.Message}");
+                                }
+                            });
+
+                            // Return immediately with job_id
+                            var asyncResponse = new JObject
+                            {
+                                ["job_id"] = job.Id,
+                                ["status"] = "running",
+                                ["estimated_seconds"] = estimatedSeconds,
+                                ["hint"] = "Continue with other tools; build status will appear in _meta.background_jobs on the next response."
+                            };
+                            return new JObject
+                            {
+                                ["isError"] = false,
+                                ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = asyncResponse.ToString(Newtonsoft.Json.Formatting.None) } }
+                            };
+                        }
+                        // else: UseSync == true → fall through to the normal synchronous dispatch below
+                        Log($"[AsyncBuild] Short build (estimated={estimatedSeconds}s < threshold={threshold}s): using sync fast-path");
                     }
 
                     object? rawWorkerCmd = null;
@@ -1136,6 +1295,32 @@ namespace GxMcp.Gateway
                             }
 
                             bool isErr = resultObj["error"] != null || string.Equals(resultObj["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+
+                            // TerseErrors: trim error envelopes to {message, code, hint} by default.
+                            // verbose_errors=true restores the full payload. Gated by PerfProfile.V1Enabled.
+                            // Runs BEFORE ResponseSizeGuard so the guard sees the trimmed (smaller) payload.
+                            if (isErr && PerfProfile.V1Enabled && finalResult is JObject errObj)
+                            {
+                                bool verbose = tArgs?["verbose_errors"]?.ToObject<bool?>() ?? false;
+                                finalResult = McpRouter.TrimErrorEnvelope(errObj, verbose);
+                            }
+
+                            // ResponseSizeGuard: replace oversize JObject results with a truncation sentinel.
+                            // Gated by PerfProfile.V1Enabled so it can be disabled via MCP_PERF_PROFILE=legacy.
+                            if (!isErr && PerfProfile.V1Enabled && finalResult is JObject finalJObj)
+                            {
+                                var guard = new ResponseSizeGuard();
+                                var (guarded, _) = guard.Apply(finalJObj, tName, tArgs);
+                                finalResult = guarded;
+                            }
+
+                            // StripNulls: remove null-valued properties from the result to reduce wire size.
+                            // Runs after ResponseSizeGuard so the guard measures the pre-stripped payload.
+                            if (PerfProfile.V1Enabled && finalResult is JObject stripObj)
+                            {
+                                McpRouter.StripNulls(stripObj);
+                            }
+
                             JToken axiPayload = NormalizeToolPayloadForAxi(finalResult, tName, tArgs, isErr);
 
                             var toolResult = new JObject
@@ -1229,6 +1414,11 @@ namespace GxMcp.Gateway
                         }
                     };
                 }
+
+                // Piggyback background_jobs: attach snapshot of running/unseen-completed jobs to _meta.
+                // Gated by PerfProfile.V1Enabled. Completions are marked seen so they surface exactly once.
+                if (PerfProfile.V1Enabled)
+                    McpRouter.PiggybackJobs(toolInnerResult, sessionId, JobRegistry);
 
                 // Wrap tool result in JSON-RPC envelope
                 return new JObject
@@ -1936,7 +2126,8 @@ namespace GxMcp.Gateway
                     string bodyBrief = body.Length > 100 ? body.Substring(0, 100) + "..." : body;
                     Log($"[HTTP] Received {method} (ID: {id}) - Body: {bodyBrief}");
 
-                    var response = await ProcessMcpRequest(requestObj);
+                    string httpSessionId = session?.Id ?? request.Headers["MCP-Session-Id"].FirstOrDefault() ?? "http";
+                    var response = await ProcessMcpRequest(requestObj, httpSessionId);
 
                     if (McpHttpProtocol.IsInitializeRequest(requestObj))
                     {

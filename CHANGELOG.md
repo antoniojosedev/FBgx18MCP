@@ -1,5 +1,104 @@
 # Changelog
 
+## v2.2.0 — 2026-05-13
+
+Coordinated perf & stability release closing the tools-disappear-mid-session
+bug and reducing roundtrips/payload across the MCP surface. All 13 changes
+gated behind a single feature flag `MCP_PERF_PROFILE=v1` (default on).
+Env-flip to `legacy` restores pre-v2.2.0 behavior. Total test count grew
+from 135 → 199, all green.
+
+### Polish (post-smoke-verification)
+- **Piggyback injection layer fix.** `_meta.background_jobs` now injects
+  into the inner `content[0].text` payload (which the LLM actually
+  reads), not the JSON-RPC wrapper. Async build completions surface on
+  the next tool response as designed.
+- **Long-poll status accepts `target` as `job_id` fallback.** The
+  `lifecycle status` tool conventionally takes `target`; LLMs and users
+  pass the job ID there. Registry is probed first; legacy taskId-based
+  status falls through unchanged when the value isn't a registered job.
+- **`type` alias for `typeFilter` in list/query/search.** The
+  `genexus_list_objects` / `genexus_query` / `genexus_search_source`
+  routers now accept both names. Aligns with the rest of the tool
+  surface where `type` is the conventional parameter name.
+
+Spec: `docs/superpowers/specs/2026-05-13-mcp-perf-and-tool-stability-design.md`.
+Plan: `docs/superpowers/plans/2026-05-13-mcp-perf-and-tool-stability-v2.2.0.md`.
+
+### Fixed
+- **Tools-disappear-mid-session bug** (`docs/issues/tools-disappear-mid-session.md`)
+  — gateway-side `ResponseSizeGuard` caps per-tool payloads at ~220KB
+  (≈55k tokens) before the harness-side truncation path can drop the
+  tool registry. Payloads over the cap are replaced with a sentinel
+  `_meta.truncated: {reason, original_size, cap_bytes, follow_up: {tool, args}}`
+  pointing at a paginated continuation. Telemetry log line
+  `[Gateway] OVERSIZE tool=X size=N` for one-release calibration.
+- **`SystemRouter` "result" routed to "Status" instead of "Result"** —
+  pre-existing routing bug surfaced and fixed during pagination work.
+
+### Added (perf profile v1, default on)
+- `genexus_lifecycle action=status` / `action=result` accept `page` /
+  `page_size` (default 50, max 200); responses carry
+  `_meta.pagination: {total, page, page_size, has_more}`.
+- `genexus_edit` returns `post_state.diff` (LCS-based unified diff with
+  `±3` context) by default — eliminates the re-read-to-verify turn.
+  `verbose=true` adds wider slices; `return_post_state=false` opts out.
+  Wired across ops, JSON-patch, and text-patch edit modes.
+- `genexus_lifecycle action=build` / `rebuild` is non-blocking when
+  `estimated_seconds ≥ BuildSyncThresholdSeconds` (default 20) — returns
+  `{job_id, status: "running", estimated_seconds, hint}` immediately.
+  Short builds use a synchronous fast-path returning the result in one turn.
+- `_meta.background_jobs: [...]` piggybacks on every tools/call response
+  when a session's `BackgroundJobRegistry` has running jobs or unseen
+  completions. LLM can do other work while a build runs and discovers
+  completion on the next tool call.
+- `genexus_lifecycle action=status` with `wait_seconds=N` (clamped to
+  [0, 25]) long-polls server-side until the job reaches terminal state
+  or the timeout. One call instead of polling loop.
+- Discovery tools (`list_objects`, `query`, `structure`, `search_source`)
+  include `_meta.suggested_next: {tool, args}` pointing at the natural
+  next call.
+- List responses include `_meta.aggregates: {total, by_type}` computed
+  during the same scan — eliminates "how many of X" follow-up calls.
+- Empty results carry `_meta.empty_reason`: `no_matches` | `filtered_out`
+  | `kb_not_loaded`.
+- `genexus_read` accepts `parts: [...]` — surgical reads of named
+  sections (Source, Variables, Rules, etc.). Backward compatible.
+- `genexus_list_objects` and `genexus_query` accept `inline_read_top: 0-3`
+  (default 0) — combined list-and-read returns `inline_reads: [{name, content}]`
+  for the top N matches in one turn.
+- Compact JSON output on tools/call responses: `Formatting.None` plus a
+  recursive `StripNulls` pass that drops null properties while preserving
+  empty arrays, zeros, false, and empty strings.
+
+### Changed
+- List items default to a minimal 4-field shape (`name`, `type`, plus
+  two context fields like `path`/`parent`). Pass `verbose=true` to get
+  the full per-item shape.
+- Errors default to terse `{code, message, hint}` — stack traces and
+  full SDK diagnostics dropped from the wire by default. Pass
+  `verbose_errors=true` per-call, or fetch from `genexus_logs`, for
+  full diagnostics.
+- `tool_definitions.json` trimmed from ~9,600 tokens to ~2,800 tokens
+  (71% reduction) — every conversation pays less for the fixed tool
+  schema in the system prompt. All 32 tools preserved.
+
+### Deferred
+- TOON serialization (see spec open question). Revisit after one
+  release of telemetry on what tokens are actually spent on.
+- Real MCP `notifications/progress` for builds — same broadcast path
+  is the leading suspect for the disappear-bug. Revisit once
+  `ResponseSizeGuard` calibration data confirms or rules out that
+  hypothesis.
+
+### Rollout / Compatibility
+- All changes additive on `_meta` or opt-in parameters. No changes to
+  `tools/list` or `notifications/tools/list_changed` semantics.
+- Existing callers that don't read the new `_meta` fields continue to
+  work unchanged.
+- Set `MCP_PERF_PROFILE=legacy` to restore pre-v2.2.0 behavior at the
+  process level (single env-flip kill switch).
+
 ## Unreleased
 
 Closes every item from the second-cycle friction report

@@ -186,7 +186,7 @@ namespace GxMcp.Worker.Services
             return _msbuildEncodingCached;
         }
 
-        public string GetStatus(string taskId)
+        public string GetStatus(string taskId, int page = 1, int pageSize = 50)
         {
             if (string.IsNullOrEmpty(taskId))
             {
@@ -199,7 +199,41 @@ namespace GxMcp.Worker.Services
                 {
                     if (status.Status == "Running" && status.StartedAt != default(DateTime))
                         status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-                    return JsonConvert.SerializeObject(status);
+
+                    // Serialize the status without the full warnings list, then inject paginated warnings
+                    var jo = JObject.FromObject(status, new JsonSerializer { NullValueHandling = NullValueHandling.Ignore });
+
+                    // Replace the flat warnings array with a paginated wrapper
+                    var paginatedWarnings = BatchService.BuildStatusPayload(status.Warnings, page, pageSize);
+                    jo["warnings"] = paginatedWarnings["warnings"];
+                    jo["_meta"] = paginatedWarnings["_meta"];
+
+                    return jo.ToString(Formatting.None);
+                }
+            }
+            return "{\"error\": \"Task ID not found\"}";
+        }
+
+        public string GetResult(string taskId, int page = 1, int pageSize = 50)
+        {
+            if (string.IsNullOrEmpty(taskId))
+                return "{\"error\": \"taskId required\"}";
+
+            if (_tasks.TryGetValue(taskId, out var status))
+            {
+                lock (status._lock)
+                {
+                    if (status.Status == "Running" && status.StartedAt != default(DateTime))
+                        status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+
+                    var jo = JObject.FromObject(status, new JsonSerializer { NullValueHandling = NullValueHandling.Ignore });
+
+                    // Replace the flat errors/items array with a paginated wrapper
+                    var paginatedResult = BatchService.BuildResultPayload(status.Errors, page, pageSize);
+                    jo["items"] = paginatedResult["items"];
+                    jo["_meta"] = paginatedResult["_meta"];
+
+                    return jo.ToString(Formatting.None);
                 }
             }
             return "{\"error\": \"Task ID not found\"}";

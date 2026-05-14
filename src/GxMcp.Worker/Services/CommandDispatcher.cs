@@ -192,13 +192,19 @@ namespace GxMcp.Worker.Services
                         break;
                     case "search":
                         if (action == "Query")
-                            return _searchService.Search(
+                        {
+                            string searchResult = _searchService.Search(
                                 target,
                                 args?["typeFilter"]?.ToString(),
                                 args?["domainFilter"]?.ToString(),
                                 args?["limit"]?.ToObject<int?>() ?? 50,
                                 args?["exactMatch"]?.ToObject<bool?>() ?? false
                             );
+                            int inlineTopSearch = Math.Min(3, args?["inline_read_top"]?.ToObject<int?>() ?? 0);
+                            return inlineTopSearch > 0
+                                ? AppendInlineReads(searchResult, inlineTopSearch)
+                                : searchResult;
+                        }
                         if (action == "SearchSource")
                         {
                             var criteria = new SourceSearchCriteria
@@ -226,17 +232,30 @@ namespace GxMcp.Worker.Services
                         break;
                     case "list":
                         if (action == "Objects")
-                            return _listService.ListObjects(
+                        {
+                            string listResult = _listService.ListObjects(
                                 target,
                                 args?["limit"]?.ToObject<int?>() ?? 5000,
                                 args?["offset"]?.ToObject<int?>() ?? 0,
                                 args?["parent"]?.ToString(),
                                 args?["typeFilter"]?.ToString(),
-                                args?["parentPath"]?.ToString()
+                                args?["parentPath"]?.ToString(),
+                                args?["verbose"]?.ToObject<bool?>() ?? false
                             );
+                            int inlineTopList = Math.Min(3, args?["inline_read_top"]?.ToObject<int?>() ?? 0);
+                            return inlineTopList > 0
+                                ? AppendInlineReads(listResult, inlineTopList)
+                                : listResult;
+                        }
                         break;
                     case "read":
                         if (action == "ExtractSource") return _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, args?["type"]?.ToString());
+                        if (action == "ExtractParts")
+                        {
+                            var partsTok = args?["parts"] as JArray;
+                            var requestedParts = partsTok?.Select(p => p.ToString()) ?? Enumerable.Empty<string>();
+                            return _objectService.ReadObjectSourceParts(target, requestedParts, args?["type"]?.ToString());
+                        }
                         if (action == "GetVariables") return _analyzeService.GetVariables(target);
                         if (action == "GetAttribute") return _analyzeService.GetAttributeMetadata(target);
                         break;
@@ -293,7 +312,9 @@ namespace GxMcp.Worker.Services
                             args?["expectedCount"]?.ToObject<int?>() ?? 1,
                             args?["type"]?.ToString(),
                             args?["dryRun"]?.ToObject<bool?>() ?? false,
-                            args?["verifyRollback"]?.ToObject<bool?>() ?? false);
+                            args?["verifyRollback"]?.ToObject<bool?>() ?? false,
+                            args?["return_post_state"]?.ToObject<bool?>() ?? true,
+                            args?["verbose"]?.ToObject<bool?>() ?? false);
                         break;
                     case "analyze":
                         var analyzeType = args?["type"]?.ToString();
@@ -408,7 +429,14 @@ namespace GxMcp.Worker.Services
                         if (action == "GetLogicStructure") return _structureService.GetLogicStructure(target);
                         break;
                     case "build":
-                        if (action == "Status") return _buildService.GetStatus(target);
+                        if (action == "Status") return _buildService.GetStatus(
+                            target,
+                            args?["page"]?.ToObject<int?>() ?? 1,
+                            args?["pageSize"]?.ToObject<int?>() ?? 50);
+                        if (action == "Result") return _buildService.GetResult(
+                            target,
+                            args?["page"]?.ToObject<int?>() ?? 1,
+                            args?["pageSize"]?.ToObject<int?>() ?? 50);
                         if (action == "Cancel") return _buildService.Cancel(target);
                         return _buildService.Build(action, target);
                     case "validation":
@@ -485,6 +513,58 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrEmpty(s)) return "";
             return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t");
+        }
+
+        /// <summary>
+        /// Post-process a list/query JSON response by appending inline_reads for the top N results.
+        /// Reads are capped at 3. ResponseSizeGuard remains the ceiling on total response size.
+        /// </summary>
+        private string AppendInlineReads(string responseJson, int n)
+        {
+            return AppendInlineReadsCore(responseJson, n,
+                (name, type) => _objectService.ReadObjectSourceParts(name, null, type));
+        }
+
+        /// <summary>
+        /// Testable core: merges inline_reads into a response JSON given a reader delegate.
+        /// </summary>
+        public static string AppendInlineReadsCore(string responseJson, int n, Func<string, string, string> reader)
+        {
+            if (string.IsNullOrEmpty(responseJson) || n <= 0) return responseJson;
+            try
+            {
+                var responseObj = JObject.Parse(responseJson);
+                var results = responseObj["results"] as JArray;
+                if (results == null || results.Count == 0) return responseJson;
+
+                var reads = new JArray();
+                foreach (var item in results.Take(n).OfType<JObject>())
+                {
+                    string name = item["name"]?.ToString();
+                    string type = item["type"]?.ToString();
+                    if (string.IsNullOrEmpty(name)) continue;
+                    try
+                    {
+                        string content = reader(name, type);
+                        reads.Add(new JObject
+                        {
+                            ["name"] = name,
+                            ["type"] = type,
+                            ["content"] = JToken.Parse(content)
+                        });
+                    }
+                    catch { /* skip objects that fail to read */ }
+                }
+
+                if (reads.Count > 0)
+                    responseObj["inline_reads"] = reads;
+
+                return responseObj.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch
+            {
+                return responseJson; // Return original if post-processing fails
+            }
         }
     }
 }

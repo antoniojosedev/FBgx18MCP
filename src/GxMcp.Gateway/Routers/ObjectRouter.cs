@@ -75,6 +75,18 @@ namespace GxMcp.Gateway.Routers
                             part = part
                         };
                     }
+                    var partsTok = args?["parts"];
+                    bool hasParts = partsTok is JArray partsArr && partsArr.Count > 0;
+                    if (hasParts)
+                    {
+                        return new {
+                            module = "Read",
+                            action = "ExtractParts",
+                            target = target,
+                            parts = (JArray)partsTok!,
+                            type = args?["type"]?.ToString()
+                        };
+                    }
                     return new {
                         module = "Read",
                         action = "ExtractSource",
@@ -108,6 +120,8 @@ namespace GxMcp.Gateway.Routers
 
                     string? mode = args?["mode"]?.ToString();
                     ValidateEditMode(mode);
+                    bool returnPostState = args?["return_post_state"]?.ToObject<bool?>() ?? true;
+                    bool verbose = args?["verbose"]?.ToObject<bool?>() ?? false;
                     if (mode == "ops")
                     {
                         ValidateSemanticOps(args?["ops"]);
@@ -117,7 +131,9 @@ namespace GxMcp.Gateway.Routers
                             target = target,
                             part = part,
                             ops = args?["ops"],
-                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                            return_post_state = returnPostState,
+                            verbose = verbose
                         };
                     }
                     if (mode == "patch")
@@ -132,7 +148,9 @@ namespace GxMcp.Gateway.Routers
                                 target = target,
                                 part = part,
                                 patch = patchArr,
-                                dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                                dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                                return_post_state = returnPostState,
+                                verbose = verbose
                             };
                         }
                         // Legacy text-patch (string payload) — unchanged
@@ -152,7 +170,9 @@ namespace GxMcp.Gateway.Routers
                             context = args?["context"]?.ToString(),
                             expectedCount = args?["expectedCount"]?.ToObject<int?>() ?? 1,
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
-                            verifyRollback = args?["verifyRollback"]?.ToObject<bool?>() ?? false
+                            verifyRollback = args?["verifyRollback"]?.ToObject<bool?>() ?? false,
+                            return_post_state = returnPostState,
+                            verbose = verbose
                         };
                     }
                     else

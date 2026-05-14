@@ -79,7 +79,16 @@ namespace GxMcp.Worker.Services
                     Logger.Error($"[StructureService] Invalid object type for visual structure: {obj.TypeDescriptor.Name}");
                     return Models.McpResponse.Error("Invalid object type", targetName, "Structure", "Visual structure is available only for Transaction, Table or SDT objects.", obj.Name, obj.TypeDescriptor?.Name);
                 }
-                
+
+                result["_meta"] = new JObject
+                {
+                    ["suggested_next"] = new JObject
+                    {
+                        ["tool"] = "genexus_read",
+                        ["args"] = new JObject { ["name"] = obj.Name, ["type"] = obj.TypeDescriptor.Name }
+                    }
+                };
+
                 Logger.Info($"[StructureService] Successfully serialized structure for {obj.Name}");
                 return result.ToString();
             } catch (Exception ex) { 
@@ -114,6 +123,14 @@ namespace GxMcp.Worker.Services
 
                 result["subs"] = subs;
                 result["events"] = events;
+                result["_meta"] = new JObject
+                {
+                    ["suggested_next"] = new JObject
+                    {
+                        ["tool"] = "genexus_read",
+                        ["args"] = new JObject { ["name"] = obj.Name, ["type"] = obj.TypeDescriptor.Name }
+                    }
+                };
                 return result.ToString();
             }
             catch (Exception ex) { return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }

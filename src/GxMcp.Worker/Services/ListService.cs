@@ -19,14 +19,14 @@ namespace GxMcp.Worker.Services
             _indexCacheService = indexCacheService;
         }
 
-        public string ListObjects(string filter, int limit, int offset, string parentFilter = null, string typeFilter = null, string parentPathFilter = null)
+        public string ListObjects(string filter, int limit, int offset, string parentFilter = null, string typeFilter = null, string parentPathFilter = null, bool verbose = false)
         {
             var sw = Stopwatch.StartNew();
             string source = "none";
             string Finalize(string response)
             {
                 sw.Stop();
-                Logger.Debug($"[ListService] source={source} limit={limit} offset={offset} parentPath='{parentPathFilter ?? ""}' parent='{parentFilter ?? ""}' typeFilter='{typeFilter ?? ""}' filter='{filter ?? ""}' elapsedMs={sw.ElapsedMilliseconds}");
+                Logger.Debug($"[ListService] source={source} limit={limit} offset={offset} parentPath='{parentPathFilter ?? ""}' parent='{parentFilter ?? ""}' typeFilter='{typeFilter ?? ""}' filter='{filter ?? ""}' verbose={verbose} elapsedMs={sw.ElapsedMilliseconds}");
                 return response;
             }
 
@@ -130,11 +130,12 @@ namespace GxMcp.Worker.Services
                             entry.Parent ?? string.Empty,
                             entry.Module ?? string.Empty,
                             entry.Path ?? string.Empty,
-                            entry.ParentPath ?? string.Empty
+                            entry.ParentPath ?? string.Empty,
+                            verbose
                         ));
                     }
 
-                    return Finalize(BuildPagedResponse(array, totalIndex, startIndex, pageSize).ToString());
+                    return Finalize(BuildPagedResponseInternal(array, totalIndex, startIndex, pageSize).ToString());
                 }
 
                 source = "runtime-sdk";
@@ -196,11 +197,12 @@ namespace GxMcp.Worker.Services
                         item.Hierarchy.ParentName,
                         item.Hierarchy.ModuleName,
                         item.Hierarchy.Path,
-                        item.Hierarchy.ParentPath
+                        item.Hierarchy.ParentPath,
+                        verbose
                     ));
                 }
 
-                return Finalize(BuildPagedResponse(array, totalRuntime, startRuntime, pageSizeRuntime).ToString());
+                return Finalize(BuildPagedResponseInternal(array, totalRuntime, startRuntime, pageSizeRuntime).ToString());
             }
             catch (Exception ex)
             {
@@ -209,7 +211,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private JObject BuildPagedResponse(JArray results, int total, int offset, int pageSize)
+        public JObject BuildPagedResponseInternal(JArray results, int total, int offset, int pageSize)
         {
             var response = new JObject();
             response["count"] = results.Count;
@@ -223,19 +225,170 @@ namespace GxMcp.Worker.Services
                 response["nextOffset"] = consumed;
             }
             response["results"] = results;
+
+            var meta = new JObject();
+
+            // Handle empty results: determine and attach empty_reason
+            if (results.Count == 0)
+            {
+                string emptyReason = DetermineEmptyReason(total);
+                meta["empty_reason"] = emptyReason;
+            }
+            else
+            {
+                // Non-empty results: compute and attach aggregates
+                var aggregates = ComputeAggregates(results);
+                if (aggregates != null)
+                {
+                    meta["aggregates"] = aggregates;
+                }
+
+                // Add suggested_next if we have results
+                var suggestion = BuildSuggestedNext(results);
+                if (suggestion != null)
+                {
+                    meta["suggested_next"] = suggestion;
+                }
+            }
+
+            // Only attach _meta if it has content
+            if (meta.Count > 0)
+            {
+                response["_meta"] = meta;
+            }
+
             return response;
         }
 
-        private JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath)
+        private string DetermineEmptyReason(int total)
+        {
+            // If total is 0, no items match at all
+            if (total == 0)
+            {
+                // Check if KB is loaded by trying to get it
+                // In test contexts where _kbService is null, default to "no_matches"
+                if (_kbService != null)
+                {
+                    var kb = _kbService.GetKB();
+                    if (kb == null || kb.DesignModel == null || kb.DesignModel.Objects == null)
+                    {
+                        return "kb_not_loaded";
+                    }
+                }
+
+                // KB is loaded but no objects match (either no filter applied or filter matched nothing)
+                // We can't directly tell if a filter was applied from this context,
+                // so we default to "no_matches"
+                return "no_matches";
+            }
+
+            // total > 0 but results.Count == 0 means a filter was applied and filtered everything out
+            return "filtered_out";
+        }
+
+        private JObject ComputeAggregates(JArray items)
+        {
+            if (items == null || items.Count == 0)
+                return null;
+
+            var aggregates = new JObject();
+
+            // total: count of items in the current page result
+            aggregates["total"] = items.Count;
+
+            // by_type: group items by type and count each type
+            var typeGrouping = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in items.Cast<JObject>())
+            {
+                var type = item["type"]?.ToString() ?? "Unknown";
+                if (typeGrouping.ContainsKey(type))
+                {
+                    typeGrouping[type]++;
+                }
+                else
+                {
+                    typeGrouping[type] = 1;
+                }
+            }
+
+            var byTypeObj = new JObject();
+            foreach (var kvp in typeGrouping.OrderBy(x => x.Key))
+            {
+                byTypeObj[kvp.Key] = kvp.Value;
+            }
+            aggregates["by_type"] = byTypeObj;
+
+            // Note: modified_last_7d is skipped because IndexEntry does not have timestamp data
+            // and KBObject does not expose modification time through the public API
+
+            return aggregates;
+        }
+
+        public static JObject BuildSuggestedNext(JArray items)
+        {
+            if (items == null || items.Count == 0)
+                return null;
+
+            var top = items[0] as JObject;
+            if (top == null)
+                return null;
+
+            return new JObject
+            {
+                ["tool"] = "genexus_read",
+                ["args"] = new JObject
+                {
+                    ["name"] = top["name"]?.ToString(),
+                    ["type"] = top["type"]?.ToString()
+                }
+            };
+        }
+
+        public static JObject BuildItemForTest(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
+        {
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, verbose);
+        }
+
+        // Test helper: allows tests to call BuildPagedResponse with mocked data
+        // Note: This uses null for _kbService, so DetermineEmptyReason will always return "no_matches" for empty results
+        public static JObject BuildPagedResponseForTest(JArray items, int total, int offset, int pageSize)
+        {
+            var svc = new ListService(null, null);
+            return svc.BuildPagedResponseInternal(items, total, offset, pageSize);
+        }
+
+        private JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
+        {
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, verbose);
+        }
+
+        private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
         {
             var item = new JObject();
             item["name"] = name;
             item["type"] = type;
-            item["description"] = description;
-            item["parent"] = parent;
-            item["module"] = module;
-            item["path"] = path;
-            item["parentPath"] = parentPath;
+
+            // Check if we're in legacy mode (MCP_PERF_PROFILE=legacy means V1Enabled=false)
+            string perfProfile = Environment.GetEnvironmentVariable("MCP_PERF_PROFILE");
+            bool isLegacyMode = !string.IsNullOrWhiteSpace(perfProfile) &&
+                               string.Equals(perfProfile, "legacy", StringComparison.OrdinalIgnoreCase);
+
+            // In legacy mode, always return full shape for backward compatibility
+            if (isLegacyMode || verbose)
+            {
+                item["description"] = description;
+                item["parent"] = parent;
+                item["module"] = module;
+                item["path"] = path;
+                item["parentPath"] = parentPath;
+            }
+            else
+            {
+                // Minimal shape (4 fields): name, type, path, parent
+                item["path"] = path;
+                item["parent"] = parent;
+            }
+
             return item;
         }
 

@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Helpers;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
 {
@@ -82,7 +83,7 @@ namespace GxMcp.Worker.Services
                     if (!string.IsNullOrEmpty(criteria.TypeFilter))
                         exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
                     var exactList = exactCandidates.ToList();
-                    var exactJson = Newtonsoft.Json.JsonConvert.SerializeObject(new {
+                    var exactObj = JObject.FromObject(new {
                         count = exactList.Count,
                         total = exactList.Count,
                         hasMore = false,
@@ -92,6 +93,19 @@ namespace GxMcp.Worker.Services
                             dataType = e.DataType, table = e.RootTable
                         })
                     });
+                    if (exactList.Count > 0)
+                    {
+                        var top = exactList[0];
+                        exactObj["_meta"] = new JObject
+                        {
+                            ["suggested_next"] = new JObject
+                            {
+                                ["tool"] = "genexus_read",
+                                ["args"] = new JObject { ["name"] = top.Name, ["type"] = top.Type }
+                            }
+                        };
+                    }
+                    var exactJson = exactObj.ToString(Newtonsoft.Json.Formatting.None);
                     _queryCache.TryAdd(cacheKey, exactJson);
                     return exactJson;
                 }
@@ -221,10 +235,10 @@ namespace GxMcp.Worker.Services
                 var scoredResults = rankedAll.Take(effectiveLimit).ToList();
                 bool hasMore = total > scoredResults.Count;
 
-                string json;
+                JObject responseObj;
                 if (isQuick)
                 {
-                    json = Newtonsoft.Json.JsonConvert.SerializeObject(new {
+                    responseObj = JObject.FromObject(new {
                         count = scoredResults.Count,
                         total,
                         hasMore,
@@ -241,7 +255,7 @@ namespace GxMcp.Worker.Services
                 }
                 else
                 {
-                    json = Newtonsoft.Json.JsonConvert.SerializeObject(new {
+                    responseObj = JObject.FromObject(new {
                         count = scoredResults.Count,
                         total,
                         hasMore,
@@ -265,6 +279,13 @@ namespace GxMcp.Worker.Services
                     });
                 }
 
+                var suggestion = BuildSuggestedNext(scoredResults);
+                if (suggestion != null)
+                {
+                    responseObj["_meta"] = new JObject { ["suggested_next"] = suggestion };
+                }
+
+                string json = responseObj.ToString(Newtonsoft.Json.Formatting.None);
                 _queryCache.TryAdd(cacheKey, json);
 
                 if (!isQuick && criteria.Terms.Count > 0 && scoredResults.Count > 0)
@@ -289,6 +310,24 @@ namespace GxMcp.Worker.Services
                 return json;
             }
             catch (Exception ex) { return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
+        }
+
+        private static JObject BuildSuggestedNext(List<RankedResult> results)
+        {
+            if (results == null || results.Count == 0) return null;
+            var top = results[0].Entry;
+            if (top == null) return null;
+            return BuildSuggestedReadFor(top.Name, top.Type);
+        }
+
+        public static JObject BuildSuggestedReadFor(string name, string type)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            return new JObject
+            {
+                ["tool"] = "genexus_read",
+                ["args"] = new JObject { ["name"] = name, ["type"] = type }
+            };
         }
 
         private int CalculateSemanticScore(SearchIndex.IndexEntry entry, HashSet<string> terms, string typeFilter)

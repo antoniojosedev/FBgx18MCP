@@ -47,6 +47,8 @@ namespace GxMcp.Worker.Services
                 string partName = req["part"]?.ToString();
                 JArray opsRaw = req["ops"] as JArray;
                 bool dryRun = req["dryRun"]?.ToObject<bool?>() ?? false;
+                bool returnPostState = req["return_post_state"]?.ToObject<bool?>() ?? true;
+                bool verbose = req["verbose"]?.ToObject<bool?>() ?? false;
 
                 if (string.IsNullOrEmpty(target))
                     throw new UsageException("usage_error", "target required");
@@ -59,7 +61,7 @@ namespace GxMcp.Worker.Services
                 if (!_objectService.GetKbService().IsOpen)
                     throw new UsageException("usage_error", "object '" + target + "' not found");
 
-                return ApplySemanticOpsCore(target, partName, opsRaw, dryRun);
+                return ApplySemanticOpsCore(target, partName, opsRaw, dryRun, returnPostState, verbose);
             }
             catch (UsageException ux)
             {
@@ -88,7 +90,7 @@ namespace GxMcp.Worker.Services
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private string ApplySemanticOpsCore(string target, string partName, JArray opsRaw, bool dryRun)
+        private string ApplySemanticOpsCore(string target, string partName, JArray opsRaw, bool dryRun, bool returnPostState = true, bool verbose = false)
         {
             var obj = _objectService.FindObject(target, null);
             if (obj == null)
@@ -127,6 +129,8 @@ namespace GxMcp.Worker.Services
                 ["opsApplied"] = ops.Count,
                 ["write"] = writeJson
             };
+            if (returnPostState)
+                resp["post_state"] = JsonPatchService.BuildPostState(currentXml, newXml, verbose);
             return resp.ToString(Newtonsoft.Json.Formatting.None);
         }
 
@@ -144,6 +148,8 @@ namespace GxMcp.Worker.Services
                 string partName = req["part"]?.ToString();
                 JArray patchArr = req["patch"] as JArray;
                 bool dryRun = req["dryRun"]?.ToObject<bool?>() ?? false;
+                bool returnPostState = req["return_post_state"]?.ToObject<bool?>() ?? true;
+                bool verbose = req["verbose"]?.ToObject<bool?>() ?? false;
 
                 if (string.IsNullOrEmpty(target))
                     throw new UsageException("usage_error", "target required");
@@ -156,7 +162,7 @@ namespace GxMcp.Worker.Services
                 if (!_objectService.GetKbService().IsOpen)
                     throw new UsageException("usage_error", "object '" + target + "' not found");
 
-                return ApplyJsonPatchCore(target, partName, patchArr, dryRun);
+                return ApplyJsonPatchCore(target, partName, patchArr, dryRun, returnPostState, verbose);
             }
             catch (UsageException ux)
             {
@@ -185,7 +191,7 @@ namespace GxMcp.Worker.Services
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private string ApplyJsonPatchCore(string target, string partName, JArray patchArr, bool dryRun)
+        private string ApplyJsonPatchCore(string target, string partName, JArray patchArr, bool dryRun, bool returnPostState = true, bool verbose = false)
         {
             var obj = _objectService.FindObject(target, null);
             if (obj == null)
@@ -222,6 +228,8 @@ namespace GxMcp.Worker.Services
                 ["opsApplied"] = patchArr.Count,
                 ["write"] = writeJson
             };
+            if (returnPostState)
+                resp["post_state"] = JsonPatchService.BuildPostState(currentXml, newXml, verbose);
             return resp.ToString(Newtonsoft.Json.Formatting.None);
         }
 

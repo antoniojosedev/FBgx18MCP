@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using System.Collections.Generic;
 using System.Linq;
@@ -817,6 +818,140 @@ namespace GxMcp.Gateway
             }
 
             return null;
+        }
+
+        internal static void StripNulls(JObject obj)
+        {
+            var toRemove = new List<string>();
+            foreach (var prop in obj.Properties())
+            {
+                if (prop.Value is null || prop.Value.Type == JTokenType.Null)
+                    toRemove.Add(prop.Name);
+                else if (prop.Value is JObject child)
+                    StripNulls(child);
+                else if (prop.Value is JArray arr)
+                    foreach (var item in arr) if (item is JObject o) StripNulls(o);
+            }
+            foreach (var name in toRemove) obj.Remove(name);
+        }
+
+        /// <summary>
+        /// Attaches a <c>_meta.background_jobs</c> snapshot to <paramref name="toolResult"/> when the session has
+        /// running or unseen-completed jobs in <paramref name="registry"/>. Marks completed jobs as seen so they
+        /// surface exactly once. No-ops when the snapshot is empty.
+        /// </summary>
+        internal static void PiggybackJobs(JObject toolResult, string sessionId, BackgroundJobRegistry registry)
+        {
+            var snapshot = registry.SnapshotForSession(sessionId);
+            if (snapshot.Count == 0) return;
+
+            // The LLM reads content[0].text (a serialized JSON string), not the wrapper JObject.
+            // Inject _meta.background_jobs into the inner JSON so the LLM actually sees it.
+            var content = toolResult["content"] as JArray;
+            var first = content?[0] as JObject;
+            var textToken = first?["text"];
+            if (textToken == null) return;
+
+            JObject inner;
+            try { inner = JObject.Parse(textToken.ToString()); }
+            catch { return; /* content is not JSON — skip piggyback */ }
+
+            var meta = (JObject?)inner["_meta"] ?? new JObject();
+            meta["background_jobs"] = new JArray(snapshot.Select(j => new JObject
+            {
+                ["id"] = j.Id,
+                ["status"] = j.Status,
+                ["summary"] = j.Summary,
+                ["completed_at"] = j.CompletedAt?.ToString("o"),
+                ["estimated_seconds"] = j.EstimatedSeconds
+            }));
+            inner["_meta"] = meta;
+
+            first["text"] = inner.ToString(Newtonsoft.Json.Formatting.None);
+            registry.MarkSeen(sessionId, snapshot.Select(j => j.Id));
+        }
+
+        /// <summary>
+        /// Resolves a background-job ID from lifecycle tool arguments.
+        /// Tries <c>job_id</c>, then <c>jobId</c>, then <c>target</c> (the lifecycle tool's
+        /// conventional parameter), returning the first non-empty value found.
+        /// </summary>
+        internal static string? ResolveJobId(JObject? args)
+        {
+            var v = args?["job_id"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(v)) return v;
+            v = args?["jobId"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(v)) return v;
+            v = args?["target"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(v)) return v;
+            return null;
+        }
+
+        /// <summary>
+        /// Returns a terse error envelope containing only <c>message</c>, <c>code</c>, and <c>hint</c>.
+        /// Stack traces and full SDK diagnostics are dropped by default. Pass <paramref name="verbose"/> = true
+        /// (via the <c>verbose_errors</c> tool argument) to get the full original envelope.
+        /// </summary>
+        internal static JObject TrimErrorEnvelope(JObject error, bool verbose)
+        {
+            if (verbose) return error; // pass-through
+            var trimmed = new JObject();
+            // first line of message only
+            var msg = error["message"]?.ToString() ?? error["error"]?.ToString() ?? "Unknown error";
+            var firstLine = msg.Split('\n')[0].Trim();
+            trimmed["message"] = firstLine;
+            if (error["code"] != null) trimmed["code"] = error["code"];
+            if (error["hint"] != null) trimmed["hint"] = error["hint"];
+            return trimmed;
+        }
+
+        /// <summary>
+        /// Long-polls <paramref name="registry"/> for <paramref name="jobId"/> until it reaches a terminal
+        /// state or <paramref name="waitSeconds"/> elapses (clamped 0–25).  Returns a status envelope.
+        /// <list type="bullet">
+        ///   <item><c>wait_seconds=0</c> (or omitted) → immediate single poll, no blocking.</item>
+        ///   <item>Unknown job → envelope with <c>error="unknown_job_id"</c>.</item>
+        ///   <item>Terminal job → returns immediately regardless of <paramref name="waitSeconds"/>.</item>
+        /// </list>
+        /// </summary>
+        internal static async Task<JObject> LongPollJob(
+            BackgroundJobRegistry registry,
+            string jobId,
+            int waitSeconds)
+        {
+            // Clamp wait_seconds to [0, 25]
+            waitSeconds = Math.Min(Math.Max(waitSeconds, 0), 25);
+
+            var deadline = DateTime.UtcNow.AddSeconds(waitSeconds);
+            JobEntry? job;
+
+            do
+            {
+                job = registry.Get(jobId);
+                if (job == null || job.Status != "running" || waitSeconds == 0)
+                    break;
+                await Task.Delay(250).ConfigureAwait(false);
+            }
+            while (DateTime.UtcNow < deadline);
+
+            if (job == null)
+            {
+                return new JObject
+                {
+                    ["error"] = "unknown_job_id",
+                    ["job_id"] = jobId
+                };
+            }
+
+            return new JObject
+            {
+                ["job_id"] = job.Id,
+                ["status"] = job.Status,
+                ["summary"] = job.Summary,
+                ["completed_at"] = job.CompletedAt?.ToString("o"),
+                ["estimated_seconds"] = job.EstimatedSeconds,
+                ["result"] = job.Result
+            };
         }
     }
 }

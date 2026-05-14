@@ -32,7 +32,7 @@ namespace GxMcp.Worker.Services
             _writeService = writeService;
         }
 
-        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false)
+        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false)
         {
             try
             {
@@ -350,6 +350,8 @@ namespace GxMcp.Worker.Services
                     ["writeMs"] = writeMs,
                     ["usedSourceCache"] = sourceFromCache
                 };
+                if (returnPostState && finalSuccess && updatedSource != null)
+                    writePayload["post_state"] = GxMcp.Worker.Services.JsonPatchService.BuildPostState(originalSource, updatedSource, verbose);
                 return writePayload.ToString();
             }
             catch (Exception ex)
