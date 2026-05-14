@@ -2,8 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
-[![MCP Badge](https://lobehub.com/badge/mcp/lennix1337-genexus18mcp?style=for-the-badge)](https://lobehub.com/mcp/lennix1337-genexus18mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![SafeSkill 85/100](https://img.shields.io/badge/SafeSkill-85%2F100_Passes%20with%20Notes-yellow)](https://safeskill.dev/scan/lennix1337-genexus18mcp)
+[![MCP Badge](https://lobehub.com/badge/mcp/lennix1337-genexus18mcp)](https://lobehub.com/mcp/lennix1337-genexus18mcp)
 
 > **¿Hablás español?** → [Guía de inicio en español](docs/GETTING_STARTED.es.md)
 > **Stuck?** → [Troubleshooting guide](TROUBLESHOOTING.md)
