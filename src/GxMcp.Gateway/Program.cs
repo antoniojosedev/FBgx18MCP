@@ -42,6 +42,14 @@ namespace GxMcp.Gateway
         }
         internal static WorkerPool? GetWorkerPool() => _workerPool;
         internal static KbResolver? GetKbResolver() => _kbResolver;
+
+        // Tools that are not KB-scoped: routed by the gateway itself or operate on global state.
+        // Must mirror the exclusion list in tool_definitions.json (no `kb` param on these).
+        private static readonly HashSet<string> _metaTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "genexus_kb", "genexus_whoami", "genexus_logs", "genexus_doc", "genexus_worker_reload"
+        };
+        private static bool IsMetaTool(string name) => _metaTools.Contains(name);
         private sealed class PendingWorkerRequest
         {
             public TaskCompletionSource<string> CompletionSource { get; init; } = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -894,39 +902,58 @@ namespace GxMcp.Gateway
             var idToken = request["id"];
 
             // Resolve KB once per request and stash in AsyncLocal so SendWorkerCommandAsync routes correctly.
-            // For non-tools/call methods the resolver falls back to DefaultKb.
+            // Meta-tools (whoami, logs, doc, worker_reload, kb) don't address a specific KB and
+            // must not trigger KB_AMBIGUOUS when several KBs are open.
             if (_kbResolver != null && _workerPool != null)
             {
-                try
+                bool isMetaTool = false;
+                string? toolNameForResolver = null;
+                if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase))
                 {
-                    string? kbArg = null;
-                    if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var paramsObj = request["params"] as JObject;
-                        var argsObj = paramsObj?["arguments"] as JObject;
-                        kbArg = argsObj?["kb"]?.ToString();
-                        // Strip `kb` from worker-bound args (worker is single-KB scoped).
-                        argsObj?.Remove("kb");
-                    }
-                    _currentKb.Value = _kbResolver.Resolve(kbArg, _workerPool.ListOpen());
+                    toolNameForResolver = (request["params"] as JObject)?["name"]?.ToString();
+                    isMetaTool = !string.IsNullOrEmpty(toolNameForResolver) && IsMetaTool(toolNameForResolver);
                 }
-                catch (KbResolutionException ex)
+
+                if (!isMetaTool)
                 {
-                    return new JObject
+                    try
                     {
-                        ["jsonrpc"] = "2.0",
-                        ["id"] = idToken?.DeepClone(),
-                        ["error"] = new JObject
+                        string? kbArg = null;
+                        if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase))
                         {
-                            ["code"] = -32602,
-                            ["message"] = ex.Message,
-                            ["data"] = new JObject
-                            {
-                                ["code"] = ex.Code,
-                                ["openKbs"] = JArray.FromObject(_workerPool!.ListOpen().Select(k => k.Alias))
-                            }
+                            var paramsObj = request["params"] as JObject;
+                            var argsObj = paramsObj?["arguments"] as JObject;
+                            kbArg = argsObj?["kb"]?.ToString();
+                            // Strip `kb` from worker-bound args (worker is single-KB scoped).
+                            argsObj?.Remove("kb");
                         }
-                    };
+                        _currentKb.Value = _kbResolver.Resolve(kbArg, _workerPool.ListOpen());
+                    }
+                    catch (KbResolutionException ex)
+                    {
+                        return new JObject
+                        {
+                            ["jsonrpc"] = "2.0",
+                            ["id"] = idToken?.DeepClone(),
+                            ["error"] = new JObject
+                            {
+                                ["code"] = -32602,
+                                ["message"] = ex.Message,
+                                ["data"] = new JObject
+                                {
+                                    ["code"] = ex.Code,
+                                    ["openKbs"] = JArray.FromObject(_workerPool!.ListOpen().Select(k => k.Alias))
+                                }
+                            }
+                        };
+                    }
+                }
+                else
+                {
+                    // Meta-tools still strip any stray `kb` arg (cosmetic) and leave _currentKb null.
+                    var argsObj = (request["params"] as JObject)?["arguments"] as JObject;
+                    argsObj?.Remove("kb");
+                    _currentKb.Value = null;
                 }
             }
 
