@@ -1,0 +1,83 @@
+# Contributing
+
+Thanks for looking at the code. This is a solo project that I maintain in spare time, so a few honest notes upfront so you don't waste yours.
+
+## What this repo is
+
+A two-process MCP server:
+
+- **Gateway** (`src/GxMcp.Gateway`, .NET 8) — speaks MCP over stdio, hot-reloads `config.json`, brokers calls to the worker.
+- **Worker** (`src/GxMcp.Worker`, .NET Framework 4.8, x86, STA) — hosts the native GeneXus 18 SDK (`Artech.*` DLLs). Has to be .NET 4.8 + STA because the SDK won't run otherwise.
+- **CLI** (`cli/`, Node 18+) — the `npx genexus-mcp` entry point: `init`, `doctor`, `axi`, update check.
+
+The Worker references DLLs from `C:\Program Files (x86)\GeneXus\GeneXus18`. **You can't build it without GeneXus 18 installed locally** — see [`docs/RELEASE.md`](docs/RELEASE.md) for why CI hosted runners can't build the .NET side.
+
+## Before you open a PR
+
+- **Bug fix or doc tweak** — go ahead, open the PR.
+- **New tool, refactor, behavior change, anything user-facing** — open an issue first so we can agree on the shape. I'd rather discuss for 10 minutes than ask you to rewrite a 400-line PR.
+- **CLAUDE.md / GEMINI.md / skill changes** — these are agent-facing instructions, not generic docs. If you change them, say which agent/scenario you tested against.
+
+## Dev loop
+
+```pwsh
+# Restore + build everything
+.\build.ps1
+
+# Run CLI tests
+npm test
+
+# Smoke the MCP end-to-end (requires a real KB)
+npx . doctor --mcp-smoke
+```
+
+If you only touched `cli/`, `npm test` is enough. If you touched the Gateway or Worker, you need `.\build.ps1` and a real KB to verify — there is no mock.
+
+## Code style
+
+- **C# (Gateway + Worker)** — match the surrounding file. No new abstractions unless they're paying for themselves. Don't add error handling for cases that can't happen.
+- **JS (CLI)** — Node built-ins only where possible, no TypeScript in `cli/`. Keep dependencies minimal — `package.json` has 0 runtime deps and I'd like to keep it that way.
+- **No comments explaining *what*** — naming should do that. Comments are for *why* something non-obvious is the way it is (workarounds, SDK quirks, hidden invariants).
+- **PowerShell scripts** use `.ps1`, target `pwsh` 7+. Use `&&` / `||` chaining freely.
+- **Don't reformat unrelated code** in a PR. If a file needs cleanup, do it in a separate `chore(...)` commit.
+
+## Commits
+
+Conventional Commits, scope mandatory when it's obvious which subsystem changed. Look at `git log --oneline` for the cadence — short, factual, no marketing.
+
+```
+feat(gateway): async build polls worker until terminal
+fix(gateway): meta-tools bypass KbResolver
+chore(release): add -NoBump flag to release.ps1
+docs(readme): add SafeSkill badge, normalize badge sizing
+```
+
+Scopes in use: `gateway`, `worker`, `cli`, `readme`, `release`, `plan`, `spec`. Add a new one if your change genuinely needs it.
+
+## Testing GeneXus changes
+
+There's no fixture KB in the repo — KBs are tens of GB and tied to a SQL Server instance. To test SDK-touching changes you need a local GeneXus 18 install and a KB built at least once. The `doctor --mcp-smoke` command exercises the common tool paths against whichever KB `config.json` points at.
+
+When you submit a PR that touches the Worker, **say what KB you tested against** (object types touched, KB size, GeneXus build). "Works on my KB" is more useful than it sounds — KBs vary wildly.
+
+## What I will and won't accept
+
+**Will:**
+- Bug fixes with a clear repro.
+- New MCP tools that wrap a specific SDK capability that's currently awkward to drive from an agent.
+- Performance work backed by a measurement (before/after wall-clock, token counts, etc.).
+- Docs fixes, typo fixes, troubleshooting additions.
+
+**Probably won't:**
+- "Generic AI improvements" / vibes-driven refactors.
+- Adding runtime dependencies to the CLI.
+- Rewrites of working code to a different style.
+- PRs that bundle a small fix with unrelated formatting churn.
+
+## Releases
+
+You can't cut a release — npm Trusted Publishing only accepts publishes from this repo's `release.yml`. See [`docs/RELEASE.md`](docs/RELEASE.md). PRs land on `main`, I cut releases from there.
+
+## Questions
+
+Open an issue, or DM on the npm package's repo discussions. I read everything; replies may take a few days.
