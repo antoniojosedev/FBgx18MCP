@@ -127,4 +127,80 @@ public class LongPollTests
         Assert.True(sw.ElapsedMilliseconds < 100,
             $"wait_seconds=0 blocked for {sw.ElapsedMilliseconds} ms, expected < 100 ms");
     }
+
+    // ── target-parameter tests ────────────────────────────────────────────────
+
+    [Fact]
+    public void ResolveJobId_ReturnsTarget_WhenNoJobIdProvided()
+    {
+        // lifecycle action=status target=<job_id> is the conventional LLM call form.
+        // ResolveJobId must honour "target" as a fallback when job_id / jobId are absent.
+        var registry = MakeRegistry();
+        var job = registry.Start("s1", "build", 30);
+
+        var args = new Newtonsoft.Json.Linq.JObject
+        {
+            ["action"] = "status",
+            ["target"] = job.Id
+        };
+
+        string? resolved = McpRouter.ResolveJobId(args);
+
+        Assert.Equal(job.Id, resolved);
+    }
+
+    [Fact]
+    public void ResolveJobId_PrefersJobId_OverTarget()
+    {
+        // job_id takes priority; target is only a fallback.
+        var args = new Newtonsoft.Json.Linq.JObject
+        {
+            ["job_id"] = "explicit-id",
+            ["target"] = "SomeObject"
+        };
+
+        string? resolved = McpRouter.ResolveJobId(args);
+
+        Assert.Equal("explicit-id", resolved);
+    }
+
+    [Fact]
+    public void ResolveJobId_ReturnsNull_WhenAllAbsent()
+    {
+        var args = new Newtonsoft.Json.Linq.JObject
+        {
+            ["action"] = "status"
+        };
+
+        string? resolved = McpRouter.ResolveJobId(args);
+
+        Assert.Null(resolved);
+    }
+
+    [Fact]
+    public async Task TargetResolvesViaRegistry_ReturnsJobStatus()
+    {
+        // End-to-end: simulate the Program.cs routing pattern using target= for job lookup.
+        // ResolveJobId extracts the id; registry.Get confirms it exists; LongPollJob returns status.
+        var registry = MakeRegistry();
+        var job = registry.Start("s1", "build", 30);
+        registry.Complete(job.Id, true, "built ok");
+
+        var args = new Newtonsoft.Json.Linq.JObject
+        {
+            ["action"] = "status",
+            ["target"] = job.Id   // no job_id, only target
+        };
+
+        string? jobId = McpRouter.ResolveJobId(args);
+        Assert.NotNull(jobId);
+
+        var probe = registry.Get(jobId!);
+        Assert.NotNull(probe); // registry lookup succeeds
+
+        JObject pollResult = await McpRouter.LongPollJob(registry, jobId!, waitSeconds: 0);
+
+        Assert.Equal("succeeded", pollResult["status"]!.ToString());
+        Assert.Equal(job.Id, pollResult["job_id"]!.ToString());
+    }
 }

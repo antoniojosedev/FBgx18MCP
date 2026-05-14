@@ -6,24 +6,60 @@ namespace GxMcp.Gateway.Tests
 {
     /// <summary>
     /// Tests for the McpRouter.PiggybackJobs helper that injects _meta.background_jobs
-    /// into every tools/call response when the session has active or unseen-completed jobs.
-    /// The wiring from ProcessMcpRequest to PiggybackJobs is not tested end-to-end here
-    /// because it requires a live HTTP stack + worker process. The BackgroundJobRegistry
-    /// contract tests (BackgroundJobRegistryTests) provide complementary coverage.
+    /// into the inner content[0].text JSON of every tools/call response when the session
+    /// has active or unseen-completed jobs.
+    ///
+    /// The toolResult shape mirrors the real MCP wrapper:
+    ///   { isError: bool, content: [{ type: "text", text: "<serialized-json>" }] }
+    /// PiggybackJobs must parse content[0].text, inject _meta.background_jobs, and
+    /// re-serialize — so the LLM (which reads the inner text) actually sees the payload.
     /// </summary>
     public class PiggybackTests
     {
+        // ── helpers ──────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Builds a minimal tool-result wrapper with a JSON payload as content[0].text.
+        /// </summary>
+        private static JObject MakeWrapper(JObject innerPayload)
+        {
+            return new JObject
+            {
+                ["isError"] = false,
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = innerPayload.ToString(Newtonsoft.Json.Formatting.None)
+                    }
+                }
+            };
+        }
+
+        /// <summary>
+        /// Parses and returns the inner JSON from content[0].text of a wrapper.
+        /// </summary>
+        private static JObject ParseInner(JObject wrapper)
+        {
+            var text = wrapper["content"]?[0]?["text"]?.ToString() ?? "{}";
+            return JObject.Parse(text);
+        }
+
+        // ── tests ─────────────────────────────────────────────────────────────────
+
         [Fact]
-        public void BackgroundJobs_AppendedToMeta_WhenSnapshotHasEntries()
+        public void BackgroundJobs_AppendedToInnerMeta_WhenSnapshotHasEntries()
         {
             var registry = new BackgroundJobRegistry(600);
             var job = registry.Start("s1", "build", 30);
             registry.Complete(job.Id, true, "done");
 
-            var result = new JObject();
-            McpRouter.PiggybackJobs(result, "s1", registry);
+            var wrapper = MakeWrapper(new JObject { ["result"] = "ok" });
+            McpRouter.PiggybackJobs(wrapper, "s1", registry);
 
-            var jobs = (JArray?)result["_meta"]?["background_jobs"];
+            var inner = ParseInner(wrapper);
+            var jobs = (JArray?)inner["_meta"]?["background_jobs"];
             Assert.NotNull(jobs);
             Assert.Single(jobs);
             Assert.Equal(job.Id, jobs![0]["id"]?.ToString());
@@ -35,11 +71,15 @@ namespace GxMcp.Gateway.Tests
         public void BackgroundJobs_AbsentWhenNoJobs()
         {
             var registry = new BackgroundJobRegistry(600);
-            var result = new JObject();
+            var wrapper = MakeWrapper(new JObject { ["result"] = "ok" });
 
-            McpRouter.PiggybackJobs(result, "s1", registry);
+            McpRouter.PiggybackJobs(wrapper, "s1", registry);
 
-            Assert.False(result.ContainsKey("_meta"));
+            // Wrapper-level _meta must not be set
+            Assert.False(wrapper.ContainsKey("_meta"));
+            // Inner text must also not have _meta (it was never touched)
+            var inner = ParseInner(wrapper);
+            Assert.False(inner.ContainsKey("_meta"));
         }
 
         [Fact]
@@ -49,17 +89,19 @@ namespace GxMcp.Gateway.Tests
             var job = registry.Start("s1", "build", 30);
             registry.Complete(job.Id, true, "ok");
 
-            // First call: completed job appears
-            var first = new JObject();
+            // First call: completed job appears in inner text
+            var first = MakeWrapper(new JObject { ["result"] = "a" });
             McpRouter.PiggybackJobs(first, "s1", registry);
-            var firstJobs = (JArray?)first["_meta"]?["background_jobs"];
+            var firstInner = ParseInner(first);
+            var firstJobs = (JArray?)firstInner["_meta"]?["background_jobs"];
             Assert.NotNull(firstJobs);
             Assert.Single(firstJobs);
 
             // Second call: completed job was marked seen, must not appear again
-            var second = new JObject();
+            var second = MakeWrapper(new JObject { ["result"] = "b" });
             McpRouter.PiggybackJobs(second, "s1", registry);
-            Assert.False(second.ContainsKey("_meta"));
+            var secondInner = ParseInner(second);
+            Assert.False(secondInner.ContainsKey("_meta"));
         }
 
         [Fact]
@@ -69,14 +111,16 @@ namespace GxMcp.Gateway.Tests
             var job = registry.Start("s1", "build", 30);
 
             // Running job appears on every snapshot call regardless of MarkSeen
-            var first = new JObject();
+            var first = MakeWrapper(new JObject { ["result"] = "x" });
             McpRouter.PiggybackJobs(first, "s1", registry);
-            Assert.Equal("running", ((JArray)first["_meta"]!["background_jobs"]!)[0]["status"]?.ToString());
+            var firstInner = ParseInner(first);
+            Assert.Equal("running", ((JArray)firstInner["_meta"]!["background_jobs"]!)[0]["status"]?.ToString());
 
             // Still running after second call
-            var second = new JObject();
+            var second = MakeWrapper(new JObject { ["result"] = "y" });
             McpRouter.PiggybackJobs(second, "s1", registry);
-            Assert.NotNull(second["_meta"]?["background_jobs"]);
+            var secondInner = ParseInner(second);
+            Assert.NotNull(secondInner["_meta"]?["background_jobs"]);
         }
 
         [Fact]
@@ -85,15 +129,45 @@ namespace GxMcp.Gateway.Tests
             var registry = new BackgroundJobRegistry(600);
             registry.Start("s1", "build", 30);
 
-            var result = new JObject
+            var inner = new JObject
             {
+                ["result"] = "value",
                 ["_meta"] = new JObject { ["other_field"] = "keep_me" }
             };
+            var wrapper = MakeWrapper(inner);
 
-            McpRouter.PiggybackJobs(result, "s1", registry);
+            McpRouter.PiggybackJobs(wrapper, "s1", registry);
 
-            Assert.Equal("keep_me", result["_meta"]?["other_field"]?.ToString());
-            Assert.NotNull(result["_meta"]?["background_jobs"]);
+            var resultInner = ParseInner(wrapper);
+            Assert.Equal("keep_me", resultInner["_meta"]?["other_field"]?.ToString());
+            Assert.NotNull(resultInner["_meta"]?["background_jobs"]);
+        }
+
+        [Fact]
+        public void NonJsonContent_IsSkippedGracefully()
+        {
+            // If content[0].text is not valid JSON, PiggybackJobs must not throw.
+            var registry = new BackgroundJobRegistry(600);
+            registry.Start("s1", "build", 30);
+
+            var wrapper = new JObject
+            {
+                ["isError"] = false,
+                ["content"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["type"] = "text",
+                        ["text"] = "plain text, not JSON"
+                    }
+                }
+            };
+
+            // Must not throw
+            McpRouter.PiggybackJobs(wrapper, "s1", registry);
+
+            // Text must be unchanged
+            Assert.Equal("plain text, not JSON", wrapper["content"]?[0]?["text"]?.ToString());
         }
     }
 }

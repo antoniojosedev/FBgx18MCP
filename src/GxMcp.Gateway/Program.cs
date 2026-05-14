@@ -1007,13 +1007,21 @@ namespace GxMcp.Gateway
                     // wait_seconds is clamped [0,25]; 0 = immediate poll (default behaviour).
                     if (string.Equals(lifecycleAction, "status", StringComparison.OrdinalIgnoreCase))
                     {
-                        string? jobId = args?["job_id"]?.ToString() ?? args?["jobId"]?.ToString();
+                        string? jobId = McpRouter.ResolveJobId(args);
                         if (!string.IsNullOrWhiteSpace(jobId))
                         {
-                            int waitSeconds = Math.Min(Math.Max(args?["wait_seconds"]?.ToObject<int?>() ?? 0, 0), 25);
-                            JObject pollResult = await McpRouter.LongPollJob(JobRegistry, jobId, waitSeconds);
-                            bool isError = pollResult["error"] != null;
-                            return BuildToolTextResponse(idToken, pollResult, isError: isError, toolName: "genexus_lifecycle", toolArgs: args);
+                            // Check registry first; only route to the long-poll path when the job
+                            // is known to the registry. Unknown IDs fall through to the legacy
+                            // worker-side taskId status path for backward compatibility.
+                            var probe = JobRegistry.Get(jobId);
+                            if (probe != null)
+                            {
+                                int waitSeconds = Math.Min(Math.Max(args?["wait_seconds"]?.ToObject<int?>() ?? 0, 0), 25);
+                                JObject pollResult = await McpRouter.LongPollJob(JobRegistry, jobId, waitSeconds);
+                                bool isError = pollResult["error"] != null;
+                                return BuildToolTextResponse(idToken, pollResult, isError: isError, toolName: "genexus_lifecycle", toolArgs: args);
+                            }
+                            // Not in registry → fall through to existing worker-side status path (legacy taskId).
                         }
                     }
                 }

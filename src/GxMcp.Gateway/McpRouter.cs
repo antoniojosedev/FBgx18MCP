@@ -845,7 +845,18 @@ namespace GxMcp.Gateway
             var snapshot = registry.SnapshotForSession(sessionId);
             if (snapshot.Count == 0) return;
 
-            var meta = (JObject?)toolResult["_meta"] ?? new JObject();
+            // The LLM reads content[0].text (a serialized JSON string), not the wrapper JObject.
+            // Inject _meta.background_jobs into the inner JSON so the LLM actually sees it.
+            var content = toolResult["content"] as JArray;
+            var first = content?[0] as JObject;
+            var textToken = first?["text"];
+            if (textToken == null) return;
+
+            JObject inner;
+            try { inner = JObject.Parse(textToken.ToString()); }
+            catch { return; /* content is not JSON — skip piggyback */ }
+
+            var meta = (JObject?)inner["_meta"] ?? new JObject();
             meta["background_jobs"] = new JArray(snapshot.Select(j => new JObject
             {
                 ["id"] = j.Id,
@@ -854,8 +865,26 @@ namespace GxMcp.Gateway
                 ["completed_at"] = j.CompletedAt?.ToString("o"),
                 ["estimated_seconds"] = j.EstimatedSeconds
             }));
-            toolResult["_meta"] = meta;
+            inner["_meta"] = meta;
+
+            first["text"] = inner.ToString(Newtonsoft.Json.Formatting.None);
             registry.MarkSeen(sessionId, snapshot.Select(j => j.Id));
+        }
+
+        /// <summary>
+        /// Resolves a background-job ID from lifecycle tool arguments.
+        /// Tries <c>job_id</c>, then <c>jobId</c>, then <c>target</c> (the lifecycle tool's
+        /// conventional parameter), returning the first non-empty value found.
+        /// </summary>
+        internal static string? ResolveJobId(JObject? args)
+        {
+            var v = args?["job_id"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(v)) return v;
+            v = args?["jobId"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(v)) return v;
+            v = args?["target"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(v)) return v;
+            return null;
         }
 
         /// <summary>
