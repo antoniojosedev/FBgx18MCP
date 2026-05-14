@@ -71,6 +71,37 @@ Replace the placeholders or let the AI ask you for them.
 
 ---
 
+## Corporate install (fixed path, ASR-friendly)
+
+If your machine has **Microsoft Defender ASR**, **SmartScreen**, or another endpoint policy blocking unsigned binaries, the default `npx` flow is painful — `npx` caches the package under `%LOCALAPPDATA%\npm-cache\_npx\<hash>\...`, and the `<hash>` changes per version, so IT can't whitelist a stable path without a wildcard over the whole npm cache (which is too broad).
+
+Use the corporate installer instead. It extracts the binaries to a stable directory and registers the AI clients to launch the gateway directly from there — `npx` is never on the runtime path.
+
+```pwsh
+# One-liner — installs latest release, registers AI clients
+iex (irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1)
+
+# With explicit KB and GeneXus paths
+$s = irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1
+& ([scriptblock]::Create($s)) -Kb "C:\KBs\MyKB" -Gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+```
+
+Install location:
+
+- **Admin shell** → `C:\Tools\GenexusMCP\`
+- **Non-admin shell** → `%LOCALAPPDATA%\Programs\GenexusMCP\`
+
+Paths to give to IT for the ASR / Defender exclusion list:
+
+```
+<InstallDir>\GxMcp.Gateway.exe
+<InstallDir>\worker\GxMcp.Worker.exe
+```
+
+Re-run the same one-liner later to **upgrade** — it detects the installed version (`version.txt` in the install dir) and downloads only if a newer release is available. Use `-Force` to reinstall the same version, `-Version v2.3.0` to pin a specific tag, `-NoClient` to skip AI client registration. Node.js 18+ must be installed for client registration; without it the script still extracts the binaries but you'll need to edit the client config (`claude_desktop_config.json` etc.) manually.
+
+---
+
 ## What can I ask the AI?
 
 Once installed, here's what unlocks. Try these as your first prompts:

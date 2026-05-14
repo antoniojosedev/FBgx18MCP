@@ -148,6 +148,13 @@ function createConfigFile(kbPath, gxPath) {
 function patchClientConfig(targetConfigPath) {
     const clients = getClientConfigTargets();
 
+    // Set by scripts/install.ps1 for fixed-path corporate installs — clients
+    // launch the gateway exe directly instead of resolving via the npx cache.
+    const directExe = process.env.GENEXUS_MCP_GATEWAY_EXE;
+    const launcher = directExe
+        ? { command: directExe, args: [] }
+        : { command: process.platform === 'win32' ? 'npx.cmd' : 'npx', args: ['-y', 'genexus-mcp@latest'] };
+
     const patched = [];
     const failed = [];
 
@@ -163,11 +170,7 @@ function patchClientConfig(targetConfigPath) {
 
             const cfgObj = parsed || {};
             cfgObj.mcpServers = cfgObj.mcpServers || {};
-            cfgObj.mcpServers.genexus = {
-                command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
-                args: ['-y', 'genexus-mcp@latest'],
-                env: { GX_CONFIG_PATH: targetConfigPath }
-            };
+            cfgObj.mcpServers.genexus = { ...launcher, env: { GX_CONFIG_PATH: targetConfigPath } };
 
             fs.writeFileSync(client.path, JSON.stringify(cfgObj, null, 2));
             patched.push(client.name);
