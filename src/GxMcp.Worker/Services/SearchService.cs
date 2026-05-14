@@ -12,54 +12,51 @@ namespace GxMcp.Worker.Services
     public class SearchService
     {
         private readonly IndexCacheService _indexCacheService;
+        private readonly ObjectService _objectService;
         private readonly VectorService _vectorService = new VectorService();
         private static readonly BoundedStringCache _queryCache = new BoundedStringCache(512);
         private static DateTime _lastIndexTime = DateTime.MinValue;
 
-        public SearchService(IndexCacheService indexCacheService)
+        public SearchService(IndexCacheService indexCacheService, ObjectService objectService = null)
         {
             _indexCacheService = indexCacheService;
+            _objectService = objectService;
         }
 
         public string Search(string query, string typeFilter = null, string domainFilter = null, int limit = 50, bool exactMatch = false)
         {
             try
             {
-                 // Friction-report #9a: instead of erroring out on the first genexus_query call
-                 // and forcing the agent to chain genexus_lifecycle(action='index') manually,
-                 // auto-start the bulk index in the background and report the nudge via _meta.
-                 if (_indexCacheService.IsIndexMissing && !_indexCacheService.IsScanning)
-                 {
-                     try { _indexCacheService.KbService?.BulkIndex(); } catch { }
-                     return Newtonsoft.Json.JsonConvert.SerializeObject(new {
-                         count = 0,
-                         results = new object[0],
-                         info = "Index missing — auto-started indexing in background. Retry in a few seconds, or call genexus_lifecycle(action='status') to monitor.",
-                         _meta = new { autoIndexed = true, indexStatus = "starting" }
-                     });
-                 }
+                // Fast-path: a literal name lookup that doesn't need the index. Cold-start
+                // indexing on huge KBs takes minutes — agents asking for a known-name object
+                // shouldn't block on it. Falls through to the normal index path if the
+                // direct SDK lookup misses.
+                var directHit = TryDirectLookup(query, typeFilter, exactMatch);
+                if (directHit != null) return directHit;
 
-                 var index = _indexCacheService.GetIndex();
-                 if (index == null || index.Objects.Count == 0) {
-                     if (_indexCacheService.IsScanning)
-                     {
-                         return Newtonsoft.Json.JsonConvert.SerializeObject(new {
-                             count = 0,
-                             results = new object[0],
-                             info = "Indexing in progress...",
-                             _meta = new { autoIndexed = true, indexStatus = "scanning" }
-                         });
-                     }
-                     // No index, not scanning, and bulk index can't be kicked off (no KbService).
-                     // Still attempt the auto-start once more in case the state flipped.
-                     try { _indexCacheService.KbService?.BulkIndex(); } catch { }
-                     return Newtonsoft.Json.JsonConvert.SerializeObject(new {
-                         count = 0,
-                         results = new object[0],
-                         info = "Index empty — attempting auto-bootstrap; call genexus_lifecycle(action='status') if this persists.",
-                         _meta = new { autoIndexed = true, indexStatus = "empty" }
-                     });
-                 }
+                bool indexMissing = _indexCacheService.IsIndexMissing;
+                bool scanning = _indexCacheService.IsScanning;
+                if (indexMissing && !scanning)
+                {
+                    try { _indexCacheService.KbService?.BulkIndex(); } catch { }
+                    scanning = _indexCacheService.IsScanning;
+                }
+
+                var index = _indexCacheService.GetIndex();
+                bool indexEmpty = index == null || index.Objects.Count == 0;
+
+                // If we genuinely have nothing yet, return progress info — but DON'T pretend
+                // it's a "zero results" search. _meta.indexStatus = "warming" tells the agent
+                // to retry once indexing progresses, while still reporting the (zero) snapshot.
+                if (indexEmpty && scanning)
+                {
+                    return BuildPartialResponse(query, new object[0], 0, scanning: true);
+                }
+                if (indexEmpty)
+                {
+                    try { _indexCacheService.KbService?.BulkIndex(); } catch { }
+                    return BuildPartialResponse(query, new object[0], 0, scanning: true);
+                }
 
                 if (index.LastUpdated > _lastIndexTime) { _queryCache.Clear(); _lastIndexTime = index.LastUpdated; }
 
@@ -285,8 +282,13 @@ namespace GxMcp.Worker.Services
                     responseObj["_meta"] = new JObject { ["suggested_next"] = suggestion };
                 }
 
+                if (_indexCacheService.IsScanning)
+                {
+                    AnnotatePartial(responseObj);
+                }
+
                 string json = responseObj.ToString(Newtonsoft.Json.Formatting.None);
-                _queryCache.TryAdd(cacheKey, json);
+                if (!_indexCacheService.IsScanning) _queryCache.TryAdd(cacheKey, json);
 
                 if (!isQuick && criteria.Terms.Count > 0 && scoredResults.Count > 0)
                 {
@@ -310,6 +312,94 @@ namespace GxMcp.Worker.Services
                 return json;
             }
             catch (Exception ex) { return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
+        }
+
+        // Returns a serialized result if the query looks like a literal object name
+        // and an SDK direct lookup succeeded. Returns null to fall through to the
+        // normal index-based path.
+        private string TryDirectLookup(string query, string typeFilter, bool exactMatch)
+        {
+            if (_objectService == null) return null;
+            if (string.IsNullOrWhiteSpace(query)) return null;
+
+            string trimmed = query.Trim();
+            // Skip if the query carries filter syntax, wildcards, or multi-term semantics.
+            if (trimmed.IndexOfAny(new[] { ' ', ':', '*', '@', '"', '?', '/' }) >= 0) return null;
+            // Object names are typically reasonable identifiers.
+            if (trimmed.Length > 80) return null;
+
+            try
+            {
+                var obj = _objectService.FindObject(trimmed, typeFilter);
+                if (obj == null) return null;
+
+                string typeName = null;
+                try { typeName = obj.TypeDescriptor?.Name; } catch { }
+                string guid = null;
+                try { guid = obj.Guid.ToString(); } catch { }
+
+                var single = new JObject
+                {
+                    ["guid"] = guid,
+                    ["name"] = obj.Name,
+                    ["type"] = typeName
+                };
+
+                var responseObj = new JObject
+                {
+                    ["count"] = 1,
+                    ["total"] = 1,
+                    ["hasMore"] = false,
+                    ["results"] = new JArray(single),
+                    ["_meta"] = new JObject
+                    {
+                        ["direct_lookup"] = true,
+                        ["suggested_next"] = BuildSuggestedReadFor(obj.Name, typeName)
+                    }
+                };
+
+                if (_indexCacheService.IsScanning) AnnotatePartial(responseObj);
+
+                return responseObj.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("Direct lookup failed (" + trimmed + "): " + ex.Message);
+                return null;
+            }
+        }
+
+        // Build a zero/partial-result payload that signals indexing is still running,
+        // so agents know to retry and clients can render a progress hint.
+        private string BuildPartialResponse(string query, object[] results, int total, bool scanning)
+        {
+            var resp = new JObject
+            {
+                ["count"] = results?.Length ?? 0,
+                ["total"] = total,
+                ["hasMore"] = false,
+                ["results"] = results == null ? new JArray() : JArray.FromObject(results)
+            };
+            AnnotatePartial(resp);
+            if (!scanning) resp["_meta"]["indexStatus"] = "empty";
+            return resp.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        private void AnnotatePartial(JObject responseObj)
+        {
+            var meta = responseObj["_meta"] as JObject ?? new JObject();
+            int processed = _indexCacheService.KbService?.IndexProcessed ?? 0;
+            int total = _indexCacheService.KbService?.IndexTotal ?? 0;
+            int pct = total > 0 ? (int)Math.Round(100.0 * processed / total) : 0;
+
+            meta["partial"] = true;
+            meta["indexStatus"] = "scanning";
+            meta["indexed_count"] = processed;
+            meta["index_total_estimated"] = total;
+            meta["indexed_pct"] = pct;
+            meta["progress_token"] = "genexus-mcp-bulk-index";
+            meta["retry_hint"] = "Indexing in background. Re-run query for more results; read/edit/build/list tools work without the index.";
+            responseObj["_meta"] = meta;
         }
 
         private static JObject BuildSuggestedNext(List<RankedResult> results)

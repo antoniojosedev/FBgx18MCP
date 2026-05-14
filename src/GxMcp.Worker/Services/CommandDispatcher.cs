@@ -73,7 +73,7 @@ namespace GxMcp.Worker.Services
             _patternAnalysisService = new PatternAnalysisService(_objectService);
             _layoutService = new LayoutService(_objectService);
             _validationService = new ValidationService(_kbService);
-            _searchService = new SearchService(_indexCacheService);
+            _searchService = new SearchService(_indexCacheService, _objectService);
             _sourceSearchService = new SourceSearchService(_indexCacheService, _objectService);
             _versionControlService = new VersionControlService(_kbService);
             _dataInsightService = new DataInsightService(_kbService, _objectService, _navigationService, _patternAnalysisService);

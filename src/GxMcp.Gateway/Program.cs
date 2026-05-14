@@ -68,6 +68,8 @@ namespace GxMcp.Gateway
         private static readonly OperationTracker _operationTracker = new OperationTracker(TimeSpan.FromMinutes(60));
         internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
+        private static int _indexBootstrapStarted;
+        private static bool _stdioActive;
         private static readonly TimeSpan _pendingRequestRetention = TimeSpan.FromMinutes(65);
         private static readonly string _logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gateway_debug.log");
         private static readonly BlockingCollection<string> _logQueue = new BlockingCollection<string>();
@@ -184,6 +186,8 @@ namespace GxMcp.Gateway
                         @params = payload
                     });
 
+                    EmitStdioNotification(json);
+
                     foreach (var session in _httpSessions.ActiveSessions)
                     {
                         QueueSessionMessage(session, json);
@@ -192,6 +196,15 @@ namespace GxMcp.Gateway
                     Log($"[Broadcast] Error: {ex.Message}");
                 }
             });
+        }
+
+        // Forward a pre-serialized JSON-RPC notification envelope to the stdio
+        // client (Claude Desktop / Cursor / Antigravity). Required because
+        // BroadcastNotification only reaches HTTP sessions otherwise.
+        private static void EmitStdioNotification(string json)
+        {
+            if (!_stdioActive) return;
+            _ = TryWriteStdout(json);
         }
 
         private static void BroadcastToolsListChanged(string reason)
@@ -491,6 +504,7 @@ namespace GxMcp.Gateway
             if (config.Server?.McpStdio == true)
             {
                 Log("[Gateway] Entering Stdio Loop...");
+                _stdioActive = true;
                 var reader = Console.In;
                 while (true)
                 {
@@ -739,6 +753,19 @@ namespace GxMcp.Gateway
                         string name = p?["name"]?.ToString() ?? "unknown";
                         Log($"[Gateway] Notification from Worker: Resource {name} updated externally.");
                         BroadcastResourceUpdated($"genexus://objects/{name}", "external_kb_change");
+                    }
+                    else if (method == "notifications/progress" || method == "notifications/message")
+                    {
+                        // Forward MCP-spec notifications from worker to both stdio and HTTP clients.
+                        EmitStdioNotification(json);
+                        var pObj = val["params"];
+                        if (pObj != null)
+                        {
+                            foreach (var session in _httpSessions.ActiveSessions)
+                            {
+                                QueueSessionMessage(session, json);
+                            }
+                        }
                     }
                     return;
                 }
@@ -989,6 +1016,7 @@ namespace GxMcp.Gateway
                 if (string.Equals(method, "initialize", StringComparison.OrdinalIgnoreCase))
                 {
                     TriggerWorkerWarmupOnce();
+                    TriggerIndexBootstrapOnce();
                     UpdateNotifier.TriggerOnce();
                 }
                 return new JObject { ["jsonrpc"] = "2.0", ["id"] = idToken?.DeepClone(), ["result"] = JToken.FromObject(mcpResponse) };
@@ -1671,6 +1699,60 @@ namespace GxMcp.Gateway
             }
             
             return null;
+        }
+
+        // Proactively kick off the KB search index on first MCP initialize so the
+        // first `genexus_query` doesn't pay the full cold-start cost. Worker side
+        // short-circuits to "AlreadyIndexed" if cache is warm, so this is cheap on
+        // warm starts. When a real cold-start kicks in, an upfront
+        // notifications/message tells the agent that search/analyze return partial
+        // results while indexing runs in the background — read/edit/build are
+        // immediate regardless.
+        private static void TriggerIndexBootstrapOnce()
+        {
+            if (Interlocked.CompareExchange(ref _indexBootstrapStarted, 1, 0) != 0) return;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (_workerPool == null) return;
+
+                    var indexCommand = new JObject
+                    {
+                        ["module"] = "KB",
+                        ["action"] = "BulkIndex",
+                        ["client"] = "mcp"
+                    };
+
+                    var resp = await SendWorkerCommandAsync(
+                        indexCommand,
+                        30000,
+                        "Index bootstrap timeout",
+                        wr => wr,
+                        (_, correlationId) => new JObject(),
+                        toolName: "gateway_index_bootstrap",
+                        trackOperation: false);
+
+                    string? status = resp?["result"]?["status"]?.ToString();
+                    if (string.Equals(status, "Started", StringComparison.OrdinalIgnoreCase))
+                    {
+                        BroadcastNotification("notifications/message", new
+                        {
+                            level = "info",
+                            logger = "indexing",
+                            data = "First-time indexing of this KB has started in the background. "
+                                + "Search and analyze tools will return partial results while it runs; "
+                                + "read, edit, build, and list tools are immediate and unaffected. "
+                                + "Watch notifications/progress for live progress."
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"[IndexBootstrap] {ex.Message}");
+                }
+            });
         }
 
         private static void TriggerWorkerWarmupOnce()

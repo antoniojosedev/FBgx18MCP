@@ -34,6 +34,9 @@ namespace GxMcp.Worker.Services
         public IndexCacheService GetIndexCache() { return _indexCacheService; }
         public bool IsInitializing => _isOpenInProgress;
         public bool IsIndexing => _isIndexing;
+        public int IndexProcessed => _processedCount;
+        public int IndexTotal => _totalCount;
+        public string IndexStatus => _currentStatus;
         public bool IsOpen { get { lock (_kbLock) { return _kb != null; } } }
 
         public string GetKbPath()
@@ -102,6 +105,22 @@ namespace GxMcp.Worker.Services
             Logger.Info("BulkIndex() requested.");
             if (_isIndexing) return "{\"status\":\"Already in progress\"}";
 
+            // Skip when the on-disk cache already populated the in-memory index — avoids
+            // a redundant full rebuild on every warm start. Callers wanting a forced
+            // refresh use action='reorg' instead, which clears the index first.
+            try
+            {
+                if (!_indexCacheService.IsIndexMissing)
+                {
+                    var loaded = _indexCacheService.GetIndex();
+                    if (loaded != null && loaded.Objects.Count > 0)
+                    {
+                        return "{\"status\":\"AlreadyIndexed\",\"objects\":" + loaded.Objects.Count + "}";
+                    }
+                }
+            }
+            catch { /* fall through and rebuild */ }
+
             _isIndexing = true;
             _processedCount = 0;
             _totalCount = 0;
@@ -143,15 +162,17 @@ namespace GxMcp.Worker.Services
                             _indexCacheService.UpdateEntry(obj);
                             _processedCount++;
                             
-                            // ELITE: Adaptive notifications. 
                             int notifyInterval = Math.Max(500, _totalCount / 100);
                             if (_processedCount % notifyInterval == 0 || _processedCount == _totalCount) {
-                                _currentStatus = $"Processed {_processedCount}/{_totalCount}";
+                                _currentStatus = $"Indexing KB: {_processedCount}/{_totalCount} objects";
                                 Logger.Info(_currentStatus);
-                                
-                                Program.SendNotification("notifications/status", new {
-                                    status = "Indexing",
-                                    processed = _processedCount,
+
+                                // MCP spec notifications/progress — clients render this natively
+                                // as a progress bar. progressToken is a stable identifier for the
+                                // background operation so clients can correlate repeated updates.
+                                Program.SendNotification("notifications/progress", new {
+                                    progressToken = "genexus-mcp-bulk-index",
+                                    progress = _processedCount,
                                     total = _totalCount,
                                     message = _currentStatus
                                 });
