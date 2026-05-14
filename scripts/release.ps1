@@ -1,23 +1,36 @@
 # GeneXus MCP - Release Script (maintainer-only)
 # ==========================================
 # Usage:
-#   .\scripts\release.ps1 patch   # 2.1.2 -> 2.1.3
-#   .\scripts\release.ps1 minor   # 2.1.2 -> 2.2.0
-#   .\scripts\release.ps1 major   # 2.1.2 -> 3.0.0
+#   .\scripts\release.ps1 patch          # 2.1.2 -> 2.1.3
+#   .\scripts\release.ps1 minor          # 2.1.2 -> 2.2.0
+#   .\scripts\release.ps1 major          # 2.1.2 -> 3.0.0
+#   .\scripts\release.ps1 -NoBump        # publish whatever version is already in package.json
 #
 # Pre-reqs: .NET 8 SDK, GeneXus 18 installed, `gh auth status` ok,
 # clean working tree, on main branch.
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false, Position = 0)]
     [ValidateScript({
         if ($_ -in @('patch', 'minor', 'major')) { return $true }
         if ($_ -match '^\d+\.\d+\.\d+(-[\w.\-]+)?$') { return $true }
         throw "BumpType must be 'patch', 'minor', 'major', or an explicit semver like '2.1.2'."
     })]
-    [string]$BumpType
+    [string]$BumpType,
+
+    # Skip the npm-version bump and the version-mirroring into the csproj.
+    # Useful when the working tree already carries the intended version (manual bump
+    # commit) and you only want to build, tag, push, and create the GitHub release.
+    [switch]$NoBump
 )
+
+if (-not $NoBump -and -not $BumpType) {
+    throw "BumpType is required unless -NoBump is given."
+}
+if ($NoBump -and $BumpType) {
+    throw "Pass BumpType OR -NoBump, not both."
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -43,24 +56,45 @@ try {
     Write-Host "[release] Pulling latest main..." -ForegroundColor Cyan
     git pull --ff-only origin main
 
-    Write-Host "[release] Bumping version ($BumpType)..." -ForegroundColor Cyan
-    npm version $BumpType --no-git-tag-version | Out-Null
-    $newVersion = (Get-Content "$root\package.json" -Raw | ConvertFrom-Json).version
-    $tag = "v$newVersion"
-    Write-Host "   > New version: $newVersion" -ForegroundColor Gray
-
-    # Mirror the bumped version into the Gateway csproj so whoami.serverVersion
-    # (read at runtime from AssemblyInformationalVersion) stays in sync with
-    # the npm-published version. Without this, the gateway surface lies.
-    Write-Host "[release] Mirroring version into Gateway csproj..." -ForegroundColor Cyan
     $csprojPath = Join-Path $root 'src\GxMcp.Gateway\GxMcp.Gateway.csproj'
-    $csproj = Get-Content $csprojPath -Raw
-    $assemblyVersion = "$newVersion.0"
-    $csproj = [regex]::Replace($csproj, '<Version>[^<]*</Version>',                 "<Version>$newVersion</Version>")
-    $csproj = [regex]::Replace($csproj, '<AssemblyVersion>[^<]*</AssemblyVersion>', "<AssemblyVersion>$assemblyVersion</AssemblyVersion>")
-    $csproj = [regex]::Replace($csproj, '<FileVersion>[^<]*</FileVersion>',         "<FileVersion>$assemblyVersion</FileVersion>")
-    $csproj = [regex]::Replace($csproj, '<InformationalVersion>[^<]*</InformationalVersion>', "<InformationalVersion>$newVersion</InformationalVersion>")
-    Set-Content -Path $csprojPath -Value $csproj -NoNewline
+
+    if ($NoBump) {
+        Write-Host "[release] -NoBump: using version from package.json..." -ForegroundColor Cyan
+        $newVersion = (Get-Content "$root\package.json" -Raw | ConvertFrom-Json).version
+        $tag = "v$newVersion"
+        Write-Host "   > Version: $newVersion" -ForegroundColor Gray
+
+        # Sanity-check that csproj is already in sync; if not, abort so we don't ship a lie.
+        $csprojRaw = Get-Content $csprojPath -Raw
+        if ($csprojRaw -notmatch "<InformationalVersion>$([regex]::Escape($newVersion))</InformationalVersion>") {
+            throw "csproj InformationalVersion does not match package.json ($newVersion). Run without -NoBump or fix the csproj first."
+        }
+
+        # Abort if the tag already exists remotely.
+        & git ls-remote --exit-code --tags origin "refs/tags/$tag" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            throw "Tag $tag already exists on origin. Bump first or delete the remote tag manually."
+        }
+    }
+    else {
+        Write-Host "[release] Bumping version ($BumpType)..." -ForegroundColor Cyan
+        npm version $BumpType --no-git-tag-version | Out-Null
+        $newVersion = (Get-Content "$root\package.json" -Raw | ConvertFrom-Json).version
+        $tag = "v$newVersion"
+        Write-Host "   > New version: $newVersion" -ForegroundColor Gray
+
+        # Mirror the bumped version into the Gateway csproj so whoami.serverVersion
+        # (read at runtime from AssemblyInformationalVersion) stays in sync with
+        # the npm-published version. Without this, the gateway surface lies.
+        Write-Host "[release] Mirroring version into Gateway csproj..." -ForegroundColor Cyan
+        $csproj = Get-Content $csprojPath -Raw
+        $assemblyVersion = "$newVersion.0"
+        $csproj = [regex]::Replace($csproj, '<Version>[^<]*</Version>',                 "<Version>$newVersion</Version>")
+        $csproj = [regex]::Replace($csproj, '<AssemblyVersion>[^<]*</AssemblyVersion>', "<AssemblyVersion>$assemblyVersion</AssemblyVersion>")
+        $csproj = [regex]::Replace($csproj, '<FileVersion>[^<]*</FileVersion>',         "<FileVersion>$assemblyVersion</FileVersion>")
+        $csproj = [regex]::Replace($csproj, '<InformationalVersion>[^<]*</InformationalVersion>', "<InformationalVersion>$newVersion</InformationalVersion>")
+        Set-Content -Path $csprojPath -Value $csproj -NoNewline
+    }
 
     Write-Host "[release] Building .NET artifacts (build.ps1)..." -ForegroundColor Cyan
     & "$root\build.ps1"
@@ -84,14 +118,27 @@ try {
     $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
     Write-Host "   > publish.zip: $zipSize MB" -ForegroundColor Gray
 
-    Write-Host "[release] Committing version bump and tagging..." -ForegroundColor Cyan
-    git add package.json
-    if (Test-Path "$root\package-lock.json") { git add package-lock.json }
-    git add (Join-Path $root 'src\GxMcp.Gateway\GxMcp.Gateway.csproj')
-    git commit -m "chore(release): $tag"
-    # Annotated tag so `git push --follow-tags` actually pushes it.
-    git tag -a $tag -m "Release $tag"
-    git push origin main --follow-tags
+    if ($NoBump) {
+        Write-Host "[release] -NoBump: skipping release commit (version already committed)." -ForegroundColor Cyan
+        # Still ensure no uncommitted changes after the build (build.ps1 shouldn't dirty the tree).
+        if ((git status --porcelain)) {
+            throw "Working tree dirty after build under -NoBump. Inspect and commit/reset before retrying."
+        }
+        # Push pending commits (the user staged the version bump in an earlier commit).
+        git push origin main
+        git tag -a $tag -m "Release $tag"
+        git push origin "refs/tags/$tag"
+    }
+    else {
+        Write-Host "[release] Committing version bump and tagging..." -ForegroundColor Cyan
+        git add package.json
+        if (Test-Path "$root\package-lock.json") { git add package-lock.json }
+        git add $csprojPath
+        git commit -m "chore(release): $tag"
+        # Annotated tag so `git push --follow-tags` actually pushes it.
+        git tag -a $tag -m "Release $tag"
+        git push origin main --follow-tags
+    }
 
     Write-Host "[release] Extracting CHANGELOG section for $tag..." -ForegroundColor Cyan
     $changelogPath = Join-Path $root 'CHANGELOG.md'
