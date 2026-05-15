@@ -32,6 +32,30 @@ namespace GxMcp.Worker.Services
             _writeService = writeService;
         }
 
+        /// <summary>
+        /// v2.3.8 Task 3.3 — Pure-string {find, replace} patch shape that routes through
+        /// <see cref="WriteService.TryMatch"/> so multi-line context with CRLF/LF mismatch
+        /// or trailing-whitespace differences still resolves to a unique window. Returns a
+        /// tuple of (ok, result). On failure result echoes the input source unchanged so
+        /// callers can splice the value safely. Used directly by unit tests; the live
+        /// editor path goes through ApplyPatch which also handles persistence.
+        /// </summary>
+        public static (bool ok, string result, string reason) ApplyFindReplace(string source, JObject patch)
+        {
+            if (source == null) return (false, string.Empty, "source is null");
+            if (patch == null) return (false, source, "patch is null");
+            string find = patch["find"]?.ToString();
+            string replace = patch["replace"]?.ToString() ?? string.Empty;
+            if (string.IsNullOrEmpty(find)) return (false, source, "patch.find is required");
+
+            if (WriteService.TryMatch(source, find, out int start, out int end) && end > start)
+            {
+                string spliced = source.Substring(0, start) + replace + source.Substring(end);
+                return (true, spliced, null);
+            }
+            return (false, source, "NoMatch");
+        }
+
         public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false)
         {
             try
