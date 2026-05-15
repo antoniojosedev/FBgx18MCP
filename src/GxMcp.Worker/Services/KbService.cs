@@ -171,6 +171,11 @@ namespace GxMcp.Worker.Services
                     _currentStatus = $"Indexing {_totalCount} objects using snapshot...";
                     Logger.Info(_currentStatus);
 
+                    // v2.3.8 (Task 1.1): publish reindex start so downstream services (whoami,
+                    // search, analyze) can detect Reindexing state from IndexCacheService.GetState().
+                    try { _indexCacheService?.MarkReindexStarted(_totalCount); } catch { }
+
+                    var indexSw = Stopwatch.StartNew();
                     foreach (var snapshotEntry in objectSnapshot)
                     {
                         try {
@@ -196,6 +201,18 @@ namespace GxMcp.Worker.Services
                                     total = _totalCount,
                                     message = _currentStatus
                                 });
+
+                                // v2.3.8 (Task 1.1): mirror progress into IndexState so callers
+                                // polling whoami can render the same ETA without piggy-backing on
+                                // MCP notifications.
+                                try {
+                                    double frac = _totalCount > 0 ? (double)_processedCount / _totalCount : 0;
+                                    long elapsedMs = indexSw.ElapsedMilliseconds;
+                                    int etaMs = (frac > 0.0001)
+                                        ? (int)Math.Max(0, (elapsedMs / frac) - elapsedMs)
+                                        : 0;
+                                    _indexCacheService?.MarkReindexProgress(frac, etaMs);
+                                } catch { }
                             }
                             
                             // Ironclad Throttling: Give the system a breather every 50 objects
@@ -208,6 +225,8 @@ namespace GxMcp.Worker.Services
                     _currentStatus = "Complete";
                     _isIndexing = false;
                     bulkSw.Stop();
+                    // v2.3.8 (Task 1.1): publish completion to IndexState.
+                    try { _indexCacheService?.MarkIndexComplete(_processedCount); } catch { }
                     Logger.Info($"[BULK-INDEX] elapsedMs={bulkSw.ElapsedMilliseconds} processed={_processedCount} total={_totalCount}");
                 } catch (Exception ex) {
                     bulkSw.Stop();

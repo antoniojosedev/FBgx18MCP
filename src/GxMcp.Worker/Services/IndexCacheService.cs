@@ -40,6 +40,57 @@ namespace GxMcp.Worker.Services
         private readonly ConcurrentDictionary<Guid, (string ParentName, string ParentPath, string Path, string ModuleName)> _hierarchyCache
             = new ConcurrentDictionary<Guid, (string, string, string, string)>();
 
+        // v2.3.8 (Task 1.1): unified IndexState surface so downstream services (whoami,
+        // search, analyze) share a single source of truth for index readiness.
+        private IndexState _state = new IndexState { Status = "Cold", TotalObjects = 0 };
+        private readonly object _stateLock = new object();
+
+        public IndexState GetState()
+        {
+            lock (_stateLock)
+            {
+                return new IndexState
+                {
+                    Status = _state.Status,
+                    LastIndexedAt = _state.LastIndexedAt,
+                    TotalObjects = _state.TotalObjects,
+                    Progress = _state.Progress,
+                    EtaMs = _state.EtaMs
+                };
+            }
+        }
+
+        public void MarkReindexStarted(int totalEstimated)
+        {
+            lock (_stateLock)
+            {
+                _state.Status = "Reindexing";
+                _state.Progress = 0;
+                _state.TotalObjects = totalEstimated;
+            }
+        }
+
+        public void MarkReindexProgress(double progress, int etaMs)
+        {
+            lock (_stateLock)
+            {
+                _state.Progress = progress;
+                _state.EtaMs = etaMs;
+            }
+        }
+
+        public void MarkIndexComplete(int totalObjects)
+        {
+            lock (_stateLock)
+            {
+                _state.Status = "Ready";
+                _state.LastIndexedAt = DateTime.UtcNow;
+                _state.TotalObjects = totalObjects;
+                _state.Progress = null;
+                _state.EtaMs = null;
+            }
+        }
+
         public IndexCacheService()
         {
             _indexPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cache", "search_index.json");
