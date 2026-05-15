@@ -71,6 +71,17 @@ namespace GxMcp.Gateway.Routers
                         varName = args?["varName"]?.ToString()
                     };
 
+                case "genexus_modify_variable":
+                    return new
+                    {
+                        module = "Write",
+                        action = "ModifyVariable",
+                        target = args?["name"]?.ToString(),
+                        varName = args?["varName"]?.ToString(),
+                        typeName = args?["typeName"]?.ToString(),
+                        basedOn = args?["basedOn"]?.ToString()
+                    };
+
                 case "genexus_validate_payload":
                     return new
                     {

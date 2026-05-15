@@ -1363,6 +1363,188 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // ── Task 4.3 (v2.3.8) — genexus_modify_variable ──────────────────────────
+        // Atomically change a variable's type while preserving its name (and
+        // description when possible). Implemented as delete+add over the same
+        // VariablesPart, with a snapshot of the pre-change variable set so we
+        // can roll back if obj.Save() throws.
+        public string ModifyVariable(string target, string varName, string newTypeName, string basedOn = null)
+        {
+            return WrapWithPersistedState(ModifyVariableInternal(target, varName, newTypeName, basedOn), target, "Variables");
+        }
+
+        private string ModifyVariableInternal(string target, string varName, string newTypeName, string basedOn)
+        {
+            // Gate 1 — resolve newTypeName up front, before any SDK / KB call.
+            // Mirrors AddVariable's Task 4.2 envelope shape exactly.
+            GxMcp.Worker.Helpers.TypeResolution resolution = null;
+            string resolvedTypeForSdk = newTypeName;
+            int? resolvedLength = null;
+            int? resolvedDecimals = null;
+            if (string.IsNullOrEmpty(newTypeName))
+            {
+                return new JObject
+                {
+                    ["status"] = "Error",
+                    ["code"] = "UnknownType",
+                    ["message"] = "newTypeName is required for genexus_modify_variable.",
+                    ["suggestion"] = "Character(40)",
+                    ["accepted"] = new JArray { "Character(N)", "Numeric(N.D)", "Date", "DateTime", "Boolean", "VarChar(N)", "<DomainName>" }
+                }.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            resolution = GxMcp.Worker.Helpers.VariableTypeResolver.Resolve(newTypeName);
+            if (!resolution.Recognized)
+            {
+                var accepted = new JArray();
+                if (resolution.AcceptedList != null)
+                    foreach (var a in resolution.AcceptedList) accepted.Add(a);
+                return new JObject
+                {
+                    ["status"] = "Error",
+                    ["code"] = "UnknownType",
+                    ["message"] = $"Unknown typeName '{newTypeName}'. Did you mean '{resolution.Suggestion}'?",
+                    ["suggestion"] = resolution.Suggestion,
+                    ["accepted"] = accepted
+                }.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            if (resolution.CanonicalType == "DomainReference" && !string.IsNullOrEmpty(resolution.DomainName))
+            {
+                resolvedTypeForSdk = resolution.DomainName;
+            }
+            else
+            {
+                resolvedLength = resolution.Length;
+                resolvedDecimals = resolution.Decimals;
+                resolvedTypeForSdk = resolution.CanonicalType;
+            }
+            // `basedOn` (optional) takes precedence over a parsed DomainReference —
+            // gives the caller explicit control when the typeName is ambiguous.
+            if (!string.IsNullOrWhiteSpace(basedOn))
+            {
+                resolvedTypeForSdk = basedOn;
+                resolution = new GxMcp.Worker.Helpers.TypeResolution
+                {
+                    Recognized = true,
+                    CanonicalType = "DomainReference",
+                    DomainName = basedOn,
+                    Suggestion = basedOn,
+                    AcceptedList = resolution?.AcceptedList
+                };
+            }
+
+            try
+            {
+                var err = ResolveVariableTarget(target, ref varName, out var obj, out var varPart, out var existing);
+                if (err != null) return err;
+
+                if (existing == null)
+                {
+                    return new JObject
+                    {
+                        ["status"] = "Error",
+                        ["code"] = "VariableNotFound",
+                        ["message"] = $"Variable '&{varName}' not found on '{target}'."
+                    }.ToString(Newtonsoft.Json.Formatting.None);
+                }
+
+                if (GxMcp.Worker.Helpers.FrameworkManagedVariables.IsManaged(varName))
+                {
+                    return new JObject
+                    {
+                        ["status"] = "Refused",
+                        ["error"] = "Framework-managed variable",
+                        ["details"] = "Variable '&" + varName + "' is managed by " + GxMcp.Worker.Helpers.FrameworkManagedVariables.GetManagedBy(varName) + " and will be re-injected on save."
+                    }.ToString();
+                }
+
+                // Snapshot for rollback: capture every variable's identity + shape so we
+                // can re-add the original if obj.Save() throws halfway through.
+                string preservedDescription = null;
+                try { preservedDescription = existing.Description; } catch { /* SDK may not expose */ }
+
+                // Atomic delete + add: keep the VariablesPart change in memory until
+                // obj.Save() either succeeds or we restore the original variable.
+                global::Artech.Genexus.Common.Variable originalSnapshot = existing;
+                try
+                {
+                    varPart.Variables.Remove(existing);
+
+                    var newVar = new global::Artech.Genexus.Common.Variable(varPart);
+                    newVar.Name = varName;
+                    if (!string.IsNullOrEmpty(preservedDescription))
+                    {
+                        try { newVar.Description = preservedDescription; } catch { /* best-effort */ }
+                    }
+
+                    if (resolution.CanonicalType != "DomainReference"
+                        && VariableInjector.TryParseDbType(resolvedTypeForSdk, out var dbType))
+                    {
+                        newVar.Type = dbType;
+                        try
+                        {
+                            if (resolvedLength.HasValue) newVar.Length = resolvedLength.Value;
+                            if (resolvedDecimals.HasValue) newVar.Decimals = resolvedDecimals.Value;
+                        }
+                        catch { /* SDK may reject for some types */ }
+                    }
+                    else
+                    {
+                        var targetObj = VariableInjector.ResolveTypeObject(varPart.Model, resolvedTypeForSdk);
+                        if (targetObj != null)
+                        {
+                            if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
+                                newVar.DomainBasedOn = dom;
+                            else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                                VariableInjector.BindVariableToSdt(newVar, targetObj);
+                            else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
+                                VariableInjector.BindVariableToBC(newVar, targetObj);
+                        }
+                    }
+
+                    varPart.Variables.Add(newVar);
+
+                    obj.EnsureSave();
+                    ScheduleFlush();
+
+                    return new JObject
+                    {
+                        ["status"] = "Success",
+                        ["details"] = $"Variable '&{varName}' retyped to '{resolution.CanonicalType}" +
+                                      (resolvedLength.HasValue ? "(" + resolvedLength.Value + (resolvedDecimals.HasValue && resolvedDecimals.Value > 0 ? "." + resolvedDecimals.Value : "") + ")" : "") + "'."
+                    }.ToString(Newtonsoft.Json.Formatting.None);
+                }
+                catch (Exception ex)
+                {
+                    // Best-effort rollback: re-add the original variable if it was
+                    // removed but the new one failed to save. We can't re-insert the
+                    // captured `originalSnapshot` directly (SDK may consider it
+                    // detached after Remove), so reconstruct from preserved fields.
+                    try
+                    {
+                        if (!varPart.Variables.Any(v => string.Equals(v.Name, varName, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            var restored = new global::Artech.Genexus.Common.Variable(varPart);
+                            restored.Name = varName;
+                            try { if (preservedDescription != null) restored.Description = preservedDescription; } catch { }
+                            try { restored.Type = originalSnapshot.Type; } catch { }
+                            try { restored.Length = originalSnapshot.Length; } catch { }
+                            try { restored.Decimals = originalSnapshot.Decimals; } catch { }
+                            try { if (originalSnapshot.DomainBasedOn != null) restored.DomainBasedOn = originalSnapshot.DomainBasedOn; } catch { }
+                            varPart.Variables.Add(restored);
+                        }
+                    }
+                    catch { /* swallow — rollback is best-effort */ }
+                    return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                }
+            }
+            catch (Exception ex)
+            {
+                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+            }
+        }
+
         private string WriteVisualPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false)
         {
             var webFormPart = WebFormXmlHelper.GetWebFormPart(obj);

@@ -329,6 +329,14 @@ namespace GxMcp.Worker.Services
                                 target,
                                 args?["varName"]?.ToString());
                         }
+                        if (action == "ModifyVariable")
+                        {
+                            return _writeService.ModifyVariable(
+                                target,
+                                args?["varName"]?.ToString(),
+                                args?["typeName"]?.ToString(),
+                                args?["basedOn"]?.ToString());
+                        }
                         if (action == "ValidatePayload")
                         {
                             return _validatePayloadService.Validate(

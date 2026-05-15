@@ -1748,7 +1748,8 @@ namespace GxMcp.Gateway
                     bool editAsync = (tArgs?["async"]?.ToObject<bool?>() ?? false) &&
                                      (string.Equals(tName, "genexus_edit", StringComparison.OrdinalIgnoreCase)
                                       || string.Equals(tName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
-                                      || string.Equals(tName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase));
+                                      || string.Equals(tName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
+                                      || string.Equals(tName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase));
                     if (editAsync)
                     {
                         int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? 30;
@@ -2263,7 +2264,8 @@ namespace GxMcp.Gateway
                 toolName.Contains("patch", StringComparison.OrdinalIgnoreCase) ||
                 toolName.Contains("create", StringComparison.OrdinalIgnoreCase) ||
                 toolName.Contains("refactor", StringComparison.OrdinalIgnoreCase) ||
-                toolName.Contains("add_variable", StringComparison.OrdinalIgnoreCase))
+                toolName.Contains("add_variable", StringComparison.OrdinalIgnoreCase) ||
+                toolName.Contains("modify_variable", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
