@@ -156,35 +156,46 @@ namespace GxMcp.Worker.Services
                 SearchIndex.IndexEntry targetNode = null;
                 string foundKey = null;
 
-                if (targetName != null && targetName.Contains(":") && index.Objects.TryGetValue(targetName, out targetNode))
-                {
-                    foundKey = targetName;
-                }
-                else
-                {
-                    var possibleKeys = index.Objects.Keys.Where(k => k.EndsWith(":" + targetName, StringComparison.OrdinalIgnoreCase)).ToList();
-
-                    if (possibleKeys.Count == 0)
-                    {
-                        var obj = _objectService?.FindObject(targetName);
-                        if (obj != null)
-                        {
-                            return "{\"target\": \"" + obj.Name + "\", \"status\": \"Indexing in progress for this object. Please retry in a few seconds.\", \"totalAffected\": 0}";
-                        }
-                        return Models.McpResponse.Error("Object not found in index", targetName, null, "The object was not found in the search index or the active Knowledge Base.");
-                    }
-
-                    foundKey = possibleKeys.FirstOrDefault(k => k.StartsWith("Procedure:", StringComparison.OrdinalIgnoreCase))
-                             ?? possibleKeys.FirstOrDefault(k => k.StartsWith("Transaction:", StringComparison.OrdinalIgnoreCase))
-                             ?? possibleKeys.FirstOrDefault(k => k.StartsWith("Table:", StringComparison.OrdinalIgnoreCase))
-                             ?? possibleKeys.First();
-
-                    index.Objects.TryGetValue(foundKey, out targetNode);
-                }
-
+                // v2.3.8 (post-self-review): replace the fragile EndsWith-then-give-up
+                // lookup with a 4-stage chain. Closes the residual "Indexing in progress
+                // for this object. Please retry in a few seconds" stale message that
+                // fired when the index entry's KEY didn't match `:<targetName>` exactly
+                // (typically when the entry's Type field was empty/different or the
+                // name carried whitespace from SDK serialisation).
+                targetNode = ResolveIndexEntry(index, targetName, out foundKey);
                 if (targetNode == null)
                 {
-                    return Models.McpResponse.Error("Object not found in index", targetName, null, "The object was not found in the search index or the active Knowledge Base.");
+                    // Last resort: ask the SDK. When it finds the object, use its
+                    // canonical name to do one more aggressive scan; if still nothing,
+                    // synthesise an empty-but-valid impact envelope so the caller
+                    // doesn't have to retry on a polling stub message. The agent gets
+                    // a deterministic answer (riskLevel=Unknown + indexEdgesMissing
+                    // hint) and can decide whether to re-index.
+                    string sdkName = null;
+                    try { sdkName = _objectService?.FindObject(targetName)?.Name; } catch { }
+                    if (!string.IsNullOrEmpty(sdkName))
+                    {
+                        targetNode = ResolveIndexEntry(index, sdkName, out foundKey);
+                        if (targetNode == null)
+                        {
+                            return new JObject
+                            {
+                                ["status"] = "Ready",
+                                ["target"] = sdkName,
+                                ["totalAffected"] = 0,
+                                ["blastRadiusScore"] = 0,
+                                ["riskLevel"] = "Unknown",
+                                ["callers"] = new JArray(),
+                                ["callees"] = new JArray(),
+                                ["indexEdgesMissing"] = true,
+                                ["hint"] = "Object was found in the KB via the SDK but its call-graph edges are not yet in the search index. Call lifecycle action=index to refresh, then retry."
+                            }.ToString();
+                        }
+                    }
+                    else
+                    {
+                        return Models.McpResponse.Error("Object not found in index", targetName, null, "The object was not found in the search index or the active Knowledge Base.");
+                    }
                 }
 
                 targetName = targetNode.Name; // canonical name
@@ -246,6 +257,72 @@ namespace GxMcp.Worker.Services
             {
                 return "{\"error\": \"Impact Analysis failed: " + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
+        }
+
+        // v2.3.8 (post-self-review) — 4-stage index entry resolver. Covers the
+        // failure modes that were leaking into the legacy "Indexing in progress
+        // for this object" stale message:
+        //  1. caller passed a "Type:Name" key directly
+        //  2. key endswith ":<name>" (case-insensitive)
+        //  3. value scan by Name field (cheapest after #2; catches entries whose
+        //     Type was empty so the EndsWith pattern didn't match)
+        //  4. value scan by trimmed/lowercased Name (catches whitespace/casing
+        //     drift between SDK serialisation and index ingestion)
+        private static SearchIndex.IndexEntry ResolveIndexEntry(SearchIndex index, string targetName, out string foundKey)
+        {
+            foundKey = null;
+            if (index?.Objects == null || string.IsNullOrEmpty(targetName)) return null;
+
+            // Stage 1: direct key lookup
+            if (targetName.Contains(":") && index.Objects.TryGetValue(targetName, out var direct))
+            {
+                foundKey = targetName;
+                return direct;
+            }
+
+            // Stage 2: EndsWith on the key suffix, type-priority ordering.
+            var possibleKeys = index.Objects.Keys
+                .Where(k => k.EndsWith(":" + targetName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (possibleKeys.Count > 0)
+            {
+                foundKey = possibleKeys.FirstOrDefault(k => k.StartsWith("Procedure:", StringComparison.OrdinalIgnoreCase))
+                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("Transaction:", StringComparison.OrdinalIgnoreCase))
+                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("WebPanel:", StringComparison.OrdinalIgnoreCase))
+                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("DataProvider:", StringComparison.OrdinalIgnoreCase))
+                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("Table:", StringComparison.OrdinalIgnoreCase))
+                         ?? possibleKeys.First();
+                if (index.Objects.TryGetValue(foundKey, out var byKey)) return byKey;
+            }
+
+            // Stage 3: exact Name match on the values (handles entries whose
+            // stored Type is empty/null so the EndsWith on the key missed).
+            foreach (var kv in index.Objects)
+            {
+                if (kv.Value != null && string.Equals(kv.Value.Name, targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    foundKey = kv.Key;
+                    return kv.Value;
+                }
+            }
+
+            // Stage 4: trimmed match — last resort for whitespace/encoding drift
+            // on the entry side. Runs unconditionally on miss; the caller's name
+            // might be clean while the index entry's Name carries SDK whitespace.
+            var trimmed = targetName.Trim();
+            if (trimmed.Length > 0)
+            {
+                foreach (var kv in index.Objects)
+                {
+                    if (kv.Value != null && string.Equals(kv.Value.Name?.Trim(), trimmed, StringComparison.OrdinalIgnoreCase))
+                    {
+                        foundKey = kv.Key;
+                        return kv.Value;
+                    }
+                }
+            }
+
+            return null;
         }
 
         // Helper: graph service returns bare names (e.g. "A"), but the index
