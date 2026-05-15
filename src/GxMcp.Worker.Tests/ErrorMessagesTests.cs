@@ -51,5 +51,48 @@ namespace GxMcp.Worker.Tests
         {
             Assert.Equal("Detailed messages:", ErrorMessages.Translate("Detailed Messages:"));
         }
+
+        // ─── Seeded from real friction-report transcripts ────────────────────
+
+        [Theory]
+        [InlineData("A validação de Transaction 'PesUni' falhou.", "Transaction 'PesUni' validation failed.")]
+        [InlineData("A validação de Procedure 'GerNomArq' falhou.", "Procedure 'GerNomArq' validation failed.")]
+        [InlineData("A validação de Structured Data Type 'SdtPedido' falhou.", "Structured Data Type 'SdtPedido' validation failed.")]
+        public void Translate_KnownObjectKindValidation_Translates(string ptbr, string expected)
+        {
+            Assert.Equal(expected, ErrorMessages.Translate(ptbr));
+        }
+
+        [Fact]
+        public void Translate_NestedValidationPlusDetailedMessages_Translates()
+        {
+            // Exact string from mcp-friction-report-2026-05-15.md.
+            var src = "A validação de Web Panel 'X' falhou.. Detailed Messages:  [VALIDATION]: Referência de controle inválida: '[var:64]'";
+            var en = ErrorMessages.Translate(src);
+            Assert.Contains("Web Panel 'X' validation failed.", en);
+            Assert.Contains("Invalid control reference: '[var:64]'", en);
+            Assert.DoesNotContain("falhou", en);
+            Assert.DoesNotContain("Referência", en);
+        }
+
+        [Fact]
+        public void Translate_InvalidPropertyForm_Translates()
+        {
+            Assert.Equal("Id is an invalid property", ErrorMessages.Translate("Id é propriedade inválida"));
+        }
+
+        [Fact]
+        public void Translate_TargetEnvSkipsReorg_Translates()
+        {
+            Assert.Equal(
+                "Target environment is configured to skip reorganization",
+                ErrorMessages.Translate("O ambiente de destino está configurado para não reorganizar"));
+        }
+
+        [Fact]
+        public void Translate_CouldNotPrefix_Translates()
+        {
+            Assert.Equal("Could not open file", ErrorMessages.Translate("Não foi possível open file"));
+        }
     }
 }

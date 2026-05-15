@@ -110,6 +110,11 @@ namespace GxMcp.Worker.Services
         // CallerGraphService and adds a waitForIndex contract so callers can
         // opt out of blocking on a cold/reindexing index.
         public string ImpactAnalysis(string targetName, bool waitForIndex = true, int waitTimeoutMs = 30000)
+            => ImpactAnalysis(targetName, waitForIndex, waitTimeoutMs, System.Threading.CancellationToken.None);
+
+        // v2.3.8 (post-Task 7.2): same path, threaded with a CancellationToken so
+        // a Control:Cancel from the gateway side-channel can stop the BFS mid-walk.
+        public string ImpactAnalysis(string targetName, bool waitForIndex, int waitTimeoutMs, System.Threading.CancellationToken ct)
         {
             try
             {
@@ -186,8 +191,10 @@ namespace GxMcp.Worker.Services
 
                 // 3) Delegate the BFS to the unified graph service.
                 var graph = _graph ?? new CallerGraphService(_indexCacheService);
-                var callersResult = graph.GetCallersTransitive(targetName, 200);
-                var calleesResult = graph.GetCalleesTransitive(targetName, 200);
+                var callersResult = graph.GetCallersTransitive(targetName, 200, ct);
+                if (ct.IsCancellationRequested) return new JObject { ["status"] = "Cancelled", ["target"] = targetName }.ToString();
+                var calleesResult = graph.GetCalleesTransitive(targetName, 200, ct);
+                if (ct.IsCancellationRequested) return new JObject { ["status"] = "Cancelled", ["target"] = targetName }.ToString();
 
                 // De-dupe + index-aware enrichment (score / entry points / etc.).
                 var affected = new HashSet<string>(callersResult.Nodes, StringComparer.OrdinalIgnoreCase);

@@ -137,12 +137,18 @@ namespace GxMcp.Worker.Services
                 method = method.ToLower();
 
                 // Only allow strictly non-SDK or pure read-cache operations to bypass STA thread
-                if (method == "ping" || method == "search" || method == "health") 
+                if (method == "ping" || method == "search" || method == "health")
                     return true;
 
                 if (method == "list")
                     return true;
-                
+
+                // v2.3.8 (post-Task 7.2 fix): Control:Cancel must run on the parallel
+                // dispatch path so it can interleave with an in-flight SDK call and
+                // trip the registered CTS. Pure in-memory dictionary lookup, no SDK.
+                if (method == "control" && action == "Cancel")
+                    return true;
+
                 // GetIndexStatus only reads static volatile fields – no SDK access
                 if (method == "kb" && action == "GetIndexStatus")
                     return true;
@@ -173,6 +179,25 @@ namespace GxMcp.Worker.Services
                 switch (method?.ToLower())
                 {
                     case "ping": return "{\"status\":\"pong\"}";
+                    case "control":
+                        // v2.3.8 (post-Task 7.2 fix): IPC cancellation side-channel.
+                        // Gateway sends this on the thread-safe path so it can interleave
+                        // with a sibling SDK call. Signals the registered CTS keyed by
+                        // cancelToken (typically the BackgroundJobRegistry job_id).
+                        if (string.Equals(action, "Cancel", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string ct = args?["cancelToken"]?.ToString() ?? target;
+                            bool ok = GxMcp.Worker.Helpers.WorkerCancellationRegistry.Cancel(ct);
+                            return JsonConvert.SerializeObject(new
+                            {
+                                status = ok ? "Cancelled" : "NotFound",
+                                cancelToken = ct,
+                                message = ok
+                                    ? "Cancellation signalled to in-flight command. The handler may still take a few iterations to terminate."
+                                    : "No active command with that cancelToken (already finished or never started)."
+                            });
+                        }
+                        break;
                     case "kb":
                         if (action == "Open")
                         {
@@ -258,7 +283,15 @@ namespace GxMcp.Worker.Services
                                         criteria.ArgMatches[idx] = prop.Value?.ToString();
                                 }
                             }
-                            string sourceSearchResult = _sourceSearchService.SearchAsJson(criteria);
+                            // v2.3.8 (post-Task 7.2 fix): register cancellation if the caller
+                            // supplied a cancelToken so a sibling Control:Cancel can stop the
+                            // scan mid-loop. Token typically matches the gateway's job_id.
+                            string ssCancelToken = args?["cancelToken"]?.ToString();
+                            string sourceSearchResult;
+                            using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(ssCancelToken, out var ssCt))
+                            {
+                                sourceSearchResult = _sourceSearchService.SearchAsJson(criteria, ssCt);
+                            }
                             int inlineTopSearchSource = Math.Min(3, args?["inline_read_top"]?.ToObject<int?>() ?? 0);
                             return inlineTopSearchSource > 0
                                 ? AppendInlineReadsForSourceSearch(sourceSearchResult, inlineTopSearchSource)
@@ -414,9 +447,15 @@ namespace GxMcp.Worker.Services
                         if (action == "ImpactAnalysis")
                         {
                             // v2.3.8 (Task 1.4): index-aware impact with optional wait-for-index.
+                            // v2.3.8 (post-Task 7.2): honour cancelToken via WorkerCancellationRegistry
+                            // so a parallel Control:Cancel stops the BFS mid-walk.
                             bool waitForIndex = args?["waitForIndex"]?.ToObject<bool?>() ?? true;
                             int waitTimeoutMs = args?["waitTimeoutMs"]?.ToObject<int?>() ?? 30000;
-                            return _analyzeService.ImpactAnalysis(target, waitForIndex, waitTimeoutMs);
+                            string ctToken = args?["cancelToken"]?.ToString();
+                            using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(ctToken, out var iaCt))
+                            {
+                                return _analyzeService.ImpactAnalysis(target, waitForIndex, waitTimeoutMs, iaCt);
+                            }
                         }
                         if (action == "InjectContext")
                         {

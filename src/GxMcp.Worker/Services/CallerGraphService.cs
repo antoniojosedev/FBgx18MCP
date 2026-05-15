@@ -126,6 +126,9 @@ namespace GxMcp.Worker.Services
         // v2.3.8 (Task 1.4): symmetric to GetCalleesTransitive. AnalyzeService.ImpactAnalysis
         // previously inlined this BFS over CalledBy; it now delegates here.
         public TransitiveResult GetCallersTransitive(string root, int maxNodes = 200)
+            => GetCallersTransitive(root, maxNodes, System.Threading.CancellationToken.None);
+
+        public TransitiveResult GetCallersTransitive(string root, int maxNodes, System.Threading.CancellationToken ct)
         {
             var result = new TransitiveResult();
             if (string.IsNullOrEmpty(root) || maxNodes <= 0) return result;
@@ -139,6 +142,7 @@ namespace GxMcp.Worker.Services
 
             while (queue.Count > 0)
             {
+                if (ct.IsCancellationRequested) { result.Truncated = true; result.Depth = maxDepth; return result; }
                 var (name, d) = queue.Dequeue();
                 maxDepth = Math.Max(maxDepth, d);
 
@@ -164,6 +168,9 @@ namespace GxMcp.Worker.Services
 
         // BFS over callees, capped at maxNodes (exclusive of the root). Cycle-safe.
         public TransitiveResult GetCalleesTransitive(string root, int maxNodes = 200)
+            => GetCalleesTransitive(root, maxNodes, System.Threading.CancellationToken.None);
+
+        public TransitiveResult GetCalleesTransitive(string root, int maxNodes, System.Threading.CancellationToken ct)
         {
             var result = new TransitiveResult();
             if (string.IsNullOrEmpty(root) || maxNodes <= 0) return result;
@@ -177,6 +184,7 @@ namespace GxMcp.Worker.Services
 
             while (queue.Count > 0)
             {
+                if (ct.IsCancellationRequested) { result.Truncated = true; result.Depth = maxDepth; return result; }
                 var (name, d) = queue.Dequeue();
                 maxDepth = Math.Max(maxDepth, d);
 

@@ -1432,23 +1432,38 @@ namespace GxMcp.Gateway
                     // the op as Cancelled in the tracker and abandon any matching pending
                     // request. The worker thread may still finish its SDK call, but the
                     // client gets a deterministic answer.
-                    // v2.3.8 (Task 7.2) — cancel via job_id: short-circuit the async
-                    // pollers (build/edit) by signaling the registered CTS and flipping the
-                    // job to "cancelled". Worker side keeps running its current SDK call
-                    // (worker-CTS plumbing is a follow-up) but the client gets a deterministic
-                    // Cancelled envelope and the polling loop terminates immediately.
+                    // v2.3.8 (Task 7.2 + post-fix) — cancel via job_id: short-circuit the
+                    // async pollers (build/edit) by signaling the registered CTS, flip the
+                    // job to "cancelled", AND fan a Control:Cancel command out to the
+                    // worker so the in-flight thread-safe handler (search/impact) can
+                    // stop mid-loop. Without the fan-out the worker kept running its
+                    // current call to completion while the gateway poller exited.
                     if (string.Equals(lifecycleAction, "cancel", StringComparison.OrdinalIgnoreCase))
                     {
                         string? cancelJobId = McpRouter.ResolveJobId(args);
                         if (!string.IsNullOrWhiteSpace(cancelJobId) && JobRegistry.Get(cancelJobId!) != null)
                         {
                             bool ok = JobRegistry.Cancel(cancelJobId!, "Cancelled by client via lifecycle action=cancel.");
+                            // Fire-and-forget worker signal. Thread-safe Control:Cancel runs
+                            // on the parallel dispatch path so it interleaves with in-flight calls.
+                            _ = SendWorkerCommandAsync(
+                                new JObject
+                                {
+                                    ["method"] = "control",
+                                    ["module"] = "Control",
+                                    ["action"] = "Cancel",
+                                    ["params"] = new JObject { ["cancelToken"] = cancelJobId }
+                                },
+                                5000, "cancel-fanout",
+                                env => env,
+                                (_, __) => new JObject(),
+                                toolName: "genexus_lifecycle", toolArgs: args, trackOperation: false);
                             var jp = new JObject
                             {
                                 ["status"] = ok ? "Cancelled" : "NotFound",
                                 ["jobId"] = cancelJobId,
                                 ["message"] = ok
-                                    ? "Job marked Cancelled. Async pollers will stop; worker may still finish its current SDK call."
+                                    ? "Job marked Cancelled and Control:Cancel fanned out to the worker. Handlers honouring CancellationToken (search, analyze, build expansion) will terminate within one iteration."
                                     : "Job not found in registry (may have completed and been pruned)."
                             };
                             return BuildToolTextResponse(idToken, jp, isError: !ok, toolName: "genexus_lifecycle", toolArgs: args);
@@ -1515,6 +1530,19 @@ namespace GxMcp.Gateway
                                 int waitSeconds = Math.Min(Math.Max(args?["wait_seconds"]?.ToObject<int?>() ?? 0, 0), McpRouter.MaxLongPollSeconds);
                                 JObject pollResult = await McpRouter.LongPollJob(JobRegistry, jobId, waitSeconds);
                                 bool isError = pollResult["error"] != null;
+                                // v2.3.8 (post-Task 6.1 fix): the DispatchCore compact pass below
+                                // only runs for the worker-side legacy taskId path. job_id results
+                                // arrive through this short-circuit and were skipping the shaper —
+                                // callers using wait_seconds>0 + job_id were getting the verbose
+                                // BuildTaskStatus payload under result. Compact here too.
+                                if (!isError
+                                    && LifecycleResponseShaper.ShouldCompact(args)
+                                    && pollResult["result"] is JObject innerResult)
+                                {
+                                    var compactJson = LifecycleResponseShaper.Compact(innerResult.ToString(Formatting.None), compact: true);
+                                    try { pollResult["result"] = JObject.Parse(compactJson); }
+                                    catch { /* shaper passthrough on non-JSON */ }
+                                }
                                 return BuildToolTextResponse(idToken, pollResult, isError: isError, toolName: "genexus_lifecycle", toolArgs: args);
                             }
                             // Not in registry → fall through to existing worker-side status path (legacy taskId).

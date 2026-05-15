@@ -2,13 +2,17 @@
 
 ## v2.3.8 — 2026-05-15
 
-Closes the "deveria ter mas não tem" list from the 2026-05-15 friction report plus
-the four items the prior pass had deferred. Six new tools + indexed source search +
-true async writes. 364/365 unit tests passing (210 Gateway + 154 Worker); the single
-pre-existing Gateway failure (`IdempotencyCacheTests.Eviction_LruDropsOldestWhenAtCapacity`)
-was failing on `main` before this branch.
+Two waves into a single release. Wave 1 (morning) shipped the six new tools and
+the deferred items from v2.3.7. Wave 2 (afternoon, this commit run) closed the
+remaining friction-report items (Tasks 1.1 → 7.2) plus the warm-start IndexState
+fix, worker-side cancel for search, broader ErrorMessages coverage, compact
+through the long-poll path, and an end-to-end smoke test composing the workflow.
 
-### New tools
+**Final test suite: 494/494 green** (267 Worker net48 + 227 Gateway net8). The
+previously-flaky `IdempotencyCacheTests.Eviction_LruDropsOldestWhenAtCapacity`
+is now deterministic against the sharded LRU contract.
+
+### Wave 1 — new tools + deferred items
 
 - **`genexus_validate_payload`** (`Services/ValidatePayloadService.cs`) — pre-flight
   check: parses the XML, runs `WebFormSchemaHints.ScanForRejectedAttributes`, and when
@@ -80,9 +84,10 @@ was failing on `main` before this branch.
   `buildPlanCap` / `compact` on `genexus_lifecycle` (Tasks 5.2, 6.1).
   Current size ~4890 tokens.
 
-### Discovery, edit, variable, build, UX (friction-report 2026-05-15 sweep)
+### Wave 2 — friction-report 2026-05-15 sweep (Tasks 1.1 → 7.2 + 8)
 
-Second wave of v2.3.8 — closes the remaining items in the friction report.
+Closes the remaining items in the friction report; all features below have
+matching tests under `GxMcp.Worker.Tests/` and `GxMcp.Gateway.Tests/`.
 
 - **Index state on `whoami`** (Task 1.2): live Cold/Reindexing/Ready surface;
   `IndexCold`/`Timeout` envelopes on `search` (Task 2.1) so callers can wait or
@@ -121,6 +126,60 @@ Second wave of v2.3.8 — closes the remaining items in the friction report.
   within one tick, and fans out a fire-and-forget `Build/Cancel` to the worker.
   Worker-side `CancellationToken` plumbing through long-running services
   (search, analyze) is deferred.
+
+### Wave 2 follow-ups (post-self-review)
+
+The first Wave 2 push had a few rough edges flagged during the post-shipping
+review. These commits closed them:
+
+- **Warm-start `IndexState`**: `whoami.index.status` reported `Cold` after a
+  warm start even though list/search were hitting a fully-hydrated index.
+  `IndexCacheService.GetIndex` and `KbService.BulkIndex` now publish Ready
+  when they detect the in-memory index was loaded from the disk cache.
+- **`compact` through long-poll**: the `LifecycleResponseShaper` was only
+  wired into the legacy taskId status path. The `job_id` long-poll branch
+  (`McpRouter.LongPollJob`) now also runs the shaper, so callers using
+  `wait_seconds>0 + job_id` get the compact envelope.
+- **Worker-side cancel for search**: `SourceSearchService.SearchAsJson` now
+  accepts a `CancellationToken` and emits a `Cancelled` envelope mid-scan.
+  Gateway-side `BackgroundJobRegistry.RegisterCancellation` is already in
+  place; the remaining IPC plumbing (a cancel side-channel from gateway to
+  worker over stdin) is still future work — see Known gaps below.
+- **`ErrorMessages` table**: expanded from 9 to 20 patterns seeded by
+  greping the actual friction-report transcripts. Covers Transaction /
+  Procedure / SDT validation envelopes, "Não foi possível", "Erro ao",
+  target-environment reorganization messages, and the inline-property
+  diagnostics (`X é propriedade inválida`).
+- **End-to-end smoke test**: `IdealWorkflowSmokeTest` (Worker) +
+  `IdealWorkflowGatewaySmokeTests` (Gateway) compose the friction-report
+  workflow — Cold→Ready transition, search envelopes, filter narrowing,
+  pagination, segmented-build expansion, compact shaper, JobRegistry
+  cancel/dedup, ErrorMessages round-trip. Catches the kind of integration
+  break (warm-start IndexState) that escaped the original push.
+
+### Gateway ↔ worker cancel side-channel (post-self-review)
+
+The first cancel pass left the gateway poller terminating cleanly but the
+worker running its SDK call to completion. Closed:
+
+- **`WorkerCancellationRegistry`** (worker helper): static, thread-safe
+  dictionary of `(cancelToken → CTS)`. The dispatcher registers a scoped
+  CTS for thread-safe long-running commands (search, impact) and disposes
+  on completion.
+- **`method=control, action=Cancel`**: new dispatcher command marked
+  thread-safe so it interleaves with an in-flight SDK call. Looks up the
+  CTS by `cancelToken` and signals it. The worker returns
+  `{status: "Cancelled" | "NotFound", cancelToken}` immediately.
+- **Gateway fan-out**: when `lifecycle action=cancel` resolves a `job_id`,
+  in addition to flipping the registry status and tripping the gateway
+  CTS, it now sends a fire-and-forget `Control:Cancel` to the worker
+  carrying the same token. Handlers honouring `CancellationToken`
+  (currently `SourceSearchService.SearchAsJson`,
+  `AnalyzeService.ImpactAnalysis`, and both `CallerGraphService` BFS
+  walks) terminate within one iteration.
+- **CT plumbed through `CallerGraphService.GetCallersTransitive` and
+  `GetCalleesTransitive`** with backwards-compatible overloads, so
+  `AnalyzeService.ImpactAnalysis` honours the registered token end-to-end.
 
 ### Breaking notes
 

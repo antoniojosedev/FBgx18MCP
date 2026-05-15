@@ -38,6 +38,16 @@ namespace GxMcp.Worker.Services
 
         public string SearchAsJson(SourceSearchCriteria c)
         {
+            return SearchAsJson(c, System.Threading.CancellationToken.None);
+        }
+
+        // v2.3.8 (post-Task 7.2 fix): worker-side cancellation. The gateway's
+        // BackgroundJobRegistry.RegisterCancellation gives us a token that the
+        // assistant trips via lifecycle action=cancel + job_id. Plumbing it
+        // here means a slow regex over 24k entries actually stops mid-loop
+        // instead of running to completion while the gateway poller exits.
+        public string SearchAsJson(SourceSearchCriteria c, System.Threading.CancellationToken ct)
+        {
             // v2.3.8 (Task 2.1): surface index readiness as a structured envelope
             // BEFORE touching the body of SearchCore — keeping the envelope check
             // in a separate method that doesn't reference KBObject types means
@@ -57,10 +67,10 @@ namespace GxMcp.Worker.Services
                 if (state.Progress.HasValue) envelope["progress"] = state.Progress.Value;
                 return envelope.ToString();
             }
-            return SearchCore(c);
+            return SearchCore(c, ct);
         }
 
-        private string SearchCore(SourceSearchCriteria c)
+        private string SearchCore(SourceSearchCriteria c, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken))
         {
             try
             {
@@ -100,6 +110,16 @@ namespace GxMcp.Worker.Services
                 foreach (var e in entries)
                 {
                     if (produced >= c.MaxResults) break;
+                    if (ct.IsCancellationRequested)
+                    {
+                        return new JObject
+                        {
+                            ["status"] = "Cancelled",
+                            ["partialHits"] = hits,
+                            ["totalScanned"] = scanned,
+                            ["totalObjects"] = entries.Count
+                        }.ToString();
+                    }
                     if (swBudget.ElapsedMilliseconds > timeoutMs)
                     {
                         var timeoutEnv = new JObject
