@@ -19,6 +19,10 @@ namespace GxMcp.Worker.Services
         public List<string> Scope { get; set; } = new List<string> { "source" };
         public int MaxResults { get; set; } = 50;
         public bool IncludeComments { get; set; }
+        // v2.3.8 (Task 2.1): hard wall-clock cap. Distinct from the legacy
+        // internal 25s budget — when exceeded we return a structured Timeout
+        // envelope with partial hits, never a silently empty result.
+        public int TimeoutMs { get; set; } = 30000;
     }
 
     public class SourceSearchService
@@ -33,6 +37,30 @@ namespace GxMcp.Worker.Services
         }
 
         public string SearchAsJson(SourceSearchCriteria c)
+        {
+            // v2.3.8 (Task 2.1): surface index readiness as a structured envelope
+            // BEFORE touching the body of SearchCore — keeping the envelope check
+            // in a separate method that doesn't reference KBObject types means
+            // unit tests with a Cold index never trigger JIT-time resolution of
+            // Artech.Architecture.Common, so they can run without the GeneXus
+            // install on the probing path.
+            var state = _index != null ? _index.GetState() : null;
+            if (state != null && state.Status != "Ready")
+            {
+                var envelope = new JObject
+                {
+                    ["status"] = string.Equals(state.Status, "Reindexing", StringComparison.OrdinalIgnoreCase)
+                        ? "Reindexing"
+                        : "IndexCold",
+                    ["retryAfterMs"] = state.EtaMs ?? 5000
+                };
+                if (state.Progress.HasValue) envelope["progress"] = state.Progress.Value;
+                return envelope.ToString();
+            }
+            return SearchCore(c);
+        }
+
+        private string SearchCore(SourceSearchCriteria c)
         {
             try
             {
@@ -60,16 +88,31 @@ namespace GxMcp.Worker.Services
                     .Where(e => MatchesAnyLiteral(e, literals))
                     .ToList();
 
-                // Cap total scan time; partial results return with budgetExceeded=true.
-                int budgetMs = 25000;
+                // v2.3.8 (Task 2.1): hard wall-clock timeout — emits a Timeout
+                // envelope with partial hits, replacing the legacy budgetExceeded
+                // flag. The 25s internal cap is now driven by c.TimeoutMs (default
+                // 30s) so callers can tune the budget per-call.
+                int timeoutMs = c.TimeoutMs > 0 ? c.TimeoutMs : 0;
                 var swBudget = System.Diagnostics.Stopwatch.StartNew();
-                bool budgetExceeded = false;
 
                 int produced = 0;
+                int scanned = 0;
                 foreach (var e in entries)
                 {
                     if (produced >= c.MaxResults) break;
-                    if (swBudget.ElapsedMilliseconds > budgetMs) { budgetExceeded = true; break; }
+                    if (swBudget.ElapsedMilliseconds > timeoutMs)
+                    {
+                        var timeoutEnv = new JObject
+                        {
+                            ["status"] = "Timeout",
+                            ["partialHits"] = hits,
+                            ["totalScanned"] = scanned,
+                            ["totalObjects"] = entries.Count,
+                            ["timeoutMs"] = timeoutMs
+                        };
+                        return timeoutEnv.ToString();
+                    }
+                    scanned++;
                     KBObject obj;
                     try { obj = _objectService.FindObject(e.Name); } catch { continue; }
                     if (obj == null) continue;
@@ -113,16 +156,11 @@ namespace GxMcp.Worker.Services
 
                 var response = new JObject
                 {
+                    ["status"] = "Ready",
                     ["count"] = produced,
                     ["truncated"] = produced >= c.MaxResults,
                     ["hits"] = hits
                 };
-                if (budgetExceeded)
-                {
-                    response["budgetExceeded"] = true;
-                    response["budgetMs"] = budgetMs;
-                    response["budgetHint"] = "search_source aborted at " + budgetMs + "ms with " + produced + " hits. Narrow with typeFilter or a more specific pattern. Indexed search is on the v2.4 roadmap.";
-                }
                 if (hits.Count > 0 && hits[0] is JObject topHit)
                 {
                     response["_meta"] = new JObject
