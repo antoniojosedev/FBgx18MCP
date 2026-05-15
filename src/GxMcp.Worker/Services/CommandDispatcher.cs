@@ -216,7 +216,11 @@ namespace GxMcp.Worker.Services
 
                             return result;
                         }
-                        if (action == "BulkIndex") return _kbService.BulkIndex();
+                        if (action == "BulkIndex")
+                        {
+                            bool force = args?["force"]?.ToObject<bool?>() ?? false;
+                            return _kbService.BulkIndex(force);
+                        }
                         if (action == "SelfTest") return _selfTestService.RunAllTests();
                         if (action == "GetIndexStatus") return _kbService.GetIndexStatus();
                         if (action == "GetIndexState")

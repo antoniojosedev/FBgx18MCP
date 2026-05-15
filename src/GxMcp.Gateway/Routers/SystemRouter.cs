@@ -30,7 +30,11 @@ namespace GxMcp.Gateway.Routers
                         case "snapshots-list": return new { module = "KB", action = "ListPatternSnapshots", target = target };
                         case "snapshots-restore": return new { module = "KB", action = "RestorePatternSnapshot", target = target, snapshotPath = args?["snapshotPath"]?.ToString() };
                         case "sync": return new { module = "Build", action = "Sync", target = target };
-                        case "index": return new { module = "KB", action = "BulkIndex" };
+                        case "index": return new {
+                            module = "KB",
+                            action = "BulkIndex",
+                            force = args?["force"]?.ToObject<bool?>() ?? false
+                        };
                         case "status":
                             if (!string.IsNullOrEmpty(target))
                             {

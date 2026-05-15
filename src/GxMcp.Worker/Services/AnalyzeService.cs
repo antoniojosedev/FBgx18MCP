@@ -188,7 +188,7 @@ namespace GxMcp.Worker.Services
                                 ["callers"] = new JArray(),
                                 ["callees"] = new JArray(),
                                 ["indexEdgesMissing"] = true,
-                                ["hint"] = "Object was found in the KB via the SDK but its call-graph edges are not yet in the search index. Call lifecycle action=index to refresh, then retry."
+                                ["hint"] = "Object was found in the KB via the SDK but its call-graph edges are not yet in the search index. Call genexus_lifecycle(action='index', force=true) to clear the stale snapshot and run a full SDK rescan, then retry."
                             }.ToString();
                         }
                     }

@@ -847,5 +847,18 @@ namespace GxMcp.Worker.Services
                 _hierarchyCache.Clear(); // PERFORMANCE (W-M5): drop stale hierarchy on KB unload.
             }
         }
+
+        // v2.3.8 (post-self-review) — companion to Clear() for force-reindex.
+        // Removes the on-disk snapshot files so the next GetIndex() hydration
+        // returns null and triggers a full SDK rebuild instead of re-loading
+        // the stale gz/plain blob.
+        public void DeleteOnDiskSnapshot()
+        {
+            lock (_lock)
+            {
+                try { if (!string.IsNullOrEmpty(_indexPathGz) && File.Exists(_indexPathGz)) File.Delete(_indexPathGz); } catch (Exception ex) { Logger.Warn("Delete gz snapshot failed: " + ex.Message); }
+                try { if (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath)) File.Delete(_indexPath); } catch (Exception ex) { Logger.Warn("Delete plain snapshot failed: " + ex.Message); }
+            }
+        }
     }
 }

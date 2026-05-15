@@ -107,15 +107,18 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string BulkIndex()
+        public string BulkIndex() => BulkIndex(force: false);
+
+        // v2.3.8 (post-self-review) — force flag closes the "stale snapshot" gap.
+        // Without force, the warm-start cache shortcuts to AlreadyIndexed even when
+        // entries are missing edges (Calls/CalledBy) or new objects exist in the KB.
+        // With force=true the in-memory + on-disk caches are cleared and the SDK
+        // walk re-runs from scratch. Surfaced as `lifecycle action=index force=true`.
+        public string BulkIndex(bool force)
         {
-            Logger.Info("BulkIndex() requested.");
+            Logger.Info($"BulkIndex(force={force}) requested.");
             if (_isIndexing) return "{\"status\":\"Already in progress\"}";
 
-            // Skip when the on-disk cache already populated the in-memory index — avoids
-            // a redundant full rebuild on every warm start. Callers wanting a forced
-            // refresh use action='reorg' instead, which clears the index first.
-            //
             // Wait briefly for the KB to open. The Gateway fires BulkIndex from the
             // initialize hook before the worker has opened the KB, so IsIndexMissing
             // would read true (cache path unknown) and trigger a redundant rebuild.
@@ -127,8 +130,22 @@ namespace GxMcp.Worker.Services
                     Thread.Sleep(200);
                     waitMs += 200;
                 }
-                if (!_indexCacheService.IsIndexMissing)
+                if (force)
                 {
+                    Logger.Info("BulkIndex: force=true — clearing in-memory + on-disk snapshot before full rebuild.");
+                    try
+                    {
+                        _indexCacheService.Clear();
+                        _indexCacheService.DeleteOnDiskSnapshot();
+                        _indexCacheService.MarkReindexStarted(0);
+                    }
+                    catch (Exception ex) { Logger.Warn("BulkIndex force-clear failed (continuing with rebuild anyway): " + ex.Message); }
+                }
+                else if (!_indexCacheService.IsIndexMissing)
+                {
+                    // Skip when the on-disk cache already populated the in-memory index — avoids
+                    // a redundant full rebuild on every warm start. Callers wanting a real refresh
+                    // must pass force=true.
                     var loaded = _indexCacheService.GetIndex();
                     if (loaded != null && loaded.Objects.Count > 0)
                     {
@@ -138,8 +155,8 @@ namespace GxMcp.Worker.Services
                         // on first hydration; this is the second safety net for the case
                         // where the index was already in memory before the BulkIndex call.
                         try { _indexCacheService.MarkIndexComplete(loaded.Objects.Count); } catch { }
-                        Logger.Info($"BulkIndex skipped — cache already populated ({loaded.Objects.Count} objects).");
-                        return "{\"status\":\"AlreadyIndexed\",\"objects\":" + loaded.Objects.Count + "}";
+                        Logger.Info($"BulkIndex skipped — cache already populated ({loaded.Objects.Count} objects). Pass force=true to rebuild.");
+                        return "{\"status\":\"AlreadyIndexed\",\"objects\":" + loaded.Objects.Count + ",\"hint\":\"Pass force=true to force a full SDK rescan when entries are missing edges or new objects exist.\"}";
                     }
                 }
             }
