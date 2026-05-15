@@ -1835,6 +1835,20 @@ namespace GxMcp.Gateway
                                 McpRouter.StripNulls(stripObj);
                             }
 
+                            // v2.3.8 (Task 6.1) — compact lifecycle status by default.
+                            // Replaces the verbose BuildTaskStatus payload (full Errors/Warnings/Output)
+                            // with counts + top-10 errors + warning dedup. compact=false restores legacy shape.
+                            if (!isErr
+                                && string.Equals(tName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(lcAction, "status", StringComparison.OrdinalIgnoreCase)
+                                && finalResult is JObject lifecycleObj
+                                && LifecycleResponseShaper.ShouldCompact(tArgs))
+                            {
+                                var compactJson = LifecycleResponseShaper.Compact(lifecycleObj.ToString(Formatting.None), compact: true);
+                                try { finalResult = JObject.Parse(compactJson); }
+                                catch { /* shaper passed through non-JSON; keep original */ }
+                            }
+
                             JToken axiPayload = NormalizeToolPayloadForAxi(finalResult, tName, tArgs, isErr);
 
                             var toolResult = new JObject
