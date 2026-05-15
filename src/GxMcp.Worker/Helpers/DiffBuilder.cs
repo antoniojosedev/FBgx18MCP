@@ -1,6 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using GxMcp.Worker.Services;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Helpers
 {
@@ -94,6 +97,108 @@ namespace GxMcp.Worker.Helpers
                 idx = hunkEnd;
             }
             return sb.ToString();
+        }
+
+        // ----------------------------------------------------------------------
+        // v2.3.8 Task 3.2 — Byte-level nearMatchHint (friction-report #4)
+        // ----------------------------------------------------------------------
+        // When edit fails to find an exact context but a near window exists,
+        // surface a structured hint pin-pointing the first divergence (EOL,
+        // Whitespace, or Content) so the agent can fix context in one turn.
+
+        public static JObject ByteLevelDivergence(string sourceWindow, string context)
+        {
+            sourceWindow = sourceWindow ?? string.Empty;
+            context = context ?? string.Empty;
+            var normSource = WriteService.NormalizeForCompare(sourceWindow) ?? string.Empty;
+            var normCtx = WriteService.NormalizeForCompare(context) ?? string.Empty;
+
+            double sim = ComputeSimilarity(normSource, normCtx);
+            string divKind = ClassifyDivergence(sourceWindow, context, normSource, normCtx);
+
+            int firstLine = 1, firstCol = 1;
+            int min = System.Math.Min(normSource.Length, normCtx.Length);
+            int diffIdx = -1;
+            for (int i = 0; i < min; i++)
+            {
+                if (normSource[i] != normCtx[i]) { diffIdx = i; break; }
+            }
+            if (diffIdx < 0 && normSource.Length != normCtx.Length) diffIdx = min;
+            if (diffIdx >= 0)
+            {
+                string scan = normSource.Length >= normCtx.Length ? normSource : normCtx;
+                int newlines = 0;
+                int lastNL = -1;
+                for (int i = 0; i < diffIdx && i < scan.Length; i++)
+                {
+                    if (scan[i] == '\n') { newlines++; lastNL = i; }
+                }
+                firstLine = newlines + 1;
+                firstCol = diffIdx - lastNL; // 1-based column within line
+                if (firstCol < 1) firstCol = 1;
+            }
+
+            return new JObject
+            {
+                ["similarity"] = System.Math.Round(sim, 4),
+                ["topWindow"] = new JObject
+                {
+                    ["contextNormalized"] = normCtx,
+                    ["sourceWindowNormalized"] = normSource,
+                    ["firstDivergenceAt"] = new JObject { ["line"] = firstLine, ["column"] = firstCol },
+                    ["divergenceKind"] = divKind
+                }
+            };
+        }
+
+        private static string ClassifyDivergence(string src, string ctx, string normSrc, string normCtx)
+        {
+            if (normSrc == normCtx)
+            {
+                // Same after EOL+trailing-ws normalization. If only line endings differ → EOL,
+                // otherwise some other whitespace (e.g. trailing spaces) was the differentiator.
+                if (src.Replace("\r\n", "\n") == ctx.Replace("\r\n", "\n"))
+                    return "EOL";
+                return "Whitespace";
+            }
+            string stripWs(string s) => new string(s.Where(c => !char.IsWhiteSpace(c)).ToArray());
+            if (stripWs(normSrc) == stripWs(normCtx))
+                return "Whitespace";
+            return "Content";
+        }
+
+        private static double ComputeSimilarity(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b)) return 1.0;
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return 0.0;
+            int dist = LevenshteinDistance(a, b);
+            int max = System.Math.Max(a.Length, b.Length);
+            return 1.0 - (double)dist / max;
+        }
+
+        private static int LevenshteinDistance(string a, string b)
+        {
+            if (a == b) return 0;
+            int n = a.Length, m = b.Length;
+            if (n == 0) return m;
+            if (m == 0) return n;
+            var prev = new int[m + 1];
+            var cur = new int[m + 1];
+            for (int j = 0; j <= m; j++) prev[j] = j;
+            for (int i = 1; i <= n; i++)
+            {
+                cur[0] = i;
+                for (int j = 1; j <= m; j++)
+                {
+                    int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                    int del = prev[j] + 1;
+                    int ins = cur[j - 1] + 1;
+                    int sub = prev[j - 1] + cost;
+                    cur[j] = System.Math.Min(System.Math.Min(del, ins), sub);
+                }
+                var tmp = prev; prev = cur; cur = tmp;
+            }
+            return prev[m];
         }
     }
 }

@@ -205,6 +205,24 @@ namespace GxMcp.Worker.Services
                                 }
                                 failureJson["nearMatches"] = arr;
                                 failureJson["nearMatchHint"] = "Top similar windows in source. Adjust 'context' to match exact tabs/whitespace of one of these and retry.";
+
+                                // v2.3.8 Task 3.2: byte-level divergence detail for the top window
+                                // when similarity is high enough that the agent likely just has
+                                // the wrong tabs/EOLs/one wrong char.
+                                var top = near[0];
+                                if (top.Similarity >= 0.80 && top.StartLine + contextLines.Length <= sourceLines.Length)
+                                {
+                                    var sb = new System.Text.StringBuilder();
+                                    for (int i = 0; i < contextLines.Length; i++)
+                                    {
+                                        if (i > 0) sb.Append('\n');
+                                        sb.Append(sourceLines[top.StartLine + i]);
+                                    }
+                                    string bestWindow = sb.ToString();
+                                    string ctxJoined = string.Join("\n", contextLines);
+                                    failureJson["nearMatchHintDetail"] = GxMcp.Worker.Helpers.DiffBuilder.ByteLevelDivergence(bestWindow, ctxJoined);
+                                }
+
                                 failure = failureJson.ToString();
                             }
                             catch { /* keep original failure on serialization issue */ }
