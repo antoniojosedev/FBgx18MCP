@@ -55,6 +55,7 @@ namespace GxMcp.Worker.Services
         private readonly ExportObjectService _exportObjectService;
         private readonly DiffService _diffService;
         private readonly ApplyTemplateService _applyTemplateService;
+        private readonly EditAndBuildOrchestrator _editAndBuildOrchestrator;
 
         private CommandDispatcher()
         {
@@ -103,6 +104,7 @@ namespace GxMcp.Worker.Services
             _exportObjectService = new ExportObjectService(_objectService);
             _diffService = new DiffService(_objectService);
             _applyTemplateService = new ApplyTemplateService(_writeService);
+            _editAndBuildOrchestrator = new EditAndBuildOrchestrator(_writeService, _analyzeService, _buildService);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -408,6 +410,12 @@ namespace GxMcp.Worker.Services
                             false,
                             true,
                             args?["dryRun"]?.ToObject<bool?>() ?? false);
+                    case "editandbuild":
+                        if (action == "Orchestrate")
+                        {
+                            return _editAndBuildOrchestrator.Orchestrate(args ?? new JObject());
+                        }
+                        break;
                     case "semanticops":
                         if (action == "Apply") return _writeService.ApplySemanticOps(args ?? request);
                         break;
