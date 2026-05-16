@@ -695,5 +695,48 @@ namespace GxMcp.Gateway.Tests
         {
             Assert.Null(ToolHelpCatalog.Get("genexus_unknown_tool"));
         }
+
+        [Fact]
+        public void ResourcesRead_ToolHelp_ReturnsMarkdownForKnownTool()
+        {
+            var request = JObject.Parse(@"{
+                ""method"": ""resources/read"",
+                ""params"": { ""uri"": ""genexus://kb/tool-help/genexus_query"" }
+            }");
+
+            var result = McpRouter.Handle(request);
+            Assert.NotNull(result);
+
+            var json = JObject.FromObject(result!);
+            var contents = (JArray)json["contents"]!;
+            var first = (JObject)contents[0];
+            Assert.Equal("genexus://kb/tool-help/genexus_query", first["uri"]!.ToString());
+            Assert.Equal("text/markdown", first["mimeType"]!.ToString());
+            Assert.Contains("Query prefixes", first["text"]!.ToString());
+        }
+
+        [Fact]
+        public void ResourcesRead_ToolHelp_ReturnsNullForUnknownTool()
+        {
+            var request = JObject.Parse(@"{
+                ""method"": ""resources/read"",
+                ""params"": { ""uri"": ""genexus://kb/tool-help/genexus_does_not_exist"" }
+            }");
+            var result = McpRouter.Handle(request);
+            Assert.Null(result);
+        }
+
+        [Fact]
+        public void ResourcesTemplatesList_IncludesToolHelpTemplate()
+        {
+            var request = JObject.Parse(@"{ ""method"": ""resources/templates/list"" }");
+            var result = McpRouter.Handle(request);
+            Assert.NotNull(result);
+
+            var json = JObject.FromObject(result!);
+            var templates = (JArray)json["resourceTemplates"]!;
+            Assert.Contains(templates, t =>
+                string.Equals(t["uriTemplate"]?.ToString(), "genexus://kb/tool-help/{name}", System.StringComparison.OrdinalIgnoreCase));
+        }
     }
 }

@@ -304,6 +304,12 @@ namespace GxMcp.Gateway
                                 uriTemplate = "genexus://attributes/{name}",
                                 name = "GeneXus Attribute Metadata",
                                 description = "Read metadata for a specific GeneXus attribute."
+                            },
+                            new
+                            {
+                                uriTemplate = "genexus://kb/tool-help/{name}",
+                                name = "GeneXus Tool Help",
+                                description = "Long-form help for a single MCP tool: prefixes, modes, examples, defaults."
                             }
                         }
                     };
@@ -713,6 +719,27 @@ namespace GxMcp.Gateway
                             uri = "genexus://kb/llm-playbook",
                             mimeType = "text/markdown",
                             text = BuildLlmCliMcpPlaybook()
+                        }
+                    }
+                };
+            }
+
+            const string toolHelpPrefix = "genexus://kb/tool-help/";
+            if (uri.StartsWith(toolHelpPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                string toolName = uri.Substring(toolHelpPrefix.Length);
+                string? text = ToolHelpCatalog.Get(toolName);
+                if (text == null) return null;
+
+                return new
+                {
+                    contents = new[]
+                    {
+                        new
+                        {
+                            uri,
+                            mimeType = "text/markdown",
+                            text
                         }
                     }
                 };
