@@ -955,9 +955,9 @@ namespace GxMcp.Gateway
             } catch (Exception ex) { Log($"HandleWorkerResponse Error: {ex.Message}"); }
         }
 
-        private static JObject BuildWorkerRpcRequest(JObject workerCommand, string requestId)
+        private static JObject BuildWorkerRpcRequest(JObject workerCommand, string requestId, string? operationId = null)
         {
-            return new JObject
+            var rpc = new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = requestId,
@@ -967,6 +967,16 @@ namespace GxMcp.Gateway
                 ["payload"] = workerCommand["payload"]?.DeepClone(),
                 ["params"] = workerCommand.DeepClone()
             };
+
+            if (!string.IsNullOrWhiteSpace(operationId))
+            {
+                rpc["_meta"] = new JObject
+                {
+                    ["progressToken"] = operationId
+                };
+            }
+
+            return rpc;
         }
 
         private static async Task<JObject?> SendWorkerCommandAsync(
@@ -999,7 +1009,7 @@ namespace GxMcp.Gateway
             }
 
             workerCommand["correlationId"] = correlationId;
-            var workerRequest = BuildWorkerRpcRequest(workerCommand, requestId);
+            var workerRequest = BuildWorkerRpcRequest(workerCommand, requestId, operationId);
             var worker = await GetActiveWorkerAsync();
             var pending = new PendingWorkerRequest
             {

@@ -60,6 +60,27 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Completed", status["status"]?.ToString());
             Assert.False(status["timedOut"]?.Value<bool>() ?? true);
         }
+        [Fact]
+        public void BuildWorkerRpcRequest_IncludesMetaProgressToken_WhenOperationIdPresent()
+        {
+            var workerCommand = JObject.Parse(@"{
+                ""module"": ""Build"",
+                ""action"": ""Build"",
+                ""target"": ""InvoiceProc""
+            }");
+
+            var method = typeof(GxMcp.Gateway.Program).GetMethod(
+                "BuildWorkerRpcRequest",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            // Signature being added: BuildWorkerRpcRequest(JObject workerCommand, string requestId, string operationId = null)
+            var built = (JObject)method!.Invoke(null, new object?[] { workerCommand, "req-1", "op-xyz" })!;
+
+            Assert.Equal("op-xyz", built["_meta"]?["progressToken"]?.ToString());
+            Assert.Equal("Build", built["method"]?.ToString());
+        }
     }
 }
 
