@@ -359,5 +359,100 @@ namespace GxMcp.Gateway.Tests
             Assert.False(obj["empty"]?.Value<bool>() ?? true);
             Assert.True(obj["results"] is JArray);
         }
+
+        [Fact]
+        public void NormalizeToolPayloadForAxi_ShouldApplyCompactByDefault_WhenAxiCompactOmitted()
+        {
+            var payload = new JObject
+            {
+                ["results"] = new JArray(
+                    new JObject
+                    {
+                        ["name"] = "InvoiceProc",
+                        ["type"] = "Procedure",
+                        ["path"] = "Main/Procs/InvoiceProc",
+                        ["parentPath"] = "Main/Procs",
+                        ["description"] = "verbose"
+                    })
+            };
+
+            // No axiCompact arg at all — expected to default to compact.
+            var args = new JObject();
+
+            var method = typeof(Program).GetMethod(
+                "NormalizeToolPayloadForAxi",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var normalized = (JToken?)method!.Invoke(null, new object?[] { payload, "genexus_list_objects", args, false });
+            var obj = Assert.IsType<JObject>(normalized);
+            var first = Assert.IsType<JObject>(Assert.IsType<JArray>(obj["results"])[0]);
+
+            Assert.NotNull(first["name"]);
+            Assert.NotNull(first["type"]);
+            Assert.NotNull(first["path"]);
+            Assert.NotNull(first["parentPath"]);
+            Assert.Null(first["description"]); // omitted under compact default
+        }
+
+        [Fact]
+        public void NormalizeToolPayloadForAxi_ShouldReturnFullFields_WhenAxiCompactFalse()
+        {
+            var payload = new JObject
+            {
+                ["results"] = new JArray(
+                    new JObject
+                    {
+                        ["name"] = "InvoiceProc",
+                        ["type"] = "Procedure",
+                        ["path"] = "Main/Procs/InvoiceProc",
+                        ["parentPath"] = "Main/Procs",
+                        ["description"] = "verbose"
+                    })
+            };
+
+            var args = new JObject { ["axiCompact"] = false };
+
+            var method = typeof(Program).GetMethod(
+                "NormalizeToolPayloadForAxi",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            var normalized = (JToken?)method!.Invoke(null, new object?[] { payload, "genexus_list_objects", args, false });
+            var obj = Assert.IsType<JObject>(normalized);
+            var first = Assert.IsType<JObject>(Assert.IsType<JArray>(obj["results"])[0]);
+
+            Assert.NotNull(first["description"]); // full payload preserved
+        }
+
+        [Fact]
+        public void NormalizeToolPayloadForAxi_ShouldRespectExplicitFields_OverrideCompactDefault()
+        {
+            var payload = new JObject
+            {
+                ["results"] = new JArray(
+                    new JObject
+                    {
+                        ["name"] = "InvoiceProc",
+                        ["type"] = "Procedure",
+                        ["description"] = "verbose"
+                    })
+            };
+
+            // Explicit fields="name,description" must win over the compact default.
+            var args = new JObject { ["fields"] = "name,description" };
+
+            var method = typeof(Program).GetMethod(
+                "NormalizeToolPayloadForAxi",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            var normalized = (JToken?)method!.Invoke(null, new object?[] { payload, "genexus_list_objects", args, false });
+            var obj = Assert.IsType<JObject>(normalized);
+            var first = Assert.IsType<JObject>(Assert.IsType<JArray>(obj["results"])[0]);
+
+            Assert.NotNull(first["name"]);
+            Assert.NotNull(first["description"]);
+            Assert.Null(first["type"]); // not requested
+        }
     }
 }

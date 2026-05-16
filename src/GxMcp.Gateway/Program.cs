@@ -2625,14 +2625,19 @@ namespace GxMcp.Gateway
             return projected;
         }
 
+        // Returns true when compact-by-default projection should be applied for tools that
+        // declare a default compact field set in GetDefaultCompactFields. Default behavior
+        // (no axiCompact key) is TRUE — the LLM must pass `axiCompact: false` to opt out.
         private static bool ShouldUseCompactDefaults(JObject? toolArgs)
         {
-            if (toolArgs == null) return false;
+            if (toolArgs == null) return true;
             var token = toolArgs["axiCompact"];
-            if (token == null) return false;
-            return token.Type == JTokenType.Boolean
-                ? token.Value<bool>()
-                : bool.TryParse(token.ToString(), out bool parsed) && parsed;
+            if (token == null) return true;
+            if (token.Type == JTokenType.Boolean)
+            {
+                return token.Value<bool>();
+            }
+            return !bool.TryParse(token.ToString(), out bool parsed) || parsed;
         }
 
         private static HashSet<string>? GetDefaultCompactFields(string toolName)
