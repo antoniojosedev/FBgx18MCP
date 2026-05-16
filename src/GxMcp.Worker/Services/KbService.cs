@@ -217,6 +217,27 @@ namespace GxMcp.Worker.Services
 
                     _indexCacheService.ReplaceAll(liteEntries);
                     _indexCacheService.MarkLitePassComplete(_totalCount);
+
+                    // Wire the enrichment queue BEFORE starting the background drain, so callers
+                    // that hit ImpactAnalysis the moment LiteReady is published can promote
+                    // their target on demand without a race window.
+                    var enricher = new IndexEntryEnricher(e =>
+                    {
+                        try
+                        {
+                            if (string.IsNullOrEmpty(e?.Guid)) return;
+                            if (!Guid.TryParse(e.Guid, out var g)) return;
+                            var fullObj = kb.DesignModel.Objects.Get(g);
+                            if (fullObj == null) return;
+                            _indexCacheService.UpdateEntry(fullObj);
+                        }
+                        catch (Exception ex) { Logger.Warn("Enrich " + (e != null ? e.Name : "?") + " failed: " + ex.Message); }
+                    });
+
+                    var queue = new EnrichmentQueue(enricher);
+                    foreach (var entry in liteEntries) queue.Enqueue(entry);
+                    _indexCacheService.SetEnrichmentQueue(queue);
+
                     liteSw.Stop();
                     _currentStatus = $"Lite pass complete: {_totalCount} objects. Enriching in background...";
                     Logger.Info($"[BULK-INDEX-LITE] elapsedMs={liteSw.ElapsedMilliseconds} objects={_totalCount}");
@@ -226,22 +247,6 @@ namespace GxMcp.Worker.Services
                         try
                         {
                             _indexCacheService.MarkEnrichmentStarted();
-                            var enricher = new IndexEntryEnricher(e =>
-                            {
-                                try
-                                {
-                                    if (string.IsNullOrEmpty(e?.Guid)) return;
-                                    if (!Guid.TryParse(e.Guid, out var g)) return;
-                                    var fullObj = kb.DesignModel.Objects.Get(g);
-                                    if (fullObj == null) return;
-                                    _indexCacheService.UpdateEntry(fullObj);
-                                }
-                                catch (Exception ex) { Logger.Warn("Enrich " + (e != null ? e.Name : "?") + " failed: " + ex.Message); }
-                            });
-
-                            var queue = new EnrichmentQueue(enricher);
-                            foreach (var entry in liteEntries) queue.Enqueue(entry);
-                            _indexCacheService.SetEnrichmentQueue(queue);
 
                             queue.DrainAsync().GetAwaiter().GetResult();
                             _processedCount = _totalCount;
