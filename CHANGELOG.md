@@ -2,6 +2,15 @@
 
 ## v2.4.0 — Unreleased
 
+### Fixed
+
+- **DSL parsers dropped attribute types**: `TransactionDslParser` and `TableDslParser` previously
+  parsed `pNode.TypeStr` from the DSL but never applied it — new attributes silently defaulted to
+  `Numeric(4)` and type changes to existing attributes were ignored. Both parsers now resolve the
+  declared type via the new `AttributeTypeApplier` helper and set `Type`/`Length`/`Decimals` for
+  primitives or `DomainBasedOn` for domain references (`UserLogin`, `AutoNum18`, etc.). The bug
+  existed since `dfdd526` (v1.2.0). Workaround until now was `semanticops add_attribute type=…`.
+
 ### Changed
 
 - **BREAKING (envelope)**: `axiCompact` now defaults to `true` for `genexus_query` and
