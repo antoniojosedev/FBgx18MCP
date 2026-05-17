@@ -710,7 +710,11 @@ namespace GxMcp.Worker.Services
                                 string targetName = targetKey.Name;
                                 if (string.IsNullOrEmpty(targetName)) {
                                     string keyStr = targetKey.ToString();
-                                    targetName = keyStr.Contains(":") ? keyStr.Split(':')[1] : keyStr;
+                                    int colon = keyStr.IndexOf(':');
+                                    if (colon >= 0 && colon < keyStr.Length - 1)
+                                        targetName = keyStr.Substring(colon + 1);
+                                    else
+                                        targetName = keyStr;
                                 }
                                 if (string.IsNullOrEmpty(targetName)) continue;
 

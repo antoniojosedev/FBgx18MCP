@@ -5,6 +5,7 @@ using System.Linq;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Descriptors;
 using Artech.Genexus.Common.Objects;
+using Artech.Genexus.Common.Parts;
 using GxMcp.Worker.Helpers;
 
 namespace GxMcp.Worker.Parsers
@@ -129,11 +130,17 @@ namespace GxMcp.Worker.Parsers
 
                     if (targetSubLevel == null)
                     {
-                        Type levelType = sdkLevel.GetType().Assembly.GetType("Artech.Genexus.Common.Objects.TransactionLevel");
-                        if (levelType != null) {
-                            targetSubLevel = Activator.CreateInstance(levelType, new object[] { sdkLevel });
+                        // Use the (TransactionLevel parent) ctor + typed AddLevel(level) so the SDK
+                        // wires the new level into the structure with bookkeeping EnsureSave honors.
+                        // The previous Activator+Levels.Add path silently dropped new sub-levels —
+                        // same shape as the BC attribute regression fixed in 8c8f433.
+                        try {
+                            targetSubLevel = new TransactionLevel(sdkLevel);
                             targetSubLevel.Name = pNode.Name;
-                            try { sdkLevel.Levels.Add(targetSubLevel); } catch { }
+                            sdkLevel.AddLevel(targetSubLevel);
+                        } catch (Exception lvlEx) {
+                            Logger.Error("[TransactionDslParser] Failed to add sub-level '" + pNode.Name + "': " + (lvlEx.InnerException?.Message ?? lvlEx.Message));
+                            targetSubLevel = null;
                         }
                     }
                     if (targetSubLevel != null) SyncTransactionNodes(targetSubLevel, pNode.Children, model);

@@ -98,27 +98,34 @@ namespace GxMcp.Worker.Services.Structure
 
                 if (isLevel) {
                     TransactionLevel targetLevel = null;
-                    if (sdkLevel.Levels != null) { 
-                        foreach (dynamic lvl in sdkLevel.Levels) { if (lvl.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) { targetLevel = lvl; break; } } 
+                    if (sdkLevel.Levels != null) {
+                        foreach (dynamic lvl in sdkLevel.Levels) { if (lvl.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) { targetLevel = lvl; break; } }
                     }
-                    if (targetLevel == null) { 
-                        targetLevel = new TransactionLevel(sdkLevel.Structure); 
-                        targetLevel.Name = name; 
-                        sdkLevel.Levels.Add(targetLevel); 
+                    if (targetLevel == null) {
+                        // Use the (TransactionLevel parent) ctor + typed AddLevel(level) so the SDK
+                        // wires the new level into the structure with the bookkeeping EnsureSave honors.
+                        // The previous `new TransactionLevel(sdkLevel.Structure)` + Levels.Add(...) pattern
+                        // silently dropped the new sub-level (mirror of commit 8c8f433's attribute fix).
+                        targetLevel = new TransactionLevel(sdkLevel);
+                        targetLevel.Name = name;
+                        try { sdkLevel.AddLevel(targetLevel); }
+                        catch (Exception ex) { Logger.Error($"[VisualStructureService] AddLevel('{name}') failed: {ex.Message}"); continue; }
                     }
                     var children = vItem["children"] as JArray;
                     if (children != null) SyncVisualLevel(targetLevel, children);
                 } else {
                     TransactionAttribute targetAttr = null;
-                    if (sdkLevel.Attributes != null) { 
-                        foreach (dynamic attr in sdkLevel.Attributes) { if (attr.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) { targetAttr = attr; break; } } 
+                    if (sdkLevel.Attributes != null) {
+                        foreach (dynamic attr in sdkLevel.Attributes) { if (attr.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) { targetAttr = attr; break; } }
                     }
                     if (targetAttr == null) {
                         var attrObj = _objectService.FindObject(name) as Artech.Genexus.Common.Objects.Attribute;
-                        if (attrObj != null) { 
-                            targetAttr = new TransactionAttribute(sdkLevel.Structure, attrObj); 
-                            targetAttr.Name = name; 
-                            sdkLevel.Attributes.Add(targetAttr); 
+                        if (attrObj != null) {
+                            // Use the typed sdkLevel.AddAttribute(globalAttr) overload — it is the only
+                            // path that links the new TransactionAttribute into the structure with the
+                            // bookkeeping EnsureSave honors. See commit 8c8f433.
+                            try { targetAttr = sdkLevel.AddAttribute(attrObj); }
+                            catch (Exception ex) { Logger.Error($"[VisualStructureService] AddAttribute('{name}') failed: {ex.Message}"); continue; }
                         }
                         else continue;
                     }

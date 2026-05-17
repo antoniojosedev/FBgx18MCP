@@ -69,6 +69,26 @@ namespace GxMcp.Worker.Helpers
                     node.Name = node.Name.Substring(0, node.Name.Length - 1).Trim();
                 }
 
+                // Bug 1: `*` key marker can also bleed into the type substring when written
+                // as "TrnId : Numeric*" or "TrnId*:Numeric(4)*". AttributeTypeApplier.Parse
+                // rejects "Numeric*" (silent drop). Strip trailing `*` here — the marker
+                // belongs to the name role, not the type. Only `*` is documented as a key
+                // marker; leave other punctuation (e.g. `&` in domain refs) alone.
+                if (!string.IsNullOrEmpty(node.TypeStr) && node.TypeStr.EndsWith("*")) {
+                    node.IsKey = true;
+                    node.TypeStr = node.TypeStr.Substring(0, node.TypeStr.Length - 1).TrimEnd();
+                }
+
+                // Bug 2: in Transaction/Table/SDT structure DSL, `&Name` is not valid syntax
+                // for attribute or item names — but some inputs (LLM-generated, copy/paste
+                // from variable contexts) carry the `&` prefix. None of the three callers
+                // (TransactionDslParser, TableDslParser, SdtDslParser) treat node.Name as a
+                // variable reference; they all do case-insensitive attribute/item lookup,
+                // and the `&` prefix breaks that lookup. Strip it here.
+                if (!string.IsNullOrEmpty(node.Name) && node.Name.StartsWith("&")) {
+                    node.Name = node.Name.Substring(1).TrimStart();
+                }
+
                 while (stack.Count > 0 && stack.Peek().Indent >= indent) stack.Pop();
                 if (stack.Count == 0) rootNodes.Add(node);
                 else stack.Peek().Node.Children.Add(node);

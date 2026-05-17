@@ -53,16 +53,19 @@ namespace GxMcp.Worker.Helpers
             foreach (var band in bands)
             {
                 var bType = band.GetType();
-                var bName = bType.GetProperty("Name")?.GetValue(band, null)?.ToString() ?? "Band";
+                var bName = AttributeTypeApplier.GetPropertyUnambiguous(bType, "Name")?.GetValue(band, null)?.ToString() ?? "Band";
                 var pb = new XElement("PrintBlock", new XAttribute("Name", bName), new XAttribute("ControlName", bName));
 
                 foreach (var pName in new[] { "Height" })
                 {
-                    var pVal = bType.GetProperty(pName)?.GetValue(band, null);
+                    var pVal = AttributeTypeApplier.GetPropertyUnambiguous(bType, pName)?.GetValue(band, null);
                     if (pVal != null) pb.SetAttributeValue(pName, pVal.ToString());
                 }
 
-                var itemsProp = bType.GetProperty("Items") ?? bType.GetProperty("Elements") ?? bType.GetProperty("Controls") ?? bType.GetProperty("Components");
+                var itemsProp = AttributeTypeApplier.GetPropertyUnambiguous(bType, "Items")
+                             ?? AttributeTypeApplier.GetPropertyUnambiguous(bType, "Elements")
+                             ?? AttributeTypeApplier.GetPropertyUnambiguous(bType, "Controls")
+                             ?? AttributeTypeApplier.GetPropertyUnambiguous(bType, "Components");
                 var items = itemsProp?.GetValue(band, null) as System.Collections.IEnumerable;
 
                 if (items != null)
@@ -108,8 +111,8 @@ namespace GxMcp.Worker.Helpers
                             }
                         }
 
-                        var currentName = iType.GetProperty("Name")?.GetValue(item, null)?.ToString();
-                        var ctrlName = (iType.GetProperty("ControlName")?.GetValue(item, null) ?? currentName)?.ToString();
+                        var currentName = AttributeTypeApplier.GetPropertyUnambiguous(iType, "Name")?.GetValue(item, null)?.ToString();
+                        var ctrlName = (AttributeTypeApplier.GetPropertyUnambiguous(iType, "ControlName")?.GetValue(item, null) ?? currentName)?.ToString();
                         if (!string.IsNullOrEmpty(ctrlName)) el.SetAttributeValue("ControlName", ctrlName);
 
                         pb.Add(el);

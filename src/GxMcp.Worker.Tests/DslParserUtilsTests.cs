@@ -32,6 +32,43 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void KeyMarkerInTypeStr_StripsAndSetsIsKey()
+        {
+            // Regression: "TrnId : Numeric(4)*" or "TrnId : Numeric*" left "*" trailing
+            // TypeStr, which AttributeTypeApplier.Parse rejected (silent type drop).
+            var nodes = DslParserUtils.ParseLinesIntoNodes(new List<string> { "TrnId : Numeric(4)*" });
+
+            Assert.Single(nodes);
+            Assert.Equal("TrnId", nodes[0].Name);
+            Assert.True(nodes[0].IsKey);
+            Assert.Equal("Numeric(4)", nodes[0].TypeStr);
+        }
+
+        [Fact]
+        public void KeyMarkerOnBothSidesOfColon_BothStripped()
+        {
+            var nodes = DslParserUtils.ParseLinesIntoNodes(new List<string> { "TrnId*:Numeric(4)*" });
+
+            Assert.Single(nodes);
+            Assert.Equal("TrnId", nodes[0].Name);
+            Assert.True(nodes[0].IsKey);
+            Assert.Equal("Numeric(4)", nodes[0].TypeStr);
+        }
+
+        [Fact]
+        public void AmpersandPrefixOnName_StrippedForAttributeLookup()
+        {
+            // Regression: "&UserLogin : Numeric" left Name == "&UserLogin", which broke
+            // case-insensitive attribute/item lookup in all three callers
+            // (TransactionDslParser, TableDslParser, SdtDslParser).
+            var nodes = DslParserUtils.ParseLinesIntoNodes(new List<string> { "&UserLogin : Numeric" });
+
+            Assert.Single(nodes);
+            Assert.Equal("UserLogin", nodes[0].Name);
+            Assert.Equal("Numeric", nodes[0].TypeStr);
+        }
+
+        [Fact]
         public void NoKeyMarker_LeavesIsKeyFalse()
         {
             var nodes = DslParserUtils.ParseLinesIntoNodes(new List<string> { "TrnDesc : Character(60)" });

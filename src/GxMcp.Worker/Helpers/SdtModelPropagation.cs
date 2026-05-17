@@ -36,7 +36,13 @@ namespace GxMcp.Worker.Helpers
             if (sdt == null || string.IsNullOrEmpty(kbPath)) return;
 
             int sdtEntityId;
-            try { sdtEntityId = Convert.ToInt32(sdt.Key.GetType().GetProperty("Id").GetValue(sdt.Key)); }
+            try
+            {
+                var keyType = sdt.Key.GetType();
+                var idProp = AttributeTypeApplier.GetPropertyUnambiguous(keyType, "Id");
+                if (idProp == null) throw new InvalidOperationException("EntityKey.Id property not found");
+                sdtEntityId = Convert.ToInt32(idProp.GetValue(sdt.Key, null));
+            }
             catch (Exception ex)
             {
                 Logger.Debug("[SDT-PROP] failed to resolve SDT entityId: " + ex.Message);

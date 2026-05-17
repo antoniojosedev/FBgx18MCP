@@ -147,8 +147,12 @@ namespace GxMcp.Worker.Services
                         if (sourceVar != null) {
                             dynamic targetVar = targetVarPart.Variables.FirstOrDefault(x => x.Name.Equals(vName, StringComparison.OrdinalIgnoreCase));
                             if (targetVar == null) {
-                                targetVar = Activator.CreateInstance(sourceVar.GetType(), new object[] { vName, targetVarPart });
-                                targetVarPart.Variables.Add(targetVar);
+                                // Use VariablesPart.Add(string) typed overload — it returns the wrapped
+                                // Variable already linked into the part with the bookkeeping that
+                                // EnsureSave honors. The previous Activator.CreateInstance + Variables.Add
+                                // path could silently drop new variables (mirror of commit 8c8f433's BC fix).
+                                targetVar = targetVarPart.Add(vName);
+                                if (targetVar == null) { Logger.Error($"[RefactorService] VariablesPart.Add('{vName}') returned null on '{newProcName}'."); continue; }
                             }
                             targetVar.Type = sourceVar.Type;
                             targetVar.Length = sourceVar.Length;

@@ -566,7 +566,12 @@ namespace GxMcp.Worker.Services
 
             if (target.Contains(":") && typeFilter == null)
             {
-                var parts = target.Split(':');
+                var parts = target.Split(new[] { ':' }, 2);
+                if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
+                {
+                    Logger.Warn("FindObject: malformed 'Type:Name' target: " + target);
+                    return null;
+                }
                 typePart = parts[0].Trim();
                 namePart = parts[1].Trim();
             }

@@ -1,6 +1,65 @@
 # Changelog
 
-## v2.4.1 — Unreleased
+## v2.4.2 — Unreleased
+
+### Fixed
+
+Systematic bug hunt following the v2.4.1 BC patches surfaced ten latent bugs sharing
+the same fault patterns. All ten are fixed in this release; full worker test suite
+(314/314) and gateway suite (241/241) green.
+
+- **SDK bookkeeping bypass — `VisualStructureService` dropped attributes/levels on save**:
+  `Services/Structure/VisualStructureService.cs` constructed `TransactionLevel` and
+  `TransactionAttribute` via `new ...()` + `parent.Levels.Add(...)` / `parent.Attributes.Add(...)`.
+  This is the exact pattern fixed in v2.4.1 for `TransactionDslParser` — items bypass SDK
+  bookkeeping and are silently lost on `EnsureSave`. Now uses the typed `sdkLevel.AddLevel(...)`
+  and `sdkLevel.AddAttribute(...)` methods.
+- **SDK bookkeeping bypass — `RefactorService` dropped copied variables**:
+  `Services/RefactorService.cs` used `Activator.CreateInstance(sourceVar.GetType(), ...)` plus
+  `targetVarPart.Variables.Add(...)`. Replaced with the typed `VariablesPart.Add(string)`
+  overload that registers the variable with the SDK and returns the linked instance.
+- **SDK bookkeeping bypass — new sub-levels in `TransactionDslParser`**:
+  The sub-level creation path (mirror of the attribute path already fixed in v2.4.1) used
+  reflection + `Levels.Add`. Now uses `new TransactionLevel(parent)` + `parent.AddLevel(...)`.
+- **`SdtDslParser` silently lost item types when SDK proxy didn't expose `eDBType`**:
+  Two sites called `Assembly.GetType("Artech.Genexus.Common.eDBType")` and used the result
+  without a null-check; subsequent `GetMethod(..., eDBTypeT)` returned null and the `Invoke`
+  NRE was swallowed by an outer `catch`. SDT items round-tripped with the default type instead
+  of the requested one. Added `ResolveEDbType()` helper that probes the preferred assembly,
+  falls back to the statically-linked type, then scans `AppDomain` — and logs a structured
+  warning when none resolves (same template as v2.4.1's `TransactionAttribute` fix).
+- **Reflection AmbiguousMatchException risk in Report layout and SDT propagation**:
+  `Helpers/ReportLayoutHelper.cs` (Band `Name`, items `Name`/`ControlName`,
+  `Items`/`Elements`/`Controls`/`Components` collection probe) and `Helpers/SdtModelPropagation.cs`
+  (`EntityKey.Id`) used `Type.GetProperty(...)` without `BindingFlags`, which can throw
+  `AmbiguousMatchException` or pick the wrong shadowed member on the Artech SDK class hierarchy.
+  This is the same fault that v2.4.1's `AttributeTypeApplier` fix addressed. Extracted
+  `AttributeTypeApplier.GetPropertyUnambiguous(Type, name)` as a shared helper and routed all
+  unsafe call sites through it.
+- **`Split(':')` array-bounds crash on malformed `Type:Name` inputs**:
+  `Services/ObjectService.cs:FindObject` and `Services/VisualizerService.cs` (two sites) blindly
+  indexed `parts[1]` after `Split(':')`; inputs like `"Type:"` or `":Name"` from agents threw
+  `IndexOutOfRangeException`. Guarded all sites; `FindObject` logs and returns `null` on
+  malformed input. `Services/IndexCacheService.cs` (reference-graph enrichment) had the same
+  pattern; now uses `IndexOf` + `Substring` with explicit bounds.
+- **DSL parser missed `*` key-marker when it appeared on the type side**:
+  `Helpers/DslParserUtils.cs` only stripped the trailing `*` from `node.Name`. Inputs like
+  `TrnId : Numeric(4)*` left `*` in `node.TypeStr`, which `AttributeTypeApplier.Parse` rejected
+  — the type spec was silently dropped. Now strips `*` from both sides and still marks `IsKey`.
+- **DSL parser preserved `&` prefix on attribute names**:
+  Inputs like `&UserLogin : Numeric` left `node.Name == "&UserLogin"`, causing case-insensitive
+  attribute lookups to miss and duplicate-create the attribute. Verified that Transaction/Table/SDT
+  structure DSLs treat `&Name` as an attribute name (not a variable reference), so stripping is
+  safe. Three new regression tests in `DslParserUtilsTests`.
+
+### Verified-but-unchanged
+
+- **`Parsers/TableDslParser.cs` attribute creation path**: probed the runtime `TableStructurePart`
+  via reflection; no typed `AddAttribute(...)` method exists on this SDK type (unlike
+  `TransactionLevel`). Kept the legacy `ctor + Attributes.Add` pattern and added an explicit
+  comment documenting the verification gap so a future SDK upgrade can revisit.
+
+## v2.4.1 — 2026-05-16
 
 ### Fixed
 

@@ -123,7 +123,15 @@ namespace GxMcp.Worker.Parsers
                                     }
                                 }
 
-                                // TableAttribute may have a (structure, globalAttribute) ctor — try that first; fall back to single-arg.
+                                // VERIFICATION GAP (commit 8c8f433 follow-up): unlike TransactionLevel which
+                                // exposes a typed `AddAttribute(Attribute)` that performs EnsureSave-aware
+                                // bookkeeping, TableStructurePart (the actual runtime type behind
+                                // `tbl.TableStructure`) inherits only AddCategory/AddDefinition — no typed
+                                // AddAttribute method exists on the SDK proxy. The canonical creation path
+                                // is the (TableStructurePart, Attribute) ctor + Attributes.Add. Reflection
+                                // probe against Artech.Genexus.Common.dll confirms this — see commit notes.
+                                // If a future SDK version adds TableStructurePart.AddAttribute(Attribute),
+                                // mirror the TransactionDslParser fix here.
                                 dynamic tblAttr;
                                 if (globalAttr != null)
                                 {

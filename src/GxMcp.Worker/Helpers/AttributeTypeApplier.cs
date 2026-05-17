@@ -173,6 +173,15 @@ namespace GxMcp.Worker.Helpers
         }
 
         private static PropertyInfo GetPropertyResolvingAmbiguity(Type type, string name)
+            => GetPropertyUnambiguous(type, name);
+
+        /// <summary>
+        /// Resolve a property by name on <paramref name="type"/> without throwing
+        /// AmbiguousMatchException when derived types shadow the property (common in
+        /// the Artech SDK class hierarchy). Tries a normal lookup first, then walks
+        /// the type chain from most-derived to base taking the first declared match.
+        /// </summary>
+        public static PropertyInfo GetPropertyUnambiguous(Type type, string name)
         {
             if (type == null || string.IsNullOrEmpty(name)) return null;
             try { return type.GetProperty(name); }
