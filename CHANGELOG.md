@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`Documentation` / `Help` parts silently failed to persist via `genexus_edit`**:
+  `DocumentationPart` and `HelpPart` do not implement `ISource`, and their `Content` /
+  `EditableContent` properties are read-only on the part wrapper. `WriteService`'s
+  generic fallback only probed `Source` / `Content`, so writes hit the
+  `"No suitable method found to update part content"` warning, returned a misleading
+  `status: "Success"` with the SHA-256 of an empty string as `persistedHash`, and
+  did not mutate the KB. Added `TrySetDocumentationContent` which writes through
+  `HelpPart.HtmlContent` (HelpPart route) or `part.Page.EditableContent` →
+  `Content` → `StorableContent` → `InvariantContent` (WikiPage route),
+  instantiating a `WikiPage` from the part's `Module` when `Page` was null.
+  Also replaced the bogus `documentation` GUID in `PartAccessor` (the placeholder
+  `26323631-…` that decodes to ASCII junk) with the real
+  `BABF62C5-0111-49e9-A1C3-CC004D90900A` read from the `[Guid]` attribute on
+  `DocumentationPart`.
+
 ## v2.4.3 — 2026-05-18
 
 ### Fixed

@@ -164,7 +164,7 @@ namespace GxMcp.Worker.Structure
                 case "webform": return Guid.Parse("d24a58ad-57ba-41b7-9e6e-eaca3543c778");
                 case "patterninstance": return Guid.Parse("a51ced48-7bee-0001-ab12-04e9e32123d1");
                 case "help": return Guid.Parse("017ea008-6202-4468-a400-3f412c938473");
-                case "documentation": return Guid.Parse("26323631-6435-4235-3037-333036343530");
+                case "documentation": return Guid.Parse("babf62c5-0111-49e9-a1c3-cc004d90900a");
                 default: return Guid.Empty;
             }
         }

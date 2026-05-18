@@ -365,6 +365,107 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Documentation / Help parts (DocumentationPart, HelpPart) wrap a WikiPage and do not
+        // implement ISource. Their Content/EditableContent properties are read-only on the part,
+        // so the generic Source/Content reflection fallback above silently misses them. HelpPart
+        // does expose a writable HtmlContent; both expose a writable Page (WikiPage) whose own
+        // Content / EditableContent / StorableContent setters accept the new text.
+        private static bool TrySetDocumentationContent(
+            global::Artech.Architecture.Common.Objects.KBObjectPart part,
+            string content,
+            out string diagnostic)
+        {
+            diagnostic = null;
+            if (part == null) return false;
+
+            var partType = part.GetType();
+            bool isDocumentation =
+                partType.GetInterface("Artech.Genexus.Common.Parts.IDocumentation") != null ||
+                partType.Name.Equals("DocumentationPart", StringComparison.OrdinalIgnoreCase) ||
+                partType.Name.Equals("HelpPart", StringComparison.OrdinalIgnoreCase);
+            if (!isDocumentation) return false;
+
+            // 1. HelpPart exposes a writable HtmlContent — preferred when present.
+            var htmlProp = partType.GetProperty("HtmlContent", BindingFlags.Public | BindingFlags.Instance);
+            if (htmlProp != null && htmlProp.CanWrite && htmlProp.PropertyType == typeof(string))
+            {
+                try
+                {
+                    htmlProp.SetValue(part, content ?? string.Empty);
+                    diagnostic = "part.HtmlContent";
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("[DEBUG-SAVE] Setting HtmlContent failed: " + ex.Message);
+                }
+            }
+
+            // 2. Push through the underlying WikiPage. Page may be null on a never-edited part;
+            // attempt to materialize one from the module so the first write isn't a no-op.
+            var pageProp = partType.GetProperty("Page", BindingFlags.Public | BindingFlags.Instance);
+            if (pageProp == null || !pageProp.CanRead) return false;
+
+            object page = null;
+            try { page = pageProp.GetValue(part); }
+            catch (Exception ex) { Logger.Debug("[DEBUG-SAVE] Reading Page failed: " + ex.Message); }
+
+            if (page == null && pageProp.CanWrite)
+            {
+                try
+                {
+                    var wikiPageType = pageProp.PropertyType;
+                    object module = null;
+                    var moduleProp = partType.GetProperty("Module", BindingFlags.Public | BindingFlags.Instance);
+                    if (moduleProp != null && moduleProp.CanRead)
+                    {
+                        try { module = moduleProp.GetValue(part); } catch { }
+                    }
+
+                    if (module != null)
+                    {
+                        var ctor = wikiPageType.GetConstructor(new[] { module.GetType() });
+                        if (ctor != null) page = ctor.Invoke(new[] { module });
+                    }
+                    if (page == null)
+                    {
+                        var ctor0 = wikiPageType.GetConstructor(Type.EmptyTypes);
+                        if (ctor0 != null) page = ctor0.Invoke(null);
+                    }
+
+                    if (page != null)
+                    {
+                        pageProp.SetValue(part, page);
+                        page = pageProp.GetValue(part); // re-read in case the setter wrapped it
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("[DEBUG-SAVE] Instantiating Page failed: " + ex.Message);
+                }
+            }
+
+            if (page == null) return false;
+
+            foreach (var name in new[] { "EditableContent", "Content", "StorableContent", "InvariantContent" })
+            {
+                var prop = page.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                if (prop == null || !prop.CanWrite || prop.PropertyType != typeof(string)) continue;
+                try
+                {
+                    prop.SetValue(page, content ?? string.Empty);
+                    diagnostic = "part.Page." + name;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("[DEBUG-SAVE] Setting page." + name + " failed: " + ex.Message);
+                }
+            }
+
+            return false;
+        }
+
         private static bool ShouldRetryWithoutPartSave(string partName, global::Artech.Architecture.Common.Objects.KBObjectPart part, Exception ex, string partMessages, JArray issues)
         {
             if (!(part is global::Artech.Architecture.Common.Objects.ISource)) return false;
@@ -795,6 +896,11 @@ namespace GxMcp.Worker.Services
                             Logger.Warn("[DEBUG-SAVE] Auto-inject variables failed: " + ex.Message);
                         }
                     }
+                    contentSet = true;
+                }
+                else if (TrySetDocumentationContent(part, decodedCode, out string docDiagnostic))
+                {
+                    Logger.Info("[DEBUG-SAVE] Documentation content set via " + docDiagnostic);
                     contentSet = true;
                 }
                 else
