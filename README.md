@@ -22,17 +22,28 @@ In practice: you point the MCP at your KB, then ask your AI assistant things lik
 
 Before you start, make sure you have:
 
-- ✅ **Windows** (GeneXus is Windows-only — this MCP runs on Windows)
-- ✅ **GeneXus 18** installed locally (usually `C:\Program Files (x86)\GeneXus\GeneXus18`)
-- ✅ **A GeneXus 18 Knowledge Base** opened at least once in the IDE (so it has been built/initialized)
-- ✅ **Node.js 18+** ([download](https://nodejs.org/))
+- ✅ **Windows** (GeneXus is Windows-only)
+- ✅ **GeneXus 18** installed locally (default path: `C:\Program Files (x86)\GeneXus\GeneXus18`)
+- ✅ **A GeneXus 18 Knowledge Base** opened at least once in the IDE (so it's initialized)
+- ✅ **Node.js 18+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
 - ✅ **An MCP-compatible AI client** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 
 You do **not** need to clone this repo or install anything globally — `npx` handles it.
 
+**Never used a terminal before?** Press `Win+R`, type `powershell`, hit Enter. That's your terminal.
+
 ---
 
-## Quickstart (3 steps)
+## Quickstart (3 steps, ~5 minutes)
+
+### Find your two paths first
+
+Before running the installer, note these down:
+
+1. **GeneXus install folder** — where `GeneXus.exe` lives. Usually `C:\Program Files (x86)\GeneXus\GeneXus18`.
+2. **Your KB folder** — the root folder of your Knowledge Base (contains the `.gx` file and subfolders like `Model/`, `WebSpa/`).
+
+Not sure where your KB lives? Open it in GeneXus and check the title bar, or look in `File → Recent`.
 
 ### Step 1 — Run the installer
 
@@ -44,21 +55,38 @@ npx genexus-mcp@latest init --kb "C:\KBs\YourKB" --gx "C:\Program Files (x86)\Ge
 
 > Prefer the wizard? Run `npx genexus-mcp@latest init --interactive` and answer the prompts.
 
-When it finishes you should see `🎉 You are all set!` plus a JSON snippet for your AI client.
+What you'll see (takes ~30 seconds first time, faster on re-runs):
+
+1. `npx` downloads the package.
+2. The installer verifies the paths exist and GeneXus is present.
+3. It **auto-detects** which AI clients you have installed and adds the MCP config to each one.
+4. Prints a JSON snippet at the end — keep it in case you need to configure a client manually.
+5. Finishes with `🎉 You are all set!`.
 
 ### Step 2 — Register the MCP in your AI client
 
-The installer **auto-registers** the server with Claude Desktop, Claude Code, Cursor, and Antigravity when it detects them. If yours wasn't detected, copy the JSON snippet from Step 1 into your client's MCP config manually. See the [client setup guide](TROUBLESHOOTING.md#client-setup) if unsure where that file lives.
+Step 1 auto-registers with Claude Desktop, Claude Code, Cursor, and Antigravity when it detects them. If yours wasn't detected, copy the JSON snippet from Step 1 into your client's MCP config manually. See the [client setup guide](TROUBLESHOOTING.md#client-setup) if unsure where that file lives.
 
-### Step 3 — Restart your AI client and test
+### Step 3 — Restart your AI client, then test
 
-Fully close and reopen Claude / Cursor / etc. Then try this prompt:
+This part trips most people: **fully close** your AI client and reopen it. Not just the window — the whole process.
 
-> *"Using the GeneXus MCP, list the first 5 transactions in my KB and show their names."*
+- **Claude Desktop**: right-click the system-tray icon → **Quit**. Then launch it again. (Closing the window is not enough.)
+- **Claude Code**: end the session and start a fresh one.
+- **Cursor / Antigravity**: close all windows and reopen.
+
+Then paste this prompt:
+
+> *"Using the GeneXus MCP, list the first 5 objects in my KB and show name + type."*
+
+**What should happen:**
+
+- The AI invokes the `genexus_list_objects` tool (some UIs show "calling tool…").
+- A few seconds later, you get a list of objects from your KB.
 
 If you get a list back — **you're done**. Skip to [What can I ask the AI?](#what-can-i-ask-the-ai) for ideas.
 
-If something didn't work, go straight to [Troubleshooting](TROUBLESHOOTING.md) — most issues are covered there.
+If the AI says it doesn't have a GeneXus tool, or nothing happens, go to [Troubleshooting](TROUBLESHOOTING.md) — most issues are covered there.
 
 ---
 

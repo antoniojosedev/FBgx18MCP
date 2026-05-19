@@ -1,6 +1,6 @@
 # Guia de início — GeneXus MCP
 
-Este guia te leva do zero até "o assistente de IA está editando minha KB do GeneXus" em uns 10 minutos.
+Este guia te leva do zero até "o assistente de IA está editando minha KB do GeneXus" em uns 5-10 minutos.
 
 > Para problemas durante ou depois da instalação, consulte [TROUBLESHOOTING.md](../TROUBLESHOOTING.md).
 
@@ -19,10 +19,12 @@ Antes de começar, garanta que você tem:
 - ✅ **Windows** (GeneXus é só Windows)
 - ✅ **GeneXus 18** instalado (normalmente em `C:\Program Files (x86)\GeneXus\GeneXus18`)
 - ✅ **Uma KB do GeneXus 18** que você já tenha aberto pelo menos uma vez no IDE (pra que esteja inicializada)
-- ✅ **Node.js 18 ou superior** ([baixar](https://nodejs.org/))
+- ✅ **Node.js 18 ou superior** — verifica com `node --version` num terminal; baixa em [nodejs.org](https://nodejs.org/) se não tiver
 - ✅ **Um cliente de IA compatível com MCP** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 
 **Não** precisa clonar o repositório. **Não** precisa instalar nada globalmente com `npm`. Tudo é gerenciado pelo `npx`.
+
+**Nunca usou um terminal?** Aperta `Win+R`, digita `powershell`, Enter. Esse é seu terminal.
 
 ---
 
