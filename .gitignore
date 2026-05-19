@@ -53,3 +53,8 @@ scripts/_*
 
 # --- Claude Code session state (per-user, not source) ---
 .claude/
+
+# --- Local user / IDE state (not source) ---
+.gemini/settings.json
+install.cmd
+scripts/research/
