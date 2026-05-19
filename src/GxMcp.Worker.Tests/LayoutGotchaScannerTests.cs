@@ -123,5 +123,74 @@ namespace GxMcp.Worker.Tests
             Assert.Empty(LayoutGotchaScanner.Scan((string)null, _ => null));
             Assert.Empty(LayoutGotchaScanner.Scan("<not closed", _ => null));
         }
+
+        // W5 phase 2 rules — structural / schema gotchas.
+
+        [Fact]
+        public void Scan_GxAttributeMissingDataField_EmitsWarning()
+        {
+            var xml = @"<GxMultiForm><Form id=""1"" type=""html"">
+                <gxAttribute id=""Phantom"" />
+            </Form></GxMultiForm>";
+            var hits = LayoutGotchaScanner.Scan(xml, _ => null);
+            Assert.Contains(hits, h => h.Code == "GotchaGxAttributeMissingDataField" && h.ControlId == "Phantom");
+        }
+
+        [Fact]
+        public void Scan_UnknownControlType_EmitsWarning()
+        {
+            // "RadioButton" without the space is a common typo and the SDK silently falls back to Edit.
+            var xml = @"<GxMultiForm><Form id=""1"" type=""html"">
+                <gxAttribute AttID=""var:8"" ControlType=""RadioButton"" />
+            </Form></GxMultiForm>";
+            var hits = LayoutGotchaScanner.Scan(xml, _ => null);
+            Assert.Contains(hits, h => h.Code == "GotchaUnknownControlType");
+        }
+
+        [Fact]
+        public void Scan_RecognizedControlType_NoWarning()
+        {
+            // "Combo Box" with the space is the canonical form — no UnknownControlType gotcha.
+            // (May still trigger the html-form discrete-readonly gotcha — that's a different code.)
+            var xml = @"<GxMultiForm><Form id=""1"" type=""layout"">
+                <gxAttribute AttID=""var:8"" ControlType=""Combo Box"" />
+            </Form></GxMultiForm>";
+            var hits = LayoutGotchaScanner.Scan(xml, _ => null);
+            Assert.DoesNotContain(hits, h => h.Code == "GotchaUnknownControlType");
+        }
+
+        [Fact]
+        public void Scan_WebComponentMissingObjectCall_EmitsWarning()
+        {
+            var xml = @"<GxMultiForm><Form id=""1"" type=""html"">
+                <gxWebComponent id=""Header"" />
+                <gxEmbeddedPage id=""Footer"" ObjectCall=""Footer.Create()"" />
+            </Form></GxMultiForm>";
+            var hits = LayoutGotchaScanner.Scan(xml, _ => null);
+            Assert.Single(hits, h => h.Code == "GotchaWebComponentMissingObjectCall");
+            Assert.Equal("Header", hits.First(h => h.Code == "GotchaWebComponentMissingObjectCall").ControlId);
+        }
+
+        [Fact]
+        public void Scan_CellOutsideTable_EmitsWarning()
+        {
+            // <cell> directly under <body> without <table>...<row>...<cell> hierarchy
+            var xml = @"<GxMultiForm><Form id=""1"" type=""html"">
+                <body><cell id=""Orphan"">x</cell></body>
+            </Form></GxMultiForm>";
+            var hits = LayoutGotchaScanner.Scan(xml, _ => null);
+            Assert.Contains(hits, h => h.Code == "GotchaCellOutsideTable");
+        }
+
+        [Fact]
+        public void Scan_DuplicateControlName_EmitsWarning()
+        {
+            var xml = @"<GxMultiForm><Form id=""1"" type=""html"">
+                <gxAttribute id=""Btn"" AttID=""var:8"" />
+                <gxButton id=""Btn"" eventGX=""'Enter'"" />
+            </Form></GxMultiForm>";
+            var hits = LayoutGotchaScanner.Scan(xml, _ => null);
+            Assert.Contains(hits, h => h.Code == "GotchaDuplicateControlName" && h.ControlId == "Btn");
+        }
     }
 }

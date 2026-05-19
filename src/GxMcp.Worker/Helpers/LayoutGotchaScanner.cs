@@ -148,9 +148,131 @@ namespace GxMcp.Worker.Helpers
                         });
                     }
                 }
+
+                // W5 phase 2 rules — derived from W5 SDK probe (friction-report roadmap 2026-05-19).
+                // These catch generator-silent breakages that compile clean and pass save-time
+                // validation but render wrong / broken at runtime.
+
+                // GotchaGxAttributeMissingDataField: gxAttribute with no AttID nor DataField →
+                // SDK leaves a phantom control; generator emits markup but never binds it.
+                if (elName.Equals("gxAttribute", StringComparison.OrdinalIgnoreCase))
+                {
+                    var attId = (string)el.Attribute("AttID");
+                    var dataField = (string)el.Attribute("DataField");
+                    if (string.IsNullOrWhiteSpace(attId) && string.IsNullOrWhiteSpace(dataField))
+                    {
+                        hits.Add(new Gotcha
+                        {
+                            Code = "GotchaGxAttributeMissingDataField",
+                            Severity = "Warning",
+                            Element = elName,
+                            ControlId = (string)el.Attribute("id") ?? "(no-id)",
+                            Message = "gxAttribute has neither AttID nor DataField — it will render but bind to nothing. " +
+                                      "FixWebFormData keeps the element silently, masking the problem.",
+                            Workaround = "Add AttID=\"var:N\" or DataField=\"<attributeName>\" so the control binds to a value."
+                        });
+                    }
+                }
+
+                // GotchaUnknownControlType: gxAttribute ControlType="..." with a misspelled value
+                // (e.g. "RadioButton" without the space, "Combobox" all-lowercase) → SDK silently
+                // falls back to default Edit. Known valid values:
+                //   Edit, Text Box, Combo Box, Radio Button, Check Box, Calendar, Image,
+                //   Picture, Hyperlink, Button, Static (legacy), Description, Embedded Page
+                if (elName.Equals("gxAttribute", StringComparison.OrdinalIgnoreCase))
+                {
+                    var ctrlType = (string)el.Attribute("ControlType");
+                    if (!string.IsNullOrWhiteSpace(ctrlType) && !_validControlTypes.Contains(ctrlType))
+                    {
+                        hits.Add(new Gotcha
+                        {
+                            Code = "GotchaUnknownControlType",
+                            Severity = "Warning",
+                            Element = elName,
+                            ControlId = (string)el.Attribute("id") ?? (string)el.Attribute("AttID") ?? "(no-id)",
+                            Message = $"gxAttribute ControlType=\"{ctrlType}\" is not a recognized SDK value. " +
+                                      "Generator falls back to Edit; your intended control type is lost.",
+                            Workaround = "Use one of: " + string.Join(", ", _validControlTypes.OrderBy(s => s)) + "."
+                        });
+                    }
+                }
+
+                // GotchaWebComponentMissingObjectCall: gxEmbeddedPage / gxWebComponent with no
+                // ObjectCall — runtime renders an empty <div>, no embedded object loads.
+                if (elName.Equals("gxEmbeddedPage", StringComparison.OrdinalIgnoreCase)
+                    || elName.Equals("gxWebComponent", StringComparison.OrdinalIgnoreCase))
+                {
+                    var objCall = (string)el.Attribute("ObjectCall");
+                    if (string.IsNullOrWhiteSpace(objCall))
+                    {
+                        hits.Add(new Gotcha
+                        {
+                            Code = "GotchaWebComponentMissingObjectCall",
+                            Severity = "Warning",
+                            Element = elName,
+                            ControlId = (string)el.Attribute("id") ?? "(no-id)",
+                            Message = elName + " has no ObjectCall attribute — runtime renders an empty <div>.",
+                            Workaround = "Add ObjectCall=\"<ComponentName>.Create()\" (or equivalent factory call)."
+                        });
+                    }
+                }
             }
+
+            // Structural rules — run after element loop so we have the doc available.
+
+            // GotchaCellOutsideTable / GotchaRowOutsideTable: <cell> or <row> with no <table>
+            // ancestor → generator wraps silently OR drops the element.
+            foreach (var el in doc.Descendants())
+            {
+                string elName = el.Name.LocalName;
+                if (elName.Equals("cell", StringComparison.OrdinalIgnoreCase) || elName.Equals("row", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool hasTableAncestor = el.Ancestors().Any(a =>
+                        a.Name.LocalName.Equals("table", StringComparison.OrdinalIgnoreCase));
+                    if (!hasTableAncestor)
+                    {
+                        hits.Add(new Gotcha
+                        {
+                            Code = "GotchaCellOutsideTable",
+                            Severity = "Warning",
+                            Element = elName,
+                            ControlId = (string)el.Attribute("id") ?? "(no-id)",
+                            Message = "<" + elName + "> has no <table> ancestor — generator wraps silently or drops the element. Layout structure may be malformed.",
+                            Workaround = "Wrap " + elName + " in a <table>...<tbody>...</tbody></table> hierarchy."
+                        });
+                    }
+                }
+            }
+
+            // GotchaDuplicateControlName: two elements with same id/Name. SDK auto-renames
+            // via GetUniqueName during save, but the caller loses the reference they wrote.
+            // Pre-empt by reporting which id was duplicated.
+            var idGroups = doc.Descendants()
+                .Where(e => !string.IsNullOrWhiteSpace((string)e.Attribute("id")))
+                .GroupBy(e => (string)e.Attribute("id"), StringComparer.OrdinalIgnoreCase);
+            foreach (var grp in idGroups.Where(g => g.Count() > 1))
+            {
+                hits.Add(new Gotcha
+                {
+                    Code = "GotchaDuplicateControlName",
+                    Severity = "Warning",
+                    Element = grp.First().Name.LocalName,
+                    ControlId = grp.Key,
+                    Message = $"id=\"{grp.Key}\" appears on {grp.Count()} elements. SDK auto-renames via GetUniqueName on save, so caller references may break silently.",
+                    Workaround = "Make each id unique. If you intended several controls with the same logical role, suffix them (Btn1, Btn2, ...)."
+                });
+            }
+
             return hits;
         }
+
+        // Valid ControlType values for gxAttribute, per SDK PropertyDescriptor.Converter.GetStandardValues().
+        // Conservative set — extend if a legitimate type appears that's missing here.
+        private static readonly HashSet<string> _validControlTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "Edit", "Text Box", "Combo Box", "Radio Button", "Check Box", "Calendar", "Image",
+            "Picture", "Hyperlink", "Button", "Static", "Description", "Embedded Page",
+            "Dynamic Combo Box", "List Box", "Multi Selection List Box", "Textarea", "Password"
+        };
 
         private static string AttrAny(XElement el, params string[] names)
         {
