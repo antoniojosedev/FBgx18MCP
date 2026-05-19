@@ -58,3 +58,4 @@ scripts/_*
 .gemini/settings.json
 install.cmd
 scripts/research/
+scratch/
