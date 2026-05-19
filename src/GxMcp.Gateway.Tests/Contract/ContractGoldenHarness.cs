@@ -53,6 +53,16 @@ namespace GxMcp.Gateway.Tests
 
             var actual = Normalize(ToToken(McpRouter.Handle((JObject)request.DeepClone())));
             var expected = Normalize(LoadToken(responseFixtureRelativePath));
+
+            // Update-mode: set env GXMCP_UPDATE_GOLDEN=1 to overwrite the fixture with the
+            // current actual output. Use sparingly (after intentional schema additions).
+            if (Environment.GetEnvironmentVariable("GXMCP_UPDATE_GOLDEN") == "1")
+            {
+                var fixturePath = FindFixturePath(responseFixtureRelativePath);
+                File.WriteAllText(fixturePath, actual.ToString(Formatting.Indented));
+                return;
+            }
+
             if (!JToken.DeepEquals(expected, actual))
             {
                 Assert.Fail(BuildDiffMessage(requestFixtureRelativePath, expected, actual));

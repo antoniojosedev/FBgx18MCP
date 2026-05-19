@@ -35,6 +35,7 @@ namespace GxMcp.Worker.Services
         private readonly NavigationSqlService _navigationSqlService;
         private readonly LinterService _linterService;
         private readonly PatternService _patternService;
+        private readonly PatternApplyService _patternApplyService;
         private readonly PatchService _patchService;
         private readonly SDTService _sdtService;
         private readonly StructureService _structureService;
@@ -56,6 +57,7 @@ namespace GxMcp.Worker.Services
         private readonly DiffService _diffService;
         private readonly ApplyTemplateService _applyTemplateService;
         private readonly EditAndBuildOrchestrator _editAndBuildOrchestrator;
+        private readonly PreviewService _previewService;
 
         private CommandDispatcher()
         {
@@ -94,6 +96,7 @@ namespace GxMcp.Worker.Services
             _historyService = new HistoryService(_objectService, _writeService);
             _linterService = new LinterService(_objectService, _navigationService);
             _patternService = new PatternService(_indexCacheService, _objectService);
+            _patternApplyService = new PatternApplyService(_objectService);
             _sdtService = new SDTService(_objectService);
             _structureService = new StructureService(_objectService);
             _propertyService = new PropertyService(_objectService);
@@ -105,6 +108,7 @@ namespace GxMcp.Worker.Services
             _diffService = new DiffService(_objectService);
             _applyTemplateService = new ApplyTemplateService(_writeService);
             _editAndBuildOrchestrator = new EditAndBuildOrchestrator(_writeService, _analyzeService, _buildService);
+            _previewService = new PreviewService(_objectService, _buildService);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -514,6 +518,14 @@ namespace GxMcp.Worker.Services
                         break;
                     case "pattern":
                         if (action == "GetSample") return _patternService.GetSample(target);
+                        if (action == "Apply")
+                        {
+                            bool reapply = args?["reapply"]?.ToObject<bool?>() ?? false;
+                            var patSettings = args?["settings"] as JObject;
+                            string patKey = args?["pattern"]?.ToString();
+                            if (reapply) return _patternApplyService.ReapplyPattern(target, patSettings);
+                            return _patternApplyService.ApplyPattern(target, patKey, patSettings);
+                        }
                         break;
                     case "ui":
                         if (action == "GetUIContext") return _uiService.GetUIContext(target);
@@ -653,6 +665,22 @@ namespace GxMcp.Worker.Services
                         break;
                     case "refactor":
                         return _refactorService.Refactor(target, action, payload);
+                    case "preview":
+                        if (action == "Render")
+                        {
+                            string previewName = target ?? args?["name"]?.ToString();
+                            var previewParms = args?["parms"] as JObject;
+                            string launcher = args?["launcher"]?.ToString() ?? "auto";
+                            bool buildFirst = args?["buildFirst"]?.ToObject<bool?>() ?? false;
+                            int waitMs = args?["waitMs"]?.ToObject<int?>() ?? 3000;
+                            string[] capture = (args?["capture"] as JArray)?.Select(t => t.ToString()).ToArray();
+                            bool diffBaseline = args?["diffBaseline"]?.ToObject<bool?>() ?? false;
+                            bool updateBaseline = args?["updateBaseline"]?.ToObject<bool?>() ?? false;
+                            var previewTask = _previewService.PreviewAsync(previewName, previewParms, launcher, buildFirst, waitMs, capture, diffBaseline, updateBaseline);
+                            previewTask.Wait();
+                            return previewTask.Result.ToString(Newtonsoft.Json.Formatting.None);
+                        }
+                        break;
                 }
 
                 return Models.McpResponse.Error(

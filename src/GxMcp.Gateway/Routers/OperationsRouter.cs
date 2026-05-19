@@ -109,6 +109,15 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                case "genexus_apply_pattern":
+                    return new
+                    {
+                        module = "Pattern",
+                        action = "Apply",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
                 case "genexus_diff":
                     return new
                     {
@@ -154,6 +163,22 @@ namespace GxMcp.Gateway.Routers
                     return ConvertStructureToolCall(args);
                 case "genexus_layout":
                     return ConvertLayoutToolCall(args);
+
+                case "genexus_preview":
+                    return new
+                    {
+                        module = "Preview",
+                        action = "Render",
+                        target = args?["name"]?.ToString(),
+                        name = args?["name"]?.ToString(),
+                        parms = args?["parms"],
+                        launcher = args?["launcher"]?.ToString() ?? "auto",
+                        buildFirst = args?["buildFirst"]?.ToObject<bool?>() ?? false,
+                        waitMs = args?["waitMs"]?.ToObject<int?>() ?? 3000,
+                        capture = args?["capture"],
+                        diffBaseline = args?["diffBaseline"]?.ToObject<bool?>() ?? false,
+                        updateBaseline = args?["updateBaseline"]?.ToObject<bool?>() ?? false
+                    };
 
                 default:
                     return null;

@@ -1,185 +1,401 @@
 {
   "tools": [
     {
-      "name": "genexus_whoami",
-      "description": "Return current KB context, GeneXus install, and MCP version.",
+      "description": "Add a variable to the Variables part of a GeneXus object.",
       "inputSchema": {
-        "type": "object",
-        "properties": {}
-      }
-    },
-    {
-      "name": "genexus_query",
-      "description": "Search objects in the active KB. Supports prefixes (type:, usedby:, parent:, parentPath:, description:). Compact projection by default. See genexus://kb/tool-help/genexus_query for examples.",
-      "inputSchema": {
-        "type": "object",
         "properties": {
-          "query": {
-            "type": "string"
-          },
-          "typeFilter": {
-            "type": "string"
-          },
-          "domainFilter": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "inline_read_top": {
-            "type": "integer",
-            "description": "0-3. Inline reads of top N in response."
-          },
           "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
           },
-          "axiCompact": {
-            "type": "boolean",
-            "description": "Default true. Returns compact projection (name,type,path). Pass false for full payload.",
-            "default": true
+          "name": {
+            "type": "string"
+          },
+          "typeName": {
+            "type": "string"
+          },
+          "varName": {
+            "type": "string"
           }
         },
         "required": [
-          "query"
-        ]
-      }
+          "name",
+          "varName"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_add_variable"
     },
     {
-      "name": "genexus_list_objects",
-      "description": "List objects with pagination. Feed nextOffset until hasMore=false. Returns minimal shape by default (name, type, path, parent); verbose=true for full shape.",
+      "description": "Cross-object semantic analysis: impact, dependencies, complexity, naming, summary, explain. See genexus://kb/tool-help/genexus_analyze for mode selection.",
       "inputSchema": {
-        "type": "object",
         "properties": {
-          "filter": {
-            "type": "string",
-            "description": "Legacy: matches name OR description. Prefer nameFilter/descriptionFilter."
-          },
-          "nameFilter": {
-            "type": "string",
-            "description": "Substring match on object name only."
-          },
-          "descriptionFilter": {
-            "type": "string",
-            "description": "Substring match on description only."
-          },
-          "pathPrefix": {
-            "type": "string",
-            "description": "Folder path prefix, e.g. 'Root Module/ClickSign/'."
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "offset": {
-            "type": "integer"
-          },
-          "parent": {
-            "type": "string"
-          },
-          "parentPath": {
-            "type": "string"
-          },
-          "typeFilter": {
-            "type": "string"
-          },
-          "verbose": {
-            "type": "boolean",
-            "description": "When true, returns full item shape (default false)."
-          },
-          "inline_read_top": {
-            "type": "integer",
-            "description": "0-3. Inline reads of top N in response."
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          },
-          "axiCompact": {
-            "type": "boolean",
-            "description": "Default true. Returns compact projection (name,type,path,parentPath). Pass false for full payload.",
-            "default": true
-          }
-        }
-      }
-    },
-    {
-      "name": "genexus_read",
-      "description": "Read source/metadata parts of one or more objects. Pass name or targets, plus parts=[...]. Paginate large source with offset/limit. See genexus://kb/tool-help/genexus_read for examples.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "targets": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "part": {
-            "type": "string"
-          },
-          "parts": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "When set, only the listed parts are returned in a combined response. Mutually exclusive with part/offset/limit."
-          },
-          "offset": {
-            "type": "integer"
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "type": {
+          "code": {
+            "description": "Required when mode=explain.",
             "type": "string"
           },
           "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        }
-      }
-    },
-    {
-      "name": "genexus_edit",
-      "description": "Edit an object part. Pass name or targets (mutually exclusive). Mode: full | patch. Use dryRun before persisting. See genexus://kb/tool-help/genexus_edit for examples.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "part": {
+            "description": "Target KB. Required when 2+ open.",
             "type": "string"
           },
           "mode": {
-            "type": "string",
+            "enum": [
+              "linter",
+              "navigation",
+              "hierarchy",
+              "impact",
+              "data_context",
+              "ui_context",
+              "pattern_metadata",
+              "summary",
+              "explain"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "waitForIndex": {
+            "default": true,
+            "description": "For mode=impact: when true (default) block up to 30s for the index to be Ready; when false return a status envelope immediately if the index is Cold/Reindexing.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_analyze"
+    },
+    {
+      "description": "Apply a GeneXus pattern (e.g. WorkWithPlus) to a parent object. Equivalent to IDE 'Right-click → Apply Pattern'.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Target KBObject name (Transaction, WebPanel, etc.)",
+            "type": "string"
+          },
+          "pattern": {
+            "description": "Pattern key ('WorkWithPlus') or GUID",
+            "type": "string"
+          },
+          "reapply": {
+            "default": false,
+            "description": "Re-run on existing instance instead of first-time apply",
+            "type": "boolean"
+          },
+          "settings": {
+            "description": "Optional pattern-instance settings (deeply nested config tree from the pattern's settings dialog)",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "pattern"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_apply_pattern"
+    },
+    {
+      "description": "Apply a visual template: kpi_header (title,kpi1,kpi2,kpi3) | empty_state (caption,image) | confirm_dialog (confirmEvent,cancelEvent). Template args go in args.",
+      "inputSchema": {
+        "properties": {
+          "args": {
+            "type": "object"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "template": {
+            "enum": [
+              "kpi_header",
+              "empty_state",
+              "confirm_dialog"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "template"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_apply_template"
+    },
+    {
+      "description": "Find, read, or write binary assets inside the active KB.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "find",
+              "read",
+              "write"
+            ],
+            "type": "string"
+          },
+          "contentBase64": {
+            "type": "string"
+          },
+          "includeContent": {
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "maxBytes": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "relativeRoot": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_asset"
+    },
+    {
+      "description": "Apply N independent edits. Item: {name,part?,content,type?,dryRun?}. stopOnError halts at first fail.",
+      "inputSchema": {
+        "properties": {
+          "dryRun": {
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "stopOnError": {
+            "type": "boolean"
+          },
+          "targets": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "targets"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_bulk_edit"
+    },
+    {
+      "description": "Create a new GeneXus object in the active KB.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "description": "e.g. Procedure, Transaction, WebPanel, SDT.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_create_object"
+    },
+    {
+      "description": "Delete an object from the KB. Irreversible — confirm=true required.",
+      "inputSchema": {
+        "properties": {
+          "confirm": {
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "confirm"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_delete_object"
+    },
+    {
+      "description": "Remove a variable. Idempotent. Refuses GAM/WWP+ framework-managed vars.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "varName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "varName"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_delete_variable"
+    },
+    {
+      "description": "Unified text diff. mode=textVsText|currentVsText.",
+      "inputSchema": {
+        "properties": {
+          "context": {
+            "type": "integer"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "left": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "textVsText",
+              "currentVsText"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "right": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_diff"
+    },
+    {
+      "description": "Generate structured docs (wiki, sequence diagrams, health reports) for an object/domain. Not for programmatic analysis (see genexus_analyze) or source (see genexus_read).",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "wiki",
+              "visualize",
+              "health"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "description": "Object or domain name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_doc"
+    },
+    {
+      "description": "Edit an object part. Pass name or targets (mutually exclusive). Mode: full | patch. Use dryRun before persisting. See genexus://kb/tool-help/genexus_edit for examples.",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "context": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "expectedCount": {
+            "type": "integer"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "mode": {
             "enum": [
               "full",
               "patch",
               "ops"
-            ]
+            ],
+            "type": "string"
           },
-          "content": {
+          "name": {
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "Replace",
+              "Insert_After",
+              "Append"
+            ],
             "type": "string"
           },
           "ops": {
-            "type": "array",
             "description": "RFC 6902 JSON-Patch ops. Supported: add, remove, replace, test.",
             "items": {
-              "type": "object",
               "properties": {
                 "op": {
-                  "type": "string",
                   "enum": [
                     "add",
                     "remove",
                     "replace",
                     "test"
-                  ]
+                  ],
+                  "type": "string"
                 },
                 "path": {
                   "type": "string"
@@ -189,17 +405,20 @@
               "required": [
                 "op",
                 "path"
-              ]
-            }
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "part": {
+            "type": "string"
           },
           "patch": {
-            "description": "Legacy string replacement OR {find, replace} JSON object. Prefer separate operation/context/content params for new code.",
             "anyOf": [
               {
                 "type": "string"
               },
               {
-                "type": "object",
                 "properties": {
                   "find": {
                     "type": "string"
@@ -211,79 +430,307 @@
                 "required": [
                   "find",
                   "replace"
-                ]
+                ],
+                "type": "object"
               }
-            ]
+            ],
+            "description": "Legacy string replacement OR {find, replace} JSON object. Prefer separate operation/context/content params for new code."
           },
-          "context": {
-            "type": "string"
-          },
-          "operation": {
-            "type": "string",
-            "enum": [
-              "Replace",
-              "Insert_After",
-              "Append"
-            ]
-          },
-          "expectedCount": {
-            "type": "integer"
-          },
-          "dryRun": {
-            "type": "boolean"
-          },
-          "verifyRollback": {
+          "return_post_state": {
+            "description": "Set false to omit post_state.diff from the response (default true).",
             "type": "boolean"
           },
           "targets": {
-            "type": "array",
             "items": {
-              "type": "object",
               "properties": {
-                "name": {
+                "content": {
                   "type": "string"
                 },
-                "content": {
+                "name": {
                   "type": "string"
                 }
               },
               "required": [
                 "name",
                 "content"
-              ]
-            }
+              ],
+              "type": "object"
+            },
+            "type": "array"
           },
           "type": {
             "type": "string"
           },
-          "return_post_state": {
-            "type": "boolean",
-            "description": "Set false to omit post_state.diff from the response (default true)."
-          },
           "verbose": {
-            "type": "boolean",
-            "description": "When true, adds slices (±15 lines around each hunk) to post_state (default false)."
+            "description": "When true, adds slices (±15 lines around each hunk) to post_state (default false).",
+            "type": "boolean"
           },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
+          "verifyRollback": {
+            "type": "boolean"
           }
-        }
-      }
+        },
+        "type": "object"
+      },
+      "name": "genexus_edit"
     },
     {
-      "name": "genexus_inspect",
-      "description": "Snapshot of an object: metadata, variables, structure, signature. Raw object shape without source text. For source/code use genexus_read.",
+      "description": "Edit an object then rebuild its callers in one call. Returns edit diff + impact + build operationId. See genexus://kb/tool-help/genexus_edit_and_build for examples.",
       "inputSchema": {
-        "type": "object",
         "properties": {
+          "buildIncludeCallees": {
+            "default": "direct",
+            "enum": [
+              "none",
+              "direct",
+              "transitive"
+            ],
+            "type": "string"
+          },
+          "buildPlanCap": {
+            "default": 200,
+            "type": "integer"
+          },
+          "content": {
+            "description": "New content or unified diff.",
+            "type": "string"
+          },
+          "dryRun": {
+            "default": false,
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "patch",
+            "enum": [
+              "full",
+              "patch"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Target object name.",
+            "type": "string"
+          },
+          "part": {
+            "description": "Part to edit (Source, Rules, ...).",
+            "type": "string"
+          },
+          "type": {
+            "description": "Disambiguates when name matches multiple objects.",
+            "type": "string"
+          },
+          "waitForIndex": {
+            "default": true,
+            "type": "boolean"
+          },
+          "waitTimeoutMs": {
+            "default": 30000,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "part",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_edit_and_build"
+    },
+    {
+      "description": "Export a GeneXus object part to a text file on disk.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
+          "outputPath": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "part": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "outputPath"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_export_object"
+    },
+    {
+      "description": "Export an object's full state (all parts) as a single JSON envelope.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_export_unified"
+    },
+    {
+      "description": "Generate new code or structures from templates or translations.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "scaffold",
+              "translate",
+              "sample"
+            ],
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_forge"
+    },
+    {
+      "description": "Format a GeneXus code snippet using worker rules.",
+      "inputSchema": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_format"
+    },
+    {
+      "description": "List, read, save, or restore GeneXus object history snapshots.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "list",
+              "get_source",
+              "save",
+              "restore"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "versionId": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_history"
+    },
+    {
+      "description": "Import a text file from disk into a GeneXus object part.",
+      "inputSchema": {
+        "properties": {
+          "inputPath": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "inputPath"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_import_object"
+    },
+    {
+      "description": "Inject SDT structures and Procedure signatures of called objects.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "recursive": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_inject_context"
+    },
+    {
+      "description": "Snapshot of an object: metadata, variables, structure, signature. Raw object shape without source text. For source/code use genexus_read.",
+      "inputSchema": {
+        "properties": {
           "include": {
-            "type": "array",
             "items": {
-              "type": "string",
               "enum": [
                 "metadata",
                 "variables",
@@ -293,813 +740,63 @@
                 "controls",
                 "events_repertoire",
                 "callers"
-              ]
-            }
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
           },
           "type": {
             "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
           }
         },
         "required": [
           "name"
-        ]
-      }
+        ],
+        "type": "object"
+      },
+      "name": "genexus_inspect"
     },
     {
-      "name": "genexus_analyze",
-      "description": "Cross-object semantic analysis: impact, dependencies, complexity, naming, summary, explain. See genexus://kb/tool-help/genexus_analyze for mode selection.",
+      "description": "Manage open KBs: list (with PID/RSS/idle), open (acquire Worker), close (release), set_default (persist alias to config.json).",
       "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "linter",
-              "navigation",
-              "hierarchy",
-              "impact",
-              "data_context",
-              "ui_context",
-              "pattern_metadata",
-              "summary",
-              "explain"
-            ]
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          },
-          "code": {
-            "type": "string",
-            "description": "Required when mode=explain."
-          },
-          "waitForIndex": {
-            "type": "boolean",
-            "description": "For mode=impact: when true (default) block up to 30s for the index to be Ready; when false return a status envelope immediately if the index is Cold/Reindexing.",
-            "default": true
-          }
-        },
-        "required": [
-          "name",
-          "mode"
-        ]
-      }
-    },
-    {
-      "name": "genexus_inject_context",
-      "description": "Inject SDT structures and Procedure signatures of called objects.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "recursive": {
-            "type": "boolean"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name"
-        ]
-      }
-    },
-    {
-      "name": "genexus_lifecycle",
-      "description": "Build, validate, index, or poll the KB. Long ops are async with operationId. See genexus://kb/tool-help/genexus_lifecycle for actions and target formats.",
-      "inputSchema": {
-        "type": "object",
         "properties": {
           "action": {
-            "type": "string",
-            "enum": [
-              "build",
-              "cancel",
-              "rebuild",
-              "reorg",
-              "validate",
-              "validate-kb",
-              "sync",
-              "index",
-              "status",
-              "result",
-              "snapshots-list",
-              "snapshots-restore"
-            ]
-          },
-          "target": {
-            "type": "string",
-            "description": "Object name(s), taskId, job_id, or op:<operationId>."
-          },
-          "code": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "snapshotPath": {
-            "type": "string"
-          },
-          "estimated_seconds": {
-            "type": "integer",
-            "description": "Build: <20 forces sync fast-path (one turn); >=20 (default 60) goes async."
-          },
-          "wait_seconds": {
-            "type": "integer",
-            "description": "Status: 0-25. >0 long-polls server-side until terminal or timeout."
-          },
-          "compact": {
-            "type": "boolean",
-            "description": "Status: when true (default) returns counts + top-10 errors + warning dedup. Set false for legacy full Output/Errors[]."
-          },
-          "force": {
-            "type": "boolean",
-            "description": "Index: when true, clears in-memory + on-disk snapshot and runs a full SDK rescan. Use when impact analyze reports indexEdgesMissing or after adding/renaming objects."
-          },
-          "includeCallees": {
-            "type": "string",
-            "enum": [
-              "none",
-              "direct",
-              "transitive"
-            ],
-            "description": "Build: auto-expand target via call graph so callees compile before callers (fixes CS0246 from missing DLLs). Default transitive."
-          },
-          "buildPlanCap": {
-            "type": "integer",
-            "description": "Build: max expanded nodes before BuildPlanTooLarge (default 200)."
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "action"
-        ]
-      }
-    },
-    {
-      "name": "genexus_forge",
-      "description": "Generate new code or structures from templates or translations.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "scaffold",
-              "translate",
-              "sample"
-            ]
-          },
-          "type": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "action"
-        ]
-      }
-    },
-    {
-      "name": "genexus_test",
-      "description": "Execute native GeneXus tests (GXtest).",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name"
-        ]
-      }
-    },
-    {
-      "name": "genexus_create_object",
-      "description": "Create a new GeneXus object in the active KB.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "description": "e.g. Procedure, Transaction, WebPanel, SDT."
-          },
-          "name": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "type",
-          "name"
-        ]
-      }
-    },
-    {
-      "name": "genexus_logs",
-      "description": "Read worker_debug.log tail for error diagnosis or correlation.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "lines": {
-            "type": "integer"
-          },
-          "filterCorrelation": {
-            "type": "string"
-          },
-          "grep": {
-            "type": "string"
-          }
-        }
-      }
-    },
-    {
-      "name": "genexus_worker_reload",
-      "description": "Hot-reload worker: copy new binaries and respawn.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "sourceDir": {
-            "type": "string",
-            "description": "Absolute path to freshly built bin/Release."
-          }
-        },
-        "required": [
-          "sourceDir"
-        ]
-      }
-    },
-    {
-      "name": "genexus_delete_object",
-      "description": "Delete an object from the KB. Irreversible — confirm=true required.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "confirm": {
-            "type": "boolean"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name",
-          "confirm"
-        ]
-      }
-    },
-    {
-      "name": "genexus_export_object",
-      "description": "Export a GeneXus object part to a text file on disk.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "outputPath": {
-            "type": "string"
-          },
-          "part": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "overwrite": {
-            "type": "boolean"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name",
-          "outputPath"
-        ]
-      }
-    },
-    {
-      "name": "genexus_import_object",
-      "description": "Import a text file from disk into a GeneXus object part.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "inputPath": {
-            "type": "string"
-          },
-          "part": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name",
-          "inputPath"
-        ]
-      }
-    },
-    {
-      "name": "genexus_refactor",
-      "description": "Run GeneXus refactor: rename, extract procedure, or WWP condition set.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "RenameAttribute",
-              "RenameVariable",
-              "RenameObject",
-              "ExtractProcedure",
-              "WWPSetCondition"
-            ]
-          },
-          "target": {
-            "type": "string",
-            "description": "Primary object or symbol to refactor."
-          },
-          "newName": {
-            "type": "string"
-          },
-          "objectName": {
-            "type": "string"
-          },
-          "code": {
-            "type": "string"
-          },
-          "procedureName": {
-            "type": "string"
-          },
-          "controlAttribute": {
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "action"
-        ]
-      }
-    },
-    {
-      "name": "genexus_add_variable",
-      "description": "Add a variable to the Variables part of a GeneXus object.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "varName": {
-            "type": "string"
-          },
-          "typeName": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name",
-          "varName"
-        ]
-      }
-    },
-    {
-      "name": "genexus_delete_variable",
-      "description": "Remove a variable. Idempotent. Refuses GAM/WWP+ framework-managed vars.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "varName": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name",
-          "varName"
-        ]
-      }
-    },
-    {
-      "name": "genexus_modify_variable",
-      "description": "Change a variable's type atomically (delete+add) preserving name and description.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Object name"
-          },
-          "varName": {
-            "type": "string"
-          },
-          "typeName": {
-            "type": "string"
-          },
-          "basedOn": {
-            "type": "string",
-            "description": "Domain name (optional)"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name",
-          "varName",
-          "typeName"
-        ]
-      }
-    },
-    {
-      "name": "genexus_validate_payload",
-      "description": "Pre-flight: parse + SDK schema scan + would-be diff vs current state. No save.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "part": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name",
-          "content"
-        ]
-      }
-    },
-    {
-      "name": "genexus_bulk_edit",
-      "description": "Apply N independent edits. Item: {name,part?,content,type?,dryRun?}. stopOnError halts at first fail.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "targets": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
-          },
-          "stopOnError": {
-            "type": "boolean"
-          },
-          "dryRun": {
-            "type": "boolean"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "targets"
-        ]
-      }
-    },
-    {
-      "name": "genexus_apply_template",
-      "description": "Apply a visual template: kpi_header (title,kpi1,kpi2,kpi3) | empty_state (caption,image) | confirm_dialog (confirmEvent,cancelEvent). Template args go in args.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "template": {
-            "type": "string",
-            "enum": [
-              "kpi_header",
-              "empty_state",
-              "confirm_dialog"
-            ]
-          },
-          "part": {
-            "type": "string"
-          },
-          "args": {
-            "type": "object"
-          },
-          "dryRun": {
-            "type": "boolean"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name",
-          "template"
-        ]
-      }
-    },
-    {
-      "name": "genexus_diff",
-      "description": "Unified text diff. mode=textVsText|currentVsText.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "mode": {
-            "type": "string",
-            "enum": [
-              "textVsText",
-              "currentVsText"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "part": {
-            "type": "string"
-          },
-          "left": {
-            "type": "string"
-          },
-          "right": {
-            "type": "string"
-          },
-          "context": {
-            "type": "integer"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        }
-      }
-    },
-    {
-      "name": "genexus_export_unified",
-      "description": "Export an object's full state (all parts) as a single JSON envelope.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "name"
-        ]
-      }
-    },
-    {
-      "name": "genexus_format",
-      "description": "Format a GeneXus code snippet using worker rules.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "code"
-        ]
-      }
-    },
-    {
-      "name": "genexus_properties",
-      "description": "Read or update GeneXus object properties. Note: Description is the title-bar text shown when a WebPanel/Popup is opened via .Popup().",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "get",
-              "set"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "control": {
-            "type": "string",
-            "description": "Optional. Layout control name (e.g. BtnConfirmar), variable name with & prefix (e.g. &Alu2RegProf), or attribute name."
-          },
-          "propertyName": {
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "action",
-          "name"
-        ]
-      }
-    },
-    {
-      "name": "genexus_asset",
-      "description": "Find, read, or write binary assets inside the active KB.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "find",
-              "read",
-              "write"
-            ]
-          },
-          "path": {
-            "type": "string"
-          },
-          "includeContent": {
-            "type": "boolean"
-          },
-          "maxBytes": {
-            "type": "integer"
-          },
-          "pattern": {
-            "type": "string"
-          },
-          "relativeRoot": {
-            "type": "string"
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "contentBase64": {
-            "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "action"
-        ]
-      }
-    },
-    {
-      "name": "genexus_history",
-      "description": "List, read, save, or restore GeneXus object history snapshots.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
             "enum": [
               "list",
-              "get_source",
-              "save",
-              "restore"
-            ]
-          },
-          "name": {
+              "open",
+              "close",
+              "set_default"
+            ],
             "type": "string"
           },
-          "versionId": {
-            "type": "integer"
+          "alias": {
+            "description": "KB alias (for open/close). For open, auto-generated from path basename if omitted.",
+            "type": "string"
           },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
+          "path": {
+            "description": "Absolute path to the KB (required for action=open if alias is not declared in config).",
+            "type": "string"
           }
         },
         "required": [
-          "action",
-          "name"
-        ]
-      }
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb"
     },
     {
-      "name": "genexus_structure",
-      "description": "Read or update visual and logical structure of GeneXus objects.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "get_visual",
-              "update_visual",
-              "get_indexes",
-              "get_logic"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "payload": {
-            "type": "object",
-            "description": "Update payload for update_visual."
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "action",
-          "name"
-        ]
-      }
-    },
-    {
-      "name": "genexus_layout",
       "description": "Native SDK layout/WebForm operations: get_tree, set_property, find_controls, inspect_surface, scan_mutators.",
       "inputSchema": {
-        "type": "object",
         "properties": {
           "action": {
-            "type": "string",
             "enum": [
               "get_tree",
               "set_property",
@@ -1110,31 +807,11 @@
               "scan_mutators",
               "rename_printblock",
               "add_printblock"
-            ]
-          },
-          "name": {
-            "type": "string"
-          },
-          "target": {
-            "type": "string",
-            "description": "Object name alias for backward compatibility."
-          },
-          "control": {
-            "type": "string"
-          },
-          "propertyName": {
-            "type": "string"
-          },
-          "value": {
-            "type": "string"
-          },
-          "query": {
+            ],
             "type": "string"
           },
           "changes": {
-            "type": "array",
             "items": {
-              "type": "object",
               "properties": {
                 "control": {
                   "type": "string"
@@ -1150,13 +827,28 @@
                 "control",
                 "propertyName",
                 "value"
-              ]
-            }
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "control": {
+            "type": "string"
+          },
+          "currentName": {
+            "type": "string"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
           },
           "limit": {
             "type": "integer"
           },
-          "currentName": {
+          "name": {
             "type": "string"
           },
           "newName": {
@@ -1165,71 +857,447 @@
           "printBlockName": {
             "type": "string"
           },
-          "height": {
+          "propertyName": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "target": {
+            "description": "Object name alias for backward compatibility.",
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_layout"
+    },
+    {
+      "description": "Build, validate, index, or poll the KB. Long ops are async with operationId. See genexus://kb/tool-help/genexus_lifecycle for actions and target formats.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "build",
+              "cancel",
+              "rebuild",
+              "reorg",
+              "validate",
+              "validate-kb",
+              "sync",
+              "index",
+              "status",
+              "result",
+              "snapshots-list",
+              "snapshots-restore"
+            ],
+            "type": "string"
+          },
+          "buildPlanCap": {
+            "description": "Build: max expanded nodes before BuildPlanTooLarge (default 200).",
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "compact": {
+            "description": "Status: when true (default) returns counts + top-10 errors + warning dedup. Set false for legacy full Output/Errors[].",
+            "type": "boolean"
+          },
+          "estimated_seconds": {
+            "description": "Build: <20 forces sync fast-path (one turn); >=20 (default 60) goes async.",
+            "type": "integer"
+          },
+          "force": {
+            "description": "Index: when true, clears in-memory + on-disk snapshot and runs a full SDK rescan. Use when impact analyze reports indexEdgesMissing or after adding/renaming objects.",
+            "type": "boolean"
+          },
+          "includeCallees": {
+            "description": "Build: auto-expand target via call graph so callees compile before callers (fixes CS0246 from missing DLLs). Default transitive.",
+            "enum": [
+              "none",
+              "direct",
+              "transitive"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "snapshotPath": {
+            "type": "string"
+          },
+          "target": {
+            "description": "Object name(s), taskId, job_id, or op:<operationId>.",
+            "type": "string"
+          },
+          "wait_seconds": {
+            "description": "Status: 0-25. >0 long-polls server-side until terminal or timeout.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_lifecycle"
+    },
+    {
+      "description": "List objects with pagination. Feed nextOffset until hasMore=false. Returns minimal shape by default (name, type, path, parent); verbose=true for full shape.",
+      "inputSchema": {
+        "properties": {
+          "axiCompact": {
+            "default": true,
+            "description": "Default true. Returns compact projection (name,type,path,parentPath). Pass false for full payload.",
+            "type": "boolean"
+          },
+          "descriptionFilter": {
+            "description": "Substring match on description only.",
+            "type": "string"
+          },
+          "filter": {
+            "description": "Legacy: matches name OR description. Prefer nameFilter/descriptionFilter.",
+            "type": "string"
+          },
+          "inline_read_top": {
+            "description": "0-3. Inline reads of top N in response.",
             "type": "integer"
           },
           "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        },
-        "required": [
-          "action"
-        ]
-      }
-    },
-    {
-      "name": "genexus_doc",
-      "description": "Generate structured docs (wiki, sequence diagrams, health reports) for an object/domain. Not for programmatic analysis (see genexus_analyze) or source (see genexus_read).",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "wiki",
-              "visualize",
-              "health"
-            ]
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
           },
-          "target": {
-            "type": "string",
-            "description": "Object or domain name."
-          }
-        },
-        "required": [
-          "action"
-        ]
-      }
-    },
-    {
-      "name": "genexus_search_source",
-      "description": "Regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "callee": {
-            "type": "string",
-            "description": "Method/function name (qualified or unqualified)."
+          "limit": {
+            "type": "integer"
           },
-          "argMatches": {
-            "type": "object",
-            "description": "Positional arg index to expected literal text."
+          "nameFilter": {
+            "description": "Substring match on object name only.",
+            "type": "string"
           },
-          "pattern": {
+          "offset": {
+            "type": "integer"
+          },
+          "parent": {
+            "type": "string"
+          },
+          "parentPath": {
+            "type": "string"
+          },
+          "pathPrefix": {
+            "description": "Folder path prefix, e.g. 'Root Module/ClickSign/'.",
             "type": "string"
           },
           "typeFilter": {
             "type": "string"
           },
-          "scope": {
-            "type": "array",
+          "verbose": {
+            "description": "When true, returns full item shape (default false).",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_list_objects"
+    },
+    {
+      "description": "Read worker_debug.log tail for error diagnosis or correlation.",
+      "inputSchema": {
+        "properties": {
+          "filterCorrelation": {
+            "type": "string"
+          },
+          "grep": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_logs"
+    },
+    {
+      "description": "Change a variable's type atomically (delete+add) preserving name and description.",
+      "inputSchema": {
+        "properties": {
+          "basedOn": {
+            "description": "Domain name (optional)",
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Object name",
+            "type": "string"
+          },
+          "typeName": {
+            "type": "string"
+          },
+          "varName": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "varName",
+          "typeName"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_modify_variable"
+    },
+    {
+      "description": "Render preview of a WebPanel via headless Chrome (chrome-devtools-axi). Opens the launcher page, fills required parms, navigates to the target, captures HTML/a11y/screenshot, optionally diffs vs baseline. Returns status + captures.",
+      "inputSchema": {
+        "properties": {
+          "buildFirst": {
+            "default": false,
+            "description": "If true, dispatch a build before opening the browser.",
+            "type": "boolean"
+          },
+          "capture": {
+            "description": "Capture set (default ['html','a11y']).",
+            "items": {
+              "enum": [
+                "html",
+                "a11y",
+                "screenshot",
+                "console"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "diffBaseline": {
+            "default": false,
+            "description": "Compute structural diff vs stored a11y baseline.",
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "launcher": {
+            "description": "Launcher page (default 'auto' = config.launcher).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Target WebPanel name.",
+            "type": "string"
+          },
+          "parms": {
+            "description": "Per-call launcher parms (merged over config defaults and objectParms).",
+            "type": "object"
+          },
+          "updateBaseline": {
+            "default": false,
+            "description": "Persist current a11y snapshot as the new baseline.",
+            "type": "boolean"
+          },
+          "waitMs": {
+            "default": 3000,
+            "description": "Milliseconds to wait after navigation before capture.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_preview"
+    },
+    {
+      "description": "Read or update GeneXus object properties. Note: Description is the title-bar text shown when a WebPanel/Popup is opened via .Popup().",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "get",
+              "set"
+            ],
+            "type": "string"
+          },
+          "control": {
+            "description": "Optional. Layout control name (e.g. BtnConfirmar), variable name with & prefix (e.g. &Alu2RegProf), or attribute name.",
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "propertyName": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_properties"
+    },
+    {
+      "description": "Search objects in the active KB. Supports prefixes (type:, usedby:, parent:, parentPath:, description:). Compact projection by default. See genexus://kb/tool-help/genexus_query for examples.",
+      "inputSchema": {
+        "properties": {
+          "axiCompact": {
+            "default": true,
+            "description": "Default true. Returns compact projection (name,type,path). Pass false for full payload.",
+            "type": "boolean"
+          },
+          "domainFilter": {
+            "type": "string"
+          },
+          "inline_read_top": {
+            "description": "0-3. Inline reads of top N in response.",
+            "type": "integer"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "typeFilter": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_query"
+    },
+    {
+      "description": "Read source/metadata parts of one or more objects. Pass name or targets, plus parts=[...]. Paginate large source with offset/limit. See genexus://kb/tool-help/genexus_read for examples.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "part": {
+            "type": "string"
+          },
+          "parts": {
+            "description": "When set, only the listed parts are returned in a combined response. Mutually exclusive with part/offset/limit.",
             "items": {
               "type": "string"
-            }
+            },
+            "type": "array"
           },
-          "maxResults": {
-            "type": "integer"
+          "targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_read"
+    },
+    {
+      "description": "Run GeneXus refactor: rename, extract procedure, or WWP condition set.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "RenameAttribute",
+              "RenameVariable",
+              "RenameObject",
+              "ExtractProcedure",
+              "WWPSetCondition"
+            ],
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "controlAttribute": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "newName": {
+            "type": "string"
+          },
+          "objectName": {
+            "type": "string"
+          },
+          "procedureName": {
+            "type": "string"
+          },
+          "target": {
+            "description": "Primary object or symbol to refactor.",
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_refactor"
+    },
+    {
+      "description": "Regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source.",
+      "inputSchema": {
+        "properties": {
+          "argMatches": {
+            "description": "Positional arg index to expected literal text.",
+            "type": "object"
+          },
+          "callee": {
+            "description": "Method/function name (qualified or unqualified).",
+            "type": "string"
           },
           "caseSensitive": {
             "type": "boolean"
@@ -1238,145 +1306,172 @@
             "type": "boolean"
           },
           "inline_read_top": {
-            "type": "integer",
-            "description": "0-3. Inline reads of top N distinct objects in response."
+            "description": "0-3. Inline reads of top N distinct objects in response.",
+            "type": "integer"
           },
           "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
-          }
-        }
-      }
-    },
-    {
-      "name": "genexus_kb",
-      "description": "Manage open KBs: list (with PID/RSS/idle), open (acquire Worker), close (release), set_default (persist alias to config.json).",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "list",
-              "open",
-              "close",
-              "set_default"
-            ]
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
           },
-          "alias": {
-            "type": "string",
-            "description": "KB alias (for open/close). For open, auto-generated from path basename if omitted."
+          "maxResults": {
+            "type": "integer"
           },
-          "path": {
-            "type": "string",
-            "description": "Absolute path to the KB (required for action=open if alias is not declared in config)."
+          "pattern": {
+            "type": "string"
+          },
+          "scope": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "typeFilter": {
+            "type": "string"
           }
         },
-        "required": [
-          "action"
-        ]
-      }
+        "type": "object"
+      },
+      "name": "genexus_search_source"
     },
     {
-      "name": "genexus_sql",
       "description": "SQL for a Transaction/Table (DDL) or a procedure For Each navigation.",
       "inputSchema": {
-        "type": "object",
         "properties": {
           "action": {
-            "type": "string",
             "enum": [
               "ddl",
               "navigation"
-            ]
+            ],
+            "type": "string"
+          },
+          "includeSubordinated": {
+            "description": "action=ddl only.",
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "levelNumber": {
+            "description": "action=navigation only.",
+            "type": "integer"
           },
           "name": {
             "type": "string"
           },
-          "includeSubordinated": {
-            "type": "boolean",
-            "description": "action=ddl only."
-          },
-          "levelNumber": {
-            "type": "integer",
-            "description": "action=navigation only."
-          },
           "type": {
             "type": "string"
-          },
-          "kb": {
-            "type": "string",
-            "description": "Target KB. Required when 2+ open."
           }
         },
         "required": [
           "action",
           "name"
-        ]
-      }
+        ],
+        "type": "object"
+      },
+      "name": "genexus_sql"
     },
     {
-      "name": "genexus_edit_and_build",
-      "description": "Edit an object then rebuild its callers in one call. Returns edit diff + impact + build operationId. See genexus://kb/tool-help/genexus_edit_and_build for examples.",
+      "description": "Read or update visual and logical structure of GeneXus objects.",
       "inputSchema": {
-        "type": "object",
         "properties": {
+          "action": {
+            "enum": [
+              "get_visual",
+              "update_visual",
+              "get_indexes",
+              "get_logic"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
           "name": {
-            "type": "string",
-            "description": "Target object name."
+            "type": "string"
+          },
+          "payload": {
+            "description": "Update payload for update_visual.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_structure"
+    },
+    {
+      "description": "Execute native GeneXus tests (GXtest).",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_test"
+    },
+    {
+      "description": "Pre-flight: parse + SDK schema scan + would-be diff vs current state. No save.",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "Target KB. Required when 2+ open.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
           },
           "part": {
-            "type": "string",
-            "description": "Part to edit (Source, Rules, ...)."
-          },
-          "content": {
-            "type": "string",
-            "description": "New content or unified diff."
-          },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "full",
-              "patch"
-            ],
-            "default": "patch"
-          },
-          "type": {
-            "type": "string",
-            "description": "Disambiguates when name matches multiple objects."
-          },
-          "dryRun": {
-            "type": "boolean",
-            "default": false
-          },
-          "buildIncludeCallees": {
-            "type": "string",
-            "enum": [
-              "none",
-              "direct",
-              "transitive"
-            ],
-            "default": "direct"
-          },
-          "buildPlanCap": {
-            "type": "integer",
-            "default": 200
-          },
-          "waitForIndex": {
-            "type": "boolean",
-            "default": true
-          },
-          "waitTimeoutMs": {
-            "type": "integer",
-            "default": 30000
+            "type": "string"
           }
         },
         "required": [
           "name",
-          "part",
           "content"
-        ]
-      }
+        ],
+        "type": "object"
+      },
+      "name": "genexus_validate_payload"
+    },
+    {
+      "description": "Return current KB context, GeneXus install, and MCP version.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "genexus_whoami"
+    },
+    {
+      "description": "Hot-reload worker: copy new binaries and respawn.",
+      "inputSchema": {
+        "properties": {
+          "sourceDir": {
+            "description": "Absolute path to freshly built bin/Release.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceDir"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_worker_reload"
     }
   ]
 }

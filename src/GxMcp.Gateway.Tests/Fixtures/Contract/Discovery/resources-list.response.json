@@ -1,34 +1,34 @@
 {
   "resources": [
     {
-      "uri": "genexus://kb/index-status",
-      "name": "KB Index Status",
-      "description": "Current indexing status for the active Knowledge Base."
-    },
-    {
-      "uri": "genexus://kb/health",
-      "name": "Gateway Health Report",
-      "description": "Health report for the GeneXus MCP worker and gateway."
-    },
-    {
-      "uri": "genexus://kb/agent-playbook",
-      "name": "GeneXus Agent Playbook",
-      "description": "Recommended MCP workflow to operate this GeneXus server in an agent-native, Git-friendly way."
-    },
-    {
-      "uri": "genexus://kb/llm-playbook",
-      "name": "LLM CLI+MCP Playbook",
-      "description": "Protocol-first guide for choosing CLI vs MCP, token-efficient calls, and timeout/lifecycle handling."
-    },
-    {
-      "uri": "genexus://objects",
-      "name": "GeneXus Objects Index",
-      "description": "Browsable index of all objects in the KB."
-    },
-    {
-      "uri": "genexus://attributes",
+      "description": "Browsable list of all attributes.",
       "name": "GeneXus Attributes",
-      "description": "Browsable list of all attributes."
+      "uri": "genexus://attributes"
+    },
+    {
+      "description": "Recommended MCP workflow to operate this GeneXus server in an agent-native, Git-friendly way.",
+      "name": "GeneXus Agent Playbook",
+      "uri": "genexus://kb/agent-playbook"
+    },
+    {
+      "description": "Health report for the GeneXus MCP worker and gateway.",
+      "name": "Gateway Health Report",
+      "uri": "genexus://kb/health"
+    },
+    {
+      "description": "Current indexing status for the active Knowledge Base.",
+      "name": "KB Index Status",
+      "uri": "genexus://kb/index-status"
+    },
+    {
+      "description": "Protocol-first guide for choosing CLI vs MCP, token-efficient calls, and timeout/lifecycle handling.",
+      "name": "LLM CLI+MCP Playbook",
+      "uri": "genexus://kb/llm-playbook"
+    },
+    {
+      "description": "Browsable index of all objects in the KB.",
+      "name": "GeneXus Objects Index",
+      "uri": "genexus://objects"
     }
   ]
 }

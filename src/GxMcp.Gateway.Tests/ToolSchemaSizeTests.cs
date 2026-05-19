@@ -47,7 +47,10 @@ namespace GxMcp.Gateway.Tests
             //   v2.4.0 (SP2.T3): 5200 → 5000 (description trim; long-form moved to genexus://kb/tool-help/{name};
             //   actual ~4956 — budget set to 5000, tighten further once remaining descriptions are trimmed)
             //   v2.4.0 (SP4.T5): 5000 → 5300 to accommodate genexus_edit_and_build composite tool (~240 tokens).
-            Assert.True(approxTokens < 5300, $"tool_definitions.json is ~{approxTokens} tokens; budget 5300.");
+            //   v2.5.2 (W2+W4 from IDE-parity roadmap): 5300 → 6000 to accommodate genexus_preview
+            //   (~410 tokens for full a11y / capture / baseline schema) and genexus_apply_pattern
+            //   (~150 tokens for pattern key / settings tree).
+            Assert.True(approxTokens < 6000, $"tool_definitions.json is ~{approxTokens} tokens; budget 6000.");
         }
     }
 }

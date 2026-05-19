@@ -1,60 +1,60 @@
 {
-  "protocolVersion": "2025-11-25",
+  "_meta": {
+    "removedTools": [
+      {
+        "argHint": "use targets[] (array of edit requests, each {name, mode, content|ops|patch, ...})",
+        "name": "genexus_batch_edit",
+        "replacedBy": "genexus_edit"
+      },
+      {
+        "argHint": "use targets[] (array of {name, part})",
+        "name": "genexus_batch_read",
+        "replacedBy": "genexus_read"
+      },
+      {
+        "argHint": "use mode=explain with name and code",
+        "name": "genexus_explain_code",
+        "replacedBy": "genexus_analyze"
+      },
+      {
+        "argHint": "use action=ddl with name (and includeSubordinated)",
+        "name": "genexus_get_sql",
+        "replacedBy": "genexus_sql"
+      },
+      {
+        "argHint": "use action=navigation with name and levelNumber",
+        "name": "genexus_get_sql_for_navigation",
+        "replacedBy": "genexus_sql"
+      },
+      {
+        "argHint": "use action=open with path (and optional alias)",
+        "name": "genexus_open_kb",
+        "replacedBy": "genexus_kb"
+      },
+      {
+        "argHint": "use mode=summary with name",
+        "name": "genexus_summarize",
+        "replacedBy": "genexus_analyze"
+      }
+    ],
+    "schemaVersion": "mcp-axi/2"
+  },
   "capabilities": {
+    "completion": {},
     "prompts": {
       "listChanged": false
-    },
-    "tools": {
-      "listChanged": true
     },
     "resources": {
       "listChanged": true,
       "subscribe": true
     },
-    "completion": {}
+    "tools": {
+      "listChanged": true
+    }
   },
+  "protocolVersion": "2025-11-25",
   "serverInfo": {
     "name": "genexus-mcp-server",
-    "version": "2.4.1"
-  },
-  "_meta": {
-    "schemaVersion": "mcp-axi/2",
-    "removedTools": [
-      {
-        "name": "genexus_batch_read",
-        "replacedBy": "genexus_read",
-        "argHint": "use targets[] (array of {name, part})"
-      },
-      {
-        "name": "genexus_batch_edit",
-        "replacedBy": "genexus_edit",
-        "argHint": "use targets[] (array of edit requests, each {name, mode, content|ops|patch, ...})"
-      },
-      {
-        "name": "genexus_open_kb",
-        "replacedBy": "genexus_kb",
-        "argHint": "use action=open with path (and optional alias)"
-      },
-      {
-        "name": "genexus_get_sql",
-        "replacedBy": "genexus_sql",
-        "argHint": "use action=ddl with name (and includeSubordinated)"
-      },
-      {
-        "name": "genexus_get_sql_for_navigation",
-        "replacedBy": "genexus_sql",
-        "argHint": "use action=navigation with name and levelNumber"
-      },
-      {
-        "name": "genexus_summarize",
-        "replacedBy": "genexus_analyze",
-        "argHint": "use mode=summary with name"
-      },
-      {
-        "name": "genexus_explain_code",
-        "replacedBy": "genexus_analyze",
-        "argHint": "use mode=explain with name and code"
-      }
-    ]
+    "version": "<version>"
   }
 }
