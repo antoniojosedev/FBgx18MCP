@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.6.3 — 2026-05-20
+
+Bug-fix pass uncovered by live-testing v2.6.2. Two gateway-side gaps prevented `lifecycle cancel` / `lifecycle status` from resolving when callers used the canonical `target=op:<jobId>` shape — exactly the call pattern documented in the tool help. Both close now.
+
+### Fixed
+
+- **`McpRouter.ResolveJobId` strips the `op:` prefix.** Callers pass `target=op:<jobId>` to lifecycle cancel/status; `ResolveJobId` returned the string verbatim, so `JobRegistry.Get("op:<id>")` always returned null, and cancel fell through to the OperationTracker path which doesn't track build/edit jobs — surface error: `"NotFound"` even when the job was registered and running. Now strips the prefix (case-insensitive, idempotent for non-prefixed inputs). 2 new unit tests in `LongPollTests`.
+
+- **`lifecycle status target=op:<jobId>` consults JobRegistry before falling through to OperationTracker.** The previous order routed every `op:<id>` shape to `_operationTracker.BuildOperationStatus`, which is a different lifecycle (gateway-internal request handles, not async jobs) and reported `NotFound`. The status path now checks `JobRegistry.Get(operationId)` first and only falls back to OperationTracker when the id isn't a registered job. Cancel was already covered by the ResolveJobId fix; this closes the symmetric status/result gap.
+
+### Internal
+
+- Live test of v2.6.2 confirmed both fixes end-to-end against KB `AcademicoHomolog1` (build started → `lifecycle cancel target=op:<jobId>` returned `{status:"Cancelled"}` + Control:Cancel fanout → `lifecycle status target=<jobId>` returned `{status:"cancelled", summary:"Cancelled by client...", completed_at:"..."}`). Worker 408/408, gateway 254/254 (+2 ResolveJobId prefix-stripping tests).
+
 ## v2.6.2 — 2026-05-20
 
 Observability + cancel reliability + pattern-parity harness. The three together close the "is the agent allowed to be assertive?" loop: writes now self-report which SDK path they took (so we know where parity regresses), `lifecycle cancel target=op:<id>` actually stops the worker (was previously a no-op for async builds/edits), and we ship the test harness that lets a contributor with a WWP-licensed KB verify byte-equivalence against the IDE.

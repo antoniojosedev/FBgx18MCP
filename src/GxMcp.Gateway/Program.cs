@@ -1434,15 +1434,22 @@ namespace GxMcp.Gateway
                         lifecycleTarget.StartsWith("op:", StringComparison.OrdinalIgnoreCase))
                     {
                         string operationId = lifecycleTarget.Substring(3);
-                        JObject opPayload = string.Equals(lifecycleAction, "result", StringComparison.OrdinalIgnoreCase)
-                            ? _operationTracker.BuildOperationResult(operationId)
-                            : _operationTracker.BuildOperationStatus(operationId);
-                        return BuildToolTextResponse(
-                            idToken,
-                            opPayload,
-                            isError: string.Equals(opPayload["status"]?.ToString(), "NotFound", StringComparison.OrdinalIgnoreCase),
-                            toolName: "genexus_lifecycle",
-                            toolArgs: args);
+                        // v2.6.2 (Item B follow-up): JobRegistry covers build/edit jobs;
+                        // OperationTracker covers gateway-internal request lifecycles.
+                        // status/result with op:<id> should resolve in EITHER — fall through
+                        // to the JobRegistry long-poll path below when the id is a job.
+                        if (JobRegistry.Get(operationId) == null)
+                        {
+                            JObject opPayload = string.Equals(lifecycleAction, "result", StringComparison.OrdinalIgnoreCase)
+                                ? _operationTracker.BuildOperationResult(operationId)
+                                : _operationTracker.BuildOperationStatus(operationId);
+                            return BuildToolTextResponse(
+                                idToken,
+                                opPayload,
+                                isError: string.Equals(opPayload["status"]?.ToString(), "NotFound", StringComparison.OrdinalIgnoreCase),
+                                toolName: "genexus_lifecycle",
+                                toolArgs: args);
+                        }
                     }
 
                     // FR#7 (friction-report 2026-05-14): support best-effort cancellation for
