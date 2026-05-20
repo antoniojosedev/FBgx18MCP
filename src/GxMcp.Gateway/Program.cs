@@ -47,7 +47,7 @@ namespace GxMcp.Gateway
         // Must mirror the exclusion list in tool_definitions.json (no `kb` param on these).
         private static readonly HashSet<string> _metaTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "genexus_kb", "genexus_whoami", "genexus_logs", "genexus_doc", "genexus_worker_reload"
+            "genexus_kb", "genexus_whoami", "genexus_logs", "genexus_doc", "genexus_worker_reload", "genexus_recipe"
         };
         private static bool IsMetaTool(string name) => _metaTools.Contains(name);
         private sealed class PendingWorkerRequest
@@ -528,7 +528,27 @@ namespace GxMcp.Gateway
                 },
                 // v2.3.8 Task 1.2: surface index readiness so agents know whether to
                 // call `lifecycle action=index` before relying on search/analyze.
-                ["index"] = BuildIndexBlock()
+                ["index"] = BuildIndexBlock(),
+                // Inline playbooks for the flows that drove the largest token spend
+                // in real sessions (LLMs were exploring WWP/popup structure before
+                // every change). Embedding the routing here means the agent sees it
+                // on the first turn and skips ~3-8k tokens of discovery. Each entry
+                // is a 1-line route, not full docs — for full recipes the agent can
+                // fetch genexus_recipe(name=...).
+                ["playbooks"] = BuildPlaybooksBlock()
+            };
+        }
+
+        private static JObject BuildPlaybooksBlock()
+        {
+            return new JObject
+            {
+                ["wwp_on_transaction"] = "genexus_apply_pattern { name: <Trn>, pattern: 'WorkWithPlus' } → generates WW<Trn>+View+Export family; no template needed.",
+                ["wwp_on_webpanel"] = "genexus_apply_pattern { name: <WebPanel>, pattern: 'WorkWithPlus', settings: { template: '<TemplateName>' } } → direct-attach via host WorkWithPlus<WebPanel>. CHECK PARENT TYPE FIRST with genexus_inspect: WebPanel + SDPanel are direct-attach; Transaction is family-gen; other types are REJECTED.",
+                ["edit_wwp_layout"] = "genexus_edit { name: WorkWithPlus<X>, part: 'PatternInstance', mode: 'patch', ... } → edit the host's XML; the MCP auto-projects to the WebForm.",
+                ["create_popup"] = "genexus_create_popup { name, spec: { title, inputs:[{type,varName,...}], buttons:[{caption,event}] } } → one call replaces ~6 edits (Form layout=true + inputs + buttons + parms).",
+                ["read_object_structure"] = "genexus_inspect { name, include:['parts','variables','signature'] } → cheap snapshot before any edit. ALWAYS run this first when unsure of object type.",
+                ["recipes_index"] = "For full step-by-step recipes call genexus_recipe { name: 'wwp_on_webpanel' | 'wwp_on_transaction' | 'create_popup' | 'edit_pattern_instance' | 'add_custom_button' | 'list' }."
             };
         }
 
@@ -1645,6 +1665,18 @@ namespace GxMcp.Gateway
                         {
                             ["isError"] = false,
                             ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = whoami.ToString(Formatting.None) } }
+                        };
+                    }
+
+                    if (string.Equals(tName, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string recipeName = tArgs?["name"]?.ToString();
+                        JObject payload = RecipeCatalog.Get(recipeName);
+                        bool isErr = payload?["error"] != null;
+                        return new JObject
+                        {
+                            ["isError"] = isErr,
+                            ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = payload.ToString(Formatting.None) } }
                         };
                     }
 

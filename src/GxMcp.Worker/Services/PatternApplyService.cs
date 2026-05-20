@@ -89,6 +89,67 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Error("Object not found", objectName);
                 }
 
+                // Parent-type gate: the WorkWithPlus apply path differs by parent kind.
+                // - Transaction: engine generates the full WW<Trn> + View + Export family,
+                //   no template required.
+                // - WebPanel / SDPanel: direct-attach via CreatePatternInstanceWithTemplate;
+                //   requires (or auto-discovers) a `WorkWithPlus for Web Template` object.
+                // - Anything else (Procedure, SDT, Domain, …): the SDK either no-ops or
+                //   creates a half-bound host that throws compile errors. Reject upfront
+                //   with explicit routing guidance so the LLM doesn't try the wrong path
+                //   (this was the source of "vinculou como se fosse transação" reports).
+                if (string.Equals(patternKey, "WorkWithPlus", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(patternKey, "WWP", StringComparison.OrdinalIgnoreCase))
+                {
+                    string parentType = obj.TypeDescriptor?.Name ?? "";
+                    bool isTransaction = string.Equals(parentType, "Transaction", StringComparison.OrdinalIgnoreCase);
+                    bool isWebPanelKind = string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)
+                                       || string.Equals(parentType, "SDPanel", StringComparison.OrdinalIgnoreCase);
+                    if (!isTransaction && !isWebPanelKind)
+                    {
+                        var rej = new JObject
+                        {
+                            ["status"] = "Error",
+                            ["target"] = obj.Name,
+                            ["patternKey"] = patternKey,
+                            ["parentType"] = parentType,
+                            ["error"] = $"WorkWithPlus cannot be applied to a {parentType}.",
+                            ["validParentTypes"] = new JArray("Transaction", "WebPanel", "SDPanel"),
+                            ["hint"] = "Apply WorkWithPlus only to a Transaction (generates WW/View/Export family) or to a WebPanel/SDPanel (direct-attach with a Template; pass settings.template or let the MCP auto-discover one)."
+                        };
+                        return rej.ToString(Newtonsoft.Json.Formatting.None);
+                    }
+
+                    // For WebPanel/SDPanel, validate (or surface) the template upfront so
+                    // the LLM sees the discovery result on the FIRST call rather than after
+                    // the SDK churns through a no-op and returns the NoOp recommendation.
+                    if (isWebPanelKind)
+                    {
+                        string callerTemplate = settings != null ? settings["template"]?.ToString() : null;
+                        try
+                        {
+                            var available = ListWwpWebTemplates();
+                            if (!string.IsNullOrEmpty(callerTemplate)
+                                && available.Count > 0
+                                && !available.Any(t => string.Equals(t, callerTemplate, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                var bad = new JObject
+                                {
+                                    ["status"] = "Error",
+                                    ["target"] = obj.Name,
+                                    ["patternKey"] = patternKey,
+                                    ["parentType"] = parentType,
+                                    ["error"] = $"Template '{callerTemplate}' is not a registered `WorkWithPlus for Web Template` in this KB.",
+                                    ["availableTemplates"] = new JArray(available),
+                                    ["hint"] = "Pass settings.template equal to one of availableTemplates, or omit it to auto-discover."
+                                };
+                                return bad.ToString(Newtonsoft.Json.Formatting.None);
+                            }
+                        }
+                        catch { /* enumeration best-effort; don't block apply on it */ }
+                    }
+                }
+
                 return ApplyPatternToObject(obj, patternId, patternKey, settings, reapply: false);
             }
             catch (Exception ex)
@@ -128,11 +189,17 @@ namespace GxMcp.Worker.Services
 
         internal string ApplyPatternToObject(KBObject obj, Guid patternId, string patternKey, JObject settings, bool reapply, string objectNameForResponse = null)
         {
-            // F17: refresh SDK surface dump on every apply so the docs/sdk-probe/
-            // artifacts stay current. Guard on _objectService != null so unit tests
-            // (which pass a fake adapter + null services) don't race on filesystem
-            // writes when xunit runs in parallel.
-            if (_objectService != null)
+            var phaseTimer = System.Diagnostics.Stopwatch.StartNew();
+            var phases = new System.Collections.Generic.List<string>();
+            void Phase(string name) { phases.Add($"{name}={phaseTimer.ElapsedMilliseconds}ms"); phaseTimer.Restart(); }
+
+            // F17 (perf-gated): SdkSurfaceProbe.Run walks every loaded SDK assembly,
+            // dumps all public types/methods/properties and writes a multi-MB raw.json.
+            // It used to run on EVERY apply (~5-15s of pure waste in production calls).
+            // It's a debugging artifact — opt in with GX_MCP_SDK_PROBE=1 when you need
+            // the dump, or call genexus_sdk_probe explicitly.
+            if (_objectService != null
+                && string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SDK_PROBE"), "1", StringComparison.Ordinal))
             {
                 try
                 {
@@ -145,6 +212,7 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex) { Logger.Debug("[SDK-PROBE] skipped: " + ex.Message); }
             }
 
+            Phase("sdkProbeGated");
             // Probe the engine; if license/package is missing we degrade gracefully.
             object patternDefinition = _engine.GetPatternDefinition(patternId);
             if (patternDefinition == null)
@@ -179,6 +247,7 @@ namespace GxMcp.Worker.Services
                     result = _engine.ApplyPattern(obj, patternDefinition, settings);
                     wasFirstApply = true;
                 }
+                Phase("engineApply");
             }
             catch (Exception ex)
             {
@@ -224,6 +293,7 @@ namespace GxMcp.Worker.Services
             // FindObject lookups, vs O(model_size) for a pre/post diff. Also avoids the
             // race where the SDK registers new objects asynchronously after Invoke returns.
             var generated = LookupWwpFamilyByConvention(obj);
+            Phase("lookupFamily");
             if (result?.GeneratedObjects != null)
             {
                 foreach (var name in result.GeneratedObjects)
@@ -261,11 +331,21 @@ namespace GxMcp.Worker.Services
                     Logger.Debug("ApplyPattern: index UpdateEntry sweep skipped: " + ex.Message);
                 }
             }
+            Phase("indexUpdate");
+
+            string parentTypeName = obj?.TypeDescriptor?.Name ?? "";
+            string bindingMode;
+            if (string.Equals(parentTypeName, "Transaction", StringComparison.OrdinalIgnoreCase)) bindingMode = "transaction-family";
+            else if (string.Equals(parentTypeName, "WebPanel", StringComparison.OrdinalIgnoreCase)) bindingMode = "webpanel-direct-attach";
+            else if (string.Equals(parentTypeName, "SDPanel", StringComparison.OrdinalIgnoreCase)) bindingMode = "sdpanel-direct-attach";
+            else bindingMode = "unknown";
 
             var response = new JObject
             {
                 ["status"] = "Success",
                 ["target"] = targetName,
+                ["parentType"] = parentTypeName,
+                ["bindingMode"] = bindingMode,
                 ["patternKey"] = patternKey,
                 ["patternId"] = patternId.ToString(),
                 ["wasFirstApply"] = wasFirstApply,
@@ -394,33 +474,41 @@ namespace GxMcp.Worker.Services
                             ? "Either: (1) pass an explicit `settings.template` matching a `WorkWithPlus for Web Template` object in this KB (we tried auto-discovery first). (2) Apply WorkWithPlus to a Transaction — the engine generates 'WW<Trn>' as a wired WWP screen."
                             : "Apply WorkWithPlus to a Transaction to generate the WWP family.";
 
-                        try
+                        // Diagnostic probes (perf-gated): pattern + full SDK surface dump.
+                        // These are useful when investigating a NoOp regression but
+                        // expensive (full reflection sweep + multi-MB disk write). Opt in
+                        // with GX_MCP_SDK_PROBE=1 — the recommendation/availableTemplates
+                        // already give the agent enough to act on without the dump.
+                        if (string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SDK_PROBE"), "1", StringComparison.Ordinal))
                         {
-                            var dump = DumpSdkSurface(patternDefinition, patternId);
-                            string dumpPath = Path.Combine(Path.GetTempPath(), "gxmcp_pattern_probe.json");
-                            File.WriteAllText(dumpPath, dump.ToString(Newtonsoft.Json.Formatting.Indented));
-                            response["sdkProbePath"] = dumpPath;
-
-                            // F17: comprehensive SDK surface probe → docs/sdk-probe/.
-                            // Always refresh on NoOp so future investigations have the
-                            // latest view of what's loaded.
-                            var fullProbe = SdkSurfaceProbe.Run(Environment.GetEnvironmentVariable("GX_MCP_SDK_PROBE_DIR"));
-                            response["sdkSurfaceProbe"] = new JObject
+                            try
                             {
-                                ["rawJsonPath"] = fullProbe.RawJsonPath,
-                                ["indexMdPath"] = fullProbe.IndexMdPath,
-                                ["generatorsMdPath"] = fullProbe.GeneratorsMdPath,
-                                ["rawSizeBytes"] = fullProbe.RawSizeBytes,
-                                ["assembliesScanned"] = fullProbe.AssembliesScanned,
-                                ["typesScanned"] = fullProbe.TypesScanned,
-                                ["generatorCandidates"] = fullProbe.GeneratorCandidates,
-                                ["warnings"] = new JArray(fullProbe.Warnings)
-                            };
+                                var dump = DumpSdkSurface(patternDefinition, patternId);
+                                string dumpPath = Path.Combine(Path.GetTempPath(), "gxmcp_pattern_probe.json");
+                                File.WriteAllText(dumpPath, dump.ToString(Newtonsoft.Json.Formatting.Indented));
+                                response["sdkProbePath"] = dumpPath;
+
+                                var fullProbe = SdkSurfaceProbe.Run(Environment.GetEnvironmentVariable("GX_MCP_SDK_PROBE_DIR"));
+                                response["sdkSurfaceProbe"] = new JObject
+                                {
+                                    ["rawJsonPath"] = fullProbe.RawJsonPath,
+                                    ["indexMdPath"] = fullProbe.IndexMdPath,
+                                    ["generatorsMdPath"] = fullProbe.GeneratorsMdPath,
+                                    ["rawSizeBytes"] = fullProbe.RawSizeBytes,
+                                    ["assembliesScanned"] = fullProbe.AssembliesScanned,
+                                    ["typesScanned"] = fullProbe.TypesScanned,
+                                    ["generatorCandidates"] = fullProbe.GeneratorCandidates,
+                                    ["warnings"] = new JArray(fullProbe.Warnings)
+                                };
+                            }
+                            catch (Exception ex) { response["sdkProbeError"] = ex.Message; }
                         }
-                        catch (Exception ex) { response["sdkProbeError"] = ex.Message; }
                     }
                 }
             }
+
+            Phase("tailEnvelope");
+            Logger.Info("[ApplyPattern-PERF] target=" + targetName + " parent=" + parentTypeName + " phases=" + string.Join(",", phases));
 
             GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(response, GxMcp.Worker.Helpers.WriteResultMeta.SdkPatternEngine);
             return response.ToString(Newtonsoft.Json.Formatting.None);
@@ -428,23 +516,62 @@ namespace GxMcp.Worker.Services
 
         // F23: list all `WorkWithPlus for Web Template` KBObjects in the current KB —
         // used to surface options to the agent on apply_pattern responses.
+        // Walking model.Objects.GetAll() is O(KB-size) and was clocking 10s+ on the
+        // 50k-object KB. Templates rarely change at runtime, so memoize per KB for
+        // 60s — fresh enough to pick up new templates, cheap on the upfront-guard
+        // path where every apply on a WebPanel hits this.
+        private static readonly Dictionary<string, (DateTime expiresAt, List<string> names)> _templateCache
+            = new Dictionary<string, (DateTime, List<string>)>(StringComparer.OrdinalIgnoreCase);
+        private static readonly object _templateCacheLock = new object();
+        private const int TemplateCacheTtlSeconds = 60;
+
         private List<string> ListWwpWebTemplates()
         {
+            if (_objectService == null) return new List<string>();
+            string kbKey = null;
+            try { kbKey = _objectService.GetKbService()?.GetKB()?.Location ?? "(no-kb)"; } catch { kbKey = "(error)"; }
+            lock (_templateCacheLock)
+            {
+                if (_templateCache.TryGetValue(kbKey, out var hit) && hit.expiresAt > DateTime.UtcNow)
+                    return hit.names;
+            }
             var names = new List<string>();
-            if (_objectService == null) return names;
+            // FAST PATH: walk the search index (in-memory, ~ms) instead of
+            // model.Objects.GetAll() (~10s on 50k-object KBs). The index entries
+            // carry Type, which is what we filter on. Fall back to SDK enumeration
+            // only when the index isn't ready.
             try
             {
-                var kb = _objectService.GetKbService()?.GetKB();
-                if (kb == null) return names;
-                foreach (KBObject o in kb.DesignModel.Objects.GetAll())
+                var index = _objectService.GetIndex();
+                if (index != null && index.Objects != null && index.Objects.Count > 0)
                 {
-                    if (o == null) continue;
-                    if (string.Equals(o.TypeDescriptor?.Name, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase))
-                        names.Add(o.Name);
+                    foreach (var entry in index.Objects.Values)
+                    {
+                        if (entry == null || string.IsNullOrEmpty(entry.Name)) continue;
+                        if (string.Equals(entry.Type, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase))
+                            names.Add(entry.Name);
+                    }
+                }
+                else
+                {
+                    var kb = _objectService.GetKbService()?.GetKB();
+                    if (kb != null)
+                    {
+                        foreach (KBObject o in kb.DesignModel.Objects.GetAll())
+                        {
+                            if (o == null) continue;
+                            if (string.Equals(o.TypeDescriptor?.Name, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase))
+                                names.Add(o.Name);
+                        }
+                    }
                 }
             }
             catch { /* best-effort */ }
             names.Sort(StringComparer.Ordinal);
+            lock (_templateCacheLock)
+            {
+                _templateCache[kbKey] = (DateTime.UtcNow.AddSeconds(TemplateCacheTtlSeconds), names);
+            }
             return names;
         }
 
