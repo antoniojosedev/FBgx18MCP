@@ -1661,7 +1661,11 @@ namespace GxMcp.Gateway
                                         ["client"] = "mcp",
                                         // v2.3.8 (Task 5.2) — forward callee-expansion knobs through the async path.
                                         ["includeCallees"] = tArgs?["includeCallees"]?.ToString(),
-                                        ["buildPlanCap"] = tArgs?["buildPlanCap"]?.ToObject<int?>()
+                                        ["buildPlanCap"] = tArgs?["buildPlanCap"]?.ToObject<int?>(),
+                                        // v2.6.2 (Item B): forward job_id as cancelToken so
+                                        // the worker registers it. A sibling lifecycle action=cancel
+                                        // target=op:<id> then resolves to a real Cancel() call.
+                                        ["cancelToken"] = job.Id
                                     };
 
                                     JObject? ackEnvelope = await SendWorkerCommandAsync(
@@ -1848,6 +1852,10 @@ namespace GxMcp.Gateway
                         int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? 30;
                         var editJob = JobRegistry.Start(sessionId, $"edit/{tName}", estEdit);
                         Log($"[AsyncEdit] Dispatching job={editJob.Id} tool={tName} estimated={estEdit}s");
+                        // v2.6.2 (Item B): inject cancelToken=jobId so the worker's
+                        // blanket-register at dispatch entry makes lifecycle cancel resolvable.
+                        if (workerCmd?["params"] is JObject capturedParams)
+                            capturedParams["cancelToken"] = editJob.Id;
                         var capturedCmd = workerCmd;
                         var capturedTimeout = timeoutMs;
                         var capturedName = tName;

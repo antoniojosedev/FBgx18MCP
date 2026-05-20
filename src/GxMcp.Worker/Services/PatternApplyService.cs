@@ -422,6 +422,7 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(response, GxMcp.Worker.Helpers.WriteResultMeta.SdkPatternEngine);
             return response.ToString(Newtonsoft.Json.Formatting.None);
         }
 

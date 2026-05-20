@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.6.2 — 2026-05-20
+
+Observability + cancel reliability + pattern-parity harness. The three together close the "is the agent allowed to be assertive?" loop: writes now self-report which SDK path they took (so we know where parity regresses), `lifecycle cancel target=op:<id>` actually stops the worker (was previously a no-op for async builds/edits), and we ship the test harness that lets a contributor with a WWP-licensed KB verify byte-equivalence against the IDE.
+
+### Added
+
+- **`_meta.sdkPath` tag on every write response.** New `Helpers/WriteResultMeta.cs` attaches a coarse, idempotent label describing which write strategy the handler picked: `typed-sdk` (IDE-native setter), `typed-writer` (our typed helpers), `raw-xml` (XElement.SetAttributeValue / source replace), `sdk-pattern-engine` (IPatternEngine.ApplyPattern), `ops` (semantic-ops / json-patch), or `hybrid` (bulk batch with mixed paths). The tag is idempotent: a deep writer's specific value (e.g. `raw-xml` from `LayoutService.SetProperty`) is preserved when a wrapper later defaults to `typed-sdk`. The KPI we get from this is the first objective measure of how often each path is used — needed to track parity-with-IDE regressions over time.
+
+- **`PatternParityHarness` + `PatternApplyParityTests`.** Five-dimension diff (generated family, PatternInstance XML, WebForm XML, Variables, Rules) between MCP-driven `apply_pattern` output and IDE "Right-click → Apply Pattern" output. Each dimension reports PASS/FAIL independently with a focused detail message (first-divergence index for XML, set-diff for collections). XML normalization sorts attributes alphabetically before comparison so serializer nondeterminism doesn't false-fail the test. `ParityReport.ToMarkdown()` emits a human-readable report. Integration test gated by `[LiveKbFact(requiresWWP: true)]` plus `GXMCP_PARITY_MCP_NAME` / `GXMCP_PARITY_IDE_NAME` env vars; 9 unit tests cover the diff dimensions on JObject fixtures so the harness itself stays regression-protected even when the live KB run is skipped.
+
+### Fixed
+
+- **`genexus_lifecycle action=cancel target=op:<id>` actually cancels async builds/edits.** Previously the worker-side `WorkerCancellationRegistry.Cancel(jobId)` returned `NotFound` because the original async command was dispatched without a `cancelToken` — only search/impact/analyze opted-in per-handler. Now: (a) the gateway injects `cancelToken=jobId` into every async command it starts (`Build/Build`, `Build/RebuildAll`, async edit commands); (b) the worker's `CommandDispatcher.Dispatch` blanket-registers the token once at entry so every handler running under it inherits a single shared CTS; (c) `WorkerCancellationRegistry.Register` is now refcounted so inner handlers that also register the same token (search/impact still do) share the registration without their `Dispose` stripping the outer scope's registration first. Net effect: a single `lifecycle cancel target=op:<id>` resolves the right CTS regardless of which handler is currently in flight.
+
+### Internal
+
+- `WriteResultMeta.TagSdkPath` is the single chokepoint. Instrumented at: `WriteService.WriteObject` / `ApplySemanticOps` / `ApplyJsonPatch` / `AddVariable` / `DeleteVariable` / `DeleteVariables` / `ModifyVariable` / `BulkWrite` (chokepoint: `WrapWithPersistedState`), `LayoutService.SetProperty` / `SetProperties`, `PatternApplyService.ApplyPattern` (tagged `sdk-pattern-engine`). Bulk results inherit the per-item path or report `hybrid` when items disagree.
+- `Helpers/WorkerCancellationRegistry.cs` rewritten around a `RefCount`-bearing `Entry` so `Register` / `Scope.Dispose` are nestable; the dictionary key remains the token string for `O(1)` `Cancel`. Test seam (`Reset`) unchanged; existing per-handler `using` blocks in `CommandDispatcher` still work and now share state with the new outer scope.
+- `Program.cs` async build dispatch (line ~1654) and async edit dispatch (line ~1853) both inject `cancelToken = job.Id` into the worker command's params. The control fan-out path that already lived at `Program.cs:1474` continues to fire — now it actually finds the registration.
+- Tests: worker 399 → 408 (6 `WriteResultMetaTests` + 5 `WorkerCancellationRegistryNestableTests` + 9 `PatternParityHarnessTests` − 1 LiveKbFact skipped on CI; net +9 enabled). Gateway 252/252 unchanged. All three additions are pure-data unit-testable so the suite stays fast and CI-green.
+
 ## v2.6.1 — 2026-05-20
 
 `genexus_create_object` now creates **any** object the GeneXus IDE can create, and it grew a real Domain path. Reported by Edgar: trying to create a `UserStatus` enumerated domain via the MCP failed with "MCP doesn't support domain creation"; this release closes that gap and the underlying gap that produced it — the tool only knew about a hardcoded list of types.

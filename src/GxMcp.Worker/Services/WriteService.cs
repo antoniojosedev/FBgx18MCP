@@ -38,7 +38,7 @@ namespace GxMcp.Worker.Services
             string target = req?["target"]?.ToString();
             string partName = req?["part"]?.ToString();
             if (string.IsNullOrEmpty(partName)) partName = "Structure";
-            return WrapWithPersistedState(ApplySemanticOpsImpl(req), target, partName);
+            return WrapWithPersistedState(ApplySemanticOpsImpl(req), target, partName, GxMcp.Worker.Helpers.WriteResultMeta.Ops);
         }
 
         private string ApplySemanticOpsImpl(JObject req)
@@ -146,7 +146,7 @@ namespace GxMcp.Worker.Services
         {
             string target = req?["target"]?.ToString();
             string partName = req?["part"]?.ToString();
-            return WrapWithPersistedState(ApplyJsonPatchImpl(req), target, partName);
+            return WrapWithPersistedState(ApplyJsonPatchImpl(req), target, partName, GxMcp.Worker.Helpers.WriteResultMeta.Ops);
         }
 
         private string ApplyJsonPatchImpl(JObject req)
@@ -651,7 +651,9 @@ namespace GxMcp.Worker.Services
             string raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun);
             // v2.3.8 Task 3.4: every edit response carries persistedHash + persistedSnippet
             // (success, no-change, dry-run, rollback, or error).
-            return WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName);
+            // Default sdkPath = typed-sdk; deeper writers (LayoutService raw-XML) tag their own
+            // sdkPath first and WrapWithPersistedState is idempotent so it preserves that.
+            return WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName, GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk);
         }
 
         private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false)
@@ -1299,12 +1301,31 @@ namespace GxMcp.Worker.Services
                 else success++;
             }
 
-            return new JObject
+            var bulkEnvelope = new JObject
             {
                 ["status"] = failure == 0 ? "Success" : "PartialFailure",
                 ["counts"] = new JObject { ["success"] = success, ["failure"] = failure, ["skipped"] = skipped },
                 ["results"] = results,
-            }.ToString();
+            };
+            // Bulk inherits whatever each item's sdkPath was: when all match, tag the bulk
+            // with that value; when they differ, tag "hybrid" so observability captures the mix.
+            string bulkSdkPath = SummarizeBulkSdkPath(results);
+            GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(bulkEnvelope, bulkSdkPath);
+            return bulkEnvelope.ToString();
+        }
+
+        private static string SummarizeBulkSdkPath(JArray results)
+        {
+            string seen = null;
+            foreach (var r in results)
+            {
+                if (!(r is JObject jo)) continue;
+                string p = jo["_meta"]?["sdkPath"]?.ToString();
+                if (string.IsNullOrEmpty(p)) continue;
+                if (seen == null) seen = p;
+                else if (!string.Equals(seen, p, StringComparison.Ordinal)) return GxMcp.Worker.Helpers.WriteResultMeta.Hybrid;
+            }
+            return seen ?? GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk;
         }
 
         private string ResolveVariableTarget(string target, ref string varName,
@@ -1334,7 +1355,7 @@ namespace GxMcp.Worker.Services
         /// Skips framework-managed names. Returns per-name outcomes plus aggregate counts.
         public string DeleteVariables(string target, System.Collections.Generic.IEnumerable<string> varNames)
         {
-            return WrapWithPersistedState(DeleteVariablesInternal(target, varNames), target, "Variables");
+            return WrapWithPersistedState(DeleteVariablesInternal(target, varNames), target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);
         }
 
         private string DeleteVariablesInternal(string target, System.Collections.Generic.IEnumerable<string> varNames)
@@ -1390,7 +1411,7 @@ namespace GxMcp.Worker.Services
 
         public string DeleteVariable(string target, string varName)
         {
-            return WrapWithPersistedState(DeleteVariableInternal(target, varName), target, "Variables");
+            return WrapWithPersistedState(DeleteVariableInternal(target, varName), target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);
         }
 
         private string DeleteVariableInternal(string target, string varName)
@@ -1517,7 +1538,7 @@ namespace GxMcp.Worker.Services
 
         public string AddVariable(string target, string varName, string typeName = null)
         {
-            return WrapWithPersistedState(AddVariableInternal(target, varName, typeName), target, "Variables");
+            return WrapWithPersistedState(AddVariableInternal(target, varName, typeName), target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);
         }
 
         private string AddVariableInternal(string target, string varName, string typeName = null)
@@ -1642,7 +1663,7 @@ namespace GxMcp.Worker.Services
         // can roll back if obj.Save() throws.
         public string ModifyVariable(string target, string varName, string newTypeName, string basedOn = null)
         {
-            return WrapWithPersistedState(ModifyVariableInternal(target, varName, newTypeName, basedOn), target, "Variables");
+            return WrapWithPersistedState(ModifyVariableInternal(target, varName, newTypeName, basedOn), target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);
         }
 
         private string ModifyVariableInternal(string target, string varName, string newTypeName, string basedOn)
@@ -5139,7 +5160,7 @@ namespace GxMcp.Worker.Services
         /// Failures to re-read are swallowed — the original envelope is still augmented with
         /// an empty hash/snippet so downstream parsers always find the keys.
         /// </summary>
-        private string WrapWithPersistedState(string responseJson, string target, string partName)
+        private string WrapWithPersistedState(string responseJson, string target, string partName, string sdkPath = null)
         {
             JObject parsed = null;
             try { parsed = JObject.Parse(responseJson); }
@@ -5147,6 +5168,8 @@ namespace GxMcp.Worker.Services
             {
                 parsed = new JObject { ["raw"] = responseJson ?? "" };
             }
+
+            GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(parsed, sdkPath);
 
             // Skip if the response is already decorated (e.g. nested call).
             if (parsed["persistedHash"] != null && parsed["persistedSnippet"] != null)

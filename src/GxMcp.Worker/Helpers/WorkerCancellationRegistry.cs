@@ -15,8 +15,18 @@ namespace GxMcp.Worker.Helpers
     // registry, the worker had no way to honour a cancel mid-call.
     public static class WorkerCancellationRegistry
     {
-        private static readonly ConcurrentDictionary<string, CancellationTokenSource> _tokens =
-            new ConcurrentDictionary<string, CancellationTokenSource>();
+        // v2.6.2: per-token refcount so an outer dispatcher-level Register() and an inner
+        // handler-level Register() can both share the same CTS without the inner Dispose
+        // dropping the registration before the outer scope exits. Cancel() finds the entry
+        // regardless of nesting depth.
+        private sealed class Entry
+        {
+            public readonly CancellationTokenSource Cts = new CancellationTokenSource();
+            public int RefCount;
+        }
+
+        private static readonly ConcurrentDictionary<string, Entry> _tokens =
+            new ConcurrentDictionary<string, Entry>();
 
         public static IDisposable Register(string token, out CancellationToken ct)
         {
@@ -25,16 +35,17 @@ namespace GxMcp.Worker.Helpers
                 ct = CancellationToken.None;
                 return new NoopDisposable();
             }
-            var cts = _tokens.GetOrAdd(token, _ => new CancellationTokenSource());
-            ct = cts.Token;
+            var entry = _tokens.GetOrAdd(token, _ => new Entry());
+            Interlocked.Increment(ref entry.RefCount);
+            ct = entry.Cts.Token;
             return new Scope(token);
         }
 
         public static bool Cancel(string token)
         {
             if (string.IsNullOrEmpty(token)) return false;
-            if (!_tokens.TryGetValue(token, out var cts)) return false;
-            try { cts.Cancel(); return true; }
+            if (!_tokens.TryGetValue(token, out var entry)) return false;
+            try { entry.Cts.Cancel(); return true; }
             catch (ObjectDisposedException) { return false; }
         }
 
@@ -45,7 +56,7 @@ namespace GxMcp.Worker.Helpers
         {
             foreach (var kvp in _tokens)
             {
-                try { kvp.Value.Dispose(); } catch { }
+                try { kvp.Value.Cts.Dispose(); } catch { }
             }
             _tokens.Clear();
         }
@@ -59,9 +70,13 @@ namespace GxMcp.Worker.Helpers
             {
                 if (_disposed) return;
                 _disposed = true;
-                if (_tokens.TryRemove(_token, out var cts))
+                if (!_tokens.TryGetValue(_token, out var entry)) return;
+                if (Interlocked.Decrement(ref entry.RefCount) <= 0)
                 {
-                    try { cts.Dispose(); } catch { }
+                    if (_tokens.TryRemove(_token, out var removed))
+                    {
+                        try { removed.Cts.Dispose(); } catch { }
+                    }
                 }
             }
         }

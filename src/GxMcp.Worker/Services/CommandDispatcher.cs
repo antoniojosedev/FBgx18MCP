@@ -206,6 +206,14 @@ namespace GxMcp.Worker.Services
 
                 Logger.Info(string.Format("[DISPATCHER] Method: {0}, Action: {1}, Target: {2}", method, action, target));
 
+                // v2.6.2 (Item B): blanket-register the cancel token so ANY handler that
+                // observes WorkerCancellationRegistry sees a single registration for the whole
+                // command. Inner handlers that also Register the same token share the CTS via
+                // refcount and only the outermost scope removes the entry. Without this, async
+                // builds/edits started by the gateway never registered their job_id and a
+                // matching lifecycle action=cancel returned NotFound on the worker side.
+                string commandCancelToken = args?["cancelToken"]?.ToString();
+                using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(commandCancelToken, out _))
                 using (GxMcp.Worker.Helpers.ProgressContext.Use(progressToken))
                 {
                 switch (method?.ToLower())

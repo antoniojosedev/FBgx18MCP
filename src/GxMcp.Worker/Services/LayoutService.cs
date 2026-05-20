@@ -263,6 +263,7 @@ namespace GxMcp.Worker.Services
                     ["previousValue"] = previous,
                     ["value"] = persistedValue
                 };
+                GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(result, GxMcp.Worker.Helpers.WriteResultMeta.RawXml);
                 return result.ToString();
             }
             catch (Exception ex)
@@ -392,14 +393,16 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                return new JObject
+                var bulkResult = new JObject
                 {
                     ["status"] = "Success",
                     ["name"] = obj.Name,
                     ["surface"] = contextResult.Surface.ToString(),
                     ["applied"] = applied,
                     ["count"] = applied.Count
-                }.ToString();
+                };
+                GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(bulkResult, GxMcp.Worker.Helpers.WriteResultMeta.RawXml);
+                return bulkResult.ToString();
             }
             catch (Exception ex)
             {
