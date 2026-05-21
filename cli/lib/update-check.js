@@ -2,6 +2,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const https = require('https');
+const {
+    getGatewayExePath,
+    getClientConfigTargets,
+    filterClientTargets,
+    readClientCommandEntry,
+    normalizeExePath
+} = require('./config');
 
 const REPO = 'lennix1337/Genexus18MCP';
 const NPM_PACKAGE = 'genexus-mcp';
@@ -159,9 +166,37 @@ function startBackgroundUpdateCheck(opts) {
     scheduleBackgroundFetch();
 }
 
+function detectClientExeDrift() {
+    try {
+        const packageNorm = normalizeExePath(getGatewayExePath());
+        const targets = filterClientTargets(getClientConfigTargets(), { platform: process.platform });
+        const mismatches = [];
+        for (const client of targets) {
+            if (!fs.existsSync(client.path)) continue;
+            const entry = readClientCommandEntry(client);
+            if (!entry || !entry.command) continue;
+            const cmd = entry.command;
+            // Skip launchers that resolve via npm at runtime.
+            if (/(^|[\\/])(npx|npx\.cmd|node|node\.exe)$/i.test(cmd) || /[\\/]genexus-mcp(\.cmd)?$/i.test(cmd)) continue;
+            if (!/\.exe$/i.test(cmd)) continue;
+            if (normalizeExePath(cmd) !== packageNorm) {
+                mismatches.push({ client: client.name, configured: cmd });
+            }
+        }
+        return mismatches;
+    } catch {
+        return [];
+    }
+}
+
 async function handleUpdate(_options, ctx) {
     const current = getPackageVersion();
     const result = await fetchLatestRelease();
+    const mismatches = detectClientExeDrift();
+
+    const driftHelp = mismatches.length
+        ? [`WARNING: ${mismatches.length} AI client(s) point at a gateway exe that is NOT this npm package — \`npm install -g ${NPM_PACKAGE}@latest\` will NOT update them. Mismatches: ${mismatches.map((m) => `${m.client} -> ${m.configured}`).join('; ')}. Re-run scripts/install.ps1 (or genexus-mcp init --write-clients) to resync.`]
+        : [];
 
     if (!result) {
         return {
@@ -171,9 +206,10 @@ async function handleUpdate(_options, ctx) {
                     current,
                     latest: null,
                     updateAvailable: false,
-                    fetched: false
+                    fetched: false,
+                    clientDrift: mismatches
                 },
-                help: ['Could not reach GitHub releases API. Check connectivity or retry later.']
+                help: ['Could not reach GitHub releases API. Check connectivity or retry later.', ...driftHelp]
             }
         };
     }
@@ -185,7 +221,7 @@ async function handleUpdate(_options, ctx) {
     });
 
     const updateAvailable = compareSemver(result.latestVersion, current || '0.0.0') > 0;
-    const help = updateAvailable
+    const baseHelp = updateAvailable
         ? [`Run: npm install -g ${NPM_PACKAGE}@latest`, result.releaseUrl ? `Release: ${result.releaseUrl}` : null].filter(Boolean)
         : ['Already on latest version.'];
 
@@ -198,9 +234,10 @@ async function handleUpdate(_options, ctx) {
                 releaseUrl: result.releaseUrl,
                 updateAvailable,
                 installCommand: `npm install -g ${NPM_PACKAGE}@latest`,
-                fetched: true
+                fetched: true,
+                clientDrift: mismatches
             },
-            help
+            help: [...baseHelp, ...driftHelp]
         }
     };
 }

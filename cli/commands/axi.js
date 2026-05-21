@@ -21,7 +21,10 @@ const {
     readKbCatalog,
     addKbToConfig,
     removeKbFromConfig,
-    switchActiveKb
+    switchActiveKb,
+    isPathLikelyAppLockerBlocked,
+    normalizeExePath,
+    readClientCommandEntry
 } = require('../lib/config');
 
 function resolveClientIds(options) {
@@ -176,7 +179,17 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
             });
 
             child.once('error', (err) => {
-                finish({ status: 'fail', detail: `${label} failed: ${err.message}` });
+                const code = err && (err.code || err.errno);
+                const accessDenied = code === 'EACCES' || code === 'EPERM' || /access is denied|access denied|acesso negado/i.test(err.message || '');
+                if (accessDenied) {
+                    const zone = isPathLikelyAppLockerBlocked(gatewayExePath);
+                    const hint = zone
+                        ? ` Gateway exe is under %${zone}% — likely blocked by AppLocker/SRP. Reinstall via scripts/install.ps1 to a whitelisted path.`
+                        : ' Access denied. AppLocker/SRP or AV may be blocking execution. Move the exe to a whitelisted path (see scripts/install.ps1).';
+                    finish({ status: 'fail', detail: `${label} failed: ${err.message}.${hint}` });
+                } else {
+                    finish({ status: 'fail', detail: `${label} failed: ${err.message}` });
+                }
             });
 
             child.once('spawn', () => {
@@ -304,6 +317,7 @@ async function runMcpSmokeProbe(cwd) {
 
 async function handleStatus(options, ctx) {
     const data = buildStatusData(ctx.cwd);
+    const riskyZone = isPathLikelyAppLockerBlocked(data.gatewayExePath);
 
     const ok = options.full
         ? {
@@ -311,6 +325,7 @@ async function handleStatus(options, ctx) {
             configFound: data.configFound,
             gatewayExeFound: data.gatewayExeFound,
             kbLooksValid: data.kbLooksValid,
+            pathSafetyWarn: !!riskyZone,
             configSource: data.configSource,
             configPath: data.configPath,
             gatewayExePath: data.gatewayExePath,
@@ -321,20 +336,86 @@ async function handleStatus(options, ctx) {
             ready: data.ready,
             configFound: data.configFound,
             gatewayExeFound: data.gatewayExeFound,
-            kbLooksValid: data.kbLooksValid
+            kbLooksValid: data.kbLooksValid,
+            pathSafetyWarn: !!riskyZone
         };
+
+    const help = data.ready
+        ? ['Run `genexus-mcp tools list --limit 10` to inspect available MCP tools.']
+        : [
+            'Run `genexus-mcp doctor` for expanded checks.',
+            'Run `genexus-mcp init --kb "<kbPath>" --gx "<geneXusPath>"` to create config.'
+        ];
+    if (riskyZone) {
+        help.unshift(`Gateway exe is under %${riskyZone}% — likely AppLocker-blocked on corporate Windows. Reinstall to a whitelisted path via scripts/install.ps1.`);
+    }
 
     return {
         exitCode: ctx.EXIT_CODES.OK,
-        envelope: {
-            ok,
-            help: data.ready
-                ? ['Run `genexus-mcp tools list --limit 10` to inspect available MCP tools.']
-                : [
-                    'Run `genexus-mcp doctor --full` for expanded checks.',
-                    'Run `genexus-mcp init --kb "<kbPath>" --gx "<geneXusPath>"` to create config.'
-                ]
+        envelope: { ok, help }
+    };
+}
+
+function buildClientExeCrossCheck(packageExePath) {
+    const packageNorm = normalizeExePath(packageExePath);
+    const targets = filterClientTargets(getClientConfigTargets(), { platform: process.platform });
+
+    const mismatches = [];
+    const matches = [];
+    const errors = [];
+    let inspected = 0;
+
+    for (const client of targets) {
+        if (!fs.existsSync(client.path)) continue;
+        let entry;
+        try {
+            entry = readClientCommandEntry(client);
+        } catch (err) {
+            errors.push(`${client.name}: ${err.message || 'read failed'}`);
+            continue;
         }
+        if (!entry || !entry.command) continue;
+        inspected += 1;
+
+        const cmd = entry.command;
+        const lowerCmd = cmd.toLowerCase();
+
+        // Skip launchers that always resolve via npm at runtime (npx, node CLI shim).
+        if (/(^|[\\/])(npx|npx\.cmd|node|node\.exe)$/i.test(lowerCmd) || /[\\/]genexus-mcp(\.cmd)?$/i.test(lowerCmd)) {
+            continue;
+        }
+
+        // Only compare when the configured command points to an .exe.
+        if (!/\.exe$/i.test(lowerCmd)) continue;
+
+        const configuredNorm = normalizeExePath(cmd);
+        if (configuredNorm === packageNorm) {
+            matches.push(client.name);
+        } else {
+            const configuredExists = fs.existsSync(cmd);
+            mismatches.push({
+                client: client.name,
+                configured: cmd,
+                exists: configuredExists
+            });
+        }
+    }
+
+    if (inspected === 0) {
+        return { status: 'warn', detail: 'No AI client config with a direct gateway exe found (or all clients use npx). Run `genexus-mcp init --write-clients` if you want to register one.' };
+    }
+
+    if (mismatches.length === 0) {
+        return {
+            status: 'pass',
+            detail: `All inspected client configs (${matches.join(', ')}) point at the npm-package gateway exe.`
+        };
+    }
+
+    const detailParts = mismatches.map((m) => `${m.client} -> ${m.configured}${m.exists ? '' : ' (missing)'}`);
+    return {
+        status: 'warn',
+        detail: `Client(s) reference a gateway exe that is NOT this npm package's bundled exe. \`npm install -g genexus-mcp@latest\` will NOT update those instances. Bundled: ${packageExePath}. Mismatches: ${detailParts.join('; ')}. Re-run scripts/install.ps1 (or genexus-mcp init --write-clients) to resync.`
     };
 }
 
@@ -359,21 +440,32 @@ async function handleDoctor(options, ctx) {
     const kbExists = !!(kbPath && fs.existsSync(kbPath));
     const gxExeExists = !!(gxPath && fs.existsSync(path.join(gxPath, 'genexus.exe')));
 
+    const riskyZone = isPathLikelyAppLockerBlocked(gatewayExePath);
+    const clientCrossCheck = buildClientExeCrossCheck(gatewayExePath);
+
     const checks = [
         { id: 'config_file', status: data.configFound ? 'pass' : 'fail', detail: data.configFound ? 'GX config file was found.' : 'GX config file is missing.' },
         { id: 'gateway_exe', status: data.gatewayExeFound ? 'pass' : 'fail', detail: data.gatewayExeFound ? 'Gateway executable is available.' : 'Gateway executable is missing.' },
+        {
+            id: 'gateway_exe_path_safety',
+            status: riskyZone ? 'warn' : 'pass',
+            detail: riskyZone
+                ? `Gateway exe is under %${riskyZone}%, which is commonly blocked by AppLocker/SRP in Windows domains. If clients show "Failed to connect" / "Access denied", reinstall to a whitelisted path via scripts/install.ps1 (defaults to C:\\Tools\\GenexusMCP or %LOCALAPPDATA%\\Programs\\GenexusMCP).`
+                : 'Gateway exe is in a path unlikely to be blocked by AppLocker/SRP.'
+        },
         { id: 'kb_path_exists', status: kbExists ? 'pass' : 'warn', detail: kbExists ? 'Configured KB path exists.' : 'Configured KB path does not exist.' },
         { id: 'kb_shape', status: data.kbLooksValid ? 'pass' : 'warn', detail: data.kbLooksValid ? 'KB folder shape looks valid.' : 'KB markers were not found in configured KB path.' },
         { id: 'gx_installation', status: gxExeExists ? 'pass' : 'warn', detail: gxExeExists ? 'GeneXus installation has genexus.exe.' : 'Configured GeneXus installation is missing genexus.exe.' },
         { id: 'tool_definitions', status: toolDefsExists ? 'pass' : 'warn', detail: toolDefsExists ? `Tool definition file found (${toolCount} tools).` : 'tool_definitions.json is missing.' },
-        { id: 'gx_env', status: process.env.GX_CONFIG_PATH ? 'pass' : 'warn', detail: process.env.GX_CONFIG_PATH ? 'GX_CONFIG_PATH env var is set.' : 'GX_CONFIG_PATH env var is not set for this process.' }
+        { id: 'gx_env', status: process.env.GX_CONFIG_PATH ? 'pass' : 'warn', detail: process.env.GX_CONFIG_PATH ? 'GX_CONFIG_PATH env var is set.' : 'GX_CONFIG_PATH env var is not set for this process.' },
+        { id: 'client_config_sync', status: clientCrossCheck.status, detail: clientCrossCheck.detail }
     ];
 
-    if (options.full) {
+    if (data.gatewayExeFound) {
         const probe = await probeGatewaySpawn();
         checks.push({ id: 'gateway_spawn_probe', status: probe.status, detail: probe.detail });
     } else {
-        checks.push({ id: 'gateway_spawn_probe', status: 'warn', detail: 'Spawn probe skipped by default. Run doctor with --full.' });
+        checks.push({ id: 'gateway_spawn_probe', status: 'warn', detail: 'Spawn probe skipped: gateway exe not found.' });
     }
 
     if (options.mcpSmoke) {
@@ -398,9 +490,6 @@ async function handleDoctor(options, ctx) {
     const help = [];
     if (checks.length > options.limit) {
         help.push(`Run 'genexus-mcp doctor --limit ${checks.length}' for all checks.`);
-    }
-    if (!options.full) {
-        help.push('Run `genexus-mcp doctor --full` to include runtime spawn probe.');
     }
     if (!options.mcpSmoke) {
         help.push('Run `genexus-mcp doctor --mcp-smoke` to execute MCP protocol smoke checks.');
@@ -774,6 +863,16 @@ async function handleLayout(subcommand, options, ctx) {
     };
 }
 
+function buildInteractiveInitHelp(patchResult) {
+    const help = [];
+    if (patchResult.patched.length === 0) {
+        help.push('Set `GX_CONFIG_PATH` in your MCP client env to the generated config path.');
+    } else if (process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
+        help.push('Windows + corporate AppLocker: the npx launcher resolves the gateway from %LOCALAPPDATA%\\npm-cache, which is commonly blocked. If clients fail with "Failed to connect" / Access denied, reinstall to a whitelisted path via scripts/install.ps1.');
+    }
+    return help;
+}
+
 async function runInteractiveInit(ctx) {
     const defaultGx = discoverGeneXusInstallation() || 'C:\\Program Files (x86)\\GeneXus\\GeneXus18';
 
@@ -820,7 +919,7 @@ async function runInteractiveInit(ctx) {
                     noOp: !created.changed,
                     clientsPatchedCount: patchResult.patched.length
                 },
-                help: patchResult.patched.length === 0 ? ['Set `GX_CONFIG_PATH` in your MCP client env to the generated config path.'] : [],
+                help: buildInteractiveInitHelp(patchResult),
                 meta: {
                     patchedClients: patchResult.patched,
                     failedClients: patchResult.failed,
@@ -828,10 +927,26 @@ async function runInteractiveInit(ctx) {
                 }
             }
         };
-    } catch {
+    } catch (err) {
+        if (err && err.code === 'GATEWAY_EXE_MISSING') {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    'GENEXUS_MCP_GATEWAY_EXE points to a path that does not exist. Client configs were NOT modified.',
+                    ctx.EXIT_CODES.ERROR,
+                    [
+                        `Path checked: ${process.env.GENEXUS_MCP_GATEWAY_EXE}`,
+                        'Either unset GENEXUS_MCP_GATEWAY_EXE (then init writes the npx-based launcher) or re-run scripts/install.ps1 to materialize the exe at that path.'
+                    ]
+                )
+            };
+        }
         return {
             exitCode: ctx.EXIT_CODES.ERROR,
-            envelope: operationalErrorEnvelope('Interactive init failed.', ctx.EXIT_CODES.ERROR)
+            envelope: operationalErrorEnvelope(
+                sanitizeOperationalMessage(`Interactive init failed: ${err && err.message ? err.message : 'unknown error'}`),
+                ctx.EXIT_CODES.ERROR
+            )
         };
     } finally {
         rl.close();
@@ -913,8 +1028,11 @@ async function handleInit(options, ctx) {
         if (patchResult.patched.length === 0 && !options.writeClients) {
             help.push('Run `genexus-mcp init --kb "<kbPath>" --gx "<geneXusPath>" --write-clients` to patch supported clients.');
         }
+        if (patchResult.patched.length > 0 && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
+            help.push('Windows + corporate AppLocker: the npx launcher resolves the gateway from %LOCALAPPDATA%\\npm-cache, which is commonly blocked. If clients fail with "Failed to connect" / Access denied, reinstall to a whitelisted path via scripts/install.ps1.');
+        }
         if (verification.summary.fail > 0 || verification.summary.warn > 0) {
-            help.push('Some verification checks did not pass. Run `genexus-mcp doctor --full --mcp-smoke` for details.');
+            help.push('Some verification checks did not pass. Run `genexus-mcp doctor --mcp-smoke` for details.');
         }
         if (options.noSmoke) {
             help.push('MCP protocol smoke was skipped (--no-smoke). Re-run `genexus-mcp doctor --mcp-smoke` to validate end-to-end.');
@@ -950,10 +1068,27 @@ async function handleInit(options, ctx) {
                 }
             }
         };
-    } catch {
+    } catch (err) {
+        if (err && err.code === 'GATEWAY_EXE_MISSING') {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    'GENEXUS_MCP_GATEWAY_EXE points to a path that does not exist. Client configs were NOT modified.',
+                    ctx.EXIT_CODES.ERROR,
+                    [
+                        `Path checked: ${process.env.GENEXUS_MCP_GATEWAY_EXE}`,
+                        'Either unset GENEXUS_MCP_GATEWAY_EXE (then init writes the npx-based launcher) or re-run scripts/install.ps1 to materialize the exe at that path.'
+                    ]
+                )
+            };
+        }
         return {
             exitCode: ctx.EXIT_CODES.ERROR,
-            envelope: operationalErrorEnvelope('Failed to write configuration.', ctx.EXIT_CODES.ERROR)
+            envelope: operationalErrorEnvelope(
+                sanitizeOperationalMessage(`Failed to write configuration: ${err && err.message ? err.message : 'unknown error'}`),
+                ctx.EXIT_CODES.ERROR,
+                ['Check write permissions on the target directory; on Windows, run from a path outside protected areas.']
+            )
         };
     }
 }

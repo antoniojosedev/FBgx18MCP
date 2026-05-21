@@ -125,6 +125,48 @@ try {
 if (-not (Test-Path $gatewayExe)) { throw "Extraction failed: $gatewayExe not found." }
 if (-not (Test-Path $workerExe))  { throw "Extraction failed: $workerExe not found." }
 
+# Spawn probe: if AppLocker/SRP blocks execution from $InstallDir, fail HERE with a
+# clear actionable message instead of letting the user discover it via "Failed to
+# connect" from their MCP client hours later.
+Write-Step 'Probing gateway exe (AppLocker / execution policy check)...'
+$probeError = $null
+try {
+    $proc = Start-Process -FilePath $gatewayExe -ArgumentList '--axi-spawn-probe' `
+        -PassThru -WindowStyle Hidden -ErrorAction Stop
+    Start-Sleep -Milliseconds 600
+    if (-not $proc.HasExited) {
+        try { $proc.Kill() } catch { }
+    }
+    Write-Ok 'Gateway exe is launchable from the install path.'
+} catch {
+    $probeError = $_.Exception.Message
+}
+
+if ($probeError) {
+    Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
+    $msg = $probeError
+    $accessDenied = $msg -match 'Access is denied|Access denied|Acesso negado|0x80070005|UnauthorizedAccess'
+    Write-Host ''
+    if ($accessDenied) {
+        Write-Host '[X] AppLocker / SRP / Defender blocked execution of the gateway from this path.' -ForegroundColor Red
+        Write-Host "    Path: $gatewayExe" -ForegroundColor Red
+        Write-Host ''
+        Write-Host 'Remediations:' -ForegroundColor Yellow
+        Write-Host '  - Run installer as admin so it defaults to C:\Tools\GenexusMCP (admin-writable, usually whitelisted).'
+        Write-Host '  - Or pass -InstallDir to a path your IT policy allows execution from'
+        Write-Host '    (e.g. C:\Apps\GenexusMCP). AppLocker default rules deny exec from'
+        Write-Host '    %APPDATA%, %LOCALAPPDATA%, and %TEMP%.'
+        Write-Host '  - If you got here via -InstallDir under AppData, retry with a path outside AppData.'
+        Write-Host '  - Get-AppLockerPolicy -Effective -Xml  # to inspect current policy'
+        Write-Host '  - Event log: Microsoft-Windows-AppLocker/EXE and DLL, IDs 8003/8004'
+    } else {
+        Write-Host '[X] Gateway exe failed to launch from the install path.' -ForegroundColor Red
+        Write-Host "    Path: $gatewayExe" -ForegroundColor Red
+        Write-Host "    Error: $msg" -ForegroundColor Red
+    }
+    throw "Aborting: gateway exe is not runnable from '$InstallDir'."
+}
+
 $Version | Out-File -FilePath $versionFile -Encoding ascii -NoNewline
 
 if (-not $NoClient) {

@@ -2,7 +2,7 @@
 
 ## v2.6.4 — 2026-05-20
 
-Two passes driven by live audits against KB `AcademicoHomolog1`: a usability sweep that caught nine concrete friction points the LLM was hitting on first use, then a UX pass focused on the "agent burns 3-8k tokens exploring before doing real work" failure mode (reported on apply_pattern flows). Validated end-to-end with happy-path apply on a disposable Transaction + WebPanel (11/11 assertions) and a focused UX probe (20/20).
+Three passes: a usability sweep against KB `AcademicoHomolog1` that caught nine concrete friction points the LLM was hitting on first use; a UX pass focused on the "agent burns 3-8k tokens exploring before doing real work" failure mode on apply_pattern; and a corporate-Windows install hardening pass triggered by a real `2.3.4 -> 2.6.3` upgrade report where the user's MCP config kept silently pointing at an old gateway exe outside `node_modules`, the npm-installed copy was blocked by domain AppLocker from `%APPDATA%`, and every diagnostic surface ("Failed to connect", `npm update` ghost operation, generic launcher errors) compounded the dead end. Validated with happy-path apply on a disposable Transaction + WebPanel (11/11 assertions), focused UX probe (20/20), and the full CLI test suite (37/38, single pre-existing assertion unrelated).
 
 ### Fixed
 
@@ -58,6 +58,30 @@ Two passes driven by live audits against KB `AcademicoHomolog1`: a usability swe
   - `E2ELiveSmokeTests` — 7 LiveKbFact-gated end-to-end tests against the published Gateway over stdio (whoami latency / explain NotImplemented / query Index pollution / read availableParts / navigation status / apply_pattern type-gate rejection / apply_pattern validate happy path requiring WWP). New `LiveGatewayHarness` spawns the process and runs the JSON-RPC handshake — mirrors the scripts under `scratch/` so the regression contract matches the live audit.
 - **`ToolSchemaSizeTests` budget bumped 6300 → 6700** to absorb genexus_recipe (~80 tokens), apply_pattern `validate` + parent-type hint (~80), description front-loading on create_object/edit/whoami (~100). Net actual ~6624 tokens.
 - **Contract-discovery goldens refreshed** to include `genexus_recipe` and the updated descriptions.
+
+### Install / DX hardening (corporate Windows + AppLocker)
+
+Triggered by a live `2.3.4 -> 2.6.3` upgrade report on a UNIVALI-domain machine. Symptoms the user hit: `npm update genexus-mcp -g` succeeded but `whoami` kept returning the old version (config pointed at a stale exe copy outside `node_modules`); after repointing at the npm-bundled exe under `%APPDATA%\Roaming\npm\node_modules\genexus-mcp\publish\`, `claude mcp get` reported "Failed to connect" and direct execution gave `Acesso negado` — domain AppLocker / SRP blocks exec from `%APPDATA%`. None of the diagnostic surfaces (`whoami`, launcher stderr, `Failed to connect`, `npm install -g`) pointed at the policy. Six fixes close the gaps:
+
+- **Launcher (`cli/index.js`) emits an actionable AppLocker hint on `EACCES`/`EPERM`.** Detects "Access is denied" / "Acesso negado" / `err.code === 'EACCES' || 'EPERM'` from the gateway spawn, identifies whether the exe lives under `%APPDATA%` / `%LOCALAPPDATA%` / `%TEMP%`, and prints: cause (AppLocker/SRP), the restricted zone tag, and the one-liner `iex (irm .../scripts/install.ps1)` remediation. Generic `Failed to start gateway process: ...` is no longer the user's only signal.
+
+- **`doctor` gains two checks and probes by default.**
+  - `gateway_exe_path_safety` — warn when the bundled exe is under `%APPDATA%` / `%LOCALAPPDATA%` / `%TEMP%`, with the install.ps1 remediation.
+  - `client_config_sync` — reads each client config (Claude Desktop/Code/Cursor/Antigravity/OpenCode/Codex; mcpServers JSON, OpenCode JSON, Codex TOML) and compares the configured `command` against the npm package's bundled exe. If a client points at a divergent `.exe`, the check warns explicitly that **`npm install -g genexus-mcp@latest` will NOT update that instance**, citing the mismatch path. Directly addresses the "npm update was a ghost operation" complaint from the report.
+  - `gateway_spawn_probe` now runs by default (was `--full`-only), so cold-install failures surface immediately. Probe failures that look like access-denial are tagged with the AppLocker hint inline in `detail`.
+
+- **`status` exposes `pathSafetyWarn: boolean` in both modes** plus, when true, prepends the AppLocker remediation as the first `help` line. `ready: true` no longer hides the runtime risk.
+
+- **`init --write-clients` advisory + GENEXUS_MCP_GATEWAY_EXE guard.**
+  - When patching clients on Windows without `GENEXUS_MCP_GATEWAY_EXE` set, both interactive and non-interactive init add a help line explaining that the npx launcher resolves the gateway from `%LOCALAPPDATA%\npm-cache`, commonly blocked by corporate AppLocker, and pointing at `scripts/install.ps1`.
+  - `patchClientConfig` refuses to write a broken path: if `GENEXUS_MCP_GATEWAY_EXE` is set but the file does not exist, throws `code: 'GATEWAY_EXE_MISSING'`. Both init flows catch that code specifically and return a dedicated non-truncated error envelope with the path checked and the two remediation options. Previously, init would silently write the dead path into six client configs.
+  - The two `catch {}` blocks that swallowed real errors (`Failed to write configuration.` / `Interactive init failed.`) now surface the underlying `err.message` (sanitized).
+
+- **`genexus-mcp update` detects client drift.** Beyond fetching the latest release tag, runs the same client-config scan as `doctor` and, when any client points at a divergent `.exe`, emits a WARNING help line: "N AI client(s) point at a gateway exe that is NOT this npm package — `npm install -g` will NOT update them. Mismatches: ... Re-run scripts/install.ps1 (or genexus-mcp init --write-clients) to resync." Same payload exposes `clientDrift[]` for tools that consume the structured envelope. Stops `update` from giving false reassurance after `npm install -g` while the actual exe in use stays stale.
+
+- **`scripts/install.ps1` probes the installed exe before declaring success.** After extraction, runs `GxMcp.Gateway.exe --axi-spawn-probe` via `Start-Process -PassThru -WindowStyle Hidden`, waits 600ms, kills the probe. On `Access is denied` / `Acesso negado` / `0x80070005` / `UnauthorizedAccess` it aborts (rolling back any temp artifacts) with: the blocked path, an explanation that AppLocker default rules deny exec from `%APPDATA%` / `%LOCALAPPDATA%` / `%TEMP%`, remediation suggestions (admin install → `C:\Tools\GenexusMCP`; non-admin → explicit `-InstallDir C:\Apps\GenexusMCP`), `Get-AppLockerPolicy -Effective -Xml` for diagnosis, and event-log pointers (`Microsoft-Windows-AppLocker/EXE and DLL`, IDs 8003/8004). Other launch failures surface the real error instead of "extraction succeeded → done". The next user with this exact policy will be blocked at the installer with the right answer, not at "Failed to connect" hours later.
+
+Internal: new shared helpers in `cli/lib/config.js` — `isPathLikelyAppLockerBlocked(exePath)` (returns the restricted zone name or null), `normalizeExePath(p)` (case-fold + slash-normalize for Windows path comparison), `readClientCommandEntry(client)` (extracts the `genexus` entry's `command` from `mcpServers` JSON, OpenCode JSON, or Codex TOML). Consumed by the launcher, doctor, update, and the patchClientConfig guard.
 
 ## v2.6.3 — 2026-05-20
 

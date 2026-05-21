@@ -1,7 +1,8 @@
 const { spawn } = require('child_process');
 const {
     getGatewayExePath,
-    applyLauncherConfigOrExit
+    applyLauncherConfigOrExit,
+    isPathLikelyAppLockerBlocked
 } = require('./lib/config');
 const {
     SUPPORTED_FORMATS,
@@ -294,6 +295,17 @@ function parseArgs(argv) {
     return result;
 }
 
+function writeAppLockerHint(stderr, gatewayExePath) {
+    const riskyZone = isPathLikelyAppLockerBlocked(gatewayExePath);
+    stderr.write('[genexus-mcp] Likely cause: Windows AppLocker / SRP is blocking execution from this path.\n');
+    if (riskyZone) {
+        stderr.write(`[genexus-mcp] The gateway exe lives under %${riskyZone}% (typically restricted by corporate policy):\n[genexus-mcp]   ${gatewayExePath}\n`);
+    }
+    stderr.write('[genexus-mcp] Remediation: install to a whitelisted path with:\n');
+    stderr.write('[genexus-mcp]   iex (irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1)\n');
+    stderr.write('[genexus-mcp] Or copy the package `publish/` folder to a path outside %APPDATA%/%LOCALAPPDATA% and point the MCP client at that exe.\n');
+}
+
 async function launchGateway(passthroughArgs, options) {
     const setup = applyLauncherConfigOrExit({
         cwd: process.cwd(),
@@ -323,6 +335,11 @@ async function launchGateway(passthroughArgs, options) {
         child.on('error', (err) => {
             if (!options.quiet) {
                 process.stderr.write(`[genexus-mcp] ERROR: Failed to start gateway process: ${err.message}\n`);
+                const code = err && (err.code || err.errno);
+                const accessDenied = code === 'EACCES' || code === 'EPERM' || /access is denied|access denied|acesso negado/i.test(err.message || '');
+                if (accessDenied) {
+                    writeAppLockerHint(process.stderr, gatewayExePath);
+                }
             }
             resolve(EXIT_CODES.ERROR);
         });

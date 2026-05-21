@@ -278,6 +278,18 @@ function filterClientTargets(targets, opts = {}) {
 }
 
 function patchClientConfig(targetConfigPath, opts = {}) {
+    // Validate corporate-install env var before we write it into N client configs.
+    // Otherwise we silently propagate a broken path to every AI client and the
+    // user only finds out when each one fails with "Failed to connect".
+    if (process.env.GENEXUS_MCP_GATEWAY_EXE && !fs.existsSync(process.env.GENEXUS_MCP_GATEWAY_EXE)) {
+        const err = new Error(
+            `GENEXUS_MCP_GATEWAY_EXE points to a path that does not exist: ${process.env.GENEXUS_MCP_GATEWAY_EXE}. ` +
+            `Refusing to write this into client configs. Unset the env var (to use the npx launcher) or re-run scripts/install.ps1 to materialize the exe.`
+        );
+        err.code = 'GATEWAY_EXE_MISSING';
+        throw err;
+    }
+
     const launcher = getLauncher();
     const onlyExisting = opts.onlyExisting !== false;
     const candidates = filterClientTargets(getClientConfigTargets(), {
@@ -456,6 +468,65 @@ function tomlString(value) {
     return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
+function isPathLikelyAppLockerBlocked(exePath) {
+    if (process.platform !== 'win32' || !exePath) return null;
+    const norm = String(exePath).toLowerCase().replace(/\\/g, '/');
+    const candidates = [
+        { name: 'APPDATA', base: process.env.APPDATA },
+        { name: 'LOCALAPPDATA', base: process.env.LOCALAPPDATA },
+        { name: 'TEMP', base: process.env.TEMP },
+        { name: 'TMP', base: process.env.TMP }
+    ];
+    for (const { name, base } of candidates) {
+        if (!base) continue;
+        const baseNorm = base.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '');
+        if (norm.startsWith(baseNorm + '/')) return name;
+    }
+    return null;
+}
+
+function normalizeExePath(p) {
+    if (!p) return '';
+    let s = String(p).trim().replace(/^"|"$/g, '');
+    s = s.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (process.platform === 'win32') s = s.toLowerCase();
+    return s;
+}
+
+function readClientCommandEntry(client) {
+    if (!fs.existsSync(client.path)) return null;
+    try {
+        if (client.format === 'mcpServers') {
+            const parsed = readJsonFileSafe(client.path);
+            if (!parsed || typeof parsed !== 'object') return null;
+            const entry = parsed.mcpServers && parsed.mcpServers.genexus;
+            if (!entry) return null;
+            return { command: entry.command || null, args: Array.isArray(entry.args) ? entry.args : [] };
+        }
+        if (client.format === 'opencode') {
+            const parsed = readJsonFileSafe(client.path);
+            if (!parsed || typeof parsed !== 'object') return null;
+            const entry = parsed.mcp && parsed.mcp.genexus;
+            if (!entry || !Array.isArray(entry.command) || entry.command.length === 0) return null;
+            return { command: entry.command[0], args: entry.command.slice(1) };
+        }
+        if (client.format === 'codex-toml') {
+            const raw = fs.readFileSync(client.path, 'utf8');
+            // Minimal extraction: find [mcp_servers.genexus] block and pull command = "..."
+            const blockRe = /\[mcp_servers\.genexus\]([\s\S]*?)(?=\n\[|$)/;
+            const m = raw.match(blockRe);
+            if (!m) return null;
+            const cmdMatch = m[1].match(/^\s*command\s*=\s*"((?:[^"\\]|\\.)*)"/m);
+            if (!cmdMatch) return null;
+            const command = cmdMatch[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+            return { command, args: [] };
+        }
+    } catch {
+        return null;
+    }
+    return null;
+}
+
 function getLocalAppDataCacheDir() {
     if (process.platform !== 'win32') return null;
     const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
@@ -628,5 +699,8 @@ module.exports = {
     addKbToConfig,
     removeKbFromConfig,
     switchActiveKb,
-    applyLauncherConfigOrExit
+    applyLauncherConfigOrExit,
+    isPathLikelyAppLockerBlocked,
+    normalizeExePath,
+    readClientCommandEntry
 };
