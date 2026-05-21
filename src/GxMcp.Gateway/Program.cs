@@ -1576,6 +1576,28 @@ namespace GxMcp.Gateway
                         return BuildToolTextResponse(idToken, _operationTracker.BuildMetricsPayload(), isError: false, toolName: "genexus_lifecycle", toolArgs: args);
                     }
 
+                    // action=result + op:<jobId> — return the stored JobEntry.Result directly.
+                    // v2.6.3 fixed status/cancel for op:<id> via JobRegistry but result still
+                    // forwarded to the worker, which only knows about its internal taskId and
+                    // returned "Task ID not found" for completed jobs (visible in
+                    // _meta.background_jobs). Symmetric handler closes that gap.
+                    if (string.Equals(lifecycleAction, "result", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string? resultJobId = McpRouter.ResolveJobId(args);
+                        if (!string.IsNullOrWhiteSpace(resultJobId))
+                        {
+                            var probe = JobRegistry.Get(resultJobId);
+                            if (probe != null)
+                            {
+                                // Envelope shape extracted into McpRouter.BuildJobResultEnvelope
+                                // for unit-test coverage and parity with status long-poll.
+                                var (resultPayload, isErr) = McpRouter.BuildJobResultEnvelope(probe);
+                                return BuildToolTextResponse(idToken, resultPayload, isError: isErr, toolName: "genexus_lifecycle", toolArgs: args);
+                            }
+                            // Unknown id → fall through to the legacy worker-side taskId result path.
+                        }
+                    }
+
                     // Long-poll intercept (Task 4.5): action=status + job_id (BackgroundJobRegistry)
                     // wait_seconds is clamped [0,25]; 0 = immediate poll (default behaviour).
                     if (string.Equals(lifecycleAction, "status", StringComparison.OrdinalIgnoreCase))
@@ -2095,6 +2117,145 @@ namespace GxMcp.Gateway
                         toolName: tName,
                         toolArgs: tArgs,
                         trackOperation: true);
+
+                    // apply_pattern { validate: true } — post-apply build of the
+                    // generated host so the LLM sees compile failures in a single
+                    // tool call. Without this the agent declared "Success" and only
+                    // discovered the broken binding by opening the IDE. Runs OUTSIDE
+                    // the SendWorkerCommandAsync onSuccess lambda (which is sync) so
+                    // we can await the validation build here.
+                    if (innerResult != null
+                        && !(innerResult["isError"]?.ToObject<bool?>() ?? false)
+                        && string.Equals(tName, "genexus_apply_pattern", StringComparison.OrdinalIgnoreCase)
+                        && (tArgs?["validate"]?.ToObject<bool?>() ?? false))
+                    {
+                        string applyText = (innerResult["content"] as JArray)?[0]?["text"]?.ToString() ?? "";
+                        JObject applyPayload = null;
+                        try { applyPayload = JObject.Parse(applyText); } catch { }
+                        string hostName = applyPayload?["patternHost"]?.ToString();
+
+                        var vBlock = new JObject { ["target"] = hostName };
+                        if (string.IsNullOrWhiteSpace(hostName))
+                        {
+                            vBlock["status"] = "skipped";
+                            vBlock["reason"] = "No patternHost in apply response — nothing to validate.";
+                        }
+                        else
+                        {
+                            // Worker's BuildService.Build is async internally — kicks off
+                            // Task.Run and returns a Running envelope with a taskId in ms.
+                            // We must (1) fire Build/Build, (2) poll Build/Status with that
+                            // taskId until terminal, (3) fetch Build/Result for errors.
+                            var vSw = System.Diagnostics.Stopwatch.StartNew();
+                            JObject startCmd = new JObject
+                            {
+                                ["module"] = "Build",
+                                ["action"] = "Build",
+                                ["target"] = hostName,
+                                ["includeCallees"] = "direct"
+                            };
+                            JObject? startEnv = await SendWorkerCommandAsync(
+                                startCmd, 10000,
+                                "validate-start timeout",
+                                env => env,
+                                (_, cid) => new JObject { ["__timeout"] = true, ["correlationId"] = cid },
+                                toolName: "genexus_apply_pattern.validate.start",
+                                toolArgs: null, trackOperation: false);
+
+                            string taskId = null;
+                            JObject startInner = startEnv?["result"] as JObject;
+                            if (startInner == null && startEnv?["result"] is JValue sjv && sjv.Type == JTokenType.String)
+                            {
+                                try { startInner = JObject.Parse(sjv.ToString()); } catch { }
+                            }
+                            taskId = startInner?["TaskId"]?.ToString() ?? startInner?["taskId"]?.ToString();
+
+                            JObject terminal = null;
+                            if (!string.IsNullOrEmpty(taskId))
+                            {
+                                // Poll up to 180s (180 iterations × 1s sleep + RPC ms)
+                                for (int i = 0; i < 180 && vSw.ElapsedMilliseconds < 180000; i++)
+                                {
+                                    await Task.Delay(1000);
+                                    var statusCmd = new JObject
+                                    {
+                                        ["module"] = "Build",
+                                        ["action"] = "Status",
+                                        ["target"] = taskId
+                                    };
+                                    JObject? statusEnv = await SendWorkerCommandAsync(
+                                        statusCmd, 8000, "validate-poll timeout",
+                                        env => env,
+                                        (_, cid) => new JObject { ["__timeout"] = true, ["correlationId"] = cid },
+                                        toolName: "genexus_apply_pattern.validate.poll",
+                                        toolArgs: null, trackOperation: false);
+                                    JObject sObj = statusEnv?["result"] as JObject;
+                                    if (sObj == null && statusEnv?["result"] is JValue pjv && pjv.Type == JTokenType.String)
+                                    {
+                                        try { sObj = JObject.Parse(pjv.ToString()); } catch { }
+                                    }
+                                    string sStatus = sObj?["Status"]?.ToString() ?? sObj?["status"]?.ToString();
+                                    if (!string.IsNullOrEmpty(sStatus) && !string.Equals(sStatus, "Running", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        terminal = sObj;
+                                        break;
+                                    }
+                                }
+                            }
+                            vSw.Stop();
+                            vBlock["durationMs"] = vSw.ElapsedMilliseconds;
+
+                            if (string.IsNullOrEmpty(taskId))
+                            {
+                                vBlock["status"] = "error";
+                                vBlock["error"] = "Worker did not return a taskId for the validation build.";
+                                if (startInner != null) vBlock["startResponse"] = startInner;
+                            }
+                            else if (terminal == null)
+                            {
+                                vBlock["status"] = "timeout";
+                                vBlock["error"] = "Validation build did not finish in 180s.";
+                                vBlock["taskId"] = taskId;
+                            }
+                            else
+                            {
+                                int errorCount = terminal["ErrorCount"]?.ToObject<int?>() ?? terminal["errorCount"]?.ToObject<int?>() ?? (terminal["Errors"] as JArray)?.Count ?? 0;
+                                int warningCount = terminal["WarningCount"]?.ToObject<int?>() ?? terminal["warningCount"]?.ToObject<int?>() ?? (terminal["Warnings"] as JArray)?.Count ?? 0;
+                                string termStatus = terminal["Status"]?.ToString() ?? "";
+                                bool buildOk = errorCount == 0
+                                    && !string.Equals(termStatus, "Failed", StringComparison.OrdinalIgnoreCase)
+                                    && terminal["error"] == null;
+                                vBlock["status"] = buildOk ? "ok" : "failed";
+                                vBlock["errorCount"] = errorCount;
+                                vBlock["warningCount"] = warningCount;
+                                vBlock["taskId"] = taskId;
+                                var errArr = terminal["Errors"] as JArray ?? terminal["errors"] as JArray;
+                                if (errArr != null && errArr.Count > 0)
+                                    vBlock["errors"] = new JArray(errArr.Take(10));
+                                var warnArr = terminal["Warnings"] as JArray ?? terminal["warnings"] as JArray;
+                                if (warnArr != null && warnArr.Count > 0)
+                                    vBlock["warnings"] = new JArray(warnArr.Take(5));
+                            }
+                        }
+
+                        // Fold the validation block back into the toolResult text
+                        // payload, and promote isError when validation didn't pass.
+                        if (applyPayload != null)
+                        {
+                            applyPayload["validation"] = vBlock;
+                            var newText = applyPayload.ToString(Formatting.None);
+                            var contentArr = innerResult["content"] as JArray;
+                            if (contentArr != null && contentArr.Count > 0 && contentArr[0] is JObject c0)
+                            {
+                                c0["text"] = newText;
+                            }
+                            if (!string.Equals(vBlock["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase)
+                                && !string.Equals(vBlock["status"]?.ToString(), "skipped", StringComparison.OrdinalIgnoreCase))
+                            {
+                                innerResult["isError"] = true;
+                            }
+                        }
+                    }
 
                     return innerResult ?? new JObject { ["isError"] = true };
                 }

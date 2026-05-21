@@ -89,65 +89,22 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Error("Object not found", objectName);
                 }
 
-                // Parent-type gate: the WorkWithPlus apply path differs by parent kind.
-                // - Transaction: engine generates the full WW<Trn> + View + Export family,
-                //   no template required.
-                // - WebPanel / SDPanel: direct-attach via CreatePatternInstanceWithTemplate;
-                //   requires (or auto-discovers) a `WorkWithPlus for Web Template` object.
-                // - Anything else (Procedure, SDT, Domain, …): the SDK either no-ops or
-                //   creates a half-bound host that throws compile errors. Reject upfront
-                //   with explicit routing guidance so the LLM doesn't try the wrong path
-                //   (this was the source of "vinculou como se fosse transação" reports).
-                if (string.Equals(patternKey, "WorkWithPlus", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(patternKey, "WWP", StringComparison.OrdinalIgnoreCase))
+                // Parent-type gate — extracted into TryBuildTypeGateRejection so
+                // the rejection envelope shape is unit-testable without a real
+                // KBObject. Live template enumeration stays in this scope because
+                // it needs _objectService.
                 {
                     string parentType = obj.TypeDescriptor?.Name ?? "";
-                    bool isTransaction = string.Equals(parentType, "Transaction", StringComparison.OrdinalIgnoreCase);
+                    string callerTemplate = settings != null ? settings["template"]?.ToString() : null;
+                    List<string> availableTemplates = null;
                     bool isWebPanelKind = string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)
                                        || string.Equals(parentType, "SDPanel", StringComparison.OrdinalIgnoreCase);
-                    if (!isTransaction && !isWebPanelKind)
-                    {
-                        var rej = new JObject
-                        {
-                            ["status"] = "Error",
-                            ["target"] = obj.Name,
-                            ["patternKey"] = patternKey,
-                            ["parentType"] = parentType,
-                            ["error"] = $"WorkWithPlus cannot be applied to a {parentType}.",
-                            ["validParentTypes"] = new JArray("Transaction", "WebPanel", "SDPanel"),
-                            ["hint"] = "Apply WorkWithPlus only to a Transaction (generates WW/View/Export family) or to a WebPanel/SDPanel (direct-attach with a Template; pass settings.template or let the MCP auto-discover one)."
-                        };
-                        return rej.ToString(Newtonsoft.Json.Formatting.None);
-                    }
-
-                    // For WebPanel/SDPanel, validate (or surface) the template upfront so
-                    // the LLM sees the discovery result on the FIRST call rather than after
-                    // the SDK churns through a no-op and returns the NoOp recommendation.
                     if (isWebPanelKind)
                     {
-                        string callerTemplate = settings != null ? settings["template"]?.ToString() : null;
-                        try
-                        {
-                            var available = ListWwpWebTemplates();
-                            if (!string.IsNullOrEmpty(callerTemplate)
-                                && available.Count > 0
-                                && !available.Any(t => string.Equals(t, callerTemplate, StringComparison.OrdinalIgnoreCase)))
-                            {
-                                var bad = new JObject
-                                {
-                                    ["status"] = "Error",
-                                    ["target"] = obj.Name,
-                                    ["patternKey"] = patternKey,
-                                    ["parentType"] = parentType,
-                                    ["error"] = $"Template '{callerTemplate}' is not a registered `WorkWithPlus for Web Template` in this KB.",
-                                    ["availableTemplates"] = new JArray(available),
-                                    ["hint"] = "Pass settings.template equal to one of availableTemplates, or omit it to auto-discover."
-                                };
-                                return bad.ToString(Newtonsoft.Json.Formatting.None);
-                            }
-                        }
-                        catch { /* enumeration best-effort; don't block apply on it */ }
+                        try { availableTemplates = ListWwpWebTemplates(); } catch { /* best-effort */ }
                     }
+                    string reject = TryBuildTypeGateRejection(obj.Name, patternKey, parentType, callerTemplate, availableTemplates);
+                    if (reject != null) return reject;
                 }
 
                 return ApplyPatternToObject(obj, patternId, patternKey, settings, reapply: false);
@@ -518,6 +475,69 @@ namespace GxMcp.Worker.Services
         // used to surface options to the agent on apply_pattern responses.
         // Walking model.Objects.GetAll() is O(KB-size) and was clocking 10s+ on the
         // 50k-object KB. Templates rarely change at runtime, so memoize per KB for
+        // v2.6.4 (#10): pure type-gate logic. Returns the rejection envelope
+        // (serialized JSON) when the parent type / template combination is
+        // ineligible for WorkWithPlus, or null if the apply may proceed.
+        // - WorkWithPlus key only (other keys pass through unchanged)
+        // - Transaction: always eligible (no template required)
+        // - WebPanel/SDPanel: eligible; if callerTemplate provided AND
+        //   availableTemplates is non-empty AND template not in list → reject
+        // - Anything else → reject upfront (Procedure/SDT/Domain/etc.)
+        // Extracted so the rejection contract is unit-testable without a live
+        // KB or KBObject.
+        internal static string TryBuildTypeGateRejection(
+            string objName,
+            string patternKey,
+            string parentType,
+            string callerTemplate,
+            List<string> availableTemplates)
+        {
+            bool isWwp = string.Equals(patternKey, "WorkWithPlus", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(patternKey, "WWP", StringComparison.OrdinalIgnoreCase);
+            if (!isWwp) return null;
+
+            if (parentType == null) parentType = "";
+            bool isTransaction = string.Equals(parentType, "Transaction", StringComparison.OrdinalIgnoreCase);
+            bool isWebPanelKind = string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)
+                               || string.Equals(parentType, "SDPanel", StringComparison.OrdinalIgnoreCase);
+
+            if (!isTransaction && !isWebPanelKind)
+            {
+                var rej = new JObject
+                {
+                    ["status"] = "Error",
+                    ["target"] = objName,
+                    ["patternKey"] = patternKey,
+                    ["parentType"] = parentType,
+                    ["error"] = $"WorkWithPlus cannot be applied to a {parentType}.",
+                    ["validParentTypes"] = new JArray("Transaction", "WebPanel", "SDPanel"),
+                    ["hint"] = "Apply WorkWithPlus only to a Transaction (generates WW/View/Export family) or to a WebPanel/SDPanel (direct-attach with a Template; pass settings.template or let the MCP auto-discover one)."
+                };
+                return rej.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            if (isWebPanelKind
+                && !string.IsNullOrEmpty(callerTemplate)
+                && availableTemplates != null
+                && availableTemplates.Count > 0
+                && !availableTemplates.Any(t => string.Equals(t, callerTemplate, StringComparison.OrdinalIgnoreCase)))
+            {
+                var bad = new JObject
+                {
+                    ["status"] = "Error",
+                    ["target"] = objName,
+                    ["patternKey"] = patternKey,
+                    ["parentType"] = parentType,
+                    ["error"] = $"Template '{callerTemplate}' is not a registered `WorkWithPlus for Web Template` in this KB.",
+                    ["availableTemplates"] = new JArray(availableTemplates),
+                    ["hint"] = "Pass settings.template equal to one of availableTemplates, or omit it to auto-discover."
+                };
+                return bad.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            return null;
+        }
+
         // 60s — fresh enough to pick up new templates, cheap on the upfront-guard
         // path where every apply on a WebPanel hits this.
         private static readonly Dictionary<string, (DateTime expiresAt, List<string> names)> _templateCache

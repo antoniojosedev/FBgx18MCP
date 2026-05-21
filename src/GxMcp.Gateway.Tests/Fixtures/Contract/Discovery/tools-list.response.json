@@ -27,13 +27,9 @@
       "name": "genexus_add_variable"
     },
     {
-      "description": "Cross-object semantic analysis: impact, dependencies, complexity, naming, summary, explain. See genexus://kb/tool-help/genexus_analyze for mode selection.",
+      "description": "Cross-object semantic analysis: impact, dependencies, complexity, naming, summary. See genexus://kb/tool-help/genexus_analyze for mode selection.",
       "inputSchema": {
         "properties": {
-          "code": {
-            "description": "Required when mode=explain.",
-            "type": "string"
-          },
           "kb": {
             "description": "Target KB. Required when 2+ open.",
             "type": "string"
@@ -47,8 +43,7 @@
               "data_context",
               "ui_context",
               "pattern_metadata",
-              "summary",
-              "explain"
+              "summary"
             ],
             "type": "string"
           },
@@ -70,7 +65,7 @@
       "name": "genexus_analyze"
     },
     {
-      "description": "Apply a GeneXus pattern (e.g. WorkWithPlus) to a parent object. Equivalent to IDE 'Right-click → Apply Pattern'.",
+      "description": "Apply a GeneXus pattern (e.g. WorkWithPlus) to a parent object. Equivalent to IDE 'Right-click → Apply Pattern'. ALWAYS run genexus_inspect first to confirm parentType — Transaction (family-gen, no template) vs WebPanel/SDPanel (direct-attach, pass settings.template). Other types are rejected. See recipe 'wwp_on_transaction' or 'wwp_on_webpanel' via genexus_recipe.",
       "inputSchema": {
         "properties": {
           "kb": {
@@ -93,6 +88,11 @@
           "settings": {
             "description": "Optional pattern-instance settings (deeply nested config tree from the pattern's settings dialog)",
             "type": "object"
+          },
+          "validate": {
+            "default": false,
+            "description": "After apply, build the generated host to verify it compiles cleanly. Response gains a `validation` block: {status: ok|failed|timeout, errorCount, warningCount, errors[], warnings[], durationMs}. Adds 60-180s wall time but catches binding/wiring errors the LLM would only see by opening the IDE.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -214,7 +214,7 @@
       "name": "genexus_bulk_edit"
     },
     {
-      "description": "Create any IDE-creatable GeneXus object (Transaction, Procedure, WebPanel, SDPanel, SDT, DataProvider, Domain, Dashboard, WorkflowDiagram, etc.). Domain takes dataType+length or enumValues. See genexus://kb/tool-help/genexus_create_object.",
+      "description": "Create any IDE-creatable GeneXus object (Transaction, Procedure, WebPanel, SDPanel, SDT, DataProvider, Domain, Dashboard, WorkflowDiagram, etc.). Domain takes dataType+length or enumValues. NOT for WorkWithPlus/WWP — that is a pattern applied via genexus_apply_pattern (see recipe 'wwp_on_transaction' or 'wwp_on_webpanel'). NOT for popups with editable inputs — use genexus_create_popup. See genexus://kb/tool-help/genexus_create_object.",
       "inputSchema": {
         "properties": {
           "basedOn": {
@@ -473,7 +473,7 @@
       "name": "genexus_doc"
     },
     {
-      "description": "Edit an object part. Pass name or targets (mutually exclusive). Mode: full | patch. Use dryRun before persisting. See genexus://kb/tool-help/genexus_edit for examples.",
+      "description": "Edit an object part. Pass name or targets (mutually exclusive). Mode: full | patch. Use dryRun before persisting. For WWP screens edit the host WorkWithPlus<X>.PatternInstance — NOT the WebForm of the parent (gets overwritten on reapply). See recipe 'edit_pattern_instance' and 'add_custom_button' via genexus_recipe.",
       "inputSchema": {
         "properties": {
           "content": {
@@ -1364,6 +1364,22 @@
       "name": "genexus_read"
     },
     {
+      "description": "Fetch a step-by-step playbook for a named flow (e.g. 'wwp_on_transaction', 'wwp_on_webpanel', 'create_popup', 'edit_pattern_instance', 'add_custom_button'). Returns prereq/steps/pitfalls. Call name='list' to enumerate available recipes.",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "description": "Recipe key, or 'list' to enumerate.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_recipe"
+    },
+    {
       "description": "Run GeneXus refactor: rename, extract procedure, or WWP condition set.",
       "inputSchema": {
         "properties": {
@@ -1590,7 +1606,7 @@
       "name": "genexus_validate_payload"
     },
     {
-      "description": "Return current KB context, GeneXus install, and MCP version.",
+      "description": "Return current KB context, GeneXus install, MCP version, AND inline playbooks for common flows (WWP, popup, layout). Call this FIRST on every session — the `playbooks` block routes you to the right tool without exploration.",
       "inputSchema": {
         "properties": {},
         "type": "object"

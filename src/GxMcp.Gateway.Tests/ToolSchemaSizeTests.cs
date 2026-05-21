@@ -52,7 +52,10 @@ namespace GxMcp.Gateway.Tests
             //   (~150 tokens for pattern key / settings tree).
             //   v2.5.3 (W3 from IDE-parity roadmap): 6000 → 6300 to accommodate genexus_create_popup
             //   (~290 tokens for the popup spec sub-schema: inputs[options], buttons, inParms/outParms).
-            Assert.True(approxTokens < 6300, $"tool_definitions.json is ~{approxTokens} tokens; budget 6300.");
+            //   v2.6.4 (LLM-UX pass): 6300 → 6700 for new genexus_recipe tool, apply_pattern `validate`
+            //   flag + parent-type routing hint, create_object/edit/whoami description front-loading.
+            //   Net ~+230 tokens; budget set conservatively at 6700.
+            Assert.True(approxTokens < 6700, $"tool_definitions.json is ~{approxTokens} tokens; budget 6700.");
         }
     }
 }

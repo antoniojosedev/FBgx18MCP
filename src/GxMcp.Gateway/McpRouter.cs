@@ -1103,5 +1103,43 @@ namespace GxMcp.Gateway
                 ["result"] = job.Result
             };
         }
+
+        // v2.6.4 (#18): lifecycle action=result for op:<id> reads the stored
+        // JobEntry result. Extracted from Program.cs so it can be unit-tested
+        // and so the result-envelope shape stays in lockstep with status long-poll.
+        // isError is set when the job terminated in failed/cancelled — callers
+        // that branch on isError get a clear pass/fail signal.
+        internal static (JObject envelope, bool isError) BuildJobResultEnvelope(JobEntry job)
+        {
+            if (job == null)
+                throw new ArgumentNullException(nameof(job));
+
+            if (string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase))
+            {
+                var pending = new JObject
+                {
+                    ["status"] = "Pending",
+                    ["operationId"] = job.Id,
+                    ["message"] = "Operation still running. Poll genexus_lifecycle action=status target=op:" + job.Id + " (with wait_seconds>0 to long-poll), then call result once it terminates.",
+                    ["startedAt"] = job.StartedAt.ToString("o"),
+                    ["estimated_seconds"] = job.EstimatedSeconds
+                };
+                return (pending, isError: false);
+            }
+
+            var terminal = new JObject
+            {
+                ["status"] = job.Status,
+                ["operationId"] = job.Id,
+                ["kind"] = job.Kind,
+                ["summary"] = job.Summary,
+                ["startedAt"] = job.StartedAt.ToString("o"),
+                ["completedAt"] = job.CompletedAt?.ToString("o")
+            };
+            if (job.Result != null) terminal["result"] = job.Result;
+            bool isErr = string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
+            return (terminal, isErr);
+        }
     }
 }

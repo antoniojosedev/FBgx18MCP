@@ -38,6 +38,27 @@ Two passes driven by live audits against KB `AcademicoHomolog1`: a usability swe
 - Probes used for the audit live under `scratch/`: `usability_probe.js` + `usability_probe2.js` (initial audit), `validation_probe.js` (25/25 assertions on the 9 fixes), `ux_probe.js` (20/20 on the new UX features), `apply_happy_path.js` (11/11 on real apply with disposable objects).
 - `RecipeCatalog.cs` is `internal static` with a `Dictionary<string, Func<JObject>>` registry — adding a recipe is one entry. Routes through the same `gateway-served meta-tool` path as `genexus_whoami` (no worker involvement, no JSON-RPC round-trip).
 
+### Added (follow-up)
+
+- **`apply_pattern { validate: true }` — post-apply build of the generated host in a single tool call.** The original "vinculou como se fosse transação" bug surfaced as the LLM declaring success on a broken WWP binding that only failed when the user opened the IDE. With `validate: true` the gateway fires `Build/Build` against the host returned by apply, polls `Build/Status` with the worker's taskId until terminal, and folds a `validation` block into the apply response: `{ status: ok|failed|timeout, errorCount, warningCount, errors[], warnings[], durationMs, taskId }`. Failed builds promote `result.isError=true` so MCP clients that branch on the flag get a clear pass/fail signal. Wall time adds 60-180s but the LLM never has to open the IDE to discover a compile failure. Validated live: 11/11 assertions including the bug-mode where the worker's `BuildService.Build` returns a `Running` envelope in milliseconds — earlier draft parsed that as `status: "ok"` (26ms / 0 errors), now correctly polls until the real terminal state (55s / 6 errors / errors[] populated).
+
+- **`genexus_lifecycle action=result target=op:<jobId>` works for completed background jobs.** v2.6.3 fixed `cancel`/`status` for `op:<id>` via JobRegistry but `result` still forwarded to the worker's taskId tracker, which returned `"Task ID not found"` for jobs visible in `_meta.background_jobs`. Symmetric handler now consults JobRegistry first: running → `Pending` envelope with poll hint; completed (`succeeded`/`failed`/`cancelled`) → stored `JobEntry.Result` plus status/operationId/kind/summary/startedAt/completedAt. Failed/cancelled propagate `isError=true`.
+
+### Internal (follow-up)
+
+- **Helper extraction for unit testability.** Two inline payload builders refactored into pure static methods so they can be covered without spinning up the gateway:
+  - `McpRouter.BuildJobResultEnvelope(JobEntry job)` → `(envelope, isError)` — the lifecycle result shape, called from the `op:<id>` route.
+  - `PatternApplyService.TryBuildTypeGateRejection(objName, patternKey, parentType, callerTemplate, availableTemplates)` → rejection JSON or null — the WWP parent-type gate, called from `ApplyPattern`.
+- **Regression suite — ~48 new assertions across 6 files:**
+  - `RecipeCatalogTests` (11) — list / known recipe / unknown / empty name / case-insensitivity / wwp_on_webpanel emphasises inspect-first.
+  - `WhoamiPlaybooksTests` (7) — playbooks block presence, 6 canonical routes, parent-type-check emphasis, index-state cache reflects updates.
+  - `ToolDefinitionsRedirectsTests` (7) — apply_pattern mentions inspect+parentType, create_object redirects WWP, edit warns about PatternInstance vs WebForm, whoami points at playbooks, `genexus_recipe` registered, `analyze.mode` drops `explain`, apply_pattern declares `validate` boolean.
+  - `LifecycleResultTests` (6) — running returns Pending without isError, succeeded surfaces stored result, failed/cancelled mark isError, null-result terminal envelope, null-job guard.
+  - `PatternApplyTypeGateTests` (17) — Transaction case-insensitive eligibility, WebPanel/SDPanel no-template path, non-eligible types rejected with `validParentTypes` + hint, bad template surfaces availableTemplates, case-insensitive template match, non-WWP keys pass through, null parent type rejected, empty available list skips check.
+  - `E2ELiveSmokeTests` — 7 LiveKbFact-gated end-to-end tests against the published Gateway over stdio (whoami latency / explain NotImplemented / query Index pollution / read availableParts / navigation status / apply_pattern type-gate rejection / apply_pattern validate happy path requiring WWP). New `LiveGatewayHarness` spawns the process and runs the JSON-RPC handshake — mirrors the scripts under `scratch/` so the regression contract matches the live audit.
+- **`ToolSchemaSizeTests` budget bumped 6300 → 6700** to absorb genexus_recipe (~80 tokens), apply_pattern `validate` + parent-type hint (~80), description front-loading on create_object/edit/whoami (~100). Net actual ~6624 tokens.
+- **Contract-discovery goldens refreshed** to include `genexus_recipe` and the updated descriptions.
+
 ## v2.6.3 — 2026-05-20
 
 Bug-fix pass uncovered by live-testing v2.6.2. Two gateway-side gaps prevented `lifecycle cancel` / `lifecycle status` from resolving when callers used the canonical `target=op:<jobId>` shape — exactly the call pattern documented in the tool help. Both close now.
