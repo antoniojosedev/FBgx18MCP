@@ -88,6 +88,35 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void Compact_True_SurfacesSuggestedRetry_WhenSuggestedRebuildTargetsPresent()
+        {
+            // FR (2026-05-21): BuildService already extracts the missing object
+            // names from CS0246/CS2001 into SuggestedRebuildTargets. The compact
+            // shaper must surface them as a ready-to-fire retry hint so the agent
+            // doesn't have to scrape error[] paths by hand.
+            var rawObj = JObject.Parse(MakeBuildStatus(2, 0));
+            rawObj["SuggestedRebuildTargets"] = new JArray { "ConvenioValorizza", "PremioMerito", "ClasseTotalAlunos" };
+            var compact = LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true);
+            var obj = JObject.Parse(compact);
+
+            var retry = obj["suggested_retry"] as JObject;
+            Assert.NotNull(retry);
+            Assert.Equal("build", retry!["action"]!.ToString());
+            Assert.Equal("ConvenioValorizza,PremioMerito,ClasseTotalAlunos", retry["target"]!.ToString());
+            Assert.Equal("direct", retry["includeCallees"]!.ToString());
+            Assert.False(string.IsNullOrWhiteSpace(retry["hint"]!.ToString()));
+        }
+
+        [Fact]
+        public void Compact_True_OmitsSuggestedRetry_WhenNoMissingObjects()
+        {
+            var raw = MakeBuildStatus(1, 0);
+            var compact = LifecycleResponseShaper.Compact(raw, compact: true);
+            var obj = JObject.Parse(compact);
+            Assert.Null(obj["suggested_retry"]);
+        }
+
+        [Fact]
         public void ShouldCompact_DefaultsToTrue_AndHonorsExplicitFalseFlags()
         {
             Assert.True(LifecycleResponseShaper.ShouldCompact(null!));

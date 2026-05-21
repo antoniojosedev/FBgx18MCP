@@ -582,6 +582,7 @@ namespace GxMcp.Gateway
                 ["edit_wwp_layout"] = "genexus_edit { name: WorkWithPlus<X>, part: 'PatternInstance', mode: 'patch', ... } → edit the host's XML; the MCP auto-projects to the WebForm.",
                 ["create_popup"] = "genexus_create_popup { name, spec: { title, inputs:[{type,varName,...}], buttons:[{caption,event}] } } → one call replaces ~6 edits (Form layout=true + inputs + buttons + parms).",
                 ["read_object_structure"] = "genexus_inspect { name, include:['parts','variables','signature'] } → cheap snapshot before any edit. ALWAYS run this first when unsure of object type.",
+                ["unbreak_build"] = "Build failed with CS0246/CS2001? Check response.suggested_retry — it already carries `target` as a CSV of the missing objects. Fire `genexus_lifecycle { action:'build', target:<that CSV>, includeCallees:'direct' }` BEFORE asking the user. Don't grep raw error[] paths by hand and don't hand the list back to the user.",
                 ["recipes_index"] = "For full step-by-step recipes call genexus_recipe { name: 'wwp_on_webpanel' | 'wwp_on_transaction' | 'create_popup' | 'edit_pattern_instance' | 'add_custom_button' | 'list' }."
             };
         }

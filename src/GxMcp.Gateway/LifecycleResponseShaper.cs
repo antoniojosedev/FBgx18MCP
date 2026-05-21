@@ -65,6 +65,29 @@ namespace GxMcp.Gateway
                 ["compact"] = true
             };
 
+            // FR (2026-05-21): when CS0246/CS2001 fired, BuildService already extracted
+            // the missing object names into SuggestedRebuildTargets. Surface them as a
+            // ready-to-fire retry hint so the agent doesn't have to scrape the paths
+            // out of error[] by hand.
+            var suggested = obj["SuggestedRebuildTargets"] as JArray;
+            if (suggested != null && suggested.Count > 0)
+            {
+                var names = suggested.Select(t => t?.ToString())
+                    .Where(s => !string.IsNullOrEmpty(s))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (names.Length > 0)
+                {
+                    compactObj["suggested_retry"] = new JObject
+                    {
+                        ["action"] = "build",
+                        ["target"] = string.Join(",", names),
+                        ["includeCallees"] = "direct",
+                        ["hint"] = "CS0246/CS2001 referenced these objects — rebuild them (and direct callees) before retrying the full build."
+                    };
+                }
+            }
+
             // Surface taskId/jobId for callers that want to fetch the raw payload later via action=result&compact=false.
             if (obj["jobId"] != null) compactObj["jobId"] = obj["jobId"];
             if (obj["ElapsedSeconds"] != null) compactObj["ElapsedSeconds"] = obj["ElapsedSeconds"];
