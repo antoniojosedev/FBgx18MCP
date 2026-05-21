@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Observability pass over the worker/gateway hot paths so degraded internal state shows up in `genexus_whoami` instead of `worker_debug.log`.
+
+### Added
+
+- **`genexus_whoami` flush-failure telemetry (W-M2).** `IndexCacheService` now tracks consecutive snapshot-flush failures, last success timestamp, and last error message; `kb.GetIndexState` surfaces them and the gateway emits a `flushHealth` block under the index section. A silently failing on-disk index snapshot (disk full / locked / permission) is visible from whoami without grepping logs.
+- **`genexus_whoami` tool-metrics summary.** `OperationTracker.BuildMetricsSummary()` rolls up total calls / errors / timeouts across tools plus the slowest tool by p95, surfaced as `metricsSummary`. Keeps the first-turn whoami response tiny; full per-tool breakdown stays at `genexus_lifecycle status target=gateway:metrics`.
+- **`BoundedStringCache` hit/miss/eviction counters.** SearchService's query cache now exposes Hits / Misses / Evictions / Count / Capacity (Interlocked, no contention with the per-call lock) so a degraded hit ratio from undersized capacity is visible without an external profiler.
+- **Slow-log instrumentation on `WriteObject` (>250ms).** Unusually-slow SDK save paths now surface in `worker_debug.log` as `[OBJ-SAVE-SLOW]` lines with target / part / codeLen / dryRun. Complements existing `[KB-OPEN]` and `[SEARCH-SLOW]` markers.
+
 ## v2.6.4 — 2026-05-20
 
 Three passes: a usability sweep against KB `AcademicoHomolog1` that caught nine concrete friction points the LLM was hitting on first use; a UX pass focused on the "agent burns 3-8k tokens exploring before doing real work" failure mode on apply_pattern; and a corporate-Windows install hardening pass triggered by a real `2.3.4 -> 2.6.3` upgrade report where the user's MCP config kept silently pointing at an old gateway exe outside `node_modules`, the npm-installed copy was blocked by domain AppLocker from `%APPDATA%`, and every diagnostic surface ("Failed to connect", `npm update` ghost operation, generic launcher errors) compounded the dead end. Validated with happy-path apply on a disposable Transaction + WebPanel (11/11 assertions), focused UX probe (20/20), and the full CLI test suite (37/38, single pre-existing assertion unrelated).
