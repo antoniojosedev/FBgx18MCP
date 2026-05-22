@@ -69,8 +69,60 @@ Discoverable via `tools/list`; full schema in `src/GxMcp.Gateway/tool_definition
 
 ## Release discipline
 
-- Before any release (`scripts/release.ps1`, tag, or GitHub Release), update
+- Before any release (`./release.ps1`, tag, or GitHub Release), update
   `CHANGELOG.md` with an entry for the exact version being released.
+
+### One-shot release command
+
+Cutting a release is a single command — `./release.ps1` handles version
+bumps, build, zip, commit, tag, push, and `gh release create` (with
+`publish.zip` attached **in the same API call** as create):
+
+```powershell
+.\release.ps1 -Version 2.6.9         # full bump → build → ship
+.\release.ps1                        # no version bump; use current package.json
+.\release.ps1 -Version 2.6.9 -DryRun # rehearse without touching origin
+```
+
+**Don't** run `gh release create` by hand. The workflow at
+`.github/workflows/release.yml` expects a `publish.zip` asset on the
+release; creating without the asset publishes a release that the
+workflow fails on with `publish.zip missing` (the script attaches it in
+one call so the workflow's first `release.published` event succeeds).
+
+The Worker can't build on GitHub-hosted runners (it references Artech.\*
+DLLs from a local GeneXus 18 install which isn't on `ubuntu-latest`),
+so the zip has to be produced on a Windows machine with GeneXus
+installed. `release.ps1` does this.
+
+### npmjs.com webpage lag after publish
+
+After `release.ps1` finishes and the workflow turns green, the package
+is live on the npm **registry** immediately:
+
+```powershell
+npm view genexus-mcp version            # → 2.6.8 right away
+npm view genexus-mcp dist-tags --json   # { "latest": "2.6.8" }
+npm install -g genexus-mcp@latest       # gets 2.6.8
+```
+
+The npmjs.com **website** (`npmjs.com/package/genexus-mcp`) is served
+from a separate CDN that caches the rendered page and **can lag the
+registry by 10–30 minutes**. The right-sidebar "Version" label and the
+"Published N hours ago" line can still show the previous version even
+when the README badge (`shields.io`, queries the live registry) already
+shows the new one. This is a known npmjs.com UI quirk, not a publish
+failure. Don't re-cut the release; just wait or verify via
+`npm view` / `registry.npmjs.org/genexus-mcp/latest`.
+
+When a user reports "still on old version after install", the actual
+fixes (in order) are:
+
+1. `where.exe genexus-mcp` — multiple matches mean an older install
+   (e.g. from `install.ps1` build-from-source) is masking the npm one.
+   Remove the non-npm copy from `PATH`.
+2. `npm cache clean --force && npm uninstall -g genexus-mcp && npm install -g genexus-mcp@<version>` — pins past any cached metadata.
+3. Confirm `genexus-mcp doctor` reports the expected version.
 
 ### CHANGELOG voice — release-facing, not roadmap-internal
 
