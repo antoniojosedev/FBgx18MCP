@@ -346,6 +346,34 @@ namespace GxMcp.Gateway.Routers
                         auth = args?["auth"]
                     };
 
+                case "genexus_browser_capture":
+                    return new
+                    {
+                        module = "browser_capture",
+                        action = "Capture",
+                        target = args?["target"]?.ToString() ?? args?["name"]?.ToString(),
+                        name = args?["target"]?.ToString() ?? args?["name"]?.ToString(),
+                        capture = args?["capture"]
+                    };
+
+                case "genexus_smoke_test":
+                    return new
+                    {
+                        module = "smoke_test",
+                        action = "Run",
+                        target = args?["target"]?.ToString() ?? args?["name"]?.ToString(),
+                        name = args?["target"]?.ToString() ?? args?["name"]?.ToString()
+                    };
+
+                case "genexus_a11y_audit":
+                    return new
+                    {
+                        module = "a11y_audit",
+                        action = "Audit",
+                        target = args?["target"]?.ToString() ?? args?["name"]?.ToString(),
+                        name = args?["target"]?.ToString() ?? args?["name"]?.ToString()
+                    };
+
                 default:
                     return null;
             }

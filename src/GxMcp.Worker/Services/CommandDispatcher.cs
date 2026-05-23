@@ -72,6 +72,11 @@ namespace GxMcp.Worker.Services
         private readonly KbExplorerService _kbExplorerService;
         private readonly NavigationViewService _navigationViewService;
         private readonly KbStartupService _kbStartupService;
+        // Wave-3 browser-verify pipeline. Shared invoker → 3 services.
+        private readonly IBrowserDriverInvoker _browserDriverInvoker;
+        private readonly BrowserCaptureService _browserCaptureService;
+        private readonly SmokeTestService _smokeTestService;
+        private readonly A11yAuditService _a11yAuditService;
 
         private CommandDispatcher()
         {
@@ -137,6 +142,11 @@ namespace GxMcp.Worker.Services
             _kbExplorerService = new KbExplorerService(_objectService, _indexCacheService);
             _navigationViewService = new NavigationViewService(_navigationService, _kbService);
             _kbStartupService = new KbStartupService(_kbService, _objectService);
+            // Wave-3 browser-verify pipeline wiring.
+            _browserDriverInvoker = new DefaultBrowserDriverInvoker();
+            _browserCaptureService = new BrowserCaptureService(_objectService, _browserDriverInvoker);
+            _smokeTestService = new SmokeTestService(_browserCaptureService);
+            _a11yAuditService = new A11yAuditService(_browserDriverInvoker);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -1117,6 +1127,28 @@ namespace GxMcp.Worker.Services
                             return _blameService.Blame(blameReq);
                         }
                         return Models.McpResponse.Error("Unknown action", target, action, $"Unsupported blame action '{action}'.");
+                    case "browser_capture":
+                        if (action == "Capture")
+                        {
+                            string bcTarget = target ?? args?["name"]?.ToString();
+                            var bcKinds = args?["capture"] as JArray;
+                            return _browserCaptureService.Capture(bcTarget, bcKinds).ToString(Newtonsoft.Json.Formatting.None);
+                        }
+                        break;
+                    case "smoke_test":
+                        if (action == "Run")
+                        {
+                            string stTarget = target ?? args?["name"]?.ToString();
+                            return _smokeTestService.Run(stTarget).ToString(Newtonsoft.Json.Formatting.None);
+                        }
+                        break;
+                    case "a11y_audit":
+                        if (action == "Audit")
+                        {
+                            string aaTarget = target ?? args?["name"]?.ToString();
+                            return _a11yAuditService.Audit(aaTarget).ToString(Newtonsoft.Json.Formatting.None);
+                        }
+                        break;
                 }
 
                 return Models.McpResponse.Error(
