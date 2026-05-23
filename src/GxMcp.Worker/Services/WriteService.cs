@@ -1503,6 +1503,41 @@ namespace GxMcp.Worker.Services
 
                     Logger.Info("[DEBUG-SAVE] SAVE & COMMIT COMPLETE.");
                     _objectService.MarkReadCacheDirty(obj, partName);
+
+                    // Item 7 (friction-report 2026-05-22): spc0150 preflight — attribute writes
+                    // inside For each/endfor in a WebPanel Events part compile clean in the MCP
+                    // write but fail at KB build time with "Attribute cannot be assigned in this
+                    // context". Warn immediately so the agent can restructure before building.
+                    try
+                    {
+                        if (string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase)
+                            && obj != null
+                            && string.Equals(obj.TypeDescriptor?.Name, "WebPanel", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var spcFindings = GxMcp.Worker.Helpers.Spc0150PreflightScanner.Scan(decodedCode);
+                            if (spcFindings != null && spcFindings.Count > 0)
+                            {
+                                var warnPayload = new JObject
+                                {
+                                    ["warnings"] = new JArray
+                                    {
+                                        new JObject
+                                        {
+                                            ["code"] = "PreflightSpc0150",
+                                            ["message"] = "WebPanel Events with attribute writes inside `For each` → spc0150 at build time. Move to a Procedure (recipe extract_to_procedure).",
+                                            ["suggested_recipe"] = "extract_to_procedure"
+                                        }
+                                    }
+                                };
+                                return Models.McpResponse.Success("Write", target, warnPayload);
+                            }
+                        }
+                    }
+                    catch (Exception spcEx)
+                    {
+                        Logger.Debug("[SPC0150] preflight scan skipped: " + spcEx.Message);
+                    }
+
                     return Models.McpResponse.Success("Write", target);
                 }
                 catch (Exception saveEx)
@@ -2320,6 +2355,37 @@ namespace GxMcp.Worker.Services
             payload["warnings"] = warnings;
         }
 
+        // Item 6: extract GotchaHtmlFormatScriptStripped entries from layoutGotchas and
+        // return them as top-level warnings[] items so callers that only inspect "warnings"
+        // see the advisory even when they don't parse "layoutGotchas".
+        private static JArray BuildHtmlFormatWarnings(JArray layoutGotchas)
+        {
+            if (layoutGotchas == null || layoutGotchas.Count == 0) return null;
+            JArray result = null;
+            foreach (var item in layoutGotchas)
+            {
+                if (!(item is JObject jo)) continue;
+                if (!string.Equals(jo["code"]?.ToString(), "GotchaHtmlFormatScriptStripped", StringComparison.Ordinal)) continue;
+                if (result == null) result = new JArray();
+                result.Add(new JObject
+                {
+                    ["code"] = "GotchaHtmlFormatScriptStripped",
+                    ["message"] = "Format=\"HTML\" gxTextBlock with <script> inside CDATA — GeneXus generator escapes this on render. Code appears as literal text. Use <body onmousedown> + addEventListener for runtime JS instead."
+                });
+            }
+            return result;
+        }
+
+        // Merges two JArrays of warning objects — returns null when both inputs are empty/null.
+        private static JArray MergeWarnings(JArray a, JArray b)
+        {
+            if ((a == null || a.Count == 0) && (b == null || b.Count == 0)) return null;
+            var merged = new JArray();
+            if (a != null) foreach (var t in a) merged.Add(t);
+            if (b != null) foreach (var t in b) merged.Add(t);
+            return merged;
+        }
+
         private string WriteVisualPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false)
         {
             var webFormPart = WebFormXmlHelper.GetWebFormPart(obj);
@@ -2388,7 +2454,8 @@ namespace GxMcp.Worker.Services
                         ["part"] = partName,
                         ["details"] = dryRun ? "Dry-run: no change would be applied." : "No change"
                     };
-                    AttachWarnings(noChangeResp, patternShadowWarnings);
+                    var noChangeHtmlWarnings = BuildHtmlFormatWarnings(prospectiveGotchas);
+                    AttachWarnings(noChangeResp, MergeWarnings(patternShadowWarnings, noChangeHtmlWarnings));
                     if (prospectiveGotchas != null) noChangeResp["layoutGotchas"] = prospectiveGotchas;
                     return Models.McpResponse.Success("Write", target, noChangeResp);
                 }
@@ -2400,7 +2467,8 @@ namespace GxMcp.Worker.Services
                         ["part"] = partName,
                         ["details"] = "Dry-run: input parsed and would update visual XML. Save skipped."
                     };
-                    AttachWarnings(dryResp, patternShadowWarnings);
+                    var dryHtmlWarnings = BuildHtmlFormatWarnings(prospectiveGotchas);
+                    AttachWarnings(dryResp, MergeWarnings(patternShadowWarnings, dryHtmlWarnings));
                     var suspects = GxMcp.Worker.Helpers.WebFormSchemaHints.ScanForRejectedAttributes(normalizedInput);
                     if (suspects.Count > 0)
                     {
@@ -2523,7 +2591,13 @@ namespace GxMcp.Worker.Services
                         ["part"] = partName,
                         ["details"] = "Visual XML updated and verified."
                     };
-                    AttachWarnings(okResp, patternShadowWarnings);
+                    // Item 6 (friction-report 2026-05-22): promote GotchaHtmlFormatScriptStripped
+                    // gotchas into the top-level warnings[] so callers that only inspect "warnings"
+                    // (not "layoutGotchas") still see the HTML-escape advisory on success.
+                    var htmlFormatWarnings = BuildHtmlFormatWarnings(prospectiveGotchas);
+                    var allWarnings = MergeWarnings(patternShadowWarnings, htmlFormatWarnings);
+                    AttachWarnings(okResp, allWarnings);
+                    if (prospectiveGotchas != null) okResp["layoutGotchas"] = prospectiveGotchas;
                     return Models.McpResponse.Success("Write", target, okResp);
                 }
                 catch (Exception ex)
