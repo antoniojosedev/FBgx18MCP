@@ -536,11 +536,80 @@ namespace GxMcp.Worker.Services
 
                         bool fallbackSuccess = string.Equals(fallbackPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                         writePayload["fallbackWriteStatus"] = fallbackPayload["status"]?.ToString() ?? "Error";
+                        // Friction 2026-05-22 #8: classifier helper extracted so the envelope shape
+                        // is unit-testable without standing up an SDK. See ClassifyFallbackFailure.
                         if (!fallbackSuccess)
                         {
-                            writePayload["status"] = "Error";
-                            writePayload["error"] = "Patch write fallback failed after persistence mismatch.";
-                            writePayload["fallbackWriteError"] = fallbackPayload["error"]?.ToString() ?? "Unknown fallback write error.";
+                            // Friction 2026-05-22 #8: differentiate two distinct failure modes
+                            // the agent previously couldn't tell apart from this single error.
+                            //
+                            // (a) write_not_persisted — neither write reached disk. Retry-safe
+                            //     because the on-disk source is still the original. SDK
+                            //     reported failure on the fallback AND a re-verify shows the
+                            //     persisted bytes still match the original.
+                            //
+                            // (b) persisted_with_concurrent_change — the primary write DID land
+                            //     (or a sibling write landed) and the persisted bytes diverge
+                            //     from the original (and from finalCode). Hash drifted *post-
+                            //     write*. Returning Error here forced the agent to retry,
+                            //     which then either no-op'd or clobbered the sibling. Surface
+                            //     as Success + postWriteHashDrift warning so the agent knows
+                            //     to re-read instead of re-write.
+                            string fallbackErrText = fallbackPayload["error"]?.ToString() ?? "Unknown fallback write error.";
+                            try
+                            {
+                                bool matchesOriginal = VerifyPersistedSource(target, partName, typeFilter, originalSource, out _);
+                                bool matchesFinal = VerifyPersistedSource(target, partName, typeFilter, finalCode, out _);
+                                var classification = ClassifyFallbackFailure(matchesOriginal, matchesFinal, fallbackErrText);
+                                writePayload["status"] = classification.Status;
+                                writePayload["code"] = classification.Code;
+                                if (classification.PatchLanded)
+                                {
+                                    writePayload["persistedVerified"] = true;
+                                    writePayload["persistedVerifyError"] = null;
+                                    persistedMatches = true;
+                                    UpdateCachedSource(cacheKey, finalCode);
+                                }
+                                else if (string.Equals(classification.Status, "Success", StringComparison.Ordinal))
+                                {
+                                    // Concurrent write without our content — keep persistedVerified=false
+                                    // and surface a re-read hint.
+                                    writePayload["persistedVerified"] = false;
+                                    writePayload["persistedVerifyError"] = "concurrent write detected; persisted bytes diverged from both original and patched content.";
+                                }
+                                if (string.Equals(classification.Status, "Success", StringComparison.Ordinal))
+                                {
+                                    var meta = writePayload["_meta"] as JObject ?? new JObject();
+                                    var drift = new JObject
+                                    {
+                                        ["code"] = classification.Code,
+                                        ["mode"] = classification.Mode,
+                                        ["message"] = classification.Message,
+                                        ["fallbackWriteError"] = fallbackErrText
+                                    };
+                                    if (classification.RequiresReread)
+                                    {
+                                        drift["suggestedAction"] = "re-read target then re-targeted patch (do not blindly retry the same patch).";
+                                    }
+                                    meta["postWriteHashDrift"] = drift;
+                                    writePayload["_meta"] = meta;
+                                }
+                                else
+                                {
+                                    writePayload["error"] = classification.Message;
+                                    writePayload["fallbackWriteError"] = fallbackErrText;
+                                    writePayload["suggested_next_step"] = "Retry the same patch — on-disk source is the same as before the attempt.";
+                                }
+                            }
+                            catch (Exception verifyEx)
+                            {
+                                // Verify itself failed — fall back to the legacy generic error so
+                                // we don't lose the signal. Keep status=Error.
+                                Logger.Debug("[PATCH] post-fallback verify failed: " + verifyEx.Message);
+                                writePayload["status"] = "Error";
+                                writePayload["error"] = "Patch write fallback failed after persistence mismatch.";
+                                writePayload["fallbackWriteError"] = fallbackErrText;
+                            }
                         }
                         else
                         {
@@ -1277,6 +1346,68 @@ namespace GxMcp.Worker.Services
             {
                 Source = source,
                 UpdatedUtc = DateTime.UtcNow
+            };
+        }
+
+        /// <summary>
+        /// Friction 2026-05-22 #8: classify a post-fallback "SDK reported failure" outcome.
+        /// Inputs are the cheap-to-compute "what does disk look like now?" booleans plus
+        /// the SDK error text. Output is the envelope shape the caller should apply to
+        /// writePayload. Pure function — unit-tested without standing up the SDK.
+        /// </summary>
+        public sealed class FallbackFailureClassification
+        {
+            /// <summary>"Success" or "Error" — the value to put on writePayload.status.</summary>
+            public string Status { get; set; }
+            /// <summary>Stable code: "write_not_persisted" or "post_write_hash_drift".</summary>
+            public string Code { get; set; }
+            /// <summary>"write_not_persisted" or "persisted_with_concurrent_change".</summary>
+            public string Mode { get; set; }
+            /// <summary>Human-readable error/note text.</summary>
+            public string Message { get; set; }
+            /// <summary>True when the agent's safe move is to re-read before retrying.</summary>
+            public bool RequiresReread { get; set; }
+            /// <summary>True when the patched content actually landed despite the SDK signal.</summary>
+            public bool PatchLanded { get; set; }
+        }
+
+        public static FallbackFailureClassification ClassifyFallbackFailure(
+            bool persistedMatchesOriginal,
+            bool persistedMatchesFinal,
+            string fallbackError)
+        {
+            if (persistedMatchesFinal)
+            {
+                return new FallbackFailureClassification
+                {
+                    Status = "Success",
+                    Code = "post_write_hash_drift",
+                    Mode = "persisted_with_concurrent_change",
+                    Message = "Primary write landed; SDK reported a fallback-write failure but the persisted bytes match the patched content. Treating as Success.",
+                    RequiresReread = false,
+                    PatchLanded = true
+                };
+            }
+            if (!persistedMatchesOriginal)
+            {
+                return new FallbackFailureClassification
+                {
+                    Status = "Success",
+                    Code = "post_write_hash_drift",
+                    Mode = "persisted_with_concurrent_change",
+                    Message = "A concurrent write modified this target between our write and our verify. The on-disk source no longer matches either our input or the original — re-read before any further patch.",
+                    RequiresReread = true,
+                    PatchLanded = false
+                };
+            }
+            return new FallbackFailureClassification
+            {
+                Status = "Error",
+                Code = "write_not_persisted",
+                Mode = "write_not_persisted",
+                Message = "Write did not reach disk (SDK fallback failed and the on-disk source is unchanged). Retry is safe.",
+                RequiresReread = false,
+                PatchLanded = false
             };
         }
 
