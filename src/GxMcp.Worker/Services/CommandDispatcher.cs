@@ -62,6 +62,7 @@ namespace GxMcp.Worker.Services
         private readonly UndoService _undoService;
         private readonly SecurityAuditService _securityAuditService;
         private readonly OrientService _orientService;
+        private readonly DbDriftService _dbDriftService;
 
         private CommandDispatcher()
         {
@@ -117,6 +118,7 @@ namespace GxMcp.Worker.Services
             _undoService = new UndoService(_objectService, _writeService, _indexCacheService);
             _securityAuditService = new SecurityAuditService(_kbService);
             _orientService = new OrientService(_kbService);
+            _dbDriftService = new DbDriftService(_buildService);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -932,6 +934,13 @@ namespace GxMcp.Worker.Services
                             bool popupDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
                             return _popupTemplateService.CreatePopup(popupName, popupSpec, popupDryRun);
                         }
+                        break;
+                    case "dbdrift":
+                        // Item 41 (mcp-improvements-2026-05-22) — Transaction ↔ DB drift.
+                        if (string.Equals(action, "Check", StringComparison.OrdinalIgnoreCase))
+                            return _dbDriftService.Check(target);
+                        if (string.Equals(action, "Report", StringComparison.OrdinalIgnoreCase))
+                            return _dbDriftService.Report(target);
                         break;
                     case "preview":
                         if (action == "Render" || action == "Run")

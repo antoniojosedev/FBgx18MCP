@@ -379,6 +379,32 @@
       "name": "genexus_create_popup"
     },
     {
+      "description": "Transaction↔DB schema drift. action=check structured; report adds markdown.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "check",
+              "report"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_db_drift"
+    },
+    {
       "description": "Delete an object from the KB. Irreversible — confirm=true required.",
       "inputSchema": {
         "properties": {

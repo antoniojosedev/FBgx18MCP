@@ -225,6 +225,19 @@ namespace GxMcp.Gateway.Routers
                         action = args?["action"]?.ToString() ?? "audit_gam"
                     };
 
+                // Item 41 (mcp-improvements-2026-05-22) — Transaction ↔ DB drift detection.
+                case "genexus_db_drift":
+                {
+                    string driftAction = args?["action"]?.ToString();
+                    bool isReport = string.Equals(driftAction, "report", StringComparison.OrdinalIgnoreCase);
+                    return new
+                    {
+                        module = "DbDrift",
+                        action = isReport ? "Report" : "Check",
+                        target = args?["target"]?.ToString()
+                    };
+                }
+
                 // Item 65 — genexus_orient welcome card
                 case "genexus_orient":
                     return new

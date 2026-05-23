@@ -83,7 +83,9 @@ namespace GxMcp.Gateway.Tests
             //   2026-05-23 friction items 20/21/43/72: 7200 → 7400 for universal dryRun
             //   (5 tools), autoFormat on genexus_edit, reorg_preview action + notifyOnFailure
             //   on genexus_lifecycle. Net ~+110 tokens measured.
-            Assert.True(approxTokens < 7400, $"tool_definitions.json is ~{approxTokens} tokens; budget 7400.");
+            //   2026-05-23 improvements item 41: 7400 → 7500 for genexus_db_drift
+            //   (Transaction↔DB schema drift detection). Net ~+30 tokens.
+            Assert.True(approxTokens < 7500, $"tool_definitions.json is ~{approxTokens} tokens; budget 7500.");
         }
     }
 }
