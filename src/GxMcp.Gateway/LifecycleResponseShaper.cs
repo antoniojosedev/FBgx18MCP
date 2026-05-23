@@ -130,6 +130,79 @@ namespace GxMcp.Gateway
             return compactObj.ToString(Newtonsoft.Json.Formatting.None);
         }
 
+        /// <summary>
+        /// Three-way classification of a terminal build payload (worker's
+        /// BuildTaskStatus, optionally already passed through Compact). Friction
+        /// 2026-05-22 item 10: a "Build succeeded: 0 warnings, 0 errors" was
+        /// returning inside an <c>&lt;e&gt;error{…}&gt;</c> envelope because the
+        /// async path was matching JobEntry.Status against "completed" while the
+        /// registry actually stamps "succeeded". Centralize the rule so every
+        /// caller (sync fast-path, async job-id long-poll, wait_until_done) ends
+        /// up on the same envelope shape.
+        /// </summary>
+        public enum BuildOutcome
+        {
+            /// <summary>ExitCode=0, ErrorCount=0, WarningCount=0 → MCP isError=false.</summary>
+            Success,
+            /// <summary>partial_success=true (Generation+Compilation OK, late MSBuild step failed)
+            /// → MCP isError=false but envelope carries partial_success/warning markers.</summary>
+            PartialSuccess,
+            /// <summary>Any real failure (ErrorCount&gt;0, non-zero ExitCode without partial_success,
+            /// or non-terminal/unknown state) → MCP isError=true.</summary>
+            Error
+        }
+
+        /// <summary>
+        /// Inspect a (possibly shaped) build payload and decide whether the MCP
+        /// envelope should be success, warning, or error. Accepts either the
+        /// post-Compact shape (lowercase errorCount/warningCount, partial_success)
+        /// or the raw BuildTaskStatus (PascalCase). status/Status terminal labels
+        /// are honored: "Succeeded" → Success regardless of counts; "Failed" with
+        /// partial_success=true → PartialSuccess; otherwise count/ExitCode drive
+        /// the classification.
+        /// </summary>
+        public static BuildOutcome ClassifyBuildOutcome(JObject buildPayload)
+        {
+            if (buildPayload == null) return BuildOutcome.Error;
+
+            int errCount = buildPayload["errorCount"]?.ToObject<int?>()
+                           ?? buildPayload["ErrorCount"]?.ToObject<int?>()
+                           ?? -1;
+            int warnCount = buildPayload["warningCount"]?.ToObject<int?>()
+                            ?? buildPayload["WarningCount"]?.ToObject<int?>()
+                            ?? 0;
+            int? exitCode = buildPayload["ExitCode"]?.ToObject<int?>()
+                            ?? buildPayload["exitCode"]?.ToObject<int?>();
+            string status = (buildPayload["status"] ?? buildPayload["Status"])?.ToString();
+            bool partial = buildPayload["partial_success"]?.ToObject<bool?>()
+                           ?? buildPayload["PartialSuccess"]?.ToObject<bool?>()
+                           ?? false;
+
+            if (partial) return BuildOutcome.PartialSuccess;
+
+            // Explicit terminal labels win when present.
+            if (!string.IsNullOrEmpty(status))
+            {
+                if (string.Equals(status, "Succeeded", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase))
+                    return BuildOutcome.Success;
+                if (string.Equals(status, "Failed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "Error", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                    return BuildOutcome.Error;
+            }
+
+            // Fall back to numeric signals: 0/0/0 with no explicit status is success.
+            if (errCount == 0 && warnCount == 0 && (exitCode ?? 0) == 0)
+                return BuildOutcome.Success;
+            if (errCount <= 0 && (exitCode ?? 0) == 0)
+                return BuildOutcome.Success; // counts unknown but exit clean.
+
+            return BuildOutcome.Error;
+        }
+
         public static bool ShouldCompact(JObject toolArgs)
         {
             if (toolArgs == null) return true;

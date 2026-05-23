@@ -126,5 +126,62 @@ namespace GxMcp.Gateway.Tests
             Assert.False(LifecycleResponseShaper.ShouldCompact(new JObject { ["compact"] = "false" }));
             Assert.False(LifecycleResponseShaper.ShouldCompact(new JObject { ["compact"] = "0" }));
         }
+
+        // Friction 2026-05-22 item 10: build envelope classification. The async path
+        // was previously matching "completed" (which the registry never emits) and
+        // forcing "Build succeeded: 0w/0e/exit=0" into an <e>error{}> envelope.
+        // ClassifyBuildOutcome is the single source of truth — covers all three
+        // terminal cases.
+        [Fact]
+        public void ClassifyBuildOutcome_ZeroZeroExitClean_IsSuccess()
+        {
+            var payload = JObject.Parse(@"{""Status"":""Succeeded"",""ErrorCount"":0,""WarningCount"":0,""ExitCode"":0}");
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.Success,
+                LifecycleResponseShaper.ClassifyBuildOutcome(payload));
+        }
+
+        [Fact]
+        public void ClassifyBuildOutcome_PartialSuccess_IsWarning()
+        {
+            var payload = JObject.Parse(@"{""Status"":""Failed"",""ErrorCount"":0,""WarningCount"":0,""ExitCode"":1,""PartialSuccess"":true}");
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.PartialSuccess,
+                LifecycleResponseShaper.ClassifyBuildOutcome(payload));
+        }
+
+        [Fact]
+        public void ClassifyBuildOutcome_RealFailure_IsError()
+        {
+            var payload = JObject.Parse(@"{""Status"":""Failed"",""ErrorCount"":3,""WarningCount"":1,""ExitCode"":1}");
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.Error,
+                LifecycleResponseShaper.ClassifyBuildOutcome(payload));
+        }
+
+        [Fact]
+        public void ClassifyBuildOutcome_HonorsCompactShape_LowercaseCountsAndPartial()
+        {
+            // Post-Compact shape uses lowercase errorCount/warningCount + partial_success
+            // bool on the outer object. Classifier must accept both shapes.
+            var compactShape = JObject.Parse(@"{""Status"":""Failed"",""errorCount"":0,""warningCount"":0,""ExitCode"":1,""partial_success"":true}");
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.PartialSuccess,
+                LifecycleResponseShaper.ClassifyBuildOutcome(compactShape));
+        }
+
+        [Fact]
+        public void ClassifyBuildOutcome_NullPayload_IsError()
+        {
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.Error,
+                LifecycleResponseShaper.ClassifyBuildOutcome(null));
+        }
+
+        [Fact]
+        public void ClassifyBuildOutcome_StatusOnly_NoCounts_RespectsStatus()
+        {
+            var succ = JObject.Parse(@"{""Status"":""Succeeded""}");
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.Success,
+                LifecycleResponseShaper.ClassifyBuildOutcome(succ));
+            var fail = JObject.Parse(@"{""Status"":""Failed""}");
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.Error,
+                LifecycleResponseShaper.ClassifyBuildOutcome(fail));
+        }
     }
 }

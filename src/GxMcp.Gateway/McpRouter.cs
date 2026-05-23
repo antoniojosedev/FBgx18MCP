@@ -1313,6 +1313,24 @@ namespace GxMcp.Gateway
             if (job.Result != null) terminal["result"] = job.Result;
             bool isErr = string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)
                       || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
+            // Friction 2026-05-22 item 10: when the inner BuildTaskStatus reports
+            // 0 errors / 0 warnings / ExitCode=0 (or partial_success=true), respect
+            // that over the registry's status flag. Race-safe: if the registry
+            // stamped success=false but the build truly was a 0/0/0, the agent
+            // would otherwise see an <e>error{}> envelope around "Build succeeded".
+            if (isErr && job.Result is JObject inner
+                && !string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                var outcome = LifecycleResponseShaper.ClassifyBuildOutcome(inner);
+                if (outcome == LifecycleResponseShaper.BuildOutcome.Success)
+                    isErr = false;
+                else if (outcome == LifecycleResponseShaper.BuildOutcome.PartialSuccess)
+                {
+                    isErr = false;
+                    terminal["partial_success"] = true;
+                    terminal["envelope"] = "warning";
+                }
+            }
             return (terminal, isErr);
         }
     }

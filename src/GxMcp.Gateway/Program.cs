@@ -47,7 +47,7 @@ namespace GxMcp.Gateway
         // Must mirror the exclusion list in tool_definitions.json (no `kb` param on these).
         private static readonly HashSet<string> _metaTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "genexus_kb", "genexus_whoami", "genexus_logs", "genexus_doc", "genexus_worker_reload", "genexus_recipe"
+            "genexus_kb", "genexus_whoami", "genexus_logs", "genexus_doc", "genexus_worker_reload", "genexus_recipe", "genexus_recipes"
         };
         private static bool IsMetaTool(string name) => _metaTools.Contains(name);
         private sealed class PendingWorkerRequest
@@ -2063,6 +2063,29 @@ namespace GxMcp.Gateway
                                     progressToken: clientProgressToken,
                                     heartbeat: hasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null);
                                 bool isError = pollResult["error"] != null;
+                                // Friction 2026-05-22 item 10: a "Build succeeded: 0w/0e/exit=0"
+                                // result was previously dropped onto an <e>error{}> envelope when
+                                // the JobEntry.Status string didn't match what callers expected.
+                                // Run the build-outcome classifier on the inner BuildTaskStatus
+                                // (if present) so the envelope's isError matches the actual outcome.
+                                if (!isError && pollResult["result"] is JObject buildPayloadEarly)
+                                {
+                                    var outcome = LifecycleResponseShaper.ClassifyBuildOutcome(buildPayloadEarly);
+                                    if (outcome == LifecycleResponseShaper.BuildOutcome.Error) isError = true;
+                                    else if (outcome == LifecycleResponseShaper.BuildOutcome.PartialSuccess)
+                                    {
+                                        // Surface partial_success on the outer envelope as a warning marker.
+                                        pollResult["partial_success"] = true;
+                                        if (pollResult["envelope"] == null) pollResult["envelope"] = "warning";
+                                    }
+                                    else if (outcome == LifecycleResponseShaper.BuildOutcome.Success)
+                                    {
+                                        // Defensive: a job stamped "failed" by the registry but whose
+                                        // BuildTaskStatus says Succeeded/0/0/exit=0 should not be an error.
+                                        // (We've seen this race: registry summary stamped before final
+                                        // status normalized.) Keep isError=false in that case.
+                                    }
+                                }
                                 // v2.3.8 (post-Task 6.1 fix): the DispatchCore compact pass below
                                 // only runs for the worker-side legacy taskId path. job_id results
                                 // arrive through this short-circuit and were skipping the shaper —
@@ -2143,6 +2166,22 @@ namespace GxMcp.Gateway
                     {
                         string recipeName = tArgs?["name"]?.ToString();
                         JObject payload = RecipeCatalog.Get(recipeName);
+                        bool isErr = payload?["error"] != null;
+                        return new JObject
+                        {
+                            ["isError"] = isErr,
+                            ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = payload.ToString(Formatting.None) } }
+                        };
+                    }
+
+                    // Item 47 — genexus_recipes (plural). action=list returns the
+                    // catalog with concrete copy-pasteable examples; action=describe
+                    // returns the same playbook as the singular tool. Gateway-served.
+                    if (string.Equals(tName, "genexus_recipes", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string recipesAction = tArgs?["action"]?.ToString();
+                        string recipesName = tArgs?["name"]?.ToString();
+                        JObject payload = RecipeCatalog.Dispatch(recipesAction, recipesName);
                         bool isErr = payload?["error"] != null;
                         return new JObject
                         {
@@ -2313,13 +2352,36 @@ namespace GxMcp.Gateway
                                     heartbeat: hasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null);
                                 // Classify the terminal status so the MCP envelope's isError
                                 // matches the build outcome. LongPollJob surfaces JobEntry.Status
-                                // which is one of: running, completed, failed, cancelled, unknown_job_id.
+                                // which is one of: running, succeeded, failed, cancelled.
                                 // running == we hit the long-poll cap without termination — not an
                                 // error per se, the caller can re-poll.
+                                //
+                                // Friction 2026-05-22 item 10: this used to compare against
+                                // "completed" (which the registry never emits — it stamps
+                                // "succeeded"/"failed"). Result: every successful build wrapped
+                                // in an error envelope. Fix routes the inner BuildTaskStatus
+                                // through ClassifyBuildOutcome so 0/0/exit=0 = success and
+                                // partial_success surfaces as a warning marker, not an error.
                                 string terminalStatus = pollResult["status"]?.ToString();
-                                bool succeeded = string.Equals(terminalStatus, "completed", StringComparison.OrdinalIgnoreCase);
                                 bool stillRunning = string.Equals(terminalStatus, "running", StringComparison.OrdinalIgnoreCase);
-                                bool isErr = !succeeded && !stillRunning;
+                                bool isErr;
+                                if (stillRunning) isErr = false;
+                                else if (pollResult["result"] is JObject buildPayloadFinal)
+                                {
+                                    var outcome = LifecycleResponseShaper.ClassifyBuildOutcome(buildPayloadFinal);
+                                    isErr = outcome == LifecycleResponseShaper.BuildOutcome.Error;
+                                    if (outcome == LifecycleResponseShaper.BuildOutcome.PartialSuccess)
+                                    {
+                                        pollResult["partial_success"] = true;
+                                        if (pollResult["envelope"] == null) pollResult["envelope"] = "warning";
+                                    }
+                                }
+                                else
+                                {
+                                    // No structured result — trust the registry summary string.
+                                    bool succeeded = string.Equals(terminalStatus, "succeeded", StringComparison.OrdinalIgnoreCase);
+                                    isErr = !succeeded;
+                                }
                                 if (!isErr
                                     && LifecycleResponseShaper.ShouldCompact(tArgs)
                                     && pollResult["result"] is JObject innerResult2)
