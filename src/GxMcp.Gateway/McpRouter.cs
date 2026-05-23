@@ -1180,7 +1180,80 @@ namespace GxMcp.Gateway
             trimmed["message"] = firstLine;
             if (error["code"] != null) trimmed["code"] = error["code"];
             if (error["hint"] != null) trimmed["hint"] = error["hint"];
+            // Friction 2026-05-22 #63: surface a structured "what to do next"
+            // hint on every error envelope. Pre-existing suggested_next_step
+            // (e.g. from the worker's write_not_persisted path) is preserved;
+            // otherwise we synthesize one from the error code / message text.
+            JToken existing = error["suggested_next_step"] ?? AttachSuggestedNextStep(error);
+            if (existing != null) trimmed["suggested_next_step"] = existing;
             return trimmed;
+        }
+
+        /// <summary>
+        /// Friction 2026-05-22 #63: turn an error envelope into a structured
+        /// "next-step" hint. Pure function — code/message pattern matching, no
+        /// I/O. Returns null when the error doesn't match any registered
+        /// recovery shape (TrimErrorEnvelope then falls back to message+hint).
+        /// </summary>
+        public static JObject AttachSuggestedNextStep(JObject error)
+        {
+            if (error == null) return null;
+            string code = error["code"]?.ToString() ?? error["status"]?.ToString();
+            string msg = error["message"]?.ToString() ?? error["error"]?.ToString() ?? "";
+
+            // Patch NoMatch — point at fuzzy/eolDiff (already in payload as
+            // nearMatches/eolDiff/did_you_mean); next-step tells the agent how
+            // to consume them.
+            if (string.Equals(code, "patch_no_match", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(code, "NoMatch", StringComparison.OrdinalIgnoreCase)
+                || (msg.IndexOf("Context not found", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("Ambiguous patch", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return new JObject
+                {
+                    ["action"] = "inspect_near_match",
+                    ["hint"] = "Patch context did not match. Inspect response.nearMatches / response.eolDiff / response.did_you_mean for the closest source window. Re-issue with the exact tabs/EOLs/whitespace of one of those, or pass replaceAll=true if you intended every occurrence."
+                };
+            }
+
+            // Visual write failure — point at LayoutGotchaScanner / inspect.
+            if (string.Equals(code, "visual_write_failed", StringComparison.OrdinalIgnoreCase)
+                || (msg.IndexOf("Invalid visual XML", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("Visual part not found", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return new JObject
+                {
+                    ["action"] = "run_layout_gotcha_scanner",
+                    ["hint"] = "Visual part write failed. Use genexus_inspect include=structure to fetch the live layout, then check response.layoutGotchas for the structural rule that the SDK rejects (gxButton custom events in html-form, ControlType misspellings, missing AttID/DataField, etc.). Fix the offending element and retry."
+                };
+            }
+
+            // KB_AMBIGUOUS — point at the kb parameter.
+            if (string.Equals(code, "KB_AMBIGUOUS", StringComparison.OrdinalIgnoreCase)
+                || (msg.IndexOf("KB_AMBIGUOUS", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("multiple KBs", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return new JObject
+                {
+                    ["action"] = "specify_kb",
+                    ["hint"] = "More than one KB is open. Re-issue the tool call with kb=<alias>. genexus_whoami / genexus_kb action=list enumerate the open aliases. Set the alias from response.openKbs."
+                };
+            }
+
+            // spc0150 build failure — point at the extract_to_procedure recipe.
+            if (string.Equals(code, "LintSpc0150ForEachAttributeWrite", StringComparison.OrdinalIgnoreCase)
+                || (msg.IndexOf("spc0150", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("Attribute cannot be assigned in this context", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return new JObject
+                {
+                    ["action"] = "recipe_extract_to_procedure",
+                    ["hint"] = "spc0150 fires when a WebPanel Events block writes a transaction attribute inside For each. Call genexus_recipe { name: 'extract_to_procedure' } to get the step-by-step playbook for moving the attribute-write into a Procedure.",
+                    ["recipe"] = "extract_to_procedure"
+                };
+            }
+
+            return null;
         }
 
         // Friction 2026-05-22: long builds (5-13min for popup compile) at the 90s cap

@@ -665,8 +665,45 @@ namespace GxMcp.Gateway
                 // on the first turn and skips ~3-8k tokens of discovery. Each entry
                 // is a 1-line route, not full docs — for full recipes the agent can
                 // fetch genexus_recipe(name=...).
-                ["playbooks"] = BuildPlaybooksBlock()
+                ["playbooks"] = BuildPlaybooksBlock(),
+                // Item 70 (friction-report 2026-05-22): which browser driver the
+                // gateway can hand off to genexus_preview / verify_in_browser.
+                // Prefer chrome-devtools-axi; fall back to Playwright via npx.
+                // When neither is available, "kind": "none" + a hint with both
+                // install commands so the agent doesn't blindly try and fail.
+                ["browserDriver"] = BuildBrowserDriverBlock()
             };
+        }
+
+        // Item 70 — surface BrowserDriverDetector result so genexus_whoami exposes
+        // whatever automation driver the worker can drive in this session.
+        private static JObject BuildBrowserDriverBlock()
+        {
+            try
+            {
+                var det = Helpers.BrowserDriverDetector.Detect();
+                var obj = new JObject
+                {
+                    ["kind"] = det.Kind.ToString()
+                };
+                if (!string.IsNullOrEmpty(det.Command)) obj["command"] = det.Command;
+                if (!string.IsNullOrEmpty(det.ResolvedPath)) obj["resolvedPath"] = det.ResolvedPath;
+                if (det.Kind == Helpers.BrowserDriverDetector.DriverKind.None)
+                {
+                    obj["code"] = "BrowserDriverUnavailable";
+                    obj["hint"] = det.Hint;
+                }
+                return obj;
+            }
+            catch (Exception ex)
+            {
+                return new JObject
+                {
+                    ["kind"] = "None",
+                    ["code"] = "BrowserDriverUnavailable",
+                    ["hint"] = "Detection failed: " + ex.Message
+                };
+            }
         }
 
         // Friction 2026-05-22: which worker exe is actually running was opaque —
@@ -1559,6 +1596,16 @@ namespace GxMcp.Gateway
                     }
                     catch (KbResolutionException ex)
                     {
+                        // Friction 2026-05-22 #63: surface suggested_next_step on KB_AMBIGUOUS
+                        // (and KB_NOT_FOUND) so the agent knows to retry with kb=<alias>.
+                        var dataObj = new JObject
+                        {
+                            ["code"] = ex.Code,
+                            ["openKbs"] = JArray.FromObject(_workerPool!.ListOpen().Select(k => k.Alias))
+                        };
+                        var nextStep = McpRouter.AttachSuggestedNextStep(
+                            new JObject { ["code"] = ex.Code, ["message"] = ex.Message });
+                        if (nextStep != null) dataObj["suggested_next_step"] = nextStep;
                         return new JObject
                         {
                             ["jsonrpc"] = "2.0",
@@ -1567,11 +1614,7 @@ namespace GxMcp.Gateway
                             {
                                 ["code"] = -32602,
                                 ["message"] = ex.Message,
-                                ["data"] = new JObject
-                                {
-                                    ["code"] = ex.Code,
-                                    ["openKbs"] = JArray.FromObject(_workerPool!.ListOpen().Select(k => k.Alias))
-                                }
+                                ["data"] = dataObj
                             }
                         };
                     }
@@ -2547,6 +2590,17 @@ namespace GxMcp.Gateway
                                     || string.Equals(innerErrObj["status"]?.ToString(), "NotFound", StringComparison.OrdinalIgnoreCase)
                                     || string.Equals(innerErrObj["status"]?.ToString(), "NotImplemented", StringComparison.OrdinalIgnoreCase);
                                 if (innerHasError) isErr = true;
+                            }
+
+                            // Friction 2026-05-22 #63: attach suggested_next_step on every error
+                            // envelope (verbose OR terse). McpRouter.AttachSuggestedNextStep is a
+                            // pure pattern-match over code/message text; routes patch NoMatch →
+                            // near-match inspection, visual write failures → LayoutGotchaScanner,
+                            // KB_AMBIGUOUS → kb=<alias>, spc0150 → extract_to_procedure recipe.
+                            if (isErr && finalResult is JObject preTrimErr && preTrimErr["suggested_next_step"] == null)
+                            {
+                                var hint = McpRouter.AttachSuggestedNextStep(preTrimErr);
+                                if (hint != null) preTrimErr["suggested_next_step"] = hint;
                             }
 
                             // TerseErrors: trim error envelopes to {message, code, hint} by default.
