@@ -41,6 +41,7 @@
               "hierarchy",
               "impact",
               "callers",
+              "event_flow",
               "data_context",
               "ui_context",
               "pattern_metadata",
@@ -273,6 +274,10 @@
       "description": "Create popup WebPanel with Form type=\"layout\" body (radio/combo render editable). Spec: title, inputs, buttons, inParms, outParms.",
       "inputSchema": {
         "properties": {
+          "dryRun": {
+            "description": "Validate spec + render layout XML without persisting the WebPanel.",
+            "type": "boolean"
+          },
           "kb": {
             "description": "KB alias (multi-KB only).",
             "type": "string"
@@ -831,6 +836,10 @@
             "description": "restore-only: drop in-memory edits, restore last persisted baseline for (name,part).",
             "type": "boolean"
           },
+          "dryRun": {
+            "description": "restore-only: return unified diff of snapshot vs current without writing.",
+            "type": "boolean"
+          },
           "kb": {
             "description": "KB alias (multi-KB only).",
             "type": "string"
@@ -935,6 +944,15 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "projection": {
+            "description": "minimal=name+type+lastUpdate; standard=default; verbose=all fields.",
+            "enum": [
+              "minimal",
+              "standard",
+              "verbose"
+            ],
             "type": "string"
           },
           "type": {
@@ -1073,6 +1091,7 @@
               "cancel",
               "rebuild",
               "reorg",
+              "reorg_preview",
               "validate",
               "validate-kb",
               "sync",
@@ -1118,6 +1137,10 @@
           },
           "limit": {
             "type": "integer"
+          },
+          "notifyOnFailure": {
+            "description": "Build: Slack/Discord webhook URL. POST {kb,target,errors,errorsDetailedHead,jobId,durationSec} when build terminal state = Failed (not PartialSuccess).",
+            "type": "string"
           },
           "since": {
             "description": "Status: prior _meta.snapshot for chained waits.",
@@ -1205,6 +1228,15 @@
           },
           "pathPrefix": {
             "description": "Folder prefix, e.g. 'Root Module/X/'.",
+            "type": "string"
+          },
+          "projection": {
+            "description": "minimal=name+type+lastUpdate; standard=default compact; verbose=all fields. Overrides axiCompact when set.",
+            "enum": [
+              "minimal",
+              "standard",
+              "verbose"
+            ],
             "type": "string"
           },
           "since": {
@@ -1656,12 +1688,13 @@
       "name": "genexus_search_source"
     },
     {
-      "description": "Audit KB-level GAM / security configuration. action=audit_gam scans IntegratedSecurityLevel, encryption, token expiry, and hardcoded secrets in env props. Returns findings with severity.",
+      "description": "Audit KB-level GAM / security configuration. action=audit_gam scans IntegratedSecurityLevel, encryption, token expiry, and hardcoded secrets in env props. action=scan_secrets searches Procedure/WebPanel/SDT Source for credential-shaped literals (JWT, PEM, password=..., AKIA, etc.). Returns findings with severity.",
       "inputSchema": {
         "properties": {
           "action": {
             "enum": [
-              "audit_gam"
+              "audit_gam",
+              "scan_secrets"
             ],
             "type": "string"
           },

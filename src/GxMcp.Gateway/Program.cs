@@ -3322,6 +3322,15 @@ namespace GxMcp.Gateway
             meta["tool"] = toolName;
             obj["meta"] = meta;
             HashSet<string>? requestedFields = ParseRequestedFields(toolArgs);
+            // Friction 2026-05-22 #64: projection=minimal|standard|verbose lets the
+            // agent opt into a smaller or larger field set without having to enumerate
+            // fields[]. Resolves to a HashSet that overrides the axiCompact default —
+            // explicit fields[] still wins (highest specificity).
+            string projection = toolArgs?["projection"]?.ToString();
+            if (requestedFields == null && !string.IsNullOrWhiteSpace(projection))
+            {
+                requestedFields = ResolveProjection(toolName, projection);
+            }
             if (requestedFields == null && ShouldUseCompactDefaults(toolArgs))
             {
                 requestedFields = GetDefaultCompactFields(toolName);
@@ -3503,6 +3512,44 @@ namespace GxMcp.Gateway
                 return token.Value<bool>();
             }
             return !bool.TryParse(token.ToString(), out bool parsed) || parsed;
+        }
+
+        /// <summary>
+        /// Friction 2026-05-22 #64: resolve projection=minimal|standard|verbose to
+        /// the field set the gateway should apply. Returns null for unknown levels
+        /// or when the tool doesn't support projection (caller falls back to
+        /// axiCompact defaults).
+        /// </summary>
+        ///   - minimal: name + kind/type + lastUpdate (3 fields, smallest legal shape)
+        ///   - standard: GetDefaultCompactFields(toolName) — same as today's default
+        ///   - verbose: returns null so no projection filter is applied → full payload
+        internal static HashSet<string>? ResolveProjection(string toolName, string projection)
+        {
+            if (string.IsNullOrWhiteSpace(projection)) return null;
+            string p = projection.Trim().ToLowerInvariant();
+            if (p == "verbose")
+            {
+                // No filter at all — caller sees every field the worker emitted.
+                return null;
+            }
+            if (p == "minimal")
+            {
+                // Same 3-field shape for both tools: the smallest legal projection.
+                // 'type' covers genexus_list_objects; 'kind' isn't a worker field today
+                // but is whitelisted defensively so the field-projector keeps it if
+                // a future worker adds it.
+                return new HashSet<string>(
+                    new[] { "name", "type", "kind", "lastUpdate" },
+                    StringComparer.OrdinalIgnoreCase);
+            }
+            if (p == "standard")
+            {
+                // Fall through to today's default. GetDefaultCompactFields is the
+                // single source of truth — keeping projection=standard in lockstep.
+                return GetDefaultCompactFields(toolName);
+            }
+            // Unknown projection level — treat like default (caller will fall back).
+            return null;
         }
 
         private static HashSet<string>? GetDefaultCompactFields(string toolName)
