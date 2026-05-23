@@ -2086,11 +2086,11 @@
       "name": "genexus_whoami"
     },
     {
-      "description": "Reload worker. soft (default): drain + respawn. hard: copy sourceDir + respawn. force=true: gateway kills directly (use when worker is hung).",
+      "description": "Reload worker. soft (default): drain + respawn. hard: copy sourceDir + respawn. warm (EXPERIMENTAL, item 51): persist IndexCacheService snapshot before reload; restore on boot if worker-dll SHA matches. force=true: gateway kills directly (use when worker is hung).",
       "inputSchema": {
         "properties": {
           "drainTimeoutMs": {
-            "description": "Soft only; default 30000.",
+            "description": "Soft/warm only; default 30000.",
             "type": "integer"
           },
           "force": {
@@ -2100,7 +2100,8 @@
           "mode": {
             "enum": [
               "soft",
-              "hard"
+              "hard",
+              "warm"
             ],
             "type": "string"
           },

@@ -152,6 +152,48 @@ namespace GxMcp.Worker.Services
         }
 
         public KbService GetKbService() { return _kbService; }
+        public IndexCacheService GetIndexCacheService() { return _indexCacheService; }
+
+        // Item 51 (Tier-S, EXPERIMENTAL) — capture IndexCacheService state to disk
+        // before a warm reload. Returns a small JObject result the dispatcher
+        // stitches into the soft-reload ack. Never throws — failures are surfaced
+        // as { saved:false, error:... } so the soft reload still proceeds.
+        private Newtonsoft.Json.Linq.JObject TryCaptureWarmSnapshot()
+        {
+            var result = new Newtonsoft.Json.Linq.JObject();
+            try
+            {
+                string kbPath = _kbService?.GetKbPath();
+                if (string.IsNullOrEmpty(kbPath))
+                {
+                    result["saved"] = false;
+                    result["error"] = "no-kb-path";
+                    return result;
+                }
+                string path = WarmIndexSnapshot.DefaultPath(kbPath);
+                var index = _indexCacheService?.GetIndex();
+                if (index == null)
+                {
+                    result["saved"] = false;
+                    result["error"] = "index-not-initialised";
+                    return result;
+                }
+                int objectCount = index.Objects?.Count ?? 0;
+                byte[] payload = System.Text.Encoding.UTF8.GetBytes(index.ToJson());
+                WarmIndexSnapshot.Save(path, payload, kbPath, objectCount);
+                result["saved"] = true;
+                result["path"] = path;
+                result["objectCount"] = objectCount;
+                result["experimental"] = true;
+                return result;
+            }
+            catch (Exception ex)
+            {
+                result["saved"] = false;
+                result["error"] = ex.Message;
+                return result;
+            }
+        }
 
         public bool IsThreadSafe(string line)
         {
@@ -523,6 +565,27 @@ namespace GxMcp.Worker.Services
                             {
                                 int drainMs = args?["drainTimeoutMs"]?.ToObject<int?>() ?? 30000;
                                 return GxMcp.Worker.Program.PerformSoftReload(drainMs);
+                            }
+                            // Item 51 (Tier-S, EXPERIMENTAL) — warm reload. Persist the
+                            // IndexCacheService state to <kb>/.gx/index-snapshot.bin
+                            // gated by the worker DLL SHA, then do a soft reload. On
+                            // the next boot the gateway respawns this worker and a
+                            // future TryRestoreWarmIndex hook can pick it back up.
+                            if (mode == "warm")
+                            {
+                                int drainMs = args?["drainTimeoutMs"]?.ToObject<int?>() ?? 30000;
+                                var warmAck = TryCaptureWarmSnapshot();
+                                var softResp = GxMcp.Worker.Program.PerformSoftReload(drainMs);
+                                // Stitch warm metadata into the soft-reload ack so the
+                                // caller sees both outcomes in a single response.
+                                try
+                                {
+                                    var jo = Newtonsoft.Json.Linq.JObject.Parse(softResp);
+                                    jo["mode"] = "warm";
+                                    jo["warmSnapshot"] = warmAck;
+                                    return jo.ToString(Newtonsoft.Json.Formatting.None);
+                                }
+                                catch { return softResp; }
                             }
                             return _objectService.WorkerReload(srcDir);
                         }
