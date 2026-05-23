@@ -94,7 +94,11 @@ namespace GxMcp.Gateway.Tests
             //   2026-05-23 wave3 Tier-S items 28/51: 8000 → 8600 for fastIncremental
             //   on genexus_lifecycle + warm mode on genexus_worker_reload (EXPERIMENTAL),
             //   plus genexus_kb startup actions added in parallel.
-            Assert.True(approxTokens < 8600, $"tool_definitions.json is ~{approxTokens} tokens; budget 8600.");
+            //   2026-05-23 wave3 IDE right-click sweep: 8600 → 9000 for genexus_kb_explorer
+            //   (Locate parity), genexus_navigation (View Navigation parity), genexus_blame
+            //   (foundation wiring), and doc-explain tools (genexus_explain / genexus_diff_generated
+            //   / genexus_kb_readme) added in parallel. Measured ~8853; budget set at 9000.
+            Assert.True(approxTokens < 9000, $"tool_definitions.json is ~{approxTokens} tokens; budget 9000.");
         }
     }
 }

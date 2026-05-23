@@ -266,6 +266,37 @@ namespace GxMcp.Gateway.Routers
                         gamSession = args?["gamSession"]
                     };
 
+                // Item 68 — deterministic PM-readable summary.
+                case "genexus_explain":
+                    return new
+                    {
+                        module = "Explain",
+                        action = "Explain",
+                        target = args?["name"]?.ToString(),
+                        type = args?["type"]?.ToString(),
+                        depth = args?["depth"]?.ToString()
+                    };
+
+                // Item 12 — unified diff of generated artifacts.
+                case "genexus_diff_generated":
+                    return new
+                    {
+                        module = "GeneratedDiff",
+                        action = "Diff",
+                        target = args?["name"]?.ToString(),
+                        against = args?["against"]?.ToString()
+                    };
+
+                // Item 90 — Markdown README generation.
+                case "genexus_kb_readme":
+                    return new
+                    {
+                        module = "KbReadme",
+                        action = "Generate",
+                        target = "_self",
+                        outputPath = args?["outputPath"]?.ToString()
+                    };
+
                 // Item 65 — genexus_orient welcome card
                 case "genexus_orient":
                     return new

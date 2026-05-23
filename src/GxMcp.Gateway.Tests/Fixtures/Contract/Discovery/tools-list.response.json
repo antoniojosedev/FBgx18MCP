@@ -526,6 +526,33 @@
       "name": "genexus_diff"
     },
     {
+      "description": "Unified diff of generated files (.cs/.aspx/.js/.html) for an object vs a baseline.",
+      "inputSchema": {
+        "properties": {
+          "against": {
+            "default": "last-build",
+            "enum": [
+              "last-build",
+              "git-head"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_diff_generated"
+    },
+    {
       "description": "Use to generate structured docs (wiki, sequence diagrams, health reports). Don't use for programmatic analysis (see genexus_analyze) or source (see genexus_read).",
       "inputSchema": {
         "properties": {
@@ -844,6 +871,36 @@
       "name": "genexus_edit_form"
     },
     {
+      "description": "Deterministic PM-readable summary of an object: purpose, inputs/outputs, variables, top called procs/transactions, description. NOT raw source.",
+      "inputSchema": {
+        "properties": {
+          "depth": {
+            "description": "deep recurses one level into called objects.",
+            "enum": [
+              "shallow",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_explain"
+    },
+    {
       "description": "Export a GeneXus object part to a text file on disk.",
       "inputSchema": {
         "properties": {
@@ -1158,6 +1215,32 @@
         "type": "object"
       },
       "name": "genexus_kb_explorer"
+    },
+    {
+      "description": "Generate a Markdown README for the KB: entities, entry points, modules, top-edited objects.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "generate"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "outputPath": {
+            "description": "Absolute path to write README. Omit to return markdown inline.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_readme"
     },
     {
       "description": "SDK layout/WebForm ops: get_tree, set_property, find_controls, inspect_surface, scan_mutators.",

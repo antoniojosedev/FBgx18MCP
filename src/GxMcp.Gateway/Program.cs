@@ -1768,8 +1768,13 @@ namespace GxMcp.Gateway
                 }
 
                 // genexus_kb — meta-tool for managing the WorkerPool (list/open/close).
-                // Handled entirely in the Gateway; never reaches a Worker.
-                if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase))
+                // Handled entirely in the Gateway; never reaches a Worker. The
+                // set_startup/get_startup actions are SDK-bound and fall through
+                // to the router pipeline (SystemRouter forwards them to the
+                // worker's KB module).
+                if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(args?["action"]?.ToString(), "set_startup", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(args?["action"]?.ToString(), "get_startup", StringComparison.OrdinalIgnoreCase))
                 {
                     JObject payload;
                     bool isError = false;

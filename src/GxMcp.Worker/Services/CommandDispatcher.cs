@@ -65,6 +65,9 @@ namespace GxMcp.Worker.Services
         private readonly DbDriftService _dbDriftService;
         private readonly WebFormEditService _webFormEditService;
         private readonly RunObjectService _runObjectService;
+        private readonly ExplainService _explainService;
+        private readonly GeneratedDiffService _generatedDiffService;
+        private readonly KbReadmeService _kbReadmeService;
         private readonly BlameService _blameService;
         private readonly KbExplorerService _kbExplorerService;
         private readonly NavigationViewService _navigationViewService;
@@ -127,6 +130,9 @@ namespace GxMcp.Worker.Services
             _dbDriftService = new DbDriftService(_buildService);
             _webFormEditService = new WebFormEditService(_objectService, _writeService);
             _runObjectService = new RunObjectService(_objectService, _kbService, _previewService);
+            _explainService = new ExplainService(_kbService, _objectService);
+            _generatedDiffService = new GeneratedDiffService(_kbService);
+            _kbReadmeService = new KbReadmeService(_kbService, _indexCacheService);
             _blameService = new BlameService(_kbService, _objectService);
             _kbExplorerService = new KbExplorerService(_objectService, _indexCacheService);
             _navigationViewService = new NavigationViewService(_navigationService, _kbService);
@@ -1040,6 +1046,21 @@ namespace GxMcp.Worker.Services
                             var gamToken = args?["gamSession"];
                             return _runObjectService.Resolve(roName, roArgs, gamToken);
                         }
+                        break;
+                    case "explain":
+                        // Item 68 — PM-readable deterministic summary.
+                        if (string.Equals(action, "Explain", StringComparison.OrdinalIgnoreCase))
+                            return _explainService.Explain(target, args?["type"]?.ToString(), args?["depth"]?.ToString());
+                        break;
+                    case "generateddiff":
+                        // Item 12 — unified diff of generated artifacts vs baseline.
+                        if (string.Equals(action, "Diff", StringComparison.OrdinalIgnoreCase))
+                            return _generatedDiffService.Diff(target, args?["against"]?.ToString());
+                        break;
+                    case "kbreadme":
+                        // Item 90 — Markdown README generation.
+                        if (string.Equals(action, "Generate", StringComparison.OrdinalIgnoreCase))
+                            return _kbReadmeService.Generate("generate", args?["outputPath"]?.ToString());
                         break;
                     case "preview":
                         if (action == "Render" || action == "Run")
