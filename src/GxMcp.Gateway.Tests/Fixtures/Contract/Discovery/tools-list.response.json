@@ -647,6 +647,10 @@
           },
           "verifyRollback": {
             "type": "boolean"
+          },
+          "visualVerify": {
+            "description": "Post-edit screenshot via chrome-devtools-axi/playwright + pixel-diff vs last baseline.",
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -721,6 +725,10 @@
             "description": "Disambiguates ambiguous names.",
             "type": "string"
           },
+          "visualVerify": {
+            "description": "Post-edit screenshot + pixel-diff vs last baseline.",
+            "type": "boolean"
+          },
           "waitForIndex": {
             "default": true,
             "type": "boolean"
@@ -737,6 +745,74 @@
         "type": "object"
       },
       "name": "genexus_edit_and_build"
+    },
+    {
+      "description": "Semantic WebForm edits. Actions: add_textblock, add_button, set_visibility, remove_control, wrap_in_fieldset.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "add_textblock",
+              "add_button",
+              "set_visibility",
+              "remove_control",
+              "wrap_in_fieldset"
+            ],
+            "type": "string"
+          },
+          "caption": {
+            "type": "string"
+          },
+          "controlId": {
+            "type": "string"
+          },
+          "controlIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "event": {
+            "type": "string"
+          },
+          "format": {
+            "enum": [
+              "Text",
+              "HTML"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "legend": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent": {
+            "type": "string"
+          },
+          "position": {
+            "description": "first|last|after:<id>",
+            "type": "string"
+          },
+          "visible": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_edit_form"
     },
     {
       "description": "Export a GeneXus object part to a text file on disk.",

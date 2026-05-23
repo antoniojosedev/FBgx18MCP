@@ -63,6 +63,7 @@ namespace GxMcp.Worker.Services
         private readonly SecurityAuditService _securityAuditService;
         private readonly OrientService _orientService;
         private readonly DbDriftService _dbDriftService;
+        private readonly WebFormEditService _webFormEditService;
 
         private CommandDispatcher()
         {
@@ -119,6 +120,7 @@ namespace GxMcp.Worker.Services
             _securityAuditService = new SecurityAuditService(_kbService);
             _orientService = new OrientService(_kbService);
             _dbDriftService = new DbDriftService(_buildService);
+            _webFormEditService = new WebFormEditService(_objectService, _writeService);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -942,6 +944,9 @@ namespace GxMcp.Worker.Services
                         if (string.Equals(action, "Report", StringComparison.OrdinalIgnoreCase))
                             return _dbDriftService.Report(target);
                         break;
+                    case "webformedit":
+                        // Item 19 (mcp-improvements-2026-05-22) — semantic WebForm edits.
+                        return _webFormEditService.Execute(action, args);
                     case "preview":
                         if (action == "Render" || action == "Run")
                         {

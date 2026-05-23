@@ -85,7 +85,10 @@ namespace GxMcp.Gateway.Tests
             //   on genexus_lifecycle. Net ~+110 tokens measured.
             //   2026-05-23 improvements item 41: 7400 → 7500 for genexus_db_drift
             //   (Transaction↔DB schema drift detection). Net ~+30 tokens.
-            Assert.True(approxTokens < 7500, $"tool_definitions.json is ~{approxTokens} tokens; budget 7500.");
+            //   2026-05-23 improvements item 19: 7500 → 7700 for genexus_edit_form
+            //   (semantic WebForm: add_textblock / add_button / set_visibility /
+            //   remove_control / wrap_in_fieldset). Net ~+195 tokens.
+            Assert.True(approxTokens < 7700, $"tool_definitions.json is ~{approxTokens} tokens; budget 7700.");
         }
     }
 }

@@ -238,6 +238,22 @@ namespace GxMcp.Gateway.Routers
                     };
                 }
 
+                // Item 19 (mcp-improvements-2026-05-22) — semantic WebForm edits.
+                case "genexus_edit_form":
+                {
+                    string editAction = args?["action"]?.ToString();
+                    string normalised = string.IsNullOrEmpty(editAction)
+                        ? string.Empty
+                        : editAction.Trim();
+                    return new
+                    {
+                        module = "WebFormEdit",
+                        action = normalised,
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+                }
+
                 // Item 65 — genexus_orient welcome card
                 case "genexus_orient":
                     return new
