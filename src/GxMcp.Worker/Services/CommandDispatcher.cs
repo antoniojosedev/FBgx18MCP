@@ -60,6 +60,8 @@ namespace GxMcp.Worker.Services
         private readonly PreviewService _previewService;
         private readonly PopupTemplateService _popupTemplateService;
         private readonly UndoService _undoService;
+        private readonly SecurityAuditService _securityAuditService;
+        private readonly OrientService _orientService;
 
         private CommandDispatcher()
         {
@@ -113,6 +115,8 @@ namespace GxMcp.Worker.Services
             _previewService = new PreviewService(_objectService, _buildService);
             _popupTemplateService = new PopupTemplateService(_objectService, _writeService);
             _undoService = new UndoService(_objectService, _writeService, _indexCacheService);
+            _securityAuditService = new SecurityAuditService(_kbService);
+            _orientService = new OrientService(_kbService);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -851,6 +855,16 @@ namespace GxMcp.Worker.Services
                             int last = args?["last"]?.ToObject<int?>() ?? 1;
                             return _undoService.Undo(last);
                         }
+                    // Item 50 — genexus_security action=audit_gam
+                    case "security":
+                        if (string.Equals(action, "audit_gam", StringComparison.OrdinalIgnoreCase))
+                            return _securityAuditService.AuditGam();
+                        return Models.McpResponse.Error("Unknown action", target, null, $"Unsupported security action '{action}'.");
+                    // Item 65 — genexus_orient welcome card
+                    case "orient":
+                        if (string.Equals(action, "Welcome", StringComparison.OrdinalIgnoreCase))
+                            return _orientService.Welcome();
+                        return Models.McpResponse.Error("Unknown action", target, null, $"Unsupported orient action '{action}'.");
                     case "property":
                         var propType = args?["type"]?.ToString();
                         if (action == "Set")

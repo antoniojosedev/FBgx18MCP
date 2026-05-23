@@ -207,6 +207,22 @@ namespace GxMcp.Gateway.Routers
                         last = args?["last"]?.ToObject<int?>() ?? 1
                     };
 
+                // Item 50 — genexus_security action=audit_gam
+                case "genexus_security":
+                    return new
+                    {
+                        module = "Security",
+                        action = args?["action"]?.ToString() ?? "audit_gam"
+                    };
+
+                // Item 65 — genexus_orient welcome card
+                case "genexus_orient":
+                    return new
+                    {
+                        module = "Orient",
+                        action = "Welcome"
+                    };
+
                 case "genexus_structure":
                     return ConvertStructureToolCall(args);
                 case "genexus_layout":

@@ -66,11 +66,19 @@
       "name": "genexus_analyze"
     },
     {
-      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent. IDE 'Right-click → Apply Pattern'. Inspect parentType first: Transaction=family-gen, WebPanel/SDPanel=direct-attach (pass settings.template). Others rejected.",
+      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent. IDE 'Right-click → Apply Pattern'. Inspect parentType first: Transaction=family-gen, WebPanel/SDPanel=direct-attach (pass settings.template). Others rejected. mode=diagnose returns structured findings without mutating.",
       "inputSchema": {
         "properties": {
           "kb": {
             "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "mode": {
+            "description": "apply (default) mutates; diagnose returns reasons without applying.",
+            "enum": [
+              "apply",
+              "diagnose"
+            ],
             "type": "string"
           },
           "name": {
@@ -1282,6 +1290,19 @@
       "name": "genexus_modify_variable"
     },
     {
+      "description": "Welcome card for a new session: KB name/path, last 5 edited objects, top 3 KB-applicable gotchas, top 5 most-used tools. Cheaper than whoami for mid-session context refresh.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_orient"
+    },
+    {
       "description": "Render WebPanel via headless Chrome. Opens launcher, fills parms, navigates, captures HTML/a11y/screenshot, optionally diffs vs baseline.",
       "inputSchema": {
         "properties": {
@@ -1633,6 +1654,28 @@
         "type": "object"
       },
       "name": "genexus_search_source"
+    },
+    {
+      "description": "Audit KB-level GAM / security configuration. action=audit_gam scans IntegratedSecurityLevel, encryption, token expiry, and hardcoded secrets in env props. Returns findings with severity.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "audit_gam"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_security"
     },
     {
       "description": "SQL for a Transaction/Table (DDL) or a procedure For Each navigation.",
