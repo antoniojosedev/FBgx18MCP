@@ -74,10 +74,13 @@ namespace GxMcp.Gateway.Tests
             //   ~140 tokens of headroom for the next small batch.
             //   2026-05-22 friction items 4/9/17: 6700 → 7000 for replaceAll flag on
             //   genexus_edit + genexus_inspect runtimeIds enum addition. Net ~+155 tokens.
+            //   2026-05-23 wave3 items 62/63/64: 7200 → 7400 for projection enum on
+            //   genexus_inspect/list_objects plus docUrl/suggested_next_step inflation
+            //   in error envelopes. Measured 7337; budget set at 7400 with ~60 headroom.
             //   2026-05-23 friction items 45/50/65: 7000 → 7200 for genexus_apply_pattern
             //   mode=diagnose + new genexus_security + genexus_orient tools. Net ~+99 tokens
             //   measured (7099); budget set at 7200 with ~100 tokens of headroom.
-            Assert.True(approxTokens < 7200, $"tool_definitions.json is ~{approxTokens} tokens; budget 7200.");
+            Assert.True(approxTokens < 7400, $"tool_definitions.json is ~{approxTokens} tokens; budget 7400.");
         }
     }
 }
