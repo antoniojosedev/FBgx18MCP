@@ -402,6 +402,14 @@ namespace GxMcp.Worker.Services
             // build path is taken, skip the IdeWebBuildAndDeploy step. See
             // InProcessBuildRunner.Run for the safety story.
             [JsonIgnore] internal bool SkipFullDeploy { get; set; }
+            // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental decision metadata.
+            // Surfaced under top-level response fields (not status output) so the
+            // agent sees the decision exactly once, with the Accepted envelope.
+            [JsonIgnore] internal bool FastIncrementalRequested { get; set; }
+            public bool FastIncrementalFallback { get; set; }
+            public string FastIncrementalFallbackReason { get; set; }
+            [JsonIgnore] internal bool FastIncrementalCanSkipDeploy { get; set; }
+            [JsonIgnore] internal IReadOnlyList<string> FastIncrementalCanSkipSpecify { get; set; }
             // Item 72 (friction 2026-05-22) — webhook URL to POST a failure summary
             // to when terminal Status == "Failed". Empty / null disables the call.
             [JsonIgnore] internal string NotifyOnFailureUrl { get; set; }
@@ -447,6 +455,13 @@ namespace GxMcp.Worker.Services
             { "Succeeded", "Failed", "Cancelled", "Error" };
         private static bool IsTerminalStatus(string s)
             => !string.IsNullOrEmpty(s) && _terminalStatuses.Contains(s);
+
+        // Item 28 (mcp-improvements-2026-05-22, Tier-S) — EXPERIMENTAL. Pluggable
+        // decision strategy for the fastIncremental opt-in. Default impl reads
+        // EditDirtyTracker + IndexCacheService; tests inject a fake.
+        private IFastIncrementalDecision _fastIncrementalDecision;
+        public void SetFastIncrementalDecision(IFastIncrementalDecision d) { _fastIncrementalDecision = d; }
+        internal IFastIncrementalDecision GetFastIncrementalDecisionForTest() => _fastIncrementalDecision;
 
         public BuildService()
         {
@@ -612,9 +627,51 @@ namespace GxMcp.Worker.Services
             => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, null);
 
         public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure)
+            => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, notifyOnFailure, fastIncremental: false);
+
+        // Item 28 — EXPERIMENTAL. When fastIncremental=true, ask the configured
+        // IFastIncrementalDecision what we can skip given the current dirty set.
+        // Three short-circuit envelopes are surfaced ahead of the normal
+        // "Accepted" response so the agent sees the chosen path:
+        //   - nothingDirty=true                    → no build queued
+        //   - fastIncrementalFallback=true         → legacy full build queued
+        //   - fastIncremental={canSkipDeploy,...}  → fast build queued
+        public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental)
         {
             // Parse target: single name OR comma/semicolon-separated list for batch "Build With These Only"
             var targets = ParseTargets(target);
+
+            // Item 28 — fastIncremental opt-in. The decision is computed BEFORE
+            // BuildPlan expansion so the agent sees the same targets it passed.
+            FastIncrementalDecision fiDecision = null;
+            if (fastIncremental
+                && action != null
+                && action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                && targets.Count > 0)
+            {
+                var decider = _fastIncrementalDecision ?? new DefaultFastIncrementalDecision(_indexCacheService);
+                try { fiDecision = decider.Decide(GetKBPath(), targets); }
+                catch (Exception ex)
+                {
+                    fiDecision = new FastIncrementalDecision
+                    {
+                        ForceFullBuild = true,
+                        FallbackReason = "decision-threw: " + ex.Message
+                    };
+                }
+
+                if (fiDecision.NothingDirty)
+                {
+                    return JsonConvert.SerializeObject(new
+                    {
+                        status = "NoBuildNeeded",
+                        nothingDirty = true,
+                        targets = targets,
+                        message = "fastIncremental=true and EditDirtyTracker has no dirty entries for the requested targets. No build dispatched.",
+                        experimental = true
+                    });
+                }
+            }
 
             // v2.3.8 (Task 5.1) — expand via CallerGraphService so callees compile
             // before callers and every per-object csproj sees its dependency DLLs.
@@ -654,7 +711,13 @@ namespace GxMcp.Worker.Services
                     && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase)
                     && targets.Count == 1
                     && string.Equals(includeCallees ?? "transitive", "none", StringComparison.OrdinalIgnoreCase),
-                NotifyOnFailureUrl = notifyOnFailure
+                NotifyOnFailureUrl = notifyOnFailure,
+                // Item 28 — surface decision on the task so status/result echo it.
+                FastIncrementalRequested = fastIncremental,
+                FastIncrementalFallback = fiDecision?.ForceFullBuild == true,
+                FastIncrementalFallbackReason = fiDecision?.ForceFullBuild == true ? fiDecision.FallbackReason : null,
+                FastIncrementalCanSkipDeploy = fiDecision?.CanSkipDeploy == true && fiDecision.ForceFullBuild == false,
+                FastIncrementalCanSkipSpecify = fiDecision?.ForceFullBuild == false ? fiDecision.CanSkipSpecify : null
             };
 
             // Best-effort caller lookup for hint (only meaningful for single-object builds)
@@ -681,6 +744,16 @@ namespace GxMcp.Worker.Services
                 targets = targets.Count > 0 ? targets : null,
                 callersToAlsoBuild = status.CallersToAlsoBuild,
                 hint = status.Hint,
+                // Item 28 — EXPERIMENTAL. Surfaces decision outcome when fastIncremental=true.
+                fastIncrementalFallback = status.FastIncrementalFallback ? (bool?)true : null,
+                fallbackReason = status.FastIncrementalFallbackReason,
+                fastIncremental = (fastIncremental && fiDecision != null && !fiDecision.ForceFullBuild)
+                    ? new {
+                        canSkipDeploy = fiDecision.CanSkipDeploy,
+                        canSkipSpecify = fiDecision.CanSkipSpecify,
+                        experimental = true
+                    }
+                    : null,
                 _meta = plan != null ? new {
                     buildPlan = new {
                         requested = ParseTargets(target),

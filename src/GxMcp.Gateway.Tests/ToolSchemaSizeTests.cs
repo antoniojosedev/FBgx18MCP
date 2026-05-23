@@ -91,7 +91,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-05-23 improvements items 11/15: 7700 → 8000 for genexus_run_object
             //   (runtime URL + GAM cookies) and transactional flag on genexus_bulk_edit.
             //   Measured 7851 with both; budget set at 8000 with ~150 tokens of headroom.
-            Assert.True(approxTokens < 8000, $"tool_definitions.json is ~{approxTokens} tokens; budget 8000.");
+            //   2026-05-23 wave3 Tier-S items 28/51: 8000 → 8600 for fastIncremental
+            //   on genexus_lifecycle + warm mode on genexus_worker_reload (EXPERIMENTAL),
+            //   plus genexus_kb startup actions added in parallel.
+            Assert.True(approxTokens < 8600, $"tool_definitions.json is ~{approxTokens} tokens; budget 8600.");
         }
     }
 }

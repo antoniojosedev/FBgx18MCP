@@ -65,6 +65,10 @@ namespace GxMcp.Worker.Services
         private readonly DbDriftService _dbDriftService;
         private readonly WebFormEditService _webFormEditService;
         private readonly RunObjectService _runObjectService;
+        private readonly BlameService _blameService;
+        private readonly KbExplorerService _kbExplorerService;
+        private readonly NavigationViewService _navigationViewService;
+        private readonly KbStartupService _kbStartupService;
 
         private CommandDispatcher()
         {
@@ -123,6 +127,10 @@ namespace GxMcp.Worker.Services
             _dbDriftService = new DbDriftService(_buildService);
             _webFormEditService = new WebFormEditService(_objectService, _writeService);
             _runObjectService = new RunObjectService(_objectService, _kbService, _previewService);
+            _blameService = new BlameService(_kbService, _objectService);
+            _kbExplorerService = new KbExplorerService(_objectService, _indexCacheService);
+            _navigationViewService = new NavigationViewService(_navigationService, _kbService);
+            _kbStartupService = new KbStartupService(_kbService, _objectService);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -293,6 +301,15 @@ namespace GxMcp.Worker.Services
                         {
                             string launcherObj = _kbService.GetLauncherObjectName();
                             return new JObject { ["name"] = launcherObj }.ToString(Newtonsoft.Json.Formatting.None);
+                        }
+                        // Wave-3: IDE "Set As Startup Object" parity. Read goes
+                        // through the same SDK shapes as GetLauncherObjectName so
+                        // get/set agree on the field name the IDE writes to .gxw.
+                        if (action == "GetStartupObject") return _kbStartupService.GetStartup();
+                        if (action == "SetStartupObject")
+                        {
+                            string startupName = target ?? args?["name"]?.ToString();
+                            return _kbStartupService.SetStartup(startupName);
                         }
                         if (action == "GetIndexStatus") return _kbService.GetIndexStatus();
                         if (action == "GetIndexState")
@@ -843,7 +860,9 @@ namespace GxMcp.Worker.Services
                             bool skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false;
                             // Item 72 (friction 2026-05-22) — failure-webhook URL plumbed through to BuildService.
                             string notifyOnFailure = args?["notifyOnFailure"]?.ToString();
-                            return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure);
+                            // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
+                            bool fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false;
+                            return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure, fastIncremental);
                         }
                     case "validation":
                         return _validationService.ValidateCode(target, action, payload);
@@ -984,6 +1003,36 @@ namespace GxMcp.Worker.Services
                             return previewTask.Result.ToString(Newtonsoft.Json.Formatting.None);
                         }
                         break;
+                    // Wave-3: IDE right-click parity tools.
+                    case "kbexplorer":
+                        if (string.Equals(action, "Locate", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string locName = target ?? args?["name"]?.ToString();
+                            return _kbExplorerService.Locate(locName);
+                        }
+                        return Models.McpResponse.Error("Unknown action", target, action, $"Unsupported kbexplorer action '{action}'.");
+                    case "navigation":
+                        if (string.Equals(action, "View", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string navName = target ?? args?["name"]?.ToString();
+                            bool latest = args?["latest"]?.ToObject<bool?>() ?? false;
+                            return _navigationViewService.View(navName, latest);
+                        }
+                        return Models.McpResponse.Error("Unknown action", target, action, $"Unsupported navigation action '{action}'.");
+                    case "blame":
+                        if (string.Equals(action, "Get", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var blameReq = new BlameService.BlameRequest
+                            {
+                                Name = target ?? args?["name"]?.ToString(),
+                                Part = args?["part"]?.ToString(),
+                                FilePath = args?["filePath"]?.ToString(),
+                                Line = args?["line"]?.ToObject<int?>() ?? 0,
+                                Context = args?["context"]?.ToObject<int?>() ?? 2
+                            };
+                            return _blameService.Blame(blameReq);
+                        }
+                        return Models.McpResponse.Error("Unknown action", target, action, $"Unsupported blame action '{action}'.");
                 }
 
                 return Models.McpResponse.Error(

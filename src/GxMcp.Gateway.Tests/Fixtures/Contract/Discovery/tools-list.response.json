@@ -196,6 +196,39 @@
       "name": "genexus_asset"
     },
     {
+      "description": "Git blame for an object part. Returns commit/author/date per line. When line is set, returns just that line. Returns code='KbNotInGit' when the KB isn't a git working tree, code='PartNotTracked' with candidates[] when no tracked file matches.",
+      "inputSchema": {
+        "properties": {
+          "context": {
+            "description": "Snippet ±N lines around the blamed line (default 2).",
+            "type": "integer"
+          },
+          "filePath": {
+            "description": "KB-relative or absolute path to a tracked file. Use when name+part doesn't disambiguate.",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "line": {
+            "description": "1-based line number. When omitted, blames the whole file.",
+            "type": "integer"
+          },
+          "name": {
+            "description": "Object name. Either name or filePath is required.",
+            "type": "string"
+          },
+          "part": {
+            "description": "Default 'Source'.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_blame"
+    },
+    {
       "description": "Apply N independent edits. Item: {name,part?,content,type?,dryRun?}. stopOnError halts at first fail. transactional=true snapshots all targets pre-edit and rolls back prior successes on first Error.",
       "inputSchema": {
         "properties": {
@@ -1065,7 +1098,7 @@
       "name": "genexus_inspect"
     },
     {
-      "description": "Manage open KBs: list / open / close / set_default.",
+      "description": "Manage open KBs and KB-level startup config. Actions list/open/close/set_default operate on the gateway WorkerPool; set_startup/get_startup mirror the IDE 'Set As Startup Object' right-click action.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1073,12 +1106,18 @@
               "list",
               "open",
               "close",
-              "set_default"
+              "set_default",
+              "set_startup",
+              "get_startup"
             ],
             "type": "string"
           },
           "alias": {
             "description": "KB alias. open: auto from path basename if omitted.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Object name (required for set_startup).",
             "type": "string"
           },
           "path": {
@@ -1092,6 +1131,33 @@
         "type": "object"
       },
       "name": "genexus_kb"
+    },
+    {
+      "description": "Locate an object in the KB explorer tree. IDE 'Right-click → Locate in KB Explorer' parity. Returns modulePath, fullPath, and up to 20 siblings in the same module.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "locate"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Object name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_explorer"
     },
     {
       "description": "SDK layout/WebForm ops: get_tree, set_property, find_controls, inspect_surface, scan_mutators.",
@@ -1215,6 +1281,10 @@
           "estimated_seconds": {
             "description": "Build: <20 sync, >=20 async (default 60).",
             "type": "integer"
+          },
+          "fastIncremental": {
+            "description": "EXPERIMENTAL (item 28). Build only: if EditDirtyTracker has no dirty entries returns nothingDirty=true without dispatch; otherwise hints to skip Specify on clean targets and deploy if dirty set is Procedure/WebPanel/Transaction-only. On any miss falls back to legacy build with fastIncrementalFallback=true + fallbackReason.",
+            "type": "boolean"
           },
           "force": {
             "description": "Index: full SDK rescan (clears snapshot).",
@@ -1418,6 +1488,37 @@
         "type": "object"
       },
       "name": "genexus_modify_variable"
+    },
+    {
+      "description": "View navigation report for an object. IDE 'Right-click → View Navigation / View Last Navigation' parity. latest=true returns the most recent cached report from .gx/navigation-cache; otherwise runs a fresh navigation.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "view"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "latest": {
+            "default": false,
+            "description": "Return the most recent cached navigation if any; otherwise run fresh.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_navigation"
     },
     {
       "description": "Welcome card for a new session: KB name/path, last 5 edited objects, top 3 KB-applicable gotchas, top 5 most-used tools. Cheaper than whoami for mid-session context refresh.",

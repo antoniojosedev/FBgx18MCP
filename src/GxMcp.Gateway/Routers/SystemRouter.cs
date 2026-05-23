@@ -23,7 +23,9 @@ namespace GxMcp.Gateway.Routers
                             buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
                             // Item 72 (friction 2026-05-22) — Slack/Discord webhook on terminal Failed state.
                             notifyOnFailure = args?["notifyOnFailure"]?.ToString(),
-                            skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false
+                            skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false,
+                            // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
+                            fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false
                         };
                         case "cancel": return new { module = "Build", action = "Cancel", target = target };
                         case "rebuild": return new { module = "Build", action = "RebuildAll", target = target };
@@ -109,6 +111,79 @@ namespace GxMcp.Gateway.Routers
 
                 case "genexus_test":
                     return new { module = "Test", action = "Run", target = args?["name"]?.ToString() };
+
+                // genexus_kb set_startup / get_startup — SDK-bound startup-object
+                // management. IDE "Set As Startup Object" parity. The other actions
+                // (list/open/close/set_default) are handled directly in Program.cs
+                // and never reach a router. Schema (action enum) is declared on
+                // genexus_kb in tool_definitions.json.
+                case "genexus_kb":
+                {
+                    string kbAction = args?["action"]?.ToString();
+                    if (string.Equals(kbAction, "set_startup", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new
+                        {
+                            module = "KB",
+                            action = "SetStartupObject",
+                            target = args?["name"]?.ToString(),
+                            name = args?["name"]?.ToString()
+                        };
+                    }
+                    if (string.Equals(kbAction, "get_startup", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new
+                        {
+                            module = "KB",
+                            action = "GetStartupObject"
+                        };
+                    }
+                    return null;
+                }
+
+                // genexus_kb_explorer action=locate — "Locate in KB Explorer" parity.
+                case "genexus_kb_explorer":
+                {
+                    string kxAction = args?["action"]?.ToString() ?? "locate";
+                    return new
+                    {
+                        module = "KbExplorer",
+                        action = string.Equals(kxAction, "locate", System.StringComparison.OrdinalIgnoreCase)
+                            ? "Locate"
+                            : kxAction,
+                        target = args?["name"]?.ToString(),
+                        name = args?["name"]?.ToString()
+                    };
+                }
+
+                // genexus_navigation action=view — "View Navigation / View Last Navigation" parity.
+                case "genexus_navigation":
+                {
+                    bool latest = args?["latest"]?.ToObject<bool?>() ?? false;
+                    return new
+                    {
+                        module = "Navigation",
+                        action = "View",
+                        target = args?["name"]?.ToString(),
+                        latest = latest
+                    };
+                }
+
+                // genexus_blame — git blame for an object part.
+                case "genexus_blame":
+                {
+                    return new
+                    {
+                        module = "Blame",
+                        action = "Get",
+                        target = args?["name"]?.ToString(),
+                        name = args?["name"]?.ToString(),
+                        part = args?["part"]?.ToString(),
+                        line = args?["line"]?.ToObject<int?>(),
+                        filePath = args?["filePath"]?.ToString(),
+                        context = args?["context"]?.ToObject<int?>()
+                    };
+                }
                 
                 // Legados
                 case "genexus_validate":
