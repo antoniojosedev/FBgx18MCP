@@ -186,6 +186,29 @@ namespace GxMcp.Worker.Services
                     string p2 = Path.GetFullPath(Path.Combine(gitRoot, path));
                     path = File.Exists(p1) ? p1 : (File.Exists(p2) ? p2 : p1);
                 }
+                else
+                {
+                    // Normalise so the StartsWith check below is reliable.
+                    try { path = Path.GetFullPath(path); } catch { /* leave as-is */ }
+                }
+                // SECURITY: `filePath` is LLM-controlled. Without this check a
+                // traversal like `filePath = "..\\..\\..\\Users\\me\\.ssh\\id_rsa"`
+                // would let File.ReadAllLines surface arbitrary file contents
+                // back to the caller via the blame envelope's snippetContext.
+                // Anchor every resolved path under the git root (which already
+                // contains kbDir) and refuse anything that escapes it.
+                string rootFull = null;
+                try { rootFull = Path.GetFullPath(gitRoot).TrimEnd('\\', '/') + Path.DirectorySeparatorChar; } catch { }
+                if (string.IsNullOrEmpty(rootFull) ||
+                    !path.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+                {
+                    error = new JObject
+                    {
+                        ["error"] = "filePath resolves outside the git repository root.",
+                        ["code"] = "PathOutsideRepo"
+                    }.ToString(Newtonsoft.Json.Formatting.None);
+                    return null;
+                }
                 if (!File.Exists(path))
                 {
                     error = new JObject
@@ -261,19 +284,15 @@ namespace GxMcp.Worker.Services
             psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
             psi.EnvironmentVariables["GIT_PAGER"] = "cat";
 
-            // net48: build a single Arguments string with quoting for paths.
+            // net48: build a single Arguments string with CommandLineToArgv-
+            // compatible quoting (see GithubService.ArgvQuote — handles trailing
+            // backslashes correctly so a malicious filename ending in '\' can't
+            // break out of its quoted token).
             var sb = new System.Text.StringBuilder();
             foreach (var a in prefixed)
             {
                 if (sb.Length > 0) sb.Append(' ');
-                if (a.IndexOfAny(new[] { ' ', '\t', '"' }) >= 0)
-                {
-                    sb.Append('"').Append(a.Replace("\"", "\\\"")).Append('"');
-                }
-                else
-                {
-                    sb.Append(a);
-                }
+                sb.Append(GithubService.ArgvQuote(a));
             }
             psi.Arguments = sb.ToString();
 
