@@ -109,9 +109,12 @@ namespace GxMcp.Worker.Services
                     continue;
                 }
 
-                // Resolve object name: try index cache (guid lookup), then FindObject by name
-                string objectName = ResolveObjectNameFromGuid(meta.RawGuid);
-                if (string.IsNullOrEmpty(objectName)) objectName = meta.RawGuid;
+                // Resolve object name from the sanitized GUID. dryRun skips this:
+                // the name is only required to call WriteObject; for a dryRun envelope
+                // we surface the raw guid + part + bytes preview without any SDK round-trip.
+                // Live restore path still resolves, but with a hard cap to avoid the
+                // full-index iteration that was costing ~60s on a 38k-object KB.
+                string objectName = dryRun ? meta.RawGuid : (ResolveObjectNameFromGuid(meta.RawGuid) ?? meta.RawGuid);
 
                 string content = EditSnapshotStore.ReadSnapshot(path);
                 if (content == null)
@@ -238,28 +241,17 @@ namespace GxMcp.Worker.Services
             {
                 var index = _indexCacheService.GetIndex();
                 if (index?.Objects == null) return null;
-                // The IndexEntry doesn't carry a guid field directly, but the snapshot
-                // root was written with the object's real guid (EditSnapshotStore.SaveSnapshot
-                // uses obj.Guid.ToString() → sanitized). We can't reverse-map sanitized
-                // guid → name without iterating all objects in the KB index.
-                // Strategy: iterate index entries, compare sanitized(entry.Guid) → rawGuid.
-                // This is O(N) but only called on 1-20 entries per undo call.
+                // IndexEntry carries Guid as a snapshot field already — no SDK round-trip
+                // needed. Prior implementation called FindObject per entry, which on a
+                // 38k-object KB cost ~60 s per snapshot. Now O(N) string comparisons
+                // against the in-memory snapshot, completes in milliseconds.
                 foreach (var kv in index.Objects)
                 {
                     var entry = kv.Value;
-                    if (entry == null) continue;
-                    // Try to obtain the real guid via ObjectService
-                    try
-                    {
-                        var obj = _objectService.FindObject(entry.Name);
-                        if (obj == null) continue;
-                        string objGuid;
-                        try { objGuid = obj.Guid.ToString(); } catch { continue; }
-                        string sanitized = SanitizeGuid(objGuid);
-                        if (string.Equals(sanitized, sanitizedGuid, StringComparison.OrdinalIgnoreCase))
-                            return entry.Name;
-                    }
-                    catch { }
+                    if (entry == null || string.IsNullOrEmpty(entry.Guid)) continue;
+                    string sanitized = SanitizeGuid(entry.Guid);
+                    if (string.Equals(sanitized, sanitizedGuid, StringComparison.OrdinalIgnoreCase))
+                        return entry.Name;
                 }
             }
             catch { }

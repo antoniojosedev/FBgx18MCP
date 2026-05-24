@@ -245,17 +245,25 @@ namespace GxMcp.Worker.Services
         {
             stdout = string.Empty;
             stderr = string.Empty;
+            // Prepend safety flags so a configured pager or interactive prompt
+            // can't wedge the worker (mirrors PrDescriptionService.RunGit).
+            var prefixed = new System.Collections.Generic.List<string> { "--no-pager", "-c", "color.ui=false" };
+            prefixed.AddRange(args);
             var psi = new ProcessStartInfo("git")
             {
                 WorkingDirectory = workingDir,
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+            psi.EnvironmentVariables["GIT_PAGER"] = "cat";
+
             // net48: build a single Arguments string with quoting for paths.
             var sb = new System.Text.StringBuilder();
-            foreach (var a in args)
+            foreach (var a in prefixed)
             {
                 if (sb.Length > 0) sb.Append(' ');
                 if (a.IndexOfAny(new[] { ' ', '\t', '"' }) >= 0)
@@ -274,9 +282,25 @@ namespace GxMcp.Worker.Services
                 using (var p = Process.Start(psi))
                 {
                     if (p == null) { stderr = "Failed to start git process."; return -1; }
-                    stdout = p.StandardOutput.ReadToEnd();
-                    stderr = p.StandardError.ReadToEnd();
-                    p.WaitForExit(30000);
+                    // Drain stdout + stderr in PARALLEL via async event handlers — the
+                    // sequential ReadToEnd → ReadToEnd → WaitForExit pattern deadlocks
+                    // when git fills the stdout pipe buffer before we drain it.
+                    try { p.StandardInput.Close(); } catch { }
+                    var outSb = new System.Text.StringBuilder();
+                    var errSb = new System.Text.StringBuilder();
+                    p.OutputDataReceived += (s, e) => { if (e.Data != null) outSb.AppendLine(e.Data); };
+                    p.ErrorDataReceived += (s, e) => { if (e.Data != null) errSb.AppendLine(e.Data); };
+                    p.BeginOutputReadLine();
+                    p.BeginErrorReadLine();
+                    if (!p.WaitForExit(30000))
+                    {
+                        try { p.Kill(); } catch { }
+                        stderr = "git " + sb.ToString() + " exceeded 30s in " + workingDir;
+                        return -1;
+                    }
+                    p.WaitForExit(); // flush async readers
+                    stdout = outSb.ToString();
+                    stderr = errSb.ToString();
                     return p.ExitCode;
                 }
             }

@@ -1826,15 +1826,38 @@ namespace GxMcp.Worker.Services
                     GxMcp.Worker.Helpers.EditSnapshotStore.ReadSnapshot,
                     (name, part, content, type) => WriteObject(name, part, content, type, true, false, true, false));
 
+                // Surface rollback-itself-failures at the top level so callers don't have to
+                // walk rollbackResults to learn the KB is in a half-restored state.
+                int rollbackErrors = 0;
+                foreach (var r in rollbackResults)
+                {
+                    var s = r["status"]?.ToString();
+                    if (string.Equals(s, "Error", StringComparison.OrdinalIgnoreCase)) rollbackErrors++;
+                }
+                bool rollbackSucceeded = rollbackErrors == 0;
+                string topStatus = rollbackSucceeded
+                    ? "RolledBack"
+                    : (rollbackErrors == rollbackResults.Count ? "RollbackFailed" : "RollbackPartial");
+
                 var rollbackEnvelope = new JObject
                 {
-                    ["status"] = "RolledBack",
+                    ["status"] = topStatus,
+                    ["rollbackSucceeded"] = rollbackSucceeded,
                     ["failedAt"] = failedAt,
                     ["successfulBeforeFailure"] = new JArray(rollbackPlan.Select(r => (JToken)r.Name).ToArray()),
-                    ["counts"] = new JObject { ["attempted"] = results.Count, ["rolledBack"] = rollbackPlan.Count, ["failed"] = failure },
+                    ["counts"] = new JObject {
+                        ["attempted"] = results.Count,
+                        ["rolledBack"] = rollbackPlan.Count - rollbackErrors,
+                        ["rollbackErrored"] = rollbackErrors,
+                        ["failed"] = failure
+                    },
                     ["results"] = results,
                     ["rollbackResults"] = rollbackResults
                 };
+                if (!rollbackSucceeded)
+                {
+                    rollbackEnvelope["hint"] = "KB may be in a half-restored state. Inspect rollbackResults[].status='Error' entries and consider genexus_undo on the affected targets.";
+                }
                 GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(rollbackEnvelope, SummarizeBulkSdkPath(results));
                 return rollbackEnvelope.ToString();
             }

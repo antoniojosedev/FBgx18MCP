@@ -3312,11 +3312,16 @@ namespace GxMcp.Gateway
             // fields[]. Resolves to a HashSet that overrides the axiCompact default —
             // explicit fields[] still wins (highest specificity).
             string projection = toolArgs?["projection"]?.ToString();
+            bool verboseRequested = !string.IsNullOrWhiteSpace(projection)
+                && string.Equals(projection.Trim(), "verbose", StringComparison.OrdinalIgnoreCase);
             if (requestedFields == null && !string.IsNullOrWhiteSpace(projection))
             {
                 requestedFields = ResolveProjection(toolName, projection);
             }
-            if (requestedFields == null && ShouldUseCompactDefaults(toolArgs))
+            // projection=verbose explicitly opts OUT of the compact filter — earlier
+            // versions silently fell into GetDefaultCompactFields here because
+            // ResolveProjection returns null for both 'verbose' and unknown levels.
+            if (requestedFields == null && !verboseRequested && ShouldUseCompactDefaults(toolArgs))
             {
                 requestedFields = GetDefaultCompactFields(toolName);
             }
@@ -3519,12 +3524,12 @@ namespace GxMcp.Gateway
             }
             if (p == "minimal")
             {
-                // Same 3-field shape for both tools: the smallest legal projection.
-                // 'type' covers genexus_list_objects; 'kind' isn't a worker field today
-                // but is whitelisted defensively so the field-projector keeps it if
-                // a future worker adds it.
+                // The smallest legal projection. Matches the schema description
+                // exactly: {name, type, lastUpdate}. (Prior versions also whitelisted
+                // 'kind' defensively but no worker emits it today — keeping the
+                // field-set tight so 'minimal' is honest about its contract.)
                 return new HashSet<string>(
-                    new[] { "name", "type", "kind", "lastUpdate" },
+                    new[] { "name", "type", "lastUpdate" },
                     StringComparer.OrdinalIgnoreCase);
             }
             if (p == "standard")
