@@ -160,10 +160,7 @@ namespace GxMcp.Worker.Services
             foreach (var a in args)
             {
                 if (sb.Length > 0) sb.Append(' ');
-                if (a.IndexOfAny(new[] { ' ', '\t', '"' }) >= 0)
-                    sb.Append('"').Append(a.Replace("\"", "\\\"")).Append('"');
-                else
-                    sb.Append(a);
+                sb.Append(GithubService.ArgvQuote(a));
             }
             var psi = new ProcessStartInfo(exe, sb.ToString())
             {

@@ -44,8 +44,14 @@ namespace GxMcp.Worker.Services
             error = null;
             try
             {
-                // net48 has no ProcessStartInfo.ArgumentList — quote manually.
-                string quoted = "\"HEAD:" + repoRelativePath.Replace("\\", "/").Replace("\"", "\\\"") + "\"";
+                // net48 has no ProcessStartInfo.ArgumentList — quote via the
+                // shared CommandLineToArgv-compatible helper (handles trailing
+                // backslashes correctly, unlike a naive Replace("\"","\\\"")).
+                // Also prepend `--` so a path beginning with '-' can't be
+                // re-interpreted as a flag, and refuse paths that escape the
+                // working tree.
+                string norm = (repoRelativePath ?? string.Empty).Replace("\\", "/");
+                string quoted = GithubService.ArgvQuote("HEAD:" + norm);
                 var psi = new ProcessStartInfo("git", "show " + quoted)
                 {
                     WorkingDirectory = workingDir,
