@@ -1,11 +1,11 @@
 {
   "tools": [
     {
-      "description": "Accessibility audit via chrome-devtools-axi a11y subcommand (fallback: playwright axe). Returns {violations:[{rule,impact,helpUrl,nodes}],score,capturedAtUtc} or {skipped,code:'A11yDriverUnavailable',hint}.",
+      "description": "A11y audit via chrome-devtools-axi (fallback: playwright axe). Returns {violations,score} or skipped:A11yDriverUnavailable.",
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "target": {
@@ -24,7 +24,7 @@
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -46,7 +46,7 @@
       "name": "genexus_add_variable"
     },
     {
-      "description": "Forward a prompt to an OpenAI-compatible endpoint (env GXMCP_AI_COMPLETE_URL/_KEY/_MODEL). Returns {completion,tokensIn,tokensOut,model} or AiEndpointNotConfigured/AiEndpointError.",
+      "description": "Forward prompt to OpenAI-compatible endpoint (env GXMCP_AI_COMPLETE_URL/_KEY/_MODEL). Errors: AiEndpointNotConfigured, AiEndpointError.",
       "inputSchema": {
         "properties": {
           "context": {
@@ -54,7 +54,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "maxTokens": {
@@ -88,7 +88,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "mode": {
@@ -97,6 +97,7 @@
               "navigation",
               "hierarchy",
               "impact",
+              "cross_platform_impact",
               "callers",
               "event_flow",
               "data_context",
@@ -125,11 +126,11 @@
       "name": "genexus_analyze"
     },
     {
-      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent. IDE 'Right-click → Apply Pattern'. Inspect parentType first: Transaction=family-gen, WebPanel/SDPanel=direct-attach (pass settings.template). Others rejected. mode=diagnose returns structured findings without mutating.",
+      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent (IDE Right-click → Apply Pattern). Transaction=family-gen; WebPanel/SDPanel=direct-attach (pass settings.template). mode=diagnose returns findings without mutating.",
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "mode": {
@@ -182,7 +183,7 @@
             "type": "boolean"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -227,7 +228,7 @@
             "type": "boolean"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "limit": {
@@ -254,7 +255,7 @@
       "name": "genexus_asset"
     },
     {
-      "description": "Seed GXtest stubs from past invocations. Reads JSONL ({atUtc,tool,target,params}/line), dedupes by tool×target. Returns {linesRead,stubsGenerated:[{name,source}],skipped[]}. No KB write.",
+      "description": "Seed GXtest stubs from past invocations (JSONL), deduped by tool×target. Returns {linesRead,stubsGenerated,skipped}. No KB write.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -277,7 +278,7 @@
       "name": "genexus_auto_test"
     },
     {
-      "description": "Git blame for an object part. Returns commit/author/date per line. When line is set, returns just that line. Returns code='KbNotInGit' when the KB isn't a git working tree, code='PartNotTracked' with candidates[] when no tracked file matches.",
+      "description": "Git blame for an object part. Returns commit/author/date per line; single line when line is set. Errors: KbNotInGit, PartNotTracked (with candidates[]).",
       "inputSchema": {
         "properties": {
           "context": {
@@ -289,7 +290,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "line": {
@@ -310,7 +311,7 @@
       "name": "genexus_blame"
     },
     {
-      "description": "Open target object in headless Chrome, capture console/network/exceptions. Returns {console,network,exceptions,driverUsed,capturedAtUtc} or {skipped,code:'BrowserDriverUnavailable',hint} when chrome-devtools-axi not on PATH.",
+      "description": "Open target in headless Chrome; capture console/network/exceptions. Skips with code='BrowserDriverUnavailable' when chrome-devtools-axi missing.",
       "inputSchema": {
         "properties": {
           "capture": {
@@ -326,7 +327,7 @@
             "type": "array"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "target": {
@@ -342,7 +343,7 @@
       "name": "genexus_browser_capture"
     },
     {
-      "description": "Walks the callee graph for target and emits {nodes:[{name,type,estimatedSeconds}],edges:[{from,to}],totalEstimatedSeconds}. estimatedSeconds derived from per-tool p95 in the ring buffer (gateway-injected) and per-type defaults. format=ascii adds a rendered tree.",
+      "description": "Walk the callee graph for target. Returns {nodes,edges,totalEstimatedSeconds}; estimates from per-tool p95 ring buffer. format=ascii adds rendered tree.",
       "inputSchema": {
         "properties": {
           "format": {
@@ -353,7 +354,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "maxNodes": {
@@ -372,14 +373,14 @@
       "name": "genexus_build_plan"
     },
     {
-      "description": "Apply N independent edits. Item: {name,part?,content,type?,dryRun?}. stopOnError halts at first fail. transactional=true snapshots all targets pre-edit and rolls back prior successes on first Error.",
+      "description": "Apply N independent edits. Item: {name,part?,content,type?,dryRun?}. stopOnError halts at first fail. transactional=true rolls back on first Error.",
       "inputSchema": {
         "properties": {
           "dryRun": {
             "type": "boolean"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "stopOnError": {
@@ -404,7 +405,7 @@
       "name": "genexus_bulk_edit"
     },
     {
-      "description": "Create any IDE-creatable object (Transaction, Procedure, WebPanel, SDPanel, SDT, DataProvider, Domain, Dashboard...). Domain takes dataType+length or enumValues. NOT for WorkWithPlus (use genexus_apply_pattern) or popups with inputs (use genexus_create_popup).",
+      "description": "Create any IDE-creatable object (Transaction, Procedure, WebPanel, SDT, Domain, Dashboard, ...). Domain takes dataType+length or enumValues. NOT for WorkWithPlus (use genexus_apply_pattern) or input-bearing popups (use genexus_create_popup).",
       "inputSchema": {
         "properties": {
           "basedOn": {
@@ -426,7 +427,7 @@
             "type": "array"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "length": {
@@ -459,7 +460,7 @@
             "type": "boolean"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -559,7 +560,7 @@
       "name": "genexus_create_popup"
     },
     {
-      "description": "Verify a WebPanel across engines. Runs chrome (chrome-devtools-axi) + firefox/webkit (npx playwright) in parallel. Returns {url,results:[{browser,ok,screenshotPath,consoleErrors,ms}],anyFailed}.",
+      "description": "Verify a WebPanel across engines (chrome + firefox/webkit via playwright). Returns {url,results,anyFailed}.",
       "inputSchema": {
         "properties": {
           "browsers": {
@@ -585,7 +586,7 @@
             "type": "array"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "target": {
@@ -611,7 +612,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "target": {
@@ -626,6 +627,42 @@
       "name": "genexus_db_drift"
     },
     {
+      "description": "Static index advisor. analyze=KB-wide For-each scan; suggest_indexes=covering DDL per Transaction; report=top-10 unindexed hot paths (+markdown).",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "analyze",
+              "suggest_indexes",
+              "report"
+            ],
+            "type": "string"
+          },
+          "format": {
+            "description": "report only. markdown adds paste-ready table.",
+            "enum": [
+              "json",
+              "markdown"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Transaction name for suggest_indexes; optional filter for analyze.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_db_optimize"
+    },
+    {
       "description": "Delete an object from the KB. Irreversible — confirm=true required.",
       "inputSchema": {
         "properties": {
@@ -633,7 +670,7 @@
             "type": "boolean"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -656,7 +693,7 @@
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -682,7 +719,7 @@
             "type": "integer"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "left": {
@@ -722,7 +759,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -786,7 +823,7 @@
             "type": "integer"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "mode": {
@@ -907,7 +944,7 @@
           },
           "visualVerify": {
             "default": false,
-            "description": "After the edit (+ optional build), open the resolved runtime URL in a headless browser, screenshot it, attach base64 (truncated) + pixel-diff vs baseline.",
+            "description": "Post-edit headless screenshot + pixel-diff vs baseline. See tool-help.",
             "type": "boolean"
           }
         },
@@ -985,7 +1022,7 @@
           },
           "visualVerify": {
             "default": false,
-            "description": "After the edit (+ optional build), open the resolved runtime URL in a headless browser, screenshot it, attach base64 (truncated) + pixel-diff vs baseline.",
+            "description": "Post-edit headless screenshot + pixel-diff vs baseline. See tool-help.",
             "type": "boolean"
           },
           "waitForIndex": {
@@ -1059,7 +1096,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "legend": {
@@ -1088,7 +1125,7 @@
       "name": "genexus_edit_form"
     },
     {
-      "description": "Recent invocations of an object from the gateway in-memory ring buffer. Returns {runs:[{atUtc,tool,durationMs,params,outcome}]}; last clamped to [1,50]. Resets on gateway restart.",
+      "description": "Recent invocations of an object from in-memory ring buffer. last clamped [1,50]. Resets on gateway restart.",
       "inputSchema": {
         "properties": {
           "last": {
@@ -1120,7 +1157,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1142,7 +1179,7 @@
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1174,7 +1211,7 @@
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1207,7 +1244,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1232,7 +1269,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           }
         },
@@ -1286,7 +1323,7 @@
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "rows": {
@@ -1337,6 +1374,35 @@
       "name": "genexus_github"
     },
     {
+      "description": "Surface GxServer sync state (status/pending/conflicts/history). Read-only v1. Returns {connected:false} when KB is not linked.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "status",
+              "pending",
+              "conflicts",
+              "history"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "history only; default 10, max 200.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_gxserver"
+    },
+    {
       "description": "List/read/save/restore object history snapshots. restore + discard=true = IDE 'Discard changes' parity.",
       "inputSchema": {
         "properties": {
@@ -1359,7 +1425,7 @@
             "type": "boolean"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1393,7 +1459,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1419,7 +1485,7 @@
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1458,7 +1524,7 @@
             "type": "array"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1485,7 +1551,7 @@
       "name": "genexus_inspect"
     },
     {
-      "description": "Manage open KBs and KB-level startup config. Actions list/open/close/set_default operate on the gateway WorkerPool; set_startup/get_startup mirror the IDE 'Set As Startup Object' right-click action.",
+      "description": "Manage open KBs and startup config. list/open/close/set_default operate on WorkerPool; set_startup/get_startup mirror IDE 'Set As Startup Object'.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1541,7 +1607,7 @@
       "name": "genexus_kb_diff"
     },
     {
-      "description": "Locate an object in the KB explorer tree. IDE 'Right-click → Locate in KB Explorer' parity. Returns modulePath, fullPath, and up to 20 siblings in the same module.",
+      "description": "Locate an object in the KB explorer tree (IDE Right-click → Locate). Returns modulePath, fullPath, up to 20 siblings.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1551,7 +1617,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1568,7 +1634,7 @@
       "name": "genexus_kb_explorer"
     },
     {
-      "description": "Copy one object's part files from another KB into the active KB. Dependencies NOT resolved. Returns {status,filesCopied,targetDir}. Run genexus_lifecycle action=index force=true after.",
+      "description": "Copy one object's part files from another KB into the active KB. Deps NOT resolved. Re-index after.",
       "inputSchema": {
         "properties": {
           "from": {
@@ -1576,7 +1642,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1607,7 +1673,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "outputPath": {
@@ -1672,7 +1738,7 @@
             "type": "integer"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "limit": {
@@ -1709,7 +1775,7 @@
       "name": "genexus_layout"
     },
     {
-      "description": "Aggregate friction.jsonl (written by genexus_friction_log). Read-only. Returns {totalEntries,byTool[],byCode[],severityHistogram}. Pair with friction_log action=tail for raw lines.",
+      "description": "Aggregate friction.jsonl (read-only). Returns {totalEntries,byTool,byCode,severityHistogram}. Pair with friction_log action=tail.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1719,7 +1785,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "since": {
@@ -1776,7 +1842,7 @@
             "type": "integer"
           },
           "fastIncremental": {
-            "description": "EXPERIMENTAL (item 28). Build only: if EditDirtyTracker has no dirty entries returns nothingDirty=true without dispatch; otherwise hints to skip Specify on clean targets and deploy if dirty set is Procedure/WebPanel/Transaction-only. On any miss falls back to legacy build with fastIncrementalFallback=true + fallbackReason.",
+            "description": "EXPERIMENTAL. Skip clean targets via dirty-tracker; falls back to legacy build on miss. See tool-help.",
             "type": "boolean"
           },
           "force": {
@@ -1793,14 +1859,14 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "limit": {
             "type": "integer"
           },
           "notifyOnFailure": {
-            "description": "Build: Slack/Discord webhook URL. POST {kb,target,errors,errorsDetailedHead,jobId,durationSec} when build terminal state = Failed (not PartialSuccess).",
+            "description": "Build: Slack/Discord webhook posted on terminal=Failed. See tool-help.",
             "type": "string"
           },
           "since": {
@@ -1808,7 +1874,7 @@
             "type": "string"
           },
           "skipFullDeploy": {
-            "description": "EXPERIMENTAL. Single-target Build + includeCallees=none: skip deploy step. DLL is NOT redeployed; see tool-help.",
+            "description": "EXPERIMENTAL. Skip deploy step (single-target, includeCallees=none). See tool-help.",
             "type": "boolean"
           },
           "snapshotPath": {
@@ -1864,7 +1930,7 @@
             "type": "integer"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "limit": {
@@ -1925,7 +1991,7 @@
       "name": "genexus_list_objects"
     },
     {
-      "description": "Read worker_debug.log tail. target=<obj> filters by object name; tail=N last N lines (default 100); since=<ISO|'crash'> lines after timestamp or from last ERROR marker. Response includes logPath so the agent can read other logs directly.",
+      "description": "Read worker_debug.log tail. target filters by object; tail=N (default 100); since=<ISO|'crash'>. Response includes logPath.",
       "inputSchema": {
         "properties": {
           "filterCorrelation": {
@@ -1960,7 +2026,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -1983,7 +2049,7 @@
       "name": "genexus_modify_variable"
     },
     {
-      "description": "Advisory file lock per (kbPath,target,part) under .gx/locks. Use before editing when multiple agents may collide. Auto-expires after ttlSec. Returns {status,held,holder,path}.",
+      "description": "Advisory file lock per (kbPath,target,part) under .gx/locks. Auto-expires after ttlSec. Returns {status,held,holder,path}.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1995,7 +2061,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "ownerId": {
@@ -2022,7 +2088,7 @@
       "name": "genexus_multi_agent_lock"
     },
     {
-      "description": "View navigation report for an object. IDE 'Right-click → View Navigation / View Last Navigation' parity. latest=true returns the most recent cached report from .gx/navigation-cache; otherwise runs a fresh navigation.",
+      "description": "View navigation report (IDE Right-click → View Navigation). latest=true returns cached report from .gx/navigation-cache; else runs fresh.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -2032,7 +2098,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "latest": {
@@ -2069,11 +2135,11 @@
       "name": "genexus_ocr_screenshot"
     },
     {
-      "description": "Welcome card for a new session: KB name/path, last 5 edited objects, top 3 KB-applicable gotchas, top 5 most-used tools. Cheaper than whoami for mid-session context refresh.",
+      "description": "Session welcome: KB info, last 5 edits, top 3 gotchas, top 5 tools. Cheaper than whoami for mid-session refresh.",
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           }
         },
@@ -2142,7 +2208,7 @@
             "type": "object"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "launcher": {
@@ -2199,7 +2265,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -2247,7 +2313,7 @@
       "name": "genexus_pr_description"
     },
     {
-      "description": "Search objects in the active KB. Supports prefixes (type:, usedby:, parent:, parentPath:, description:). Compact projection by default. See genexus://kb/tool-help/genexus_query for examples.",
+      "description": "Search objects in active KB. Prefixes: type:, usedby:, parent:, parentPath:, description:. Compact by default. See genexus://kb/tool-help/genexus_query.",
       "inputSchema": {
         "properties": {
           "axiCompact": {
@@ -2267,7 +2333,7 @@
             "type": "integer"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "limit": {
@@ -2304,11 +2370,11 @@
       "name": "genexus_query"
     },
     {
-      "description": "Read source/metadata parts of one or more objects. Pass name or targets, plus parts=[...]. Paginate large source with offset/limit. See genexus://kb/tool-help/genexus_read for examples.",
+      "description": "Read parts of objects. name or targets + parts=[...]. Paginate via offset/limit. See genexus://kb/tool-help/genexus_read.",
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "limit": {
@@ -2345,7 +2411,7 @@
       "name": "genexus_read"
     },
     {
-      "description": "Step-by-step playbook for a named flow ('wwp_on_transaction', 'create_popup', etc.). name='list' to enumerate. Pass 'name@v1' to pin a specific version (latest otherwise).",
+      "description": "Named playbooks + self-extending macros. action=list|describe|run|suggest_macro|crystallize.",
       "inputSchema": {
         "examples": [
           {
@@ -2355,18 +2421,42 @@
             "name": "wwp_on_transaction"
           },
           {
-            "name": "popup_blocking_with_reload@v1"
+            "action": "suggest_macro"
           }
         ],
         "properties": {
+          "action": {
+            "description": "suggest_macro: detect repeated sequences; crystallize: save one as a recipe.",
+            "enum": [
+              "list",
+              "describe",
+              "run",
+              "suggest_macro",
+              "crystallize"
+            ],
+            "type": "string"
+          },
+          "description": {
+            "description": "crystallize: human-readable description.",
+            "type": "string"
+          },
+          "macroName": {
+            "description": "crystallize: proposed name from suggest_macro.",
+            "type": "string"
+          },
+          "minRepetitions": {
+            "description": "suggest_macro: threshold (default 3).",
+            "type": "integer"
+          },
           "name": {
             "description": "Recipe key (latest version), 'name@v1' (pinned), or 'list'.",
             "type": "string"
+          },
+          "windowMinutes": {
+            "description": "suggest_macro: history window (default 30).",
+            "type": "integer"
           }
         },
-        "required": [
-          "name"
-        ],
         "type": "object"
       },
       "name": "genexus_recipe"
@@ -2392,7 +2482,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "newName": {
@@ -2431,7 +2521,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "to": {
@@ -2452,7 +2542,7 @@
       "name": "genexus_rename_across_kb"
     },
     {
-      "description": "Spot whether N similar objects share enough structure to justify a pattern. Intersects vars/events/parm-sigs. Returns {commonVariables[],commonEvents[],commonParmSignature,divergencePoints[],hint}.",
+      "description": "Detect whether N similar objects share enough structure for a pattern. Intersects vars/events/parm-sigs. Returns {commonVariables,commonEvents,divergencePoints,hint}.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -2462,7 +2552,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "source": {
@@ -2482,7 +2572,7 @@
       "name": "genexus_reverse_pattern"
     },
     {
-      "description": "Resolve runtime URL for a KB object (active Environment webRoot + aspx + URL-encoded positional args). Optional gamSession='auto'|{user,pass,repository?} captures GAM session cookies via HTTP login. Does NOT open a browser — pipe the returned url into chrome-devtools-axi.",
+      "description": "Resolve runtime URL for an object (webRoot + aspx + encoded args). gamSession='auto'|{user,pass,...} captures GAM cookies. Does NOT open a browser.",
       "inputSchema": {
         "properties": {
           "args": {
@@ -2501,7 +2591,7 @@
             "description": "'auto' (use GXMCP_GAM_USER/PASS env) or {user, pass, repository?, loginUrl?}."
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -2547,7 +2637,7 @@
       "name": "genexus_sandbox"
     },
     {
-      "description": "IDE 'Save As...' parity. Clones a KBObject's parts under a new name (same type, same module). Works for any creatable type. includePatternInstance=true also clones a linked WorkWithPlus instance.",
+      "description": "IDE 'Save As...' — clone object parts under a new name (same type/module). includePatternInstance=true also clones a linked WWP instance.",
       "inputSchema": {
         "properties": {
           "dryRun": {
@@ -2560,7 +2650,7 @@
             "type": "boolean"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -2638,7 +2728,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -2694,7 +2784,7 @@
             "type": "integer"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "maxResults": {
@@ -2718,7 +2808,7 @@
       "name": "genexus_search_source"
     },
     {
-      "description": "Audit KB-level GAM / security configuration. action=audit_gam scans IntegratedSecurityLevel, encryption, token expiry, and hardcoded secrets in env props. action=scan_secrets searches Procedure/WebPanel/SDT Source for credential-shaped literals (JWT, PEM, password=..., AKIA, etc.). Returns findings with severity.",
+      "description": "Audit KB security. action=audit_gam scans GAM/env props; action=scan_secrets greps Source for credential-shaped literals. Returns findings with severity.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -2729,7 +2819,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           }
         },
@@ -2741,11 +2831,11 @@
       "name": "genexus_security"
     },
     {
-      "description": "Sequence: open target headless, assert HTTP 200, no <scriptError> in body, console.exceptions empty. Returns {ok,steps:[{name,ok,message}],failedAt?}. Skips with BrowserDriverUnavailable when driver missing.",
+      "description": "Headless smoke: HTTP 200 + no <scriptError> + clean console. Returns {ok,steps,failedAt?}. Skips with BrowserDriverUnavailable.",
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "target": {
@@ -2783,7 +2873,7 @@
             "type": "boolean"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "levelNumber": {
@@ -2819,7 +2909,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -2843,7 +2933,7 @@
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -2858,7 +2948,7 @@
       "name": "genexus_test"
     },
     {
-      "description": "Recover an object's part bytes from a past git commit. at=<ISO> resolves most-recent commit <= timestamp; at=<sha> direct. Read-only; returns {recoveredFromCommit,parts:[{path,content}]} or KbNotInGit.",
+      "description": "Recover an object's part bytes from a past git commit. at=<ISO|sha>. Read-only; returns {recoveredFromCommit,parts} or KbNotInGit.",
       "inputSchema": {
         "properties": {
           "at": {
@@ -2866,7 +2956,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -2895,7 +2985,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           }
         },
@@ -2928,7 +3018,7 @@
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "last": {
@@ -2949,7 +3039,7 @@
             "type": "string"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "name": {
@@ -2968,7 +3058,7 @@
       "name": "genexus_validate_payload"
     },
     {
-      "description": "Map an NL transcript (e.g. 'add button called Save', 'rename X to Y') to a suggested tool call via regex intents. Returns {matched,dispatchedTool,dispatchedArgs}. Agent confirms; no dispatch.",
+      "description": "Map NL transcript to a suggested tool call via regex intents. Returns {matched,dispatchedTool,dispatchedArgs}. Agent confirms; no dispatch.",
       "inputSchema": {
         "examples": [
           {
@@ -2991,7 +3081,7 @@
       "name": "genexus_voice"
     },
     {
-      "description": "Filter recent edits/runs/lifecycle ops on target whose payload mentions an event name. In-memory OperationTracker; returns {runs:[{atUtc,tool,params,outcome}]}. Not a runtime breakpoint.",
+      "description": "Filter recent ops on target whose payload mentions an event name. In-memory OperationTracker. Not a runtime breakpoint.",
       "inputSchema": {
         "properties": {
           "event": {
@@ -3016,11 +3106,11 @@
       "name": "genexus_watch_event"
     },
     {
-      "description": "WCAG-shaped sanity checks on a WebPanel's CaptionExpression/Tooltip values. Flags empty-caption-with-tooltip, caption>80 chars, HTML in plain-text captions. No contrast check.",
+      "description": "WCAG sanity checks on WebPanel CaptionExpression/Tooltip. Flags empty-caption-with-tooltip, caption>80, HTML in plain captions. No contrast.",
       "inputSchema": {
         "properties": {
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           },
           "target": {
@@ -3036,7 +3126,7 @@
       "name": "genexus_wcag_check"
     },
     {
-      "description": "Preview impact of a typed change (e.g. attribute swap). Walks impact graph + source scan; cross-family swaps flagged. Returns {breaks[],probably_safe[],unknown[]}. Read-only.",
+      "description": "Preview impact of a typed change (e.g. attribute swap). Read-only. Returns {breaks,probably_safe,unknown}.",
       "inputSchema": {
         "properties": {
           "change": {
@@ -3044,7 +3134,7 @@
             "type": "object"
           },
           "kb": {
-            "description": "KB alias (multi-KB only).",
+            "description": "KB alias.",
             "type": "string"
           }
         },
@@ -3083,7 +3173,7 @@
       "name": "genexus_worker_pool"
     },
     {
-      "description": "Reload worker. soft (default): drain + respawn. hard: copy sourceDir + respawn. warm (EXPERIMENTAL, item 51): persist IndexCacheService snapshot before reload; restore on boot if worker-dll SHA matches. force=true: gateway kills directly (use when worker is hung).",
+      "description": "Reload worker. modes: soft (drain+respawn), hard (copy sourceDir+respawn), warm (EXPERIMENTAL; persist index snapshot). force=true: gateway kills directly. See tool-help.",
       "inputSchema": {
         "properties": {
           "drainTimeoutMs": {

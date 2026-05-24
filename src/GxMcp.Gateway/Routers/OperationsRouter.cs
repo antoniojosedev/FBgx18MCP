@@ -267,6 +267,29 @@ namespace GxMcp.Gateway.Routers
                     };
                 }
 
+                // SOTA — index advisor + hot-path analysis. Three actions: analyze
+                // (KB-wide static walk of For each blocks), suggest_indexes (covering
+                // index DDL for a single Transaction), report (top-10 unindexed hot
+                // paths with optional markdown).
+                case "genexus_db_optimize":
+                {
+                    string optAction = args?["action"]?.ToString();
+                    string mapped;
+                    if (string.Equals(optAction, "suggest_indexes", StringComparison.OrdinalIgnoreCase))
+                        mapped = "SuggestIndexes";
+                    else if (string.Equals(optAction, "report", StringComparison.OrdinalIgnoreCase))
+                        mapped = "Report";
+                    else
+                        mapped = "Analyze";
+                    return new
+                    {
+                        module = "DbOptimize",
+                        action = mapped,
+                        target = args?["target"]?.ToString(),
+                        format = args?["format"]?.ToString()
+                    };
+                }
+
                 // Item 19 (mcp-improvements-2026-05-22) — semantic WebForm edits.
                 case "genexus_edit_form":
                 {
@@ -409,6 +432,16 @@ namespace GxMcp.Gateway.Routers
                 // Item 66 — static step-by-step onboarding walkthrough.
                 case "genexus_tutorial":
                     return new { module = "Tutorial", action = "Step", step = args?["step"]?.ToObject<int?>() ?? 1 };
+
+                // Read-only surface for GxServer sync state. No SDK calls; worker probes
+                // <kbPath>/Repository/Repository.gxs and similar metadata files.
+                case "genexus_gxserver":
+                    return new
+                    {
+                        module = "GxServer",
+                        action = "Run",
+                        @params = args
+                    };
 
                 // Item 71 — gh CLI passthrough.
                 case "genexus_github":
@@ -563,6 +596,18 @@ namespace GxMcp.Gateway.Routers
                         action = "Audit",
                         target = args?["target"]?.ToString() ?? args?["name"]?.ToString(),
                         name = args?["target"]?.ToString() ?? args?["name"]?.ToString()
+                    };
+
+                // genexus_api — REST endpoint introspection + breaking-change diff.
+                // Single dispatcher arm; the worker's ApiIntrospectService.Run switches
+                // on args.action (list|describe|diff_baseline|snapshot).
+                case "genexus_api":
+                    return new
+                    {
+                        module = "Api",
+                        action = args?["action"]?.ToString() ?? "list",
+                        target = args?["target"]?.ToString(),
+                        @params = args
                     };
 
                 default:

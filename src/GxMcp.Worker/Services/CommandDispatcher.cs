@@ -66,6 +66,8 @@ namespace GxMcp.Worker.Services
         private readonly SecurityAuditService _securityAuditService;
         private readonly OrientService _orientService;
         private readonly DbDriftService _dbDriftService;
+        // SOTA tool — static "missing index" advisor for the KB.
+        private readonly DbOptimizeService _dbOptimizeService;
         private readonly WebFormEditService _webFormEditService;
         private readonly RunObjectService _runObjectService;
         private readonly ExplainService _explainService;
@@ -80,6 +82,8 @@ namespace GxMcp.Worker.Services
         // Wave-3 (items 76 / 78 / 84 / 86): friction-report aggregation, SDPanel proxy,
         // multi-agent file lock, what-if typed-change simulator.
         private readonly LearningReportService _learningReportService;
+        // genexus_gxserver — read-only sync-state surface.
+        private readonly GxServerSyncService _gxServerSyncService;
         private readonly SdPanelService _sdPanelService;
         private readonly MultiAgentLockService _multiAgentLockService;
         private readonly WhatIfService _whatIfService;
@@ -108,6 +112,10 @@ namespace GxMcp.Worker.Services
         private readonly BuildPlanService _buildPlanService;
         // genexus_doctor: one-call health/triage envelope.
         private readonly DoctorService _doctorService;
+        // genexus_types: Domain + SDT type introspection + value validation.
+        private readonly TypeIntrospectService _typeIntrospectService;
+        // genexus_api: REST endpoint introspection + breaking-change diff.
+        private readonly ApiIntrospectService _apiIntrospectService;
 
         private CommandDispatcher()
         {
@@ -166,6 +174,7 @@ namespace GxMcp.Worker.Services
             _securityAuditService = new SecurityAuditService(_kbService);
             _orientService = new OrientService(_kbService);
             _dbDriftService = new DbDriftService(_buildService);
+            _dbOptimizeService = new DbOptimizeService(_kbService, _objectService, _indexCacheService);
             _webFormEditService = new WebFormEditService(_objectService, _writeService);
             _runObjectService = new RunObjectService(_objectService, _kbService, _previewService);
             _explainService = new ExplainService(_kbService, _objectService);
@@ -178,6 +187,7 @@ namespace GxMcp.Worker.Services
             _frictionLogService = new FrictionLogService(_kbService);
             _wcagCheckService = new WcagCheckService(_objectService);
             _learningReportService = new LearningReportService(_kbService);
+            _gxServerSyncService = new GxServerSyncService(_kbService);
             _sdPanelService = new SdPanelService(_objectService, _writeService);
             _multiAgentLockService = new MultiAgentLockService(_kbService);
             _whatIfService = new WhatIfService(_analyzeService, _objectService);
@@ -201,6 +211,7 @@ namespace GxMcp.Worker.Services
             _visualVerifyService = new VisualVerifyService(_kbService, _objectService);
             _buildPlanService = new BuildPlanService(_indexCacheService, _objectService, callerGraphService);
             _doctorService = new DoctorService(_kbService, _indexCacheService, null);
+            _apiIntrospectService = new ApiIntrospectService(_kbService, _objectService, _indexCacheService);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -823,6 +834,8 @@ namespace GxMcp.Worker.Services
                         }
                         if (action == "ExplainCode") return _analyzeService.ExplainCode(target, payload);
                         if (action == "ParentContext") return _analyzeService.ParentContext(target);
+                        // Wave-3 SOTA: mode=cross_platform_impact — Web vs SmartDevices divergence.
+                        if (action == "CrossPlatformImpact") return _analyzeService.CrossPlatformImpact(target);
                         // Item 24: mode=callers — per-call-site detail with line + context.
                         if (action == "FindCallerSites") return _analyzeService.FindCallerSites(target);
                         if (action == "GetEventFlow") return _analyzeService.GetEventFlow(target, analyzeType);
@@ -1151,6 +1164,16 @@ namespace GxMcp.Worker.Services
                         if (string.Equals(action, "Report", StringComparison.OrdinalIgnoreCase))
                             return _dbDriftService.Report(target);
                         break;
+                    case "dboptimize":
+                        // SOTA — static index advisor. Walks For each blocks and proposes
+                        // covering indexes for hot Transaction × where-signature paths.
+                        if (string.Equals(action, "Analyze", StringComparison.OrdinalIgnoreCase))
+                            return _dbOptimizeService.Analyze(target);
+                        if (string.Equals(action, "SuggestIndexes", StringComparison.OrdinalIgnoreCase))
+                            return _dbOptimizeService.SuggestIndexes(target);
+                        if (string.Equals(action, "Report", StringComparison.OrdinalIgnoreCase))
+                            return _dbOptimizeService.Report(args?["format"]?.ToString());
+                        break;
                     case "webformedit":
                         // Item 19 (mcp-improvements-2026-05-22) — semantic WebForm edits.
                         return _webFormEditService.Execute(action, args);
@@ -1216,6 +1239,10 @@ namespace GxMcp.Worker.Services
                         if (string.Equals(action, "Report", StringComparison.OrdinalIgnoreCase))
                             return _learningReportService.Report(args?["since"]?.ToString(), args?["until"]?.ToString());
                         break;
+                    case "gxserver":
+                        // genexus_gxserver — read-only surface for GxServer sync state.
+                        // No SDK calls; probes metadata files under the KB root.
+                        return _gxServerSyncService.Run(args ?? new JObject());
                     case "sdpanel":
                         return _sdPanelService.Dispatch(action, target ?? args?["name"]?.ToString() ?? args?["target"]?.ToString(), args?["params"] as JObject ?? args);
                     case "multiagentlock":
@@ -1236,6 +1263,10 @@ namespace GxMcp.Worker.Services
                     case "doctor":
                         // genexus_doctor — health/triage envelope. No args.
                         return _doctorService.Diagnose();
+                    case "api":
+                        // genexus_api — REST endpoint introspection + diff vs baseline.
+                        // Single Run() switches on args.action (list/describe/diff_baseline/snapshot).
+                        return _apiIntrospectService.Run(args ?? new JObject());
                     case "github":
                         if (string.Equals(action, "CreatePr", StringComparison.OrdinalIgnoreCase))
                             return _githubService.CreatePr(args?["title"]?.ToString(), args?["body"]?.ToString(), args?["base"]?.ToString(), args?["workingDir"]?.ToString());
