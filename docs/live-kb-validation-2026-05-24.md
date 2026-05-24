@@ -48,24 +48,54 @@ they were authored — they ran for the first time today and surfaced their
 design-time assumptions vs. KB reality. None is a v2.6.9 regression. None
 touches a tool surface the user calls in practice.
 
+## Follow-up pass (same day, commit `9bf0d8b`)
+
+The 3 failures from the first run drove three concrete fixes:
+
+- **`McpRouter.TrimErrorEnvelope` widened** to preserve LLM routing fields
+  (`parentType`, `validParentTypes`, `patternKey`, `target`, `type`, plus the
+  worker's `status` when it's NOT "Error" — e.g. "NotImplemented"). Previously
+  the default trim left only `{message, code, hint, suggested_next_step}` so
+  an agent saw "WorkWithPlus cannot be applied to a Procedure." with no
+  information about valid parent types — even though the worker emitted them.
+  Recovers `AnalyzeExplain_ReturnsNotImplemented_NotStubResponse` and
+  `ApplyPattern_OnProcedure_RejectedFast_WithValidParentTypes`.
+- **Disposable-name timestamp bug** in `ApplyPattern_Validate_HappyPath_OnWebPanel`
+  — `Ticks.ToString("X").Substring(0, 6)` sliced the HIGH-order hex digits
+  (changes ~hourly); two test runs in the same window collided on the same
+  disposable WebPanel name and the second crashed on "already exists". Fixed
+  to take the LAST 6 hex digits (~100ns granularity).
+- **Diagnostic output on `IsToolError(create)`** in the same test now surfaces
+  the actual envelope instead of just an assertion message. Surfaced the
+  underlying root cause when the test still fails: a worker crash on rapid
+  LiveGatewayHarness spawn cycles (`"Worker for KB 'academicohomolog1' crashed/exited."`).
+
+Re-run pass-rate after the fixes:
+
+| Suite | Before | After |
+| --- | --- | --- |
+| Worker integration | 2/3 | 2/3 (unchanged — ParityProbe still gated on KB-side fixture env vars) |
+| Gateway E2E | 4/7 | 6/7 |
+
+## Remaining: worker-crash-on-rapid-spawn (test stability)
+
+`ApplyPattern_Validate_HappyPath_OnWebPanel` is the last failure. When run
+together with the other live tests, the LiveGatewayHarness spawn sequence
+overlaps with the worker boot of a previous test's harness, and the worker
+sometimes crashes mid-boot. The test passes cleanly when run in isolation
+(`dotnet test --filter "DisplayName~ApplyPattern_Validate_HappyPath"` → 1/1).
+
+This is a known stability pattern (see `MEMORY.md` —
+`worker_reload force=true` and `worker zombies accumulate` notes). Not a
+v2.6.9 regression; a worker-lifecycle hardening task for v2.7.x. Possible
+remediation: stagger LiveGatewayHarness instantiation in the test class
+fixture, or share a single harness across all live tests.
+
 ## Decision
 
-Release v2.6.9 with the 11 live-gated tests remaining `[LiveKbFact]` (i.e.
-skipped in default `dotnet test` runs). The 3 failures are tracked here for a
-follow-up release pass:
-
-- **Update `AnalyzeExplain_ReturnsNotImplemented_NotStubResponse`** to check
-  `isError=true` + the absence of the legacy stub string, NOT the literal
-  `NotImplemented` token (the gateway intentionally strips it).
-- **Update `ApplyPattern_OnProcedure_RejectedFast_WithValidParentTypes`** to
-  match the actual reject-envelope shape (or update the worker reject path
-  to carry `validParentTypes`).
-- **Investigate `ApplyPattern_Validate_HappyPath_OnWebPanel`** — capture the
-  full create-WebPanel envelope on failure so the actual error code is
-  visible, not just the harness assertion.
-
-These are test-design fixes, not user-facing regressions, and don't block
-the release.
+Ship v2.6.9. The TrimErrorEnvelope widening + timestamp fix improve
+LLM error-handling quality (the actual user-facing benefit). The remaining
+test-design flake is documented; it doesn't affect any tool surface.
 
 ## Reference
 
