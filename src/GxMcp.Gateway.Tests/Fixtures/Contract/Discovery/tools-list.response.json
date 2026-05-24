@@ -46,6 +46,28 @@
       "name": "genexus_add_variable"
     },
     {
+      "description": "DEFERRED stub: AI-prompted code completion in Events Source. Stub for upstream LLM integration. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "context": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_ai_complete"
+    },
+    {
       "description": "Use this for cross-object semantic analysis: impact, dependencies, complexity, naming, summary. See tool-help for mode selection.",
       "inputSchema": {
         "properties": {
@@ -222,6 +244,24 @@
         "type": "object"
       },
       "name": "genexus_asset"
+    },
+    {
+      "description": "DEFERRED stub: generate tests from real production invocation patterns. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "generate_from_prod_log"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_auto_test"
     },
     {
       "description": "Git blame for an object part. Returns commit/author/date per line. When line is set, returns just that line. Returns code='KbNotInGit' when the KB isn't a git working tree, code='PartNotTracked' with candidates[] when no tracked file matches.",
@@ -504,6 +544,29 @@
         "type": "object"
       },
       "name": "genexus_create_popup"
+    },
+    {
+      "description": "DEFERRED stub: render in parallel browsers; diff screenshots. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "browsers": {
+            "items": {
+              "enum": [
+                "chrome",
+                "firefox",
+                "safari"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_cross_browser"
     },
     {
       "description": "Transaction↔DB schema drift. action=check structured; report adds markdown.",
@@ -1188,6 +1251,21 @@
       "name": "genexus_generate_sample_data"
     },
     {
+      "description": "DEFERRED stub: auto-create PR from current branch. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create_pr"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_github"
+    },
+    {
       "description": "List/read/save/restore object history snapshots. restore + discard=true = IDE 'Discard changes' parity.",
       "inputSchema": {
         "properties": {
@@ -1371,6 +1449,21 @@
       "name": "genexus_kb"
     },
     {
+      "description": "DEFERRED stub: object-level diff between two KBs. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "kbA": {
+            "type": "string"
+          },
+          "kbB": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_kb_diff"
+    },
+    {
       "description": "Locate an object in the KB explorer tree. IDE 'Right-click → Locate in KB Explorer' parity. Returns modulePath, fullPath, and up to 20 siblings in the same module.",
       "inputSchema": {
         "properties": {
@@ -1396,6 +1489,25 @@
         "type": "object"
       },
       "name": "genexus_kb_explorer"
+    },
+    {
+      "description": "DEFERRED stub: import an object plus deps from another KB. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_kb_import"
     },
     {
       "description": "Generate a Markdown README for the KB: entities, entry points, modules, top-edited objects.",
@@ -1508,6 +1620,21 @@
         "type": "object"
       },
       "name": "genexus_layout"
+    },
+    {
+      "description": "DEFERRED stub: cross-session friction-learning loop. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "report"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_learning"
     },
     {
       "description": "Build, validate, index, or poll the KB. Long ops are async with operationId. See genexus://kb/tool-help/genexus_lifecycle for actions and target formats.",
@@ -1752,6 +1879,25 @@
         "type": "object"
       },
       "name": "genexus_modify_variable"
+    },
+    {
+      "description": "DEFERRED stub: granular lock for parallel multi-agent edits. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "part": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_multi_agent_lock"
     },
     {
       "description": "View navigation report for an object. IDE 'Right-click → View Navigation / View Last Navigation' parity. latest=true returns the most recent cached report from .gx/navigation-cache; otherwise runs a fresh navigation.",
@@ -2144,6 +2290,50 @@
       "name": "genexus_refactor"
     },
     {
+      "description": "DEFERRED stub: rename across every call site / attribute / index in the KB. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_rename_across_kb"
+    },
+    {
+      "description": "DEFERRED stub: infer a pattern (WWP-like) from existing similar objects. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "infer"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "source": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_reverse_pattern"
+    },
+    {
       "description": "Resolve runtime URL for a KB object (active Environment webRoot + aspx + URL-encoded positional args). Optional gamSession='auto'|{user,pass,repository?} captures GAM session cookies via HTTP login. Does NOT open a browser — pipe the returned url into chrome-devtools-axi.",
       "inputSchema": {
         "properties": {
@@ -2178,6 +2368,27 @@
       "name": "genexus_run_object"
     },
     {
+      "description": "DEFERRED stub: clone the KB for sandboxed edits; merge-back manual. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create"
+            ],
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_sandbox"
+    },
+    {
       "description": "Publish (copy) a screenshot PNG to <kbPath>/.gx/published-screenshots/<UTC>-<basename>. Local only — no remote upload.",
       "inputSchema": {
         "properties": {
@@ -2205,6 +2416,25 @@
         "type": "object"
       },
       "name": "genexus_sdk_probe"
+    },
+    {
+      "description": "DEFERRED stub: SDPanel parity for mobile. Most existing tools assume WebPanel. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_sd_panel"
     },
     {
       "description": "Regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source.",
@@ -2406,6 +2636,25 @@
       "name": "genexus_test"
     },
     {
+      "description": "DEFERRED stub: restore object state from a past timestamp without losing intermediate edits. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_time_travel"
+    },
+    {
       "description": "Translations import. action=import + inputPath=CSV with columns objectName,attribute,language,value. SDK write currently deferred; rows are parsed and reported.",
       "inputSchema": {
         "properties": {
@@ -2430,6 +2679,18 @@
         "type": "object"
       },
       "name": "genexus_translations"
+    },
+    {
+      "description": "DEFERRED stub: interactive onboarding tutorial. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "step": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_tutorial"
     },
     {
       "description": "Revert the last N edits from EditSnapshotStore (.gx/snapshots). Best-effort: reports which succeeded when any fail.",
@@ -2476,6 +2737,31 @@
       "name": "genexus_validate_payload"
     },
     {
+      "description": "DEFERRED stub: voice-driven edits via NL command. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_voice"
+    },
+    {
+      "description": "DEFERRED stub: set breakpoints in Events; capture variable state when triggered. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_watch_event"
+    },
+    {
       "description": "WCAG-shaped sanity checks on a WebPanel's CaptionExpression/Tooltip values. Flags empty-caption-with-tooltip, caption>80 chars, HTML in plain-text captions. No contrast check.",
       "inputSchema": {
         "properties": {
@@ -2496,12 +2782,46 @@
       "name": "genexus_wcag_check"
     },
     {
+      "description": "DEFERRED stub: simulate a type/schema change; report breakage without persisting. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "change": {
+            "type": "object"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_what_if"
+    },
+    {
       "description": "KB context + version + playbooks. Call FIRST every session — playbooks block routes you to the right tool.",
       "inputSchema": {
         "properties": {},
         "type": "object"
       },
       "name": "genexus_whoami"
+    },
+    {
+      "description": "DEFERRED stub: maintain N warm workers for instant spawn. Returns {status:'Future',code:'ItemDeferred'}.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "warm_spares"
+            ],
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_worker_pool"
     },
     {
       "description": "Reload worker. soft (default): drain + respawn. hard: copy sourceDir + respawn. warm (EXPERIMENTAL, item 51): persist IndexCacheService snapshot before reload; restore on boot if worker-dll SHA matches. force=true: gateway kills directly (use when worker is hung).",
