@@ -335,6 +335,16 @@ namespace GxMcp.Gateway.Routers
                         target = args?["target"]?.ToString() ?? args?["name"]?.ToString()
                     };
 
+                // IDE Save-As parity.
+                case "genexus_save_as":
+                    return new
+                    {
+                        module = "Object",
+                        action = "SaveAs",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
                 // Item 65 — genexus_orient welcome card
                 case "genexus_orient":
                     return new

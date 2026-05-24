@@ -2389,6 +2389,48 @@
       "name": "genexus_sandbox"
     },
     {
+      "description": "IDE 'Save As...' parity. Clones a KBObject's parts under a new name (same type, same module). Works for any creatable type. includePatternInstance=true also clones a linked WorkWithPlus instance.",
+      "inputSchema": {
+        "properties": {
+          "dryRun": {
+            "default": false,
+            "type": "boolean"
+          },
+          "includePatternInstance": {
+            "default": false,
+            "description": "Also clone linked WorkWithPlus instance.",
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Source object name.",
+            "type": "string"
+          },
+          "newName": {
+            "description": "New object name.",
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "type": "boolean"
+          },
+          "type": {
+            "description": "Disambiguates ambiguous names.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "newName"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_save_as"
+    },
+    {
       "description": "Publish (copy) a screenshot PNG to <kbPath>/.gx/published-screenshots/<UTC>-<basename>. Local only — no remote upload.",
       "inputSchema": {
         "properties": {

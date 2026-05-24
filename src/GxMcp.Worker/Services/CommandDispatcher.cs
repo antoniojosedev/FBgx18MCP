@@ -71,6 +71,7 @@ namespace GxMcp.Worker.Services
         private readonly ExplainService _explainService;
         private readonly GeneratedDiffService _generatedDiffService;
         private readonly KbReadmeService _kbReadmeService;
+        private readonly SaveAsService _saveAsService;
         private readonly OcrScreenshotService _ocrScreenshotService;
         private readonly PrDescriptionService _prDescriptionService;
         private readonly ScreenshotPublishService _screenshotPublishService;
@@ -154,6 +155,7 @@ namespace GxMcp.Worker.Services
             _explainService = new ExplainService(_kbService, _objectService);
             _generatedDiffService = new GeneratedDiffService(_kbService);
             _kbReadmeService = new KbReadmeService(_kbService, _indexCacheService);
+            _saveAsService = new SaveAsService(new SdkObjectCloner(_objectService, _writeService, _patternApplyService));
             _ocrScreenshotService = new OcrScreenshotService();
             _prDescriptionService = new PrDescriptionService(_kbService);
             _screenshotPublishService = new ScreenshotPublishService(_kbService);
@@ -585,6 +587,7 @@ namespace GxMcp.Worker.Services
                             return _objectService.CreateObject(args?["type"]?.ToString(), target, args);
                         }
                         if (action == "Delete") return _objectService.DeleteObject(target, args?["type"]?.ToString(), args?["confirm"]?.ToObject<bool?>() ?? false);
+                        if (action == "SaveAs") return _saveAsService.SaveAs(args ?? new JObject());
                         if (action == "WorkerReload")
                         {
                             // FR#20 (v2.6.6 Stream B): mode=soft is the new default — drain
