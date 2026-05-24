@@ -1,8 +1,29 @@
 # Changelog
 
-## v2.6.9 — 2026-05-23
+## v2.6.9 — 2026-05-24
 
-Friction wishlist sweep distilled into permanent tool/playbook improvements. Headline: agents stop paying repeated pedágio for runtime-vs-design IDs, the popup-async gotcha, HTML format sanitization, `For each` attribute writes inside WebPanel Events, opaque build/patch envelopes, SQL-injection-shaped writes, hardcoded credentials, GAM misconfig, and master-page incompatibility — all surface in the same turn as the edit.
+Friction wishlist sweep distilled into permanent tool/playbook improvements. Headline: 18 long-tail tools that previously returned a `Future` placeholder are now real implementations; agents stop paying repeated pedágio for runtime-vs-design IDs, the popup-async gotcha, HTML format sanitization, `For each` attribute writes inside WebPanel Events, opaque build/patch envelopes, SQL-injection-shaped writes, hardcoded credentials, GAM misconfig, and master-page incompatibility — all surface in the same turn as the edit.
+
+### Added — promoted from `Future` stub to real implementation
+
+- **`genexus_tutorial step=<1..6>`.** Deterministic 6-step onboarding walkthrough. Each step returns `{stepNumber, totalSteps, title, narrative, suggestedCall, next}` so a fresh agent can self-orient without reading source.
+- **`genexus_voice transcript=<text>`.** Maps a natural-language phrase (e.g. `"add button called Confirmar"`) to a concrete dispatched tool call (`{matched, dispatchedTool, dispatchedArgs}`). Returns `{matched:false, unrecognised:true}` for phrases outside the recipe table.
+- **`genexus_time_travel name=<obj> at=<ISO-or-sha>`.** Recovers an object's part bytes from git history. ISO timestamps resolve through `git log --before=<at> -1`; commit SHAs (7-40 hex chars) bypass the log. Returns `{recoveredFromCommit, parts:[{path, bytes, content}]}` — read-only, no KB write. Surfaces `KbNotInGit` when `.git` is missing.
+- **`genexus_ai_complete context=<text>`.** Optional bridge to a customer-hosted completion endpoint (env vars `GXMCP_AI_COMPLETE_URL` / `GXMCP_AI_COMPLETE_KEY`). Returns `{code:"AiEndpointNotConfigured"}` when unset so the LLM can fall back gracefully.
+- **`genexus_cross_browser target=<obj> browsers=[chrome,firefox,webkit]`.** Parallel render of the resolved object URL across multiple browser engines. Chrome → `chrome-devtools-axi`, Firefox/WebKit → `npx playwright`. Per-browser graceful skip when the driver isn't installed.
+- **`genexus_auto_test action=generate_from_prod_log path=<jsonl>`.** Reads a JSONL log of `{atUtc, tool, target, params}` records and emits GXtest stubs unique by `(tool × target)`. Skips malformed lines.
+- **`genexus_reverse_pattern action=infer source=[X,Y,...]`.** Walks ≥2 similar objects, extracts variables (regex on Variables part), event names (Events source scrape), parm signatures (`parm(...)` in Rules) and reports `{commonVariables, commonEvents, commonParmSignature, parmSignatureMatchesAll, divergencePoints}`. Diagnostic only — does not generate a real WWP pattern.
+- **`genexus_github action=create_pr title=<…> body=<…>`.** Shells out to `gh pr create`. Returns the PR URL on success, `{code:"GhCliNotInstalled"}` when `gh` is absent, `{code:"GhExitNonZero", exitCode, stderr}` on failure.
+- **`genexus_kb_import from=<path> name=<X> type=<Procedure|...>`.** Best-effort import of an external part-bytes file as a new KB object. Validates source path exists; returns typed `BadRequest` for invalid declarations.
+- **`genexus_kb_diff kbA=<path> kbB=<path>`.** Cross-KB structural diff. Returns `BadRequest` when paths are identical or one is unreachable.
+- **`genexus_rename_across_kb from=<old> to=<new>`.** Routes through `RefactorService` for attribute/object renames across all referencing objects in one shot.
+- **`genexus_sandbox action=create|remove|status name=<x>`.** Lightweight named scratch space under `.gx/sandboxes/`. Idempotent: `remove` on nonexistent → `NotFound`, not error.
+- **`genexus_worker_pool action=warm_spares spareCount=<n>`.** Pre-warms `n` spare worker processes in the pool so first calls avoid cold-start. `spareCount=0` returns `Disabled`.
+- **`genexus_sd_panel action=inspect name=<x>`.** Smart Device Panel layout inspection; returns the parts inventory + control tree. Graceful `NotFound` on bad name.
+- **`genexus_multi_agent_lock action=status|acquire|release target=<obj> part=<X>`.** File-system advisory lock under `.gx/locks/<obj>__<part>.lock` so multiple AI agents editing the same KB don't clobber each other. Status returns `{held, holder, since, path}`.
+- **`genexus_what_if change={kind,attribute,newType,...}`.** Read-only impact analysis: enumerates the callers, tables, indexes that `change` would touch. Validates required arguments and surfaces `MissingTarget` clearly.
+- **`genexus_watch_event target=<obj> event=<Name>`.** Pulls every recent execution of `<obj>.<Event>` from the OperationTracker ring buffer with timestamps, args, and outcomes — for diagnosing flaky events without scraping logs.
+- **`genexus_learning action=report`.** Aggregates the per-session friction log (`.gx/friction.jsonl`) into a structured summary: `{totalEntries, topPainPoints, byTool, byErrorCode, suggestedRecipes}`. Lets the LLM notice patterns ("the user has hit `Spc0150` 5 times today; recommend `extract_to_procedure` recipe").
 
 ### Added
 
@@ -71,6 +92,10 @@ Friction wishlist sweep distilled into permanent tool/playbook improvements. Hea
 - `EditDirtyTracker` records a `(kbPath, target)` dirty bucket on every `WriteService.NotePerTargetWrite` so the in-process build path can fast-skip Specify+Generate for clean targets. Static `WriteService._objectServiceRef` resolves the KbService for that call; this is single-STA-thread-safe but fragile if multiple `WriteService` instances are instantiated in the same process (e.g., from a `RefactorService` extraction) — flagged for follow-up refactor, not fixed in this release.
 - Golden fixture `tools-list.response.json` regenerated via `GXMCP_UPDATE_GOLDEN=1`; alphabetical order preserved.
 - ~30 new unit tests across 8 new test files (`PatchFrictionTests`, `LogFilteringTests`, `ObservabilityTests`, `RuntimeIdParserTests`, `InjectMetaTokensTests`, `OrientServiceTests`, `SecurityAuditServiceTests`, `UndoTimestampSortTests`, `HtmlFormatGotchaTests`, `Spc0150PreflightTests`). Gateway suite 331 passed / 7 skipped (live-KB gated); Worker suite green in isolation (a parallel-run flake on `PatternApplyServiceTests.*` is already noted in AGENTS.md).
+- New service files for the 18 promoted-Future tools: `Services/TutorialService.cs`, `Services/VoiceIntentService.cs`, `Services/TimeTravelService.cs`, `Services/AiCompleteService.cs`, `Services/CrossBrowserService.cs`, `Services/AutoTestService.cs`, `Services/ReversePatternService.cs`, `Services/GithubService.cs`. All wired through `CommandDispatcher` + `OperationsRouter`; `Routers/FutureItemRouter.cs` is now a no-op safety net (empty `_items` dictionary).
+- 26 new deterministic unit tests covering the 8 promoted-Future services end-to-end (error envelopes, env-var-gated paths, tempdir git happy-path for TimeTravel, dedup logic for AutoTest, voice-intent recipe matching). Worker suite: 879 → 905 passing, 4 skipped.
+- Flaky-test serialization: new `TestCollections.cs` defines `StderrCapture` + `InProcessSdkReflection` `[CollectionDefinition]`s with `DisableParallelization = true`. `LoggerPhaseTagTests` (Console.SetError process-global) and `EdgeCaseRegressionTests.Dispatcher_PatchApply_ValidateOnly_MapsToDryRun_ViaConvention` (concurrent disk read of `CommandDispatcher.cs`) are now serialised within their buckets while keeping inter-bucket parallelism. Three consecutive full Worker runs land at 0 failures.
+- Live-smoke harness `scripts/smoke-futures.ps1` exercises one tool call per promoted-Future against a real KB through the spawned gateway over stdio. Validated all 18 envelopes against `AcademicoHomolog1` before release.
 
 ## v2.6.8 — 2026-05-22
 
