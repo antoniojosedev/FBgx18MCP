@@ -1895,7 +1895,7 @@ namespace GxMcp.Worker.Services
             out global::Artech.Genexus.Common.Variable existing)
         {
             obj = null; varPart = null; existing = null;
-            if (string.IsNullOrEmpty(varName)) return "{\"error\": \"Variable name is required.\"}";
+            if (string.IsNullOrEmpty(varName)) return "{\"status\":\"Error\",\"error\": \"Variable name is required.\"}";
             varName = varName.TrimStart('&');
 
             obj = _objectService.FindObject(target);
@@ -1966,7 +1966,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 
@@ -2052,7 +2052,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 
@@ -2236,7 +2236,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 
@@ -2439,12 +2439,12 @@ namespace GxMcp.Worker.Services
                     // when the message doesn't match the heuristic.
                     var boundResp = TryBuildBoundToControlsError(ex, obj, varName, existingVarId);
                     if (boundResp != null) return boundResp;
-                    return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                    return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
                 }
             }
             catch (Exception ex)
             {
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 

@@ -81,7 +81,7 @@ namespace GxMcp.Worker.Services
             try
             {
                 if (string.IsNullOrEmpty(c.Callee) && string.IsNullOrEmpty(c.Pattern))
-                    return "{\"error\":\"Provide 'callee' (semantic) or 'pattern' (regex).\"}";
+                    return "{\"status\":\"Error\",\"error\":\"Provide 'callee' (semantic) or 'pattern' (regex).\"}";
 
                 Regex rx = null;
                 if (!string.IsNullOrEmpty(c.Pattern))
@@ -275,7 +275,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 

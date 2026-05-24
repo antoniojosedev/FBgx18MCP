@@ -47,12 +47,12 @@ namespace GxMcp.Worker.Services
                     return result.ToString();
                 }
 
-                return "{\"error\": \"Object is not an SDT\"}";
+                return "{\"status\":\"Error\",\"error\": \"Object is not an SDT\"}";
             }
             catch (Exception ex)
             {
                 Logger.Error("SDTService Error: " + ex.Message);
-                return "{\"error\": \"" + ex.Message + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + ex.Message + "\"}";
             }
         }
 

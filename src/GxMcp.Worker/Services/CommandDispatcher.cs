@@ -1357,7 +1357,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\":\"" + EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\":\"" + EscapeJsonString(ex.Message) + "\"}";
             }
         }
 

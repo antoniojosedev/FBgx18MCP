@@ -67,7 +67,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\": \"Formatting failed: " + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"Formatting failed: " + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 

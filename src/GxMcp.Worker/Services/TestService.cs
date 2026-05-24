@@ -110,7 +110,7 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 Logger.Error(string.Format("Test execution error: {0}", ex.Message));
-                return "{\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
     }

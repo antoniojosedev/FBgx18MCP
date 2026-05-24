@@ -859,7 +859,7 @@ namespace GxMcp.Worker.Services
                     return jo.ToString(Formatting.None);
                 }
             }
-            return "{\"error\": \"Task ID not found\"}";
+            return "{\"status\":\"Error\",\"error\": \"Task ID not found\"}";
         }
 
         // v2.6.6 Stream F: event-driven status wait. Replaces the gateway's 25s
@@ -969,7 +969,7 @@ namespace GxMcp.Worker.Services
         public string GetResult(string taskId, int page = 1, int pageSize = 50)
         {
             if (string.IsNullOrEmpty(taskId))
-                return "{\"error\": \"taskId required\"}";
+                return "{\"status\":\"Error\",\"error\": \"taskId required\"}";
 
             if (_tasks.TryGetValue(taskId, out var status))
             {
@@ -989,12 +989,12 @@ namespace GxMcp.Worker.Services
                     return jo.ToString(Formatting.None);
                 }
             }
-            return "{\"error\": \"Task ID not found\"}";
+            return "{\"status\":\"Error\",\"error\": \"Task ID not found\"}";
         }
 
         public string Cancel(string taskId)
         {
-            if (string.IsNullOrEmpty(taskId)) return "{\"error\": \"taskId required\"}";
+            if (string.IsNullOrEmpty(taskId)) return "{\"status\":\"Error\",\"error\": \"taskId required\"}";
             // FR#7 (friction-report 2026-05-14): the old "Task ID not found" was ambiguous —
             // the operation might have completed and been pruned, or never existed, or
             // expired from the registry. Return a more specific message + hint so the LLM
@@ -1038,7 +1038,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 

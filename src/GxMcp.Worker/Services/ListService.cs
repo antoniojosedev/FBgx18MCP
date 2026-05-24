@@ -302,10 +302,10 @@ namespace GxMcp.Worker.Services
 
                 source = "runtime-sdk";
                 var kb = _kbService.GetKB();
-                if (kb == null) return Finalize("{\"error\":\"KB not open\"}");
-                if (kb.DesignModel == null) return Finalize("{\"error\":\"KB DesignModel is null\"}");
+                if (kb == null) return Finalize("{\"status\":\"Error\",\"error\":\"KB not open\"}");
+                if (kb.DesignModel == null) return Finalize("{\"status\":\"Error\",\"error\":\"KB DesignModel is null\"}");
                 var objects = kb.DesignModel.Objects;
-                if (objects == null) return Finalize("{\"error\":\"KB DesignModel.Objects is null\"}");
+                if (objects == null) return Finalize("{\"status\":\"Error\",\"error\":\"KB DesignModel.Objects is null\"}");
 
                 var allObjects = ((System.Collections.IEnumerable)objects.GetAll())
                     .Cast<global::Artech.Architecture.Common.Objects.KBObject>();
@@ -440,7 +440,7 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 source = source + "-error";
-                return Finalize("{\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}");
+                return Finalize("{\"status\":\"Error\",\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}");
             }
         }
 

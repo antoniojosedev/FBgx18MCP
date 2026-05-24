@@ -93,7 +93,7 @@ namespace GxMcp.Worker.Services
             {
                 Logger.Error("InjectContext fatal: " + ex.Message);
                 sb.AppendLine($"> Fatal Error: {ex.Message}");
-                return sb.Length > 0 ? sb.ToString() : "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return sb.Length > 0 ? sb.ToString() : "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 

@@ -61,7 +61,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 
@@ -324,12 +324,12 @@ namespace GxMcp.Worker.Services
                         return result.ToString();
                     }
                 }
-                return "{\"error\": \"Version " + versionId + " not found or has no source code.\"}";
+                return "{\"status\":\"Error\",\"error\": \"Version " + versionId + " not found or has no source code.\"}";
             }
             catch (Exception ex)
             {
                 Logger.Error("Failed to read version source: " + ex.Message);
-                return "{\"error\": \"SDK Version access failed: " + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"SDK Version access failed: " + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 
@@ -364,7 +364,7 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 Logger.Error("Failed to read revisions: " + ex.Message);
-                return "{\"error\": \"SDK History access failed: " + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"SDK History access failed: " + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
 
             return new JObject { ["history"] = history }.ToString();
@@ -408,7 +408,7 @@ namespace GxMcp.Worker.Services
                 .ToArray();
 
             if (files.Length == 0)
-                return "{\"error\": \"No snapshots found for " + CommandDispatcher.EscapeJsonString(safeName) + " (Target: " + target + ")\"}";
+                return "{\"status\":\"Error\",\"error\": \"No snapshots found for " + CommandDispatcher.EscapeJsonString(safeName) + " (Target: " + target + ")\"}";
 
             string lastFile = files.First();
             string code = File.ReadAllText(lastFile, Encoding.UTF8);

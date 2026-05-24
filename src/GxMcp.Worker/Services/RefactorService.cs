@@ -67,7 +67,7 @@ namespace GxMcp.Worker.Services
 
                 return Models.McpResponse.Error("Refactor action not found", target, action, "Supported actions are RenameVariable, RenameAttribute, RenameObject, ExtractProcedure, WWPSetCondition.");
             } catch (Exception ex) {
-                return "{\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 
@@ -184,7 +184,7 @@ namespace GxMcp.Worker.Services
 
                 return Models.McpResponse.Error("Code block not found in source object", sourceObjectName, "Source", "The exact code block to extract was not found in the source object.");
             } catch (Exception ex) {
-                return "{\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 

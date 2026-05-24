@@ -22,7 +22,7 @@ namespace GxMcp.Worker.Services
             try
             {
                 dynamic kb = _kbService.GetKB();
-                if (kb == null) return "{\"error\": \"No KB open\"}";
+                if (kb == null) return "{\"status\":\"Error\",\"error\": \"No KB open\"}";
 
                 var result = new JObject();
                 
@@ -52,7 +52,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 
@@ -61,12 +61,12 @@ namespace GxMcp.Worker.Services
             try
             {
                 dynamic kb = _kbService.GetKB();
-                if (kb == null) return "{\"error\": \"No KB open\"}";
+                if (kb == null) return "{\"status\":\"Error\",\"error\": \"No KB open\"}";
 
                 kb.VersionControl.Update();
                 return "{\"status\": \"Success\"}";
             }
-            catch (Exception ex) { return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
+            catch (Exception ex) { return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
         }
 
         public string Commit(string message)
@@ -74,12 +74,12 @@ namespace GxMcp.Worker.Services
             try
             {
                 dynamic kb = _kbService.GetKB();
-                if (kb == null) return "{\"error\": \"No KB open\"}";
+                if (kb == null) return "{\"status\":\"Error\",\"error\": \"No KB open\"}";
 
                 kb.VersionControl.Commit(message);
                 return "{\"status\": \"Success\"}";
             }
-            catch (Exception ex) { return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
+            catch (Exception ex) { return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
         }
     }
 }

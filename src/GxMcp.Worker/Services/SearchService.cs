@@ -421,7 +421,7 @@ namespace GxMcp.Worker.Services
 
                 return json;
             }
-            catch (Exception ex) { return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
+            catch (Exception ex) { return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
             finally
             {
                 sw.Stop();

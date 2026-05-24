@@ -28,7 +28,7 @@ namespace GxMcp.Worker.Services
                 Logger.Info($"GetNavigation START: {targetName}");
 
                 string nvgPath = FindNavigationFile(targetName);
-                if (nvgPath == null) return "{\"error\": \"Navigation report not found for '" + targetName + "'. Make sure the object is specified.\"}";
+                if (nvgPath == null) return "{\"status\":\"Error\",\"error\": \"Navigation report not found for '" + targetName + "'. Make sure the object is specified.\"}";
 
                 Logger.Info($"GetNavigation file resolved for {targetName}: {nvgPath}");
 
@@ -127,7 +127,7 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 Logger.Error($"GetNavigation ERROR for {targetName}: {ex.Message}");
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
         }
 

@@ -46,10 +46,10 @@ namespace GxMcp.Worker.Services
                         return "{\"status\": \"Success\"}";
                     } catch (Exception ex) {
                         sdkTrans.Rollback();
-                        return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                        return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
                     }
                 }
-            } catch (Exception ex) { return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
+            } catch (Exception ex) { return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
         }
 
         public string GetVisualStructure(string targetName)
@@ -93,7 +93,7 @@ namespace GxMcp.Worker.Services
                 return result.ToString();
             } catch (Exception ex) { 
                 Logger.Error($"[StructureService] Error loading visual structure: {ex.Message}\n{ex.StackTrace}");
-                return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; 
+                return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; 
             }
         }
 
@@ -133,7 +133,7 @@ namespace GxMcp.Worker.Services
                 };
                 return result.ToString();
             }
-            catch (Exception ex) { return "{\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
+            catch (Exception ex) { return "{\"status\":\"Error\",\"error\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
         }
 
         private void ExtractLogicItems(string source, JArray subs, JArray events)
