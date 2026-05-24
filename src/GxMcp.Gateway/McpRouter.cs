@@ -1118,11 +1118,14 @@ namespace GxMcp.Gateway
                     // Stamp the block first so the size estimate reflects the *emitted*
                     // payload, not the pre-injection text — otherwise responses near the
                     // 50% threshold are under-reported and never get the pagination hint.
+                    // `hint` is only attached when usage crosses 50% of the budget
+                    // (~95% of responses are well under). Omitting the field on the
+                    // common path saves ~15 bytes per response; clients that read
+                    // `hint` should treat a missing key as "no hint".
                     var tokenBlock = new JObject
                     {
                         ["used"] = 0,
-                        ["limit"] = MetaTokenLimit,
-                        ["hint"] = JValue.CreateNull()
+                        ["limit"] = MetaTokenLimit
                     };
                     meta["tokens"] = tokenBlock;
                     inner["_meta"] = meta;

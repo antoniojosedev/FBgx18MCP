@@ -26,12 +26,15 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void Hint_Null_Below_Half_Limit()
+        public void Hint_Omitted_Below_Half_Limit()
         {
+            // Perf cut: `hint` is now omitted (not null) when usage is under 50%
+            // of the budget. Saves ~15 bytes per response for the common case.
+            // Consumers should treat missing key the same as null.
             var tr = MakeToolResult("{\"status\":\"Success\"}");
             McpRouter.InjectMetaTokens(tr);
             var inner = JObject.Parse((string)tr["content"]![0]!["text"]!);
-            Assert.Equal(JTokenType.Null, inner["_meta"]!["tokens"]!["hint"]!.Type);
+            Assert.Null(inner["_meta"]!["tokens"]!["hint"]);
         }
 
         [Fact]
