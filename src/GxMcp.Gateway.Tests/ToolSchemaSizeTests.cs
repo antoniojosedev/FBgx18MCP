@@ -109,7 +109,11 @@ namespace GxMcp.Gateway.Tests
             //   2026-05-23 wave3 items 30/87/36/94: 9800 → 10200 for two new tools
             //   (genexus_build_plan, genexus_execution_history) + dependency_heatmap
             //   mode + format param on genexus_analyze.
-            Assert.True(approxTokens < 10200, $"tool_definitions.json is ~{approxTokens} tokens; budget 10200.");
+            //   2026-05-23 wave3 items 40/85/89/93/99: 10200 → 11800 for 5 new tools
+            //   (genexus_ocr_screenshot, genexus_pr_description, genexus_screenshot_publish,
+            //   genexus_friction_log, genexus_wcag_check) merged with item 35/53-98 stubs
+            //   that landed concurrently.
+            Assert.True(approxTokens < 11800, $"tool_definitions.json is ~{approxTokens} tokens; budget 11800.");
         }
     }
 }

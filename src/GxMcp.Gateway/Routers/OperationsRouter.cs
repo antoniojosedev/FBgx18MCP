@@ -297,6 +297,44 @@ namespace GxMcp.Gateway.Routers
                         outputPath = args?["outputPath"]?.ToString()
                     };
 
+                case "genexus_ocr_screenshot":
+                    return new { module = "Ocr", action = "Run", path = args?["path"]?.ToString() };
+
+                case "genexus_pr_description":
+                    return new
+                    {
+                        module = "PrDescription",
+                        action = "Generate",
+                        last = args?["last"]?.ToObject<int?>() ?? 10,
+                        workingDir = args?["workingDir"]?.ToString()
+                    };
+
+                case "genexus_screenshot_publish":
+                    return new { module = "ScreenshotPublish", action = "Publish", path = args?["path"]?.ToString() };
+
+                case "genexus_friction_log":
+                {
+                    string fAction = args?["action"]?.ToString();
+                    bool isTail = string.Equals(fAction, "tail", StringComparison.OrdinalIgnoreCase);
+                    return new
+                    {
+                        module = "FrictionLog",
+                        action = isTail ? "Tail" : "Append",
+                        tool = args?["tool"]?.ToString(),
+                        message = args?["message"]?.ToString(),
+                        severity = args?["severity"]?.ToString(),
+                        n = args?["n"]?.ToObject<int?>() ?? 20
+                    };
+                }
+
+                case "genexus_wcag_check":
+                    return new
+                    {
+                        module = "WcagCheck",
+                        action = "Check",
+                        target = args?["target"]?.ToString() ?? args?["name"]?.ToString()
+                    };
+
                 // Item 65 — genexus_orient welcome card
                 case "genexus_orient":
                     return new

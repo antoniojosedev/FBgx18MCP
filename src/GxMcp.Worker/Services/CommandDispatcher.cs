@@ -71,6 +71,11 @@ namespace GxMcp.Worker.Services
         private readonly ExplainService _explainService;
         private readonly GeneratedDiffService _generatedDiffService;
         private readonly KbReadmeService _kbReadmeService;
+        private readonly OcrScreenshotService _ocrScreenshotService;
+        private readonly PrDescriptionService _prDescriptionService;
+        private readonly ScreenshotPublishService _screenshotPublishService;
+        private readonly FrictionLogService _frictionLogService;
+        private readonly WcagCheckService _wcagCheckService;
         private readonly BlameService _blameService;
         private readonly KbExplorerService _kbExplorerService;
         private readonly NavigationViewService _navigationViewService;
@@ -149,6 +154,11 @@ namespace GxMcp.Worker.Services
             _explainService = new ExplainService(_kbService, _objectService);
             _generatedDiffService = new GeneratedDiffService(_kbService);
             _kbReadmeService = new KbReadmeService(_kbService, _indexCacheService);
+            _ocrScreenshotService = new OcrScreenshotService();
+            _prDescriptionService = new PrDescriptionService(_kbService);
+            _screenshotPublishService = new ScreenshotPublishService(_kbService);
+            _frictionLogService = new FrictionLogService(_kbService);
+            _wcagCheckService = new WcagCheckService(_objectService);
             _blameService = new BlameService(_kbService, _objectService);
             _kbExplorerService = new KbExplorerService(_objectService, _indexCacheService);
             _navigationViewService = new NavigationViewService(_navigationService, _kbService);
@@ -1125,6 +1135,39 @@ namespace GxMcp.Worker.Services
                         // Item 90 — Markdown README generation.
                         if (string.Equals(action, "Generate", StringComparison.OrdinalIgnoreCase))
                             return _kbReadmeService.Generate("generate", args?["outputPath"]?.ToString());
+                        break;
+                    case "ocr":
+                        if (string.Equals(action, "Run", StringComparison.OrdinalIgnoreCase))
+                            return _ocrScreenshotService.Run(args?["path"]?.ToString());
+                        break;
+                    case "prdescription":
+                        if (string.Equals(action, "Generate", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int last = args?["last"]?.ToObject<int?>() ?? 10;
+                            return _prDescriptionService.Generate(last, args?["workingDir"]?.ToString());
+                        }
+                        break;
+                    case "screenshotpublish":
+                        if (string.Equals(action, "Publish", StringComparison.OrdinalIgnoreCase))
+                            return _screenshotPublishService.Publish(args?["path"]?.ToString());
+                        break;
+                    case "frictionlog":
+                        if (string.Equals(action, "Append", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return _frictionLogService.Append(
+                                args?["tool"]?.ToString(),
+                                args?["message"]?.ToString(),
+                                args?["severity"]?.ToString());
+                        }
+                        if (string.Equals(action, "Tail", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int n = args?["n"]?.ToObject<int?>() ?? 20;
+                            return _frictionLogService.Tail(n);
+                        }
+                        break;
+                    case "wcagcheck":
+                        if (string.Equals(action, "Check", StringComparison.OrdinalIgnoreCase))
+                            return _wcagCheckService.Check(target ?? args?["target"]?.ToString() ?? args?["name"]?.ToString());
                         break;
                     case "preview":
                         if (action == "Render" || action == "Run")

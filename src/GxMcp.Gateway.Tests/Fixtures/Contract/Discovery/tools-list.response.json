@@ -1127,6 +1127,44 @@
       "name": "genexus_format"
     },
     {
+      "description": "Local friction journal under <kbPath>/.gx/friction.jsonl. action=append writes {atUtc,tool,message,severity}; action=tail returns last N entries.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "append",
+              "tail"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "n": {
+            "description": "Tail count (default 20, max 1000).",
+            "type": "integer"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "warn",
+              "error",
+              "critical"
+            ],
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_friction_log"
+    },
+    {
       "description": "Emit INSERT statements with fake-but-typed data for a Transaction. SQL only; not executed.",
       "inputSchema": {
         "properties": {
@@ -1747,6 +1785,22 @@
       "name": "genexus_navigation"
     },
     {
+      "description": "OCR a screenshot PNG. Stub: returns Unwired envelope until Tesseract.NET is added and GXMCP_OCR_ENGINE=tesseract is set.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Absolute path to a PNG.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_ocr_screenshot"
+    },
+    {
       "description": "Welcome card for a new session: KB name/path, last 5 edited objects, top 3 KB-applicable gotchas, top 5 most-used tools. Cheaper than whoami for mid-session context refresh.",
       "inputSchema": {
         "properties": {
@@ -1897,6 +1951,32 @@
         "type": "object"
       },
       "name": "genexus_properties"
+    },
+    {
+      "description": "Generate a structured PR description from the last N commits on the current branch via 'git log'. Returns {title, summary, why, changes:[...]}.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "generate"
+            ],
+            "type": "string"
+          },
+          "last": {
+            "description": "Commits to read (default 10, max 100).",
+            "type": "integer"
+          },
+          "workingDir": {
+            "description": "Override repo root (defaults to active KB path).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_pr_description"
     },
     {
       "description": "Search objects in the active KB. Supports prefixes (type:, usedby:, parent:, parentPath:, description:). Compact projection by default. See genexus://kb/tool-help/genexus_query for examples.",
@@ -2096,6 +2176,22 @@
         "type": "object"
       },
       "name": "genexus_run_object"
+    },
+    {
+      "description": "Publish (copy) a screenshot PNG to <kbPath>/.gx/published-screenshots/<UTC>-<basename>. Local only — no remote upload.",
+      "inputSchema": {
+        "properties": {
+          "path": {
+            "description": "Absolute path to a PNG inside the workspace.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_screenshot_publish"
     },
     {
       "description": "Dump SDK surface (types/methods/props) to docs/sdk-probe/. Use when hunting for entry points.",
@@ -2378,6 +2474,26 @@
         "type": "object"
       },
       "name": "genexus_validate_payload"
+    },
+    {
+      "description": "WCAG-shaped sanity checks on a WebPanel's CaptionExpression/Tooltip values. Flags empty-caption-with-tooltip, caption>80 chars, HTML in plain-text captions. No contrast check.",
+      "inputSchema": {
+        "properties": {
+          "kb": {
+            "description": "KB alias (multi-KB only).",
+            "type": "string"
+          },
+          "target": {
+            "description": "WebPanel name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_wcag_check"
     },
     {
       "description": "KB context + version + playbooks. Call FIRST every session — playbooks block routes you to the right tool.",
