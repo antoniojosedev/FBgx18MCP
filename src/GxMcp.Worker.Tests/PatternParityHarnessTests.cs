@@ -110,7 +110,7 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(5, report.Dimensions.Count);
         }
 
-        [LiveKbFact(requiresWWP: true)]
+        [LiveKbFact(requiresWWP: true, requiresParityFixture: true)]
         public void Integration_ParityProbe_GeneratesReportToTempPath()
         {
             // Driven by env: GXMCP_TEST_KB + GXMCP_PARITY_MCP_NAME + GXMCP_PARITY_IDE_NAME.

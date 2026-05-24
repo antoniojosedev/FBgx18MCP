@@ -21,16 +21,32 @@ namespace GxMcp.Gateway.Tests
     //   #10 apply_pattern on non-eligible type → rejected in <500ms
     //   #17 apply_pattern { validate: true } → real build envelope, requires WWP
     [Trait("Category", "LiveE2E")]
-    public class E2ELiveSmokeTests
+    public class E2ELiveSmokeTests : IClassFixture<LiveGatewayHarness>, IAsyncLifetime
     {
+        // v2.6.9 — share one harness across all tests in the class. Each test
+        // previously spawned + killed its own gateway/worker which left shared
+        // SDK state (KB lock, COM registration) that crashed the next worker
+        // boot mid-cycle. The fixture pattern is also more representative of
+        // real MCP usage (one long-lived gateway, many tool calls).
+        private readonly LiveGatewayHarness _h;
+        private bool _initialized;
+
+        public E2ELiveSmokeTests(LiveGatewayHarness h) { _h = h; }
+
+        public async Task InitializeAsync()
+        {
+            if (_initialized) return;
+            await _h.InitializeAsync();
+            _initialized = true;
+        }
+
+        public Task DisposeAsync() => Task.CompletedTask;
+
         [LiveKbFact]
         public async Task Whoami_BaselineUnder500ms_AndCarriesPlaybooks()
         {
-            using var h = new LiveGatewayHarness();
-            await h.InitializeAsync();
-
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            var resp = await h.CallToolAsync("genexus_whoami", new JObject());
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+            var resp = await _h.CallToolAsync("genexus_whoami", new JObject());
             sw.Stop();
             var payload = LiveGatewayHarness.ParseToolPayload(resp);
 
@@ -44,11 +60,8 @@ namespace GxMcp.Gateway.Tests
         [LiveKbFact]
         public async Task AnalyzeExplain_ReturnsNotImplemented_NotStubResponse()
         {
-            using var h = new LiveGatewayHarness();
-            await h.InitializeAsync();
-
-            // Pick any procedure as the analyze target.
-            var list = await h.CallToolAsync("genexus_list_objects", new JObject
+                        // Pick any procedure as the analyze target.
+            var list = await _h.CallToolAsync("genexus_list_objects", new JObject
             {
                 ["typeFilter"] = "Procedure",
                 ["limit"] = 1
@@ -58,7 +71,7 @@ namespace GxMcp.Gateway.Tests
                            ?? listPayload?["items"]?[0]?["name"]?.ToString();
             Assert.False(string.IsNullOrEmpty(procName), "KB must contain at least one procedure");
 
-            var resp = await h.CallToolAsync("genexus_analyze", new JObject
+            var resp = await _h.CallToolAsync("genexus_analyze", new JObject
             {
                 ["name"] = procName,
                 ["mode"] = "explain",
@@ -77,10 +90,7 @@ namespace GxMcp.Gateway.Tests
         [LiveKbFact]
         public async Task Query_DoesNotPullIndexObjects_AndCarriesMatchQuality()
         {
-            using var h = new LiveGatewayHarness();
-            await h.InitializeAsync();
-
-            var resp = await h.CallToolAsync("genexus_query", new JObject
+                        var resp = await _h.CallToolAsync("genexus_query", new JObject
             {
                 ["query"] = "Country",
                 ["limit"] = 20
@@ -100,11 +110,8 @@ namespace GxMcp.Gateway.Tests
         [LiveKbFact]
         public async Task Read_InvalidPart_ErrorHintsAvailableParts()
         {
-            using var h = new LiveGatewayHarness();
-            await h.InitializeAsync();
-
-            // Find a procedure so we know which parts are valid.
-            var list = await h.CallToolAsync("genexus_list_objects", new JObject
+                        // Find a procedure so we know which parts are valid.
+            var list = await _h.CallToolAsync("genexus_list_objects", new JObject
             {
                 ["typeFilter"] = "Procedure",
                 ["limit"] = 1
@@ -113,7 +120,7 @@ namespace GxMcp.Gateway.Tests
                            ?? LiveGatewayHarness.ParseToolPayload(list)?["items"]?[0]?["name"]?.ToString();
             Assert.False(string.IsNullOrEmpty(procName));
 
-            var resp = await h.CallToolAsync("genexus_read", new JObject
+            var resp = await _h.CallToolAsync("genexus_read", new JObject
             {
                 ["name"] = procName,
                 ["part"] = "BogusZzz"
@@ -133,10 +140,7 @@ namespace GxMcp.Gateway.Tests
         [LiveKbFact]
         public async Task Navigation_NoForEachBlocks_ReturnsNoNavigationBlocksStatus()
         {
-            using var h = new LiveGatewayHarness();
-            await h.InitializeAsync();
-
-            var list = await h.CallToolAsync("genexus_list_objects", new JObject
+                        var list = await _h.CallToolAsync("genexus_list_objects", new JObject
             {
                 ["typeFilter"] = "Procedure",
                 ["limit"] = 5
@@ -150,7 +154,7 @@ namespace GxMcp.Gateway.Tests
             foreach (var item in items ?? new JArray())
             {
                 string name = item["name"]?.ToString();
-                var nav = await h.CallToolAsync("genexus_analyze", new JObject
+                var nav = await _h.CallToolAsync("genexus_analyze", new JObject
                 {
                     ["name"] = name,
                     ["mode"] = "navigation"
@@ -173,10 +177,7 @@ namespace GxMcp.Gateway.Tests
         {
             // Item #10 — non-eligible types must be rejected upfront (<500ms)
             // with the validParentTypes routing hint.
-            using var h = new LiveGatewayHarness();
-            await h.InitializeAsync();
-
-            var list = await h.CallToolAsync("genexus_list_objects", new JObject
+                        var list = await _h.CallToolAsync("genexus_list_objects", new JObject
             {
                 ["typeFilter"] = "Procedure",
                 ["limit"] = 1
@@ -186,7 +187,7 @@ namespace GxMcp.Gateway.Tests
             Assert.False(string.IsNullOrEmpty(proc));
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var resp = await h.CallToolAsync("genexus_apply_pattern", new JObject
+            var resp = await _h.CallToolAsync("genexus_apply_pattern", new JObject
             {
                 ["name"] = proc,
                 ["pattern"] = "WorkWithPlus"
@@ -209,10 +210,7 @@ namespace GxMcp.Gateway.Tests
             // Tagged requiresWWP since direct-attach needs the WorkWithPlus
             // license. The disposable name is logged so the user can clean up
             // in the IDE if the test crashes before deletion.
-            using var h = new LiveGatewayHarness();
-            await h.InitializeAsync();
-
-            // v2.6.9 — `Substring(0, 6)` previously sliced the HIGH-order hex digits
+                        // v2.6.9 — `Substring(0, 6)` previously sliced the HIGH-order hex digits
             // of Ticks, which change slowly (~hours). Two test runs in the same
             // window collided on the same disposable name, and the second run
             // failed at create_object with "Web Panel already exists". Take the
@@ -222,7 +220,7 @@ namespace GxMcp.Gateway.Tests
             string stamp = ticksHex.Substring(ticksHex.Length - 6).ToLowerInvariant();
             string wp = "TestVldWp" + stamp;
 
-            var create = await h.CallToolAsync("genexus_create_object", new JObject
+            var create = await _h.CallToolAsync("genexus_create_object", new JObject
             {
                 ["type"] = "WebPanel",
                 ["name"] = wp
@@ -238,7 +236,7 @@ namespace GxMcp.Gateway.Tests
                     + (createPayload?.ToString(Newtonsoft.Json.Formatting.None) ?? "<null>"));
             }
 
-            var apply = await h.CallToolAsync("genexus_apply_pattern", new JObject
+            var apply = await _h.CallToolAsync("genexus_apply_pattern", new JObject
             {
                 ["name"] = wp,
                 ["pattern"] = "WorkWithPlus",

@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
+using Xunit;
 
 namespace GxMcp.Gateway.Tests
 {
@@ -13,20 +14,37 @@ namespace GxMcp.Gateway.Tests
     // [LiveKbFact]. Mirrors the JSON-RPC driver used by scripts under
     // scratch/usability_probe.js etc., but in C# so xunit can run it.
     //
-    // Lifecycle: ctor spawns the process and runs initialize. Call() sends a
-    // tools/call request and awaits the matching response. Dispose closes stdin
-    // and gives the process 500ms before killing it.
-    internal sealed class LiveGatewayHarness : IDisposable
+    // Lifecycle: ctor spawns the process; IAsyncLifetime.InitializeAsync runs
+    // the JSON-RPC initialize. Call() sends a tools/call request and awaits
+    // the matching response. DisposeAsync closes stdin and gives the process
+    // a graceful 2s before killing it (worker needs time to release the KB
+    // lock; a 500ms kill leaves shared SDK state that crashes the next spawn).
+    //
+    // v2.6.9 — exposed as public so the test class can take it via
+    // IClassFixture<LiveGatewayHarness>. Rapid per-test spawn cycles were
+    // crashing the worker mid-boot on the next test ("Worker for KB
+    // 'academicohomolog1' crashed/exited"); sharing the harness across all
+    // tests in a class is the canonical xunit pattern for expensive resources.
+    public sealed class LiveGatewayHarness : IAsyncLifetime, IDisposable
     {
-        private readonly Process _process;
+        private Process? _process;
         private readonly ConcurrentDictionary<int, TaskCompletionSource<JObject>> _pending = new();
         private int _nextId = 1;
         private readonly StringBuilder _stderrBuf = new StringBuilder();
+        private bool _initialized;
 
         public LiveGatewayHarness()
         {
             // Resolve the published gateway from the repo root. We walk up from
             // the test bin directory because xunit copies bins to bin/Debug/...
+            // Skip spawn entirely when GXMCP_TEST_KB is not set: IClassFixture
+            // instances are constructed for every test class regardless of whether
+            // any [LiveKbFact] inside actually runs, and spawning a doomed
+            // gateway here just wastes ~5s per class on CI.
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GXMCP_TEST_KB")))
+            {
+                return;
+            }
             string exe = LocatePublishedGateway()
                 ?? throw new InvalidOperationException(
                     "Published Gateway not found. Run build.ps1 before running LiveKbFact tests.");
@@ -69,6 +87,8 @@ namespace GxMcp.Gateway.Tests
 
         public async Task InitializeAsync()
         {
+            if (_initialized) return; // IClassFixture: only initialize once per class
+            if (_process == null) return; // GXMCP_TEST_KB unset: harness is a no-op
             var init = await RpcAsync("initialize", new JObject
             {
                 ["protocolVersion"] = "2024-11-05",
@@ -81,7 +101,14 @@ namespace GxMcp.Gateway.Tests
             SendNotification("notifications/initialized", new JObject());
             // Allow worker bootstrap to settle (BulkIndex etc.)
             await Task.Delay(5000);
+            _initialized = true;
         }
+
+        // IAsyncLifetime contract — xunit calls this once when the fixture is
+        // torn down. Currently a no-op (Dispose handles the heavy lifting);
+        // kept here so future async cleanup (e.g. waiting for in-flight writes
+        // to flush) has a hook to grow into without breaking callers.
+        public Task DisposeAsync() => Task.CompletedTask;
 
         public async Task<JObject> CallToolAsync(string name, JObject args, int timeoutMs = 240_000)
         {
@@ -108,6 +135,8 @@ namespace GxMcp.Gateway.Tests
 
         private async Task<JObject> RpcAsync(string method, JObject @params, int timeoutMs)
         {
+            if (_process == null)
+                throw new InvalidOperationException("LiveGatewayHarness has no process — GXMCP_TEST_KB was not set when the fixture was constructed.");
             int id = Interlocked.Increment(ref _nextId);
             var tcs = new TaskCompletionSource<JObject>();
             _pending[id] = tcs;
@@ -132,6 +161,7 @@ namespace GxMcp.Gateway.Tests
 
         private void SendNotification(string method, JObject @params)
         {
+            if (_process == null) return;
             var env = new JObject
             {
                 ["jsonrpc"] = "2.0",
@@ -156,10 +186,15 @@ namespace GxMcp.Gateway.Tests
 
         public void Dispose()
         {
+            if (_process == null) return;
             try
             {
                 _process.StandardInput.Close();
-                if (!_process.WaitForExit(500)) _process.Kill();
+                // 2s grace lets the worker release the KB lock + drain its
+                // EditSnapshotStore writes. 500ms was too aggressive — the
+                // shared SDK state outlived the kill and crashed the next
+                // spawn on rapid test-class cycles.
+                if (!_process.WaitForExit(2000)) _process.Kill();
             }
             catch { }
             _process.Dispose();
