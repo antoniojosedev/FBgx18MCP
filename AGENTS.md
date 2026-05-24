@@ -145,6 +145,29 @@ Discoverable via `tools/list`; full schema in `src/GxMcp.Gateway/tool_definition
 - **`genexus_preview action=run`** — F5 launcher. Resolves the KB's startup object via `KbService.GetLauncherObjectName` (`StartupObject` env property → `DefaultObject` fallback) and opens it in the headless bridge. No `target` argument required.
 - **`genexus_analyze mode=parent_context target=<webpanel>`** — popup-vs-standalone classification. Returns `{ openedAs: "popup"|"standalone", hint }` so the agent knows whether the panel was generated for `genexus_create_popup` or as a top-level screen. The same `popupHint` is inlined into the create_popup response so both sides agree on the first call.
 
+## Tool playbook — v2.6.9 additions (Wave 3 + Futures-promoted)
+
+These 18 tools graduated from `DEFERRED`/`Future` stubs into live services. Each is a 2-line orientation; full schema lives in `tool_definitions.json`.
+
+- **`genexus_tutorial step=N`** — static 6-step walkthrough (orient → list → inspect → read → edit → build). Call once on a fresh session; returns `{title, narrative, suggestedCall, next}`. No KB state.
+- **`genexus_watch_event target=<obj> event=<name>`** — filters the in-memory `OperationTracker` for runs against `target` whose payload mentions `event`. Returns `{runs:[…]}`. Not a runtime breakpoint; resets on gateway restart.
+- **`genexus_learning action=report`** — aggregates `.gx/friction.jsonl` (written by `genexus_friction_log`) into `{totalEntries, byTool[], byCode[], severityHistogram}`. Read-only; pair with `genexus_friction_log action=tail` for raw lines.
+- **`genexus_sd_panel action=inspect|create|edit name=<sdpanel>`** — type-locked SDPanel entry for mobile-first agents. Rejects non-SDPanel targets. Returns the underlying envelope tagged `kind="SDPanel"`.
+- **`genexus_multi_agent_lock action=acquire|release|status target=<obj> ownerId=<id>`** — advisory file lock per `(kbPath, target, part)` under `.gx/locks`. Auto-expires after `ttlSec` (default 300, max 86400). Use before edits when multiple agents may collide.
+- **`genexus_what_if change={kind,target,attribute,oldType,newType}`** — read-only impact preview. Walks `ImpactAnalysis` callers + source-substring scan; cross-family type swaps (Numeric ↔ Character) flagged as breaks. Returns `{breaks[], probably_safe[], unknown[]}`.
+- **`genexus_voice transcript="add button called Save"`** — maps NL transcripts to a suggested tool call via built-in regex intents (add button, rename X to Y, build all, screenshot X, list transactions, …). Returns `{matched, dispatchedTool, dispatchedArgs}`. Agent confirms; no dispatch.
+- **`genexus_ai_complete context=<prompt>`** — forwards the prompt to an OpenAI-compatible chat endpoint (env `GXMCP_AI_COMPLETE_URL`/`_KEY`/`_MODEL`). Returns `{completion, tokensIn, tokensOut, model}` or `{code:"AiEndpointNotConfigured"}` when env unset.
+- **`genexus_time_travel name=<obj> at=<ISO-or-sha>`** — recovers an object's part bytes from a past git commit. `at=<ISO>` resolves to most-recent commit ≤ timestamp; `at=<sha>` is direct. Read-only; returns `{recoveredFromCommit, parts:[{path,content}]}` or `KbNotInGit`.
+- **`genexus_auto_test action=generate_from_prod_log path=<jsonl>`** — reads `{atUtc,tool,target,params}` lines, dedupes by tool×target, emits GXtest stub source. Returns `{linesRead, stubsGenerated:[{name,source}], skipped[]}`. Nothing written to the KB.
+- **`genexus_reverse_pattern action=infer source=[X,Y,…]`** — intersects variables / events / parm-signatures across ≥2 objects to flag pattern candidates. Returns `{commonVariables[], commonEvents[], commonParmSignature, divergencePoints[], hint}`. Does NOT emit a real pattern.
+- **`genexus_cross_browser target=<webpanel>`** — resolves the runtime URL once, then renders in chrome (via `chrome-devtools-axi`) and firefox/webkit (via `npx playwright`) in parallel. Returns `{url, results:[{browser,ok,screenshotPath,consoleErrors,ms}], anyFailed}`. Per-browser `{skipped:true,code:"BrowserDriverUnavailable"}` when a driver is missing.
+- **`genexus_rename_across_kb from=<name> to=<name> type=Attribute?`** — KB-wide rename. Patches every call-site found via the index's `CalledBy` edges by routing through `RefactorService.Rename{Object|Attribute}`. Returns the standard refactor envelope with patched-site count.
+- **`genexus_kb_diff kbA=<alias-or-path> kbB=<alias-or-path>`** — gateway-side filesystem diff between two KB roots. Walks `Objects/<Type>/<Name>/`; no SDK touch. Returns `{onlyInA[], onlyInB[], modified[]}`. For SDK-level inspection use `genexus_inspect`.
+- **`genexus_worker_pool action=warm_spares spareCount=N`** — gateway lifecycle knob: pre-spawns N warm workers bound to declared KBs so the first KB-bound call doesn't pay cold-start. `spareCount<=0` disables; capped at 5. Returns `{status, spareCount, configured}`.
+- **`genexus_sandbox action=create from=<alias> name=<id>`** — gateway-side filesystem clone of a KB to `<configRoot>/sandboxes/<name>/` for throwaway edits. `action=remove` is idempotent; `overwrite=true` replaces. Returns `{status, path, filesCopied, bytesCopied, alias}`. Open the sandbox with `genexus_kb action=open path=<path> alias=sandbox-<name>`.
+- **`genexus_github action=create_pr title=<t> body=<b>`** — shells out to the `gh` CLI from the KB path (or `workingDir`). Returns `{status, url}` on success, `{code:"GhCliNotInstalled"}` when the CLI is missing, or `{code:"GhExitNonZero", exitCode, stderr}`.
+- **`genexus_kb_import from=<alias> name=<obj> type=<TypeName>`** — gateway-side filesystem copy of one object's part files from another KB into the active KB. Dependencies NOT resolved. Returns `{status, filesCopied, targetDir}`. Must run `genexus_lifecycle action=index force=true` afterwards to make the imported object discoverable.
+
 ## Release discipline
 
 - Before any release (`./release.ps1`, tag, or GitHub Release), update

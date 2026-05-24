@@ -46,7 +46,7 @@
       "name": "genexus_add_variable"
     },
     {
-      "description": "Forward a code-completion prompt to an OpenAI-compatible endpoint (env: GXMCP_AI_COMPLETE_URL, GXMCP_AI_COMPLETE_KEY). Returns the completion + token usage, or AiEndpointNotConfigured if env unset.",
+      "description": "Forward a prompt to an OpenAI-compatible endpoint (env GXMCP_AI_COMPLETE_URL/_KEY/_MODEL). Returns {completion,tokensIn,tokensOut,model} or AiEndpointNotConfigured/AiEndpointError.",
       "inputSchema": {
         "properties": {
           "context": {
@@ -254,7 +254,7 @@
       "name": "genexus_asset"
     },
     {
-      "description": "Generate GXtest stubs from a JSONL log of past invocations (one {atUtc,tool,target,params} per line). Returns the generated source; nothing is written to the KB.",
+      "description": "Seed GXtest stubs from past invocations. Reads JSONL ({atUtc,tool,target,params}/line), dedupes by tool×target. Returns {linesRead,stubsGenerated:[{name,source}],skipped[]}. No KB write.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -559,7 +559,7 @@
       "name": "genexus_create_popup"
     },
     {
-      "description": "Render the target in chrome (via chrome-devtools-axi) and firefox/webkit (via npx playwright) in parallel; capture per-browser screenshot + console errors. Missing drivers → per-browser skipped envelope; other browsers still run.",
+      "description": "Verify a WebPanel across engines. Runs chrome (chrome-devtools-axi) + firefox/webkit (npx playwright) in parallel. Returns {url,results:[{browser,ok,screenshotPath,consoleErrors,ms}],anyFailed}.",
       "inputSchema": {
         "properties": {
           "browsers": {
@@ -1282,7 +1282,7 @@
       "name": "genexus_generate_sample_data"
     },
     {
-      "description": "Create a GitHub PR via the `gh` CLI. Returns the PR URL on success, or GhCliNotInstalled.",
+      "description": "Open a PR after pushing a branch. Shells `gh pr create` from KB path (or workingDir). Returns {status,url} or {code:'GhCliNotInstalled'}.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1497,7 +1497,7 @@
       "name": "genexus_kb"
     },
     {
-      "description": "Object-index diff between two KBs at the filesystem level (no SDK). Walks Objects/<Type>/<Name>/; returns {onlyInA, onlyInB, modified[]}.",
+      "description": "Compare two KBs without opening them. Filesystem walk of Objects/<Type>/<Name>/, no SDK. Returns {onlyInA[],onlyInB[],modified[]}.",
       "inputSchema": {
         "properties": {
           "kbA": {
@@ -1509,6 +1509,10 @@
             "type": "string"
           }
         },
+        "required": [
+          "kbA",
+          "kbB"
+        ],
         "type": "object"
       },
       "name": "genexus_kb_diff"
@@ -1541,7 +1545,7 @@
       "name": "genexus_kb_explorer"
     },
     {
-      "description": "Filesystem-level import of an object's part files from another KB into the active KB. Limited: dependencies NOT resolved. Run genexus_lifecycle action=index force=true afterwards.",
+      "description": "Copy one object's part files from another KB into the active KB. Dependencies NOT resolved. Returns {status,filesCopied,targetDir}. Run genexus_lifecycle action=index force=true after.",
       "inputSchema": {
         "properties": {
           "from": {
@@ -1560,6 +1564,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "from",
+          "name",
+          "type"
+        ],
         "type": "object"
       },
       "name": "genexus_kb_import"
@@ -1677,7 +1686,7 @@
       "name": "genexus_layout"
     },
     {
-      "description": "Aggregate <kbPath>/.gx/friction.jsonl into a summary: top friction tools, common error codes, severity histogram. Read-only.",
+      "description": "Aggregate friction.jsonl (written by genexus_friction_log). Read-only. Returns {totalEntries,byTool[],byCode[],severityHistogram}. Pair with friction_log action=tail for raw lines.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1951,7 +1960,7 @@
       "name": "genexus_modify_variable"
     },
     {
-      "description": "File-based advisory lock per (kbPath,target,part) under <kbPath>/.gx/locks. Auto-expires when atUtc+ttlSec passes.",
+      "description": "Advisory file lock per (kbPath,target,part) under .gx/locks. Use before editing when multiple agents may collide. Auto-expires after ttlSec. Returns {status,held,holder,path}.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -2380,7 +2389,7 @@
       "name": "genexus_refactor"
     },
     {
-      "description": "Rename an object or attribute KB-wide. Renames the target and patches every call-site found via the index's CalledBy edges. Pass type=Attribute for attributes; defaults to non-attribute object rename.",
+      "description": "Rename object/attribute and patch every call-site via CalledBy edges. Routes through RefactorService Rename{Object|Attribute}. Returns standard refactor envelope with patched-site count.",
       "inputSchema": {
         "properties": {
           "from": {
@@ -2400,12 +2409,16 @@
             "type": "string"
           }
         },
+        "required": [
+          "from",
+          "to"
+        ],
         "type": "object"
       },
       "name": "genexus_rename_across_kb"
     },
     {
-      "description": "Identify structural commonalities (shared variables, events, parm signatures) across N similar objects. Doesn't generate a real pattern — flags candidates for one.",
+      "description": "Spot whether N similar objects share enough structure to justify a pattern. Intersects vars/events/parm-sigs. Returns {commonVariables[],commonEvents[],commonParmSignature,divergencePoints[],hint}.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -2469,7 +2482,7 @@
       "name": "genexus_run_object"
     },
     {
-      "description": "Filesystem clone of a KB to <configRoot>/sandboxes/<name>/ for sandboxed edits. action=create copies (overwrite=true replaces); action=remove deletes idempotently.",
+      "description": "Copy a KB to <configRoot>/sandboxes/<name>/ for throwaway edits. create needs from+name; remove idempotent. Returns {status,path,filesCopied,bytesCopied,alias}.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -2480,7 +2493,7 @@
             "type": "string"
           },
           "from": {
-            "description": "Source KB alias or path (create only).",
+            "description": "Source KB alias or path (required for create).",
             "type": "string"
           },
           "name": {
@@ -2491,6 +2504,10 @@
             "type": "boolean"
           }
         },
+        "required": [
+          "action",
+          "name"
+        ],
         "type": "object"
       },
       "name": "genexus_sandbox"
@@ -2567,7 +2584,7 @@
       "name": "genexus_sdk_probe"
     },
     {
-      "description": "SDPanel-typed entry point: inspect|create|edit. Resolves target as SDPanel and tags response with kind='SDPanel'.",
+      "description": "Type-locked SDPanel entry: inspect/create/edit. Rejects non-SDPanel targets. Returns the underlying envelope tagged kind='SDPanel'.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -2600,7 +2617,8 @@
           }
         },
         "required": [
-          "action"
+          "action",
+          "name"
         ],
         "type": "object"
       },
@@ -2806,7 +2824,7 @@
       "name": "genexus_test"
     },
     {
-      "description": "Recover an object's part bytes from a git history point. at=<ISO> resolves to the most-recent commit <= that timestamp; at=<sha> uses the commit directly. Read-only — no KB write.",
+      "description": "Recover an object's part bytes from a past git commit. at=<ISO> resolves most-recent commit <= timestamp; at=<sha> direct. Read-only; returns {recoveredFromCommit,parts:[{path,content}]} or KbNotInGit.",
       "inputSchema": {
         "properties": {
           "at": {
@@ -2856,11 +2874,11 @@
       "name": "genexus_translations"
     },
     {
-      "description": "Step-by-step onboarding walkthrough. Static deterministic content; each step returns title + narrative + suggested next call.",
+      "description": "Bootstrap a brand-new agent. Static 6-step walkthrough (orient → list → inspect → read → edit → build). Returns {stepNumber,title,narrative,suggestedCall,next}.",
       "inputSchema": {
         "properties": {
           "step": {
-            "description": "Step number (1-based).",
+            "description": "Step number (1-based, 1..6).",
             "type": "integer"
           }
         },
@@ -2916,7 +2934,7 @@
       "name": "genexus_validate_payload"
     },
     {
-      "description": "Map a natural-language transcript to a tool call via built-in regex intents. Returns the suggested {dispatchedTool, dispatchedArgs} without invoking — the agent confirms.",
+      "description": "Map an NL transcript (e.g. 'add button called Save', 'rename X to Y') to a suggested tool call via regex intents. Returns {matched,dispatchedTool,dispatchedArgs}. Agent confirms; no dispatch.",
       "inputSchema": {
         "properties": {
           "transcript": {
@@ -2931,7 +2949,7 @@
       "name": "genexus_voice"
     },
     {
-      "description": "Proxy view of edits/runs/lifecycle ops against target whose payload mentions the named event. Reads in-memory OperationTracker; resets on gateway restart. Not a source-level breakpoint.",
+      "description": "Filter recent edits/runs/lifecycle ops on target whose payload mentions an event name. In-memory OperationTracker; returns {runs:[{atUtc,tool,params,outcome}]}. Not a runtime breakpoint.",
       "inputSchema": {
         "properties": {
           "event": {
@@ -2976,7 +2994,7 @@
       "name": "genexus_wcag_check"
     },
     {
-      "description": "Simulate a typed change (e.g. attribute type) and categorise callers as breaks / probably_safe / unknown. Strictly read-only.",
+      "description": "Preview impact of a typed change (e.g. attribute swap). Walks impact graph + source scan; cross-family swaps flagged. Returns {breaks[],probably_safe[],unknown[]}. Read-only.",
       "inputSchema": {
         "properties": {
           "change": {
@@ -3004,7 +3022,7 @@
       "name": "genexus_whoami"
     },
     {
-      "description": "Pre-spawn N warm workers bound to declared KBs so the first call doesn't pay cold-start. spareCount<=0 disables; capped at 5.",
+      "description": "Pre-spawn N warm workers bound to declared KBs to skip cold-start. Returns {status,spareCount,configured}. spareCount<=0 disables; capped at 5.",
       "inputSchema": {
         "properties": {
           "action": {
