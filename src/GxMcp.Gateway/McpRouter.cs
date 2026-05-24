@@ -908,7 +908,7 @@ namespace GxMcp.Gateway
                 "3. For list/read operations, always set `limit`/`offset`; prefer narrow, paginated requests.\n" +
                 "4. For `genexus_query` and `genexus_list_objects`, use `fields` or `axiCompact=true` to reduce tokens.\n" +
                 "5. Parse MCP tool payload from `result.content[0].text` as JSON.\n" +
-                "6. Expect additive metadata: `meta.schemaVersion=mcp-axi/2`, `meta.tool`, plus collection helpers (`returned`, `total`, `empty`, `hasMore`, `nextOffset`) when inferable.\n" +
+                "6. `schemaVersion=mcp-axi/2` is emitted once at `initialize` (`_meta.schemaVersion`), not per response. Expect additive metadata on responses: collection helpers (`returned`, `total`, `empty`, `hasMore`, `nextOffset`) when inferable, and `meta.{truncated,fields,totalByType}` when relevant.\n" +
                 "7. If `result.isError=true` and `operationId` is present, treat as running operation and poll `genexus_lifecycle(action='status'|'result', target='op:<operationId>')`.\n" +
                 "8. For safe mutation flows, use patch `dryRun` first, then apply and re-read for persistence confirmation.\n\n" +
                 "Recommended bootstrap sequence:\n" +

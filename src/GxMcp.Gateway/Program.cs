@@ -3549,10 +3549,12 @@ namespace GxMcp.Gateway
             }
 
             var obj = (JObject)sourceObj.DeepClone();
+            // Per-response meta is intentionally lean: `schemaVersion` is emitted
+            // once in the `initialize` handshake (`_meta.schemaVersion`) and the
+            // client already knows which tool it called, so neither field is
+            // repeated per response (~60B/response saved). Only emit `meta` when
+            // a real signal (truncated/fields/totalByType/…) gets attached below.
             var meta = obj["meta"] as JObject ?? new JObject();
-            meta["schemaVersion"] = McpAxiSchemaVersion;
-            meta["tool"] = toolName;
-            obj["meta"] = meta;
             HashSet<string>? requestedFields = ParseRequestedFields(toolArgs);
             // Friction 2026-05-22 #64: projection=minimal|standard|verbose lets the
             // agent opt into a smaller or larger field set without having to enumerate
@@ -3654,6 +3656,18 @@ namespace GxMcp.Gateway
                 }
 
                 break;
+            }
+
+            // Only emit a `meta` block when at least one signal was attached;
+            // an empty `{}` is pure overhead for the 90% of responses that have
+            // no truncation/projection/totals to surface.
+            if (meta.Properties().Any())
+            {
+                obj["meta"] = meta;
+            }
+            else
+            {
+                obj.Remove("meta");
             }
 
             return obj;

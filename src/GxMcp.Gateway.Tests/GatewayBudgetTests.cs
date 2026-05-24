@@ -182,8 +182,9 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(normalized);
 
             var obj = Assert.IsType<JObject>(normalized);
-            Assert.Equal("mcp-axi/2", obj["meta"]?["schemaVersion"]?.ToString());
-            Assert.Equal("genexus_query", obj["meta"]?["tool"]?.ToString());
+            // schemaVersion/tool no longer duplicated per response — see initialize handshake.
+            Assert.Null(obj["meta"]?["schemaVersion"]);
+            Assert.Null(obj["meta"]?["tool"]);
             Assert.Equal(2, obj["returned"]?.Value<int>());
             Assert.Equal(3, obj["total"]?.Value<int>());
             Assert.False(obj["empty"]?.Value<bool>() ?? true);
@@ -211,7 +212,8 @@ namespace GxMcp.Gateway.Tests
 
             var obj = Assert.IsType<JObject>(normalized);
             Assert.True(obj["noChange"]?.Value<bool>() ?? false);
-            Assert.Equal("mcp-axi/2", obj["meta"]?["schemaVersion"]?.ToString());
+            // schemaVersion is now emitted once at initialize, not per-response.
+            Assert.Null(obj["meta"]?["schemaVersion"]);
         }
 
         [Fact]
@@ -353,8 +355,9 @@ namespace GxMcp.Gateway.Tests
             var normalized = (JToken?)method!.Invoke(null, new object?[] { payload, "genexus_list_objects", args, false });
             var obj = Assert.IsType<JObject>(normalized);
 
-            Assert.Equal("mcp-axi/2", obj["meta"]?["schemaVersion"]?.ToString());
-            Assert.Equal("genexus_list_objects", obj["meta"]?["tool"]?.ToString());
+            // schemaVersion/tool no longer duplicated per response — see initialize handshake.
+            Assert.Null(obj["meta"]?["schemaVersion"]);
+            Assert.Null(obj["meta"]?["tool"]);
             Assert.Equal(2, obj["returned"]?.Value<int>());
             Assert.False(obj["empty"]?.Value<bool>() ?? true);
             Assert.True(obj["results"] is JArray);
