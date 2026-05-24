@@ -1008,6 +1008,20 @@
     {
       "description": "Semantic WebForm edits. Actions: add_textblock, add_button, set_visibility, remove_control, wrap_in_fieldset.",
       "inputSchema": {
+        "examples": [
+          {
+            "action": "add_button",
+            "caption": "Confirmar",
+            "event": "OnConfirm",
+            "name": "WPMain"
+          },
+          {
+            "action": "set_visibility",
+            "controlId": "GrpDetail",
+            "name": "WPMain",
+            "visible": false
+          }
+        ],
         "properties": {
           "action": {
             "enum": [
@@ -2333,6 +2347,17 @@
     {
       "description": "Step-by-step playbook for a named flow ('wwp_on_transaction', 'create_popup', etc.). name='list' to enumerate. Pass 'name@v1' to pin a specific version (latest otherwise).",
       "inputSchema": {
+        "examples": [
+          {
+            "name": "list"
+          },
+          {
+            "name": "wwp_on_transaction"
+          },
+          {
+            "name": "popup_blocking_with_reload@v1"
+          }
+        ],
         "properties": {
           "name": {
             "description": "Recipe key (latest version), 'name@v1' (pinned), or 'list'.",
@@ -2945,6 +2970,14 @@
     {
       "description": "Map an NL transcript (e.g. 'add button called Save', 'rename X to Y') to a suggested tool call via regex intents. Returns {matched,dispatchedTool,dispatchedArgs}. Agent confirms; no dispatch.",
       "inputSchema": {
+        "examples": [
+          {
+            "transcript": "add button called Confirmar"
+          },
+          {
+            "transcript": "rename AluCod to StudentCode"
+          }
+        ],
         "properties": {
           "transcript": {
             "type": "string"

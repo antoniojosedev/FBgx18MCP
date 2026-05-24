@@ -83,7 +83,12 @@ namespace GxMcp.Gateway.Tests
             //   v2.6.9 (2026-05-24): 13000 → 13100 for genexus_doctor (~31 tokens). New
             //   triage tool that consolidates health checks the user previously had to
             //   chain across genexus_whoami + genexus_logs + manual psutil.
-            Assert.True(approxTokens < 13100, $"tool_definitions.json is ~{approxTokens} tokens; budget 13100.");
+            //   v2.6.9 (2026-05-24): 13100 → 13200 for "examples" arrays on three
+            //   high-traffic schemas (genexus_voice, genexus_recipe, genexus_edit_form).
+            //   LLM clients render schema examples in the tool picker; the +27 tokens
+            //   measured pay for themselves the first time the agent guesses a malformed
+            //   call. Capped at three tools to avoid death-by-thousand-fields.
+            Assert.True(approxTokens < 13200, $"tool_definitions.json is ~{approxTokens} tokens; budget 13200.");
         }
     }
 }
