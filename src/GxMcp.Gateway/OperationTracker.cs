@@ -453,6 +453,40 @@ namespace GxMcp.Gateway
             return obj;
         }
 
+        // Public snapshot type for callers that scan the history (e.g. MacroSuggestionService).
+        // We expose immutable copies of ToolArguments so the caller can't mutate the live record.
+        internal sealed class OperationSnapshot
+        {
+            public DateTime AtUtc { get; init; }
+            public string ToolName { get; init; } = string.Empty;
+            public string Status { get; init; } = string.Empty;
+            public JObject? ToolArguments { get; init; }
+        }
+
+        // Item: snapshot recent operations for pattern-mining (MacroSuggestionService).
+        // Returns ops with StartedAtUtc >= sinceUtc, ordered ascending by start time.
+        // Args are deep-cloned so the caller can't mutate the live record.
+        internal IReadOnlyList<OperationSnapshot> SnapshotRecentOperations(DateTime sinceUtc)
+        {
+            var list = new List<OperationSnapshot>();
+            foreach (var rec in _operations.Values)
+            {
+                if (rec.StartedAtUtc < sinceUtc) continue;
+                lock (rec.SyncRoot)
+                {
+                    list.Add(new OperationSnapshot
+                    {
+                        AtUtc = rec.StartedAtUtc,
+                        ToolName = rec.ToolName,
+                        Status = rec.Status,
+                        ToolArguments = rec.ToolArguments != null ? (JObject)rec.ToolArguments.DeepClone() : null
+                    });
+                }
+            }
+            list.Sort((a, b) => a.AtUtc.CompareTo(b.AtUtc));
+            return list;
+        }
+
         // Test seam: record a tool invocation synthetically (no worker round-trip required).
         // Used by HeatmapBlockTests and ExecutionHistoryTests to keep them hermetic.
         internal void RecordSyntheticCompletion(string toolName, long elapsedMs, bool isError, JObject toolArguments = null)

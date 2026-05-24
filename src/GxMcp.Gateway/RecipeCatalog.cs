@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
@@ -21,6 +22,84 @@ namespace GxMcp.Gateway
         // pin is given, and `Get(name@v1)` resolves a specific one. All
         // current recipes are "v1" — no breaking change.
         private record RecipeMeta(string Description, string Example, string Version, Func<JObject> Build);
+
+        // Crystallized user macros: discovered from <configRoot>/recipes/user-macros/*.json.
+        // Built-in recipes win on name collision. Set via ConfigureUserMacroDirectory + Refresh*.
+        private static string _userMacroDirectory;
+        private static readonly Dictionary<string, RecipeMeta> _userMacros
+            = new Dictionary<string, RecipeMeta>(StringComparer.OrdinalIgnoreCase);
+        private static readonly object _userMacroLock = new object();
+
+        public static void ConfigureUserMacroDirectory(string directory)
+        {
+            lock (_userMacroLock)
+            {
+                _userMacroDirectory = directory;
+            }
+            RefreshUserMacros();
+        }
+
+        // Reload all user-macro JSON files from the configured directory.
+        // Called after Crystallize() so freshly-written recipes are reachable
+        // without a gateway restart. Built-ins always win on key collision.
+        public static void RefreshUserMacros()
+        {
+            string dir;
+            lock (_userMacroLock) { dir = _userMacroDirectory; }
+            if (string.IsNullOrEmpty(dir)) return;
+
+            var fresh = new Dictionary<string, RecipeMeta>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                if (Directory.Exists(dir))
+                {
+                    foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
+                    {
+                        try
+                        {
+                            string raw = File.ReadAllText(file);
+                            var parsed = JObject.Parse(raw);
+                            string name = parsed["name"]?.ToString() ?? Path.GetFileNameWithoutExtension(file);
+                            if (string.IsNullOrWhiteSpace(name)) continue;
+                            // Built-ins win — skip if registry already has this key.
+                            if (RecipeRegistry.ContainsKey(name)) continue;
+                            string desc = parsed["description"]?.ToString() ?? "User macro.";
+                            string version = parsed["version"]?.ToString() ?? "v1";
+                            string example = "genexus_recipe { name: '" + name + "' }";
+                            JObject snapshot = parsed; // captured by builder
+                            fresh[name] = new RecipeMeta(desc, example, version, () => (JObject)snapshot.DeepClone());
+                        }
+                        catch
+                        {
+                            // Ignore malformed user macros — surface as missing rather than crash the gateway.
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore IO errors — user macros are best-effort.
+            }
+
+            lock (_userMacroLock)
+            {
+                _userMacros.Clear();
+                foreach (var kvp in fresh) _userMacros[kvp.Key] = kvp.Value;
+            }
+        }
+
+        private static IEnumerable<KeyValuePair<string, RecipeMeta>> AllRecipes()
+        {
+            foreach (var kvp in RecipeRegistry) yield return kvp;
+            lock (_userMacroLock)
+            {
+                foreach (var kvp in _userMacros)
+                {
+                    if (RecipeRegistry.ContainsKey(kvp.Key)) continue; // built-in wins
+                    yield return kvp;
+                }
+            }
+        }
 
         public static JObject Get(string name)
         {
@@ -44,7 +123,7 @@ namespace GxMcp.Gateway
                 var arr = new JArray();
                 // Group by recipe key (case-insensitive) to compute availableVersions.
                 var grouped = new Dictionary<string, List<RecipeMeta>>(StringComparer.OrdinalIgnoreCase);
-                foreach (var kvp in RecipeRegistry)
+                foreach (var kvp in AllRecipes())
                 {
                     string baseName = StripVersion(kvp.Key);
                     if (!grouped.TryGetValue(baseName, out var list))
@@ -91,7 +170,7 @@ namespace GxMcp.Gateway
             // pick the lexicographically max version among matching entries.
             RecipeMeta resolved = null;
             string resolvedVersion = null;
-            foreach (var kvp in RecipeRegistry)
+            foreach (var kvp in AllRecipes())
             {
                 string baseName = StripVersion(kvp.Key);
                 if (!string.Equals(baseName, key, StringComparison.OrdinalIgnoreCase)) continue;
@@ -141,7 +220,7 @@ namespace GxMcp.Gateway
             if (string.IsNullOrEmpty(a) || a == "list" || a == "index")
             {
                 var arr = new JArray();
-                foreach (var kvp in RecipeRegistry)
+                foreach (var kvp in AllRecipes())
                 {
                     JObject body = null;
                     try { body = kvp.Value.Build(); } catch { }

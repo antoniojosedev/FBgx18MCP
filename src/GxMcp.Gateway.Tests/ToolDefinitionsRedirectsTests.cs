@@ -26,8 +26,13 @@ namespace GxMcp.Gateway.Tests
             var t = FindTool("genexus_apply_pattern");
             Assert.NotNull(t);
             string desc = t!["description"]!.ToString();
-            Assert.Contains("inspect", desc, System.StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("parentType", desc, System.StringComparison.OrdinalIgnoreCase);
+            // v2.6.9 description trim: the "inspect first / parentType-routing"
+            // long-form moved into the genexus://kb/tool-help/genexus_apply_pattern
+            // resource. The terse description still names the two binding modes
+            // which is the routing signal the test was guarding for.
+            Assert.Contains("Transaction", desc, System.StringComparison.Ordinal);
+            Assert.Contains("WebPanel", desc, System.StringComparison.Ordinal);
+            Assert.Contains("diagnose", desc, System.StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]
@@ -63,9 +68,13 @@ namespace GxMcp.Gateway.Tests
         {
             var t = FindTool("genexus_recipe");
             Assert.NotNull(t);
-            // Required input "name" so list/get is explicit.
-            var required = (JArray)t!["inputSchema"]!["required"]!;
-            Assert.Contains("name", required.Select(x => x.ToString()));
+            // v2.6.10 (auto-macro recording) — `name` is no longer universally
+            // required since the new suggest_macro/crystallize actions don't take
+            // it. Test now just guards registration + action surface presence.
+            var actions = (JArray)t!["inputSchema"]!["properties"]!["action"]!["enum"]!;
+            var actionNames = actions.Select(x => x.ToString()).ToList();
+            Assert.Contains("list", actionNames);
+            Assert.Contains("run", actionNames);
         }
 
         [Fact]

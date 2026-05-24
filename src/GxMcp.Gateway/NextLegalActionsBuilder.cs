@@ -1,0 +1,384 @@
+using System;
+using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
+
+namespace GxMcp.Gateway
+{
+    /// <summary>
+    /// SOTA LLM-UX: every state-changing tool response carries a
+    /// <c>next_legal_actions</c> array listing the most-likely useful next
+    /// tool calls. Reduces cross-turn guessing for the LLM client.
+    ///
+    /// Pure function — given the tool name, request args, response payload,
+    /// and whether the call was an error, returns an array of suggestion
+    /// objects of the shape:
+    /// <code>
+    /// { "tool": "...", "args": {...}, "why": "...", "priority": "high|medium|low" }
+    /// </code>
+    /// Returns null when no suggestions apply (the gateway just doesn't
+    /// attach the field). Capped at 3 suggestions per call (~80-120B each)
+    /// to keep payloads small. Read-only tools (whoami / query / list /
+    /// read / inspect / analyze) never produce suggestions.
+    /// </summary>
+    public static class NextLegalActionsBuilder
+    {
+        // Read-only tools — no natural "next step" beyond doing the work
+        // the user asked for, so we skip emission entirely.
+        private static readonly HashSet<string> _readOnlyTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "genexus_whoami",
+            "genexus_query",
+            "genexus_list_objects",
+            "genexus_read",
+            "genexus_inspect",
+            "genexus_analyze",
+            "genexus_logs",
+            "genexus_doc",
+            "genexus_recipe",
+            "genexus_kb",
+        };
+
+        /// <summary>
+        /// Build the suggestion array for a single tool response. Returns
+        /// null when no suggestions apply.
+        /// </summary>
+        public static JArray? BuildFor(string toolName, JObject? args, JObject? responsePayload, bool isError)
+        {
+            if (string.IsNullOrWhiteSpace(toolName)) return null;
+            if (_readOnlyTools.Contains(toolName)) return null;
+
+            args ??= new JObject();
+            responsePayload ??= new JObject();
+
+            JArray? suggestions = toolName.ToLowerInvariant() switch
+            {
+                "genexus_apply_pattern" => BuildForApplyPattern(args, responsePayload, isError),
+                "genexus_create_object" => isError ? null : BuildForCreateObject(args, responsePayload),
+                "genexus_create_popup" => isError ? null : BuildForCreatePopup(args, responsePayload),
+                "genexus_edit" => isError ? null : BuildForEdit(args, responsePayload),
+                "genexus_lifecycle" => BuildForLifecycle(args, responsePayload, isError),
+                "genexus_save_as" => isError ? null : BuildForSaveAs(args, responsePayload),
+                "genexus_history" => isError ? null : BuildForHistory(args, responsePayload),
+                "genexus_undo" => isError ? null : BuildForUndo(args, responsePayload),
+                _ => null,
+            };
+
+            if (suggestions == null || suggestions.Count == 0) return null;
+
+            // Cap at 3 suggestions per the token budget.
+            while (suggestions.Count > 3) suggestions.RemoveAt(suggestions.Count - 1);
+            return suggestions;
+        }
+
+        private static JObject Suggest(string tool, JObject args, string why, string priority)
+            => new JObject
+            {
+                ["tool"] = tool,
+                ["args"] = args,
+                ["why"] = why,
+                ["priority"] = priority,
+            };
+
+        private static string? S(JToken? t) => t?.Type == JTokenType.Null || t == null ? null : t.ToString();
+
+        // 1 & 10. apply_pattern
+        private static JArray? BuildForApplyPattern(JObject args, JObject payload, bool isError)
+        {
+            string? target = S(args["target"]) ?? S(payload["target"]) ?? S(payload["object"]);
+
+            // Case 10: error with validParentTypes — guide the LLM to inspect
+            // the target's actual type or create one of the valid types.
+            if (isError)
+            {
+                if (payload["validParentTypes"] is JArray validTypes && validTypes.Count > 0)
+                {
+                    var arr = new JArray();
+                    if (!string.IsNullOrEmpty(target))
+                    {
+                        arr.Add(Suggest(
+                            "genexus_inspect",
+                            new JObject { ["target"] = target },
+                            "Confirm the target's actual GeneXus type before retrying apply_pattern",
+                            "high"));
+                    }
+                    string firstValid = validTypes[0]?.ToString() ?? "Transaction";
+                    arr.Add(Suggest(
+                        "genexus_create_object",
+                        new JObject { ["type"] = firstValid, ["name"] = "NewHost" },
+                        $"Create an object of a supported parent type (e.g. {firstValid}) and apply the pattern to it",
+                        "medium"));
+                    return arr;
+                }
+                return null;
+            }
+
+            // Case 1: success — host typically named WorkWithPlus{Target}, but
+            // the worker may surface it as `hostName` / `host` / `created`.
+            string? host = S(payload["hostName"]) ?? S(payload["host"]) ?? S(payload["created"]);
+            if (string.IsNullOrEmpty(host) && !string.IsNullOrEmpty(target))
+            {
+                host = "WorkWithPlus" + target;
+            }
+            if (string.IsNullOrEmpty(host)) return null;
+
+            var arr2 = new JArray
+            {
+                Suggest(
+                    "genexus_lifecycle",
+                    new JObject { ["action"] = "build", ["target"] = host },
+                    "Verify the freshly-attached pattern compiles",
+                    "high"),
+                Suggest(
+                    "genexus_edit",
+                    new JObject { ["name"] = host, ["part"] = "PatternInstance" },
+                    "Customize the WWP host's PatternInstance (do not edit the parent WebForm directly)",
+                    "medium"),
+            };
+            if (!string.IsNullOrEmpty(target))
+            {
+                arr2.Add(Suggest(
+                    "genexus_history",
+                    new JObject { ["action"] = "restore", ["discard"] = true, ["target"] = target! },
+                    "Revert if the pattern apply was wrong",
+                    "low"));
+            }
+            return arr2;
+        }
+
+        // 2. create_object
+        private static JArray? BuildForCreateObject(JObject args, JObject payload)
+        {
+            string? name = S(args["name"]) ?? S(payload["name"]) ?? S(payload["created"]);
+            string? type = S(args["type"]) ?? S(payload["type"]);
+            if (string.IsNullOrEmpty(name)) return null;
+
+            string defaultPart = string.Equals(type, "Transaction", StringComparison.OrdinalIgnoreCase) ? "Structure"
+                : string.Equals(type, "WebPanel", StringComparison.OrdinalIgnoreCase) ? "WebForm"
+                : string.Equals(type, "Procedure", StringComparison.OrdinalIgnoreCase) ? "Source"
+                : "Source";
+
+            var arr = new JArray
+            {
+                Suggest(
+                    "genexus_edit",
+                    new JObject { ["name"] = name, ["part"] = defaultPart },
+                    $"Edit the new {(type ?? "object")}'s {defaultPart} to add real content",
+                    "high"),
+            };
+            bool patternable = string.Equals(type, "Transaction", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(type, "WebPanel", StringComparison.OrdinalIgnoreCase);
+            if (patternable)
+            {
+                arr.Add(Suggest(
+                    "genexus_apply_pattern",
+                    new JObject { ["target"] = name, ["pattern"] = "WorkWithPlus" },
+                    "Attach a WorkWithPlus / WorkWith pattern for a generated UI",
+                    "medium"));
+            }
+            arr.Add(Suggest(
+                "genexus_lifecycle",
+                new JObject { ["action"] = "build", ["target"] = name },
+                "Build the new object to surface any structural errors early",
+                "low"));
+            return arr;
+        }
+
+        // 3. create_popup
+        private static JArray? BuildForCreatePopup(JObject args, JObject payload)
+        {
+            string? parent = S(args["parent"]) ?? S(args["caller"]) ?? S(payload["parent"]);
+            string? popup = S(args["name"]) ?? S(payload["created"]) ?? S(payload["popup"]);
+            if (string.IsNullOrEmpty(popup)) return null;
+
+            var arr = new JArray();
+            if (!string.IsNullOrEmpty(parent))
+            {
+                arr.Add(Suggest(
+                    "genexus_edit",
+                    new JObject
+                    {
+                        ["name"] = parent!,
+                        ["part"] = "WebForm",
+                        ["op"] = "add_button",
+                        ["caption"] = "Open " + popup,
+                        ["onClick"] = popup + ".Show()",
+                    },
+                    "Wire a button on the parent WebForm that opens the new popup",
+                    "high"));
+            }
+            arr.Add(Suggest(
+                "genexus_lifecycle",
+                new JObject { ["action"] = "build", ["target"] = popup },
+                "Build the popup target to confirm it compiles",
+                "medium"));
+            return arr;
+        }
+
+        // 4. edit (patch success)
+        private static JArray? BuildForEdit(JObject args, JObject payload)
+        {
+            string? name = S(args["name"]) ?? S(payload["name"]) ?? S(payload["object"]);
+            if (string.IsNullOrEmpty(name)) return null;
+
+            // Treat any non-"No change" success as a real patch worth verifying.
+            bool noChange = payload["noChange"]?.Value<bool>() == true;
+            if (noChange) return null;
+
+            var arr = new JArray
+            {
+                Suggest(
+                    "genexus_lifecycle",
+                    new JObject { ["action"] = "build", ["target"] = name },
+                    "Verify the patch compiles",
+                    "high"),
+                Suggest(
+                    "genexus_preview",
+                    new JObject { ["action"] = "run", ["target"] = name },
+                    "Render the edited object in the headless browser to spot regressions",
+                    "medium"),
+                Suggest(
+                    "genexus_undo",
+                    new JObject { ["target"] = name },
+                    "Undo the patch if the build or preview shows it was wrong",
+                    "low"),
+            };
+            return arr;
+        }
+
+        // 5 & 6. lifecycle build (Success and Failed)
+        private static JArray? BuildForLifecycle(JObject args, JObject payload, bool isError)
+        {
+            string? action = S(args["action"]) ?? S(payload["action"]);
+            if (!string.Equals(action, "build", StringComparison.OrdinalIgnoreCase)) return null;
+
+            string? target = S(args["target"]) ?? S(payload["target"]);
+            string? status = S(payload["status"]) ?? S(payload["result"]);
+
+            bool failed = isError
+                || string.Equals(status, "Failed", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "Error", StringComparison.OrdinalIgnoreCase);
+
+            if (failed)
+            {
+                var arr = new JArray
+                {
+                    Suggest(
+                        "genexus_logs",
+                        new JObject { ["tail"] = 200 },
+                        "Read the build log tail to find the first compile error",
+                        "high"),
+                };
+                if (!string.IsNullOrEmpty(target))
+                {
+                    arr.Add(Suggest(
+                        "genexus_history",
+                        new JObject { ["action"] = "restore", ["discard"] = true, ["target"] = target! },
+                        "Discard recent edits on the failing target if the regression came from this turn",
+                        "medium"));
+                    arr.Add(Suggest(
+                        "genexus_analyze",
+                        new JObject { ["mode"] = "impact", ["target"] = target! },
+                        "Inspect downstream impact before re-attempting the build",
+                        "low"));
+                }
+                return arr;
+            }
+
+            // partial_success → ask for status
+            bool partial = string.Equals(status, "partial_success", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "PartialSuccess", StringComparison.OrdinalIgnoreCase);
+
+            var ok = new JArray();
+            if (!string.IsNullOrEmpty(target))
+            {
+                ok.Add(Suggest(
+                    "genexus_preview",
+                    new JObject { ["action"] = "run", ["target"] = target! },
+                    "Run the built object to verify it behaves correctly",
+                    "high"));
+            }
+            else
+            {
+                ok.Add(Suggest(
+                    "genexus_preview",
+                    new JObject { ["action"] = "run" },
+                    "Run the KB's startup object to verify it behaves correctly",
+                    "high"));
+            }
+            if (partial)
+            {
+                string? jobId = S(payload["jobId"]) ?? S(payload["job"]);
+                var statusArgs = new JObject { ["action"] = "status" };
+                if (!string.IsNullOrEmpty(jobId)) statusArgs["jobId"] = jobId;
+                ok.Add(Suggest(
+                    "genexus_lifecycle",
+                    statusArgs,
+                    "Build reported partial_success — poll lifecycle status for the failed sub-targets",
+                    "medium"));
+            }
+            return ok.Count == 0 ? null : ok;
+        }
+
+        // 7. save_as
+        private static JArray? BuildForSaveAs(JObject args, JObject payload)
+        {
+            string? newName = S(args["newName"]) ?? S(args["targetName"]) ?? S(payload["created"]) ?? S(payload["newName"]);
+            if (string.IsNullOrEmpty(newName)) return null;
+
+            var arr = new JArray
+            {
+                Suggest(
+                    "genexus_edit",
+                    new JObject { ["name"] = newName, ["part"] = "Source" },
+                    "Edit the cloned object's parts so it diverges from the original",
+                    "high"),
+                Suggest(
+                    "genexus_lifecycle",
+                    new JObject { ["action"] = "build", ["target"] = newName },
+                    "Build the cloned object to confirm it compiles standalone",
+                    "medium"),
+            };
+            return arr;
+        }
+
+        // 8. history restore
+        private static JArray? BuildForHistory(JObject args, JObject payload)
+        {
+            string? action = S(args["action"]);
+            if (!string.Equals(action, "restore", StringComparison.OrdinalIgnoreCase)) return null;
+
+            string? target = S(args["target"]) ?? S(payload["target"]);
+            if (string.IsNullOrEmpty(target)) return null;
+
+            return new JArray
+            {
+                Suggest(
+                    "genexus_lifecycle",
+                    new JObject { ["action"] = "build", ["target"] = target! },
+                    "Build the restored object to verify the rollback compiles",
+                    "high"),
+            };
+        }
+
+        // 9. undo
+        private static JArray? BuildForUndo(JObject args, JObject payload)
+        {
+            string? target = S(args["target"]) ?? S(payload["target"]);
+            if (string.IsNullOrEmpty(target)) return null;
+
+            return new JArray
+            {
+                Suggest(
+                    "genexus_lifecycle",
+                    new JObject { ["action"] = "build", ["target"] = target! },
+                    "Build to confirm the undo left the KB in a valid state",
+                    "high"),
+                Suggest(
+                    "genexus_inspect",
+                    new JObject { ["target"] = target! },
+                    "Inspect the object to confirm the expected pre-edit shape was restored",
+                    "medium"),
+            };
+        }
+    }
+}

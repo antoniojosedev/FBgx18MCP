@@ -67,6 +67,17 @@ namespace GxMcp.Gateway
         private static IdempotencyCache _idempotencyCache = new IdempotencyCache(15, 1000);
         private static readonly OperationTracker _operationTracker = new OperationTracker(TimeSpan.FromMinutes(60));
         internal static OperationTracker OperationTracker => _operationTracker;
+
+        // User-macro storage: <configRoot>/recipes/user-macros/<name>.json.
+        // Same configRoot used by sandboxes (Configuration.CurrentConfigPath dir,
+        // falling back to AppContext.BaseDirectory).
+        internal static string GetUserMacroDir()
+        {
+            string configDir = !string.IsNullOrEmpty(Configuration.CurrentConfigPath)
+                ? System.IO.Path.GetDirectoryName(Configuration.CurrentConfigPath!)!
+                : AppContext.BaseDirectory;
+            return System.IO.Path.Combine(configDir, "recipes", "user-macros");
+        }
         internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
         private static int _indexBootstrapStarted;
@@ -948,6 +959,8 @@ namespace GxMcp.Gateway
             var config = Configuration.Load();
             _activeConfig = config;
             LogGeneXusVersionCheck(config);
+            try { RecipeCatalog.ConfigureUserMacroDirectory(GetUserMacroDir()); }
+            catch (Exception ex) { Log("[RecipeCatalog] User-macro discovery skipped: " + ex.Message); }
             Log("[Gateway] Startup orphan-kill disabled. Existing gateway reuse is handled by the extension client.");
             AppDomain.CurrentDomain.ProcessExit += (_, __) =>
             {
@@ -2442,9 +2455,75 @@ namespace GxMcp.Gateway
 
                     if (string.Equals(tName, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
                     {
-                        string recipeName = tArgs?["name"]?.ToString();
-                        JObject payload = RecipeCatalog.Get(recipeName);
-                        bool isErr = payload?["error"] != null;
+                        string action = tArgs?["action"]?.ToString()?.ToLowerInvariant();
+                        JObject payload;
+                        bool isErr;
+
+                        if (string.Equals(action, "suggest_macro", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int windowMinutes = tArgs?["windowMinutes"]?.ToObject<int?>() ?? 30;
+                            int minReps = tArgs?["minRepetitions"]?.ToObject<int?>() ?? 3;
+                            var svc = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
+                            payload = svc.Suggest(windowMinutes, minReps);
+                            isErr = string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                        }
+                        else if (string.Equals(action, "crystallize", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string macroName = tArgs?["macroName"]?.ToString();
+                            string description = tArgs?["description"]?.ToString();
+                            var steps = tArgs?["steps"] as JArray;
+
+                            // If steps were not supplied, try to re-derive from current history
+                            // using the proposedName as the discriminator.
+                            if (steps == null || steps.Count == 0)
+                            {
+                                var svc = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
+                                JObject sugg = svc.Suggest(60, 2);
+                                if (sugg["candidateMacros"] is JArray arr)
+                                {
+                                    foreach (var c in arr)
+                                    {
+                                        if (string.Equals(c?["proposedName"]?.ToString(), macroName, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            steps = c["steps"] as JArray;
+                                            if (string.IsNullOrWhiteSpace(description))
+                                                description = c["suggestedDescription"]?.ToString();
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            var svc2 = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
+                            payload = svc2.Crystallize(macroName, description, steps);
+                            isErr = string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                        }
+                        else
+                        {
+                            // Default: legacy behavior. action=list/describe via RecipeCatalog.Get.
+                            // If action is provided and is list/describe, route via Dispatch.
+                            string recipeName = tArgs?["name"]?.ToString();
+                            if (string.Equals(action, "list", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(action, "describe", StringComparison.OrdinalIgnoreCase))
+                            {
+                                payload = RecipeCatalog.Dispatch(action, recipeName);
+                            }
+                            else if (!string.IsNullOrEmpty(action))
+                            {
+                                payload = new JObject
+                                {
+                                    ["status"] = "Error",
+                                    ["error"] = $"Unknown action '{action}'.",
+                                    ["hint"] = "Supported: list, describe, run, suggest_macro, crystallize."
+                                };
+                            }
+                            else
+                            {
+                                payload = RecipeCatalog.Get(recipeName);
+                            }
+                            isErr = payload?["error"] != null || string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                        }
+
                         return new JObject
                         {
                             ["isError"] = isErr,
@@ -3668,6 +3747,30 @@ namespace GxMcp.Gateway
             else
             {
                 obj.Remove("meta");
+            }
+
+            // next_legal_actions injection — last step.
+            // SOTA LLM-UX: state-changing tool responses carry an additive
+            // array of the most-likely useful next tool calls so the LLM
+            // doesn't have to guess across turns. Read-only tools and
+            // payloads without a natural follow-up return null and the
+            // field is simply omitted. Spec-clean: extra top-level field;
+            // clients that don't know about it ignore it.
+            try
+            {
+                if (obj["next_legal_actions"] == null)
+                {
+                    JArray? actions = NextLegalActionsBuilder.BuildFor(toolName, toolArgs, obj, isError);
+                    if (actions != null && actions.Count > 0)
+                    {
+                        obj["next_legal_actions"] = actions;
+                    }
+                }
+            }
+            catch
+            {
+                // Builder is best-effort UX sugar; never let it break the
+                // response envelope.
             }
 
             return obj;
