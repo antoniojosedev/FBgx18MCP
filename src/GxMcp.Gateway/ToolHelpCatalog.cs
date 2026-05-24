@@ -222,7 +222,25 @@ namespace GxMcp.Gateway
                 "## Errors\n" +
                 "If `name` matches multiple objects, the edit phase aborts and the envelope returns `status=Error` with an `alternatives` array — retry with one of the (`name`, `type`) pairs.\n\n" +
                 "## Example\n" +
-                "`{ name: 'InvoiceProc', part: 'Source', mode: 'patch', content: '<diff>', buildIncludeCallees: 'direct' }`\n"
+                "`{ name: 'InvoiceProc', part: 'Source', mode: 'patch', content: '<diff>', buildIncludeCallees: 'direct' }`\n",
+
+            ["genexus_db_optimize"] =
+                "# genexus_db_optimize\n\n" +
+                "Static index advisor. Walks every Procedure / WebPanel / DataProvider Source + Events part, regex-parses `For each` blocks, derives (Transaction × where-signature × sort) access patterns, then surfaces concrete optimization opportunities.\n\n" +
+                "## Actions\n" +
+                "- `analyze [target=<Tx>]` — KB-wide pattern scan. Returns `{transactions:[{name, accessPatterns:[{whereSignature, callerCount, sortAttributes, samples:[...]}]}]}` sorted by callerCount desc. `target` is an optional filter.\n" +
+                "- `suggest_indexes target=<Tx>` — for one Transaction, proposes covering indexes for the top where-signatures that are NOT covered by an existing index. Returns `{existingIndexes:[...], suggestedIndexes:[{columns, rationale, coveredQueries, estimatedBenefit, confidence, ddl}], redundantIndexes:[{name, reason}]}`. DDL is paste-ready (`CREATE INDEX IX_Tx_A_B ON Tx (A, B);`).\n" +
+                "- `report [format=markdown|json]` — top-10 unindexed hot paths across the whole KB ranked by callerCount. `format=markdown` adds a paste-ready table under `report`.\n\n" +
+                "## Where-signature canonicalisation\n" +
+                "Two queries `Where AluCod = &c` and `Where AluCod = 1` collapse to the same signature `AluCod`. Literals and variables (&...) are stripped; only attribute references survive. Order is alphabetical so `{A,B}` and `{B,A}` collide.\n\n" +
+                "## Confidence\n" +
+                "Each finding carries `confidence: high|medium|low`. `low` means the For each lacked a Transaction name or a Where clause and the parse fell back to heuristic — treat those as leads, not actions.\n\n" +
+                "## Index coverage\n" +
+                "A multi-column index `(A, B, C)` covers any where-signature that is a strict prefix — `{A}` and `{A, B}` are covered, `{B}` is not. The advisor never suggests indexes that already exist as a prefix.\n\n" +
+                "## Examples\n" +
+                "- `{ action: 'analyze' }` — every transaction with at least one For each in the KB.\n" +
+                "- `{ action: 'suggest_indexes', target: 'Aluno' }` — covering DDL for the hottest Where signatures on `Aluno`.\n" +
+                "- `{ action: 'report', format: 'markdown' }` — paste into a code review.\n"
         };
 
         internal static string? Get(string toolName)

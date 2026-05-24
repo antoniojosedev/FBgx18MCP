@@ -1376,6 +1376,119 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // ----------------------------------------------------------------
+        // mode=cross_platform_impact — Wave-3 SOTA add-on.
+        // Buckets target's callers by surface (Web vs SmartDevices) and runs
+        // divergence detectors so the agent can predict which platform breaks
+        // when a Transaction/SDT/Domain changes shape. See
+        // CrossPlatformImpactAnalyzer for the heuristic catalog.
+        // ----------------------------------------------------------------
+        public string CrossPlatformImpact(string target)
+        {
+            return CrossPlatformImpact(target, null);
+        }
+
+        internal string CrossPlatformImpact(string target, Func<string, string, string> sourceResolver)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(target))
+                    return "{\"status\":\"Error\",\"message\":\"target is required\"}";
+
+                var index = _indexCacheService?.GetIndex();
+                if (index == null || index.Objects == null)
+                    return Models.McpResponse.Error("Index not found", target, null, "Run the KB indexing flow before requesting cross_platform_impact analysis.");
+
+                var entry = ResolveIndexEntry(index, target, out var _);
+                if (entry == null)
+                    return Models.McpResponse.Error("Object not found in index", target, null, "The object was not found in the search index.");
+
+                string canonicalName = entry.Name ?? target;
+                string canonicalType = entry.Type ?? "Object";
+
+                // Pull the target's Rules part text so the surface-gated detector
+                // has something to look at. Best-effort: skip silently when the
+                // SDK isn't reachable (unit tests pass sourceResolver=null).
+                string rulesSource = null;
+                if (sourceResolver != null)
+                {
+                    try { rulesSource = sourceResolver(canonicalName, "Rules"); } catch { }
+                }
+                else if (_objectService != null)
+                {
+                    try { rulesSource = _objectService.ReadObjectSource(canonicalName, "Rules"); } catch { }
+                    if (!string.IsNullOrEmpty(rulesSource))
+                    {
+                        var trimmed = rulesSource.TrimStart();
+                        // Skip ReadObjectSource error envelopes — see FindCallerSites for
+                        // the same defensive pattern.
+                        if (trimmed.StartsWith("{") && (
+                            trimmed.IndexOf("\"status\"", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                            trimmed.IndexOf("\"Error\"", StringComparison.OrdinalIgnoreCase) >= 0))
+                        {
+                            rulesSource = null;
+                        }
+                    }
+                }
+
+                // Default caller-source resolver: route to ObjectService.ReadObjectSource.
+                Func<string, string, string> resolverForCallers = sourceResolver;
+                if (resolverForCallers == null && _objectService != null)
+                {
+                    resolverForCallers = (n, p) =>
+                    {
+                        try { return _objectService.ReadObjectSource(n, p); }
+                        catch { return null; }
+                    };
+                }
+
+                var result = CrossPlatformImpactAnalyzer.Analyze(
+                    canonicalName, canonicalType, index, rulesSource, resolverForCallers);
+
+                var webArr = new JArray(); foreach (var c in result.WebCallers) webArr.Add(c);
+                var sdArr = new JArray(); foreach (var c in result.SdCallers) sdArr.Add(c);
+                var divArr = new JArray(); foreach (var d in result.Divergence) divArr.Add(d);
+                var detectorsRun = new JArray(); foreach (var d in result.DetectorsRun) detectorsRun.Add(d);
+                var detectorsPending = new JArray(); foreach (var d in result.DetectorsPending) detectorsPending.Add(d);
+
+                string confidence;
+                if (resolverForCallers == null) confidence = "low";
+                else if (rulesSource == null && (result.WebCallers.Count == 0 || result.SdCallers.Count == 0)) confidence = "low";
+                else if (rulesSource == null) confidence = "medium";
+                else confidence = "medium";
+
+                return new JObject
+                {
+                    ["status"] = "Success",
+                    ["target"] = new JObject { ["name"] = canonicalName, ["type"] = canonicalType },
+                    ["platforms"] = new JObject
+                    {
+                        ["Web"] = new JObject { ["callers"] = webArr, ["count"] = result.WebCallers.Count, ["divergenceSignals"] = new JArray() },
+                        ["SmartDevices"] = new JObject { ["callers"] = sdArr, ["count"] = result.SdCallers.Count, ["divergenceSignals"] = new JArray() }
+                    },
+                    ["crossPlatformDivergence"] = divArr,
+                    ["summary"] = new JObject
+                    {
+                        ["webCallers"] = result.WebCallers.Count,
+                        ["sdCallers"] = result.SdCallers.Count,
+                        ["divergencePoints"] = result.Divergence.Count
+                    },
+                    ["_meta"] = new JObject
+                    {
+                        ["confidence"] = confidence,
+                        ["detectorsRun"] = detectorsRun,
+                        ["detectorsPending"] = detectorsPending,
+                        ["rulesSourceAvailable"] = !string.IsNullOrEmpty(rulesSource),
+                        ["note"] = "Heuristic platform classification based on caller object types + transitive caller walk. Procedures are bucketed via depth-3 caller traversal."
+                    }
+                }.ToString();
+            }
+            catch (Exception ex)
+            {
+                return "{\"status\":\"Error\",\"message\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+            }
+        }
+
         public string ExplainCode(string target, string codeSnippet)
         {
             // analyze mode=explain was a placeholder that returned a hardcoded

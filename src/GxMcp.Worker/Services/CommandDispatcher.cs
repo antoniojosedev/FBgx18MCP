@@ -212,6 +212,7 @@ namespace GxMcp.Worker.Services
             _buildPlanService = new BuildPlanService(_indexCacheService, _objectService, callerGraphService);
             _doctorService = new DoctorService(_kbService, _indexCacheService, null);
             _apiIntrospectService = new ApiIntrospectService(_kbService, _objectService, _indexCacheService);
+            _typeIntrospectService = new TypeIntrospectService(_kbService, _objectService);
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -1267,6 +1268,10 @@ namespace GxMcp.Worker.Services
                         // genexus_api — REST endpoint introspection + diff vs baseline.
                         // Single Run() switches on args.action (list/describe/diff_baseline/snapshot).
                         return _apiIntrospectService.Run(args ?? new JObject());
+                    case "types":
+                        // genexus_types — Domain/SDT introspection + value validation.
+                        // Run() switches on args.action (list/describe/validate_value).
+                        return _typeIntrospectService.Run(args ?? new JObject());
                     case "github":
                         if (string.Equals(action, "CreatePr", StringComparison.OrdinalIgnoreCase))
                             return _githubService.CreatePr(args?["title"]?.ToString(), args?["body"]?.ToString(), args?["base"]?.ToString(), args?["workingDir"]?.ToString());

@@ -88,7 +88,22 @@ namespace GxMcp.Gateway.Tests
             //   LLM clients render schema examples in the tool picker; the +27 tokens
             //   measured pay for themselves the first time the agent guesses a malformed
             //   call. Capped at three tools to avoid death-by-thousand-fields.
-            Assert.True(approxTokens < 13200, $"tool_definitions.json is ~{approxTokens} tokens; budget 13200.");
+            //   v2.6.9 (2026-05-24, description trim sweep): 13200 → 12400. Tightened
+            //   ~25 top-level tool descriptions and shrank repeated kb-param description
+            //   (64 instances of "KB alias (multi-KB only)." → "KB alias.") plus the
+            //   visualVerify/notifyOnFailure/skipFullDeploy/fastIncremental over-prose
+            //   on genexus_lifecycle and genexus_edit{,_and_build}. Net ~-860 tokens.
+            //   Golden tools-list fixture regenerated. No tool-help resource changes
+            //   (ToolHelpCatalog.cs already carries the long-form for the trimmed tools).
+            //   v2.6.9 (2026-05-24, SOTA db_optimize): 12400 → 12800 for genexus_db_optimize
+            //   (~80 tokens — static index advisor + hot-path analysis) plus other
+            //   parallel-wave additions that landed in the same window.
+            //   v2.6.10 (2026-05-24, SOTA wave consolidation): 12800 → 13050 to cover
+            //   the full parallel-wave landing: genexus_api, genexus_db_optimize,
+            //   genexus_gxserver, genexus_types, plus genexus_analyze.cross_platform_impact
+            //   enum value and genexus_recipe action surface expansion (suggest_macro /
+            //   crystallize). Measured ~12943; ~107 tokens headroom.
+            Assert.True(approxTokens < 13050, $"tool_definitions.json is ~{approxTokens} tokens; budget 13050.");
         }
     }
 }

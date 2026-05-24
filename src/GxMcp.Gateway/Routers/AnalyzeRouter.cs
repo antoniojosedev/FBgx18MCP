@@ -77,6 +77,11 @@ namespace GxMcp.Gateway.Routers
                                 type = type,
                                 format = args?["format"]?.ToString()
                             };
+                        case "cross_platform_impact":
+                            // Wave-3 SOTA: bucket callers by Web vs SmartDevices and
+                            // surface divergence points before a Trn/SDT/Domain change
+                            // ships. Read-only; no SDK writes.
+                            return new { module = "Analyze", action = "CrossPlatformImpact", target = target, type = type };
                         case "parent_context":
                             // FR#18 (Stream G, v2.6.6): classifies how a WebPanel / SDPanel is
                             // invoked by its callers (popup vs standalone) so the agent picks

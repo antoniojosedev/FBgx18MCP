@@ -126,6 +126,47 @@
       "name": "genexus_analyze"
     },
     {
+      "description": "Introspect REST endpoints exposed by HTTP procedures. action=list|describe|snapshot|diff_baseline. Returns endpoints + detects breaking changes vs a saved baseline.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "list",
+              "describe",
+              "snapshot",
+              "diff_baseline"
+            ],
+            "type": "string"
+          },
+          "baseline": {
+            "description": "Baseline name under .gx/api-baselines/ or absolute path (action=diff_baseline).",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Baseline name (action=snapshot).",
+            "type": "string"
+          },
+          "pathPrefix": {
+            "description": "Folder prefix filter (action=list), e.g. 'Root Module/API/'.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Procedure name (action=describe).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_api"
+    },
+    {
       "description": "Apply a pattern (e.g. WorkWithPlus) to a parent (IDE Right-click → Apply Pattern). Transaction=family-gen; WebPanel/SDPanel=direct-attach (pass settings.template). mode=diagnose returns findings without mutating.",
       "inputSchema": {
         "properties": {
@@ -3012,6 +3053,51 @@
         "type": "object"
       },
       "name": "genexus_tutorial"
+    },
+    {
+      "description": "Surface KB type/domain constraints. list enumerates Domains/SDTs; describe shows range+allowedValues; validate_value dry-checks a value against a type.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "list",
+              "describe",
+              "validate_value"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "action=list filter.",
+            "enum": [
+              "domain",
+              "sdt",
+              "all"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Type name (action=describe).",
+            "type": "string"
+          },
+          "type": {
+            "description": "Type name (action=validate_value).",
+            "type": "string"
+          },
+          "value": {
+            "description": "Value to validate (action=validate_value).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_types"
     },
     {
       "description": "Revert the last N edits from EditSnapshotStore (.gx/snapshots). Best-effort: reports which succeeded when any fail.",

@@ -610,6 +610,18 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                // genexus_types — Domain/SDT introspection + value validation.
+                // Worker's TypeIntrospectService.Run switches on args.action
+                // (list|describe|validate_value).
+                case "genexus_types":
+                    return new
+                    {
+                        module = "types",
+                        action = args?["action"]?.ToString() ?? "list",
+                        target = args?["name"]?.ToString() ?? args?["type"]?.ToString(),
+                        @params = args
+                    };
+
                 default:
                     return null;
             }
