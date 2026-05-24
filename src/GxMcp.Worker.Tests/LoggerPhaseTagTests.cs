@@ -13,6 +13,7 @@ namespace GxMcp.Worker.Tests
     /// capture path) is the cheapest way to assert formatting without racing the
     /// async file writer.
     /// </summary>
+    [Collection("StderrCapture")]
     public class LoggerPhaseTagTests : IDisposable
     {
         private readonly TextWriter _originalErr;

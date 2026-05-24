@@ -19,6 +19,7 @@ namespace GxMcp.Worker.Tests
     // the boundary / fallback / retention paths that the original streams either
     // documented in code comments but didn't exercise, or that surfaced as bugs
     // during integration.
+    [Collection("InProcessSdkReflection")]
     public class EdgeCaseRegressionTests
     {
         // ── Stream E (FR#9) — IsBcOrphanError predicate ─────────────────────
