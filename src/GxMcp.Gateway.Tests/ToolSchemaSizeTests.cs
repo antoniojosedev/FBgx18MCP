@@ -109,7 +109,12 @@ namespace GxMcp.Gateway.Tests
             //   2026-05-23 wave3 items 30/87/36/94: 9800 → 10200 for two new tools
             //   (genexus_build_plan, genexus_execution_history) + dependency_heatmap
             //   mode + format param on genexus_analyze.
-            Assert.True(approxTokens < 10200, $"tool_definitions.json is ~{approxTokens} tokens; budget 10200.");
+            //   2026-05-23 wave3 future-stubs sweep (18 tools — items 35/53/54/55/56/
+            //   66/71/76/78/81/82/83/84/86/91/95/96/98): 10200 → 11500. Each entry is a
+            //   short DEFERRED-stub description routed through FutureItemRouter →
+            //   FutureItemStub.Deferred. Measured ~11351; budget set at 11500 with
+            //   ~150 tokens of headroom.
+            Assert.True(approxTokens < 11500, $"tool_definitions.json is ~{approxTokens} tokens; budget 11500.");
         }
     }
 }

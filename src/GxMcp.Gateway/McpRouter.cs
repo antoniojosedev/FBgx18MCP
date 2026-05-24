@@ -93,7 +93,10 @@ namespace GxMcp.Gateway
                 new ObjectRouter(),
                 new AnalyzeRouter(),
                 new SystemRouter(),
-                new OperationsRouter()
+                new OperationsRouter(),
+                // Wave-3 doc-flagged long-term / speculative items. Schema only;
+                // every tool dispatches to FutureItemStub.Deferred in the worker.
+                new FutureItemRouter()
             };
 
             LoadToolDefinitions();

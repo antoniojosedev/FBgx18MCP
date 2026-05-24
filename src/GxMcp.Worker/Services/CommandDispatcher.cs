@@ -820,6 +820,17 @@ namespace GxMcp.Worker.Services
                             return _buildPlanService.GeneratePlan(target, planFormat, toolStatsP95, maxNodes);
                         }
                         break;
+                    case "future":
+                        // Wave-3 doc-flagged long-term / speculative items. The schema is
+                        // shipped via tool_definitions.json + FutureItemRouter; the body
+                        // is a single typed deferred envelope. See FutureItemStub.cs.
+                        if (action == "Deferred")
+                        {
+                            int itemNumber = args?["itemNumber"]?.ToObject<int?>() ?? 0;
+                            string hint = args?["hint"]?.ToString();
+                            return FutureItemStub.Deferred(itemNumber, hint);
+                        }
+                        break;
                     case "linter":
                         bool linterFix = args?["fix"]?.ToObject<bool?>() ?? false;
                         if (linterFix) return _linterService.LintAndFix(target);
