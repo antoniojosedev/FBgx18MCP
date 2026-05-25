@@ -45,11 +45,17 @@ function Warn([string]$msg) { Write-Host "    [!]  $msg" -ForegroundColor Yellow
 function Fail([string]$msg) { Write-Host "    [ERR] $msg" -ForegroundColor Red; exit 1 }
 
 function Invoke-Cmd {
-    param([string]$Exe, [string[]]$Args, [switch]$IgnoreExit)
-    $display = "$Exe $($Args -join ' ')"
+    # NOTE: do NOT name a parameter `$Args` — it collides with PowerShell's
+    # automatic variable inside the function body, and `@Args` then splats
+    # the EMPTY automatic instead of the caller's array. Observed releases
+    # v2.6.9 with the bug: `git`, `dotnet`, `pwsh` all invoked with no args
+    # (release.ps1 would die at "Tagging $tag" with git printing its help).
+    # Use `$Arguments` (or any non-automatic name) instead.
+    param([string]$Exe, [string[]]$Arguments, [switch]$IgnoreExit)
+    $display = "$Exe $($Arguments -join ' ')"
     Write-Host "    $ $display" -ForegroundColor DarkGray
     if ($DryRun) { return }
-    & $Exe @Args
+    & $Exe @Arguments
     if (-not $IgnoreExit -and $LASTEXITCODE -ne 0) {
         Fail "Command failed (exit $LASTEXITCODE): $display"
     }
