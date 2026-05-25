@@ -93,12 +93,18 @@ try {
     $proc.StandardInput.WriteLine((@{jsonrpc="2.0";method="notifications/initialized"} | ConvertTo-Json -Compress)); $proc.StandardInput.Flush()
     Start-Sleep -Seconds 3
 
-    # Warm — kick worker + index
-    Write-Host "Warming worker..." -ForegroundColor Cyan
-    Send-Rpc @{jsonrpc="2.0";id=(Next-Id);method="tools/call";params=@{name="genexus_whoami";arguments=@{}}} 180 | Out-Null
+    # Warm — kick worker + index, then poll until Ready (v2.6.9 fast-fail
+    # returns Indexing envelopes until BulkIndex finishes).
+    Write-Host "Warming worker + waiting for index Ready..." -ForegroundColor Cyan
+    for ($t = 0; $t -lt 24; $t++) {
+        $r = Send-Rpc @{jsonrpc="2.0";id=(Next-Id);method="tools/call";params=@{name="genexus_whoami";arguments=@{}}} 30
+        $txt = $r.resp.result.content[0].text
+        if ($txt -match '"status":"Ready"') { Write-Host "  Ready after $($t*5)s" -ForegroundColor Green; break }
+        Start-Sleep -Seconds 5
+    }
 
     # Capture baseline source per target (for write/patch restore)
-    Start-Sleep -Seconds 5  # extra settle so index is ready
+    Start-Sleep -Seconds 2  # let any straggler enrichment land
     $baselines = @{}
     foreach ($t in $Targets) {
         $r = $null
