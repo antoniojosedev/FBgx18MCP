@@ -98,12 +98,12 @@ namespace GxMcp.Gateway.Tests
             //   v2.6.9 (2026-05-24, SOTA db_optimize): 12400 → 12800 for genexus_db_optimize
             //   (~80 tokens — static index advisor + hot-path analysis) plus other
             //   parallel-wave additions that landed in the same window.
-            //   v2.6.10 (2026-05-24, SOTA wave consolidation): 12800 → 13050 to cover
+            //   v2.6.9 (2026-05-24, SOTA wave consolidation): 12800 → 13050 to cover
             //   the full parallel-wave landing: genexus_api, genexus_db_optimize,
             //   genexus_gxserver, genexus_types, plus genexus_analyze.cross_platform_impact
             //   enum value and genexus_recipe action surface expansion (suggest_macro /
             //   crystallize). Measured ~12943; ~107 tokens headroom.
-            //   v2.6.10 (2026-05-24, profile bridge): 13050 → 13150 for genexus_profile
+            //   v2.6.9 (2026-05-24, profile bridge): 13050 → 13150 for genexus_profile
             //   (~75 tokens — runtime profiler XML ingest). Measured 13081.
             Assert.True(approxTokens < 13150, $"tool_definitions.json is ~{approxTokens} tokens; budget 13150.");
         }

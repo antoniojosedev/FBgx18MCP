@@ -30,7 +30,7 @@ namespace GxMcp.Worker.Models
             // v2.3.8 (Task 7.1) — translate SDK PT-BR messages to canonical EN;
             // keep the original under _meta.sourceMessage so support tooling can
             // still grep for the literal SDK string.
-            // v2.6.10 — canonical key is ["message"] (REST / JSON-Schema convention).
+            // v2.6.9 — canonical key is ["message"] (REST / JSON-Schema convention).
             // The legacy ["error"] alias was dropped; it duplicated bytes on every
             // error envelope. Gateway's TrimErrorEnvelope still falls back to
             // ["error"] for back-compat with any path that hasn't migrated.

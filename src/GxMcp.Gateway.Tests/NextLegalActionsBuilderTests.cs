@@ -5,7 +5,7 @@ using Xunit;
 
 namespace GxMcp.Gateway.Tests
 {
-    // v2.6.10 — covers the 10 canonical scenarios the builder routes
+    // v2.6.9 — covers the 10 canonical scenarios the builder routes
     // (8 happy + 2 error). Read-only tools must return null. Suggestion
     // cap is 3. Each generated args block must carry the keys the named
     // tool's schema requires so the LLM can copy-paste.

@@ -1,8 +1,13 @@
 # Changelog
 
-## v2.6.10 — 2026-05-25
+## v2.6.9 — 2026-05-25
 
-SOTA wave: eight new surfaces that move the MCP from "thorough GeneXus tool exposure" to "agent navigation system". The headline is the seven new tools (REST endpoint introspection, DB index advisor, GxServer sync, type/domain bridge, runtime profiler XML ingest, cross-platform Web↔SD divergence, and the auto-macro self-extending recipe catalog) plus the universal `next_legal_actions` block that turns every state-changing response into a guided next-call menu. Per-response token overhead is also down ~29% (~7.4 KB/100-call session) from the meta-block trim.
+Two passes folded into one release:
+
+1. **SOTA wave** — seven new tools (REST endpoint introspection, DB index advisor, GxServer sync, type/domain bridge, runtime profiler XML ingest, cross-platform Web↔SD divergence, auto-macro self-extending recipe catalog) plus the universal `next_legal_actions` block that turns every state-changing response into a guided next-call menu. Per-response token overhead also down ~29% (~7.4 KB/100-call session) from the meta-block trim.
+2. **Friction wishlist sweep** — 18 long-tail tools previously stubbed as `Future` are now real implementations, plus the lifecycle/build/patch/security fixes from the earlier 26-item friction batch.
+
+### SOTA wave
 
 ### Added
 
@@ -44,11 +49,7 @@ SOTA wave: eight new surfaces that move the MCP from "thorough GeneXus tool expo
 - New service files: `ApiIntrospectService.cs`, `DbOptimizeService.cs`, `GxServerSyncService.cs`, `TypeIntrospectService.cs`, `ProfileService.cs`, `CrossPlatformImpactAnalyzer.cs`. Gateway-side: `MacroSuggestionService.cs`, `NextLegalActionsBuilder.cs`. OperationTracker gained `SnapshotRecentOperations(DateTime sinceUtc) → IReadOnlyList<OperationSnapshot>` with deep-cloned args. RecipeCatalog gained user-macros discovery hook (`ConfigureUserMacroDirectory` / `RefreshUserMacros`).
 - ~67 new unit tests across the wave: `ApiIntrospectServiceTests` (15), `DbOptimizeServiceTests` (16), `GxServerSyncServiceTests` (5), `TypeIntrospectServiceTests` (varies), `CrossPlatformImpactAnalyzerTests` (8), `ProfileServiceTests` (6), `MacroSuggestionServiceTests` (6), `NextLegalActionsBuilderTests` (11). Worker 909 → 976 passing; Gateway 410 → 428 passing.
 
-## v2.6.9 — 2026-05-24
-
-Friction wishlist sweep distilled into permanent tool/playbook improvements. Headline: 18 long-tail tools that previously returned a `Future` placeholder are now real implementations; agents stop paying repeated pedágio for runtime-vs-design IDs, the popup-async gotcha, HTML format sanitization, `For each` attribute writes inside WebPanel Events, opaque build/patch envelopes, SQL-injection-shaped writes, hardcoded credentials, GAM misconfig, and master-page incompatibility — all surface in the same turn as the edit.
-
-### Added — promoted from `Future` stub to real implementation
+### Friction wishlist — promoted from `Future` stub to real implementation
 
 - **`genexus_tutorial step=<1..6>`.** Deterministic 6-step onboarding walkthrough. Each step returns `{stepNumber, totalSteps, title, narrative, suggestedCall, next}` so a fresh agent can self-orient without reading source.
 - **`genexus_voice transcript=<text>`.** Maps a natural-language phrase (e.g. `"add button called Confirmar"`) to a concrete dispatched tool call (`{matched, dispatchedTool, dispatchedArgs}`). Returns `{matched:false, unrecognised:true}` for phrases outside the recipe table.

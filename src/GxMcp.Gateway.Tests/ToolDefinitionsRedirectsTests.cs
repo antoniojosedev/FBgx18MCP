@@ -68,7 +68,7 @@ namespace GxMcp.Gateway.Tests
         {
             var t = FindTool("genexus_recipe");
             Assert.NotNull(t);
-            // v2.6.10 (auto-macro recording) — `name` is no longer universally
+            // v2.6.9 (auto-macro recording) — `name` is no longer universally
             // required since the new suggest_macro/crystallize actions don't take
             // it. Test now just guards registration + action surface presence.
             var actions = (JArray)t!["inputSchema"]!["properties"]!["action"]!["enum"]!;
