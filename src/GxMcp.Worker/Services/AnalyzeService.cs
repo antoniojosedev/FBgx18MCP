@@ -21,6 +21,11 @@ namespace GxMcp.Worker.Services
         // when no write has landed against the target. Invalidation watches
         // WriteService._lastWriteAtUtc — any in-process write to the target
         // post-cache flips the entry stale and forces a fresh read.
+        //
+        // Same shape reused for the ImpactAnalysis cache below; both survive
+        // a gateway semantic-cache wipe (which clears on every mutating
+        // call regardless of target) so an alternating read/write/read flow
+        // against different targets keeps the read side warm.
         private sealed class InspectCacheEntry
         {
             public string Json;
@@ -29,6 +34,10 @@ namespace GxMcp.Worker.Services
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, InspectCacheEntry> _inspectCache
             = new System.Collections.Concurrent.ConcurrentDictionary<string, InspectCacheEntry>(System.StringComparer.OrdinalIgnoreCase);
         private static readonly System.TimeSpan InspectCacheTtl = System.TimeSpan.FromSeconds(30);
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, InspectCacheEntry> _impactCache
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, InspectCacheEntry>(System.StringComparer.OrdinalIgnoreCase);
+        private static readonly System.TimeSpan ImpactCacheTtl = System.TimeSpan.FromSeconds(30);
 
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
@@ -132,6 +141,31 @@ namespace GxMcp.Worker.Services
         // a Control:Cancel from the gateway side-channel can stop the BFS mid-walk.
         public string ImpactAnalysis(string targetName, bool waitForIndex, int waitTimeoutMs, System.Threading.CancellationToken ct)
         {
+            // v2.6.9 perf: cache repeated impact queries against the same target.
+            // The BFS over CalledBy is read-only and 25-50 ms on the STA thread;
+            // a 30 s TTL + WriteService.WasTargetWrittenSince invalidation makes
+            // repeats sub-ms without affecting freshness after edits.
+            //
+            // Only consult / populate the cache when the lite index pass has
+            // finished (LiteReady / Enriching / Ready). Cold / Reindexing must
+            // still flow through the gate below so callers honour waitForIndex
+            // semantics and the Reindexing-envelope contract.
+            var earlyState = _indexCacheService?.GetState();
+            bool earlyLitePassDone = earlyState != null
+                && earlyState.Status != "Cold" && earlyState.Status != "Reindexing";
+            if (earlyLitePassDone && !string.IsNullOrEmpty(targetName))
+            {
+                if (_impactCache.TryGetValue(targetName, out var cachedImpact) && cachedImpact != null)
+                {
+                    bool ttlOk = (System.DateTime.UtcNow - cachedImpact.FilledAtUtc) < ImpactCacheTtl;
+                    bool noWrite = !WriteService.WasTargetWrittenSince(targetName, cachedImpact.FilledAtUtc);
+                    if (ttlOk && noWrite)
+                    {
+                        return cachedImpact.Json;
+                    }
+                    _impactCache.TryRemove(targetName, out _);
+                }
+            }
             try
             {
                 // 1) Index-readiness envelope.
@@ -287,7 +321,17 @@ namespace GxMcp.Worker.Services
 
                 GxMcp.Worker.Helpers.ProgressEmitter.Emit(100, 100, "Impact analysis: complete");
 
-                return json.ToString();
+                string impactJson = json.ToString();
+                // v2.6.9 perf: populate impact cache (see _impactCache decl).
+                if (!string.IsNullOrEmpty(targetName))
+                {
+                    _impactCache[targetName] = new InspectCacheEntry
+                    {
+                        Json = impactJson,
+                        FilledAtUtc = System.DateTime.UtcNow
+                    };
+                }
+                return impactJson;
             }
             catch (Exception ex)
             {
