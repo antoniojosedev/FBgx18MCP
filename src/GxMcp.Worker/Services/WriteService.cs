@@ -2966,13 +2966,41 @@ namespace GxMcp.Worker.Services
 
                     if (!XmlEquivalence.AreEquivalent(persistedXml, normalizedInput, out var patternDiff, out var patternStructured))
                     {
-                        return CreateWriteError(
+                        // Friction 2026-05-25 item #5 — return rich diagnostics
+                        // so the agent can see exactly what the SDK normalised
+                        // away. Without persisted/requested snippets the agent
+                        // had to guess which attribute/child was rejected; with
+                        // them it can do a textual compare and fix the next
+                        // call. Keep snippets capped (~800 chars) so they
+                        // survive the TrimErrorEnvelope allowlist without
+                        // blowing the wire budget.
+                        const int snippetCap = 800;
+                        string persistedSnippet = string.IsNullOrEmpty(persistedXml)
+                            ? null
+                            : (persistedXml.Length > snippetCap ? persistedXml.Substring(0, snippetCap) + "…[truncated]" : persistedXml);
+                        string requestedSnippet = string.IsNullOrEmpty(normalizedInput)
+                            ? null
+                            : (normalizedInput.Length > snippetCap ? normalizedInput.Substring(0, snippetCap) + "…[truncated]" : normalizedInput);
+
+                        var verifyErr = CreateWriteError(
                             "Pattern write verification failed",
                             target,
                             partName,
-                            "The SDK save path completed, but the persisted WorkWithPlus pattern XML does not match the requested content. Diff: " + (patternDiff ?? "n/a"),
+                            "The SDK save path completed, but the persisted WorkWithPlus pattern XML does not match the requested content. Compare 'persistedSnippet' (what the SDK kept) vs 'requestedSnippet' (what you sent) to see which attribute/child was sanitised. Diff: " + (patternDiff ?? "n/a"),
                             refreshedObject ?? resolvedObject,
                             patternStructured);
+                        // Inject snippets into the JSON envelope produced by CreateWriteError.
+                        try
+                        {
+                            var verifyJobj = JObject.Parse(verifyErr);
+                            if (persistedSnippet != null) verifyJobj["persistedSnippet"] = persistedSnippet;
+                            if (requestedSnippet != null) verifyJobj["requestedSnippet"] = requestedSnippet;
+                            return verifyJobj.ToString();
+                        }
+                        catch
+                        {
+                            return verifyErr;
+                        }
                     }
 
                     var success = new JObject

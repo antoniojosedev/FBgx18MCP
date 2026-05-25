@@ -1197,6 +1197,19 @@ namespace GxMcp.Gateway
             {
                 if (error[k] != null) trimmed[k] = error[k];
             }
+            // Friction 2026-05-25 item #5 — verification/validation failure
+            // diagnostics. When the SDK rejects a write because the persisted
+            // XML doesn't match the requested (Pattern write verification
+            // failed, Visual write failed with sanitisation, etc.), the agent
+            // needs the actual diff to fix the next call. The terse default
+            // dropped `details` + `verifyDiff` so the agent saw only "Pattern
+            // write verification failed" with no clue what was rejected.
+            // Allowlist these when present — they're small structured objects.
+            string[] diagnosticKeys = { "details", "verifyDiff", "suggestion", "persistedSnippet", "requestedSnippet", "availableParts", "part", "objectName", "objectType" };
+            foreach (var k in diagnosticKeys)
+            {
+                if (error[k] != null) trimmed[k] = error[k];
+            }
             string status = error["status"]?.ToString();
             if (!string.IsNullOrEmpty(status) &&
                 !string.Equals(status, "Error", StringComparison.OrdinalIgnoreCase))

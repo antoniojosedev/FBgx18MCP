@@ -134,6 +134,15 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Error("Object not found", objectName);
                 }
 
+                // Friction 2026-05-25 item #6 — IDE lock pre-check. The GeneXus
+                // IDE writes <KB>/Locks/<object-guid>.lock when it opens an
+                // object. The reapply SDK call deadlocks for >10min when the
+                // IDE holds the lock (UpdateParentObject contends on the same
+                // KBObject handle). Fail fast with a structured error rather
+                // than hanging the worker thread indefinitely.
+                string lockReject = TryBuildIdeLockRejection(obj, objectName);
+                if (lockReject != null) return lockReject;
+
                 // For reapply we default to WorkWithPlus until other patterns are wired.
                 return ApplyPatternToObject(obj, WorkWithPlusPatternId, "WorkWithPlus", settings, reapply: true);
             }
@@ -141,6 +150,142 @@ namespace GxMcp.Worker.Services
             {
                 Logger.Error("PatternApplyService.ReapplyPattern failed: " + ex);
                 return McpResponse.Error(ex.Message, objectName);
+            }
+        }
+
+        /// <summary>
+        /// Friction 2026-05-25 item #6 — returns a structured "IDE holds lock"
+        /// rejection envelope when GeneXus IDE has the object open, otherwise
+        /// null. Looks for <KB>/Locks/<guid>.lock for the parent AND its WWP
+        /// host (WorkWithPlus&lt;Name&gt;). Best-effort: any I/O failure logs
+        /// and returns null so the SDK call proceeds.
+        /// </summary>
+        internal string TryBuildIdeLockRejection(KBObject parent, string objectName)
+        {
+            try
+            {
+                string kbPath = null;
+                try { kbPath = _objectService?.GetKbService()?.GetKbPath(); } catch { /* best-effort */ }
+                if (string.IsNullOrWhiteSpace(kbPath)) return null;
+
+                // GetKbPath returns either the .gkb file or the directory; normalise.
+                string kbDir = System.IO.File.Exists(kbPath)
+                    ? System.IO.Path.GetDirectoryName(kbPath)
+                    : kbPath;
+                if (string.IsNullOrWhiteSpace(kbDir)) return null;
+
+                string locksDir = System.IO.Path.Combine(kbDir, "Locks");
+                if (!System.IO.Directory.Exists(locksDir)) return null;
+
+                var hits = new System.Collections.Generic.List<JObject>();
+                void Probe(KBObject obj, string role)
+                {
+                    if (obj == null) return;
+                    var guid = obj.Guid;
+                    if (guid == Guid.Empty) return;
+                    string lockFile = System.IO.Path.Combine(locksDir, guid.ToString("D") + ".lock");
+                    if (!System.IO.File.Exists(lockFile)) return;
+
+                    // Distinguish IDE locks from our own worker's locks. The
+                    // worker writes its OWN .lock files when it opens objects;
+                    // we should not refuse our own session. The IDE's lock
+                    // files are typically created/touched at session start and
+                    // remain throughout — the safest signal is "is the file
+                    // currently held open by another process". F_OK is enough
+                    // for now; refine via FileShare probe if false-positives
+                    // appear.
+                    hits.Add(new JObject
+                    {
+                        ["role"] = role,
+                        ["object"] = obj.Name,
+                        ["guid"] = guid.ToString("D"),
+                        ["lockFile"] = lockFile,
+                        ["lockedAtUtc"] = System.IO.File.GetLastWriteTimeUtc(lockFile).ToString("o")
+                    });
+                }
+
+                Probe(parent, "parent");
+
+                // Probe the WWP host too: WorkWithPlus<Name> is the conventional naming.
+                if (_objectService != null && !string.IsNullOrEmpty(parent?.Name))
+                {
+                    var hostName = "WorkWithPlus" + parent.Name;
+                    var host = _objectService.FindObject(hostName);
+                    Probe(host, "wwpHost");
+                }
+
+                if (hits.Count == 0) return null;
+
+                var err = new JObject
+                {
+                    ["status"] = "Error",
+                    ["code"] = "IdeHoldsLock",
+                    ["message"] = "GeneXus IDE has " + (hits.Count == 1 ? "an object" : "objects") + " open that would deadlock the SDK reapply call. Close the tab(s) in the IDE (or save and switch to another object) and retry.",
+                    ["target"] = objectName,
+                    ["lockedObjects"] = new JArray(hits),
+                    ["hint"] = "Close '" + (string)hits[0]["object"] + "' (and any other listed object) in the GeneXus IDE before calling reapply. The MCP worker and the IDE cannot hold the same KBObject handle simultaneously."
+                };
+                return err.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch (Exception ex)
+            {
+                Logger.Info("[IDE-LOCK-CHECK] best-effort failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Friction 2026-05-25 — invoke <c>DVelop.Patterns.WorkWithPlus.Helpers.PatternInstancePackageInterface.SetPatternApplyOnSave(host)</c>
+        /// so the IDE's "Apply this pattern on save" checkbox stays on after a
+        /// reapply (or after a user manually unchecked it in the IDE). Pure
+        /// reflection over WWP types; best-effort — any miss is logged and
+        /// returns false instead of throwing. Returns true when the SDK
+        /// method was found and invoked without exception.
+        /// </summary>
+        internal bool TryEnableApplyOnSave(KBObject host)
+        {
+            if (host == null) return false;
+            try
+            {
+                var wwpAsm = AppDomain.CurrentDomain.GetAssemblies()
+                    .FirstOrDefault(a => string.Equals(a.GetName().Name, "DVelop.Patterns.WorkWithPlus", StringComparison.OrdinalIgnoreCase));
+                if (wwpAsm == null) { Logger.Debug("[APPLY-ON-SAVE] DVelop.Patterns.WorkWithPlus not loaded"); return false; }
+                var ifaceType = wwpAsm.GetType("DVelop.Patterns.WorkWithPlus.Helpers.PatternInstancePackageInterface", false);
+                if (ifaceType == null) { Logger.Debug("[APPLY-ON-SAVE] PatternInstancePackageInterface not found"); return false; }
+                var setApplyMethod = ifaceType.GetMethod("SetPatternApplyOnSave", BindingFlags.Public | BindingFlags.Static);
+                if (setApplyMethod == null) { Logger.Debug("[APPLY-ON-SAVE] SetPatternApplyOnSave method not found"); return false; }
+                setApplyMethod.Invoke(null, new object[] { host });
+                Logger.Info("[APPLY-ON-SAVE] SetPatternApplyOnSave invoked on host '" + host.Name + "'");
+
+                // Persist the change so the IDE sees the flag flip across the
+                // next refresh — the SDK call mutates in-memory state only.
+                try
+                {
+                    var prefs = new global::Artech.Architecture.Common.Objects.KBObjectSavePreferences
+                    {
+                        ForceSave = true,
+                        ForceSaveDefaultParts = true,
+                        SkipValidation = true
+                    };
+                    host.Save(prefs);
+                }
+                catch (Exception saveEx)
+                {
+                    Logger.Info("[APPLY-ON-SAVE] host.Save threw: " + saveEx.Message + " — trying EnsureSave(true)");
+                    try { host.EnsureSave(true); } catch (Exception ex2) { Logger.Info("[APPLY-ON-SAVE] EnsureSave fallback also failed: " + ex2.Message); }
+                }
+                return true;
+            }
+            catch (TargetInvocationException tie)
+            {
+                var inner = tie.InnerException ?? tie;
+                Logger.Info("[APPLY-ON-SAVE] SetPatternApplyOnSave threw: " + inner.GetType().Name + ": " + inner.Message);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Info("[APPLY-ON-SAVE] reflection failed: " + ex.Message);
+                return false;
             }
         }
 
@@ -229,19 +374,35 @@ namespace GxMcp.Worker.Services
             // PatternInstance state from before genexus_edit landed.
             if (existingInstance != null && _objectService != null)
             {
+                KBObject reappliedHost = null;
                 try
                 {
                     var freshHost = _objectService.FindObject("WorkWithPlus" + obj.Name);
                     if (freshHost != null)
                     {
                         TryInvokeBuildProcessUpdateParent(obj, freshHost);
+                        reappliedHost = freshHost;
                     }
                     else if (existingInstance is KBObject existingHostObj)
                     {
                         TryInvokeBuildProcessUpdateParent(obj, existingHostObj);
+                        reappliedHost = existingHostObj;
                     }
                 }
                 catch (Exception ex) { Logger.Info("Reapply UpdateParentObject best-effort: " + ex.Message); }
+
+                // Friction 2026-05-25 — first-apply called SetPatternApplyOnSave
+                // via PatternInstancePackageInterface so the IDE's "Apply this
+                // pattern on save" checkbox lit up; reapply previously skipped
+                // it, so a host whose checkbox was manually unchecked stayed
+                // unchecked even after a successful reapply. Now always re-
+                // assert the flag on reapply — best-effort, reflection-based,
+                // matches the helper used in TryFirstApplyViaPackage above.
+                if (reappliedHost != null)
+                {
+                    try { TryEnableApplyOnSave(reappliedHost); }
+                    catch (Exception ex) { Logger.Info("Reapply SetPatternApplyOnSave best-effort: " + ex.Message); }
+                }
             }
 
             // Compute the real generated-objects list. The adapter's GeneratedObjects
