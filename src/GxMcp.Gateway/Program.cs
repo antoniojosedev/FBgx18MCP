@@ -2468,7 +2468,7 @@ namespace GxMcp.Gateway
                         ["params"] = tcParams
                     };
 
-                    // v2.6.9 perf: gateway-side fast-fail for list_objects / query when
+                    // v2.6.9 perf: gateway-side fast-fail for SDK-bound tools when
                     // the worker is still doing its initial BulkIndex on the STA thread.
                     // Without this the request queues behind a 30-60s SDK enumeration
                     // and the agent eats the full 60s gateway-timeout before learning
@@ -2476,8 +2476,39 @@ namespace GxMcp.Gateway
                     // gateway as soon as BulkIndex finishes, so once _lastKnownIndexState
                     // flips to "Ready" we forward normally. Worker-side ListService has
                     // its own fast-fail for callers that bypass this short-circuit.
+                    //
+                    // Allow-list of tools that are blocked behind the STA thread and
+                    // therefore benefit from the short-circuit. Gateway-served tools
+                    // (whoami, recipe, doctor, kb_diff, sandbox, etc.) bypass naturally
+                    // because they never hit the worker dispatcher.
                     if (string.Equals(tName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(tName, "genexus_query", StringComparison.OrdinalIgnoreCase))
+                        || string.Equals(tName, "genexus_query", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_inspect", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_search_source", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_analyze", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_explain", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_apply_pattern", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_inject_context", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_db_optimize", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_api", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_types", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_edit", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_edit_form", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_edit_and_build", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_save_as", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_create_object", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_create_popup", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_bulk_edit", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_navigation", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_kb_explorer", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_run_object", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_diff_generated", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_what_if", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_db_drift", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_orient", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(tName, "genexus_security", StringComparison.OrdinalIgnoreCase))
                     {
                         IndexStateSnapshot idxSnap;
                         lock (_lastKnownIndexStateLock) { idxSnap = _lastKnownIndexState; }
