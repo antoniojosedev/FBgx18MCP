@@ -14,6 +14,22 @@ namespace GxMcp.Worker.Services
 {
     public class AnalyzeService : IAnalyzeServiceFacade
     {
+        // v2.6.9 perf: inspect (GetConversionContext) cache. The SDK reads for
+        // signature/variables/structure/parts/controls/events/callers are
+        // serialised on the STA thread and the first call per target costs
+        // ~700 ms p99. Subsequent calls within TTL skip the SDK round-trips
+        // when no write has landed against the target. Invalidation watches
+        // WriteService._lastWriteAtUtc — any in-process write to the target
+        // post-cache flips the entry stale and forces a fresh read.
+        private sealed class InspectCacheEntry
+        {
+            public string Json;
+            public System.DateTime FilledAtUtc;
+        }
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, InspectCacheEntry> _inspectCache
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, InspectCacheEntry>(System.StringComparer.OrdinalIgnoreCase);
+        private static readonly System.TimeSpan InspectCacheTtl = System.TimeSpan.FromSeconds(30);
+
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
@@ -615,6 +631,25 @@ namespace GxMcp.Worker.Services
 
         public string GetConversionContext(string name, JArray include = null, string typeFilter = null)
         {
+            // v2.6.9 perf: inspect cache. Build a stable key from name + sorted
+            // include set + typeFilter, then reuse a fresh entry if no write
+            // landed against the target since the cache was filled.
+            string includeKey = include == null || include.Count == 0
+                ? "*"
+                : string.Join(",", include.Select(i => (i?.ToString() ?? string.Empty).Trim().ToLowerInvariant())
+                                          .Where(s => s.Length > 0)
+                                          .OrderBy(s => s, System.StringComparer.OrdinalIgnoreCase));
+            string inspectKey = (name ?? "") + "|" + includeKey + "|" + (typeFilter ?? "");
+            if (_inspectCache.TryGetValue(inspectKey, out var cached) && cached != null)
+            {
+                bool ttlOk = (System.DateTime.UtcNow - cached.FilledAtUtc) < InspectCacheTtl;
+                bool noConcurrentWrite = !WriteService.WasTargetWrittenSince(name, cached.FilledAtUtc);
+                if (ttlOk && noConcurrentWrite)
+                {
+                    return cached.Json;
+                }
+                _inspectCache.TryRemove(inspectKey, out _);
+            }
             try
             {
                 var obj = _objectService.FindObject(name, typeFilter);
@@ -1009,7 +1044,16 @@ namespace GxMcp.Worker.Services
                 // 7. Final Summary
                 result["summary"] = GenerateSummary(obj, result);
 
-                return result.ToString();
+                string json = result.ToString();
+                // v2.6.9 perf: populate inspect cache. Bounded by 30 s TTL +
+                // WriteService.WasTargetWrittenSince invalidation; safe to skip
+                // SDK reads on the next hit.
+                _inspectCache[inspectKey] = new InspectCacheEntry
+                {
+                    Json = json,
+                    FilledAtUtc = System.DateTime.UtcNow
+                };
+                return json;
             }
             catch (Exception ex)
             {
