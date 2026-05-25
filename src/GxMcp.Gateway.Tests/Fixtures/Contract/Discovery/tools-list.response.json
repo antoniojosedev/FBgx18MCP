@@ -2291,6 +2291,39 @@
       "name": "genexus_preview"
     },
     {
+      "description": "Ingest a GeneXus runtime profiler XML; returns hot-spot summary by object. Defensive parser; surfaces parserWarnings on unrecognized schema.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "analyze",
+              "hotspots",
+              "correlate"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "Filesystem path to a GeneXus profile XML.",
+            "type": "string"
+          },
+          "target": {
+            "description": "correlate only.",
+            "type": "string"
+          },
+          "top": {
+            "description": "hotspots only; default 10, max 50.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_profile"
+    },
+    {
       "description": "Read or update GeneXus object properties. Note: Description is the title-bar text shown when a WebPanel/Popup is opened via .Popup().",
       "inputSchema": {
         "properties": {

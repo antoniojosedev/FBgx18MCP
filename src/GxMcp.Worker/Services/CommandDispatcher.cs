@@ -116,6 +116,8 @@ namespace GxMcp.Worker.Services
         private readonly TypeIntrospectService _typeIntrospectService;
         // genexus_api: REST endpoint introspection + breaking-change diff.
         private readonly ApiIntrospectService _apiIntrospectService;
+        // genexus_profile: runtime profiler XML bridge (file-only ingest v1).
+        private readonly ProfileService _profileService;
 
         private CommandDispatcher()
         {
@@ -213,6 +215,7 @@ namespace GxMcp.Worker.Services
             _doctorService = new DoctorService(_kbService, _indexCacheService, null);
             _apiIntrospectService = new ApiIntrospectService(_kbService, _objectService, _indexCacheService);
             _typeIntrospectService = new TypeIntrospectService(_kbService, _objectService);
+            _profileService = new ProfileService();
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -1268,6 +1271,10 @@ namespace GxMcp.Worker.Services
                         // genexus_api — REST endpoint introspection + diff vs baseline.
                         // Single Run() switches on args.action (list/describe/diff_baseline/snapshot).
                         return _apiIntrospectService.Run(args ?? new JObject());
+                    case "profile":
+                        // genexus_profile — runtime profiler XML bridge.
+                        // Single Run() switches on args.action (analyze/hotspots/correlate).
+                        return _profileService.Run(args ?? new JObject());
                     case "types":
                         // genexus_types — Domain/SDT introspection + value validation.
                         // Run() switches on args.action (list/describe/validate_value).

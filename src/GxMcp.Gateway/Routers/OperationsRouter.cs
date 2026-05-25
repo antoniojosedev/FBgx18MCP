@@ -610,6 +610,17 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                // genexus_profile — runtime profiler XML bridge (file-only ingest v1).
+                // Worker's ProfileService.Run switches on args.action (analyze|hotspots|correlate).
+                case "genexus_profile":
+                    return new
+                    {
+                        module = "Profile",
+                        action = args?["action"]?.ToString() ?? "analyze",
+                        target = args?["target"]?.ToString(),
+                        @params = args
+                    };
+
                 // genexus_types — Domain/SDT introspection + value validation.
                 // Worker's TypeIntrospectService.Run switches on args.action
                 // (list|describe|validate_value).

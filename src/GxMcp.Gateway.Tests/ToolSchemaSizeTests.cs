@@ -103,7 +103,9 @@ namespace GxMcp.Gateway.Tests
             //   genexus_gxserver, genexus_types, plus genexus_analyze.cross_platform_impact
             //   enum value and genexus_recipe action surface expansion (suggest_macro /
             //   crystallize). Measured ~12943; ~107 tokens headroom.
-            Assert.True(approxTokens < 13050, $"tool_definitions.json is ~{approxTokens} tokens; budget 13050.");
+            //   v2.6.10 (2026-05-24, profile bridge): 13050 → 13150 for genexus_profile
+            //   (~75 tokens — runtime profiler XML ingest). Measured 13081.
+            Assert.True(approxTokens < 13150, $"tool_definitions.json is ~{approxTokens} tokens; budget 13150.");
         }
     }
 }
