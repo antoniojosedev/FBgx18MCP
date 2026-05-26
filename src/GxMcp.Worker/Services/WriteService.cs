@@ -2565,6 +2565,11 @@ namespace GxMcp.Worker.Services
             // can attach the same warning set without duplicating the resolution work.
             JArray patternShadowWarnings = BuildPatternShadowWarningsIfAny(obj, partName);
 
+            // Captured from the precheck so the save-failure handler can emit a
+            // deterministic transition hint without re-parsing post-rollback state.
+            string currentFormType = null;
+            string incomingFormType = null;
+
             string normalizedInput;
             try
             {
@@ -2609,6 +2614,8 @@ namespace GxMcp.Worker.Services
             try
             {
                 string currentXml = WebFormXmlHelper.ReadEditableXml(obj);
+                currentFormType = TryExtractFormType(currentXml);
+                incomingFormType = TryExtractFormType(normalizedInput);
                 if (XmlEquivalence.AreEquivalent(currentXml, normalizedInput, out _))
                 {
                     var noChangeResp = new JObject
@@ -2779,7 +2786,27 @@ namespace GxMcp.Worker.Services
                     // several iterations to diagnose; with a recognizable hint
                     // they correct on the next call.
                     string hint = null;
-                    if (!string.IsNullOrEmpty(chain))
+                    string code = null;
+
+                    // Deterministic detection: if the incoming XML changed the
+                    // <Form type="…"> attribute vs the persisted body, the save
+                    // failure is almost certainly the transition itself, not a
+                    // generic visual-write error. This fires regardless of what
+                    // the SDK message says.
+                    if (!string.IsNullOrEmpty(currentFormType)
+                        && !string.IsNullOrEmpty(incomingFormType)
+                        && !string.Equals(currentFormType, incomingFormType, StringComparison.OrdinalIgnoreCase))
+                    {
+                        code = "FormTypeTransitionUnsupported";
+                        hint = $"Form type transition detected ({currentFormType} → {incomingFormType}). " +
+                               $"Visual writes that change the Form type only succeed when the request body is a COMPLETE target-type document: " +
+                               $"a single <Form type=\"{incomingFormType}\"> root containing all children required by the target schema. " +
+                               $"Partial patches and html→layout sub-tree edits are rejected by the SDK without diagnostics. " +
+                               $"On WorkWithPlus KBs the layout body additionally requires the dual-form <detail><layout><table> wrapping — " +
+                               $"see genexus_playbook topic=wwp_dual_form.";
+                    }
+
+                    if (hint == null && !string.IsNullOrEmpty(chain))
                     {
                         if (chain.IndexOf("marca (table) não corresponde", StringComparison.OrdinalIgnoreCase) >= 0
                             || chain.IndexOf("convertion of formId", StringComparison.OrdinalIgnoreCase) >= 0
@@ -2807,12 +2834,13 @@ namespace GxMcp.Worker.Services
                     }
 
                     var visualErr = CreateWriteError("Visual write failed", target, partName, chain, obj);
-                    if (!string.IsNullOrEmpty(hint))
+                    if (!string.IsNullOrEmpty(hint) || !string.IsNullOrEmpty(code))
                     {
                         try
                         {
                             var jo = Newtonsoft.Json.Linq.JObject.Parse(visualErr);
-                            jo["hint"] = hint;
+                            if (!string.IsNullOrEmpty(hint)) jo["hint"] = hint;
+                            if (!string.IsNullOrEmpty(code)) jo["code"] = code;
                             return jo.ToString();
                         }
                         catch { /* fall through to plain envelope */ }
@@ -2825,6 +2853,26 @@ namespace GxMcp.Worker.Services
         // Walks ex.InnerException so the deepest message — usually the real SDK
         // diagnostic — ends up in the response. Outer wrappers are still surfaced
         // but only when they add information beyond the inner message.
+        internal static string TryExtractFormType(string xml)
+        {
+            if (string.IsNullOrWhiteSpace(xml)) return null;
+            try
+            {
+                var doc = new System.Xml.XmlDocument();
+                doc.LoadXml(xml);
+                var node = doc.SelectSingleNode("//Form[@type]") as System.Xml.XmlElement;
+                return node?.GetAttribute("type");
+            }
+            catch
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(
+                    xml,
+                    @"<Form\b[^>]*\btype\s*=\s*[""']([^""']+)[""']",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                return match.Success ? match.Groups[1].Value : null;
+            }
+        }
+
         internal static string FormatExceptionChain(Exception ex)
         {
             if (ex == null) return null;

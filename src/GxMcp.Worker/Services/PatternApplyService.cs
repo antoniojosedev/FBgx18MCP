@@ -295,6 +295,11 @@ namespace GxMcp.Worker.Services
             var phases = new System.Collections.Generic.List<string>();
             void Phase(string name) { phases.Add($"{name}={phaseTimer.ElapsedMilliseconds}ms"); phaseTimer.Restart(); }
 
+            // Surfaced on the response when reapply projection runs long — agents
+            // need a structured signal (not just a log line) to suggest closing
+            // an IDE tab or retrying later. See SLOW_REAPPLY_THRESHOLD_MS.
+            long projectionElapsedMs = 0;
+
             // F17 (perf-gated): SdkSurfaceProbe.Run walks every loaded SDK assembly,
             // dumps all public types/methods/properties and writes a multi-MB raw.json.
             // It used to run on EVERY apply (~5-15s of pure waste in production calls).
@@ -398,6 +403,7 @@ namespace GxMcp.Worker.Services
                 }
                 catch (Exception ex) { Logger.Info("Reapply UpdateParentObject best-effort: " + ex.Message); }
                 projectionSw.Stop();
+                projectionElapsedMs = projectionSw.ElapsedMilliseconds;
                 if (projectionSw.ElapsedMilliseconds > 30000)
                 {
                     // 30s threshold — IDE-hold-on-tab deadlocks were 10+ min.
@@ -535,6 +541,19 @@ namespace GxMcp.Worker.Services
                 response["patternValidationIssues"] = patternValidationIssues;
                 response["hint"] = "Pattern apply persisted, but the parent's Events code references controls the fresh PatternInstance doesn't expose. The next IDE 'Ctrl+S' will fail with these errors. Edit the parent's Events to remove or rename the referenced controls (typically " +
                                    "`GrpX.Visible = …` or similar) before saving in the IDE.";
+            }
+
+            // Reapply projection-time surfacing. The STA-bound SDK call can't be
+            // hard-aborted from another thread, but a structured signal lets the
+            // agent decide to close the IDE tab / retry without re-reading logs.
+            // Threshold matches the warn-log at the projection site.
+            if (reapply && projectionElapsedMs > 30000)
+            {
+                response["slowReapply"] = true;
+                response["projectionMs"] = projectionElapsedMs;
+                response["slowReapplyHint"] = $"Reapply projection took {projectionElapsedMs}ms (threshold 30000ms). " +
+                                              $"The most common cause is the GeneXus IDE holding '{targetName}' or 'WorkWithPlus{targetName}' open in a tab — close it and retry. " +
+                                              $"If no IDE is running, the SDK may be hung on a stale handle; restart the worker via genexus_worker_reload mode=hard.";
             }
 
             // Surface the WWP host (`WorkWithPlus<X>`) explicitly when present — agents

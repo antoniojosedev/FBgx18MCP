@@ -2,8 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- **`genexus_apply_pattern reapply=true` now surfaces a `slowReapply` signal** when the SDK projection phase exceeds 30 s. The response carries `slowReapply: true`, the measured `projectionMs`, and a `slowReapplyHint` pointing at the most common cause (the GeneXus IDE holding the parent or `WorkWithPlus<Name>` open in a tab — close it and retry; if no IDE is running, restart the worker via `genexus_worker_reload mode=hard`). Previously the slow-projection signal only hit the worker log; agents had no structured way to react. The STA constraint still prevents a hard wall-clock abort of the SDK call itself — combine this signal with the existing `IdeHoldsLock` pre-check for the full safety net.
+
 ### Changed
 
+- **`genexus_edit` visual-write now emits `code:"FormTypeTransitionUnsupported"` when the request changes `<Form type>`.** Previously a Form-type transition (typically `html → layout`) failed with the generic `"Visual write failed"` envelope and no useful diagnostic — agents iterated several times trying to figure out what the SDK rejected. The worker now extracts the Form `type` attribute from both the persisted XML and the incoming body; if they differ, the save-failure envelope is tagged with the specific code and a hint explaining that Form-type transitions only succeed when the body is a COMPLETE target-type document (mode='full' with the new `<Form type="…">` root and all children), and that WorkWithPlus KBs additionally need the dual-form `<detail><layout><table>` wrapping. Detection is structural (XML attribute comparison), not string-matching the SDK exception, so it fires regardless of which root cause the SDK reports.
 - **`Indexing` envelope now reports real progress and ETA.** The cold-start `{status:"Indexing", code:"IndexNotReady"}` envelope (returned by `genexus_list_objects` and the gateway's pre-worker guard when the index isn't ready yet) previously hardcoded `"Index still building; retry in 2-5 seconds."` regardless of KB size. The message is now templated from the index phase (`"Building index from cold start"` / `"Walking KB (ultra-lite pass)"` / `"Rebuilding index"`) with `N% complete` and `~Ns remaining` appended when the worker has populated them. `etaMs` is also surfaced on the envelope so an agent can pace its retry instead of polling blindly. Agents on large KBs (10k+ objects) get a realistic wait estimate; small-KB callers see the same sub-second behavior as before.
 
 ### Fixed
