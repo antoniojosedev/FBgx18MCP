@@ -732,9 +732,12 @@ namespace GxMcp.Worker.Services
             }
             else
             {
-                // Minimal shape (4 fields): name, type, path, parent
                 item["path"] = path;
                 item["parent"] = parent;
+                if (!string.IsNullOrEmpty(parentPath))
+                {
+                    item["parentPath"] = parentPath;
+                }
             }
 
             // v2.3.8 (Task 2.2): always expose parentFolderPath when known so the

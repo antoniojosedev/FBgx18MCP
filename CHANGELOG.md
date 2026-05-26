@@ -1,6 +1,14 @@
 # Changelog
 
-## v2.7.0 — 2026-05-26
+## Unreleased
+
+### Fixed
+
+- **`genexus_list_objects` compact shape now returns `parentPath`.** The gateway's default (`axiCompact=true`) projection promised `{name, type, path, parentPath, lastUpdate}`, but the worker only emitted `parentPath` when `verbose=true` — so default callers got the field projected to nothing. Compact responses now carry `parentPath` whenever the index knows it (e.g. `"Root Module/ClickSign"`); verbose callers are unchanged.
+
+### Changed
+
+- **Faster hierarchy lookups on a warm KB.** `genexus_list_objects`, `genexus_inspect`, and other tools that resolve an object's parent chain no longer re-walk `obj.Parent` per sibling on the first hot call after a KB open. The hierarchy cache is now primed from the on-disk index at hydration time, so lookups are O(1) from the first call. Most visible on large KBs where the prior cold-list spent measurable time re-resolving identical parent paths across hundreds of siblings.
 
 ### Changed
 

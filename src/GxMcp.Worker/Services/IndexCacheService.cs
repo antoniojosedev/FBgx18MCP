@@ -181,6 +181,7 @@ namespace GxMcp.Worker.Services
                 idx.LastUpdated = DateTime.UtcNow;
                 _index = idx;
                 _initialized = true;
+                PrimeHierarchyCacheFromIndex(idx);
             }
             // v2.6.9 perf: flip state to Ready so the gateway-side / list-service
             // fast-fail path doesn't treat fixture-loaded indexes as still-building.
@@ -616,6 +617,7 @@ namespace GxMcp.Worker.Services
                         _index = SearchIndex.FromJson(json);
                         NormalizeLegacyHierarchy(_index);
                         BuildParentIndex(_index);
+                        PrimeHierarchyCacheFromIndex(_index);
                         Logger.Info(string.Format("Index loaded. Objects: {0}", _index.Objects.Count));
                         // v2.3.8 (post-Task 1.2 fix): when we hydrate the in-memory index
                         // from the on-disk cache (warm start), publish Ready to IndexState
@@ -1011,6 +1013,17 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private void PrimeHierarchyCacheFromIndex(SearchIndex index)
+        {
+            if (index?.Objects == null) return;
+            foreach (var entry in index.Objects.Values)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.Guid)) continue;
+                if (!Guid.TryParse(entry.Guid, out var g)) continue;
+                _hierarchyCache[g] = (entry.Parent ?? string.Empty, entry.ParentPath ?? string.Empty, entry.Path ?? string.Empty, entry.Module);
+            }
+        }
+
         public void Clear()
         {
             lock (_lock)
@@ -1041,6 +1054,7 @@ namespace GxMcp.Worker.Services
                 BuildParentIndex(idx);
                 _index = idx;
                 _initialized = true;
+                PrimeHierarchyCacheFromIndex(idx);
             }
         }
 

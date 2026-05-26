@@ -19,18 +19,16 @@ namespace GxMcp.Worker.Tests
 
             var item = MakeItem("InvoiceProc", "Procedure", verbose: false);
 
-            // Should have: name, type, path, parent
             Assert.Equal("InvoiceProc", item["name"]?.ToString());
             Assert.Equal("Procedure", item["type"]?.ToString());
             Assert.NotNull(item["path"]);
             Assert.NotNull(item["parent"]);
+            Assert.NotNull(item["parentPath"]);
 
-            // Should NOT have: description, module, parentPath
             Assert.Null(item["description"]);
             Assert.Null(item["module"]);
-            Assert.Null(item["parentPath"]);
 
-            Assert.Equal(4, item.Count);
+            Assert.Equal(5, item.Count);
         }
 
         [Fact]
