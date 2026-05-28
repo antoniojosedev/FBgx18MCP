@@ -590,26 +590,27 @@
             "type": "string"
           },
           "ops": {
-            "description": "RFC 6902 JSON-Patch ops. Supported: add, remove, replace, test.",
+            "description": "GeneXus semantic ops (NOT RFC 6902 JSON-Patch). Each item: {op, args}. Supported ops: set_attribute, add_attribute, remove_attribute (Transaction); add_rule, remove_rule (Transaction/Procedure/WebPanel); set_property (any kind). Use mode=patch for textual find/replace.",
             "items": {
               "properties": {
+                "args": {
+                  "description": "Op-specific args. set_attribute: {name, type?, description?}. add_attribute: {name, type, ...}. add_rule: {rule}. set_property: {name, value}.",
+                  "type": "object"
+                },
                 "op": {
                   "enum": [
-                    "add",
-                    "remove",
-                    "replace",
-                    "test"
+                    "set_attribute",
+                    "add_attribute",
+                    "remove_attribute",
+                    "add_rule",
+                    "remove_rule",
+                    "set_property"
                   ],
                   "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "value": {}
+                }
               },
               "required": [
-                "op",
-                "path"
+                "op"
               ],
               "type": "object"
             },
@@ -1452,7 +1453,7 @@
       "name": "genexus_properties"
     },
     {
-      "description": "Search objects in active KB. Prefixes: type:, usedby:, parent:, parentPath:, description:. Compact by default. See genexus://kb/tool-help/genexus_query.",
+      "description": "Search objects in active KB. Prefixes: name:, type:, usedby:, parent:, parentPath:, description:. name:\"X\" (or bare quoted \"X\") demands exact-name match — use it when you know the object's name. Compact by default. See genexus://kb/tool-help/genexus_query.",
       "inputSchema": {
         "properties": {
           "axiCompact": {

@@ -31,6 +31,17 @@ namespace GxMcp.Worker.Services
         // is event-driven elsewhere, so doubling the TTL is safe.
         private static readonly TimeSpan ReadCacheTtl = TimeSpan.FromSeconds(60);
 
+        // Records successful deletions so a follow-up DeleteObject call that arrives
+        // after a gateway timeout (worker finished after the pipe died) is reported as
+        // success-confirmed-after-timeout instead of the ambiguous "Object not found".
+        // Key: "<type>:<name>" lower-case. Pruned lazily on hit + TTL on lookup.
+        private static readonly ConcurrentDictionary<string, DateTime> _recentDeletions =
+            new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan RecentDeletionTtl = TimeSpan.FromMinutes(5);
+
+        private static string RecentDeletionKey(string type, string name) =>
+            ((type ?? "") + ":" + (name ?? "")).ToLowerInvariant();
+
         // v2.6.8 (review C8): crash-line detector. Anchored markers only —
         // bare "critical" inside a log message (e.g., "critical section",
         // "no critical errors") must NOT trip the matcher.
@@ -507,7 +518,37 @@ namespace GxMcp.Worker.Services
                 }
 
                 var obj = FindObject(target, typeFilter);
-                if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+                if (obj == null)
+                {
+                    // A prior delete_object call may have timed out at the gateway pipe
+                    // while the worker's obj.Delete() completed successfully a few seconds
+                    // later. The retry now reaches a KB where the object is genuinely gone
+                    // — without this probe we'd return a misleading "Object not found".
+                    // Match any recently-deleted entry whose name equals the target
+                    // (type may be absent on the retry call).
+                    var nowUtc = DateTime.UtcNow;
+                    foreach (var kv in _recentDeletions)
+                    {
+                        if (nowUtc - kv.Value > RecentDeletionTtl)
+                        {
+                            _recentDeletions.TryRemove(kv.Key, out _);
+                            continue;
+                        }
+                        int colon = kv.Key.IndexOf(':');
+                        if (colon < 0) continue;
+                        string cachedType = kv.Key.Substring(0, colon);
+                        string cachedName = kv.Key.Substring(colon + 1);
+                        if (!string.Equals(cachedName, target, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!string.IsNullOrEmpty(typeFilter) && !string.Equals(cachedType, typeFilter, StringComparison.OrdinalIgnoreCase)) continue;
+
+                        var ackName = CommandDispatcher.EscapeJsonString(cachedName);
+                        var ackType = CommandDispatcher.EscapeJsonString(cachedType);
+                        var deletedAt = CommandDispatcher.EscapeJsonString(kv.Value.ToString("o"));
+                        Logger.Info(string.Format("DeleteObject: {0} ({1}) already removed at {2} — confirming via recent-deletion cache.", cachedName, cachedType, deletedAt));
+                        return "{\"status\":\"Success\", \"deleted\":\"" + ackName + "\", \"type\":\"" + ackType + "\", \"confirmedAfterTimeout\":true, \"deletedAtUtc\":\"" + deletedAt + "\", \"note\":\"Object was already deleted in a prior call (likely one whose response timed out at the client). No action taken on this retry.\"}";
+                    }
+                    return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+                }
 
                 string objName = obj.Name;
                 string objType = obj.TypeDescriptor?.Name ?? "Unknown";
@@ -518,6 +559,11 @@ namespace GxMcp.Worker.Services
                 obj.Delete();
 
                 Logger.Info(string.Format("Object deleted: {0} ({1})", objName, objType));
+
+                // Record the deletion before any further work — even if the index
+                // RemoveEntry below throws, the cache still lets a follow-up retry
+                // be answered correctly.
+                _recentDeletions[RecentDeletionKey(objType, objName)] = DateTime.UtcNow;
 
                 // Keep the search index honest: without this, list_objects keeps returning
                 // the deleted object for several minutes until a full reindex. Same

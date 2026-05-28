@@ -152,6 +152,12 @@ namespace GxMcp.Worker.Services
                 int dop = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
                 var queryResults = sourceSet.AsParallel().WithDegreeOfParallelism(dop);
 
+                // name:"X" demands exact-name match. Hard filter so the ranker never
+                // sees substring / vector candidates — those were poisoning results
+                // when an agent passed a long unique identifier.
+                if (!string.IsNullOrEmpty(criteria.NameFilter))
+                    queryResults = queryResults.Where(e => string.Equals(e.Name, criteria.NameFilter, StringComparison.OrdinalIgnoreCase));
+
                 if (!string.IsNullOrEmpty(criteria.TypeFilter))
                     queryResults = queryResults.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
                 
@@ -601,6 +607,25 @@ namespace GxMcp.Worker.Services
             query = ExtractFilter(query, "parentPath", value => c.ParentPathFilter = value);
             query = ExtractFilter(query, "parent", value => c.ParentFilter = value);
             query = ExtractFilter(query, "type", value => c.TypeFilter = value);
+            // name:"X" or name:X — exact-name lookup. Without this, a quoted long token
+            // like "WorkWithPlusComissaoParecerCadastro" leaked into vector similarity
+            // and surfaced 50 unrelated attributes whose embeddings happened to be
+            // semantically close. Exact-name short-circuits the ranker.
+            query = ExtractFilter(query, "name", value => c.NameFilter = value);
+
+            // Bare-quoted "X" with no other terms also signals "user wants this exact
+            // name" — same intent as name:"X". Common shape from agents typing a unique
+            // identifier verbatim. Only triggers when the whole residual query is a
+            // single quoted token, so multi-word semantic queries still vector-rank.
+            if (string.IsNullOrEmpty(c.NameFilter))
+            {
+                var bareQuoted = Regex.Match(query.Trim(), "^\"(?<v>[^\"]+)\"$");
+                if (bareQuoted.Success)
+                {
+                    c.NameFilter = bareQuoted.Groups["v"].Value;
+                    query = string.Empty;
+                }
+            }
 
             foreach (var part in query.Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries)) {
                 c.Terms.Add(part.ToLowerInvariant());
@@ -627,11 +652,12 @@ namespace GxMcp.Worker.Services
         }
 
         private class RankedResult { public SearchIndex.IndexEntry Entry { get; set; } public int Score { get; set; } public float VectorSimilarity { get; set; } }
-        private class SearchCriteria { 
+        private class SearchCriteria {
             public string TypeFilter { get; set; } public string ParentFilter { get; set; } public string ParentPathFilter { get; set; }
-            public string UsedByFilter { get; set; } public string DomainFilter { get; set; } 
+            public string UsedByFilter { get; set; } public string DomainFilter { get; set; }
             public string DescriptionFilter { get; set; } public string MetadataFilter { get; set; }
-            public HashSet<string> Terms { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase); 
+            public string NameFilter { get; set; }
+            public HashSet<string> Terms { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
     }
 }

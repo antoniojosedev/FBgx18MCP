@@ -294,6 +294,30 @@ namespace GxMcp.Worker.Services
 
             // Detect existing instance to decide between first-apply and re-apply.
             object existingInstance = _engine.GetPatternInstance(obj, patternId);
+
+            // Stale-metadata guard: GetPatternInstance can return non-null even after
+            // the user deleted the generated host (WorkWithPlus<Name>) in a prior
+            // session — the SDK keeps the PatternInstance metadata on the parent.
+            // Without this probe, reapply would skip the engine apply and produce a
+            // minimalist PatternInstance (empty <table/>). Treat a missing host as
+            // first-apply so the engine regenerates the family.
+            bool staleInstanceRecovered = false;
+            if (existingInstance != null && _objectService != null && !string.IsNullOrEmpty(obj?.Name)
+                && string.Equals(patternKey, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var wwpHostProbe = _objectService.FindObject("WorkWithPlus" + obj.Name);
+                    if (wwpHostProbe == null)
+                    {
+                        Logger.Info("ApplyPattern: PatternInstance metadata present but WorkWithPlus" + obj.Name + " host missing — treating as first-apply (stale metadata recovery).");
+                        existingInstance = null;
+                        staleInstanceRecovered = true;
+                    }
+                }
+                catch (Exception ex) { Logger.Debug("ApplyPattern: stale-host probe failed (best-effort): " + ex.Message); }
+            }
+
             bool wasFirstApply = existingInstance == null;
 
             PatternApplyResult result;
@@ -501,6 +525,11 @@ namespace GxMcp.Worker.Services
                 ["generatedObjects"] = new JArray(generated),
                 ["errors"] = new JArray(result?.Errors ?? Enumerable.Empty<string>())
             };
+            if (staleInstanceRecovered)
+            {
+                response["staleInstanceRecovered"] = true;
+                response["staleInstanceHint"] = "PatternInstance metadata was present on the parent but the generated WorkWithPlus host was missing (typically from a prior delete). Engine apply was re-run as if this were a fresh apply so the family regenerates instead of producing an empty PatternInstance.";
+            }
             if (patternValidationIssues != null)
             {
                 response["patternValidationIssues"] = patternValidationIssues;

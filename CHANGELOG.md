@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.7.4 — 2026-05-28
+
+### Fixed
+
+- **`genexus_delete_object` retry after a client timeout is no longer reported as "Object not found".** When the worker's `obj.Delete()` finished after the MCP client gave up on the call (large objects can take longer than the gateway's pipe budget), the next `genexus_delete_object` for the same name reached an empty KB and surfaced the generic not-found envelope — leaving the agent unsure whether the deletion actually succeeded. The worker now records every successful delete for 5 minutes and matches retries against that record: a retry whose object is genuinely gone returns `status:"Success", confirmedAfterTimeout:true, deletedAtUtc:<iso>` with a note explaining the earlier call completed server-side. A typo or never-existed name still gets the not-found envelope.
+- **`genexus_apply_pattern` with `reapply=true` regenerates the full family when the generated host was previously deleted.** The pattern engine's `GetPatternInstance` returns the metadata stored on the parent even after the `WorkWithPlus<Name>` host has been removed from the KB, so reapply was taking the "existing instance" path and producing a minimalist `PatternInstance` (often an empty `<table/>`) instead of regenerating. The apply path now probes for the host before trusting the metadata: a missing host promotes the call back to first-apply so the engine rebuilds the family. The response carries `staleInstanceRecovered:true` and a hint when this happens.
+- **`genexus_edit mode=ops` schema now matches the real ops dispatcher.** The `ops` field was advertised as "RFC 6902 JSON-Patch" with `op ∈ {add, remove, replace, test}`, but the worker actually implements a GeneXus-semantic DSL — `set_attribute`, `add_attribute`, `remove_attribute` (Transaction), `add_rule`, `remove_rule` (Transaction/Procedure/WebPanel), `set_property` (any kind). Sending `{op:"add", path:"…"}` was accepted by the schema and then rejected by the worker with a `did-you-mean: set_attribute, …` error. The schema now declares the actual op enum and a free-form `args` object; the description spells out which op applies to which object kind and points callers at `mode=patch` for textual find/replace.
+- **`genexus_query name:"X"` (and bare quoted `"X"`) now returns the exact name instead of 50 substring/vector look-alikes.** Passing a unique identifier like `name:"WorkWithPlusComissaoParecerCadastro"` used to leak the term into vector similarity and surface dozens of attributes whose embeddings were semantically close — wasting the agent's response budget on noise. `name:` is now a first-class filter (alongside `type:`, `usedby:`, `parent:`, `parentPath:`, `description:`) that applies a hard exact-name match before the ranker runs, and a bare-quoted whole query is interpreted the same way. Multi-word semantic queries still vector-rank normally.
+
 ## v2.7.3 — 2026-05-27
 
 ### Fixed
