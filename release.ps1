@@ -108,7 +108,26 @@ if (Test-Path $changelogPath) {
 }
 
 # ── 2. Bump version files if needed ───────────────────────────────────────
-if ($Version -ne $currentVersion) {
+#
+# Drift check (v2.8.0 lesson): when package.json was hand-edited BEFORE
+# running release.ps1, `$Version -eq $currentVersion` and the whole bump
+# block was skipped — including the csproj sync. The published binary
+# carried the OLD InformationalVersion stamp even though the source was
+# new. Detect that case and force the bump when ANY file is out of sync,
+# not only when -Version was passed.
+$csprojPath = Join-Path $root 'src\GxMcp.Gateway\GxMcp.Gateway.csproj'
+$csprojVersion = $null
+if (Test-Path $csprojPath) {
+    $csprojRaw = Get-Content $csprojPath -Raw
+    if ($csprojRaw -match '<InformationalVersion>([^<]+)</InformationalVersion>') {
+        $csprojVersion = $Matches[1].Trim()
+    }
+}
+$needsBump = ($Version -ne $currentVersion) -or ($csprojVersion -and $csprojVersion -ne $Version)
+if ($needsBump -and ($Version -eq $currentVersion) -and ($csprojVersion -ne $Version)) {
+    Warn "csproj InformationalVersion=$csprojVersion is out of sync with package.json=$Version — forcing bump pass to realign."
+}
+if ($needsBump) {
     Step "Bumping version: $currentVersion → $Version"
 
     # package.json — preserve formatting via regex (ConvertTo-Json reorders keys).

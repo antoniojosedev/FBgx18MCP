@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.8.1 — 2026-05-28
+
+### Fixed
+
+- **`mcp.serverVersion` in `whoami` no longer reports a stale 2.7.4 stamp.** The v2.8.0 publish landed with the Gateway csproj `InformationalVersion=2.7.4` because `release.ps1` only bumped version files when `-Version` was passed AND it differed from `package.json`. When `package.json` was edited by hand before invoking the script (as happened for v2.8.0), `$Version -eq $currentVersion` and the whole bump block was skipped — including the csproj sync. The published binary then carried the old version stamp even though the runtime code was the new v2.8.0 source. The script now also reads the csproj's current `InformationalVersion` and forces the bump pass when it's out of sync with `package.json`, regardless of whether `-Version` was passed.
+- **csproj version stamp realigned to 2.8.1.** The Gateway DLL emitted by this release stamps `Version` / `AssemblyVersion` / `FileVersion` / `InformationalVersion` to 2.8.1 — so `genexus_whoami.mcp.serverVersion` matches the package version, and the in-band update check no longer marks the running binary as "update available" against its own release.
+
 ## v2.8.0 — 2026-05-28 (BREAKING)
 
 This release replaces the legacy MCP response shape with a single canonical envelope, so a weakly-capable LLM can read any tool's reply with the same parser. **Every client that parses tool results needs to migrate.**
