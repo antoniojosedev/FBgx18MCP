@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.8.2 — 2026-05-30
+
+### Added
+
+- **Worker startup diagnostics in `worker_debug.log`.** On open, the worker now logs the active environment's data store (`[KB-OPEN-DATASTORE]` — type / server / schema, read from metadata only, no connection) plus a single `[COLD-START] totalMs=…` line covering Service-Manager warmup + SDK init + KB open. A slow or hung startup — e.g. one blocked reaching an unreachable database server during open — can now be diagnosed from the log alone instead of by guesswork.
+
+### Fixed
+
+- **`read`, `query`, `list_objects`, and object creation no longer get stuck on `IndexNotReady` / `totalObjects: 0` after a KB finishes indexing.** The v2.8.0 canonical-envelope migration wrapped the worker's index-state reply one level deeper (`result.result`), but the gateway's internal refresh still read the old top level — so it saw `status: "ok"` and `totalObjects: 0` and fast-failed every SDK-bound tool, even while `genexus_lifecycle action=status` correctly reported the index as ready with all objects. The gateway now reads the nested payload. Backward-compatible with the pre-2.8.0 reply shape.
+- **The active data store (DBMS dialect) now resolves for database-aware tools.** Datastore enumeration relied on SDK accessors (`Parts.Get("DataStores")`, `Environment.DataStores`, `TargetModel.DataStore`) that come back empty on many KBs, so the DBMS family silently fell back to a hardcoded default and the new `[KB-OPEN-DATASTORE]` diagnostic showed `<unresolved>`. It now reads the data store through the correct `DataStoresPart` model part — searching every environment model — and reads the DBMS off `GxDataStore.Dbms` directly, so the real dialect (e.g. Oracle) is resolved instead of guessed.
+- **The one-time "background indexing started" notice fires on first open again.** The cold-start banner only matched the legacy full-index reply (`Started`), not the default lite-index path (`LiteStarted`), so on most KBs it silently never appeared. It now fires for either path (and stays quiet on warm starts).
+
+### Changed
+
+- **SDK-bound tools self-heal instead of waiting for a manual `whoami`.** When the gateway's index mirror reports "not ready", a blocked tool now does one bounded synchronous refresh against the worker and re-checks before returning `IndexNotReady` — so a ready index that the mirror simply hadn't caught up to no longer leaves the agent stuck until it manually re-runs `whoami`. The refresh reads the worker's off-thread index state, so it stays fast even mid-indexing, and is skipped when the mirror was just refreshed.
+- **`genexus_doctor` always runs, even while the index is building.** It previously fast-failed with the generic `IndexNotReady` envelope during indexing. It now reaches its health report, which reads the on-disk snapshot and returns a precise `SearchIndexMissing` / `SearchIndexEmpty` (with retry hints) when appropriate — making it a reliable diagnostic and an escape hatch when the index state looks wrong.
+
+### Internal
+
+- Extracted index-state and database-info parsing into testable `ApplyIndexStateFromWorkerResult` / `ExtractDatabaseInfoFromWorkerResult` seams, with regression coverage for the canonical-envelope, flat-legacy, and string-`data` payload shapes. Index-readiness gating consolidated into `IsIndexUsableForReads`.
+- Audited every gateway-internal worker round-trip for the same envelope-nesting class: index-state and database-info were the only two affected (Build start/status and List/Objects stay flat; async-edit completion detection already descends correctly).
+- Serialized the tests that touch the process-wide `_lastKnownIndexState` mirror into a non-parallel collection, fixing a latent cross-class flake exposed by the new coverage.
+- Database-info refresh hardening: unwrap the v2.8.0 canonical envelope (`ExtractDatabaseInfoFromWorkerResult`), and resolve a KB alias from the single open KB when `_currentKb` is unset (whoami is a meta-tool, so the per-request KB isn't bound and the refresh previously never dispatched). `GetDatabaseInfo` now dispatches for whoami; fully populating the `whoami.database` block is being finished separately.
+
 ## v2.8.1 — 2026-05-28
 
 ### Fixed

@@ -5,6 +5,13 @@ using GxMcp.Gateway;
 
 namespace GxMcp.Gateway.Tests
 {
+    // Tests that read or mutate Program._lastKnownIndexState (a process-wide static mirror)
+    // must not run in parallel with each other, or one test's transient status value leaks
+    // into another's assertions. Membership in this collection serializes them.
+    [CollectionDefinition("IndexStateMirror", DisableParallelization = true)]
+    public sealed class IndexStateMirrorCollection { }
+
+    [Collection("IndexStateMirror")]
     public class WhoamiVersionTests
     {
         [Fact]

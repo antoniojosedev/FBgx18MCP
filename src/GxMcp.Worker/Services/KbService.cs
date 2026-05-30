@@ -122,6 +122,13 @@ namespace GxMcp.Worker.Services
 
                         sw.Stop();
                         Logger.Info($"[KB-OPEN] elapsedMs={sw.ElapsedMilliseconds} path={path}");
+                        // Diagnostic (read-only, no DB connect): record which data store the
+                        // active environment points at. The GeneXus SDK may try to reach this
+                        // server during open; when it's unreachable, KB-OPEN above balloons or
+                        // hangs. This line lets a slow/hung open be correlated with the target
+                        // DB from worker_debug.log alone. Best-effort — never gates readiness.
+                        try { Logger.Info($"[KB-OPEN-DATASTORE] {DescribeActiveDataStore(_kb)}"); }
+                        catch (Exception dsEx) { Logger.Debug($"[KB-OPEN-DATASTORE] probe failed: {dsEx.Message}"); }
                         return Models.McpResponse.Ok(
                             target: path,
                             code: "KbOpened",
@@ -185,6 +192,52 @@ namespace GxMcp.Worker.Services
             {
                 Logger.Warn($"[KB-METADATA] Failed to normalize .gxw version metadata: {ex.Message}");
             }
+        }
+
+        // Read-only one-line description of the active environment's default data store
+        // (name / type / server / schema) for the [KB-OPEN-DATASTORE] diagnostic. Reads
+        // SDK metadata only — does NOT open a DB connection. All access is defensive so a
+        // missing property or an unexpected SDK shape degrades to a partial string, never
+        // throws into the open path.
+        private static string DescribeActiveDataStore(dynamic kb)
+        {
+            if (kb == null) return "kb=null";
+            Func<Func<string>, string> s = f => { try { return f() ?? ""; } catch { return ""; } };
+
+            // Primary: the DataStoresPart accessor (shared with DatabaseInfoService). The
+            // legacy Environment.DataStores / TargetModel.DataStore paths return null on many
+            // KBs, which is why this used to log <unresolved> even though the store exists.
+            dynamic def = null;
+            try
+            {
+                var stores = DatabaseInfoService.EnumerateViaDataStoresPart(kb);
+                foreach (dynamic ds in stores)
+                {
+                    if (ds == null) continue;
+                    if (def == null) def = ds;
+                    bool isDefault = false;
+                    try { isDefault = (bool)ds.IsDefault; } catch { }
+                    if (isDefault) { def = ds; break; }
+                }
+            }
+            catch { }
+            if (def == null) { try { def = kb.DesignModel?.Environment?.TargetModel?.DataStore; } catch { } }
+            if (def == null) return "datastore=<unresolved>";
+
+            string name = s(() => (string)def.Name);
+            if (name.Length == 0) name = s(() => (string)def.Category.Name);
+            if (name.Length == 0) name = s(() => (string)def.Type);
+            int dbms = -1; try { dbms = (int)def.Dbms; } catch { }
+            string family = ""; try { family = ExecutionPlanFetcher.ResolveDbmsFamily(dbms); } catch { }
+            string server = s(() => (string)def.ServerName);
+            if (server.Length == 0) server = s(() => (string)def.Server);
+            string schema = s(() => (string)def.DatabaseSchema);
+            if (schema.Length == 0) schema = s(() => (string)def.Schema);
+
+            return "name=" + (name.Length == 0 ? "?" : name)
+                 + " type=" + (family.Length == 0 ? ("dbms" + dbms) : family)
+                 + " server=" + (server.Length == 0 ? "<none>" : server)
+                 + " schema=" + (schema.Length == 0 ? "<none>" : schema);
         }
 
         private static string ResolveKbDirectory(string kbPath)

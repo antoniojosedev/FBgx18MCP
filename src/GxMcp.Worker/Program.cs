@@ -193,6 +193,14 @@ namespace GxMcp.Worker
                 //
                 // Best-effort: any failure here is logged and ignored — the
                 // in-process build path will fall back to MSBuild.exe spawn.
+                //
+                // Cold-start breakdown is logged per-phase ([ArtechTask-warmup] …,
+                // Full SDK Initialization SUCCESS in …, [KB-OPEN] elapsedMs=…). This
+                // stopwatch adds a single end-to-end [COLD-START] line at sdk_ready so
+                // support can read time-to-ready from one line. On most KBs the SM
+                // warmup dominates; a sudden jump in kbOpen points at the data-store
+                // connect the SDK attempts during open.
+                var coldStartSw = System.Diagnostics.Stopwatch.StartNew();
                 TryWarmupArtechTaskCctor(gxPath);
 
                 InitializeSdk(gxPath);
@@ -218,6 +226,8 @@ namespace GxMcp.Worker
                     }
                 }
 
+                coldStartSw.Stop();
+                Logger.Info($"[COLD-START] totalMs={coldStartSw.ElapsedMilliseconds} (SM-warmup + SDK-init + KB-open until ready) kb={(string.IsNullOrEmpty(kbPath) ? "<none>" : kbPath)}");
                 Logger.Info("Worker SDK ready.");
                 // Tell the gateway the SDK is up so it can start the per-tool timeout
                 // clock only AFTER cold-start finishes (KB open + SDK init can take ~50s).

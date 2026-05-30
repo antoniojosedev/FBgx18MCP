@@ -253,7 +253,7 @@ if ($NotesFile -and (Test-Path $NotesFile)) {
     $m = $rx.Match($cl)
     if ($m.Success) {
         $notes = $m.Groups[1].Value.Trim()
-        Ok "Extracted release notes from CHANGELOG (${($notes.Length)} chars)."
+        Ok "Extracted release notes from CHANGELOG ($($notes.Length) chars)."
     }
 }
 if (-not $notes) {

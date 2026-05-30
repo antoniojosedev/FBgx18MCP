@@ -394,9 +394,13 @@ namespace GxMcp.Gateway
         // v2.3.8 Task 1.2: gateway-side mirror of the worker's IndexCacheService.GetState().
         // The worker is the source of truth (CommandDispatcher.GetIndexState), but the gateway
         // keeps a last-known snapshot so `whoami` returns instantly without round-tripping
-        // and works even when no worker is currently attached (default Cold/0). Updaters
-        // (search/lifecycle paths) call UpdateLastKnownIndexState whenever they receive
-        // fresh index telemetry from the worker.
+        // and works even when no worker is currently attached (default Cold/0).
+        //
+        // IMPORTANT: the ONLY production writer is TryRefreshIndexStateFromWorkerAsync (called
+        // from whoami and from the SDK-bound short-circuit's self-heal path). There is no
+        // background push from the worker, so this mirror can lag reality until something
+        // refreshes it — the short-circuit below compensates with a synchronous re-check rather
+        // than trusting a stale snapshot. Do not assume search/list/lifecycle calls keep it warm.
         private sealed class IndexStateSnapshot
         {
             public string Status = "Cold";
@@ -450,6 +454,24 @@ namespace GxMcp.Gateway
             // Keep AutoTypeInjector's name→type map warm whenever we get fresh index data.
             if (recentlyChanged != null)
                 AutoTypeInjector.RefreshFromRecentlyChanged(recentlyChanged);
+        }
+
+        // True when the index has enough populated entries for SDK-bound reads/edits.
+        // v2.6.9 perf: accept UltraLiteReady + LiteReady + Enriching as usable too. The lite
+        // pass streams partial snapshots every 500-1000 objects (UltraLiteReady), then completes
+        // (LiteReady), then enrichment runs in background (Enriching → Ready). All four states
+        // have name/type/path/lifecycle populated — enough for list_objects, query, inspect,
+        // read, explain, edit. mode=impact does on-demand per-target enrichment. (Note: "Complete"
+        // is KbService._currentStatus vocabulary, NOT an IndexCacheService state — the worker
+        // publishes "Ready" here when indexing finishes; the two must not be conflated.)
+        private static bool IsIndexUsableForReads(IndexStateSnapshot snap)
+        {
+            if (snap == null || snap.TotalObjects <= 0) return false;
+            string s = snap.Status ?? string.Empty;
+            return string.Equals(s, "Ready", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(s, "LiteReady", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(s, "Enriching", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(s, "UltraLiteReady", StringComparison.OrdinalIgnoreCase);
         }
 
         private static JObject BuildIndexBlock()
@@ -513,42 +535,7 @@ namespace GxMcp.Gateway
                 JObject? result = env["result"] as JObject;
                 if (result == null) return false;
 
-                // The worker may wrap the JSON-RPC result as either a JObject or a string payload.
-                JObject state = result;
-                if (result["indexStatus"] == null && result["status"] == null && result["data"] is JValue dv && dv.Type == JTokenType.String)
-                {
-                    try { state = JObject.Parse(dv.ToString()); } catch { return false; }
-                }
-
-                // v2.8.0: canonical envelope puts indexStatus (not status) inside result.
-                string status = state["indexStatus"]?.ToString() ?? state["status"]?.ToString() ?? "Cold";
-                int totalObjects = state["totalObjects"]?.ToObject<int?>() ?? 0;
-                DateTime? lastIndexedAt = null;
-                var liTok = state["lastIndexedAt"];
-                if (liTok != null && liTok.Type != JTokenType.Null)
-                {
-                    if (DateTime.TryParse(liTok.ToString(), null,
-                        System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
-                    {
-                        lastIndexedAt = parsed;
-                    }
-                }
-                double? progress = state["progress"]?.ToObject<double?>();
-                int? etaMs = state["etaMs"]?.ToObject<int?>();
-                int flushFailuresConsecutive = state["flushFailuresConsecutive"]?.ToObject<int?>() ?? 0;
-                DateTime? flushLastSuccessUtc = null;
-                var fls = state["flushLastSuccessUtc"];
-                if (fls != null && fls.Type != JTokenType.Null &&
-                    DateTime.TryParse(fls.ToString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var flsParsed))
-                {
-                    flushLastSuccessUtc = flsParsed;
-                }
-                string? flushLastError = state["flushLastError"]?.Type == JTokenType.Null ? null : state["flushLastError"]?.ToString();
-
-                JArray? recentlyChanged = state["recentlyChanged"] as JArray;
-                UpdateLastKnownIndexState(status, totalObjects, lastIndexedAt, progress, etaMs,
-                    flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged);
-                return true;
+                return ApplyIndexStateFromWorkerResult(result);
             }
             catch (Exception ex)
             {
@@ -557,11 +544,83 @@ namespace GxMcp.Gateway
             }
         }
 
+        // Parses the worker's GetIndexState payload and refreshes _lastKnownIndexState.
+        // Extracted from TryRefreshIndexStateFromWorkerAsync so the envelope-shape handling
+        // is unit-testable without spinning up a worker. `workerResult` is env["result"] —
+        // the JSON-RPC result the worker returned for the GetIndexState command.
+        // Returns true when a state was applied.
+        internal static bool ApplyIndexStateFromWorkerResult(JObject workerResult)
+        {
+            if (workerResult == null) return false;
+
+            // The worker may wrap the JSON-RPC result as either a JObject or a string payload.
+            JObject state = workerResult;
+            if (state["indexStatus"] == null && state["status"] == null && state["data"] is JValue dv && dv.Type == JTokenType.String)
+            {
+                try { state = JObject.Parse(dv.ToString()); } catch { return false; }
+            }
+
+            // v2.8.1 — v2.8.0 (commit e639b04) wrapped the worker's GetIndexState reply in the
+            // canonical McpResponse.Ok envelope { status:"ok", code:"IndexState", result:{ … } },
+            // which nests the real index payload one level below env["result"]. Without descending
+            // we read the envelope's status:"ok" / totalObjects:null (→0), so the gateway's
+            // SDK-bound short-circuit fast-failed every read/query/list with IndexNotReady even
+            // though the worker's index was Ready. Descend only when the current level lacks
+            // indexStatus but the nested result carries it — pre-2.8.0 flat replies pass through.
+            if (state["indexStatus"] == null && state["result"] is JObject canonicalInner && canonicalInner["indexStatus"] != null)
+            {
+                state = canonicalInner;
+            }
+
+            string status = state["indexStatus"]?.ToString() ?? state["status"]?.ToString() ?? "Cold";
+            int totalObjects = state["totalObjects"]?.ToObject<int?>() ?? 0;
+            DateTime? lastIndexedAt = null;
+            var liTok = state["lastIndexedAt"];
+            if (liTok != null && liTok.Type != JTokenType.Null)
+            {
+                if (DateTime.TryParse(liTok.ToString(), null,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                {
+                    lastIndexedAt = parsed;
+                }
+            }
+            double? progress = state["progress"]?.ToObject<double?>();
+            int? etaMs = state["etaMs"]?.ToObject<int?>();
+            int flushFailuresConsecutive = state["flushFailuresConsecutive"]?.ToObject<int?>() ?? 0;
+            DateTime? flushLastSuccessUtc = null;
+            var fls = state["flushLastSuccessUtc"];
+            if (fls != null && fls.Type != JTokenType.Null &&
+                DateTime.TryParse(fls.ToString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var flsParsed))
+            {
+                flushLastSuccessUtc = flsParsed;
+            }
+            string? flushLastError = state["flushLastError"]?.Type == JTokenType.Null ? null : state["flushLastError"]?.ToString();
+
+            JArray? recentlyChanged = state["recentlyChanged"] as JArray;
+            UpdateLastKnownIndexState(status, totalObjects, lastIndexedAt, progress, etaMs,
+                flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged);
+            return true;
+        }
+
         private static async Task<bool> TryRefreshDatabaseInfoFromWorkerAsync(int timeoutMs = 800)
         {
             if (_workerPool == null) return false;
             KbHandle? kb = _currentKb.Value;
             string? alias = kb?.NormalizedAlias;
+            if (string.IsNullOrEmpty(alias))
+            {
+                // whoami is a meta-tool, so the per-request KB isn't resolved and _currentKb is
+                // null — which left the database block stuck at "Pending" because this refresh
+                // returned before ever dispatching GetDatabaseInfo. (The index refresh isn't
+                // affected: it doesn't key by alias.) Fall back to the single open KB so the
+                // block populates; with multiple KBs open there's no unambiguous "the" KB, so skip.
+                try
+                {
+                    var open = _workerPool.ListOpen();
+                    if (open != null && open.Count == 1) alias = open[0].NormalizedAlias;
+                }
+                catch { }
+            }
             if (string.IsNullOrEmpty(alias)) return false;
             if (_databaseInfoByKb.ContainsKey(alias!)) return true;
             try
@@ -576,23 +635,8 @@ namespace GxMcp.Gateway
                     toolArgs: null,
                     trackOperation: false);
 
-                if (env == null || env["__timeout"] != null) return false;
-                JObject? result = env["result"] as JObject;
-                if (result == null) return false;
-
-                JObject info = result;
-                if (result["status"] == null && result["data"] is JValue dv && dv.Type == JTokenType.String)
-                {
-                    try { info = JObject.Parse(dv.ToString()); } catch { return false; }
-                }
-                // v2.8.0: success is signalled by env["status"] == "ok"; legacy envelope
-                // carried status:"Success" inside result. Accept either form.
-                bool dbInfoOk = string.Equals(env["status"]?.ToString(), "ok", StringComparison.Ordinal)
-                             || string.Equals(info["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase);
-                if (!dbInfoOk)
-                {
-                    return false;
-                }
+                JObject? info = ExtractDatabaseInfoFromWorkerResult(env);
+                if (info == null) return false;
                 _databaseInfoByKb[alias!] = info;
                 return true;
             }
@@ -601,6 +645,41 @@ namespace GxMcp.Gateway
                 Log($"[Whoami] database info fetch failed: {ex.Message}");
                 return false;
             }
+        }
+
+        // Extracts the database-info payload from a worker GetDatabaseInfo reply, or null when the
+        // reply didn't signal success. `env` is the JSON-RPC response (its `result` holds the
+        // worker's payload). Extracted from TryRefreshDatabaseInfoFromWorkerAsync so the envelope
+        // handling is unit-testable without a worker.
+        //
+        // v2.8.1 — v2.8.0 (commit e639b04) wrapped GetDatabaseInfo in the canonical McpResponse.Ok
+        // envelope { status:"ok", code:"DatabaseInfoCollected", result:{ default, … } }. whoami's
+        // database block and the SQL-dialect injection read the store fields (default/additional)
+        // off the top level, so descend into the nested result. Pre-2.8.0 flat replies (store
+        // fields beside status, no nested result) pass through unchanged.
+        internal static JObject? ExtractDatabaseInfoFromWorkerResult(JObject? env)
+        {
+            if (env == null || env["__timeout"] != null) return null;
+            JObject? result = env["result"] as JObject;
+            if (result == null) return null;
+
+            JObject info = result;
+            if (result["status"] == null && result["data"] is JValue dv && dv.Type == JTokenType.String)
+            {
+                try { info = JObject.Parse(dv.ToString()); } catch { return null; }
+            }
+            // success is signalled by env["status"] == "ok"; legacy envelope carried
+            // status:"Success" inside result. Accept either form. Check the OUTER envelope
+            // before unwrapping, since the canonical "status" lives there.
+            bool dbInfoOk = string.Equals(env["status"]?.ToString(), "ok", StringComparison.Ordinal)
+                         || string.Equals(info["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase);
+            if (!dbInfoOk) return null;
+
+            if (info["result"] is JObject canonicalInner && (info["code"] != null || info["status"] != null))
+            {
+                info = canonicalInner;
+            }
+            return info;
         }
 
         private static JObject? GetCachedDatabaseInfo()
@@ -645,8 +724,11 @@ namespace GxMcp.Gateway
                 bool refreshed = await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 400).ConfigureAwait(false);
                 // DB info is stable; fetch once per KB and cache forever. Await on first
                 // whoami of a session so the database block populates inline; subsequent
-                // calls short-circuit on the cache and pay nothing.
-                await TryRefreshDatabaseInfoFromWorkerAsync(timeoutMs: 600).ConfigureAwait(false);
+                // calls short-circuit on the cache and pay nothing. The timeout is generous
+                // (3s) because GetDatabaseInfo enumerates the DataStoresPart across the
+                // environment's models, which the SDK lazy-loads on first touch after a cold
+                // start — 600ms missed it, leaving database stuck at "Pending" for the session.
+                await TryRefreshDatabaseInfoFromWorkerAsync(timeoutMs: 3000).ConfigureAwait(false);
                 if (!refreshed)
                 {
                     lock (_lastKnownIndexStateLock)
@@ -2955,15 +3037,20 @@ namespace GxMcp.Gateway
                     // the worker is still doing its initial BulkIndex on the STA thread.
                     // Without this the request queues behind a 30-60s SDK enumeration
                     // and the agent eats the full 60s gateway-timeout before learning
-                    // the index isn't ready. The worker pushes index state to the
-                    // gateway as soon as BulkIndex finishes, so once _lastKnownIndexState
-                    // flips to "Ready" we forward normally. Worker-side ListService has
-                    // its own fast-fail for callers that bypass this short-circuit.
+                    // the index isn't ready. Once _lastKnownIndexState reports a usable
+                    // status we forward normally; when it doesn't, the block below does a
+                    // synchronous refresh-and-recheck before fast-failing so a ready index
+                    // isn't masked by a stale mirror. Worker-side ListService has its own
+                    // fast-fail for callers that bypass this short-circuit.
                     //
                     // Allow-list of tools that are blocked behind the STA thread and
                     // therefore benefit from the short-circuit. Gateway-served tools
-                    // (whoami, recipe, doctor, kb_diff, sandbox, etc.) bypass naturally
-                    // because they never hit the worker dispatcher.
+                    // (whoami, recipe, kb_diff, sandbox, etc.) bypass naturally because they
+                    // never hit the worker dispatcher. genexus_doctor is deliberately NOT
+                    // listed: it runs off the STA thread (worker "health" method) and reads
+                    // the on-disk snapshot, returning its own SearchIndexMissing/Empty report
+                    // with retry hints — far more useful than a generic IndexNotReady while
+                    // indexing, and it doubles as an escape hatch when the mirror is wrong.
                     if (string.Equals(tName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(tName, "genexus_query", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(tName, "genexus_inspect", StringComparison.OrdinalIgnoreCase)
@@ -2976,7 +3063,6 @@ namespace GxMcp.Gateway
                         || string.Equals(tName, "genexus_db_optimize", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(tName, "genexus_api", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(tName, "genexus_types", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(tName, "genexus_edit", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(tName, "genexus_edit_form", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(tName, "genexus_edit_and_build", StringComparison.OrdinalIgnoreCase)
@@ -2995,27 +3081,29 @@ namespace GxMcp.Gateway
                     {
                         IndexStateSnapshot idxSnap;
                         lock (_lastKnownIndexStateLock) { idxSnap = _lastKnownIndexState; }
-                        // v2.6.9 perf: accept UltraLiteReady + LiteReady + Enriching
-                        // as usable too. The lite pass streams partial snapshots
-                        // every 500-1000 objects (UltraLiteReady), then completes
-                        // (LiteReady), then enrichment runs in background (Enriching
-                        // → Ready). All three states have name/type/path/lifecycle
-                        // populated — enough for list_objects, query, inspect, read,
-                        // explain, edit. mode=impact does on-demand per-target
-                        // enrichment via IndexEntryEnricher. Time-to-productive for
-                        // a new user drops from ~108 s (LiteReady) to ~10 s
-                        // (UltraLiteReady first flush).
-                        string idxStatusUpper = idxSnap?.Status ?? string.Empty;
-                        bool indexUsable = idxSnap != null && idxSnap.TotalObjects > 0
-                            && (string.Equals(idxStatusUpper, "Ready", StringComparison.OrdinalIgnoreCase)
-                                || string.Equals(idxStatusUpper, "LiteReady", StringComparison.OrdinalIgnoreCase)
-                                || string.Equals(idxStatusUpper, "Enriching", StringComparison.OrdinalIgnoreCase)
-                                || string.Equals(idxStatusUpper, "UltraLiteReady", StringComparison.OrdinalIgnoreCase));
+                        bool indexUsable = IsIndexUsableForReads(idxSnap);
                         if (!indexUsable)
                         {
-                            // Kick a fresh state probe so the gateway notices when the
-                            // worker eventually catches up; non-blocking.
-                            _ = TryRefreshIndexStateFromWorkerAsync(timeoutMs: 50);
+                            // The gateway's index mirror is only written by TryRefreshIndexStateFromWorkerAsync
+                            // (whoami), so a "not usable" snapshot may just be STALE — the worker finished
+                            // indexing but no whoami has refreshed the mirror since. Rather than fast-fail
+                            // on a possibly-stale cache (which left agents stuck on IndexNotReady until they
+                            // manually called whoami), do ONE bounded synchronous refresh and re-check.
+                            // GetIndexState runs off the worker's STA thread, so this stays fast even while a
+                            // cold-start BulkIndex is in flight. Skip the refresh when the mirror was just
+                            // refreshed (index genuinely still building) so tight retry loops don't each pay
+                            // a round-trip.
+                            bool cacheStale = idxSnap == null
+                                || idxSnap.RefreshedAtUtc == DateTime.MinValue
+                                || (DateTime.UtcNow - idxSnap.RefreshedAtUtc).TotalSeconds > 2;
+                            if (cacheStale && await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 1200))
+                            {
+                                lock (_lastKnownIndexStateLock) { idxSnap = _lastKnownIndexState; }
+                                indexUsable = IsIndexUsableForReads(idxSnap);
+                            }
+                        }
+                        if (!indexUsable)
+                        {
                             var indexingEnvelope = new JObject
                             {
                                 ["status"] = "Indexing",
@@ -3874,7 +3962,12 @@ namespace GxMcp.Gateway
                     string? status = resp?["result"]?["status"]?.ToString();
                     Log($"[IndexBootstrap] worker reply status={status ?? "<null>"}");
 
-                    if (string.Equals(status, "Started", StringComparison.OrdinalIgnoreCase))
+                    // The default lite-index path returns "LiteStarted"; the legacy full path
+                    // returns "Started". Either means a fresh cold-start index just kicked off,
+                    // so the agent should see the one-time background-indexing notice.
+                    // ("AlreadyIndexed" is a warm start — no notice.)
+                    if (string.Equals(status, "Started", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(status, "LiteStarted", StringComparison.OrdinalIgnoreCase))
                     {
                         Log("[IndexBootstrap] emitting cold-start notice");
                         BroadcastNotification("notifications/message", new

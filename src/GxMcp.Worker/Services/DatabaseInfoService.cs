@@ -85,6 +85,19 @@ namespace GxMcp.Worker.Services
         private static IEnumerable<dynamic> EnumerateDataStores(dynamic kb)
         {
             var collected = new List<dynamic>();
+
+            // v2.8.2 — primary path: the DataStoresPart KBModelPart. The legacy paths below
+            // miss it on many KBs because KBModelPartCollection is keyed by Guid (so
+            // Parts.Get("DataStores") with a string finds nothing) and Environment.DataStores /
+            // TargetModel.DataStore come back null. DataStoresPart.DataStores is the real,
+            // documented accessor for the GxDataStore collection.
+            try
+            {
+                var viaPart = EnumerateViaDataStoresPart(kb);
+                if (viaPart.Count > 0) return viaPart;
+            }
+            catch { }
+
             try
             {
                 dynamic part = TryGet(() => kb.DesignModel.Parts.Get("DataStores"));
@@ -123,9 +136,72 @@ namespace GxMcp.Worker.Services
             return collected;
         }
 
+        // v2.8.2 — enumerate GxDataStores via the DataStoresPart model part. The part lives in
+        // model.Parts (a Guid-keyed KBModelPartCollection), so we iterate and match by type name
+        // rather than guessing the part's Guid. Tries the design model first, then the
+        // environment's target model. Shared with KbService's [KB-OPEN-DATASTORE] diagnostic.
+        internal static List<dynamic> EnumerateViaDataStoresPart(dynamic kb)
+        {
+            var found = new List<dynamic>();
+            if (kb == null) return found;
+
+            var models = new List<dynamic>();
+            try { var m = kb.DesignModel; if (m != null) models.Add(m); } catch { }
+            try { var tm = kb.DesignModel.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+            // The DataStoresPart often lives on an environment model that is neither the design
+            // model nor the target model. KBEnvironment.Models exposes them all — try each.
+            try
+            {
+                var all = kb.DesignModel.Environment.Models;
+                if (all is System.Collections.IEnumerable me)
+                    foreach (var m in me) { if (m != null) models.Add(m); }
+            }
+            catch { }
+
+            foreach (var model in models)
+            {
+                dynamic parts = null;
+                try { parts = model.Parts; } catch { }
+                if (!(parts is System.Collections.IEnumerable seq)) continue;
+
+                foreach (var item in seq)
+                {
+                    if (item == null) continue;
+                    // KBModelPartCollection is IDictionary<Guid, KBModelPart>; the default
+                    // enumerator may yield KeyValuePair<Guid, KBModelPart>. Unwrap to the part.
+                    object part = item;
+                    try
+                    {
+                        var it = item.GetType();
+                        if (it.Name.StartsWith("KeyValuePair", StringComparison.Ordinal))
+                            part = it.GetProperty("Value")?.GetValue(item);
+                    }
+                    catch { }
+                    if (part == null) continue;
+
+                    string typeName = null;
+                    try { typeName = part.GetType().Name; } catch { }
+                    if (!string.Equals(typeName, "DataStoresPart", StringComparison.Ordinal)) continue;
+
+                    dynamic dss = null;
+                    try { dss = ((dynamic)part).DataStores; } catch { }
+                    if (dss is System.Collections.IEnumerable dsSeq)
+                    {
+                        foreach (var ds in dsSeq) if (ds != null) found.Add(ds);
+                    }
+                    if (found.Count > 0) return found;
+                }
+            }
+            return found;
+        }
+
         private static JObject BuildEntry(dynamic ds)
         {
-            string name = TryGet(() => (string)ds.Name) ?? "";
+            // GxDataStore has no direct Name property — fall back to its Category name / Type.
+            string name = TryGet(() => (string)ds.Name)
+                          ?? TryGet(() => (string)ds.Category.Name)
+                          ?? TryGet(() => (string)ds.Type)
+                          ?? "";
             int dbmsInt = TryGetInt(() => (int)ds.Dbms);
             string family = ExecutionPlanFetcher.ResolveDbmsFamily(dbmsInt);
             string typeLabel = DbmsTypeLabel(dbmsInt);
