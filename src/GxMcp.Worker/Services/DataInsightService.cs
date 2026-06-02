@@ -43,7 +43,11 @@ namespace GxMcp.Worker.Services
                 if (obj is Transaction trn)
                 {
                     trnObj = trn;
-                    tbl = _objectService.FindObject(trn.Name) as Table;
+                    // v2.8.5: ask explicitly for the Table. A bare FindObject(name) now
+                    // prefers the editable logic object (the Transaction itself), so the
+                    // old untyped re-resolve would return the Transaction again and the
+                    // 'as Table' cast would null out, breaking sql_ddl for Transactions.
+                    tbl = _objectService.FindObject(trn.Name, "Table") as Table;
                 }
                 else if (obj is Table)
                 {
@@ -74,7 +78,8 @@ namespace GxMcp.Worker.Services
 
                 // 1. Try Native SQL from Reorganization folder
                 string nativeSql = TryGetNativeSql(tbl);
-                if (!string.IsNullOrEmpty(nativeSql))
+                bool hasNative = !string.IsNullOrEmpty(nativeSql);
+                if (hasNative)
                 {
                     result["ddl"] = nativeSql;
                     result["source"] = "Native (reorg.sql)";
@@ -85,6 +90,9 @@ namespace GxMcp.Worker.Services
                     result["ddl"] = GenerateHeuristicSql(tbl, dbmsType);
                     result["source"] = "Heuristic (SDK Structure)";
                 }
+                // v2.8.5: label trustworthiness so agents don't treat reconstructed
+                // DDL as authoritative.
+                result.Merge(BuildDdlAccuracy(hasNative));
 
                 // Subordinated Levels enumeration (for Transactions only)
                 if (trnObj != null)
@@ -171,6 +179,23 @@ namespace GxMcp.Worker.Services
         private string TryGetNativeSql(Table tbl)
         {
             return null; // For now, heuristic is more flexible.
+        }
+
+        // v2.8.5: be explicit about how trustworthy the emitted DDL is. Native reorg
+        // SQL (when present) is exact; the structure-derived fallback is reliable for
+        // column types/lengths and the PK but may diverge from reorg output on
+        // composite indexes, FKs, check constraints and storage clauses. Agents were
+        // treating heuristic DDL as authoritative — this labels it so they don't.
+        internal static JObject BuildDdlAccuracy(bool hasNativeSql)
+        {
+            if (hasNativeSql)
+                return new JObject { ["accuracy"] = "exact" };
+            return new JObject
+            {
+                ["accuracy"] = "heuristic",
+                ["accuracyNote"] = "DDL reconstructed from the SDK table structure, not emitted by the GeneXus reorganization generator. Column types/lengths and the primary key are reliable; composite indexes, foreign keys, check constraints and storage clauses may differ from what reorg produces.",
+                ["verifyVia"] = "Run genexus_lifecycle action=reorg on a non-production environment to obtain the authoritative CREATE/ALTER statements."
+            };
         }
 
         private string GenerateHeuristicSql(Table tbl, int dbmsType)

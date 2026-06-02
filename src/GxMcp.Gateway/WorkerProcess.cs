@@ -515,6 +515,10 @@ namespace GxMcp.Gateway
                 startInfo.Arguments = $"--kb \"{kbPath}\"";
                 startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = _config.GeneXus?.InstallationPath ?? string.Empty;
                 startInfo.EnvironmentVariables["GX_KB_PATH"] = kbPath;
+                // v2.8.5: hand the worker the authoritative server version so
+                // genexus_doctor reports the same number as whoami (the worker
+                // assembly version can lag the package version between releases).
+                startInfo.EnvironmentVariables["GXMCP_SERVER_VERSION"] = McpRouter.ServerVersion;
                 startInfo.EnvironmentVariables["GX_SHADOW_PATH"] = _config.Environment?.GX_SHADOW_PATH ?? Path.Combine(kbPath, ".gx_mirror");
                 startInfo.EnvironmentVariables["PATH"] = (_config.GeneXus?.InstallationPath ?? string.Empty) + ";" + Environment.GetEnvironmentVariable("PATH");
 

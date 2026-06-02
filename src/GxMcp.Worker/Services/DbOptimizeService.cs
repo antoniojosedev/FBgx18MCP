@@ -59,6 +59,20 @@ namespace GxMcp.Worker.Services
         private readonly IObjectEnumerator _objects;
         private readonly ISourceReader _reader;
         private readonly IIndexReader _indexes;
+        private readonly IndexCacheService _indexCache;   // null in unit tests
+        private readonly KbService _scopeKb;              // null in unit tests
+        private readonly ObjectService _scopeObjects;     // null in unit tests
+
+        // v2.8.5: scan-cost guards. SuggestIndexes used to ScanKb the WHOLE KB
+        // (two SDK source reads per Procedure/WebPanel/DataProvider) even for a
+        // single target — thousands of STA round-trips that wedged the worker.
+        // We now scope the scan to the transaction's callers (index call-graph)
+        // and cap a fallback full scan so one call can never grind for minutes.
+        private const int MaxScanReads = 1500;
+        private bool _lastScanTruncated;
+        private int _lastScanReads;
+        private bool _lastScanScoped;
+        private string _lastScopeSource; // "index" | "sdk" | null
 
         // ---- Production wiring --------------------------------------------------
 
@@ -66,7 +80,11 @@ namespace GxMcp.Worker.Services
             : this(new IndexEnumerator(indexCache),
                    new ObjectSourceReader(objectService),
                    new TransactionIndexReader(objectService))
-        { }
+        {
+            _indexCache = indexCache;
+            _scopeKb = kbService;
+            _scopeObjects = objectService;
+        }
 
         // Direct ctor for tests.
         public DbOptimizeService(IObjectEnumerator objects, ISourceReader reader, IIndexReader indexes)
@@ -114,7 +132,11 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                var patternsByTx = ScanKb(transactionName);
+                // v2.8.5: scope the scan to objects that actually reference this
+                // transaction (index call-graph), falling back to a capped full scan
+                // when the index has no caller edges yet.
+                var candidates = ResolveCandidateCallers(transactionName);
+                var patternsByTx = ScanKb(transactionName, candidates);
                 if (!patternsByTx.TryGetValue(transactionName, out var patterns))
                 {
                     patterns = new List<AccessPattern>();
@@ -195,7 +217,8 @@ namespace GxMcp.Worker.Services
                         ["transaction"] = transactionName,
                         ["existingIndexes"] = existingArr,
                         ["suggestedIndexes"] = suggested,
-                        ["redundantIndexes"] = redundant
+                        ["redundantIndexes"] = redundant,
+                        ["scan"] = BuildScanInfo()
                     });
             }
             catch (Exception ex)
@@ -265,8 +288,116 @@ namespace GxMcp.Worker.Services
         /// transactions are still recorded only if their source mentions the target —
         /// callers can then ignore them. We keep it simple: full scan, caller decides.
         /// </summary>
-        private Dictionary<string, List<AccessPattern>> ScanKb(string onlyTransaction)
+        // v2.8.5: resolve the set of objects that reference a transaction from the
+        // index call-graph (the transaction entry's CalledBy, plus its generated
+        // Table's CalledBy — For each reads the physical table). Returns null when
+        // no index is wired (unit tests) or no edges are known, so the caller falls
+        // back to a capped full scan.
+        private ISet<string> ResolveCandidateCallers(string transactionName)
         {
+            _lastScopeSource = null;
+            if (_indexCache == null || string.IsNullOrWhiteSpace(transactionName)) return null;
+            SearchIndex idx;
+            try { idx = _indexCache.GetIndex(); }
+            catch { return null; }
+            if (idx?.Objects == null) return null;
+
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in new[] { "Transaction:" + transactionName, "Table:" + transactionName })
+            {
+                if (idx.Objects.TryGetValue(key, out var e) && e?.CalledBy != null)
+                    foreach (var c in e.CalledBy)
+                        if (!string.IsNullOrEmpty(c)) set.Add(c);
+            }
+            if (set.Count > 0) _lastScopeSource = "index";
+
+            // v2.8.5: the index call-graph is often empty for a transaction even after
+            // enrichment (For each reads the physical table, and those edges may not be
+            // materialised). Fall back to the live SDK reference graph — the same source
+            // genexus_inspect/impact use — so scoping still works and SuggestIndexes
+            // doesn't degrade to a capped full-KB scan. Best-effort; never throws.
+            if (set.Count == 0)
+            {
+                foreach (var n in ResolveSdkCallers(transactionName))
+                    set.Add(n);
+                if (set.Count > 0) _lastScopeSource = "sdk";
+            }
+
+            return set.Count > 0 ? set : null;
+        }
+
+        private IEnumerable<string> ResolveSdkCallers(string transactionName)
+        {
+            var names = new List<string>();
+            if (_scopeObjects == null) return names;
+            dynamic kb = null;
+            try { kb = _scopeKb?.GetKB(); } catch { kb = null; }
+
+            // The transaction itself and its generated Table are both reference targets.
+            var targets = new List<Artech.Architecture.Common.Objects.KBObject>();
+            try { var t = _scopeObjects.FindObject(transactionName); if (t != null) targets.Add(t); } catch { }
+            try { var tbl = _scopeObjects.FindObject(transactionName, "Table"); if (tbl != null) targets.Add(tbl); } catch { }
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var obj in targets)
+            {
+                try
+                {
+                    foreach (var r in obj.GetReferencesTo())
+                    {
+                        if (names.Count >= 500) break;
+                        try
+                        {
+                            var s = kb?.DesignModel.Objects.Get(r.From);
+                            if (s != null)
+                            {
+                                string nm = (string)s.Name;
+                                if (!string.IsNullOrEmpty(nm) && seen.Add(nm)) names.Add(nm);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+            return names;
+        }
+
+        private JObject BuildScanInfo()
+        {
+            string note;
+            if (_lastScanScoped)
+            {
+                string src = _lastScopeSource == "sdk"
+                    ? "the live SDK reference graph (the index call-graph had no caller edges yet)"
+                    : "the index call-graph";
+                note = "Scan scoped to the transaction's callers via " + src + ".";
+            }
+            else if (_lastScanTruncated)
+                note = "No caller edges were found for this transaction (index or SDK); the full-KB scan was capped at "
+                       + MaxScanReads + " objects (results may be incomplete). Run genexus_lifecycle(action='index', force=true) to enable scoped, complete scanning.";
+            else
+                note = "No caller edges were found for this transaction; performed a full-KB scan.";
+            var info = new JObject
+            {
+                ["scannedObjects"] = _lastScanReads,
+                ["scoped"] = _lastScanScoped,
+                ["truncated"] = _lastScanTruncated,
+                ["note"] = note
+            };
+            if (_lastScanScoped && !string.IsNullOrEmpty(_lastScopeSource))
+                info["scopeSource"] = _lastScopeSource; // "index" | "sdk"
+            return info;
+        }
+
+        // v2.8.5: candidateNames scopes the (expensive) source reads to a known
+        // caller set; null = scan all enumerated objects but capped at MaxScanReads.
+        private Dictionary<string, List<AccessPattern>> ScanKb(string onlyTransaction, ISet<string> candidateNames = null)
+        {
+            _lastScanTruncated = false;
+            _lastScanReads = 0;
+            _lastScanScoped = candidateNames != null;
+
             var txNames = new HashSet<string>(_objects.EnumerateTransactionNames(), StringComparer.OrdinalIgnoreCase);
             // When the index doesn't surface a Transactions list yet, fall back to
             // accepting any uppercased identifier — better than emitting zero hits.
@@ -276,6 +407,14 @@ namespace GxMcp.Worker.Services
 
             foreach (var obj in _objects.EnumerateCallers())
             {
+                // Skip the SDK read entirely for objects outside the scoped set.
+                if (candidateNames != null && (obj?.Name == null || !candidateNames.Contains(obj.Name)))
+                    continue;
+                // Hard backstop: never let a single call grind through the whole KB
+                // on the STA thread. Truncate with a flag the caller surfaces.
+                if (_lastScanReads >= MaxScanReads) { _lastScanTruncated = true; break; }
+                _lastScanReads++;
+
                 string source;
                 try { source = _reader.ReadCallerSource(obj); }
                 catch { continue; }

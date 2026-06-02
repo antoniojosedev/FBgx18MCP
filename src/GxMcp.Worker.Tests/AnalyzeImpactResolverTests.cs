@@ -77,6 +77,63 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Impact_ZeroEdges_NoSdk_ReportsUnknownNotLow()
+        {
+            // Regression (friction 2026-06-02): a node that exists in the index but
+            // carries no call-graph edges, with no SDK/ObjectService to confirm,
+            // must NOT be reported as riskLevel "Low" (which reads as "safe to
+            // change"). It must surface "Unknown" + indexEdgesMissing so the agent
+            // knows the blast radius was NOT confirmed. This was the bug where impact
+            // reported blastRadius 0 for an object inspect showed as having callers.
+            var entries = new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Lonely", Type = "Procedure", Calls = new List<string>(), CalledBy = new List<string>() }
+            };
+            var index = BuildIndex(entries);
+            var svc = BuildAnalyze(index); // objSvc null → no SDK cross-check available
+
+            string json;
+            try { json = svc.ImpactAnalysis("Lonely"); }
+            catch (System.IO.FileNotFoundException) { return; }
+            catch (System.TypeLoadException) { return; }
+
+            var obj = JObject.Parse(json);
+            Assert.Equal("ok", obj["status"]?.ToString());
+            var result = obj["result"] ?? obj;
+            string risk = result["riskLevel"]?.ToString();
+            Assert.NotEqual("Low", risk);
+            Assert.Equal("Unknown", risk);
+            Assert.True(result["indexEdgesMissing"]?.ToObject<bool>() == true);
+            Assert.True(result["verifiedZero"]?.ToObject<bool>() == false);
+        }
+
+        [Fact]
+        public void Impact_WithRealEdges_StillReportsConcreteRisk()
+        {
+            // Guard the other direction: when the index DOES have edges, the
+            // zero-signal path must not fire — risk stays a concrete level and
+            // indexEdgesMissing is absent.
+            var entries = new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Callee", Type = "Procedure", Calls = new List<string>(), CalledBy = new List<string> { "Caller" } },
+                new SearchIndex.IndexEntry { Name = "Caller", Type = "Procedure", Calls = new List<string> { "Callee" }, CalledBy = new List<string>() }
+            };
+            var index = BuildIndex(entries);
+            var svc = BuildAnalyze(index);
+
+            string json;
+            try { json = svc.ImpactAnalysis("Callee"); }
+            catch (System.IO.FileNotFoundException) { return; }
+            catch (System.TypeLoadException) { return; }
+
+            var obj = JObject.Parse(json);
+            var result = obj["result"] ?? obj;
+            Assert.Equal("ok", obj["status"]?.ToString());
+            Assert.NotEqual("Unknown", result["riskLevel"]?.ToString());
+            Assert.Null(result["indexEdgesMissing"]);
+        }
+
+        [Fact]
         public void Impact_TrulyMissing_ReturnsObjectNotFound_NotPollingStub()
         {
             // Object is absent from both index AND (null) ObjectService.

@@ -1,3 +1,6 @@
+using System;
+using System.IO;
+using System.Linq;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -102,6 +105,69 @@ namespace GxMcp.Worker.Tests
             // error rate = 3 / 80 = 0.0375 → 0.038 after rounding to 3dp.
             double er = (double)json["result"]!["telemetry"]!["errorRate"];
             Assert.True(er > 0.03 && er < 0.05, "errorRate should be ~0.038, got " + er);
+        }
+
+        // ---- v2.8.5 regression: doctor must agree with whoami -----------------
+
+        [Fact]
+        public void Version_PrefersGatewayServerVersionFromEnv()
+        {
+            string prev = Environment.GetEnvironmentVariable("GXMCP_SERVER_VERSION");
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_SERVER_VERSION", "9.9.9-test");
+                var json = JObject.Parse(new DoctorService(null, null, null).Diagnose());
+                Assert.Equal("9.9.9-test", (string)json["result"]!["version"]!["current"]);
+                Assert.Equal("gateway", (string)json["result"]!["version"]!["source"]);
+            }
+            finally { Environment.SetEnvironmentVariable("GXMCP_SERVER_VERSION", prev); }
+        }
+
+        [Fact]
+        public void Version_FallsBackToWorkerAssemblyWhenEnvUnset()
+        {
+            string prev = Environment.GetEnvironmentVariable("GXMCP_SERVER_VERSION");
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_SERVER_VERSION", null);
+                var json = JObject.Parse(new DoctorService(null, null, null).Diagnose());
+                Assert.Equal("worker-assembly", (string)json["result"]!["version"]!["source"]);
+                Assert.False(string.IsNullOrWhiteSpace((string)json["result"]!["version"]!["current"]));
+            }
+            finally { Environment.SetEnvironmentVariable("GXMCP_SERVER_VERSION", prev); }
+        }
+
+        [Fact]
+        public void Sdk_DetectedViaGxProgramDir_NoFalseCritical()
+        {
+            // The gateway sets GX_PROGRAM_DIR, not GX_PATH. doctor must resolve the
+            // SDK from it and NOT raise the false "SDK not found / CRITICAL" warning.
+            string prevPath = Environment.GetEnvironmentVariable("GX_PATH");
+            string prevProg = Environment.GetEnvironmentVariable("GX_PROGRAM_DIR");
+            string tmp = Path.Combine(Path.GetTempPath(), "gxdoctor_" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(tmp);
+                File.WriteAllText(Path.Combine(tmp, "Artech.Fake.Sdk.dll"), "stub");
+                Environment.SetEnvironmentVariable("GX_PATH", null);
+                Environment.SetEnvironmentVariable("GX_PROGRAM_DIR", tmp);
+
+                var json = JObject.Parse(new DoctorService(null, null, null).Diagnose());
+                var gx = json["result"]!["geneXus"]!;
+                Assert.True((bool)gx["found"]!);
+                Assert.True((int)gx["sdkDllCount"]! >= 1);
+                Assert.Equal("GX_PROGRAM_DIR", (string)gx["source"]!);
+
+                var warnings = (JArray)json["result"]!["warnings"]!;
+                Assert.DoesNotContain(warnings.Select(w => (string)w),
+                    s => s != null && s.Contains("SDK install not found"));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_PATH", prevPath);
+                Environment.SetEnvironmentVariable("GX_PROGRAM_DIR", prevProg);
+                try { Directory.Delete(tmp, true); } catch { }
+            }
         }
 
         // Reflection target — DoctorService looks up "BuildMetricsPayload"

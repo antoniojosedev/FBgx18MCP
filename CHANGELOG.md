@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`genexus_analyze mode=impact` no longer reports "Low" risk when it has no signal.** When the search index held an object but carried no call-graph edges for it (not yet enriched, or a stale snapshot), impact analysis returned `blastRadiusScore: 0, riskLevel: "Low"` — indistinguishable from a genuinely safe change, and the reason it could claim "0 affected" for an object that clearly had callers. It now cross-checks the live SDK reference graph (the same source `genexus_inspect` uses): edges the index missed are surfaced under `sdkCrossCheck` with `indexEdgesMissing: true`; a genuinely empty graph is reported as `riskLevel: "None", verifiedZero: true`; and when nothing can confirm the result, it returns `riskLevel: "Unknown"` instead of a misleading "Low".
+- **`genexus_analyze` and `genexus_inspect` now resolve an ambiguous name to the same object.** A bare name that matches both a Transaction and its generated Table (e.g. `"Acao"`) was resolved nondeterministically — `inspect` could land on the Table while `impact` preferred the Transaction, so the two tools appeared to contradict each other. Resolution is now deterministic: editable logic objects (Transaction/Procedure/WebPanel/…) rank above the generated Table/View, with a stable tiebreak. `genexus_inspect` also returns `resolvedAs` and `alsoMatches` whenever a name spans multiple types, and `genexus_analyze mode=impact` echoes the `resolvedType` it analyzed.
+- **`genexus_doctor` no longer falsely reports "GeneXus SDK install not found / CRITICAL".** Doctor only checked the `GX_PATH` environment variable, which the gateway never sets (it launches the worker with `GX_PROGRAM_DIR`), so the triage tool screamed CRITICAL while the worker was happily serving the KB. It now resolves the SDK from `GX_PATH`, then `GX_PROGRAM_DIR`, then a loaded `Artech.*` assembly, and reports which `source` it used. Doctor's reported version now matches `genexus_whoami` (it reads the server version the gateway stamps into the worker, instead of the worker assembly's own — sometimes stale — version).
+- **`genexus_db action=optimize_suggest` no longer grinds through the whole Knowledge Base.** For a single target it used to read the Source + Events of every Procedure/WebPanel/DataProvider in the KB on one thread — thousands of round-trips that could hang the worker on a large KB. It now scopes the scan to the objects that actually reference the transaction (via the index call-graph) and caps any fallback full scan, reporting `scan.scoped`, `scan.scannedObjects`, and `scan.truncated` so a capped result is never mistaken for a complete one.
+
+### Changed
+
+- **`genexus_db action=sql_ddl` now labels how trustworthy its output is.** Structure-derived DDL (the common case, when no native reorg SQL is available) is tagged `accuracy: "heuristic"` with a note that column types/lengths and the primary key are reliable but composite indexes, foreign keys, check constraints and storage clauses may differ — plus a `verifyVia` pointer to `action=reorg` for the authoritative statements. Native reorg SQL is tagged `accuracy: "exact"`.
+
 ## v2.8.4 — 2026-06-02
 
 ### Changed

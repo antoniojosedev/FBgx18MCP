@@ -1060,6 +1060,31 @@ namespace GxMcp.Worker.Services
             return meta;
         }
 
+        // v2.8.5: deterministic ambiguous-name resolution. When a bare name matches
+        // multiple objects (classic: a Transaction and its generated Table share a
+        // name), the old ordering left Table and Transaction tied at rank 0 and the
+        // pick was whatever the dictionary enumerated first — nondeterministic, and
+        // the reason genexus_inspect (which got Table) and genexus_analyze impact
+        // (which prefers Transaction) silently resolved DIFFERENT objects for the
+        // same name. Editable logic objects now rank above the generated Table/View,
+        // with a stable type tiebreak so the result is repeatable across calls.
+        internal static SearchIndex.IndexEntry PrioritizeNameMatches(IList<SearchIndex.IndexEntry> matches)
+        {
+            if (matches == null || matches.Count == 0) return null;
+            return matches
+                .OrderBy(m => (m.Type == "Folder" || m.Type == "Module") ? 100 : 0)
+                .ThenBy(m => (m.Type == "File" || m.Type == "Image") ? 50 : 0)
+                .ThenBy(m => IsGeneratedPhysical(m.Type) ? 10 : 0)
+                .ThenBy(m => m.Type ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+        }
+
+        internal static bool IsGeneratedPhysical(string type)
+        {
+            return string.Equals(type, "Table", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(type, "View", StringComparison.OrdinalIgnoreCase);
+        }
+
         public KBObject FindObject(string target, string typeFilter = null)
         {
             if (string.IsNullOrEmpty(target)) return null;
@@ -1117,10 +1142,7 @@ namespace GxMcp.Worker.Services
                     if (matches.Count > 0)
                     {
                         // Order: 1. Non-Folders/Modules, 2. Logic Types (Procedure, WP, Trn), 3. Files/Images (last)
-                        var prioritizedMatch = matches
-                            .OrderBy(m => (m.Type == "Folder" || m.Type == "Module") ? 100 : 0)
-                            .ThenBy(m => (m.Type == "File" || m.Type == "Image") ? 50 : 0)
-                            .FirstOrDefault();
+                        var prioritizedMatch = PrioritizeNameMatches(matches);
 
                         if (prioritizedMatch != null && !string.IsNullOrEmpty(prioritizedMatch.Guid))
                         {
@@ -1148,22 +1170,27 @@ namespace GxMcp.Worker.Services
                 }
             }
 
-            // Global search, prioritizing non-container objects and avoiding Files if others exist
+            // Global search, prioritizing non-container objects and avoiding Files if others exist.
+            // v2.8.5: also prefer an editable logic object (Transaction/Procedure/WebPanel/…)
+            // over the generated Table/View when a name collides, mirroring the index fast-path
+            // and PrioritizeNameMatches so SDK-fallback resolution stays deterministic too.
+            KBObject firstPrimaryLogic = null;
             KBObject firstLogicMatch = null;
             KBObject firstMatch = null;
 
             foreach (KBObject obj in sdkMatches)
             {
                 if (firstMatch == null) firstMatch = obj;
-                
+
                 string type = obj.TypeDescriptor?.Name;
                 if (type != "Folder" && type != "Module" && type != "File" && type != "Image")
                 {
                     if (firstLogicMatch == null) firstLogicMatch = obj;
+                    if (firstPrimaryLogic == null && !IsGeneratedPhysical(type)) firstPrimaryLogic = obj;
                 }
             }
 
-            var result = firstLogicMatch ?? firstMatch;
+            var result = firstPrimaryLogic ?? firstLogicMatch ?? firstMatch;
             if (result != null)
             {
                 Logger.Debug(string.Format("FindObject '{0}' SUCCESS (SDK-Fallback) in {1}ms", target, sw.ElapsedMilliseconds));

@@ -101,35 +101,92 @@ namespace GxMcp.Worker.Services
 
         private static JObject BuildVersionBlock()
         {
+            // v2.8.5: prefer the authoritative server version the gateway stamps into
+            // the worker env at spawn (GXMCP_SERVER_VERSION = McpRouter.ServerVersion,
+            // the same number whoami reports). Falls back to the worker assembly's own
+            // version only when the env isn't set (worker launched standalone). This
+            // ends the doctor-vs-whoami version mismatch where doctor reported a stale
+            // worker assembly version (e.g. 2.6.9) while whoami reported 2.8.4.
+            string serverVersion = Environment.GetEnvironmentVariable("GXMCP_SERVER_VERSION");
+            if (!string.IsNullOrWhiteSpace(serverVersion))
+                return new JObject { ["current"] = serverVersion, ["source"] = "gateway" };
+
             string version = typeof(DoctorService).Assembly.GetName().Version?.ToString() ?? "unknown";
             var info = typeof(DoctorService).Assembly
                 .GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false)
                 .OfType<AssemblyInformationalVersionAttribute>().FirstOrDefault();
             if (info != null && !string.IsNullOrWhiteSpace(info.InformationalVersion))
                 version = info.InformationalVersion;
-            return new JObject { ["current"] = version };
+            return new JObject { ["current"] = version, ["source"] = "worker-assembly" };
         }
 
         private static JObject BuildGxBlock()
         {
-            string gxPath = Environment.GetEnvironmentVariable("GX_PATH");
+            // v2.8.5: resolve the SDK from the signals the worker actually has,
+            // in priority order, instead of GX_PATH alone — the gateway never sets
+            // GX_PATH (it spawns the worker with GX_PROGRAM_DIR), so the old check
+            // reported "SDK not found / CRITICAL" even though the worker was happily
+            // serving the KB with the SDK loaded. doctor must not contradict whoami.
+            string source = null;
+            string gxPath = FirstExistingDir(
+                Environment.GetEnvironmentVariable("GX_PATH"),
+                Environment.GetEnvironmentVariable("GX_PROGRAM_DIR"));
+            if (!string.IsNullOrEmpty(gxPath))
+                source = Environment.GetEnvironmentVariable("GX_PATH") != null ? "GX_PATH" : "GX_PROGRAM_DIR";
+
             bool found = false;
             int sdkDllCount = 0;
-            if (!string.IsNullOrEmpty(gxPath) && Directory.Exists(gxPath))
+            if (!string.IsNullOrEmpty(gxPath))
             {
                 try
                 {
                     sdkDllCount = Directory.EnumerateFiles(gxPath, "Artech.*.dll", SearchOption.TopDirectoryOnly).Count();
                     found = sdkDllCount > 0;
                 }
-                catch { /* fall through */ }
+                catch { /* fall through to loaded-assembly probe */ }
             }
+
+            // Fallback: trust a loaded Artech.* assembly. If the worker has the SDK
+            // in its AppDomain, that IS the SDK it is using — the truthful signal,
+            // and it works even when no env var points at the install.
+            if (!found)
+            {
+                try
+                {
+                    var artech = AppDomain.CurrentDomain.GetAssemblies()
+                        .FirstOrDefault(a => (a.GetName().Name ?? string.Empty)
+                            .StartsWith("Artech.", StringComparison.OrdinalIgnoreCase));
+                    if (artech != null)
+                    {
+                        found = true;
+                        source = "loaded-assembly";
+                        try
+                        {
+                            string dir = Path.GetDirectoryName(artech.Location);
+                            if (string.IsNullOrEmpty(gxPath) && !string.IsNullOrEmpty(dir)) gxPath = dir;
+                            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                                sdkDllCount = Directory.EnumerateFiles(dir, "Artech.*.dll", SearchOption.TopDirectoryOnly).Count();
+                        }
+                        catch { /* path probe best-effort */ }
+                    }
+                }
+                catch { /* assembly enumeration best-effort */ }
+            }
+
             return new JObject
             {
                 ["installationPath"] = string.IsNullOrEmpty(gxPath) ? (JToken)JValue.CreateNull() : new JValue(gxPath),
                 ["found"] = found,
-                ["sdkDllCount"] = sdkDllCount
+                ["sdkDllCount"] = sdkDllCount,
+                ["source"] = string.IsNullOrEmpty(source) ? (JToken)JValue.CreateNull() : new JValue(source)
             };
+        }
+
+        private static string FirstExistingDir(params string[] candidates)
+        {
+            foreach (var c in candidates)
+                if (!string.IsNullOrEmpty(c) && Directory.Exists(c)) return c;
+            return null;
         }
 
         private JObject BuildKbBlock()

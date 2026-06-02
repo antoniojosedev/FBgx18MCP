@@ -297,6 +297,12 @@ namespace GxMcp.Worker.Services
 
                 var json = new JObject();
                 json["target"] = targetName;
+                // v2.8.5: surface WHICH object was resolved. inspect and impact used
+                // different resolvers (inspect→Table, impact→Transaction for a colliding
+                // name), so an agent saw "5 callers" from one tool and "0" from the other
+                // with no way to tell they analysed different objects. resolvedType makes
+                // the resolution explicit on both sides.
+                json["resolvedType"] = targetNode.Type ?? "";
                 json["totalAffected"] = affected.Count;
                 json["blastRadiusScore"] = score;
                 json["riskLevel"] = score > 100 ? "High" : (score > 20 ? "Medium" : "Low");
@@ -311,6 +317,52 @@ namespace GxMcp.Worker.Services
                 json["callees"] = calleesArr;
                 json["calleesTruncated"] = calleesResult.Truncated;
                 json["maxDepth"] = Math.Max(callersResult.Depth, calleesResult.Depth);
+
+                // v2.8.5 (friction 2026-06-02): zero-signal honesty.
+                // The index can hold a node but carry no call-graph edges for it
+                // (not yet enriched, or a stale snapshot). The old code mapped that
+                // score==0 case straight to riskLevel "Low" — indistinguishable from
+                // a genuinely-safe object, and the exact bug that made impact report
+                // blastRadius 0 for an object inspect showed as having callers. When
+                // the index yields zero edges, cross-check the live SDK reference
+                // graph (same source genexus_inspect uses) before claiming "Low".
+                bool zeroFromIndex = callersResult.Nodes.Count == 0 && calleesResult.Nodes.Count == 0;
+                if (zeroFromIndex)
+                {
+                    var sdk = TrySdkReferenceCrossCheck(targetName);
+                    if (sdk == null)
+                    {
+                        // No SDK available to confirm — must NOT assert "Low" on no signal.
+                        json["riskLevel"] = "Unknown";
+                        json["indexEdgesMissing"] = true;
+                        json["verifiedZero"] = false;
+                        json["hint"] = "The search index holds this object but no call-graph edges for it (it may not be enriched yet, or the snapshot is stale). Blast radius could NOT be confirmed — this is NOT a guarantee of zero impact. Run genexus_lifecycle(action='index', force=true) and retry, or cross-check with genexus_inspect(include=['callers']).";
+                    }
+                    else if (sdk.Callers.Count > 0 || sdk.Callees.Count > 0)
+                    {
+                        // SDK sees edges the index missed — surface them and flag the gap
+                        // instead of reporting a misleading "0 affected / Low".
+                        json["riskLevel"] = sdk.Callers.Count > 5 ? "Medium" : "Low";
+                        json["totalAffected"] = sdk.Callers.Count;
+                        json["indexEdgesMissing"] = true;
+                        var sdkCallers = new JArray();
+                        foreach (var c in sdk.Callers) sdkCallers.Add(c);
+                        var sdkCallees = new JArray();
+                        foreach (var c in sdk.Callees) sdkCallees.Add(c);
+                        json["sdkCrossCheck"] = new JObject
+                        {
+                            ["callers"] = sdkCallers,
+                            ["callees"] = sdkCallees,
+                            ["note"] = "Index call-graph was empty for this object; these edges come from the live SDK reference graph. Run genexus_lifecycle(action='index', force=true) to make impact analysis authoritative."
+                        };
+                    }
+                    else
+                    {
+                        // SDK confirms genuinely zero incoming/outgoing references.
+                        json["riskLevel"] = "None";
+                        json["verifiedZero"] = true;
+                    }
+                }
 
                 var topEntryPoints = new JArray();
                 foreach (var ep in entryPoints.Take(50)) topEntryPoints.Add(ep);
@@ -423,6 +475,63 @@ namespace GxMcp.Worker.Services
                 }
             }
             return false;
+        }
+
+        // v2.8.5: container for SDK reference-graph cross-check results.
+        private sealed class SdkRefs
+        {
+            public readonly List<string> Callers = new List<string>();
+            public readonly List<string> Callees = new List<string>();
+        }
+
+        // v2.8.5 (friction 2026-06-02): when the index reports zero edges for an
+        // object, consult the live SDK reference graph (GetReferencesTo / GetReferences)
+        // — the same source genexus_inspect uses — to tell "genuinely zero" apart from
+        // "index not enriched". Returns null when no SDK/ObjectService is wired (unit
+        // tests, cold worker) so the caller falls back to riskLevel=Unknown instead of
+        // asserting a misleading "Low". Best-effort and bounded; never throws.
+        private SdkRefs TrySdkReferenceCrossCheck(string name)
+        {
+            if (_objectService == null || string.IsNullOrEmpty(name)) return null;
+            KBObject obj;
+            try { obj = _objectService.FindObject(name); }
+            catch { return null; }
+            if (obj == null) return null;
+
+            dynamic kb = null;
+            try { kb = _kbService?.GetKB(); } catch { kb = null; }
+
+            var refs = new SdkRefs();
+            const int cap = 50;
+            try
+            {
+                foreach (var r in obj.GetReferencesTo())
+                {
+                    if (refs.Callers.Count >= cap) break;
+                    try
+                    {
+                        var s = kb?.DesignModel.Objects.Get(r.From);
+                        if (s != null && !refs.Callers.Contains(s.Name)) refs.Callers.Add(s.Name);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            try
+            {
+                foreach (var r in obj.GetReferences())
+                {
+                    if (refs.Callees.Count >= cap) break;
+                    try
+                    {
+                        var t = kb?.DesignModel.Objects.Get(r.To);
+                        if (t != null && !refs.Callees.Contains(t.Name)) refs.Callees.Add(t.Name);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return refs;
         }
 
         private int GetTypeWeight(string type)
@@ -704,6 +813,38 @@ namespace GxMcp.Worker.Services
                 result["name"] = obj.Name;
                 result["type"] = obj.TypeDescriptor.Name;
                 result["description"] = obj.Description;
+
+                // v2.8.5: ambiguity disclosure. When a name resolves across multiple
+                // object types (classic: a Transaction and its generated Table share a
+                // name), inspect used to pick one silently. Surface the alternatives so
+                // the agent knows it can re-query with type=... — this is what made
+                // inspect(X) and analyze(impact,X) appear to contradict each other:
+                // they silently resolved different objects for the same name.
+                try
+                {
+                    var ambIndex = _indexCacheService?.GetIndex();
+                    if (ambIndex?.Objects != null)
+                    {
+                        var others = new JArray();
+                        var seenTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { obj.TypeDescriptor.Name ?? string.Empty };
+                        foreach (var kv in ambIndex.Objects)
+                        {
+                            var e = kv.Value;
+                            if (e == null || string.IsNullOrEmpty(e.Type)) continue;
+                            if (string.Equals(e.Name, obj.Name, StringComparison.OrdinalIgnoreCase)
+                                && seenTypes.Add(e.Type))
+                            {
+                                others.Add(new JObject { ["name"] = e.Name, ["type"] = e.Type });
+                            }
+                        }
+                        if (others.Count > 0)
+                        {
+                            result["resolvedAs"] = new JObject { ["name"] = obj.Name, ["type"] = obj.TypeDescriptor.Name };
+                            result["alsoMatches"] = others;
+                        }
+                    }
+                }
+                catch { /* disclosure is best-effort; never break inspect */ }
 
                 // Attribute-specific: surface physical tables that host this attribute
                 if (obj is global::Artech.Genexus.Common.Objects.Attribute)

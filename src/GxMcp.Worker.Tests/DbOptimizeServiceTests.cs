@@ -249,6 +249,44 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void SuggestIndexes_CapsScan_DoesNotGrindWholeKb()
+        {
+            // Regression (friction 2026-06-02): SuggestIndexes used to read Source+Events
+            // for EVERY caller object in the KB on the STA thread, wedging the worker.
+            // With no index call-graph (test ctor → unscoped), the scan must cap and
+            // flag truncation instead of reading an unbounded number of objects.
+            var svc = BuildService(out var e, out var r, out var idx);
+            e.Transactions.Add("Aluno");
+            for (int i = 0; i < 1600; i++)
+            {
+                string name = "P" + i;
+                e.Callers.Add(new() { Name = name, Type = "Procedure" });
+                r.Sources[name] = "For each Aluno\nWhere AluCurso = &c\nendfor";
+            }
+
+            var jo = JObject.Parse(svc.SuggestIndexes("Aluno"));
+            Assert.Equal("ok", jo["status"]?.ToString());
+            var scan = (JObject)jo["result"]!["scan"]!;
+            Assert.True((bool)scan["truncated"]!, "scan should report truncation when uncapped work exceeds the limit");
+            Assert.False((bool)scan["scoped"]!); // no index wired in the test ctor
+            Assert.Equal(1500, (int)scan["scannedObjects"]!); // capped at MaxScanReads
+        }
+
+        [Fact]
+        public void SuggestIndexes_SmallScan_NotTruncated()
+        {
+            var svc = BuildService(out var e, out var r, out var idx);
+            e.Transactions.Add("Aluno");
+            e.Callers.Add(new() { Name = "P1", Type = "Procedure" });
+            r.Sources["P1"] = "For each Aluno\nWhere AluCurso = &c\nendfor";
+
+            var jo = JObject.Parse(svc.SuggestIndexes("Aluno"));
+            var scan = (JObject)jo["result"]!["scan"]!;
+            Assert.False((bool)scan["truncated"]!);
+            Assert.Equal(1, (int)scan["scannedObjects"]!);
+        }
+
+        [Fact]
         public void SuggestIndexes_MissingTarget_ReturnsError()
         {
             var svc = BuildService(out var _, out var _, out var _);
