@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.8.4 — 2026-06-02
+
+### Changed
+
+- **Leaner install payload.** The published bundle no longer ships debug symbols (`.pdb`), trimming the download. The fallback `config.json` shipped in the package is now a sanitized placeholder — earlier builds could embed the developer's real Knowledge Base path; the released artifact never contains a real KB path.
+- **Update checks now use the npm registry as the source of truth.** Both the CLI and the in-session gateway notification previously asked GitHub for the "latest" release, but you install from npm — so right after a release (GitHub tag created, npm publish still running) the check would advertise a version `npm install` couldn't yet fetch, and on networks that block `api.github.com` it never worked at all. The check now reads the npm `dist-tags` (with GitHub as a fallback), so "update available" means a version you can actually install, and it works behind proxies that allow npm. The release-notes link is derived from the version.
+- **`genexus-mcp update` is now install-method-aware.** It detects how your AI clients launch the gateway and reports the right upgrade path: clients launched via `npx genexus-mcp@latest` **auto-update on restart** (just restart — no command), a global npm install gets `npm install -g …@latest`, and a fixed-path/corporate install gets the installer one-liner. Drift detection (a client pointing at a gateway that isn't this package) now covers any launcher, not just `.exe`.
+
+### Added
+
+- **`genexus-mcp update --apply` performs the upgrade** for your install method (with a confirmation prompt; `--yes` for unattended/CI). `--channel <tag>` checks a specific npm dist-tag (e.g. `--channel next`).
+- **Corporate fixed-path installs now self-update in the background.** This is the install type the `npx @latest` launcher can't keep current. The gateway downloads the new `publish.zip` (verified against a published SHA-256), stages it next to the install, and applies it on the next launch — the running session finishes on the current version and the new binary loads when the AI client next starts it. It only activates for installs materialized by `scripts/install.ps1`; it's fail-safe (a locked file or any error leaves the install untouched and retries next launch) and can be turned off with `GENEXUS_MCP_NO_SELF_UPDATE=1`. `genexus_whoami.update.staged` reports a build waiting for restart.
+
+### Internal
+
+- CLI and gateway now share the update-check cache (`%LOCALAPPDATA%\GenexusMCP\update-check.json`), so a check by either side serves the other. Pure-function coverage added for install-method detection and the per-method upgrade plan.
+
 ## v2.8.3 — 2026-06-02
 
 ### Added

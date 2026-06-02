@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const { renderOutput } = require('./lib/output');
-const { compareSemver } = require('./lib/update-check');
+const { compareSemver, detectInstallMethod, upgradePlanFor } = require('./lib/update-check');
 const { detectClientInstalled, readJsonFileSafe } = require('./lib/config');
 
 const cliPath = path.join(__dirname, 'run.js');
@@ -827,6 +827,36 @@ test('compareSemver detects newer, older, equal versions', () => {
     assert.equal(compareSemver('1.3.0', '1.3.0'), 0);
     assert.equal(compareSemver('1.2.9', '1.3.0'), -1);
     assert.equal(compareSemver('garbage', '1.0.0'), 0);
+});
+
+test('detectInstallMethod returns fixed-path when GENEXUS_MCP_GATEWAY_EXE is set', () => {
+    const prev = process.env.GENEXUS_MCP_GATEWAY_EXE;
+    process.env.GENEXUS_MCP_GATEWAY_EXE = 'C:\\Tools\\GenexusMCP\\GxMcp.Gateway.exe';
+    try {
+        const r = detectInstallMethod();
+        assert.equal(r.method, 'fixed-path');
+        assert.equal(r.detail, 'C:\\Tools\\GenexusMCP\\GxMcp.Gateway.exe');
+    } finally {
+        if (prev === undefined) delete process.env.GENEXUS_MCP_GATEWAY_EXE;
+        else process.env.GENEXUS_MCP_GATEWAY_EXE = prev;
+    }
+});
+
+test('upgradePlanFor encodes the per-method upgrade strategy', () => {
+    const npx = upgradePlanFor('npx-latest', 'latest');
+    assert.equal(npx.auto, true, 'npx@latest auto-updates on restart');
+    assert.ok(npx.steps.join(' ').toLowerCase().includes('restart'));
+
+    const npm = upgradePlanFor('npm-global', 'latest');
+    assert.equal(npm.auto, false);
+    assert.deepEqual(npm.applyCommand.args, ['install', '-g', 'genexus-mcp@latest']);
+
+    const npmNext = upgradePlanFor('npm-global', 'next');
+    assert.deepEqual(npmNext.applyCommand.args, ['install', '-g', 'genexus-mcp@next']);
+
+    const fixed = upgradePlanFor('fixed-path', 'latest');
+    assert.equal(fixed.auto, false);
+    assert.equal(fixed.applyCommand, null, 'fixed-path has no npm apply; uses the installer');
 });
 
 test('gateway passthrough remains intact when no AXI subcommand is used', () => {

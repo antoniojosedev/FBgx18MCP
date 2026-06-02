@@ -51,7 +51,7 @@ namespace GxMcp.Gateway
                 }
 
                 bool available = CompareSemver(cached.LatestVersion!, current!) > 0;
-                return new JObject {
+                var result = new JObject {
                     ["currentVersion"] = current,
                     ["latestVersion"] = cached.LatestVersion,
                     ["updateAvailable"] = available,
@@ -60,6 +60,11 @@ namespace GxMcp.Gateway
                     ["command"] = available ? "npx genexus-mcp@latest init" : null,
                     ["restartRequired"] = available
                 };
+                // Corporate self-update: surface a staged build waiting for restart so
+                // the LLM can tell the user "restart to finish updating to vX".
+                var staged = SelfUpdater.GetStagedStatusSync();
+                if (staged != null) result["staged"] = staged;
+                return result;
             }
             catch (Exception ex)
             {
@@ -87,6 +92,15 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrEmpty(latest)) return;
 
                 if (CompareSemver(latest!, current!) <= 0) return;
+
+                // Corporate fixed-path installs can't auto-update via npx, so stage
+                // the new build in the background; it applies on the next launch.
+                // No-op (and silent) for npx-cache launches.
+                if (SelfUpdater.IsManagedInstall())
+                {
+                    try { await SelfUpdater.MaybeStageAsync(latest!); }
+                    catch (Exception ex) { Program.Log($"[UpdateCheck] staging error: {ex.Message}"); }
+                }
 
                 await EmitNotificationAsync(current!, latest!, releaseUrl);
             }
@@ -127,20 +141,56 @@ namespace GxMcp.Gateway
             return fetched;
         }
 
+        // Authority is the npm registry (that's what `npm install -g <pkg>@latest`
+        // resolves), so we never advertise a version npm can't install yet — the
+        // GitHub-release-before-npm-publish window used to cause exactly that — and
+        // we keep working on networks that allow npm but block api.github.com.
+        // GitHub releases is a fallback only; the release URL is derived from the
+        // version so no GitHub API call is needed on the happy path.
+        private const string NpmPackage = "genexus-mcp";
+
+        private static string ReleaseUrlFor(string version) => $"https://github.com/{Repo}/releases/tag/v{StripV(version)}";
+
         private static async Task<(string? version, string? url)> FetchLatestReleaseAsync()
         {
             using var http = new HttpClient { Timeout = FetchTimeout };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("genexus-mcp-gateway");
-            http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+            http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var resp = await http.GetAsync($"https://api.github.com/repos/{Repo}/releases/latest");
-            if (!resp.IsSuccessStatusCode) return (null, null);
+            // 1. npm registry dist-tags (lightweight; the source of truth for installs).
+            try
+            {
+                var npmResp = await http.GetAsync($"https://registry.npmjs.org/-/package/{NpmPackage}/dist-tags");
+                if (npmResp.IsSuccessStatusCode)
+                {
+                    var tags = JObject.Parse(await npmResp.Content.ReadAsStringAsync());
+                    string npmTag = StripV(tags["latest"]?.ToString() ?? string.Empty);
+                    if (!string.IsNullOrEmpty(npmTag)) return (npmTag, ReleaseUrlFor(npmTag));
+                }
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"[UpdateCheck] npm registry lookup failed: {ex.GetType().Name}: {ex.Message}");
+            }
 
-            string body = await resp.Content.ReadAsStringAsync();
-            var json = JObject.Parse(body);
-            string tag = StripV(json["tag_name"]?.ToString() ?? string.Empty);
-            string? url = json["html_url"]?.ToString();
-            return (string.IsNullOrEmpty(tag) ? null : tag, url);
+            // 2. GitHub releases fallback.
+            try
+            {
+                using var gh = new HttpClient { Timeout = FetchTimeout };
+                gh.DefaultRequestHeaders.UserAgent.ParseAdd("genexus-mcp-gateway");
+                gh.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+                var resp = await gh.GetAsync($"https://api.github.com/repos/{Repo}/releases/latest");
+                if (!resp.IsSuccessStatusCode) return (null, null);
+                var json = JObject.Parse(await resp.Content.ReadAsStringAsync());
+                string tag = StripV(json["tag_name"]?.ToString() ?? string.Empty);
+                string? url = json["html_url"]?.ToString() ?? (string.IsNullOrEmpty(tag) ? null : ReleaseUrlFor(tag));
+                return (string.IsNullOrEmpty(tag) ? null : tag, url);
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"[UpdateCheck] GitHub fallback failed: {ex.GetType().Name}: {ex.Message}");
+                return (null, null);
+            }
         }
 
         private static async Task EmitNotificationAsync(string current, string latest, string? releaseUrl)

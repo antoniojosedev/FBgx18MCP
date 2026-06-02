@@ -208,12 +208,20 @@ if (-not $SkipTests) {
 Step "Packing publish.zip"
 $zipPath = Join-Path $root 'publish.zip'
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+$shaPath = "$zipPath.sha256"
+if (Test-Path $shaPath) { Remove-Item $shaPath -Force }
 if (-not $DryRun) {
     Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zipPath -Force
     $sizeMb = [Math]::Round((Get-Item $zipPath).Length / 1MB, 2)
     Ok "publish.zip created ($sizeMb MB)."
+    # SHA-256 sidecar — the gateway's self-updater verifies the downloaded zip
+    # against this before staging a corporate in-place update (sha256sum format:
+    # "<hex>  publish.zip").
+    $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+    [System.IO.File]::WriteAllText($shaPath, "$hash  publish.zip`n", [System.Text.UTF8Encoding]::new($false))
+    Ok "publish.zip.sha256 written ($hash)."
 } else {
-    Ok "[dry-run] would create publish.zip"
+    Ok "[dry-run] would create publish.zip + publish.zip.sha256"
 }
 
 # ── 6. Commit (if version bumped or tree dirty) ───────────────────────────
@@ -277,6 +285,8 @@ $createArgs = @(
     '--target', 'main',
     $zipPath
 )
+# Attach the checksum sidecar so the gateway self-updater can verify the download.
+if (Test-Path $shaPath) { $createArgs += $shaPath }
 Invoke-Cmd 'gh' $createArgs
 
 Ok "Release created: https://github.com/lennix1337/Genexus18MCP/releases/tag/$tag"

@@ -2042,8 +2042,13 @@ function commandHelpMap() {
             examples: ['genexus-mcp llm help --format json', 'genexus-mcp llm help --full --format json']
         },
         update: {
-            usage: 'genexus-mcp update [--format toon|json|text]',
-            examples: ['genexus-mcp update', 'genexus-mcp update --format json']
+            usage: 'genexus-mcp update [--apply] [--yes] [--channel latest|next] [--format toon|json|text]',
+            examples: [
+                'genexus-mcp update                  # check; reports your install method + the right upgrade step',
+                'genexus-mcp update --apply          # perform the upgrade for your install method (confirms first)',
+                'genexus-mcp update --apply --yes    # unattended (CI/automation)',
+                'genexus-mcp update --channel next   # check the @next dist-tag'
+            ]
         },
         layout: {
             usage: 'genexus-mcp layout status [--title "GeneXus"] [--format ...] OR genexus-mcp layout run --action <focus|activate-layout|activate-tab|send-keys|type-text|click> [--tab "Layout"] [--keys "..."] [--text "..."] [--x N --y N] [--title "..."] [--format ...] OR genexus-mcp layout inspect [--tab "Layout"] [--limit N] [--full] [--title "..."] [--format ...]',

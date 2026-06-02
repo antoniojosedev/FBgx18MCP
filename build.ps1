@@ -135,31 +135,30 @@ if (Test-Path "$gxPath\Definitions") {
     }
 }
 
-# 5. Sync config fallback artifact from canonical root config
-if (Test-Path "$root\config.json") {
-    Write-Host "   > Syncing canonical config.json to publish fallback artifact..."
-    Copy-Item "$root\config.json" -Destination "$publishDir\config.json" -Force
-} else {
-    Write-Host "   > Creating default config.json..."
-    $defaultConfig = @{
-        GeneXus = @{
-            InstallationPath = "C:\\Program Files (x86)\\GeneXus\\GeneXus18"
-            WorkerExecutable = "$publishDir\\worker\\GxMcp.Worker.exe"
-        }
-        Server = @{
-            HttpPort = 5000
-            McpStdio = $true
-        }
-        Logging = @{
-            Level = "Debug"
-            Path = "logs"
-        }
-        Environment = @{
-            KBPath = "C:\\KBs\\academicoLocal"
-        }
-    } | ConvertTo-Json -Depth 4
-    Set-Content "$publishDir\config.json" $defaultConfig
-}
+# 5. Write a SANITIZED fallback config.json into the publish artifact.
+#    This file is only a fallback for a bare manual run (every real launcher sets
+#    GX_CONFIG_PATH to the KB's own config). We deliberately do NOT sync the dev's
+#    root config.json here — that would ship the developer's real KB path in the
+#    release zip (a privacy/hygiene leak). The placeholder KBPath signals "set me".
+Write-Host "   > Writing sanitized fallback config.json to publish..."
+$defaultConfig = @{
+    GeneXus = @{
+        InstallationPath = "C:\\Program Files (x86)\\GeneXus\\GeneXus18"
+        WorkerExecutable = "$publishDir\\worker\\GxMcp.Worker.exe"
+    }
+    Server = @{
+        HttpPort = 5000
+        McpStdio = $true
+    }
+    Logging = @{
+        Level = "Debug"
+        Path = "logs"
+    }
+    Environment = @{
+        KBPath = "C:\\KBs\\YourKB"
+    }
+} | ConvertTo-Json -Depth 4
+Set-Content "$publishDir\config.json" $defaultConfig
 
 # 6. Generate start_mcp.bat
 Write-Host "   > Generating start_mcp.bat..."
@@ -189,8 +188,9 @@ dotnet GxMcp.Gateway.dll
 "@
 Set-Content -Path "$publishDir\start_mcp.bat" -Value $batContent -Encoding Ascii
 
-# 6.1 Remove transient runtime logs/cache from publish output
-Get-ChildItem -Path $publishDir -Recurse -Include *.log,*.prev.log,*panic*.log -ErrorAction SilentlyContinue |
+# 6.1 Slim the publish output: drop debug symbols (.pdb — not shipped) and any
+# transient runtime logs/cache a dev run may have written into the dir.
+Get-ChildItem -Path $publishDir -Recurse -Include *.pdb,*.log,*.prev.log,*panic*.log -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 if (Test-Path "$publishDir\worker\cache") {
     Remove-Item "$publishDir\worker\cache" -Recurse -Force -ErrorAction SilentlyContinue

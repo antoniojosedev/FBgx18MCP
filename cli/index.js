@@ -48,6 +48,8 @@ const GLOBAL_DEFAULTS = {
     noSmoke: false,
     warm: false,
     yes: false,
+    apply: false,
+    channel: null,
     name: null,
     limit: 100,
     query: null,
@@ -287,6 +289,15 @@ function parseArgs(argv) {
             case 'yes':
                 result.options.yes = true;
                 break;
+            case 'apply':
+                result.options.apply = true;
+                break;
+            case 'channel': {
+                const val = takeValue();
+                if (val) result.options.channel = val;
+                else result.unknownFlags.push('--channel requires a value');
+                break;
+            }
             case 'quiet':
                 result.options.quiet = true;
                 break;

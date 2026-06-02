@@ -1305,6 +1305,13 @@ namespace GxMcp.Gateway
             }
 
             InitializeLogging();
+
+            // Squirrel-style: if a previous session staged a newer build, swap it in
+            // now (before any worker is spawned or files are opened). Fail-safe — a
+            // locked file or any error just leaves the install untouched and retries
+            // next launch. No-op for npx-cache launches (managed-install only).
+            SelfUpdater.ApplyStagedUpdateOnStartup();
+
             var config = Configuration.Load();
             _activeConfig = config;
             LogGeneXusVersionCheck(config);
