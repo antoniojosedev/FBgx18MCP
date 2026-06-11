@@ -438,6 +438,27 @@ if (-not $skipExtract) {
         throw "Failed to download $zipUrl after $DownloadRetries attempts. Check the version exists on Releases, your network/proxy ('$env:HTTPS_PROXY'), or pass -Version to a known-good tag. Error: $($_.Exception.Message)"
     }
 
+    # ── Integrity check: verify SHA-256 against the sidecar committed at the tag ──
+    # publish.zip.sha256 is written by release.ps1 and committed before tagging
+    # (introduced in v2.9.2). Older releases won't have the file; we warn but continue.
+    $shaUrl = "https://github.com/$Repo/releases/download/$Version/publish.zip.sha256"
+    $tmpSha = Join-Path ([IO.Path]::GetTempPath()) "genexus-mcp-$Version.zip.sha256"
+    try {
+        Invoke-WebRequest -Uri $shaUrl -OutFile $tmpSha -UseBasicParsing -ErrorAction Stop
+        $expectedHash = (Get-Content $tmpSha -Raw).Trim().Split()[0].ToUpperInvariant()
+        $actualHash   = (Get-FileHash -Path $tmpZip -Algorithm SHA256).Hash.ToUpperInvariant()
+        if ($actualHash -ne $expectedHash) {
+            Remove-Item $tmpZip  -Force -ErrorAction SilentlyContinue
+            Remove-Item $tmpSha  -Force -ErrorAction SilentlyContinue
+            throw "publish.zip SHA-256 mismatch. Expected: $expectedHash  Got: $actualHash`nThe downloaded file may be corrupted or tampered with. Aborting installation."
+        }
+        Write-Step "Integrity check passed ($($actualHash.Substring(0,16))...)"
+    } catch [System.Net.WebException] {
+        Write-Warning "Could not download $shaUrl — skipping integrity check (pre-v2.9.2 release or network issue)."
+    } finally {
+        if (Test-Path $tmpSha) { Remove-Item $tmpSha -Force -ErrorAction SilentlyContinue }
+    }
+
     # Refuse to clean an unrelated directory - only wipe if it already looks like
     # an install (version.txt or the gateway exe present), or is brand new.
     if (Test-Path $InstallDir) {

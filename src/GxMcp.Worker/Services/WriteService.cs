@@ -12,7 +12,7 @@ using GxMcp.Worker.Models;
 
 namespace GxMcp.Worker.Services
 {
-    public class WriteService : IWriteServiceFacade
+    public partial class WriteService : IWriteServiceFacade
     {
         private readonly ObjectService _objectService;
         private readonly PatternAnalysisService _patternAnalysisService;
@@ -782,7 +782,8 @@ namespace GxMcp.Worker.Services
                     true,
                     false,
                     true,
-                    facadeArgs.DryRun);
+                    facadeArgs.DryRun,
+                    facadeArgs.ExplicitBase64);
             }
 
             // Friction 2026-05-22: KBs default to WIN1252 (codepage 1252) on
@@ -849,6 +850,7 @@ namespace GxMcp.Worker.Services
             string operation = args["operation"]?.ToString() ?? "Replace";
             string context = args["context"]?.ToString();
             string content = args["content"]?.ToString() ?? string.Empty;
+            string encoding = args["encoding"]?.ToString();
 
             if (args["content"] is JObject patchShape && string.Equals(mode, "patch", StringComparison.OrdinalIgnoreCase))
             {
@@ -869,7 +871,8 @@ namespace GxMcp.Worker.Services
                 VerifyRollback = args["verifyRollback"]?.ToObject<bool?>() ?? false,
                 ReturnPostState = args["return_post_state"]?.ToObject<bool?>() ?? true,
                 Verbose = args["verbose"]?.ToObject<bool?>() ?? false,
-                ReplaceAll = args["replaceAll"]?.ToObject<bool?>() ?? false
+                ReplaceAll = args["replaceAll"]?.ToObject<bool?>() ?? false,
+                ExplicitBase64 = string.Equals(encoding, "base64", StringComparison.OrdinalIgnoreCase)
             };
         }
 
@@ -887,6 +890,7 @@ namespace GxMcp.Worker.Services
             public bool ReturnPostState { get; set; }
             public bool Verbose { get; set; }
             public bool ReplaceAll { get; set; }
+            public bool ExplicitBase64 { get; set; }
         }
 
         // Returns a deduped list of glyphs in the args payload that cannot
@@ -956,7 +960,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false)
+        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false)
         {
             // Friction 2026-05-22 fix: hold the per-target lock around the
             // ENTIRE write pipeline (snapshot + internal write + wrap). This is
@@ -967,9 +971,30 @@ namespace GxMcp.Worker.Services
             // write can detect the concurrent modification and report Stale.
             lock (AcquirePerTargetLock(target))
             {
+            // Advisory lock check — honours GXMCP_WRITE_OWNER_ID / GXMCP_WRITE_FORCE env vars.
+            // Reads the .gx/locks/<target>__<part>.lock file written by genexus_multi_agent_lock.
+            // Returns an error envelope immediately if a different, non-expired owner holds the lock.
+            // Best-effort: any exception inside AdvisoryLockCheck is swallowed and the write proceeds.
+            if (!dryRun)
+            {
+                string advisoryOwnerId = System.Environment.GetEnvironmentVariable("GXMCP_WRITE_OWNER_ID");
+                bool advisoryForce = string.Equals(
+                    System.Environment.GetEnvironmentVariable("GXMCP_WRITE_FORCE"), "1",
+                    StringComparison.Ordinal);
+                if (!string.IsNullOrWhiteSpace(advisoryOwnerId))
+                {
+                    string kbPathForLock = null;
+                    try { kbPathForLock = _objectService.GetKbService().GetKbPath(); } catch { }
+                    var lockError = GxMcp.Worker.Helpers.WritePipeline.AdvisoryLockCheck(
+                        kbPathForLock, target, partName ?? "Source", advisoryOwnerId, advisoryForce);
+                    if (lockError != null)
+                        return lockError.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            }
+
             // PERFORMANCE (instrumentation): wrap the entire write pipeline (SDK ops + validation +
             // persistedHash projection) in a Stopwatch so unusually-slow object saves surface in
-            // worker_debug.log. Threshold 250ms matches user-perceived friction: anything over that
+            // worker_debug.log. Threshold 250ms matches user-performed friction: anything over that
             // is worth diagnosing.
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -986,7 +1011,7 @@ namespace GxMcp.Worker.Services
             string raw;
             try
             {
-                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun);
+                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64);
             }
             finally
             {
@@ -1079,7 +1104,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false)
+        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false)
         {
             try
             {
@@ -1087,12 +1112,34 @@ namespace GxMcp.Worker.Services
 
                 // DEBUG ENCODING: Detect and decode Base64 if needed
                 string decodedCode = code;
-                if (!string.IsNullOrEmpty(code) && (code.EndsWith("=") || code.Length > 100)) {
-                    try {
-                        byte[] data = Convert.FromBase64String(code);
-                        decodedCode = System.Text.Encoding.UTF8.GetString(data);
-                        Logger.Info("[DEBUG-SAVE] Payload decoded from Base64.");
-                    } catch { /* Not base64, use as is */ }
+                bool usedBase64Sniff = false;
+                if (!string.IsNullOrEmpty(code))
+                {
+                    if (explicitBase64)
+                    {
+                        // Explicit encoding:base64 flag — decode unconditionally.
+                        try {
+                            byte[] data = Convert.FromBase64String(code);
+                            decodedCode = System.Text.Encoding.UTF8.GetString(data);
+                            Logger.Info("[DEBUG-SAVE] Payload decoded from Base64 (explicit encoding:base64).");
+                        } catch (Exception b64Ex) {
+                            Logger.Warn($"[DEBUG-SAVE] encoding=base64 specified but decode failed: {b64Ex.Message}");
+                        }
+                    }
+                    else if (code.EndsWith("=") && code.Length >= 20 && !code.Contains("\n") && !code.Contains(" "))
+                    {
+                        // Sniff: only try if it looks like a pure base64 token (no spaces/newlines)
+                        // AND round-trip produces valid UTF-8 text without NUL bytes.
+                        try {
+                            byte[] data = Convert.FromBase64String(code);
+                            string candidate = System.Text.Encoding.UTF8.GetString(data);
+                            if (!candidate.Contains('\0') && candidate.Length > 0) {
+                                decodedCode = candidate;
+                                usedBase64Sniff = true;
+                                Logger.Warn($"[DEBUG-SAVE] Base64 auto-detected via sniff (len={code.Length}); pass encoding:\"base64\" explicitly to suppress this warning.");
+                            }
+                        } catch { /* Not base64, use as is */ }
+                    }
                 }
 
                 Logger.Info(string.Format("[DEBUG-SAVE] Request received for {0} (Part: {1}, Code Length: {2})", target, partName, decodedCode?.Length ?? 0));
@@ -1409,20 +1456,24 @@ namespace GxMcp.Worker.Services
                                 saveMethod.Invoke(obj, null);
                                 ScheduleFlush();
                                 _objectService.MarkReadCacheDirty(obj, partName);
-                                return Models.McpResponse.Ok(
-                                    target: target,
-                                    code: "WriteApplied",
-                                    result: new JObject { ["fastPath"] = "save_without_transaction" });
+                                {
+                                    var fpResult = new JObject { ["fastPath"] = "save_without_transaction" };
+                                    string fpMsgs = GetSdkMessagesSafe(part);
+                                    if (!string.IsNullOrWhiteSpace(fpMsgs)) fpResult["sdkMessages"] = fpMsgs;
+                                    return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: fpResult);
+                                }
                             }
 
                             Logger.Info("[DEBUG-SAVE] Fast persistence path fallback: obj.EnsureSave(false) without explicit transaction.");
                             obj.EnsureSave(false);
                             ScheduleFlush();
                             _objectService.MarkReadCacheDirty(obj, partName);
-                            return Models.McpResponse.Ok(
-                                target: target,
-                                code: "WriteApplied",
-                                result: new JObject { ["fastPath"] = "ensure_save_without_transaction" });
+                            {
+                                var fpResult = new JObject { ["fastPath"] = "ensure_save_without_transaction" };
+                                string fpMsgs = GetSdkMessagesSafe(part);
+                                if (!string.IsNullOrWhiteSpace(fpMsgs)) fpResult["sdkMessages"] = fpMsgs;
+                                return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: fpResult);
+                            }
                         }
                         catch (Exception fastEx)
                         {
@@ -1619,7 +1670,25 @@ namespace GxMcp.Worker.Services
                         Logger.Debug("[SPC0150] preflight scan skipped: " + spcEx.Message);
                     }
 
-                    return Models.McpResponse.Ok(target: target, code: "WriteApplied");
+                    // Build success result — include retryStrategy and warnings when validation was bypassed
+                    var writeResult = new JObject();
+                    var writeWarnings = new JArray();
+                    if (explicitBase64 || usedBase64Sniff)
+                        writeResult["decodedBase64"] = true;
+                    if (!string.Equals(retryStrategy, "standard", StringComparison.Ordinal))
+                    {
+                        writeResult["retryStrategy"] = retryStrategy;
+                        if (retryStrategy.Contains("ensure_save_without_validation"))
+                            writeWarnings.Add("validation was bypassed on save; run a build to verify");
+                        if (retryStrategy.Contains("object_save_only"))
+                            writeWarnings.Add("part-level save was skipped; only object-level save succeeded");
+                    }
+                    if (writeWarnings.Count > 0)
+                        writeResult["warnings"] = writeWarnings;
+                    return Models.McpResponse.Ok(
+                        target: target,
+                        code: "WriteApplied",
+                        result: writeResult.Count > 0 ? writeResult : null);
                 }
                 catch (Exception saveEx)
                 {
@@ -2950,12 +3019,21 @@ namespace GxMcp.Worker.Services
                     // ── DIAGNOSTIC: byte-level state RIGHT BEFORE obj.Save ────────────────
                     Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "BEFORE-SAVE");
 
+                    JObject webFormPartSaveError = null;
                     try
                     {
                         webFormPart.Save();
                     }
-                    catch
+                    catch (Exception wfSaveEx)
                     {
+                        var rootEx = wfSaveEx.InnerException ?? wfSaveEx;
+                        webFormPartSaveError = new JObject
+                        {
+                            ["type"] = rootEx.GetType().FullName,
+                            ["message"] = rootEx.Message,
+                            ["where"] = "webFormPart.Save()"
+                        };
+                        Logger.Info("[VisualWrite] webFormPart.Save() threw: " + rootEx.GetType().Name + ": " + rootEx.Message + " — captured for error envelope if needed.");
                     }
 
                     // KBObjectManager.PrepareSave skips persistence silently when kbObject.Mode ==
@@ -2984,25 +3062,30 @@ namespace GxMcp.Worker.Services
                     // ── DIAGNOSTIC: byte-level state RIGHT AFTER obj.Save ─────────────────
                     Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "AFTER-SAVE");
 
-                    // ── BYPASS: Direct SaveModelEntityOutput ─────────────────────────────
-                    // The SDK's SaveWithParent path completes successfully and SerializeData()
-                    // returns the right bytes, but they don't reach disk. Try writing bytes
-                    // directly via Entity.SaveModelEntityOutput(outputTypeId, version, ts, bytes).
-                    Helpers.WebFormSaveDiagnostics.TryDirectSaveModelEntityOutput(webFormPart, obj);
+                    // ── BYPASS: Direct SaveModelEntityOutput / SaveWithParent / SaveHeader ──
+                    // These three reflection-based bypass calls are diagnostic experiments
+                    // and are OFF by default. Set GXMCP_WEBFORM_SAVE_DIAGNOSTICS=1 to enable.
+                    if (string.Equals(Environment.GetEnvironmentVariable("GXMCP_WEBFORM_SAVE_DIAGNOSTICS"), "1", StringComparison.Ordinal))
+                    {
+                        // The SDK's SaveWithParent path completes successfully and SerializeData()
+                        // returns the right bytes, but they don't reach disk. Try writing bytes
+                        // directly via Entity.SaveModelEntityOutput(outputTypeId, version, ts, bytes).
+                        Helpers.WebFormSaveDiagnostics.TryDirectSaveModelEntityOutput(webFormPart, obj);
 
-                    // ── BYPASS 2: EntityManager.SaveWithParent direct call ───────────────
-                    // If PerformSave's iteration of kbObject.Parts is skipping our part
-                    // (IsVirtualPart=true, ShouldIgnorePart=true, or wrong instance), this
-                    // sidesteps the loop entirely and forces SaveWithParent with our ref.
-                    Helpers.WebFormSaveDiagnostics.TryDirectSaveWithParent(webFormPart, obj);
+                        // If PerformSave's iteration of kbObject.Parts is skipping our part
+                        // (IsVirtualPart=true, ShouldIgnorePart=true, or wrong instance), this
+                        // sidesteps the loop entirely and forces SaveWithParent with our ref.
+                        Helpers.WebFormSaveDiagnostics.TryDirectSaveWithParent(webFormPart, obj);
 
-                    // ── BYPASS 3: SaveHeader() — bucket scan proved WebForm bytes are NOT
-                    //   in any (typeId, version) output bucket. SaveHeader writes the entity's
-                    //   primary row, which likely contains the data BLOB column.
-                    Helpers.WebFormSaveDiagnostics.TryDirectSaveHeader(webFormPart);
+                        // SaveHeader writes the entity's primary row, which likely contains the data BLOB column.
+                        Helpers.WebFormSaveDiagnostics.TryDirectSaveHeader(webFormPart);
+                    }
 
                     // ── DIAGNOSTIC: state after all bypasses, before transaction.Commit ──
-                    Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "AFTER-BYPASSES");
+                    if (string.Equals(Environment.GetEnvironmentVariable("GXMCP_WEBFORM_SAVE_DIAGNOSTICS"), "1", StringComparison.Ordinal))
+                    {
+                        Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "AFTER-BYPASSES");
+                    }
 
                     transaction.Commit();
                     // Force synchronous flush so the data actually lands on disk before we re-read
@@ -3016,13 +3099,36 @@ namespace GxMcp.Worker.Services
                     string persistedXml = WebFormXmlHelper.ReadEditableXml(refreshedObj ?? obj);
                     if (!XmlEquivalence.AreEquivalent(persistedXml, normalizedInput, out var visualDiff, out var visualStructured))
                     {
-                        return CreateWriteError(
+                        if (webFormPartSaveError != null)
+                            Logger.Info("[VisualWrite] webFormPart.Save() error captured during verification failure: " + webFormPartSaveError.ToString(Newtonsoft.Json.Formatting.None));
+                        string visualVerifyErr = CreateWriteError(
                             "Visual write verification failed",
                             target,
                             partName,
                             "The SDK save path completed, but the persisted WebForm XML does not match the requested content. Diff: " + (visualDiff ?? "n/a"),
                             obj,
                             visualStructured);
+                        // Attach snapshot descriptor + restore hint so the caller can roll back.
+                        try
+                        {
+                            var verifyJobj = JObject.Parse(visualVerifyErr);
+                            var errObj = verifyJobj["error"] as JObject ?? verifyJobj;
+                            if (webFormPartSaveError != null) errObj["sdkSaveError"] = webFormPartSaveError;
+                            // Inject restore nextStep into nextSteps array.
+                            var nsArr = verifyJobj["nextSteps"] as JArray ?? new JArray();
+                            nsArr.Add(new JObject
+                            {
+                                ["tool"] = "genexus_history",
+                                ["args"] = new JObject { ["action"] = "restore", ["discard"] = true, ["target"] = target },
+                                ["why"] = "Restore to the pre-write snapshot to undo the failed visual write."
+                            });
+                            verifyJobj["nextSteps"] = nsArr;
+                            return verifyJobj.ToString();
+                        }
+                        catch
+                        {
+                            return visualVerifyErr;
+                        }
                     }
 
                     var okResp = new JObject
@@ -3477,6 +3583,17 @@ namespace GxMcp.Worker.Services
                                 if (requestedSnippet != null) verifyJobj["requestedSnippet"] = requestedSnippet;
                                 if (sdkSaveError != null) verifyJobj["sdkSaveError"] = sdkSaveError;
                                 AttachReconcileReport(verifyJobj, reconcileReport);
+                            }
+                            // Inject restore nextStep so the caller knows how to roll back.
+                            {
+                                var nsArr = verifyJobj["nextSteps"] as JArray ?? new JArray();
+                                nsArr.Add(new JObject
+                                {
+                                    ["tool"] = "genexus_history",
+                                    ["args"] = new JObject { ["action"] = "restore", ["discard"] = true, ["target"] = target },
+                                    ["why"] = "Restore to the pre-write snapshot to undo the failed pattern write."
+                                });
+                                verifyJobj["nextSteps"] = nsArr;
                             }
                             return verifyJobj.ToString();
                         }

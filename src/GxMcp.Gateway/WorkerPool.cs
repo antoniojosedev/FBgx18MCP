@@ -39,7 +39,7 @@ namespace GxMcp.Gateway
         private readonly object _capacityLock = new object();
 
         public event Action<string>? OnRpcResponse;
-        public event Action<KbHandle>? OnWorkerExited;
+        public event Action<KbHandle, WorkerStopReason>? OnWorkerExited;
 
         public WorkerPool(Configuration config) { _config = config; }
 
@@ -49,6 +49,11 @@ namespace GxMcp.Gateway
             public WorkerProcess? Worker;
             public DateTime LastActivityUtc = DateTime.UtcNow;
             public readonly SemaphoreSlim SpawnGate = new SemaphoreSlim(1, 1);
+            // Draining: set to true when a planned worker reload is in progress.
+            // AcquireAsync callers that hit the fast path while Draining==true wait
+            // on DrainComplete before returning the freshly-spawned replacement.
+            public volatile bool Draining;
+            public TaskCompletionSource<bool> DrainComplete = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         public IReadOnlyList<KbHandle> ListOpen() =>
@@ -60,7 +65,7 @@ namespace GxMcp.Gateway
         public bool IsAtCapacity()
         {
             int max = _config.Server?.MaxOpenKbs ?? 3;
-            return _entries.Count >= max;
+            return _entries.Count > max;
         }
 
         public IReadOnlyList<string> GetKnownAliases()
@@ -99,6 +104,17 @@ namespace GxMcp.Gateway
         public async Task<WorkerProcess> AcquireAsync(KbHandle handle, CancellationToken ct)
         {
             var entry = _entries.GetOrAdd(handle.NormalizedAlias, _ => new Entry { Handle = handle });
+            // If this entry is draining (a planned reload is orchestrating a
+            // kill → spawn cycle), wait for DrainComplete before proceeding.
+            // This covers both the fast path (Worker != null) AND the case where
+            // DrainAndReplaceAsync has already removed the old entry and we raced
+            // to GetOrAdd a new empty one.
+            if (entry.Draining)
+            {
+                await entry.DrainComplete.Task.ConfigureAwait(false);
+                // After the drain the entry was replaced — re-read.
+                entry = _entries.GetOrAdd(handle.NormalizedAlias, _ => new Entry { Handle = handle });
+            }
             if (entry.Worker != null)
             {
                 entry.LastActivityUtc = DateTime.UtcNow;
@@ -136,9 +152,9 @@ namespace GxMcp.Gateway
                 var worker = new WorkerProcess(_config, handle);
                 worker.OnRpcResponse += json => OnRpcResponse?.Invoke(json);
                 var capturedHandle = handle;
-                worker.OnWorkerExited += () =>
+                worker.OnWorkerExited += (reason) =>
                 {
-                    OnWorkerExited?.Invoke(capturedHandle);
+                    OnWorkerExited?.Invoke(capturedHandle, reason);
                     _entries.TryRemove(capturedHandle.NormalizedAlias, out _);
                 };
                 worker.Start();
@@ -156,22 +172,72 @@ namespace GxMcp.Gateway
             }
         }
 
-        public bool Close(string alias)
+        /// <summary>
+        /// Gateway-orchestrated graceful worker reload for the given alias.
+        /// 1. Marks the entry as Draining so new AcquireAsync callers wait rather than
+        ///    receiving the dying worker.
+        /// 2. Stops the current worker with PlannedReload so OnWorkerExited skips
+        ///    eager respawn.
+        /// 3. Waits for the OS process to exit (up to <paramref name="drainTimeoutMs"/>).
+        /// 4. Spawns a fresh worker via AcquireAsync, which also registers it.
+        /// 5. Signals DrainComplete so waiting callers may proceed.
+        /// Returns the new WorkerProcess on success, throws on failure.
+        /// </summary>
+        public async Task<WorkerProcess> DrainAndReplaceAsync(KbHandle handle, int drainTimeoutMs, CancellationToken ct)
+        {
+            if (!_entries.TryGetValue(handle.NormalizedAlias, out var entry))
+                throw new InvalidOperationException($"No pool entry for alias '{handle.Alias}'.");
+
+            // Mark draining before touching the process so any concurrent AcquireAsync
+            // that passes the Worker != null check enters the wait path.
+            entry.Draining = true;
+
+            WorkerProcess? oldWorker = entry.Worker;
+            if (oldWorker != null)
+            {
+                oldWorker.StopWithReason(WorkerStopReason.PlannedReload);
+                // Wait for the OS process to exit.  We don't rethrow on timeout —
+                // the OS process will linger but we still spawn a fresh one.
+                try
+                {
+                    using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeoutCts.CancelAfter(drainTimeoutMs);
+                    await oldWorker.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { /* timeout or caller cancel — proceed */ }
+            }
+
+            // Remove the old entry so AcquireAsync below creates a fresh one.
+            _entries.TryRemove(handle.NormalizedAlias, out _);
+
+            try
+            {
+                var newWorker = await AcquireAsync(handle, ct).ConfigureAwait(false);
+                return newWorker;
+            }
+            finally
+            {
+                // Signal any AcquireAsync waiters regardless of success/failure.
+                entry.DrainComplete.TrySetResult(true);
+            }
+        }
+
+        public bool Close(string alias, WorkerStopReason reason = WorkerStopReason.ExplicitClose)
         {
             if (_entries.TryRemove(alias.ToLowerInvariant(), out var entry))
             {
-                try { entry.Worker?.Stop(); } catch { }
+                try { entry.Worker?.StopWithReason(reason); } catch { }
                 return true;
             }
 
             return false;
         }
 
-        public void StopAll()
+        public void StopAll(WorkerStopReason reason = WorkerStopReason.GatewayShutdown)
         {
             foreach (var e in _entries.Values)
             {
-                try { e.Worker?.Stop(); } catch { }
+                try { e.Worker?.StopWithReason(reason); } catch { }
             }
             _entries.Clear();
         }
@@ -198,7 +264,7 @@ namespace GxMcp.Gateway
 
         private void EvictEntry(Entry entry)
         {
-            try { entry.Worker?.Stop(); } catch { }
+            try { entry.Worker?.StopWithReason(WorkerStopReason.ExplicitClose); } catch { }
             _entries.TryRemove(entry.Handle.NormalizedAlias, out _);
         }
 
@@ -235,10 +301,19 @@ namespace GxMcp.Gateway
                 }
                 try
                 {
-                    // Block on AcquireAsync — pre-spawn is a one-shot setup call.
-                    var task = AcquireAsync(kb, CancellationToken.None);
-                    task.Wait();
-                    prespawned.Add(kb.Alias);
+                    // Fire-and-forget: pre-spawn is a one-shot setup; blocking here
+                    // would deadlock on a synchronisation context. Failures are logged
+                    // in AcquireAsync and the alias is skipped rather than throwing.
+                    var capturedKb = kb;
+                    var capturedPrespawned = prespawned;
+                    var capturedSkipped = skipped;
+                    _ = AcquireAsync(capturedKb, CancellationToken.None).ContinueWith(t =>
+                    {
+                        if (t.IsCompletedSuccessfully)
+                            capturedPrespawned.Add(capturedKb.Alias);
+                        else
+                            capturedSkipped.Add(capturedKb.Alias);
+                    }, TaskScheduler.Default);
                     budget--;
                 }
                 catch
@@ -269,5 +344,22 @@ namespace GxMcp.Gateway
         {
             return _entries.Values.OrderBy(e => e.LastActivityUtc).FirstOrDefault()?.Handle;
         }
+
+        /// <summary>
+        /// Test helper: marks the named entry as Draining so the AcquireAsync fast
+        /// path is forced into the wait branch.  Returns the DrainComplete TCS so
+        /// the caller can signal it when ready.
+        /// </summary>
+        internal TaskCompletionSource<bool> SetDrainingForTest(string alias)
+        {
+            if (!_entries.TryGetValue(alias.ToLowerInvariant(), out var entry))
+                throw new InvalidOperationException($"No entry for alias '{alias}'.");
+            entry.Draining = true;
+            return entry.DrainComplete;
+        }
+
+        /// <summary>Returns true when the entry for <paramref name="alias"/> exists and Draining==true.</summary>
+        internal bool IsDrainingForTest(string alias) =>
+            _entries.TryGetValue(alias.ToLowerInvariant(), out var e) && e.Draining;
     }
 }

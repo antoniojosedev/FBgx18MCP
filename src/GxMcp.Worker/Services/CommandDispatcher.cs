@@ -424,7 +424,7 @@ namespace GxMcp.Worker.Services
                 {
                 switch (method?.ToLower())
                 {
-                    case "ping": return "{\"status\":\"pong\"}";
+                    case "ping": return Models.McpResponse.Ok(code: "Pong", result: new JObject { ["message"] = "pong" });
                     case "control":
                         // v2.3.8 (post-Task 7.2 fix): IPC cancellation side-channel.
                         // Gateway sends this on the thread-safe path so it can interleave
@@ -434,14 +434,16 @@ namespace GxMcp.Worker.Services
                         {
                             string ct = args?["cancelToken"]?.ToString() ?? target;
                             bool ok = GxMcp.Worker.Helpers.WorkerCancellationRegistry.Cancel(ct);
-                            return JsonConvert.SerializeObject(new
-                            {
-                                status = ok ? "Cancelled" : "NotFound",
-                                cancelToken = ct,
-                                message = ok
-                                    ? "Cancellation signalled to in-flight command. The handler may still take a few iterations to terminate."
-                                    : "No active command with that cancelToken (already finished or never started)."
-                            });
+                            // Item 11: wrap in canonical McpResponse envelope.
+                            return ok
+                                ? Models.McpResponse.Ok(code: "Cancelled", result: new JObject
+                                    {
+                                        ["cancelToken"] = ct,
+                                        ["message"] = "Cancellation signalled to in-flight command. The handler may still take a few iterations to terminate."
+                                    })
+                                : Models.McpResponse.Err(code: "NotFound",
+                                    message: "No active command with that cancelToken (already finished or never started).",
+                                    hint: "The cancelToken may have already expired or the command completed.");
                         }
                         break;
                     case "kb":
@@ -1063,7 +1065,7 @@ namespace GxMcp.Worker.Services
                             }
                             catch (Exception ex)
                             {
-                                return "{\"status\":\"Error\",\"message\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                                return Models.McpResponse.Err(code: "SdkProbeError", message: ex.Message, hint: "Check worker logs for the full stack trace.");
                             }
                         }
                         break;

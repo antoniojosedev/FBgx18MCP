@@ -83,18 +83,57 @@ Ok "Target version: $Version  (tag: $tag)"
 
 Step "Checking git working tree"
 $status = git status --porcelain
+# Files release.ps1 itself bumps/regenerates. A dirty tree consisting SOLELY of
+# these is the signature of a previous release run that died mid-way (e.g. a
+# failed test pass after the version bump) — that's resumable, not an error.
+$bumpFiles = @(
+    'package.json',
+    'package-lock.json',
+    'CHANGELOG.md',
+    'publish.zip.sha256',
+    'src/GxMcp.Gateway/GxMcp.Gateway.csproj',
+    'src/GxMcp.Worker/GxMcp.Worker.csproj'
+)
 if ($status -and -not $AllowDirty) {
-    Write-Host $status
-    Fail "Working tree is dirty. Commit or stash before releasing (or pass -AllowDirty to bundle pending changes into the release commit)."
+    $dirtyPaths = @($status | ForEach-Object { $_.Substring(3).Trim().Trim('"') -replace '\\', '/' })
+    $nonBump = @($dirtyPaths | Where-Object { $bumpFiles -notcontains $_ })
+    if ($nonBump.Count -eq 0) {
+        Warn "Working tree is dirty, but only with version-bump files ($($dirtyPaths -join ', ')) — resuming: they'll be bundled into the release commit."
+    } else {
+        Write-Host $status
+        Fail "Working tree is dirty beyond the version-bump files ($($nonBump -join ', ')). Commit or stash before releasing (or pass -AllowDirty to bundle pending changes into the release commit)."
+    }
 }
 Ok "Tree state acceptable."
 
-# Verify tag isn't already on remote.
+# Verify tag isn't already on remote — and if it is, decide between abort and
+# resume. A tag on origin WITH a publish.zip-carrying release means this
+# version already shipped → abort. A tag on origin WITHOUT that asset means a
+# previous run died between `git push` and `gh release create` → resume from
+# the release-creation step against the existing tagged commit.
+$resumeRelease = $false
+$releaseExists = $false
 $remoteTag = git ls-remote --tags origin "refs/tags/$tag" 2>$null
 if ($remoteTag) {
-    Fail "Tag $tag already exists on origin. Bump the version or delete the remote tag first."
+    $assetNames = @(gh release view $tag --json assets --jq '.assets[].name' 2>$null)
+    if ($LASTEXITCODE -eq 0) { $releaseExists = $true }
+    if ($releaseExists -and ($assetNames -contains 'publish.zip')) {
+        Fail "Tag $tag already exists on origin and release $tag already has publish.zip. Bump the version (or delete the remote tag + release first)."
+    }
+    if ($releaseExists) {
+        Warn "Tag $tag exists on origin and release $tag exists but has NO publish.zip asset — resuming: will upload the asset to the existing release."
+    } else {
+        Warn "Tag $tag exists on origin but no GitHub release was created — resuming from the release-creation step."
+    }
+    # Resume reuses the artefacts produced by the failed run: the zip MUST be
+    # the exact bytes whose hash was committed in the tagged commit, so we must
+    # NOT rebuild/rezip (builds aren't byte-reproducible).
+    $resumeRelease = $true
+    $SkipBuild = $true
+    $SkipTests = $true
+} else {
+    Ok "Tag $tag is free on origin."
 }
-Ok "Tag $tag is free on origin."
 
 # Verify CHANGELOG has an entry for this version (best-effort).
 $changelogPath = Join-Path $root 'CHANGELOG.md'
@@ -202,6 +241,37 @@ if (-not $SkipTests) {
     }
 } else {
     Warn "-SkipTests set; not running test suite."
+}
+
+# ── 4b. Validate artefact version stamps match $Version ──────────────────
+# With -SkipBuild a stale publish/ can ship silently; catch it here.
+Step "Validating artefact version stamps"
+if (-not $DryRun) {
+    $gwExe = Join-Path $publishDir 'GxMcp.Gateway.exe'
+    $wkExe = Join-Path $publishDir 'worker\GxMcp.Worker.exe'
+    $tdJson = Join-Path $publishDir 'tool_definitions.json'
+
+    if (-not (Test-Path $tdJson)) {
+        Fail "publish\tool_definitions.json missing — rebuild with build.ps1."
+    }
+    Ok "tool_definitions.json present."
+
+    foreach ($pair in @(
+        @{ Path = $gwExe; Label = 'GxMcp.Gateway.exe' },
+        @{ Path = $wkExe; Label = 'worker\GxMcp.Worker.exe' }
+    )) {
+        if (Test-Path $pair.Path) {
+            $vi = (Get-Item $pair.Path).VersionInfo
+            # ProductVersion may carry build metadata like "2.9.1+abc"; strip the +suffix.
+            $prodVer = $vi.ProductVersion -replace '\+.*$', '' | ForEach-Object { $_.Trim() }
+            if ($prodVer -and $prodVer -ne $Version) {
+                Fail "$($pair.Label) ProductVersion ($prodVer) != release version ($Version). Rebuild publish/ with build.ps1 before releasing."
+            }
+            Ok "$($pair.Label) version stamp: $prodVer ✓"
+        }
+    }
+} else {
+    Ok "[dry-run] would validate exe version stamps against $Version"
 }
 
 # ── 5. Zip publish/ → publish.zip ─────────────────────────────────────────

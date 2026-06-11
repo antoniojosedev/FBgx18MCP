@@ -5,11 +5,20 @@ using GxMcp.Worker.Models;
 
 namespace GxMcp.Worker.Services
 {
+    /// <summary>
+    /// FIFO enrichment queue. Synchronous by design: the previous implementation used
+    /// <c>await SemaphoreSlim.WaitAsync(...).ConfigureAwait(false)</c>, so contended
+    /// continuations resumed on MTA threadpool threads and then called straight into
+    /// the (thread-unsafe) GeneXus SDK. Nothing here needs async — a plain lock keeps
+    /// the caller's thread (STA drain thread or gated dispatcher thread) for the whole
+    /// SDK call. The methods keep their Task-returning signatures for source
+    /// compatibility with existing callers (AnalyzeService awaits PromoteAsync).
+    /// </summary>
     public class EnrichmentQueue
     {
         private readonly IndexEntryEnricher _enricher;
         private readonly ConcurrentQueue<SearchIndex.IndexEntry> _queue = new ConcurrentQueue<SearchIndex.IndexEntry>();
-        private readonly SemaphoreSlim _enrichGate = new SemaphoreSlim(1, 1);
+        private readonly object _enrichGate = new object();
         private int _pendingCount;
 
         public EnrichmentQueue(IndexEntryEnricher enricher)
@@ -26,37 +35,32 @@ namespace GxMcp.Worker.Services
             Interlocked.Increment(ref _pendingCount);
         }
 
-        public async Task DrainAsync(CancellationToken cancellationToken = default(CancellationToken))
+        public Task DrainAsync(CancellationToken cancellationToken = default(CancellationToken))
         {
             SearchIndex.IndexEntry entry;
             while (_queue.TryDequeue(out entry))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await _enrichGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
+                lock (_enrichGate)
                 {
                     _enricher.Enrich(entry);
                     Interlocked.Decrement(ref _pendingCount);
                 }
-                finally
-                {
-                    _enrichGate.Release();
-                }
             }
+            return CompletedTask;
         }
 
-        public async Task PromoteAsync(SearchIndex.IndexEntry entry, CancellationToken cancellationToken = default(CancellationToken))
+        public Task PromoteAsync(SearchIndex.IndexEntry entry, CancellationToken cancellationToken = default(CancellationToken))
         {
-            if (entry == null || entry.IsEnriched) return;
-            await _enrichGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            if (entry == null || entry.IsEnriched) return CompletedTask;
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_enrichGate)
             {
                 _enricher.Enrich(entry);
             }
-            finally
-            {
-                _enrichGate.Release();
-            }
+            return CompletedTask;
         }
+
+        private static readonly Task CompletedTask = Task.FromResult(0);
     }
 }

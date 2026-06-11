@@ -41,6 +41,9 @@
     "publish",
     "docs/llm_cli_mcp_playbook.md"
   ],
+  "os": [
+    "win32"
+  ],
   "engines": {
     "node": ">=18.0.0"
   },

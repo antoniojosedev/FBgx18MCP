@@ -30,11 +30,11 @@ namespace GxMcp.Worker.Tests
             "genexus_edit",
             "genexus_edit_and_build",
             "genexus_edit_form",
-            "genexus_github",
+            // genexus_github, genexus_multi_agent_lock and genexus_rename_across_kb
+            // were de-advertised from tools/list in v2.10.0 (still dispatchable by
+            // name) — no advertised schema to assert dryRun on.
             "genexus_lifecycle",
-            "genexus_multi_agent_lock",
             "genexus_refactor",
-            "genexus_rename_across_kb",
             "genexus_run_object",
             "genexus_variable",
             "genexus_versioning"
@@ -50,11 +50,8 @@ namespace GxMcp.Worker.Tests
             ["genexus_edit"]            = "WriteService.cs",
             ["genexus_edit_and_build"]  = "EditAndBuildOrchestrator.cs",
             ["genexus_edit_form"]       = "WebFormEditService.cs",
-            ["genexus_github"]          = "GithubService.cs",
             ["genexus_lifecycle"]       = "BuildService.cs",
-            ["genexus_multi_agent_lock"] = "MultiAgentLockService.cs",
             ["genexus_refactor"]        = "RefactorService.cs",
-            ["genexus_rename_across_kb"] = "RefactorService.cs",       // routes to same service
             ["genexus_run_object"]      = "RunObjectService.cs",
             ["genexus_variable"]        = "WriteService.cs",
             ["genexus_versioning"]      = "HistoryService.cs"           // undo also in UndoService.cs

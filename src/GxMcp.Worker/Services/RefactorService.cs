@@ -242,10 +242,21 @@ namespace GxMcp.Worker.Services
             try {
                 Logger.Info($"Extracting code to new procedure: {newProcName} from {sourceObjectName}");
 
-                var writeService = new WriteService(_objectService);
-                string createResult = writeService.WriteObject(newProcName, "Procedure", codeToExtract);
-                
-                if (createResult.Contains("error")) return createResult;
+                // WriteObject only writes to existing objects — the procedure must be
+                // created first via the same path genexus_create uses.
+                string createResult = _objectService.CreateObject("Procedure", newProcName);
+
+                // Use parsed envelope status instead of fragile string.Contains("error").
+                bool createFailed = false;
+                try
+                {
+                    var createObj = JObject.Parse(createResult);
+                    string createStatus = createObj["status"]?.ToString() ?? string.Empty;
+                    createFailed = !string.Equals(createStatus, "ok", StringComparison.OrdinalIgnoreCase)
+                                && !string.Equals(createStatus, "success", StringComparison.OrdinalIgnoreCase);
+                }
+                catch { createFailed = createResult.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0; }
+                if (createFailed) return createResult;
 
                 var newProc = _objectService.FindObject(newProcName) as global::Artech.Genexus.Common.Objects.Procedure;
                 if (newProc == null) return Models.McpResponse.Err(
@@ -257,6 +268,8 @@ namespace GxMcp.Worker.Services
                         args: new JObject { ["name"] = newProcName },
                         why: "Check whether the procedure was partially created before the failure.")),
                     target: newProcName);
+
+                newProc.ProcedurePart.Source = codeToExtract;
 
                 var variablesFound = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var matches = System.Text.RegularExpressions.Regex.Matches(codeToExtract, @"&(\w+)");
@@ -366,9 +379,10 @@ namespace GxMcp.Worker.Services
                         why: "Search for attributes matching the name to find the correct identifier.")),
                     target: oldName);
 
-            attrObj.Name = newName;
-            attrObj.EnsureSave();
-
+            // Patch callers FIRST (before renaming the attribute) so that the old
+            // name is still resolvable while we enumerate and save each caller.
+            // Renaming the attribute before patching callers can cause reference
+            // failures inside EnsureSave for objects that still reference oldName.
             var index = _indexCacheService.GetIndex();
             var affectedObjects = new List<string>();
             // index.Objects is keyed as "Type:Name" via GetEntryStorageKey, not bare Name.
@@ -376,29 +390,61 @@ namespace GxMcp.Worker.Services
                 affectedObjects.AddRange(entry.CalledBy);
 
             string pattern = @"(?i)\b" + System.Text.RegularExpressions.Regex.Escape(oldName) + @"\b";
-            int updatedCount = 0;
+
+            var patched = new List<string>();
+            var failed = new List<JObject>();
 
             foreach (var objName in affectedObjects.Distinct()) {
                 var obj = _objectService.FindObject(objName);
-                if (obj == null) continue;
+                if (obj == null) { failed.Add(new JObject { ["name"] = objName, ["reason"] = "object not found" }); continue; }
                 bool changed = false;
-                foreach (var part in obj.Parts.Cast<KBObjectPart>()) {
-                    if (part is ISource sourcePart) {
-                        string original = sourcePart.Source;
-                        if (!string.IsNullOrEmpty(original)) {
-                            string updated = System.Text.RegularExpressions.Regex.Replace(original, pattern, newName);
-                            if (updated != original) { sourcePart.Source = updated; changed = true; }
+                try
+                {
+                    foreach (var part in obj.Parts.Cast<KBObjectPart>()) {
+                        if (part is ISource sourcePart) {
+                            string original = sourcePart.Source;
+                            if (!string.IsNullOrEmpty(original)) {
+                                string updated = System.Text.RegularExpressions.Regex.Replace(original, pattern, newName);
+                                if (updated != original) { sourcePart.Source = updated; changed = true; }
+                            }
                         }
                     }
+                    if (changed) { obj.EnsureSave(); _indexCacheService.UpdateEntry(obj); patched.Add(objName); }
                 }
-                if (changed) { obj.EnsureSave(); _indexCacheService.UpdateEntry(obj); updatedCount++; }
+                catch (Exception patchEx)
+                {
+                    failed.Add(new JObject { ["name"] = objName, ["reason"] = patchEx.Message });
+                }
             }
 
+            // Now rename the attribute itself.
+            attrObj.Name = newName;
+            attrObj.EnsureSave();
             _indexCacheService.UpdateEntry(attrObj);
+
+            bool hasFailures = failed.Count > 0;
+            var resultObj = new JObject
+            {
+                ["oldName"] = oldName,
+                ["newName"] = newName,
+                ["patched"] = new JArray(patched.Select(p => (JToken)p).ToArray()),
+                ["failed"] = new JArray(failed.Cast<JToken>().ToArray()),
+                ["affectedObjects"] = patched.Count
+            };
+
+            if (hasFailures)
+            {
+                // Partial success — attribute was renamed but some callers could not be patched.
+                return Models.McpResponse.Ok(
+                    target: oldName,
+                    code: "AttributeRenamedPartial",
+                    result: resultObj);
+            }
+
             return Models.McpResponse.Ok(
                 target: oldName,
                 code: "AttributeRenamed",
-                result: new JObject { ["oldName"] = oldName, ["newName"] = newName, ["affectedObjects"] = updatedCount });
+                result: resultObj);
         }
 
         private string RenameVariable(string target, string oldName, string newName)

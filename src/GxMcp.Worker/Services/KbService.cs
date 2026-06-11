@@ -31,7 +31,7 @@ namespace GxMcp.Worker.Services
         public static long LastDatastoreProbeMs = 0;
 
         private dynamic _kb;
-        private bool _isOpenInProgress = false;
+        private volatile bool _isOpenInProgress = false;
         private readonly object _kbLock = new object();
 
         public KbService(IndexCacheService indexCacheService)
@@ -83,6 +83,14 @@ namespace GxMcp.Worker.Services
 
         public string OpenKB(string path)
         {
+            // Concurrency redesign: the multi-minute KnowledgeBase.Open used to run while
+            // HOLDING _kbLock, which (a) blocked every locked accessor (GetKbPath, IsOpen,
+            // GetKB, GetActiveEnvironment) for the whole open, and (b) made the
+            // _isOpenInProgress fast-fail unreachable for a second caller (it was queued on
+            // the very lock the first caller held). Now the flag is set under the lock,
+            // the lock is released, Open runs lock-free, and the handle is published by
+            // re-acquiring the lock. A second concurrent caller gets the OpenInProgress
+            // envelope immediately.
             lock (_kbLock)
             {
                 if (_isOpenInProgress)
@@ -90,11 +98,10 @@ namespace GxMcp.Worker.Services
                     return Models.McpResponse.Err(
                         code: "OpenInProgress",
                         message: "Another KB open is already in progress on this worker.",
-                        hint: "Wait for the current open to finish; calls to KbService.OpenKB are serialized on this lock.",
+                        hint: "Wait for the current open to finish, then retry.",
                         retryAfterMs: 1500,
                         target: path);
                 }
-                _isOpenInProgress = true;
 
                 if (_kb != null)
                 {
@@ -102,65 +109,89 @@ namespace GxMcp.Worker.Services
                     {
                         if (string.Equals(_kb.Location, path, StringComparison.OrdinalIgnoreCase))
                         {
-                            _isOpenInProgress = false;
                             return Models.McpResponse.Ok(target: path, code: "KbAlreadyOpen");
                         }
                     }
                     catch { }
                     try { _kb.Close(); } catch { }
+                    _kb = null;
                 }
 
-                // PERFORMANCE (instrumentation): time the KB.Open call so cold-start regressions
-                // are visible in logs. Previously this critical SDK call had no timing data.
-                var sw = Stopwatch.StartNew();
-                try
+                _isOpenInProgress = true;
+            }
+
+            // PERFORMANCE (instrumentation): time the KB.Open call so cold-start regressions
+            // are visible in logs. Previously this critical SDK call had no timing data.
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                Logger.Info($"Opening KB: {path}");
+                dynamic opened = null;
+                // SdkGate: KnowledgeBase.Open is the heaviest SDK call in the process;
+                // serialize it against the index/watcher threads like every other SDK region.
+                using (SdkGate.Enter())
                 {
-                    Logger.Info($"Opening KB: {path}");
                     string oldDir = Directory.GetCurrentDirectory();
                     try
                     {
+                        // NOTE (process-global CWD mutation): the GeneXus SDK resolves some
+                        // KB-relative artifacts (e.g. environment metadata, model.ini probes)
+                        // against the current directory during Open on certain installs.
+                        // We could not prove it safe to remove without a live-KB regression
+                        // matrix, so the mutation is kept — but tightly scoped to the Open
+                        // call itself and restored in finally. Anything else that needs the
+                        // KB directory should derive it from kb.Location, never from CWD.
                         string kbDir = Path.GetDirectoryName(path);
                         Directory.SetCurrentDirectory(kbDir);
 
                         var options = new KnowledgeBase.OpenOptions(path);
-                        _kb = KnowledgeBase.Open(options);
-                        NormalizeGxwVersionMetadata(path);
-
-                        sw.Stop();
-                        LastOpenElapsedMs = sw.ElapsedMilliseconds;
-                        Logger.Info($"[KB-OPEN] elapsedMs={sw.ElapsedMilliseconds} path={path}");
-                        // Diagnostic (read-only, no DB connect): record which data store the
-                        // active environment points at. The GeneXus SDK may try to reach this
-                        // server during open; when it's unreachable, KB-OPEN above balloons or
-                        // hangs. This line lets a slow/hung open be correlated with the target
-                        // DB from worker_debug.log alone. Best-effort — never gates readiness.
-                        // Fase 0: time the probe separately — it does SDK metadata reads and can
-                        // balloon if the DB server is unreachable, masquerading as slow KB-open.
-                        var dsSw = Stopwatch.StartNew();
-                        try { Logger.Info($"[KB-OPEN-DATASTORE] {DescribeActiveDataStore(_kb)}"); }
-                        catch (Exception dsEx) { Logger.Debug($"[KB-OPEN-DATASTORE] probe failed: {dsEx.Message}"); }
-                        dsSw.Stop();
-                        LastDatastoreProbeMs = dsSw.ElapsedMilliseconds;
-                        return Models.McpResponse.Ok(
-                            target: path,
-                            code: "KbOpened",
-                            result: new JObject { ["elapsedMs"] = sw.ElapsedMilliseconds });
+                        opened = KnowledgeBase.Open(options);
                     }
-                    finally { Directory.SetCurrentDirectory(oldDir); _isOpenInProgress = false; }
+                    finally
+                    {
+                        try { Directory.SetCurrentDirectory(oldDir); } catch { }
+                    }
                 }
-                catch (Exception ex)
-                {
-                    sw.Stop();
-                    Logger.Error($"[KB-OPEN-FAIL] elapsedMs={sw.ElapsedMilliseconds} path={path} error={ex.Message}");
-                    Logger.Error($"ERROR opening KB: {ex.Message}");
-                    _kb = null;
-                    _isOpenInProgress = false;
-                    return Models.McpResponse.Err(
-                        code: "KbOpenFailed",
-                        message: ex.Message,
-                        hint: "Verify the path points to a .gx file (or its containing folder), the file is accessible, and the GeneXus install matches the KB version.",
-                        target: path);
-                }
+                NormalizeGxwVersionMetadata(path);
+
+                // Publish the handle.
+                lock (_kbLock) { _kb = opened; }
+
+                sw.Stop();
+                LastOpenElapsedMs = sw.ElapsedMilliseconds;
+                Logger.Info($"[KB-OPEN] elapsedMs={sw.ElapsedMilliseconds} path={path}");
+                // Diagnostic (read-only, no DB connect): record which data store the
+                // active environment points at. The GeneXus SDK may try to reach this
+                // server during open; when it's unreachable, KB-OPEN above balloons or
+                // hangs. This line lets a slow/hung open be correlated with the target
+                // DB from worker_debug.log alone. Best-effort — never gates readiness.
+                // Fase 0: time the probe separately — it does SDK metadata reads and can
+                // balloon if the DB server is unreachable, masquerading as slow KB-open.
+                var dsSw = Stopwatch.StartNew();
+                try { using (SdkGate.Enter()) Logger.Info($"[KB-OPEN-DATASTORE] {DescribeActiveDataStore(opened)}"); }
+                catch (Exception dsEx) { Logger.Debug($"[KB-OPEN-DATASTORE] probe failed: {dsEx.Message}"); }
+                dsSw.Stop();
+                LastDatastoreProbeMs = dsSw.ElapsedMilliseconds;
+                return Models.McpResponse.Ok(
+                    target: path,
+                    code: "KbOpened",
+                    result: new JObject { ["elapsedMs"] = sw.ElapsedMilliseconds });
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                Logger.Error($"[KB-OPEN-FAIL] elapsedMs={sw.ElapsedMilliseconds} path={path} error={ex.Message}");
+                Logger.Error($"ERROR opening KB: {ex.Message}");
+                lock (_kbLock) { _kb = null; }
+                return Models.McpResponse.Err(
+                    code: "KbOpenFailed",
+                    message: ex.Message,
+                    hint: "Verify the path points to a .gx file (or its containing folder), the file is accessible, and the GeneXus install matches the KB version.",
+                    target: path);
+            }
+            finally
+            {
+                _isOpenInProgress = false;
             }
         }
 
@@ -390,7 +421,9 @@ namespace GxMcp.Worker.Services
             }
 
             Logger.Info($"BulkIndex(force={force}) requested — fast index path (lite + lazy enrichment).");
-            if (_isIndexing) return "{\"status\":\"Already in progress\"}";
+            if (_isIndexing) return Models.McpResponse.Ok(
+                code: "AlreadyInProgress",
+                result: new JObject { ["hint"] = "An index build is already running; poll genexus_whoami for progress." });
 
             // Wait briefly for the KB to open — same warm-up window as the legacy path.
             try
@@ -439,7 +472,13 @@ namespace GxMcp.Worker.Services
                             _isIndexing = true;
                             StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count);
                             Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}) — delta refresh started.");
-                            return "{\"status\":\"DeltaStarted\",\"objects\":" + loaded.Objects.Count + ",\"hint\":\"Index is usable now from the warm cache; objects changed since last index are being refreshed in the background.\"}";
+                            return Models.McpResponse.Ok(
+                                code: "DeltaStarted",
+                                result: new JObject
+                                {
+                                    ["objects"] = loaded.Objects.Count,
+                                    ["hint"] = "Index is usable now from the warm cache; objects changed since last index are being refreshed in the background."
+                                });
                         }
                         Logger.Info($"BulkIndex(fast): cache present but not delta-eligible (canDelta={validation.CanDelta} metaPresent={validation.MetaPresent} schemaMatch={validation.SchemaMatch} dllMatch={validation.DllMatch}) — full rebuild to re-establish the delta baseline.");
                     }
@@ -542,7 +581,10 @@ namespace GxMcp.Worker.Services
                             long flushStart = Stopwatch.GetTimestamp();
                             try
                             {
-                                _indexCacheService.ReplaceAll(new List<SearchIndex.IndexEntry>(liteEntries));
+                                // Item 6: incremental AddOrUpdateBatch instead of ReplaceAll so
+                                // enriched entries already in the cache are never overwritten with
+                                // lite stubs during streaming progress flushes.
+                                _indexCacheService.AddOrUpdateBatch(new List<SearchIndex.IndexEntry>(liteEntries));
                                 _indexCacheService.MarkUltraLiteReady(_totalCount);
                             }
                             catch { /* best-effort; full ReplaceAll at end is authoritative */ }
@@ -763,7 +805,9 @@ namespace GxMcp.Worker.Services
                         int storedCount = idx.Objects.Count;
                         int currentCount = -1;
                         try { currentCount = (int)kb.DesignModel.Objects.Count; } catch { currentCount = -1; }
-                        if (currentCount >= 0 && currentCount < storedCount && idx.GuidToKey != null)
+                        // Item 3: sweep when count dropped OR when objects changed (changed > 0
+                        // means GUIDs may have rotated even if total count is the same).
+                        if (currentCount >= 0 && (currentCount < storedCount || changed > 0) && idx.GuidToKey != null)
                         {
                             var currentGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                             foreach (global::Artech.Architecture.Common.Objects.KBObject o in (System.Collections.IEnumerable)kb.DesignModel.Objects)

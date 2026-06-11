@@ -100,7 +100,10 @@ namespace GxMcp.Gateway
         private static bool _stdioActive;
         private static readonly TimeSpan _pendingRequestRetention = TimeSpan.FromMinutes(65);
         private static readonly string _logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gateway_debug.log");
-        private static readonly BlockingCollection<string> _logQueue = new BlockingCollection<string>();
+        // Rotation: when the log exceeds this many bytes the current file is renamed to
+        // gateway_debug.log.1 and a fresh file is opened.  Only two files are kept.
+        private const long _logRotateBytes = 10 * 1024 * 1024; // 10 MB
+        private static StreamWriter? _logWriter;
         private static readonly string[] _defaultLocalOrigins = new[]
         {
             "http://localhost",
@@ -134,7 +137,14 @@ namespace GxMcp.Gateway
 
         private static void InitializeLogging()
         {
-            /* Background writer disabled for stability */
+            try
+            {
+                lock (_logLock)
+                {
+                    _logWriter = new StreamWriter(_logPath, append: true, System.Text.Encoding.UTF8) { AutoFlush = true };
+                }
+            }
+            catch { /* fall back to no-op if the file is unavailable */ }
             Log("=== Gateway starting (Stdio Mode) ===");
         }
 
@@ -142,7 +152,33 @@ namespace GxMcp.Gateway
         {
             try {
                 lock (_logLock) {
-                    File.AppendAllText(_logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {msg}\n");
+                    string line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {msg}\n";
+                    if (_logWriter == null)
+                    {
+                        // InitializeLogging() has not been called (e.g. in tests).
+                        // Fall back to the direct append-all path so the file is
+                        // always written and existing tests that snapshot file length
+                        // continue to work.
+                        File.AppendAllText(_logPath, line);
+                        return;
+                    }
+                    // Size-based rotation: rename current to .1 (overwriting any previous .1)
+                    // then open a fresh log file.
+                    try
+                    {
+                        var fi = new FileInfo(_logPath);
+                        if (fi.Exists && fi.Length > _logRotateBytes)
+                        {
+                            _logWriter.Dispose();
+                            _logWriter = null;
+                            string rotated = _logPath + ".1";
+                            if (File.Exists(rotated)) File.Delete(rotated);
+                            File.Move(_logPath, rotated);
+                            _logWriter = new StreamWriter(_logPath, append: false, System.Text.Encoding.UTF8) { AutoFlush = true };
+                        }
+                    }
+                    catch { /* rotation failure is non-fatal; keep using existing writer */ }
+                    _logWriter?.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {msg}");
                 }
             } catch { }
         }
@@ -1484,18 +1520,57 @@ namespace GxMcp.Gateway
                     string capturedLine = line;
                     _ = Task.Run(async () =>
                     {
+                        JToken? capturedId = null;
                         try
                         {
-                            var request = JObject.Parse(capturedLine);
+                            JObject request;
+                            try
+                            {
+                                request = JObject.Parse(capturedLine);
+                            }
+                            catch (Exception parseEx)
+                            {
+                                Log("MCP parse error: " + parseEx.Message);
+                                var parseErr = new JObject
+                                {
+                                    ["jsonrpc"] = "2.0",
+                                    ["id"] = JValue.CreateNull(),
+                                    ["error"] = new JObject { ["code"] = -32700, ["message"] = "Parse error" }
+                                };
+                                await TryWriteStdout(parseErr.ToString(Formatting.None));
+                                return;
+                            }
+                            capturedId = request["id"];
                             var response = await ProcessMcpRequest(request);
                             if (response != null)
                             {
                                 await TryWriteStdout(response.ToString(Formatting.None));
                             }
                         }
+                        catch (WorkerPoolFullException poolEx)
+                        {
+                            Log("MCP WorkerPoolFull: " + poolEx.Message);
+                            var errResp = new JObject
+                            {
+                                ["jsonrpc"] = "2.0",
+                                ["id"] = capturedId?.DeepClone() ?? JValue.CreateNull(),
+                                ["error"] = new JObject { ["code"] = -32000, ["message"] = poolEx.Message }
+                            };
+                            await TryWriteStdout(errResp.ToString(Formatting.None));
+                        }
                         catch (Exception ex)
                         {
                             Log("MCP Error: " + ex.Message);
+                            if (capturedId != null)
+                            {
+                                var errResp = new JObject
+                                {
+                                    ["jsonrpc"] = "2.0",
+                                    ["id"] = capturedId.DeepClone(),
+                                    ["error"] = new JObject { ["code"] = -32603, ["message"] = "Internal error" }
+                                };
+                                await TryWriteStdout(errResp.ToString(Formatting.None));
+                            }
                         }
                     });
                 }
@@ -1656,7 +1731,7 @@ namespace GxMcp.Gateway
             _kbResolver = new KbResolver(config);
             _workerPool = new WorkerPool(config);
             _workerPool.OnRpcResponse += HandleWorkerResponse;
-            _workerPool.OnWorkerExited += (kb) => {
+            _workerPool.OnWorkerExited += (kb, stopReason) => {
                 string alias = kb.NormalizedAlias;
                 int aborted = 0;
                 foreach (var kvp in _pendingRequests.ToArray())
@@ -1684,6 +1759,16 @@ namespace GxMcp.Gateway
                 // MCP clients (VS Code Codex) to close the transport entirely.
                 // Fire-and-forget: failures are logged but don't propagate; the
                 // lazy path in WorkerPool.AcquireAsync still works as a fallback.
+                // Skip eager respawn for intentional/planned exits.
+                if (stopReason == WorkerStopReason.IdleTimeout ||
+                    stopReason == WorkerStopReason.GatewayShutdown ||
+                    stopReason == WorkerStopReason.BusyReject ||
+                    stopReason == WorkerStopReason.ExplicitClose ||
+                    stopReason == WorkerStopReason.PlannedReload)
+                {
+                    Log($"[Respawn] Skipped eager respawn for KB '{kb.Alias}' — stop reason: {stopReason}.");
+                    return;
+                }
                 if (IsEagerRespawnSuppressed())
                 {
                     Log($"[Respawn] Skipped eager respawn for KB '{kb.Alias}' — planned exit in progress.");
@@ -2406,6 +2491,78 @@ namespace GxMcp.Gateway
                             ["jsonrpc"] = "2.0",
                             ["id"] = idToken?.DeepClone(),
                             ["error"] = JToken.FromObject(new { code = -32603, message = "Force-reload failed: " + ex.Message })
+                        };
+                    }
+                }
+
+                // Non-force genexus_worker_reload: gateway-orchestrated graceful drain + respawn.
+                // Previously this fell through to the worker as a normal RPC; the worker ACK'd
+                // then exited, leaving a window where AcquireAsync returned the dying process.
+                // Now the gateway marks the pool entry as draining (blocking concurrent
+                // AcquireAsync callers), sends StopWithReason(PlannedReload), waits for the OS
+                // process to exit, spawns a fresh worker, awaits its SdkReadyTask, then responds.
+                if (string.Equals(toolName, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
+                    && args?["force"]?.ToObject<bool?>() != true)
+                {
+                    if (_activeConfig == null || _workerPool == null)
+                    {
+                        return new JObject
+                        {
+                            ["jsonrpc"] = "2.0",
+                            ["id"] = idToken?.DeepClone(),
+                            ["error"] = JToken.FromObject(new { code = -32603, message = "Reload refused: gateway has no active configuration." })
+                        };
+                    }
+                    string? reloadAlias = args?["alias"]?.ToString();
+                    KbHandle? reloadKb = null;
+                    if (!string.IsNullOrWhiteSpace(reloadAlias))
+                    {
+                        reloadKb = _workerPool.ListOpen().FirstOrDefault(h =>
+                            string.Equals(h.NormalizedAlias, reloadAlias.ToLowerInvariant(), StringComparison.OrdinalIgnoreCase));
+                    }
+                    else
+                    {
+                        reloadKb = _workerPool.ListOpen().FirstOrDefault();
+                    }
+                    if (reloadKb == null)
+                    {
+                        return BuildToolTextResponse(idToken,
+                            new JObject { ["status"] = "NoWorker", ["detail"] = "No open KB worker found to reload." },
+                            isError: false, toolName: toolName, toolArgs: args);
+                    }
+                    try
+                    {
+                        using (SuppressEagerRespawn())
+                        {
+                            // Drain timeout: 30s for the old worker process to exit.
+                            var newWorker = await _workerPool.DrainAndReplaceAsync(reloadKb, drainTimeoutMs: 30_000, ct: CancellationToken.None).ConfigureAwait(false);
+                            // Wait for the new worker's SDK to be ready (cap at 180s to avoid hanging).
+                            bool sdkReady = await McpRouter.AwaitWithHeartbeat(
+                                newWorker.SdkReadyTask, timeoutMs: 180_000,
+                                progressToken: null, heartbeat: null,
+                                toolName: "worker_reload").ConfigureAwait(false);
+                            BroadcastToolsListChanged("worker_reloaded_soft");
+                            BroadcastResourcesListChanged("worker_reloaded_soft");
+                            return BuildToolTextResponse(idToken,
+                                new JObject
+                                {
+                                    ["status"] = "Reloaded",
+                                    ["swappedAndReady"] = sdkReady,
+                                    ["detail"] = sdkReady
+                                        ? "Worker gracefully drained and replaced; new worker is SDK-ready."
+                                        : "Worker replaced but new worker did not signal SDK-ready within 180s."
+                                },
+                                isError: false, toolName: toolName, toolArgs: args);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[Reload] Soft reload failed for KB '{reloadKb.Alias}': {ex.Message}");
+                        return new JObject
+                        {
+                            ["jsonrpc"] = "2.0",
+                            ["id"] = idToken?.DeepClone(),
+                            ["error"] = JToken.FromObject(new { code = -32603, message = "Soft reload failed: " + ex.Message })
                         };
                     }
                 }
@@ -3938,7 +4095,32 @@ namespace GxMcp.Gateway
                     ["error"] = JToken.FromObject(new { code = -32601, message = $"Method not found: {fallbackToolName}" })
                 };
             }
-            
+
+            // Fix 6a: unknown method with an id is a request (not a notification) — must
+            // respond. Notifications have no "id" field; those return null (no response).
+            if (idToken != null && !string.IsNullOrEmpty(method)
+                && !method.StartsWith("notifications/", StringComparison.OrdinalIgnoreCase))
+            {
+                return new JObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = idToken.DeepClone(),
+                    ["error"] = new JObject { ["code"] = -32601, ["message"] = $"Method not found: {method}" }
+                };
+            }
+
+            // Fix 6e: notifications/cancelled — acknowledge by resolving/aborting matching request.
+            if (string.Equals(method, "notifications/cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                var cancelledId = request["params"]?["requestId"];
+                if (cancelledId != null)
+                {
+                    Log($"[Protocol] notifications/cancelled for requestId={cancelledId}");
+                    // Best-effort: no tracked pending-request map yet; the caller will time out naturally.
+                }
+                return null;
+            }
+
             return null;
         }
 

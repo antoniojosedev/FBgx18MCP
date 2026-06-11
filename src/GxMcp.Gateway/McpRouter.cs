@@ -127,9 +127,9 @@ namespace GxMcp.Gateway
                     {
                         try
                         {
-                            // null arguments — routers that read args?[...] tolerate this;
-                            // ones that throw are treated as "did not claim".
-                            object result = router.ConvertToolCall(toolName, null);
+                            // empty JObject probe — safer than null; routers that gate on
+                            // required args will return null without throwing.
+                            object result = router.ConvertToolCall(toolName, new JObject());
                             if (result != null) { hits++; claimers.Add(router.GetType().Name); }
                         }
                         catch { /* throwing router doesn't claim the tool */ }
@@ -224,8 +224,26 @@ namespace GxMcp.Gateway
 
         public const string McpAxiSchemaVersion = "mcp-axi/2";
 
-        private static JObject BuildInitializeResponse()
+        // Fix 6d: known MCP protocol versions this server supports (oldest → newest).
+        public static readonly string[] KnownProtocolVersions =
         {
+            "2024-11-05",
+            "2025-03-26",
+            "2025-06-18",
+            "2025-11-25"
+        };
+
+        private static JObject BuildInitializeResponse(string? clientRequestedVersion = null)
+        {
+            // Echo the client's requested version if it is one we support; otherwise
+            // fall back to the highest version we know about (SupportedProtocolVersion).
+            string negotiatedVersion = SupportedProtocolVersion;
+            if (!string.IsNullOrEmpty(clientRequestedVersion)
+                && Array.IndexOf(KnownProtocolVersions, clientRequestedVersion) >= 0)
+            {
+                negotiatedVersion = clientRequestedVersion;
+            }
+
             var removed = new JArray();
             foreach (var kvp in RemovedToolsRegistry.Map)
             {
@@ -239,12 +257,12 @@ namespace GxMcp.Gateway
 
             return new JObject
             {
-                ["protocolVersion"] = SupportedProtocolVersion,
+                ["protocolVersion"] = negotiatedVersion,
                 ["capabilities"] = new JObject
                 {
                     ["prompts"] = new JObject { ["listChanged"] = false },
                     ["tools"] = new JObject { ["listChanged"] = true },
-                    ["resources"] = new JObject { ["listChanged"] = true, ["subscribe"] = true },
+                    ["resources"] = new JObject { ["listChanged"] = true },
                     ["completion"] = new JObject()
                 },
                 ["serverInfo"] = new JObject
@@ -266,7 +284,10 @@ namespace GxMcp.Gateway
             switch (method)
             {
                 case "initialize":
-                    return BuildInitializeResponse();
+                    {
+                        string? clientVersion = (request["params"] as JObject)?["protocolVersion"]?.ToString();
+                        return BuildInitializeResponse(clientVersion);
+                    }
                 case "tools/list":
                     return new { tools = _toolDefinitions };
                 case "resources/list":

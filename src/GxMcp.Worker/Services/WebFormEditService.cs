@@ -70,6 +70,7 @@ namespace GxMcp.Worker.Services
 
             bool dryRun = args["dryRun"]?.ToObject<bool?>() ?? false;
 
+            var t0 = DateTime.UtcNow;
             string xmlBefore;
             try
             {
@@ -110,6 +111,11 @@ namespace GxMcp.Worker.Services
                     ["action"] = action,
                     ["warnings"] = JArray.FromObject(warnings)
                 });
+            }
+
+            if (!dryRun && WriteService.WasTargetWrittenSince(target, t0))
+            {
+                return Err("StaleWrite", "The WebForm was modified by another write between this read and write. Re-read and retry.");
             }
 
             string writeResult;

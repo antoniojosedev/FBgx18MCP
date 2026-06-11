@@ -308,7 +308,14 @@ function readJsonFileSafe(filePath) {
         } catch {
             // Fall back to a JSONC-tolerant parse before giving up, so a commented
             // VS Code / OpenCode config isn't treated as corrupt.
-            return JSON.parse(stripJsonComments(raw));
+            const stripped = stripJsonComments(raw);
+            const result = JSON.parse(stripped);
+            // Warn: if we ever rewrite this file the comments will be lost.
+            process.stderr.write(
+                `[genexus-mcp] Warning: ${filePath} contains JSONC comments (// or /* */).\n` +
+                `[genexus-mcp] Comments are stripped for reading but will be lost if this file is rewritten by the CLI.\n`
+            );
+            return result;
         }
     } catch {
         return null;
@@ -331,6 +338,9 @@ function writeFileAtomic(filePath, content) {
 // Back up a client config once per process run before the first mutation, so the
 // user has a restore point (the old build-from-source install.ps1 did this; the
 // CLI now owns it). Best-effort \u2014 a failed backup never blocks the write.
+// After writing a new backup, prune old .bak files for the same config so at
+// most BAK_KEEP_COUNT backups exist (oldest removed first).
+const BAK_KEEP_COUNT = 5;
 const _backedUpThisRun = new Set();
 function backupClientConfigOnce(filePath) {
     if (!fs.existsSync(filePath)) return null;
@@ -345,6 +355,22 @@ function backupClientConfigOnce(filePath) {
         const bak = `${filePath}.${stamp}.bak`;
         fs.copyFileSync(filePath, bak);
         _backedUpThisRun.add(key);
+        // Prune: keep only the BAK_KEEP_COUNT most-recent .bak files for this config.
+        try {
+            const dir = path.dirname(resolved);
+            const base = path.basename(resolved);
+            const bakPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\\d{14}\\.bak$`);
+            const existing = fs.readdirSync(dir)
+                .filter(f => bakPattern.test(f))
+                .map(f => path.join(dir, f))
+                .sort(); // ISO timestamp stamps sort lexicographically = chronologically
+            if (existing.length > BAK_KEEP_COUNT) {
+                const toRemove = existing.slice(0, existing.length - BAK_KEEP_COUNT);
+                for (const old of toRemove) {
+                    try { fs.rmSync(old, { force: true }); } catch { /* best-effort */ }
+                }
+            }
+        } catch { /* pruning is best-effort; never block the backup */ }
         return bak;
     } catch {
         return null;

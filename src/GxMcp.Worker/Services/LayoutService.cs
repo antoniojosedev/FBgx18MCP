@@ -2305,6 +2305,7 @@ namespace GxMcp.Worker.Services
                     {
                         if (!TryNormalizeReportPrintCommandsInSourceInMemory(obj, normalizedXml, out string normalizeError))
                         {
+                            transaction.Rollback();
                             return Models.McpResponse.Err(
                                 code: "LayoutMutationFailed",
                                 message: "Layout mutation failed: " + normalizeError,
@@ -2315,6 +2316,7 @@ namespace GxMcp.Worker.Services
 
                         if (!TryFlushSourceForLayoutMutation(obj, out string flushSourceError))
                         {
+                            transaction.Rollback();
                             return Models.McpResponse.Err(
                                 code: "LayoutMutationFailed",
                                 message: "Layout mutation failed: " + flushSourceError,
@@ -2325,6 +2327,7 @@ namespace GxMcp.Worker.Services
 
                         if (!ReportLayoutHelper.WriteLayout(context.VisualPart, normalizedXml))
                         {
+                            transaction.Rollback();
                             return Models.McpResponse.Err(
                                 code: "LayoutMutationFailed",
                                 message: "Layout mutation failed: ReportLayoutHelper failed to write XML to the ReportPart.",
@@ -2336,7 +2339,12 @@ namespace GxMcp.Worker.Services
                     else if (context.Surface == VisualSurface.WebForm)
                     {
                         WebFormXmlHelper.ApplyEditableXml(context.WebFormPart, normalizedXml);
-                        try { context.WebFormPart.Save(); } catch { }
+                        try { context.WebFormPart.Save(); }
+                        catch (Exception saveEx)
+                        {
+                            Logger.Warn($"[LAYOUT-SAVE] {context.Surface} save failed: {saveEx.Message}");
+                            throw;
+                        }
                     }
                     else if (context.Surface == VisualSurface.LayoutSource)
                     {
@@ -2346,7 +2354,11 @@ namespace GxMcp.Worker.Services
                             var saveMethod = context.SourcePart.GetType().GetMethod("Save", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
                             saveMethod?.Invoke(context.SourcePart, null);
                         }
-                        catch { }
+                        catch (Exception saveEx)
+                        {
+                            Logger.Warn($"[LAYOUT-SAVE] {context.Surface} save failed: {saveEx.Message}");
+                            throw;
+                        }
                     }
                     else if (context.Surface == VisualSurface.PartXml)
                     {
@@ -2356,7 +2368,11 @@ namespace GxMcp.Worker.Services
                             var saveMethod = context.VisualPart.GetType().GetMethod("Save", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
                             saveMethod?.Invoke(context.VisualPart, null);
                         }
-                        catch { }
+                        catch (Exception saveEx)
+                        {
+                            Logger.Warn($"[LAYOUT-SAVE] {context.Surface} save failed: {saveEx.Message}");
+                            throw;
+                        }
                     }
                     else if (context.Surface == VisualSurface.PartMemberXml)
                     {
@@ -2400,7 +2416,11 @@ namespace GxMcp.Worker.Services
                             var saveMethod = context.VisualPart.GetType().GetMethod("Save", BindingFlags.Public | BindingFlags.Instance);
                             saveMethod?.Invoke(context.VisualPart, null);
                         }
-                        catch { }
+                        catch (Exception saveEx)
+                        {
+                            Logger.Warn($"[LAYOUT-SAVE] {context.Surface} save failed: {saveEx.Message}");
+                            throw;
+                        }
                     }
                     else
                     {

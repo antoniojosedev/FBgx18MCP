@@ -127,7 +127,18 @@ namespace GxMcp.Gateway.Tests
             //   v2.8.0 (2026-05-28, MCP-spec annotations): 10500 → 12000. Added
             //   annotations block (readOnlyHint, destructiveHint, idempotentHint,
             //   openWorldHint) to all 42 tools. Measured ~11588 tokens; ~412 headroom.
-            Assert.True(approxTokens < 12000, $"tool_definitions.json is ~{approxTokens} tokens; budget 12000.");
+            //   v2.9.2 (2026-06-11, schema trim): 12000 → 11400. De-advertised 5 tools
+            //   (genexus_ai_complete, genexus_github, genexus_multi_agent_lock,
+            //   genexus_rename_across_kb, genexus_worker_pool); they remain callable via
+            //   their existing direct dispatch but are no longer in the tool list.
+            //   Added index-readiness preconditions to genexus_query/search_source/analyze,
+            //   cross-reference hints to genexus_structure/properties, removed redundant
+            //   alias params (target) from genexus_layout/db/browser, fixed terse param
+            //   descriptions in genexus_versioning/io/telemetry, set genexus_edit
+            //   destructiveHint=true, resolved genexus_versioning hint conflict,
+            //   removed EXPERIMENTAL mode=warm from genexus_worker_reload.
+            //   Measured ~10925 tokens; ~475 headroom.
+            Assert.True(approxTokens < 11400, $"tool_definitions.json is ~{approxTokens} tokens; budget 11400.");
         }
     }
 }

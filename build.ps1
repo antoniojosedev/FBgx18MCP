@@ -127,13 +127,15 @@ if (Test-Path $workerBinRelease) {
     Get-ChildItem -Path "$workerBinRelease\*" -Recurse | Copy-Item -Destination "$workerPublishDir" -Recurse -Force
 }
 
-# 4.1 Copy GeneXus Definitions (Crucial for SDK)
-if (Test-Path "$gxPath\Definitions") {
-    Write-Host "   > Copying GeneXus Definitions..."
-    if (-not (Test-Path "$workerPublishDir\Definitions")) {
-        Copy-Item "$gxPath\Definitions" -Destination "$workerPublishDir\Definitions" -Recurse -Force
-    }
-}
+# 4.1 GeneXus Definitions/ — NOT copied into the artifact.
+# The Worker sets Directory.SetCurrentDirectory(gxPath) before calling any SDK
+# methods, so the SDK resolves Definitions/ from the local GeneXus 18 install
+# (the same path it was loaded from). Shipping a copy would:
+#   (a) add ~20 MB of GeneXus proprietary XML to the public npm tarball, and
+#   (b) risk stale copies diverging from the user's actual GeneXus version.
+# Every install of genexus-mcp already requires a local GeneXus 18 install, so
+# the SDK always finds the canonical Definitions/ at runtime without a copy here.
+Write-Host "   > Skipping Definitions/ copy — resolved at runtime from GeneXus install dir ($gxPath)."
 
 # 5. Write a SANITIZED fallback config.json into the publish artifact.
 #    This file is only a fallback for a bare manual run (every real launcher sets
@@ -162,30 +164,36 @@ Set-Content "$publishDir\config.json" $defaultConfig
 
 # 6. Generate start_mcp.bat
 Write-Host "   > Generating start_mcp.bat..."
-$batContent = @"
+# IMPORTANT: use %~dp0-relative paths so the bat works from any install location.
+# GX_CONFIG_PATH is set only when not already defined, so callers that pass their
+# own KB-specific config (e.g. the MCP client launcher) are not overridden.
+$batContent = @'
 @echo off
 setlocal
 
-set "REPO_ROOT=$root"
-set "GX_CONFIG_PATH=$root\config.json"
+rem Resolve the directory containing this bat file (works at any install path).
+set "BAT_DIR=%~dp0"
+rem Remove trailing backslash so paths join cleanly.
+if "%BAT_DIR:~-1%"=="\" set "BAT_DIR=%BAT_DIR:~0,-1%"
+
+rem Only set GX_CONFIG_PATH when the caller hasn't provided one.
+if not defined GX_CONFIG_PATH (
+  set "GX_CONFIG_PATH=%BAT_DIR%\config.json"
+)
+
 set "GX_MCP_STDIO=true"
 
-set "DEBUG_GATEWAY=%REPO_ROOT%\src\GxMcp.Gateway\bin\Debug\net8.0-windows\GxMcp.Gateway.exe"
-set "RELEASE_GATEWAY=%REPO_ROOT%\src\GxMcp.Gateway\bin\Release\net8.0-windows\GxMcp.Gateway.exe"
-
-if exist "%DEBUG_GATEWAY%" (
-  "%DEBUG_GATEWAY%"
+rem Launch the gateway exe that lives alongside this bat file.
+set "GATEWAY_EXE=%BAT_DIR%\GxMcp.Gateway.exe"
+if exist "%GATEWAY_EXE%" (
+  "%GATEWAY_EXE%"
   exit /b %ERRORLEVEL%
 )
 
-if exist "%RELEASE_GATEWAY%" (
-  "%RELEASE_GATEWAY%"
-  exit /b %ERRORLEVEL%
-)
-
-cd /d "%~dp0"
+rem Fallback: run the DLL via dotnet (dev layout where .exe is not present).
+cd /d "%BAT_DIR%"
 dotnet GxMcp.Gateway.dll
-"@
+'@
 Set-Content -Path "$publishDir\start_mcp.bat" -Value $batContent -Encoding Ascii
 
 # 6.1 Slim the publish output: drop debug symbols (.pdb — not shipped) and any

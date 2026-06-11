@@ -1,5 +1,7 @@
 using System;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace GxMcp.Gateway.Tests
@@ -35,11 +37,15 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void IsAtCapacity_respects_MaxOpenKbs()
         {
+            // IsAtCapacity uses strict ">", matching AcquireAsync's eviction threshold.
+            // At-max (count == max) is NOT at capacity; over-max (count > max) IS.
             var pool = new WorkerPool(CfgWithMax(2));
             Assert.False(pool.IsAtCapacity());
             pool.RegisterForTest(new KbHandle("a", "C:/A"));
             pool.RegisterForTest(new KbHandle("b", "C:/B"));
-            Assert.True(pool.IsAtCapacity());
+            Assert.False(pool.IsAtCapacity()); // exactly at max — not yet at capacity
+            pool.RegisterForTest(new KbHandle("c", "C:/C"));
+            Assert.True(pool.IsAtCapacity());  // one over max — at capacity
         }
 
         [Fact]
@@ -58,6 +64,61 @@ namespace GxMcp.Gateway.Tests
             var pool = new WorkerPool(CfgWithMax(2));
             pool.RegisterForTest(new KbHandle("ProductionKb", "C:/P"));
             Assert.True(pool.Close("PRODUCTIONKB"));
+        }
+
+        // Drain regression: when an entry is draining, AcquireAsync must wait for
+        // DrainComplete rather than returning the dying worker immediately.
+        [Fact]
+        public async Task AcquireAsync_during_drain_waits_for_DrainComplete()
+        {
+            var pool = new WorkerPool(CfgWithMax(5));
+            var handle = new KbHandle("drainKb", "C:/Drain");
+            // Register an entry with Worker=null so the fast path hits the draining check.
+            pool.RegisterForTest(handle);
+            // Mark it as draining.
+            var drainTcs = pool.SetDrainingForTest("drainkb");
+            Assert.True(pool.IsDrainingForTest("drainkb"));
+
+            // AcquireAsync should be blocked on DrainComplete.
+            var acquireTask = pool.AcquireAsync(handle, CancellationToken.None);
+            // Give it a moment to start waiting.
+            await Task.Delay(50);
+            Assert.False(acquireTask.IsCompleted, "AcquireAsync should be blocked while draining.");
+
+            // Signal drain complete; since Worker is still null, AcquireAsync will fall
+            // through to the spawn path. With no real spawner wired up (test pool) it
+            // will spawn a real WorkerProcess — we cancel instead to avoid that.
+            using var cts = new CancellationTokenSource();
+            var cancelledTask = pool.AcquireAsync(handle, cts.Token);
+            drainTcs.TrySetResult(true);
+            cts.Cancel();
+            // After cancellation the task should fault/cancel, not return a worker.
+            var ex = await Record.ExceptionAsync(() => cancelledTask);
+            Assert.NotNull(ex);
+        }
+
+        // Drain regression: IsDrainingForTest reflects the draining flag accurately.
+        [Fact]
+        public void IsDrainingForTest_reflects_draining_state()
+        {
+            var pool = new WorkerPool(CfgWithMax(5));
+            pool.RegisterForTest(new KbHandle("kb1", "C:/KB1"));
+            Assert.False(pool.IsDrainingForTest("kb1"));
+            pool.SetDrainingForTest("kb1");
+            Assert.True(pool.IsDrainingForTest("kb1"));
+        }
+
+        // Fix 9b: IsAtCapacity uses ">", matching AcquireAsync's eviction threshold.
+        [Fact]
+        public void IsAtCapacity_and_AcquireAsync_use_same_threshold()
+        {
+            // Both use count > max. IsAtCapacity at exactly max is false;
+            // at max+1 is true — consistent with AcquireAsync which only evicts when count > max.
+            var pool = new WorkerPool(CfgWithMax(1));
+            pool.RegisterForTest(new KbHandle("a", "C:/A"));
+            Assert.False(pool.IsAtCapacity()); // 1 entry, max=1 → 1 > 1 is false
+            pool.RegisterForTest(new KbHandle("b", "C:/B"));
+            Assert.True(pool.IsAtCapacity());  // 2 entries, max=1 → 2 > 1 is true
         }
     }
 }

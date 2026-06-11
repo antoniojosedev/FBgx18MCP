@@ -778,5 +778,56 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("InvoiceProc",  json["target"]?.ToString());
             Assert.NotNull(json["args"]);
         }
+
+        // Fix 6d — protocol version negotiation
+        [Fact]
+        public void Handle_Initialize_EchosKnownClientVersion()
+        {
+            // When the client requests a version we know about, echo it back.
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}""");
+
+            var result = McpRouter.Handle(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("2025-03-26", json["protocolVersion"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_Initialize_FallsBackForUnknownClientVersion()
+        {
+            // When the client requests a version we don't know about, use our latest.
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}""");
+
+            var result = McpRouter.Handle(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal(McpRouter.SupportedProtocolVersion, json["protocolVersion"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_Initialize_FallsBackWhenNoVersionInParams()
+        {
+            // When client omits protocolVersion, use our latest.
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}""");
+
+            var result = McpRouter.Handle(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal(McpRouter.SupportedProtocolVersion, json["protocolVersion"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_UnknownMethod_ReturnsNull()
+        {
+            // Handle() returns null for unknown methods; ProcessMcpRequest wraps it in -32601.
+            var request = JObject.Parse("""{"jsonrpc":"2.0","id":1,"method":"bogus/method"}""");
+
+            var result = McpRouter.Handle(request);
+
+            Assert.Null(result);
+        }
     }
 }

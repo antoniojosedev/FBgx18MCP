@@ -1,5 +1,53 @@
 # Changelog
 
+## v2.10.0 — 2026-06-11
+
+### Added
+
+- **Multi-agent lock enforcement on writes.** When another agent holds an advisory lock on the target (via `genexus_multi_agent_lock`), write operations now return a typed `TargetLockedByOtherAgent` error with the holder id and remaining TTL instead of silently overwriting. Pass `force=true` to override. Previously the lock tool existed but no write path consulted it.
+- **Explicit base64 writes.** `genexus_edit` accepts `encoding:"base64"` for binary-safe payloads. The legacy auto-detection now only fires when the decoded bytes round-trip as valid UTF-8, and every auto-decode is flagged with `decodedBase64: true` in the response — content that merely *looked* like base64 (hashes, tokens) can no longer be silently corrupted.
+- **Restore hint on verification failures.** When a visual or pattern write commits but post-write verification finds a mismatch, the error now includes the pre-write snapshot reference and a ready-made `genexus_history action=restore discard=true` next step, so the agent can undo the write in one call.
+
+### Fixed
+
+- **`genexus_worker_reload` no longer leaves the session with a dead pipe.** Reload is now orchestrated by the gateway: tool calls that arrive during the swap wait in a queue instead of being routed to the exiting worker, and the reload response returns only after the replacement worker is SDK-ready (`swappedAndReady: true`). The old "reconnect the MCP client after reload" workaround is no longer needed.
+- **Worker respawn loops eliminated.** A worker that exited on purpose — idle timeout, explicit `genexus_kb action=close`, gateway shutdown, or a "KB already open in another instance" rejection — was treated as a crash and respawned, in the busy-KB case in an infinite loop that could kill the legitimate sibling worker. Exit intent is now threaded through the lifecycle and deliberate exits stay down.
+- **The on-disk index can no longer go permanently stale.** The index metadata sidecar was written even when the index body flush had failed or was still in flight, so the next warm start trusted a high-water-mark the body didn't contain and skipped those objects forever (only a `force=true` rebuild recovered). The sidecar is now written only after a durably confirmed flush.
+- **Index flush throttling no longer drops trailing writes.** A change landing inside the 30-second throttle window was held in memory with nothing re-arming the flush — if the process exited, the change was lost. The throttle is now a proper trailing-edge debounce.
+- **Object replacements are reconciled on warm start.** The deletion sweep only ran when the object count shrank, so deleting one object and creating another between sessions left a ghost entry in the index indefinitely. The sweep now compares the actual object sets.
+- **Background indexing no longer downgrades enriched entries.** The streaming publish during the initial catalogue walk rebuilt the whole index from stubs, silently demoting objects that had already been enriched on demand (and doing O(N²) work on large KBs). Publishing is now incremental and never overwrites an enriched entry with a stub.
+- **Failed enrichment is retried instead of being marked done.** A transient SDK error during on-demand enrichment (object locked, KB busy) permanently flagged the object as enriched for the session, so impact analysis ran against an entry with no call-graph edges. The enriched flag is now set only on success.
+- **Intermittent index-save failures under load fixed.** Call-graph edges were mutated in place while a background flush serialized the same lists, producing "Collection was modified" save failures or torn snapshots. Edge lists are now replaced copy-on-write, making concurrent flushes safe.
+- **SDK access is serialized across background work.** The catalogue walk, on-demand enrichment, delta refresh, file watcher, and tool commands each ran on their own thread against the thread-unsafe GeneXus SDK — the likely source of sporadic unexplained errors during indexing. All SDK-touching paths now go through a single gate.
+- **Opening a KB no longer blocks every status probe.** The multi-minute `KnowledgeBase.Open` held the service lock, so `doctor`/`whoami`-style calls hung instead of answering; a second concurrent open now gets an immediate `OpenInProgress` response.
+- **JSON-RPC conformance.** Unknown methods now return `-32601` (previously: no response at all, leaving the client waiting), malformed input returns `-32700`, internal failures return `-32603` with the request id, and `notifications/cancelled` is honored. `initialize` negotiates the protocol version with the client instead of always returning a fixed one, and no longer advertises the unimplemented `resources.subscribe` capability.
+- **Port-conflict recovery can no longer kill unrelated processes.** Freeing the HTTP port used a substring match over netstat output (`:5000` also matched `:50001` and remote addresses) and killed whatever it found. It now resolves the exact local listener and only terminates the MCP's own gateway/worker processes.
+- **`genexus_refactor action=RenameAttribute` is restartable and honest about partial failure.** Call sites are patched before the attribute itself is renamed, every touched object is snapshotted and recorded, and a mid-run failure returns a `partial` envelope listing `patched[]`/`failed[]` sites instead of a generic error over a half-renamed KB.
+- **`genexus_refactor action=ExtractProcedure` now actually creates the procedure.** It wrote to a procedure object that didn't exist yet, so extraction always failed; it now creates the object first, writes the extracted code as its source, and replaces the block in the caller.
+- **Layout edits get the same guard-rails as source edits.** `genexus_layout` mutations now take the per-target lock, snapshot before writing (so `genexus_history` restore covers them), and surface save errors that were previously swallowed.
+- **Validation bypass is no longer reported as a clean write.** When a save only succeeded after retrying with validation disabled, the response said plain success; it now carries the retry strategy and a warning to build-verify.
+- **Fast-path saves check compiler messages.** The fast source-save path reported success on a bare save without consulting SDK messages; errors now surface instead of first appearing at build time.
+- **Concurrent-edit clobbering detected in WebForm edits.** A read-modify-write that raced another edit silently overwrote it; it now returns a typed stale-write error so the agent can re-read and retry.
+- **Diagnostic raw-entity saves disabled by default.** Three undocumented reflection-based writes into non-public SDK persistence ran on every visual edit (left over from a past investigation); they are now opt-in via `GXMCP_WEBFORM_SAVE_DIAGNOSTICS=1`.
+- **`start_mcp.bat` works from any install location.** The launcher hardcoded the original build machine's directory and overrode `GX_CONFIG_PATH` unconditionally; it now resolves paths relative to its own location and respects a pre-set `GX_CONFIG_PATH`.
+- **CLI no longer risks corrupting the MCP stream on a late error.** An unhandled-rejection envelope was written to stdout even in server mode, where stdout is the JSON-RPC channel; it now goes to stderr.
+
+### Changed
+
+- **Large-KB index saves are streamed.** The index snapshot was serialized into a single in-memory string (~45 MB on a 38k-object KB) before compressing; it is now streamed straight into the gzip writer, removing the allocation spike on every flush.
+- **Gateway log is rotated.** The debug log is written through a persistent writer and capped at 10 MB with one rotation file, instead of growing without bound via per-line file appends.
+- **Release integrity chain.** The `publish.zip` SHA-256 is committed in the tagged release commit, the publish workflow verifies the uploaded asset against it before npm-publishing, the installer verifies the download before extracting, binary versions inside the zip are asserted to match the release version, and CI actions are pinned to commit SHAs.
+- **Smaller, cleaner npm package.** The package no longer ships the GeneXus `Definitions/` tree (~20 MB of proprietary XML — the worker resolves it from your local GeneXus install, which was already required), and declares `"os": ["win32"]` so non-Windows installs fail early with a clear message instead of at runtime.
+- **Config backups are pruned.** MCP-client config backups (`.bak`) are now capped at the 5 most recent per file instead of accumulating forever.
+- **Leaner tool catalogue.** Five niche tools (`genexus_ai_complete`, `genexus_github`, `genexus_multi_agent_lock`, `genexus_rename_across_kb`, `genexus_worker_pool`) are no longer advertised in `tools/list` — they still work when called by name, but no longer cost schema tokens in every session. `genexus_rename_across_kb`'s KB-wide call-site patching is documented on `genexus_refactor`, which performs the same operation.
+- **Clearer tool schemas.** `genexus_query`, `genexus_search_source` and `genexus_analyze` now state the index-readiness precondition in their descriptions (with a pointer to `genexus_lifecycle action=status`); `genexus_structure`/`genexus_properties` cross-reference `genexus_layout` for layout-control work; redundant `target` alias parameters and experimental flags were removed from the advertised schemas; terse parameter descriptions in `genexus_versioning`/`genexus_io`/`genexus_telemetry` were rewritten; `genexus_edit` is now correctly annotated as destructive.
+
+### Internal
+
+- Resumable `release.ps1`: re-running after a mid-release failure resumes from the failed step (existing tag without a release, version-bump-only dirty tree) instead of aborting.
+- Worker envelope contract: dispatcher-level wrapping of non-canonical `status` values into the standard envelope for `ping`/cancel/probe paths; `BulkIndex` status strings intentionally left as-is pending gateway contract-test alignment.
+- New `WritePipeline` helper centralizes snapshot + per-target lock + dirty-tracking for WriteService, LayoutService and RefactorService; pattern-debug instrumentation moved to a `WritePatternDiagnostics` partial.
+
 ## v2.9.1 — 2026-06-09
 
 ### Fixed

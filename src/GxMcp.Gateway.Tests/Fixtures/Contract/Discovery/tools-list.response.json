@@ -3,57 +3,11 @@
     {
       "annotations": {
         "destructiveHint": false,
-        "idempotentHint": false,
-        "openWorldHint": true,
-        "readOnlyHint": false
-      },
-      "description": "Forward prompt to OpenAI-compatible endpoint (env GXMCP_AI_COMPLETE_URL/_KEY/_MODEL). Errors: AiEndpointNotConfigured, AiEndpointError.",
-      "inputSchema": {
-        "examples": [
-          {
-            "context": "What does this Procedure do?"
-          },
-          {
-            "context": "Summarize the business logic in this source code.",
-            "name": "Customer",
-            "part": "Source"
-          }
-        ],
-        "properties": {
-          "context": {
-            "description": "Prompt sent to the LLM.",
-            "type": "string"
-          },
-          "kb": {
-            "description": "KB alias.",
-            "type": "string"
-          },
-          "maxTokens": {
-            "description": "Default 200, max 4000.",
-            "type": "integer"
-          },
-          "name": {
-            "type": "string"
-          },
-          "part": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "context"
-        ],
-        "type": "object"
-      },
-      "name": "genexus_ai_complete"
-    },
-    {
-      "annotations": {
-        "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Use this for cross-object semantic analysis: impact, dependencies, complexity, naming, summary. See tool-help for mode selection.",
+      "description": "Use this for cross-object semantic analysis: impact, dependencies, complexity, naming, summary. See tool-help for mode selection. Requires the KB index to be Ready for impact/callers modes — check genexus_lifecycle action=status if results look empty.",
       "inputSchema": {
         "examples": [
           {
@@ -341,7 +295,7 @@
             "type": "string"
           },
           "name": {
-            "description": "Alias of 'target'.",
+            "description": "WebPanel name.",
             "type": "string"
           },
           "network": {
@@ -357,10 +311,6 @@
           "parms": {
             "description": "preview only.",
             "type": "object"
-          },
-          "target": {
-            "description": "WebPanel name. Alias of 'name'.",
-            "type": "string"
           },
           "updateBaseline": {
             "description": "preview only.",
@@ -521,7 +471,7 @@
           },
           {
             "action": "sql_ddl",
-            "target": "Customer"
+            "name": "Customer"
           }
         ],
         "properties": {
@@ -584,16 +534,12 @@
             "type": "integer"
           },
           "name": {
-            "description": "Alias of target.",
+            "description": "Object/transaction/type name.",
             "type": "string"
           },
           "rows": {
             "description": "sample_data: 1-1000; default 5.",
             "type": "integer"
-          },
-          "target": {
-            "description": "Object/transaction/type name. Alias of name/trn.",
-            "type": "string"
           },
           "trn": {
             "description": "sample_data: Transaction name.",
@@ -724,7 +670,7 @@
     },
     {
       "annotations": {
-        "destructiveHint": false,
+        "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false
@@ -1101,61 +1047,6 @@
     {
       "annotations": {
         "destructiveHint": false,
-        "idempotentHint": false,
-        "openWorldHint": true,
-        "readOnlyHint": false
-      },
-      "description": "Open a PR after pushing a branch. Shells `gh pr create` from KB path (or workingDir). Returns {status,url} or {code:'GhCliNotInstalled'}. dryRun=true returns the resolved command args without shelling out.",
-      "inputSchema": {
-        "examples": [
-          {
-            "action": "create_pr",
-            "title": "Fix customer validation"
-          },
-          {
-            "action": "create_pr",
-            "base": "main",
-            "body": "## Summary\nAdds new capability",
-            "title": "Add new feature"
-          }
-        ],
-        "properties": {
-          "action": {
-            "enum": [
-              "create_pr"
-            ],
-            "type": "string"
-          },
-          "base": {
-            "description": "Base branch.",
-            "type": "string"
-          },
-          "body": {
-            "type": "string"
-          },
-          "dryRun": {
-            "default": false,
-            "description": "When true, returns the resolved gh command arguments without executing them.",
-            "type": "boolean"
-          },
-          "title": {
-            "type": "string"
-          },
-          "workingDir": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "title"
-        ],
-        "type": "object"
-      },
-      "name": "genexus_github"
-    },
-    {
-      "annotations": {
-        "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,
         "readOnlyHint": true
@@ -1299,15 +1190,15 @@
             "type": "string"
           },
           "contentBase64": {
-            "description": "asset_write.",
+            "description": "asset_write: base64-encoded file content.",
             "type": "string"
           },
           "includeContent": {
-            "description": "asset_find.",
+            "description": "asset_find: inline file content.",
             "type": "boolean"
           },
           "inputPath": {
-            "description": "import_part.",
+            "description": "import_part: source file path.",
             "type": "string"
           },
           "kb": {
@@ -1315,39 +1206,39 @@
             "type": "string"
           },
           "limit": {
-            "description": "asset_find.",
+            "description": "asset_find: max results.",
             "type": "integer"
           },
           "maxBytes": {
-            "description": "asset_read.",
+            "description": "asset_read: max bytes to return.",
             "type": "integer"
           },
           "name": {
-            "description": "export/import/export_unified.",
+            "description": "export/import/export_unified: object name.",
             "type": "string"
           },
           "outputPath": {
-            "description": "export_part.",
+            "description": "export_part: destination file path.",
             "type": "string"
           },
           "overwrite": {
-            "description": "export_part.",
+            "description": "export_part: overwrite if exists.",
             "type": "boolean"
           },
           "part": {
-            "description": "export/import_part.",
+            "description": "export/import_part: part name (e.g. Source).",
             "type": "string"
           },
           "path": {
-            "description": "asset/screenshot_publish/ocr.",
+            "description": "asset/screenshot_publish/ocr: file path.",
             "type": "string"
           },
           "pattern": {
-            "description": "asset_find.",
+            "description": "asset_find: glob pattern.",
             "type": "string"
           },
           "relativeRoot": {
-            "description": "asset_find.",
+            "description": "asset_find: root for relative paths.",
             "type": "string"
           },
           "type": {
@@ -1419,7 +1310,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "SDK layout/WebForm ops: get_tree, set_property, find_controls, inspect_surface, scan_mutators.",
+      "description": "SDK layout/WebForm ops: get_tree, set_property, find_controls, inspect_surface, scan_mutators. For object-level properties use genexus_properties; for object-level visual structure use genexus_structure get_visual.",
       "inputSchema": {
         "examples": [
           {
@@ -1500,10 +1391,6 @@
           "query": {
             "type": "string"
           },
-          "target": {
-            "description": "Alias for name (backcompat).",
-            "type": "string"
-          },
           "value": {
             "type": "string"
           }
@@ -1572,10 +1459,6 @@
             "description": "Build: <20 sync, >=20 async (default 60).",
             "type": "integer"
           },
-          "fastIncremental": {
-            "description": "EXPERIMENTAL. Skip clean targets via dirty-tracker; falls back to legacy build on miss. See tool-help.",
-            "type": "boolean"
-          },
           "force": {
             "description": "Index: full SDK rescan (clears snapshot).",
             "type": "boolean"
@@ -1596,17 +1479,9 @@
           "limit": {
             "type": "integer"
           },
-          "notifyOnFailure": {
-            "description": "Build: Slack/Discord webhook posted on terminal=Failed. See tool-help.",
-            "type": "string"
-          },
           "since": {
             "description": "Status: prior _meta.snapshot for chained waits.",
             "type": "string"
-          },
-          "skipFullDeploy": {
-            "description": "EXPERIMENTAL. Skip deploy step (single-target, includeCallees=none). See tool-help.",
-            "type": "boolean"
           },
           "snapshotPath": {
             "type": "string"
@@ -1739,68 +1614,6 @@
     {
       "annotations": {
         "destructiveHint": false,
-        "idempotentHint": false,
-        "openWorldHint": false,
-        "readOnlyHint": false
-      },
-      "description": "Advisory file lock per (kbPath,target,part) under .gx/locks. Auto-expires after ttlSec. Returns {status,held,holder,path}. dryRun=true previews acquire/release without writing the lock file.",
-      "inputSchema": {
-        "examples": [
-          {
-            "action": "acquire",
-            "ownerId": "claude-A",
-            "target": "Customer"
-          },
-          {
-            "action": "release",
-            "ownerId": "claude-A",
-            "target": "Customer"
-          }
-        ],
-        "properties": {
-          "action": {
-            "enum": [
-              "acquire",
-              "release",
-              "status"
-            ],
-            "type": "string"
-          },
-          "dryRun": {
-            "default": false,
-            "description": "When true, returns what would happen without writing or deleting the lock file.",
-            "type": "boolean"
-          },
-          "kb": {
-            "description": "KB alias.",
-            "type": "string"
-          },
-          "ownerId": {
-            "description": "Required for acquire/release.",
-            "type": "string"
-          },
-          "part": {
-            "type": "string"
-          },
-          "target": {
-            "type": "string"
-          },
-          "ttlSec": {
-            "description": "Default 300, max 86400.",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "action",
-          "target"
-        ],
-        "type": "object"
-      },
-      "name": "genexus_multi_agent_lock"
-    },
-    {
-      "annotations": {
-        "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,
         "readOnlyHint": true
@@ -1853,7 +1666,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or update GeneXus object properties. Note: Description is the title-bar text shown when a WebPanel/Popup is opened via .Popup(). Uncertain a property exists or what values it takes? → resources/read uri=genexus://kb/skills/navigation (CallProtocol does NOT apply to Web/SD Panels and 'Modal' is not a value).",
+      "description": "Read or update GeneXus object properties. Note: Description is the title-bar text shown when a WebPanel/Popup is opened via .Popup(). Uncertain a property exists or what values it takes? → resources/read uri=genexus://kb/skills/navigation (CallProtocol does NOT apply to Web/SD Panels and 'Modal' is not a value). Use genexus_layout set_property for layout control properties.",
       "inputSchema": {
         "examples": [
           {
@@ -1908,7 +1721,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Search objects in active KB. Prefixes: name:, type:, usedby:, parent:, parentPath:, description:. name:\"X\" (or bare quoted \"X\") demands exact-name match — use it when you know the object's name. Compact by default. See genexus://kb/tool-help/genexus_query.",
+      "description": "Search objects in active KB. Prefixes: name:, type:, usedby:, parent:, parentPath:, description:. name:\"X\" (or bare quoted \"X\") demands exact-name match — use it when you know the object's name. Compact by default. See genexus://kb/tool-help/genexus_query. Requires the KB index to be Ready — check genexus_lifecycle action=status if results look empty.",
       "inputSchema": {
         "examples": [
           {
@@ -2093,7 +1906,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Run GeneXus refactor: rename, extract procedure, or WWP condition set. dryRun=true previews what would change without persisting.",
+      "description": "Run GeneXus refactor: rename, extract procedure, or WWP condition set. For KB-wide rename with call-site patching (RenameObject/RenameAttribute), the response includes a patched-site count from RefactorService. dryRun=true previews what would change without persisting.",
       "inputSchema": {
         "examples": [
           {
@@ -2159,57 +1972,6 @@
         "type": "object"
       },
       "name": "genexus_refactor"
-    },
-    {
-      "annotations": {
-        "destructiveHint": false,
-        "idempotentHint": false,
-        "openWorldHint": false,
-        "readOnlyHint": false
-      },
-      "description": "Rename object/attribute and patch every call-site via CalledBy edges. Routes through RefactorService Rename{Object|Attribute}. Returns standard refactor envelope with patched-site count. dryRun=true previews sites without persisting.",
-      "inputSchema": {
-        "examples": [
-          {
-            "from": "OldName",
-            "to": "NewName"
-          },
-          {
-            "from": "CustomerId",
-            "to": "ClientId",
-            "type": "Attribute"
-          }
-        ],
-        "properties": {
-          "dryRun": {
-            "default": false,
-            "description": "When true, returns the list of would-be renamed sites without persisting.",
-            "type": "boolean"
-          },
-          "from": {
-            "description": "Current name.",
-            "type": "string"
-          },
-          "kb": {
-            "description": "KB alias.",
-            "type": "string"
-          },
-          "to": {
-            "description": "New name.",
-            "type": "string"
-          },
-          "type": {
-            "description": "Object type; pass 'Attribute' for attribute renames.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "from",
-          "to"
-        ],
-        "type": "object"
-      },
-      "name": "genexus_rename_across_kb"
     },
     {
       "annotations": {
@@ -2291,7 +2053,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source.",
+      "description": "Regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source. Requires the KB index to be Ready — check genexus_lifecycle action=status if results look empty.",
       "inputSchema": {
         "examples": [
           {
@@ -2404,7 +2166,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or update visual and logical structure of GeneXus objects.",
+      "description": "Read or update visual and logical structure of GeneXus objects. For layout control trees use genexus_layout get_tree; for object-level visual structure use get_visual here.",
       "inputSchema": {
         "examples": [
           {
@@ -2480,15 +2242,15 @@
             "type": "string"
           },
           "event": {
-            "description": "watch_event.",
+            "description": "watch_event: event name to match in operation payload.",
             "type": "string"
           },
           "filterCorrelation": {
-            "description": "logs.",
+            "description": "logs: filter by correlation/operation ID.",
             "type": "string"
           },
           "grep": {
-            "description": "logs.",
+            "description": "logs: substring filter on log lines.",
             "type": "string"
           },
           "kb": {
@@ -2496,23 +2258,23 @@
             "type": "string"
           },
           "last": {
-            "description": "executions/watch_event.",
+            "description": "executions/watch_event: max results.",
             "type": "integer"
           },
           "message": {
-            "description": "friction_append.",
+            "description": "friction_append: description of the friction encountered.",
             "type": "string"
           },
           "n": {
-            "description": "friction_tail.",
+            "description": "friction_tail: number of recent lines to return.",
             "type": "integer"
           },
           "path": {
-            "description": "profile_*.",
+            "description": "profile_*: path to the GeneXus profiler XML file.",
             "type": "string"
           },
           "severity": {
-            "description": "friction_append.",
+            "description": "friction_append: severity level.",
             "enum": [
               "info",
               "warn",
@@ -2522,26 +2284,27 @@
             "type": "string"
           },
           "since": {
-            "description": "learning_report/logs.",
+            "description": "learning_report/logs: ISO-8601 start time filter.",
             "type": "string"
           },
           "tail": {
-            "description": "logs.",
+            "description": "logs: number of tail lines from worker_debug.log.",
             "type": "integer"
           },
           "target": {
+            "description": "executions/watch_event: object name to filter.",
             "type": "string"
           },
           "tool": {
-            "description": "friction_append.",
+            "description": "friction_append: tool name that produced the friction entry.",
             "type": "string"
           },
           "top": {
-            "description": "profile_hotspots.",
+            "description": "profile_hotspots: top-N hottest procedures to return.",
             "type": "integer"
           },
           "until": {
-            "description": "learning_report.",
+            "description": "learning_report: ISO-8601 end time filter.",
             "type": "string"
           }
         },
@@ -2656,7 +2419,7 @@
     {
       "annotations": {
         "destructiveHint": true,
-        "idempotentHint": true,
+        "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false
       },
@@ -2701,7 +2464,7 @@
             "type": "string"
           },
           "context": {
-            "description": "blame.",
+            "description": "blame: surrounding lines of context.",
             "type": "integer"
           },
           "discard": {
@@ -2711,7 +2474,7 @@
             "type": "boolean"
           },
           "filePath": {
-            "description": "blame.",
+            "description": "blame: absolute or KB-relative file path.",
             "type": "string"
           },
           "kb": {
@@ -2723,11 +2486,11 @@
             "type": "integer"
           },
           "left": {
-            "description": "diff.",
+            "description": "diff: left-side text or snapshot label.",
             "type": "string"
           },
           "line": {
-            "description": "blame.",
+            "description": "blame: 1-based line number to annotate.",
             "type": "integer"
           },
           "mode": {
@@ -2745,7 +2508,7 @@
             "type": "string"
           },
           "right": {
-            "description": "diff.",
+            "description": "diff: right-side text or snapshot label.",
             "type": "string"
           },
           "snapshot": {
@@ -2786,38 +2549,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Pre-spawn N warm workers bound to declared KBs to skip cold-start. Returns {status,spareCount,configured}. spareCount<=0 disables; capped at 5.",
-      "inputSchema": {
-        "examples": [
-          {
-            "action": "warm_spares",
-            "spareCount": 2
-          }
-        ],
-        "properties": {
-          "action": {
-            "enum": [
-              "warm_spares"
-            ],
-            "type": "string"
-          },
-          "spareCount": {
-            "description": "Number of spares to pre-spawn (0 disables; capped at 5).",
-            "type": "integer"
-          }
-        },
-        "type": "object"
-      },
-      "name": "genexus_worker_pool"
-    },
-    {
-      "annotations": {
-        "destructiveHint": false,
-        "idempotentHint": false,
-        "openWorldHint": true,
-        "readOnlyHint": false
-      },
-      "description": "Reload worker. modes: soft (drain+respawn), hard (copy sourceDir+respawn), warm (EXPERIMENTAL; persist index snapshot). force=true: gateway kills directly. See tool-help.",
+      "description": "Reload worker. modes: soft (drain+respawn), hard (copy sourceDir+respawn). force=true: gateway kills directly. See tool-help.",
       "inputSchema": {
         "examples": [
           {
@@ -2830,7 +2562,7 @@
         ],
         "properties": {
           "drainTimeoutMs": {
-            "description": "Soft/warm only; default 30000.",
+            "description": "Soft only; default 30000.",
             "type": "integer"
           },
           "force": {
@@ -2840,8 +2572,7 @@
           "mode": {
             "enum": [
               "soft",
-              "hard",
-              "warm"
+              "hard"
             ],
             "type": "string"
           },

@@ -37,19 +37,19 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
       - name: Upgrade npm for Trusted Publishing
         run: |
-          npm install -g npm@11
+          npm install -g npm@11.16.0
           npm --version
 
       - name: Resolve package metadata
@@ -101,6 +101,26 @@ jobs:
             --pattern publish.zip \
             --dir .
 
+      - name: Verify publish.zip integrity
+        if: steps.npm_check.outputs.already_published == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Read the SHA-256 committed at the tag (written by release.ps1 before tagging).
+          SHA_FILE="publish.zip.sha256"
+          if [[ ! -f "$SHA_FILE" ]]; then
+            echo "::warning::$SHA_FILE not found at tag ${{ steps.tag.outputs.tag }} — skipping integrity check (pre-v2.9.2 release)."
+          else
+            EXPECTED=$(awk '{print $1}' "$SHA_FILE")
+            ACTUAL=$(sha256sum publish.zip | awk '{print $1}')
+            if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+              echo "::error::publish.zip SHA-256 mismatch. Expected: $EXPECTED  Got: $ACTUAL"
+              echo "::error::The binary was not produced by the tagged commit. Re-run release.ps1 on the correct commit."
+              exit 1
+            fi
+            echo "Integrity check passed: $ACTUAL"
+          fi
+
       - name: Unpack publish/
         if: steps.npm_check.outputs.already_published == 'false'
         run: |
@@ -109,6 +129,8 @@ jobs:
           unzip -q publish.zip -d publish
           test -f publish/GxMcp.Gateway.exe || { echo "::error::GxMcp.Gateway.exe missing in publish.zip"; exit 1; }
           test -f publish/worker/GxMcp.Worker.exe || { echo "::error::worker/GxMcp.Worker.exe missing in publish.zip"; exit 1; }
+          # Task 4: assert tool_definitions.json is present (version consistency validated by release.ps1)
+          test -f publish/tool_definitions.json || { echo "::error::publish/tool_definitions.json missing in publish.zip — rebuild with release.ps1"; exit 1; }
 
       - name: Install dependencies
         if: steps.npm_check.outputs.already_published == 'false'

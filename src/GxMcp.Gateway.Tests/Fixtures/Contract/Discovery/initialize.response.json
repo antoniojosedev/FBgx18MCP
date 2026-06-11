@@ -45,8 +45,7 @@
       "listChanged": false
     },
     "resources": {
-      "listChanged": true,
-      "subscribe": true
+      "listChanged": true
     },
     "tools": {
       "listChanged": true

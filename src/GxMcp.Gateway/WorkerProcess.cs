@@ -11,6 +11,17 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
 {
+    /// <summary>Reason a WorkerProcess was intentionally stopped.</summary>
+    public enum WorkerStopReason
+    {
+        None,
+        IdleTimeout,
+        GatewayShutdown,
+        BusyReject,      // exit code 17 — sibling already owns this KB
+        ExplicitClose,   // genexus_kb action=close
+        PlannedReload    // genexus_worker_reload (non-force); gateway is orchestrating drain+respawn
+    }
+
     public class WorkerProcess
     {
         // PERFORMANCE (G-M6): jitter source for exponential-backoff in spawn retry.
@@ -40,8 +51,7 @@ namespace GxMcp.Gateway
         public bool IsSdkReady => _sdkReady.Task.IsCompleted;
         private string _lastOperationInfo = "None";
         private bool _isStarting;
-        private bool _suppressAutoRestart;
-        private string _stopReason = "none";
+        private WorkerStopReason _stopReason = WorkerStopReason.None;
         private int _inFlightCommands;
         private int _queuedCommands;
         private long _spawnMs = -1;
@@ -53,7 +63,7 @@ namespace GxMcp.Gateway
         public long? SdkInitMs { get { var v = System.Threading.Interlocked.Read(ref _sdkInitMs); return v < 0 ? (long?)null : v; } }
 
         public event Action<string>? OnRpcResponse;
-        public event Action? OnWorkerExited;
+        public event Action<WorkerStopReason>? OnWorkerExited;
 
         public int? Pid
         {
@@ -102,7 +112,7 @@ namespace GxMcp.Gateway
                         if (ShouldStopForIdle())
                         {
                             Program.Log($"[Gateway] worker_idle_shutdown pid={_process.Id} idleTimeoutMinutes={_workerIdleTimeout.TotalMinutes}");
-                            StopProcess("idle_timeout", suppressAutoRestart: true);
+                            StopProcess(WorkerStopReason.IdleTimeout);
                             continue;
                         }
 
@@ -156,9 +166,30 @@ namespace GxMcp.Gateway
                                 continue;
                             }
 
+                            // Fix 3: removed lazy Start() — on unexpected exit the pool drops this
+                            // entry and a fresh WorkerProcess is created by AcquireAsync. Calling
+                            // Start() from inside the queue loop caused double-spawning (tracked +
+                            // orphaned worker) and bypassed the respawn-suppression path in Program.cs.
+                            // If the process is not running, fail this command with a typed error
+                            // so the gateway returns a clean JSON-RPC error instead of silently dropping it.
                             if (!IsProcessRunning(_process))
                             {
-                                Start();
+                                string failId = "unknown";
+                                try
+                                {
+                                    var failJson = JObject.Parse(jsonRpc);
+                                    failId = failJson["id"]?.ToString() ?? "unknown";
+                                }
+                                catch { }
+                                Program.Log($"[Gateway] Worker not running; failing command {failId} with WorkerCrashed error.");
+                                var errResponse = new JObject
+                                {
+                                    ["jsonrpc"] = "2.0",
+                                    ["id"] = failId == "unknown" ? (JToken)JValue.CreateNull() : new JValue(failId),
+                                    ["error"] = new JObject { ["code"] = -32000, ["message"] = $"Worker for KB '{Kb.Alias}' crashed/exited. Reconnect or try again." }
+                                };
+                                OnRpcResponse?.Invoke(errResponse.ToString(Formatting.None));
+                                continue;
                             }
 
                             string id = "unknown";
@@ -193,23 +224,31 @@ namespace GxMcp.Gateway
 
                                 await WaitForPipeReadyAsync(id, _cts.Token);
 
+                                // Fix 7: snapshot writer under lock, write outside. Holding
+                                // _processLock during the blocking WriteLine/Flush was causing
+                                // deadlock risk: StopProcess() also takes _processLock and the
+                                // write could block on a full pipe buffer.
+                                StreamWriter? writer;
                                 lock (_processLock)
                                 {
-                                    if (_pipeWriter != null)
-                                    {
-                                        _pipeWriter.WriteLine(jsonRpc);
-                                        _pipeWriter.Flush();
-                                        Program.Log($"[Gateway] Command written to pipe: {id}");
-                                    }
-                                    else
-                                    {
-                                        if (countsAsActivity)
-                                        {
-                                            CompleteInFlight();
-                                        }
+                                    writer = _pipeWriter;
+                                }
 
-                                        Program.Log($"[Gateway] ERROR: Cannot send command {id}, pipe not available after wait.");
+                                if (writer != null)
+                                {
+                                    // WriteLineAsync + FlushAsync with cancellation support.
+                                    await writer.WriteLineAsync(jsonRpc).ConfigureAwait(false);
+                                    await writer.FlushAsync().ConfigureAwait(false);
+                                    Program.Log($"[Gateway] Command written to pipe: {id}");
+                                }
+                                else
+                                {
+                                    if (countsAsActivity)
+                                    {
+                                        CompleteInFlight();
                                     }
+
+                                    Program.Log($"[Gateway] ERROR: Cannot send command {id}, pipe not available after wait.");
                                 }
                             }
                             catch (Exception ex)
@@ -457,8 +496,7 @@ namespace GxMcp.Gateway
             try
             {
                 KillOrphanWorkers();
-                _suppressAutoRestart = false;
-                _stopReason = "none";
+                _stopReason = WorkerStopReason.None;
                 MarkActivity();
                 _pipeReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _sdkReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -569,7 +607,13 @@ namespace GxMcp.Gateway
                     // FR#19: exit code 17 means a sibling worker already serves this KB
                     // (single-instance reject). Don't respawn — the live worker is authoritative.
                     bool busyReject = exitCode == 17;
-                    Program.Log($"[Gateway] Worker process EXITED with code {exitCode}. reason={_stopReason} busyReject={busyReject}");
+
+                    // Capture the stop reason set before Kill; upgrade to BusyReject if the
+                    // exit code says so (can override an earlier "none").
+                    WorkerStopReason reason = _stopReason;
+                    if (busyReject) reason = WorkerStopReason.BusyReject;
+
+                    Program.Log($"[Gateway] Worker process EXITED with code {exitCode}. reason={reason}");
 
                     // SINGLE RESPAWN AUTHORITY. The WorkerPool owns the worker lifecycle:
                     // firing OnWorkerExited lets the pool drop this KB's entry and spawn
@@ -580,13 +624,7 @@ namespace GxMcp.Gateway
                     // — which compounded into a runaway worker-process explosion (a real memory
                     // leak: hundreds of GxMcp.Worker for a single KB). KillOrphanWorkers() at
                     // the top of Start() is the hard "exactly one worker per KB" backstop.
-                    if (busyReject)
-                    {
-                        // A sibling already owns the KB — suppress any respawn attempt so we
-                        // don't bounce off the single-instance lock in a loop.
-                        _suppressAutoRestart = true;
-                    }
-                    OnWorkerExited?.Invoke();
+                    OnWorkerExited?.Invoke(reason);
                 };
 
                 _spawnWatch = System.Diagnostics.Stopwatch.StartNew();
@@ -619,7 +657,8 @@ namespace GxMcp.Gateway
                         lock (_jitterLock) { jitterMs = _jitter.Next(0, baseMs / 2 + 1); }
                         int sleepMs = baseMs + jitterMs;
                         Program.Log($"[Gateway] Access denied (5) when starting worker. Attempt {attempt}/10. File might be locked. Retrying in {sleepMs}ms...");
-                        Thread.Sleep(sleepMs);
+                        // Fix 7: replaced Thread.Sleep (blocks worker thread) with async delay.
+                        Task.Delay(sleepMs).GetAwaiter().GetResult();
                     }
                 }
 
@@ -683,18 +722,43 @@ namespace GxMcp.Gateway
             await _commandChannel.Writer.WriteAsync(jsonRpc);
         }
 
-        public void Stop()
+        public void Stop() => StopWithReason(WorkerStopReason.GatewayShutdown);
+
+        /// <summary>
+        /// Waits asynchronously for the underlying OS process to exit.
+        /// Completes immediately if the process is already exited or was never started.
+        /// Throws <see cref="OperationCanceledException"/> if <paramref name="ct"/> fires.
+        /// </summary>
+        public Task WaitForExitAsync(CancellationToken ct = default)
         {
-            _cts.Cancel();
-            StopProcess("gateway_shutdown", suppressAutoRestart: true);
+            Process? p;
+            lock (_processLock) { p = _process; }
+            if (p == null) return Task.CompletedTask;
+            try { if (p.HasExited) return Task.CompletedTask; } catch { return Task.CompletedTask; }
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            p.Exited += (_, __) => tcs.TrySetResult(true);
+            // Double-check after wiring the event — process may have exited between the
+            // HasExited check above and Exited subscription.
+            try { if (p.HasExited) tcs.TrySetResult(true); } catch { tcs.TrySetResult(true); }
+
+            if (ct == CancellationToken.None) return tcs.Task;
+            var reg = ct.Register(() => tcs.TrySetCanceled());
+            return tcs.Task.ContinueWith(_ => { try { reg.Dispose(); } catch { } return _; },
+                TaskContinuationOptions.ExecuteSynchronously).Unwrap();
         }
 
-        private void StopProcess(string reason, bool suppressAutoRestart)
+        public void StopWithReason(WorkerStopReason reason)
+        {
+            _cts.Cancel();
+            StopProcess(reason);
+        }
+
+        private void StopProcess(WorkerStopReason reason)
         {
             lock (_processLock)
             {
                 _stopReason = reason;
-                _suppressAutoRestart = suppressAutoRestart;
                 if (_pipeWriter != null)
                 {
                     try { _pipeWriter.Dispose(); } catch { }

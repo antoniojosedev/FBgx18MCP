@@ -23,6 +23,21 @@ namespace GxMcp.Worker.Services
 
         private SearchIndex _index;
         private string _indexPath;
+
+        // ── Dirty-generation tracking (stale-index-forever fix) ─────────────────
+        // Every in-memory mutation bumps _dirtyGeneration; a successful FlushToDisk
+        // records the generation it captured at snapshot time into _flushedGeneration.
+        // FlushNow() only reports success once the generation that was dirty at its
+        // entry is confirmed on disk — so callers (KbService) can gate the meta
+        // sidecar on a body that actually contains their changes. _flushedGeneration
+        // starts at -1 so a clean index still gets one real write on FlushNow().
+        private long _dirtyGeneration = 0;
+        private long _flushedGeneration = -1;
+
+        internal void MarkDirty() => System.Threading.Interlocked.Increment(ref _dirtyGeneration);
+        internal long DirtyGeneration => System.Threading.Interlocked.Read(ref _dirtyGeneration);
+        internal long FlushedGeneration => System.Threading.Interlocked.Read(ref _flushedGeneration);
+        internal bool IsFullyFlushed => FlushedGeneration >= DirtyGeneration;
         // PERFORMANCE (W-A3): mirror path with .gz extension. Derived from _indexPath so
         // the two never drift; new flushes go here gzipped, legacy plain-JSON still readable.
         private string _indexPathGz => _indexPath + ".gz";
@@ -566,6 +581,7 @@ namespace GxMcp.Worker.Services
                 }
                 index.GuidToKey.TryRemove(guid, out _);
             }
+            MarkDirty();
         }
 
         private (string ParentName, string ParentPath, string Path, string ModuleName) ResolveHierarchy(global::Artech.Architecture.Common.Objects.KBObject obj)
@@ -770,6 +786,7 @@ namespace GxMcp.Worker.Services
                 BuildParentIndex(index);
                 _index = index;
             }
+            MarkDirty();
             // Fire and forget save to disk with throttling (W-A3: 10s → 30s)
             ScheduleThrottledFlush();
         }
@@ -779,24 +796,87 @@ namespace GxMcp.Worker.Services
         // object — measured 261 full-index serializations in one pass on a 38.6k KB,
         // serializeMs climbing 300→1800ms as the index swelled 12→45MB. The direct
         // Task.Run(FlushToDisk) calls bypassed the throttle that UpdateIndex already had.
-        private void ScheduleThrottledFlush()
+        //
+        // Trailing-edge debounce: writes landing INSIDE the throttle window used to be
+        // dropped on the floor (nothing re-armed a flush), so the last burst of changes
+        // before the process went idle never reached disk until exit. Now a one-shot
+        // timer fires at the end of the window and flushes whatever is still dirty.
+        private double _flushThrottleSeconds = FlushThrottleSeconds;
+        internal void SetFlushThrottleForTest(double seconds) { _flushThrottleSeconds = seconds; }
+        private System.Threading.Timer _trailingFlushTimer;
+        private int _trailingFlushArmed = 0;
+        private readonly object _trailingTimerLock = new object();
+
+        internal void ScheduleThrottledFlush()
         {
-            if (!_savingInProgress && (DateTime.Now - _lastFlushTime).TotalSeconds > FlushThrottleSeconds)
+            if (!_savingInProgress && (DateTime.Now - _lastFlushTime).TotalSeconds > _flushThrottleSeconds)
             {
                 Task.Run(() => FlushToDisk());
+                return;
+            }
+            ArmTrailingFlush();
+        }
+
+        private void ArmTrailingFlush()
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref _trailingFlushArmed, 1, 0) != 0) return;
+            try
+            {
+                lock (_trailingTimerLock)
+                {
+                    if (_trailingFlushTimer == null)
+                        _trailingFlushTimer = new System.Threading.Timer(OnTrailingFlush, null,
+                            System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+                    double elapsed = (DateTime.Now - _lastFlushTime).TotalSeconds;
+                    int dueMs = (int)Math.Max(250, (_flushThrottleSeconds - elapsed) * 1000);
+                    _trailingFlushTimer.Change(dueMs, System.Threading.Timeout.Infinite);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Threading.Interlocked.Exchange(ref _trailingFlushArmed, 0);
+                Logger.Warn("ArmTrailingFlush failed: " + ex.Message);
             }
         }
 
-        // Force an immediate flush regardless of the throttle window. Call at the end of
-        // a bulk enrichment drain / delta refresh so the final, fully-enriched index reaches
-        // disk even if the last changes landed inside the 30s throttle window.
-        // FlushToDisk early-returns while a throttled flush is mid-flight, so a bare call could
-        // silently no-op and leave the meta sidecar stamped against a one-flush-stale body.
-        // Wait out any in-flight flush first, then flush the latest snapshot.
-        public void FlushNow()
+        private void OnTrailingFlush(object state)
         {
-            for (int i = 0; i < 150 && _savingInProgress; i++) System.Threading.Thread.Sleep(20); // up to ~3s
-            FlushToDisk();
+            System.Threading.Interlocked.Exchange(ref _trailingFlushArmed, 0);
+            try
+            {
+                if (IsFullyFlushed) return;
+                bool flushed = FlushToDisk();
+                // A concurrent flush was in flight (or this one failed) and changes are
+                // still pending — re-arm so the trailing write isn't lost.
+                if (!flushed && !IsFullyFlushed) ArmTrailingFlush();
+            }
+            catch (Exception ex) { Logger.Warn("Trailing flush failed: " + ex.Message); }
+        }
+
+        // Force a confirmed-current flush regardless of the throttle window. Call at the
+        // end of a bulk enrichment drain / delta refresh BEFORE writing the meta sidecar.
+        // Returns true only once every change that was dirty at the moment of this call
+        // is confirmed on disk; returns false (never lies) when the deadline elapses —
+        // in which case the caller MUST NOT stamp the sidecar, otherwise the persisted
+        // high-water-mark would claim changes the body doesn't contain and the next warm
+        // start's delta would skip them forever.
+        public bool FlushNow(int timeoutMs = 30000)
+        {
+            if (_index == null) return false; // nothing loaded — nothing to certify
+            long target = System.Threading.Interlocked.Read(ref _dirtyGeneration);
+            var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(100, timeoutMs));
+            while (true)
+            {
+                if (System.Threading.Interlocked.Read(ref _flushedGeneration) >= target) return true;
+                FlushToDisk(); // no-ops (returns false) while another flush is mid-flight
+                if (System.Threading.Interlocked.Read(ref _flushedGeneration) >= target) return true;
+                if (DateTime.UtcNow >= deadline)
+                {
+                    Logger.Warn($"[FLUSH-NOW] timed out after {timeoutMs}ms (flushedGen={FlushedGeneration} targetGen={target}) — caller must not stamp the meta sidecar.");
+                    return false;
+                }
+                System.Threading.Thread.Sleep(20);
+            }
         }
 
         // ===== Fase 1: persistible incremental index (version stamp + high-water-mark + delta-on-open) =====
@@ -938,21 +1018,29 @@ namespace GxMcp.Worker.Services
             return v;
         }
 
-        private void FlushToDisk()
+        // Returns true when this call wrote a snapshot to disk that is at least as new
+        // as the dirty generation captured before serialization started; false when it
+        // skipped (flush already in flight / no index) or failed. Never throws.
+        private bool FlushToDisk()
         {
-            if (_savingInProgress) return;
-            
+            if (_savingInProgress) return false;
+
             SearchIndex snapshot = null;
             lock (_lock)
             {
-                if (_savingInProgress) return;
-                if (_index == null) return;
-                
+                if (_savingInProgress) return false;
+                if (_index == null) return false;
+
                 _savingInProgress = true;
                 // ELITE: Snapshot the index to serialize it OUTSIDE the lock.
                 // ConcurrentDictionary iteration is thread-safe and provides a consistent snapshot view.
-                snapshot = _index; 
+                snapshot = _index;
             }
+
+            // Capture the generation BEFORE enumeration begins: every mutation that
+            // happened-before this read is visible to the serializer below, so on
+            // success the on-disk body provably contains generation `gen`.
+            long gen = System.Threading.Interlocked.Read(ref _dirtyGeneration);
 
             try
             {
@@ -965,28 +1053,27 @@ namespace GxMcp.Worker.Services
                     Formatting = Newtonsoft.Json.Formatting.None
                 };
 
-                // Fase 0 instrumentation: split flush cost into serialize / gzip+write /
-                // move so we know whether the throttled 30s flush competes with the STA
-                // walk for CPU, and which sub-step dominates as the index grows.
                 var flushSw = System.Diagnostics.Stopwatch.StartNew();
-
-                // Perform heavy serialization OUTSIDE the lock
-                string json = Newtonsoft.Json.JsonConvert.SerializeObject(snapshot, settings);
-                long serializeMs = flushSw.ElapsedMilliseconds;
 
                 // PERFORMANCE (W-A3): write gzipped via a temp file + atomic move so partial
                 // writes never leave a corrupt snapshot on disk.
+                // LOH fix: stream the serializer straight through gzip instead of building
+                // the whole index as one ~45MB JSON string first — the intermediate string
+                // landed on the Large Object Heap on every flush.
                 string tmpPath = _indexPathGz + ".tmp";
                 // CompressionLevel.Fastest: file isn't transmitted, the ~5% ratio improvement
                 // from Optimal isn't worth the extra CPU on every flush.
-                flushSw.Restart();
+                var serializer = Newtonsoft.Json.JsonSerializer.Create(settings);
                 using (var fs = File.Create(tmpPath))
                 using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
                 using (var writer = new StreamWriter(gz, new UTF8Encoding(false)))
+                using (var jsonWriter = new Newtonsoft.Json.JsonTextWriter(writer))
                 {
-                    writer.Write(json);
+                    serializer.Serialize(jsonWriter, snapshot);
                 }
-                long gzipWriteMs = flushSw.ElapsedMilliseconds;
+                long serializeGzipMs = flushSw.ElapsedMilliseconds;
+                long gzBytes = 0;
+                try { gzBytes = new FileInfo(tmpPath).Length; } catch { }
 
                 flushSw.Restart();
                 if (File.Exists(_indexPathGz)) File.Delete(_indexPathGz);
@@ -996,21 +1083,27 @@ namespace GxMcp.Worker.Services
                 // Clean up the legacy plain-JSON file once we have a valid gzipped snapshot.
                 try { if (File.Exists(_indexPath)) File.Delete(_indexPath); } catch { }
 
-                long sizeKb = new FileInfo(_indexPathGz).Length / 1024;
+                long sizeKb = gzBytes / 1024;
                 int entryCount = snapshot.Objects?.Count ?? 0;
                 // Fase 3 measurement: piggyback the running enrichment sub-step split on the
                 // throttled flush so the SDK-bound (refScan/typeExtract) vs CPU-only
                 // (embedding/textualScan) proportion is observable without waiting for the
                 // (pathologically slow) full drain to reach [ENRICH-DONE].
-                Logger.Info($"[INDEX-SAVE] gzKB={sizeKb} rawKB={json.Length / 1024} serializeMs={serializeMs} gzipWriteMs={gzipWriteMs} moveMs={moveMs} totalMs={serializeMs + gzipWriteMs + moveMs} entries={entryCount} | {GetEnrichTimingSummary()}");
+                Logger.Info($"[INDEX-SAVE] gzKB={sizeKb} serializeGzipMs={serializeGzipMs} moveMs={moveMs} totalMs={serializeGzipMs + moveMs} entries={entryCount} gen={gen} | {GetEnrichTimingSummary()}");
                 System.Threading.Interlocked.Exchange(ref _consecutiveFlushFailures, 0);
                 _lastFlushSuccessUtc = DateTime.UtcNow;
                 _lastFlushErrorMessage = null;
+                // Publish the confirmed-on-disk generation (monotonic max).
+                long cur;
+                while ((cur = System.Threading.Interlocked.Read(ref _flushedGeneration)) < gen
+                       && System.Threading.Interlocked.CompareExchange(ref _flushedGeneration, gen, cur) != cur) { }
+                return true;
             }
             catch (Exception ex) {
                 int n = System.Threading.Interlocked.Increment(ref _consecutiveFlushFailures);
                 _lastFlushErrorMessage = ex.Message;
                 Logger.Error($"Flush Error (consecutive={n}): {ex.Message}");
+                return false;
             }
             finally {
                 _savingInProgress = false;
@@ -1161,15 +1254,55 @@ namespace GxMcp.Worker.Services
                 try {
                     var kb = _buildService.KbService?.GetKB();
                     if (kb == null) return;
-                    var bgObj = kb.DesignModel.Objects.Get(objGuid);
-                    if (bgObj == null) return;
-                    EnrichEdges((global::Artech.Architecture.Common.Objects.KBObject)bgObj, entry, index);
+                    // SdkGate: GetKB/Get/GetReferences are SDK calls; the background
+                    // dispatcher thread must not interleave them with other apartments.
+                    using (SdkGate.Enter())
+                    {
+                        var bgObj = kb.DesignModel.Objects.Get(objGuid);
+                        if (bgObj == null) return;
+                        EnrichEdges((global::Artech.Architecture.Common.Objects.KBObject)bgObj, entry, index);
+                    }
                 } catch (Exception ex) { Logger.Error("Background Indexing Error: " + ex.Message); }
             });
 
+            MarkDirty();
             // Fire and forget save to disk (throttled — see ScheduleThrottledFlush)
             ScheduleThrottledFlush();
         }
+
+        // ── Copy-on-write edge lists ────────────────────────────────────────────
+        // FlushToDisk serializes LIVE entries on a threadpool thread with no lock.
+        // Mutating a published List<string> in place (Calls/Tables/CalledBy) raced
+        // that serialization ("Collection was modified" flush failures / torn
+        // snapshots). These helpers never mutate a published list: they replace the
+        // property with a new list instance, so any reader/serializer holding the
+        // old reference sees a stable snapshot. The per-entry lock only serializes
+        // concurrent WRITERS against each other.
+        internal static bool AddEdgeCow(
+            SearchIndex.IndexEntry entry,
+            Func<SearchIndex.IndexEntry, List<string>> get,
+            Action<SearchIndex.IndexEntry, List<string>> set,
+            string value)
+        {
+            if (entry == null || string.IsNullOrEmpty(value)) return false;
+            lock (entry)
+            {
+                var current = get(entry) ?? new List<string>();
+                if (current.Contains(value, StringComparer.OrdinalIgnoreCase)) return false;
+                var next = new List<string>(current.Count + 1);
+                next.AddRange(current);
+                next.Add(value);
+                set(entry, next);
+                return true;
+            }
+        }
+
+        internal static bool AddCallCow(SearchIndex.IndexEntry e, string name)
+            => AddEdgeCow(e, x => x.Calls, (x, l) => x.Calls = l, name);
+        internal static bool AddTableCow(SearchIndex.IndexEntry e, string name)
+            => AddEdgeCow(e, x => x.Tables, (x, l) => x.Tables = l, name);
+        internal static bool AddCalledByCow(SearchIndex.IndexEntry e, string name)
+            => AddEdgeCow(e, x => x.CalledBy, (x, l) => x.CalledBy = l, name);
 
         // Dependency enrichment (extracted so the call path is readable): populate this entry's
         // Calls/Tables and the inverted CalledBy edges via the SDK reference graph + the FR#3
@@ -1200,20 +1333,15 @@ namespace GxMcp.Worker.Services
 
                         string targetType = targetKey.TypeDescriptor.Name;
                         if (targetType == "Attribute" || targetType == "Table") {
-                            if (!entry.Tables.Contains(targetName)) { entry.Tables.Add(targetName); changed = true; }
+                            if (AddTableCow(entry, targetName)) changed = true;
                         } else {
-                            if (!entry.Calls.Contains(targetName)) { entry.Calls.Add(targetName); changed = true; }
+                            if (AddCallCow(entry, targetName)) changed = true;
                         }
 
-                        // Inverted Index (CalledBy)
+                        // Inverted Index (CalledBy) — copy-on-write, see AddEdgeCow.
                         string targetIndexKey = $"{targetType}:{targetName}";
                         if (index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
-                            lock (targetEntry.CalledBy) {
-                                if (!targetEntry.CalledBy.Contains(entry.Name)) {
-                                    targetEntry.CalledBy.Add(entry.Name);
-                                    changed = true;
-                                }
-                            }
+                            if (AddCalledByCow(targetEntry, entry.Name)) changed = true;
                         }
                     } catch { }
                 }
@@ -1234,7 +1362,7 @@ namespace GxMcp.Worker.Services
             catch (Exception scanEx) { Logger.Debug("[FR#3] Textual call scan failed: " + scanEx.Message); }
             System.Threading.Interlocked.Add(ref _enrichTextualScanTicks, System.Diagnostics.Stopwatch.GetTimestamp() - tsStart);
 
-            if (changed) ScheduleThrottledFlush();
+            if (changed) { MarkDirty(); ScheduleThrottledFlush(); }
         }
 
         // FR#3 (friction-report 2026-05-14): textual call-site scan that augments the SDK
@@ -1284,22 +1412,8 @@ namespace GxMcp.Worker.Services
                     string key = typePrefix + ":" + name;
                     if (!index.Objects.TryGetValue(key, out var target) || target == null) continue;
 
-                    if (!entry.Calls.Contains(target.Name, StringComparer.OrdinalIgnoreCase))
-                    {
-                        entry.Calls.Add(target.Name);
-                        changed = true;
-                    }
-                    if (target.CalledBy != null)
-                    {
-                        lock (target.CalledBy)
-                        {
-                            if (!target.CalledBy.Contains(entry.Name, StringComparer.OrdinalIgnoreCase))
-                            {
-                                target.CalledBy.Add(entry.Name);
-                                changed = true;
-                            }
-                        }
-                    }
+                    if (AddCallCow(entry, target.Name)) changed = true;
+                    if (AddCalledByCow(target, entry.Name)) changed = true;
                     break; // first matching object type wins
                 }
             }
@@ -1316,6 +1430,7 @@ namespace GxMcp.Worker.Services
         public void RemoveEntry(string type, string name)
         {
             var index = GetIndex();
+            bool removed = false;
             lock (_lock)
             {
                 var keysToRemove = index.Objects
@@ -1324,12 +1439,16 @@ namespace GxMcp.Worker.Services
                         string.Equals(pair.Value.Name, name, StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
-                var removed = false;
                 foreach (var pair in keysToRemove)
                 {
                     if (index.Objects.TryRemove(pair.Key, out var removedEntry))
                     {
                         removed = true;
+                        // Surgical removal (mirrors RemoveEntryByGuid) — the previous
+                        // implementation rebuilt the ENTIRE parent index via UpdateIndex
+                        // per deletion, an O(N) rebuild for an O(1) operation.
+                        if (index.ChildrenByParent != null && removedEntry != null)
+                            RemoveEntryFromParentIndex(index.ChildrenByParent, removedEntry);
                         // PERFORMANCE (W-M5): invalidate hierarchy cache for removed objects.
                         if (!string.IsNullOrEmpty(removedEntry?.Guid) && Guid.TryParse(removedEntry.Guid, out var g))
                         {
@@ -1340,8 +1459,12 @@ namespace GxMcp.Worker.Services
                             index.GuidToKey.TryRemove(removedEntry.Guid, out _);
                     }
                 }
+            }
 
-                if (removed) UpdateIndex(index);
+            if (removed)
+            {
+                MarkDirty();
+                ScheduleThrottledFlush();
             }
         }
 
@@ -1368,10 +1491,14 @@ namespace GxMcp.Worker.Services
         // SP6.T6 — fast-index lite pass uses this to bulk-replace the in-memory index with
         // stub entries (no SourceSnippet/Calls/CalledBy/Embedding). Keys follow the same
         // GetEntryStorageKey scheme so subsequent UpdateEntry calls AddOrUpdate cleanly.
+        // Anti-demotion guard: an already-enriched live entry (concurrent UpdateEntry /
+        // on-demand PromoteAsync during the walk) is NEVER overwritten by an incoming
+        // lite stub — the enriched entry is carried over into the new index.
         public void ReplaceAll(IEnumerable<SearchIndex.IndexEntry> entries)
         {
             lock (_lock)
             {
+                var previous = _index;
                 var idx = new SearchIndex();
                 if (entries != null)
                 {
@@ -1379,6 +1506,13 @@ namespace GxMcp.Worker.Services
                     {
                         if (e == null || string.IsNullOrEmpty(e.Name)) continue;
                         string key = GetEntryStorageKey(e);
+                        if (!e.IsEnriched && previous != null
+                            && previous.Objects.TryGetValue(key, out var existing)
+                            && existing != null && existing.IsEnriched)
+                        {
+                            idx.Objects[key] = existing; // keep the enriched live entry
+                            continue;
+                        }
                         idx.Objects[key] = e;
                     }
                 }
@@ -1387,6 +1521,47 @@ namespace GxMcp.Worker.Services
                 _index = idx;
                 _initialized = true;
                 PrimeHierarchyCacheFromIndex(idx);
+            }
+            MarkDirty();
+        }
+
+        // Streaming companion to ReplaceAll: incrementally AddOrUpdate the given batch
+        // into the LIVE index instead of rebuilding a brand-new SearchIndex from the
+        // full accumulated list (the lite walk used to do that every 500 objects —
+        // O(N²) on a 38.6k KB and it clobbered concurrent UpdateEntry promotions by
+        // demoting just-enriched entries back to stubs). Enriched entries are never
+        // overwritten by stubs here either.
+        public void AddOrUpdateBatch(IEnumerable<SearchIndex.IndexEntry> entries)
+        {
+            if (entries == null) return;
+            SearchIndex idx;
+            lock (_lock)
+            {
+                if (_index == null) _index = new SearchIndex();
+                idx = _index;
+                if (idx.ChildrenByParent == null || idx.GuidToKey == null) BuildParentIndex(idx);
+                _initialized = true;
+            }
+
+            bool any = false;
+            foreach (var e in entries)
+            {
+                if (e == null || string.IsNullOrEmpty(e.Name)) continue;
+                string key = GetEntryStorageKey(e);
+                if (!e.IsEnriched && idx.Objects.TryGetValue(key, out var existing)
+                    && existing != null && existing.IsEnriched)
+                {
+                    continue; // never demote an enriched entry to a stub
+                }
+                idx.Objects[key] = e;
+                if (idx.ChildrenByParent != null) AddOrUpdateEntryInParentIndex(idx.ChildrenByParent, e);
+                if (idx.GuidToKey != null && !string.IsNullOrEmpty(e.Guid)) idx.GuidToKey[e.Guid] = key;
+                any = true;
+            }
+            if (any)
+            {
+                idx.LastUpdated = DateTime.UtcNow;
+                MarkDirty();
             }
         }
 

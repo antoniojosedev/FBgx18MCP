@@ -89,12 +89,14 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void Github_IsOpenWorld()
+        public void Browser_Preview_IsOpenWorld()
         {
+            // genexus_github was de-advertised in v2.9.2; use genexus_browser as the
+            // representative open-world tool (shells out to headless Chrome/Playwright).
             var tools = LoadToolDefinitions();
-            var tool = FindTool(tools, "genexus_github");
+            var tool = FindTool(tools, "genexus_browser");
             Assert.True((bool)tool["annotations"]!["openWorldHint"]!,
-                "genexus_github.openWorldHint should be true.");
+                "genexus_browser.openWorldHint should be true.");
         }
 
         [Fact]
