@@ -162,7 +162,17 @@ if (Test-Path $csprojPath) {
         $csprojVersion = $Matches[1].Trim()
     }
 }
-$needsBump = ($Version -ne $currentVersion) -or ($csprojVersion -and $csprojVersion -ne $Version)
+$workerCsprojVersionPath = Join-Path $root 'src\GxMcp.Worker\GxMcp.Worker.csproj'
+$workerCsprojVersion = $null
+if (Test-Path $workerCsprojVersionPath) {
+    $workerRaw = Get-Content $workerCsprojVersionPath -Raw
+    if ($workerRaw -match '<InformationalVersion>([^<]+)</InformationalVersion>') {
+        $workerCsprojVersion = $Matches[1].Trim()
+    }
+}
+$needsBump = ($Version -ne $currentVersion) -or
+             ($csprojVersion -and $csprojVersion -ne $Version) -or
+             ($workerCsprojVersion -and $workerCsprojVersion -ne $Version)
 if ($needsBump -and ($Version -eq $currentVersion) -and ($csprojVersion -ne $Version)) {
     Warn "csproj InformationalVersion=$csprojVersion is out of sync with package.json=$Version — forcing bump pass to realign."
 }
