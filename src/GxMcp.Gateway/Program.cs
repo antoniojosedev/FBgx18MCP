@@ -2047,6 +2047,26 @@ namespace GxMcp.Gateway
                 }
             }
 
+            // apply_pattern (esp. reapply) runs the WWP projection step, which on a
+            // large host or an IDE-tab-held object takes minutes. The worker bounds it
+            // with GENEXUS_MCP_REAPPLY_TIMEOUT_MS (default 5 min); align the gateway
+            // ceiling so the client doesn't get a premature -32001 mid-reapply while the
+            // worker is still legitimately working.
+            if (string.Equals(toolName, "genexus_apply_pattern", StringComparison.OrdinalIgnoreCase))
+            {
+                int reapplyMs = 300000;
+                var envVal = Environment.GetEnvironmentVariable("GENEXUS_MCP_REAPPLY_TIMEOUT_MS");
+                if (!string.IsNullOrWhiteSpace(envVal) && int.TryParse(envVal, out var parsed) && parsed > 0)
+                    reapplyMs = parsed;
+                // Add a 30s gateway-side cushion over the worker's own hard-timeout
+                // window so that when the projection DOES return near the deadline, the
+                // client receives the worker's rich envelope (slowReapply / recoveryRequired
+                // / recoveryHint) rather than a bare transport -32001. If the STA call never
+                // returns, the gateway times out here and recoveryHint tells the agent to
+                // genexus_worker_reload mode=hard — the worker can't self-abort an STA SDK call.
+                return reapplyMs + 30000;
+            }
+
             return 60000;
         }
 
@@ -4159,13 +4179,18 @@ namespace GxMcp.Gateway
                         toolName: "gateway_index_bootstrap",
                         trackOperation: false);
 
-                    string? status = resp?["result"]?["status"]?.ToString();
-                    Log($"[IndexBootstrap] worker reply status={status ?? "<null>"}");
+                    // BulkIndex now returns the canonical envelope ({status:"ok", code, result}).
+                    // The fresh-vs-warm signal lives in `code`; fall back to the legacy top-level
+                    // `status` for any pre-canonical worker still in the pool.
+                    var result = resp?["result"] as JObject;
+                    string? status = result?["code"]?.ToString()
+                        ?? result?["status"]?.ToString();
+                    Log($"[IndexBootstrap] worker reply code={status ?? "<null>"}");
 
                     // The default lite-index path returns "LiteStarted"; the legacy full path
                     // returns "Started". Either means a fresh cold-start index just kicked off,
                     // so the agent should see the one-time background-indexing notice.
-                    // ("AlreadyIndexed" is a warm start — no notice.)
+                    // ("AlreadyIndexed" / "AlreadyInProgress" / "DeltaStarted" are warm starts — no notice.)
                     if (string.Equals(status, "Started", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(status, "LiteStarted", StringComparison.OrdinalIgnoreCase))
                     {

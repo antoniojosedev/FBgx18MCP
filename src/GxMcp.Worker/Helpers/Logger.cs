@@ -20,6 +20,14 @@ namespace GxMcp.Worker.Helpers
         private static readonly BlockingCollection<string> _queue = new BlockingCollection<string>();
         private static readonly Thread _writer;
 
+        // Diagnostics: with GXMCP_SYNC_LOG=1 every line is also appended synchronously
+        // to the log file, so a hard worker crash (e.g. an uncatchable SDK
+        // StackOverflow/AccessViolation mid-write) still leaves the final step on disk
+        // instead of losing it in the async batch. Off by default — the async path is
+        // the hot path; this is for reproducing crashes only.
+        private static readonly bool SyncLog =
+            string.Equals(Environment.GetEnvironmentVariable("GXMCP_SYNC_LOG"), "1", StringComparison.Ordinal);
+
         // FR#24 (v2.6.6 Stream C): per-phase log tag, propagated via AsyncLocal so
         // BuildService updates affect background tasks too. Setter is internal so
         // only the worker can mutate it; foreign callers see a read-only surface.
@@ -82,6 +90,13 @@ namespace GxMcp.Worker.Helpers
             // Surface to stderr synchronously (cheap, non-blocking on the OS level) so the
             // Gateway captures the line immediately even if the file writer is behind.
             try { Console.Error.WriteLine($"[Worker Log] {line}"); } catch { }
+
+            // Crash-forensics mode: persist synchronously so a hard process death
+            // mid-write doesn't lose the last step in the async batch.
+            if (SyncLog)
+            {
+                try { File.AppendAllText(LogFile, line + Environment.NewLine); } catch { }
+            }
 
             if (_queue.IsAddingCompleted) return;
             try { _queue.Add(line); }

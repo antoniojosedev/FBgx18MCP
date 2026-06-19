@@ -34,6 +34,26 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void GetToolTimeoutMs_ApplyPattern_UsesReapplyWindowPlusCushion()
+        {
+            var prior = Environment.GetEnvironmentVariable("GENEXUS_MCP_REAPPLY_TIMEOUT_MS");
+            try
+            {
+                Environment.SetEnvironmentVariable("GENEXUS_MCP_REAPPLY_TIMEOUT_MS", null);
+                // default reapply window 300000 + 30000 gateway cushion
+                Assert.Equal(330000, Program.GetToolTimeoutMs("genexus_apply_pattern", null));
+
+                // env override is honoured and the cushion still added
+                Environment.SetEnvironmentVariable("GENEXUS_MCP_REAPPLY_TIMEOUT_MS", "120000");
+                Assert.Equal(150000, Program.GetToolTimeoutMs("genexus_apply_pattern", null));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GENEXUS_MCP_REAPPLY_TIMEOUT_MS", prior);
+            }
+        }
+
+        [Fact]
         public void TruncateResponseIfNeeded_ShouldPreserveSearchResultsInsteadOfReturningErrorEnvelope()
         {
             var results = new JArray();

@@ -727,7 +727,9 @@ namespace GxMcp.Worker.Services
             liteThread.SetApartmentState(ApartmentState.STA);
             liteThread.Start();
 
-            return "{\"status\":\"LiteStarted\",\"hint\":\"list_objects is usable after a few seconds; analyze impact uses on-demand enrichment.\"}";
+            return Models.McpResponse.Ok(
+                code: "LiteStarted",
+                result: new JObject { ["hint"] = "list_objects is usable after a few seconds; analyze impact uses on-demand enrichment." });
         }
 
         // Shared enrich-one-entry closure used by the lite-pass queue, the delta resume queue,
@@ -880,7 +882,9 @@ namespace GxMcp.Worker.Services
         private string BulkIndexLegacy(bool force)
         {
             Logger.Info($"BulkIndex(force={force}) requested.");
-            if (_isIndexing) return "{\"status\":\"Already in progress\"}";
+            if (_isIndexing) return Models.McpResponse.Ok(
+                code: "AlreadyInProgress",
+                result: new JObject { ["hint"] = "An index build is already running; poll genexus_whoami for progress." });
 
             // Wait briefly for the KB to open. The Gateway fires BulkIndex from the
             // initialize hook before the worker has opened the KB, so IsIndexMissing
@@ -919,7 +923,13 @@ namespace GxMcp.Worker.Services
                         // where the index was already in memory before the BulkIndex call.
                         try { _indexCacheService.MarkIndexComplete(loaded.Objects.Count); } catch { }
                         Logger.Info($"BulkIndex skipped — cache already populated ({loaded.Objects.Count} objects). Pass force=true to rebuild.");
-                        return "{\"status\":\"AlreadyIndexed\",\"objects\":" + loaded.Objects.Count + ",\"hint\":\"Pass force=true to force a full SDK rescan when entries are missing edges or new objects exist.\"}";
+                        return Models.McpResponse.Ok(
+                            code: "AlreadyIndexed",
+                            result: new JObject
+                            {
+                                ["objects"] = loaded.Objects.Count,
+                                ["hint"] = "Pass force=true to force a full SDK rescan when entries are missing edges or new objects exist."
+                            });
                     }
                 }
             }
@@ -1032,7 +1042,9 @@ namespace GxMcp.Worker.Services
             indexThread.SetApartmentState(ApartmentState.STA);
             indexThread.Start();
 
-            return "{\"status\":\"Started\"}";
+            return Models.McpResponse.Ok(
+                code: "Started",
+                result: new JObject { ["hint"] = "Full SDK index started in the background; poll genexus_whoami for progress." });
         }
 
         public string GetIndexStatus()

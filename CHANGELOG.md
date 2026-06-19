@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Search inside WebForm layouts.** `genexus_search_source` now accepts `scope=["webForm"]` (or `["layout"]`), scanning the WebPanel/Transaction visual XML with the same line-numbered context as a source scan — find a control name, caption, theme class, or binding across the KB. Previously the only way to match WebForm content was `fields=["webForm"]`, which returned the whole XML blob with no line context, and a layout-only term was filtered out before its part was ever read.
+
+### Fixed
+
+- **`genexus_edit` no longer reports `WriteApplied` when a source write persisted as empty.** As a safety net, a non-empty source edit that re-reads as an empty part now returns a `WriteNotPersisted` error with a recovery path (restore via `genexus_history`, or retry once the KB is idle) instead of a false success, and a follow-up edit of the same object is no longer stuck on a phantom `WriteNoChange`.
+- **`genexus_edit validate=best-effort` no longer times out on large WebForm/PatternInstance writes.** A full visual or pattern write used to re-read and diff the persisted XML on every save to verify it landed; on large WorkWithPlus PatternInstance bodies that re-read dominated the call and tripped client timeouts. `validate=best-effort` now skips the post-write XML diff (a genuine SDK save error is still surfaced) — `validate=strict` (the default) keeps the full verification. Build afterward to confirm generation.
+- **`genexus_apply_pattern` reapply gets the time it needs before the client gives up.** Reapply runs the WorkWithPlus projection step, which on a large host or an object the IDE is holding open takes minutes; the gateway was cutting the request off at 60 seconds while the worker was still legitimately working. The gateway ceiling now matches the worker's reapply window (`GENEXUS_MCP_REAPPLY_TIMEOUT_MS`, default 5 minutes) plus a cushion, so a slow-but-progressing reapply returns its real result — including the `slowReapply` / `recoveryRequired` hints — instead of a bare transport timeout.
+
+### Internal
+
+- BulkIndex now returns the canonical `McpResponse` envelope (`{status:"ok", code, result}`) on every path (`LiteStarted` / `Started` / `AlreadyIndexed` / `AlreadyInProgress` / `DeltaStarted`), replacing the four ad-hoc raw `{"status":...}` strings; the gateway index-bootstrap reads the fresh-vs-warm signal from `code` with a legacy `status` fallback. Resolves the v2.10.0 "BulkIndex status strings left as-is pending gateway contract-test alignment" note.
+- `validate` is threaded into the WriteService write pipeline as a `strictVerify` flag (`WriteObject`/`WriteObjectInternal`/`WriteVisualPart`/`WritePatternPart`). New tests: `WriteServiceFacadeArgsTests` validate→strictVerify mapping, `GatewayBudgetTests` apply_pattern timeout window. Golden tools-list fixture regenerated for the `genexus_search_source` scope/fields and `genexus_edit` validate descriptions.
+- `PatchService.ParseWriteResult` now bridges the canonical write envelope (`status:"ok"`/`code:"WriteApplied"`) to the legacy `_internalStatus`/`message` fields the patch flow reads, so a clean canonical write is recognized as success instead of being forced down the fallback re-verify/rollback path on every patch (latent since the v2.8.0 envelope migration). `WriteService.ApplyEmptyPersistGuard` / `ShouldRejectEmptyPersist` add the empty-persist safety net (`WriteNotPersisted`) and clear a per-target flag that previously let an empty in-memory part lock the caller into `WriteNoChange`. `Logger` gains an opt-in `GXMCP_SYNC_LOG=1` mode (synchronous file append) for capturing the last step before a hard worker crash. New tests: `PatchParseWriteResultTests`, `EmptyPersistGuardTests`.
+
 ## v2.10.0 — 2026-06-11
 
 ### Added

@@ -749,6 +749,100 @@ namespace GxMcp.Worker.Services
             return _lastWriteAtUtc.TryGetValue(target, out var t) && t > sinceUtc;
         }
 
+        // Issue #24 — empty-persist guard. A non-empty logical-source write that
+        // lands as an empty part on disk (GeneXus silently drops source containing
+        // inline native-code delimiters `[! !]`) used to return WriteApplied with
+        // the empty-string hash. Two consequences are tracked here:
+        //   1) the false success is rewritten to a WriteNotPersisted error (see
+        //      ApplyEmptyPersistGuard), and
+        //   2) the in-memory SDK part still holds the content the save dropped, so
+        //      the next identical write short-circuits to WriteNoChange forever.
+        //      We flag the (target, part) so WriteObjectInternal bypasses that
+        //      short-circuit and re-attempts (re-firing the guard) instead of
+        //      reporting a phantom "no change".
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _suspectEmptyPersist
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        private static string SuspectKey(string target, string partName)
+            => (target ?? string.Empty) + "|" + (string.IsNullOrWhiteSpace(partName) ? "Source" : partName);
+
+        internal static bool IsEmptyPersistPending(string target, string partName)
+            => _suspectEmptyPersist.ContainsKey(SuspectKey(target, partName));
+
+        /// <summary>
+        /// Issue #24 — decides whether a write that the SDK reported as applied
+        /// actually lost the content. True only when a logical source part
+        /// (Source / Events / Code) received non-whitespace input but the
+        /// re-read persisted source hashes to the empty string. Pure: no SDK,
+        /// no I/O — unit-tested directly.
+        /// </summary>
+        internal static bool ShouldRejectEmptyPersist(string partName, string inputCode, string persistedHash)
+        {
+            if (string.IsNullOrWhiteSpace(inputCode)) return false;       // intentional blank write
+            if (string.IsNullOrEmpty(persistedHash)) return false;        // no re-read happened
+            if (!WritePolicy.IsLogicalSourcePart(string.IsNullOrWhiteSpace(partName) ? "Source" : partName)) return false;
+            return string.Equals(persistedHash, ComputeSha256(string.Empty), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Issue #24 — post-write guard. Inspects the wrapped response (which already
+        /// carries <c>persistedHash</c> from <see cref="WrapWithPersistedState"/>). When
+        /// a non-empty logical-source write persisted as empty, rewrite the false
+        /// <c>WriteApplied</c> into a <c>WriteNotPersisted</c> error and flag the target so
+        /// the next write doesn't get stuck on a phantom WriteNoChange. Otherwise clears
+        /// any prior flag (a real non-empty persist recovered the part).
+        /// </summary>
+        internal static string ApplyEmptyPersistGuard(string wrappedJson, string target, string partName, string inputCode)
+        {
+            JObject parsed;
+            try { parsed = JObject.Parse(wrappedJson); }
+            catch { return wrappedJson; }
+
+            // Only fire on a reported-successful write; errors/no-change pass through.
+            string status = parsed["status"]?.ToString();
+            string code = parsed["code"]?.ToString();
+            bool reportedApplied = string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(code, "WriteApplied", StringComparison.OrdinalIgnoreCase);
+            if (!reportedApplied) return wrappedJson;
+
+            string normPart = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            string persistedHash = parsed["persistedHash"]?.ToString();
+
+            if (!ShouldRejectEmptyPersist(normPart, inputCode, persistedHash))
+            {
+                // Confirmed non-empty persist of a logical source — recovery point.
+                if (WritePolicy.IsLogicalSourcePart(normPart) && !string.IsNullOrWhiteSpace(inputCode))
+                    _suspectEmptyPersist.TryRemove(SuspectKey(target, normPart), out _);
+                return wrappedJson;
+            }
+
+            _suspectEmptyPersist[SuspectKey(target, normPart)] = true;
+            Logger.Error($"[EMPTY-PERSIST] {target} ({normPart}): {inputCode.Length}-char write reported applied but persisted source is empty. Surfacing WriteNotPersisted.");
+
+            var nextSteps = new JArray(
+                McpResponse.NextStep(
+                    tool: "genexus_history",
+                    args: new JObject { ["action"] = "restore", ["discard"] = true, ["target"] = target },
+                    why: "Restores the part bytes captured immediately before this write from the latest snapshot."),
+                McpResponse.NextStep(
+                    tool: "genexus_read",
+                    args: new JObject { ["name"] = target, ["part"] = normPart },
+                    why: "Confirms whether the persisted source is empty so you can recover before re-editing."));
+
+            return McpResponse.Err(
+                code: "WriteNotPersisted",
+                message: "Write was reported as applied but the persisted source is empty — the content was not saved.",
+                hint: "The SDK save reported success but the part re-read as empty (a save that lands during a background index or an SDK normalization edge can drop content). Restore via genexus_history, or re-run the edit once the KB is idle; if it recurs, edit that object in the GeneXus IDE.",
+                nextSteps: nextSteps,
+                target: target,
+                extra: new JObject
+                {
+                    ["part"] = normPart,
+                    ["inputLength"] = inputCode.Length,
+                    ["persistedHash"] = persistedHash
+                });
+        }
+
         // IWriteServiceFacade adapter — translates JObject args into the canonical WriteObject call.
         public string WriteObject(string target, JObject args)
         {
@@ -774,6 +868,12 @@ namespace GxMcp.Worker.Services
             }
             else
             {
+                // Async follow-up (next-major item #2): a full visual write re-reads and
+                // diff-verifies the persisted WebForm XML, which dominates wall-clock on large
+                // PatternInstance writes and is the cause of client timeouts. validate="best-effort"
+                // skips that post-write SDK verify (the save status / compiler messages are still
+                // checked); validate=null/"strict" keeps it. "only" already short-circuits to dryRun.
+                bool strictVerify = !string.Equals(facadeArgs.Validate, "best-effort", StringComparison.OrdinalIgnoreCase);
                 raw = WriteObject(
                     target,
                     facadeArgs.PartName,
@@ -783,7 +883,8 @@ namespace GxMcp.Worker.Services
                     false,
                     true,
                     facadeArgs.DryRun,
-                    facadeArgs.ExplicitBase64);
+                    facadeArgs.ExplicitBase64,
+                    strictVerify);
             }
 
             // Friction 2026-05-22: KBs default to WIN1252 (codepage 1252) on
@@ -861,6 +962,7 @@ namespace GxMcp.Worker.Services
             return new FacadeWriteArgs
             {
                 Mode = mode,
+                Validate = facadeValidate,
                 PartName = partName,
                 TypeFilter = typeFilter,
                 DryRun = facadeDryRun,
@@ -879,6 +981,7 @@ namespace GxMcp.Worker.Services
         internal sealed class FacadeWriteArgs
         {
             public string Mode { get; set; }
+            public string Validate { get; set; }
             public string PartName { get; set; }
             public string TypeFilter { get; set; }
             public bool DryRun { get; set; }
@@ -960,7 +1063,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false)
+        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true)
         {
             // Friction 2026-05-22 fix: hold the per-target lock around the
             // ENTIRE write pipeline (snapshot + internal write + wrap). This is
@@ -1011,7 +1114,7 @@ namespace GxMcp.Worker.Services
             string raw;
             try
             {
-                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64);
+                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify);
             }
             finally
             {
@@ -1027,6 +1130,12 @@ namespace GxMcp.Worker.Services
             // Default sdkPath = typed-sdk; deeper writers (LayoutService raw-XML) tag their own
             // sdkPath first and WrapWithPersistedState is idempotent so it preserves that.
             string wrapped = WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName, GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk);
+
+            // Issue #24 — never report WriteApplied when a non-empty source write
+            // landed as an empty part on disk. Runs against the persistedHash the
+            // wrap just computed; turns the silent data loss into a recoverable error.
+            if (!dryRun)
+                wrapped = ApplyEmptyPersistGuard(wrapped, target, partName, code);
 
             // Attach snapshot envelope to the response so callers can restore.
             if (snapshot != null)
@@ -1104,7 +1213,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false)
+        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true)
         {
             try
             {
@@ -1194,12 +1303,12 @@ namespace GxMcp.Worker.Services
 
                 if (PatternAnalysisService.IsPatternPart(partName))
                 {
-                    return WritePatternPart(obj, target, partName, decodedCode, dryRun);
+                    return WritePatternPart(obj, target, partName, decodedCode, dryRun, strictVerify);
                 }
 
                 if (WebFormXmlHelper.IsVisualPart(partName))
                 {
-                    return WriteVisualPart(obj, target, partName, decodedCode, dryRun);
+                    return WriteVisualPart(obj, target, partName, decodedCode, dryRun, strictVerify);
                 }
 
                 if (dryRun)
@@ -1327,7 +1436,12 @@ namespace GxMcp.Worker.Services
                     );
                 }
 
+                // Issue #24 — skip the no-change short-circuit when a prior write to this
+                // part persisted empty. The in-memory Source still holds the content the
+                // SDK dropped, so it would falsely compare equal to the incoming code and
+                // lock the caller into WriteNoChange forever. Re-attempt the save instead.
                 if (part is global::Artech.Architecture.Common.Objects.ISource existingSourcePart &&
+                    !IsEmptyPersistPending(target, partName) &&
                     WritePolicy.IsUnchangedSourceWrite(existingSourcePart.Source, decodedCode))
                 {
                     Logger.Info("[DEBUG-SAVE] Content is identical. Skipping validation and Save.");
@@ -2886,7 +3000,7 @@ namespace GxMcp.Worker.Services
             return merged;
         }
 
-        private string WriteVisualPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false)
+        private string WriteVisualPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false, bool strictVerify = true)
         {
             var webFormPart = WebFormXmlHelper.GetWebFormPart(obj);
             if (webFormPart == null)
@@ -3095,46 +3209,83 @@ namespace GxMcp.Worker.Services
                     ScheduleFlush(force: true);
                     Logger.Info("[VisualWrite] ScheduleFlush(force=true) completed.");
 
-                    var refreshedObj = _objectService.FindObject(target);
-                    string persistedXml = WebFormXmlHelper.ReadEditableXml(refreshedObj ?? obj);
-                    if (!XmlEquivalence.AreEquivalent(persistedXml, normalizedInput, out var visualDiff, out var visualStructured))
+                    // Async follow-up (next-major item #2): the re-read + XML diff below dominates
+                    // wall-clock on large PatternInstance/WebForm writes and is the cause of client
+                    // timeouts. validate="best-effort" (strictVerify=false) skips the re-read/diff;
+                    // a genuine SDK save error captured during the save is still surfaced. The commit
+                    // + forced flush already happened, so the bytes are on disk either way.
+                    if (strictVerify)
                     {
-                        if (webFormPartSaveError != null)
-                            Logger.Info("[VisualWrite] webFormPart.Save() error captured during verification failure: " + webFormPartSaveError.ToString(Newtonsoft.Json.Formatting.None));
-                        string visualVerifyErr = CreateWriteError(
-                            "Visual write verification failed",
+                        var refreshedObj = _objectService.FindObject(target);
+                        string persistedXml = WebFormXmlHelper.ReadEditableXml(refreshedObj ?? obj);
+                        if (!XmlEquivalence.AreEquivalent(persistedXml, normalizedInput, out var visualDiff, out var visualStructured))
+                        {
+                            if (webFormPartSaveError != null)
+                                Logger.Info("[VisualWrite] webFormPart.Save() error captured during verification failure: " + webFormPartSaveError.ToString(Newtonsoft.Json.Formatting.None));
+                            string visualVerifyErr = CreateWriteError(
+                                "Visual write verification failed",
+                                target,
+                                partName,
+                                "The SDK save path completed, but the persisted WebForm XML does not match the requested content. Diff: " + (visualDiff ?? "n/a"),
+                                obj,
+                                visualStructured);
+                            // Attach snapshot descriptor + restore hint so the caller can roll back.
+                            try
+                            {
+                                var verifyJobj = JObject.Parse(visualVerifyErr);
+                                var errObj = verifyJobj["error"] as JObject ?? verifyJobj;
+                                if (webFormPartSaveError != null) errObj["sdkSaveError"] = webFormPartSaveError;
+                                // Inject restore nextStep into nextSteps array.
+                                var nsArr = verifyJobj["nextSteps"] as JArray ?? new JArray();
+                                nsArr.Add(new JObject
+                                {
+                                    ["tool"] = "genexus_history",
+                                    ["args"] = new JObject { ["action"] = "restore", ["discard"] = true, ["target"] = target },
+                                    ["why"] = "Restore to the pre-write snapshot to undo the failed visual write."
+                                });
+                                verifyJobj["nextSteps"] = nsArr;
+                                return verifyJobj.ToString();
+                            }
+                            catch
+                            {
+                                return visualVerifyErr;
+                            }
+                        }
+                    }
+                    else if (webFormPartSaveError != null)
+                    {
+                        // best-effort: skip the diff but never swallow a real SDK save failure.
+                        string sdkErr = CreateWriteError(
+                            "Visual write reported an SDK save error",
                             target,
                             partName,
-                            "The SDK save path completed, but the persisted WebForm XML does not match the requested content. Diff: " + (visualDiff ?? "n/a"),
+                            "The SDK save path returned an error (post-write XML diff was skipped because validate=best-effort).",
                             obj,
-                            visualStructured);
-                        // Attach snapshot descriptor + restore hint so the caller can roll back.
+                            null);
                         try
                         {
-                            var verifyJobj = JObject.Parse(visualVerifyErr);
-                            var errObj = verifyJobj["error"] as JObject ?? verifyJobj;
-                            if (webFormPartSaveError != null) errObj["sdkSaveError"] = webFormPartSaveError;
-                            // Inject restore nextStep into nextSteps array.
-                            var nsArr = verifyJobj["nextSteps"] as JArray ?? new JArray();
+                            var sdkErrJobj = JObject.Parse(sdkErr);
+                            var errObj = sdkErrJobj["error"] as JObject ?? sdkErrJobj;
+                            errObj["sdkSaveError"] = webFormPartSaveError;
+                            var nsArr = sdkErrJobj["nextSteps"] as JArray ?? new JArray();
                             nsArr.Add(new JObject
                             {
                                 ["tool"] = "genexus_history",
                                 ["args"] = new JObject { ["action"] = "restore", ["discard"] = true, ["target"] = target },
                                 ["why"] = "Restore to the pre-write snapshot to undo the failed visual write."
                             });
-                            verifyJobj["nextSteps"] = nsArr;
-                            return verifyJobj.ToString();
+                            sdkErrJobj["nextSteps"] = nsArr;
+                            return sdkErrJobj.ToString();
                         }
-                        catch
-                        {
-                            return visualVerifyErr;
-                        }
+                        catch { return sdkErr; }
                     }
 
                     var okResp = new JObject
                     {
                         ["part"] = partName,
-                        ["details"] = "Visual XML updated and verified."
+                        ["details"] = strictVerify
+                            ? "Visual XML updated and verified."
+                            : "Visual XML updated (post-write verify skipped: validate=best-effort). Build to confirm generation."
                     };
                     // Item 6 (friction-report 2026-05-22): promote GotchaHtmlFormatScriptStripped
                     // gotchas into the top-level warnings[] so callers that only inspect "warnings"
@@ -3316,7 +3467,7 @@ namespace GxMcp.Worker.Services
             return sb.Length == 0 ? ex.Message : sb.ToString();
         }
 
-        private string WritePatternPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false)
+        private string WritePatternPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false, bool strictVerify = true)
         {
             string normalizedInput;
             GxMcp.Worker.Helpers.PatternChildOrderReconciler.Report reconcileReport;
@@ -3509,7 +3660,14 @@ namespace GxMcp.Worker.Services
                     // timer-based ScheduleFlush() can lose writes if the worker is recycled before it fires.
                     ScheduleFlush(force: true);
 
-                    string persistedXml = _patternAnalysisService.ReadPatternPartXml(obj, partName, out var refreshedObject, out _);
+                    // Async follow-up (next-major item #2): ReadPatternPartXml + the XML diff below
+                    // dominate wall-clock on large PatternInstance writes and are the cause of client
+                    // timeouts. validate="best-effort" (strictVerify=false) skips them; a real SDK save
+                    // error captured above is still surfaced. Commit + forced flush already ran.
+                    global::Artech.Architecture.Common.Objects.KBObject refreshedObject = null;
+                    if (strictVerify)
+                    {
+                    string persistedXml = _patternAnalysisService.ReadPatternPartXml(obj, partName, out refreshedObject, out _);
 
                     if (!XmlEquivalence.AreEquivalent(persistedXml, normalizedInput, out var patternDiff, out var patternStructured))
                     {
@@ -3602,11 +3760,42 @@ namespace GxMcp.Worker.Services
                             return verifyErr;
                         }
                     }
+                    } // end if (strictVerify)
+                    else if (sdkSaveError != null)
+                    {
+                        // best-effort: skip the diff but never swallow a real SDK save failure.
+                        var sdkErr = CreateWriteError(
+                            "Pattern write reported an SDK save error",
+                            target,
+                            partName,
+                            "The SDK save path returned an error (post-write XML diff was skipped because validate=best-effort).",
+                            resolvedObject,
+                            null,
+                            code: "PatternVerificationMismatch");
+                        try
+                        {
+                            var sdkErrJobj = JObject.Parse(sdkErr);
+                            var errObj = sdkErrJobj["error"] as JObject ?? sdkErrJobj;
+                            errObj["sdkSaveError"] = sdkSaveError;
+                            var nsArr = sdkErrJobj["nextSteps"] as JArray ?? new JArray();
+                            nsArr.Add(new JObject
+                            {
+                                ["tool"] = "genexus_history",
+                                ["args"] = new JObject { ["action"] = "restore", ["discard"] = true, ["target"] = target },
+                                ["why"] = "Restore to the pre-write snapshot to undo the failed pattern write."
+                            });
+                            sdkErrJobj["nextSteps"] = nsArr;
+                            return sdkErrJobj.ToString();
+                        }
+                        catch { return sdkErr; }
+                    }
 
                     var success = new JObject
                     {
                         ["part"] = partName,
-                        ["details"] = "Pattern XML updated and verified."
+                        ["details"] = strictVerify
+                            ? "Pattern XML updated and verified."
+                            : "Pattern XML updated (post-write verify skipped: validate=best-effort). Build to confirm generation."
                     };
 
                     if (resolvedObject.Guid != obj.Guid)

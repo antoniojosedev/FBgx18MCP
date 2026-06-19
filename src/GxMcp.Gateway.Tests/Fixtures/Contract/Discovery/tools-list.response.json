@@ -805,7 +805,7 @@
             "type": "string"
           },
           "validate": {
-            "description": "strict (default) aborts on first error. best-effort applies what compiles. only runs in-memory, no persist.",
+            "description": "strict (default) aborts on first error and post-write-verifies visual/PatternInstance writes (re-reads + diffs the persisted XML). best-effort applies what compiles and SKIPS the post-write XML re-read/diff (faster on large WebForm/PatternInstance writes; build to confirm). only runs in-memory, no persist.",
             "enum": [
               "strict",
               "best-effort",
@@ -2078,7 +2078,7 @@
             "type": "boolean"
           },
           "fields": {
-            "description": "Fields to search. Default [source]. Add webForm to scan WebPanel/Transaction WebForm XML (layout-form examples).",
+            "description": "Whole-field metadata match (returns matchedValue, no line context). Default [source]. Prefer scope=[webForm] for line-context WebForm hits; use fields=[webForm] only for a coarse contains-match.",
             "items": {
               "enum": [
                 "source",
@@ -2109,7 +2109,16 @@
             "type": "string"
           },
           "scope": {
+            "description": "Parts to scan with line-numbered context. Default [source]. webForm/layout scans the WebPanel/Transaction visual XML (control names, captions, classes, bindings).",
             "items": {
+              "enum": [
+                "source",
+                "rules",
+                "conditions",
+                "events",
+                "webForm",
+                "layout"
+              ],
               "type": "string"
             },
             "type": "array"

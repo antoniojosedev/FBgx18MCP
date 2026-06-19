@@ -94,10 +94,18 @@ namespace GxMcp.Worker.Services
                 // entries that demonstrably reference none of them.
                 var literals = ExtractLiteralTokens(c.Pattern, c.Callee);
 
+                // The literal pre-filter only sees indexed text (SourceSnippet/Name/Keywords),
+                // which never contains the WebForm XML. A WebForm scope scan would therefore
+                // be pre-filtered away before its part is ever read, so skip the pre-filter
+                // when the caller asked for the webForm/layout part.
+                bool scopeTouchesWebForm = (c.Scope ?? new List<string> { "source" })
+                    .Any(s => string.Equals(s, "webForm", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(s, "layout", StringComparison.OrdinalIgnoreCase));
+
                 var entries = index.Objects.Values
                     .Where(e => e.Type == "Procedure" || e.Type == "DataProvider" || e.Type == "WebPanel" || e.Type == "Transaction")
                     .Where(e => string.IsNullOrEmpty(c.TypeFilter) || string.Equals(e.Type, c.TypeFilter, StringComparison.OrdinalIgnoreCase))
-                    .Where(e => MatchesAnyLiteral(e, literals))
+                    .Where(e => scopeTouchesWebForm || MatchesAnyLiteral(e, literals))
                     .ToList();
 
                 // v2.3.8 (Task 2.1): hard wall-clock timeout — emits a Timeout
@@ -402,6 +410,16 @@ namespace GxMcp.Worker.Services
                 if (string.Equals(partName, "events", StringComparison.OrdinalIgnoreCase))
                 {
                     try { return ((dynamic)obj).Events?.Source ?? ""; } catch { return ""; }
+                }
+                // WebForm / Layout — the visual XML of WebPanels/Transactions. Not an
+                // ISource part, so it has to be read through WebFormXmlHelper. Searching it
+                // via scope lets callers grep control names, captions, classes and bindings
+                // with the same line-numbered context as a source scan, instead of the
+                // whole-blob matchedValue the fields=[webForm] metadata path returns.
+                if (string.Equals(partName, "webForm", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(partName, "layout", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { return GxMcp.Worker.Helpers.WebFormXmlHelper.ReadEditableXml(obj) ?? ""; } catch { return ""; }
                 }
             }
             catch { }

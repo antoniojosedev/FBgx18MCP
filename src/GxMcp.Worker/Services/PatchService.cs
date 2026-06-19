@@ -1367,7 +1367,34 @@ namespace GxMcp.Worker.Services
 
         private static JObject ParseWriteResult(string writeResult)
         {
-            try { return JObject.Parse(writeResult); }
+            try
+            {
+                var jo = JObject.Parse(writeResult);
+                // v2.8.0 migration bridge. WriteService now emits the CANONICAL envelope
+                // ({status:"ok"|"error"|"partial", code:"WriteApplied"|"WriteNoChange"|…}),
+                // but the rest of ApplyPatch keys success off the LEGACY _internalStatus /
+                // status:"Success" shape. Without this lift, primaryWriteSuccess is always
+                // false for a clean canonical write, so every patch is forced down the
+                // fallback re-verify/rollback path — an unnecessary second write on the
+                // happy path. Map canonical status -> _internalStatus so the success
+                // detection holds against the current WriteService envelope.
+                if (jo["_internalStatus"] == null)
+                {
+                    string st = jo["status"]?.ToString();
+                    if (string.Equals(st, "ok", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(st, "partial", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(st, "Success", StringComparison.OrdinalIgnoreCase))
+                        jo["_internalStatus"] = "Success";
+                    else if (string.Equals(st, "error", StringComparison.OrdinalIgnoreCase))
+                        jo["_internalStatus"] = "Error";
+                    // Lift the canonical error.message up so the legacy
+                    // writePayload["message"] reads still find a human sentence
+                    // instead of falling back to a raw/partial string.
+                    if (jo["message"] == null && jo["error"]?["message"] != null)
+                        jo["message"] = jo["error"]["message"];
+                }
+                return jo;
+            }
             // Scaffold-only: this JObject is consumed by the ApplyPatch method's local
             // writePayload checks; it is NEVER returned directly as the tool response.
             // The final response is emitted via McpResponse.Ok / .Err at the bottom
