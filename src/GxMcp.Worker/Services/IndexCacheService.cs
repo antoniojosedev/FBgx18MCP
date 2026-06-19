@@ -984,6 +984,15 @@ namespace GxMcp.Worker.Services
             // Delta-on-open is only safe when the body is present AND a trustworthy sidecar
             // (matching schema + worker DLL) accompanies it. Anything else → full rebuild.
             public bool CanDelta => BodyPresent && MetaPresent && SchemaMatch && DllMatch && HighWaterMark != DateTime.MinValue;
+
+            // Relaxed predicate for the post-upgrade case: the worker DLL changed (DllMatch=False)
+            // but the index LAYOUT is unchanged (SchemaMatch=True), so the on-disk body is still
+            // structurally readable. Gated by Configuration.DeltaAcrossWorkerDll in the caller —
+            // running a bounded delta here (and re-baselining the sidecar's DLL hash) avoids the
+            // full 38k re-walk that would otherwise block writes for minutes after every upgrade.
+            // The only thing skipped vs. a full rebuild is retro-applying enrichment-LOGIC changes
+            // to objects that didn't change on disk; a forced reindex still does that.
+            public bool CanDeltaAcrossDll => BodyPresent && MetaPresent && SchemaMatch && HighWaterMark != DateTime.MinValue;
         }
 
         /// <summary>

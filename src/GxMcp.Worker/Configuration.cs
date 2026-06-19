@@ -35,6 +35,20 @@ namespace GxMcp.Worker
         // "load cache + trust forever" warm-start behaviour (no automatic delta).
         public static bool UseDeltaOnOpen => BoolSetting("Indexing.UseDeltaOnOpen");
 
+        // Post-upgrade write-starvation fix — gate the delta-across-worker-DLL path.
+        // Defaults to true. Every MCP version upgrade changes the worker DLL hash →
+        // DllMatch=False → a full 38k re-walk that sets _isIndexing and BLOCKS ALL WRITES
+        // (EnsureNotIndexing) for its whole duration. When this is on and only the DLL
+        // differs (schema still matches → index layout unchanged), we run the bounded
+        // DELTA refresh instead and let it re-baseline the sidecar to the new DLL hash.
+        // Tradeoff: enrichment-LOGIC changes in the new release won't retro-apply to
+        // UNCHANGED objects until a forced reindex (genexus_lifecycle action=index
+        // force=true). In LazyEnrichment mode (default) those objects are re-enriched
+        // on demand anyway, so the staleness window is invisible in practice. Set
+        // Indexing.DeltaAcrossWorkerDll=false to restore the full-rebuild-on-DLL-change
+        // behaviour (always re-enriches everything, but starves writes on large KBs).
+        public static bool DeltaAcrossWorkerDll => BoolSetting("Indexing.DeltaAcrossWorkerDll");
+
         // Fase 3 — lazy/on-demand enrichment. Defaults to true. When true, the index build
         // stops after the lite catalogue (LiteReady→Ready) and does NOT eagerly drain all
         // objects through enrichment (measured ~20min on a 38.6k KB, ~91% STA-bound SDK reads,

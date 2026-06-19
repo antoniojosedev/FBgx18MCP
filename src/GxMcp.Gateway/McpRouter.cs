@@ -1520,16 +1520,42 @@ namespace GxMcp.Gateway
         /// Stack traces and full SDK diagnostics are dropped by default. Pass <paramref name="verbose"/> = true
         /// (via the <c>verbose_errors</c> tool argument) to get the full original envelope.
         /// </summary>
+        // v2.8.0 canonical error envelope nests code/message/hint/nextSteps under an
+        // `error` sub-object: { status:"error", error:{ code, message, hint, ... }, ... }.
+        // Legacy/flat envelopes put them at the top level. Resolve a field from the
+        // canonical sub-object first, then fall back to the top level so both shapes
+        // trim correctly. Without this, `error["message"]` is null for a canonical
+        // envelope and the old `?? error["error"]?.ToString()` fallback serialized the
+        // entire sub-object — whose first line is "{" — producing the {"message":"{"}
+        // false error that masked every validation diagnostic (issue #24).
+        private static JToken ResolveErrorField(JObject error, string key)
+        {
+            if (error == null) return null;
+            if (error["error"] is JObject inner && inner[key] != null) return inner[key];
+            return error[key];
+        }
+
+        private static string ResolveErrorMessage(JObject error)
+        {
+            string msg = ResolveErrorField(error, "message")?.ToString();
+            // Last-resort legacy shape: `error` is a bare string, not a sub-object.
+            if (string.IsNullOrEmpty(msg) && error?["error"]?.Type == JTokenType.String)
+                msg = error["error"].ToString();
+            return string.IsNullOrEmpty(msg) ? "Unknown error" : msg;
+        }
+
         internal static JObject TrimErrorEnvelope(JObject error, bool verbose)
         {
             if (verbose) return error; // pass-through
             var trimmed = new JObject();
             // first line of message only
-            var msg = error["message"]?.ToString() ?? error["error"]?.ToString() ?? "Unknown error";
+            var msg = ResolveErrorMessage(error);
             var firstLine = msg.Split('\n')[0].Trim();
             trimmed["message"] = firstLine;
-            if (error["code"] != null) trimmed["code"] = error["code"];
-            if (error["hint"] != null) trimmed["hint"] = error["hint"];
+            var code = ResolveErrorField(error, "code");
+            if (code != null) trimmed["code"] = code;
+            var hint = ResolveErrorField(error, "hint");
+            if (hint != null) trimmed["hint"] = hint;
             // v2.6.9: preserve a small allowlist of routing/diagnosis fields that
             // an LLM needs to self-correct on the next call. Without them the
             // agent sees "WorkWithPlus cannot be applied to a Procedure." and has
@@ -1578,8 +1604,9 @@ namespace GxMcp.Gateway
         public static JObject AttachSuggestedNextStep(JObject error)
         {
             if (error == null) return null;
-            string code = error["code"]?.ToString() ?? error["status"]?.ToString();
-            string msg = error["message"]?.ToString() ?? error["error"]?.ToString() ?? "";
+            string code = ResolveErrorField(error, "code")?.ToString() ?? error["status"]?.ToString();
+            string msg = ResolveErrorMessage(error);
+            if (string.Equals(msg, "Unknown error", StringComparison.Ordinal)) msg = "";
 
             // Patch NoMatch — point at fuzzy/eolDiff (already in payload as
             // nearMatches/eolDiff/did_you_mean); next-step tells the agent how

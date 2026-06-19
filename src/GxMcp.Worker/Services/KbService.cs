@@ -466,12 +466,19 @@ namespace GxMcp.Worker.Services
                         // cache isn't delta-eligible (legacy/no-sidecar, schema or worker-DLL
                         // change, or a body left partially enriched by a crashed worker).
                         var validation = _indexCacheService.ValidateOnDiskCache();
-                        if (Configuration.UseDeltaOnOpen && validation.CanDelta)
+                        // Post-upgrade write-starvation fix: a worker-DLL change alone (DllMatch=False
+                        // but SchemaMatch=True) no longer forces a full re-walk that blocks writes for
+                        // minutes. Take the bounded delta and let StartDeltaRefreshThread re-baseline the
+                        // sidecar's DLL hash via WriteMetaSidecar. See Configuration.DeltaAcrossWorkerDll.
+                        bool dllRebaseline = !validation.CanDelta
+                            && Configuration.DeltaAcrossWorkerDll
+                            && validation.CanDeltaAcrossDll;
+                        if (Configuration.UseDeltaOnOpen && (validation.CanDelta || dllRebaseline))
                         {
                             try { _indexCacheService.MarkIndexComplete(loaded.Objects.Count); } catch { }
                             _isIndexing = true;
                             StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count);
-                            Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}) — delta refresh started.");
+                            Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}, dllRebaseline={dllRebaseline}) — delta refresh started.");
                             return Models.McpResponse.Ok(
                                 code: "DeltaStarted",
                                 result: new JObject
@@ -480,7 +487,7 @@ namespace GxMcp.Worker.Services
                                     ["hint"] = "Index is usable now from the warm cache; objects changed since last index are being refreshed in the background."
                                 });
                         }
-                        Logger.Info($"BulkIndex(fast): cache present but not delta-eligible (canDelta={validation.CanDelta} metaPresent={validation.MetaPresent} schemaMatch={validation.SchemaMatch} dllMatch={validation.DllMatch}) — full rebuild to re-establish the delta baseline.");
+                        Logger.Info($"BulkIndex(fast): cache present but not delta-eligible (canDelta={validation.CanDelta} canDeltaAcrossDll={validation.CanDeltaAcrossDll} metaPresent={validation.MetaPresent} schemaMatch={validation.SchemaMatch} dllMatch={validation.DllMatch}) — full rebuild to re-establish the delta baseline.");
                     }
                 }
             }

@@ -43,5 +43,44 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Unknown error", (string)trimmed["message"]!);
             Assert.False(trimmed.ContainsKey("code"));
         }
+
+        [Fact]
+        public void TrimErrorEnvelope_CanonicalEnvelope_ResolvesNestedMessageNotBrace()
+        {
+            // Issue #24 regression: the v2.8.0 canonical envelope nests code/message/hint
+            // under an `error` sub-object. The old code read top-level `error["message"]`
+            // (null here) then fell back to `error["error"]?.ToString()` — the whole
+            // sub-object serialized, whose first line is "{". Result: every validation
+            // failure reached the client as {"message":"{"} with the real diagnostic lost.
+            var input = JObject.Parse(@"{
+                ""status"":""error"",
+                ""target"":""ZTmpIssue24"",
+                ""error"":{
+                    ""code"":""TransactionFailed"",
+                    ""message"":""SDK Save Exception for ZTmpIssue24: validation failed.\nsrc0053: '[' is invalid."",
+                    ""hint"":""Build surfaces full diagnostics.""
+                },
+                ""part"":""Source"",
+                ""persistedSnippet"":""// Procedure: ZTmpIssue24\n""
+            }");
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.Equal("SDK Save Exception for ZTmpIssue24: validation failed.", (string)trimmed["message"]!);
+            Assert.NotEqual("{", (string)trimmed["message"]!);
+            Assert.Equal("TransactionFailed", (string)trimmed["code"]!);
+            Assert.Equal("Build surfaces full diagnostics.", (string)trimmed["hint"]!);
+            // Top-level diagnostic fields still pass through.
+            Assert.Equal("Source", (string)trimmed["part"]!);
+            Assert.Equal("// Procedure: ZTmpIssue24\n", (string)trimmed["persistedSnippet"]!);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_LegacyBareStringError_StillResolves()
+        {
+            // Oldest shape: `error` is a bare string rather than a sub-object.
+            var input = JObject.Parse(@"{""error"":""flat string failure""}");
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            Assert.Equal("flat string failure", (string)trimmed["message"]!);
+        }
     }
 }
