@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.13.0 — 2026-07-08
 
 Worker-reliability, KB-lifecycle, and DX pass on large KBs (issue #26): the worker comes back on its own, an opened KB stays put, `genexus_search_source` can no longer take the worker down, and Design System objects write their tokens and styles to the right place.
 
