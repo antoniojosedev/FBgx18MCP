@@ -419,6 +419,20 @@ namespace GxMcp.Worker.Services
                 }
                 responseObj["_meta"] = meta;
 
+                // issue #25 follow-up (P0): usedby (reads CalledBy/Calls) and semantic
+                // ranking (reads Embedding) depend on ENRICHMENT, which lazily lags the
+                // "Ready" state. IsScanning is false in that window, so without this an
+                // empty usedby set / degraded semantic recall looks authoritative. Flag
+                // it so a zero/short result isn't read as "nothing uses X".
+                bool enrichmentSensitive = !string.IsNullOrEmpty(criteria.UsedByFilter)
+                    || (!isQuick && criteria.Terms.Count > 0);
+                if (enrichmentSensitive && !_indexCacheService.IsScanning && _indexCacheService.HasPendingEnrichment())
+                {
+                    meta["enrichmentPending"] = true;
+                    meta["enrichmentHint"] = "The index is still enriching (cross-reference edges / semantic vectors are incomplete). A zero or short result here may be an artifact of pending enrichment, not the truth — re-run once whoami reports enrichment complete before concluding nothing matches.";
+                    responseObj["_meta"] = meta;
+                }
+
                 if (_indexCacheService.IsScanning)
                 {
                     AnnotatePartial(responseObj);

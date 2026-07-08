@@ -687,7 +687,9 @@ namespace GxMcp.Worker.Services
                             var enrichSw = Stopwatch.StartNew();
                             Logger.Info($"[ENRICH-START] pending={_totalCount} litePassMs={liteSw.ElapsedMilliseconds}");
 
-                            queue.DrainAsync().GetAwaiter().GetResult();
+                            queue.DrainAsync(default(CancellationToken),
+                                (proc, tot) => { _processedCount = proc; _indexCacheService.MarkEnrichmentProgress(proc, tot); })
+                                .GetAwaiter().GetResult();
                             _processedCount = _totalCount;
                             _indexCacheService.MarkIndexComplete(_totalCount);
                             // Fase 0.5: coalesced final flush — the per-object enrichment
@@ -861,7 +863,9 @@ namespace GxMcp.Worker.Services
                         Logger.Info($"[DELTA-RESUME-ENRICH] pending={pendingEnrich.Count}");
                         foreach (var e in pendingEnrich) enrichQueue.Enqueue(e);
                         _indexCacheService.MarkEnrichmentStarted();
-                        enrichQueue.DrainAsync().GetAwaiter().GetResult();
+                        enrichQueue.DrainAsync(default(CancellationToken),
+                            (proc, tot) => _indexCacheService.MarkEnrichmentProgress(proc, tot))
+                            .GetAwaiter().GetResult();
                         _indexCacheService.MarkIndexComplete(loadedCount);
                         try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(loadedCount); }
                         catch (Exception fx) { Logger.Warn("Resume-enrich flush/sidecar failed: " + fx.Message); }
@@ -1165,11 +1169,18 @@ namespace GxMcp.Worker.Services
         {
             if (_isIndexing)
             {
-                return "{\"status\":\"Error\",\"message\": \"Knowledge Base is currently busy performing a background indexing task. Please wait a few seconds and try again.\", \"isBusy\": true}";
+                return Models.McpResponse.Err(code: "KbBusyIndexing",
+                    message: "Knowledge Base is currently busy performing a background indexing task.",
+                    hint: "Poll genexus_lifecycle action=status wait=<sec> — it returns the moment indexing finishes — then retry.",
+                    nextSteps: new Newtonsoft.Json.Linq.JArray(Models.McpResponse.NextStep("genexus_lifecycle", new Newtonsoft.Json.Linq.JObject { ["action"] = "status", ["wait"] = 30 }, "Block until the index build finishes, then retry the call.")),
+                    extra: new Newtonsoft.Json.Linq.JObject { ["isBusy"] = true });
             }
             if (_isOpenInProgress)
             {
-                return "{\"status\":\"Error\",\"message\": \"Knowledge Base is currently opening. Please wait.\", \"isBusy\": true}";
+                return Models.McpResponse.Err(code: "KbOpening",
+                    message: "Knowledge Base is currently opening.",
+                    hint: "Wait a few seconds and retry; genexus_whoami shows when the worker/KB is ready.",
+                    extra: new Newtonsoft.Json.Linq.JObject { ["isBusy"] = true });
             }
             return null;
         }

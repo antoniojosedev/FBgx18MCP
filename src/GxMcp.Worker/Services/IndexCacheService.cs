@@ -240,6 +240,30 @@ namespace GxMcp.Worker.Services
             {
                 _state.Status = "Enriching";
                 _state.EnrichmentStartedUtc = DateTime.UtcNow;
+                _state.Progress = 0;
+            }
+            SignalStateChanged();
+        }
+
+        // issue #25 follow-up (P3): surface Enriching-phase progress. Previously only
+        // Reindexing set Progress/EtaMs, so an agent polling during enrichment saw a
+        // fixed "Enriching" with no denominator. Now Progress reflects enriched/total
+        // and EtaMs is a linear estimate from elapsed time.
+        public void MarkEnrichmentProgress(int processed, int total)
+        {
+            if (total <= 0) return;
+            double frac = Math.Min(1.0, (double)processed / total);
+            int? eta = null;
+            lock (_stateLock)
+            {
+                if (_state.Status != "Enriching") return; // don't clobber a later state
+                _state.Progress = frac;
+                if (_state.EnrichmentStartedUtc.HasValue && processed > 0 && frac > 0)
+                {
+                    double elapsedMs = (DateTime.UtcNow - _state.EnrichmentStartedUtc.Value).TotalMilliseconds;
+                    eta = (int)Math.Max(0, (elapsedMs / frac) - elapsedMs);
+                    _state.EtaMs = eta;
+                }
             }
             SignalStateChanged();
         }
@@ -955,6 +979,23 @@ namespace GxMcp.Worker.Services
         /// Embedding==null/empty is the reliable signal: UpdateEntry always sets a 128-float
         /// embedding, lite stubs never carry one.
         /// </summary>
+        // issue #25 follow-up (P0): cheap early-exit probe. In lazy mode the index
+        // flips to Status="Ready" while most entries are still un-enriched (empty
+        // Calls/CalledBy/Embedding), so tools that read those edges can silently
+        // under-report. This lets a tool flag `enrichmentPending` when a zero/empty
+        // edge result might be an artifact of pending enrichment rather than truth.
+        public bool HasPendingEnrichment()
+        {
+            var idx = GetIndex();
+            if (idx?.Objects == null) return false;
+            foreach (var e in idx.Objects.Values)
+            {
+                if (e == null) continue;
+                if (e.Embedding == null || e.Embedding.Length == 0) return true;
+            }
+            return false;
+        }
+
         public List<SearchIndex.IndexEntry> GetUnenrichedEntries()
         {
             var idx = GetIndex();

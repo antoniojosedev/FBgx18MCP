@@ -30,6 +30,30 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void MarkEnrichmentProgress_SetsFraction_WhileEnriching()
+        {
+            // issue #25 follow-up (P3): Enriching phase now carries a progress fraction.
+            var cache = NewService();
+            cache.MarkLitePassComplete(100);
+            cache.MarkEnrichmentStarted();
+            cache.MarkEnrichmentProgress(25, 100);
+            var st = cache.GetState();
+            Assert.Equal("Enriching", st.Status);
+            Assert.NotNull(st.Progress);
+            Assert.Equal(0.25, st.Progress.Value, 3);
+        }
+
+        [Fact]
+        public void MarkEnrichmentProgress_Ignored_WhenNotEnriching()
+        {
+            var cache = NewService();
+            cache.MarkIndexComplete(100); // Ready
+            cache.MarkEnrichmentProgress(25, 100);
+            // Must not clobber the Ready state's null progress with a stale fraction.
+            Assert.Equal("Ready", cache.GetState().Status);
+        }
+
+        [Fact]
         public void MarkLitePassComplete_TransitionsToLiteReady()
         {
             var cache = NewService();

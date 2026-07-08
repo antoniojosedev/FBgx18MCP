@@ -511,11 +511,18 @@ namespace GxMcp.Worker.Services
             try
             {
                 var kb = _kbService.GetKB();
-                if (kb == null) return "{\"status\":\"Error\", \"error\":\"No KB open\"}";
+                if (kb == null)
+                    return Models.McpResponse.Err(code: "KbNotOpen", message: "No KB open.",
+                        hint: "Open a KB first with genexus_kb action=open.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Open the target KB before deleting.")));
 
                 if (!confirm)
                 {
-                    return "{\"status\":\"Error\", \"error\":\"Delete requires explicit confirm=true (irreversible operation).\"}";
+                    return Models.McpResponse.Err(code: "ConfirmRequired",
+                        message: "Delete requires explicit confirm=true (irreversible operation).",
+                        hint: "Re-issue genexus_delete_object with confirm=true. Consider dryRun=true first to preview the impact.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_delete_object", new JObject { ["target"] = target, ["confirm"] = true }, "Re-issue with confirm=true to perform the irreversible delete.")),
+                        target: target);
                 }
 
                 var obj = FindObject(target, typeFilter);

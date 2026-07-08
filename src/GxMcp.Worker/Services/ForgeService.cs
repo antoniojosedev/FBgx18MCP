@@ -37,7 +37,9 @@ namespace GxMcp.Worker.Services
                 }
                 else
                 {
-                    return "{\"status\":\"Error\",\"message\":\"Scaffold for type '" + type + "' not implemented.\"}";
+                    return Models.McpResponse.Err(code: "ScaffoldTypeUnsupported",
+                        message: "Scaffold for type '" + type + "' is not implemented.",
+                        hint: "Supported scaffold types are limited; create this object type with genexus_create instead.");
                 }
 
                 Logger.Info("[DEBUG-SCAFFOLD] Step 2: Instantiated");

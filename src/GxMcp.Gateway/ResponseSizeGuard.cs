@@ -42,6 +42,24 @@ namespace GxMcp.Gateway
         private static JObject BuildFollowUp(string tool, JObject? args)
         {
             var followArgs = args != null ? (JObject)args.DeepClone() : new JObject();
+            // issue #25 follow-up (A3): the retry hint must use args the tool actually
+            // understands. inspect/analyze don't paginate (page/page_size were a no-op
+            // that looped the agent back to the same oversize call) — steer them to the
+            // levers that shrink the payload instead.
+            string t = tool ?? string.Empty;
+            if (t.Equals("genexus_inspect", StringComparison.OrdinalIgnoreCase))
+            {
+                followArgs["include"] = new JArray("signature", "variables", "metadata");
+                return new JObject { ["tool"] = tool, ["args"] = followArgs,
+                    ["hint"] = "Response too large. Re-request a subset with include=[...], or read a single part with genexus_read (paginated)." };
+            }
+            if (t.Equals("genexus_analyze", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("genexus_navigation", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("genexus_structure", StringComparison.OrdinalIgnoreCase))
+            {
+                return new JObject { ["tool"] = tool, ["args"] = followArgs,
+                    ["hint"] = "Response too large. Narrow the request (a specific target/mode/part) or read incrementally with genexus_read." };
+            }
             followArgs["page"] = 1;
             followArgs["page_size"] = 25;
             return new JObject { ["tool"] = tool, ["args"] = followArgs };

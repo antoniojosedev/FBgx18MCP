@@ -75,7 +75,9 @@ namespace GxMcp.Worker.Services
             try
             {
                 var kb = _kbService.GetKB();
-                if (target == null) return "{\"status\":\"KB analysis not implemented for all objects yet\"}";
+                if (target == null) return Models.McpResponse.Err(code: "TargetRequired",
+                    message: "KB-wide analysis (no target) is not implemented; analyze needs a specific object.",
+                    hint: "Pass target=<objectName>. To browse the KB use genexus_list_objects; for KB-level health use genexus_doctor.");
 
                 var obj = _objectService.FindObject(target, typeFilter);
                 if (obj == null) return HealingService.FormatNotFoundError(target, _indexCacheService.GetIndex());
@@ -735,14 +737,20 @@ namespace GxMcp.Worker.Services
                 result["name"] = obj.Name;
                 result["type"] = obj.TypeDescriptor.Name;
 
+                // issue #25 follow-up (P1): cap edge lists so a heavily-referenced
+                // base object (Domain/base Transaction) can't return hundreds of
+                // full-description entries in one payload.
+                const int maxEdges = 100;
                 // PERFORMANCE (W-A4): dedup outgoing references — same justification as Analyze.
                 var calls = new JArray();
                 var seenOut = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                bool callsTruncated = false;
                 foreach (var reference in obj.GetReferences())
                 {
                     string refKey = null;
                     try { refKey = reference.To?.ToString(); } catch { }
                     if (!string.IsNullOrEmpty(refKey) && !seenOut.Add(refKey)) continue;
+                    if (calls.Count >= maxEdges) { callsTruncated = true; break; }
 
                     var targetObj = kb.DesignModel.Objects.Get(reference.To);
                     if (targetObj != null) calls.Add(new JObject {
@@ -752,15 +760,18 @@ namespace GxMcp.Worker.Services
                     });
                 }
                 result["calls"] = calls;
+                if (callsTruncated) result["callsTruncated"] = true;
 
                 // PERFORMANCE (W-A4): dedup incoming references.
                 var calledBy = new JArray();
                 var seenIn = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                bool calledByTruncated = false;
                 foreach (var reference in obj.GetReferencesTo())
                 {
                     string refKey = null;
                     try { refKey = reference.From?.ToString(); } catch { }
                     if (!string.IsNullOrEmpty(refKey) && !seenIn.Add(refKey)) continue;
+                    if (calledBy.Count >= maxEdges) { calledByTruncated = true; break; }
 
                     var sourceObj = kb.DesignModel.Objects.Get(reference.From);
                     if (sourceObj != null) calledBy.Add(new JObject {
@@ -770,6 +781,7 @@ namespace GxMcp.Worker.Services
                     });
                 }
                 result["calledBy"] = calledBy;
+                if (calledByTruncated) result["calledByTruncated"] = true;
 
                 // Friction item 25: ASCII tree view — eyeball-friendly summary the agent
                 // can paste back to the user without re-formatting the flat arrays.
@@ -1033,17 +1045,22 @@ namespace GxMcp.Worker.Services
                 {
                     tasks.Add(Task.Run(() => {
                         try {
-                            var rules = GetPartSourceByName(obj, "Rules");
-                            lock (result) result["rules"] = rules;
-                            
+                            // issue #25 follow-up (P1): cap each part source so a default
+                            // inspect (no `include` filter) can't dump tens of KB of
+                            // Rules+Conditions+Events unpaginated. Full source is available
+                            // via genexus_read (paginated). Mirrors the maxCallers cap below.
+                            var rules = CapInspectSource(GetPartSourceByName(obj, "Rules"), out bool rulesTrunc);
+                            lock (result) { result["rules"] = rules; if (rulesTrunc) result["rulesTruncated"] = true; }
+
                             if (obj is Procedure || obj is WebPanel) {
-                                var conditions = GetPartSourceByName(obj, "Conditions");
-                                lock (result) result["conditions"] = conditions;
+                                var conditions = CapInspectSource(GetPartSourceByName(obj, "Conditions"), out bool condTrunc);
+                                lock (result) { result["conditions"] = conditions; if (condTrunc) result["conditionsTruncated"] = true; }
                             }
                             if (obj is Transaction || obj is WebPanel) {
-                                var events = GetPartSourceByName(obj, "Events");
-                                lock (result) result["events"] = events;
+                                var events = CapInspectSource(GetPartSourceByName(obj, "Events"), out bool evTrunc);
+                                lock (result) { result["events"] = events; if (evTrunc) result["eventsTruncated"] = true; }
                             }
+                            lock (result) result["sourceReadHint"] = "Inspect source parts are capped; use genexus_read part=Rules|Conditions|Events (paginated) for the full text.";
                         } catch {}
                     }));
                 }
@@ -1314,6 +1331,18 @@ namespace GxMcp.Worker.Services
                 if (part is ISource source) return source.Source;
             } catch {}
             return null;
+        }
+
+        // issue #25 follow-up (P1): per-part source cap for genexus_inspect so a default
+        // (no `include`) inspect stays token-bounded. Head-only slice (a truncated head is
+        // enough for orientation; genexus_read gives the full paginated text).
+        private const int InspectSourceCap = 8000;
+        private static string CapInspectSource(string src, out bool truncated)
+        {
+            truncated = false;
+            if (string.IsNullOrEmpty(src) || src.Length <= InspectSourceCap) return src;
+            truncated = true;
+            return src.Substring(0, InspectSourceCap) + "\n\n// ... [inspect source truncated — use genexus_read for the full part] ...";
         }
 
         public string GetSignature(string name, string typeFilter = null)
@@ -1728,7 +1757,9 @@ namespace GxMcp.Worker.Services
             // now removed from the public tool schema; if an old client still
             // dispatches here, return a clear NotImplemented envelope so the
             // agent doesn't trust a fake answer.
-            return "{\"status\":\"NotImplemented\",\"error\":\"analyze mode=explain is not implemented. Use mode=summary, linter, navigation, data_context, or pattern_metadata.\"}";
+            return Models.McpResponse.Err(code: "ModeNotImplemented",
+                message: "analyze mode=explain is not implemented.",
+                hint: "Use mode=summary, linter, navigation, data_context, or pattern_metadata instead.");
         }
 
         private static readonly Guid SDT_STRUCTURE_PART_GUID = Guid.Parse("8597371d-1941-4c12-9c17-48df9911e2f3");
@@ -1974,6 +2005,42 @@ namespace GxMcp.Worker.Services
                             });
                         }
                     }
+                }
+
+                // issue #25 follow-up (P0): a zero result here is dangerous — the
+                // index holds the object but CalledBy is empty until the object is
+                // enriched (lazy mode leaves Status="Ready" with un-enriched edges),
+                // so "0 call sites" reads as "safe to delete/rename" when it may just
+                // mean "not enriched yet". Never assert an authoritative zero without
+                // cross-checking the live SDK reference graph (same source impact uses).
+                if (callers.Count == 0)
+                {
+                    var sdk = TrySdkReferenceCrossCheck(canonicalName);
+                    var zeroResult = new JObject
+                    {
+                        ["callSiteCount"] = 0,
+                        ["callers"] = callers,
+                        ["indexEdgesMissing"] = true
+                    };
+                    if (sdk == null)
+                    {
+                        zeroResult["verifiedZero"] = false;
+                        zeroResult["hint"] = "The index holds this object but no caller edges (it may not be enriched yet). This is NOT a confirmed 'no callers' — do NOT treat it as safe to delete/rename. Cross-check with genexus_analyze(mode=impact) or genexus_inspect(include=['callers']).";
+                        return McpResponse.Ok(target: canonicalName, code: "CallerSitesUnconfirmed", result: zeroResult);
+                    }
+                    if (sdk.Callers.Count > 0)
+                    {
+                        var sdkCallers = new JArray();
+                        foreach (var c in sdk.Callers) sdkCallers.Add(c);
+                        zeroResult["sdkCallers"] = sdkCallers;
+                        zeroResult["verifiedZero"] = false;
+                        zeroResult["hint"] = "The index had no caller edges yet, but the live SDK reference graph found callers (listed under sdkCallers). Line-level call sites weren't resolved because the index isn't enriched — re-run shortly, or use genexus_read on the listed callers.";
+                        return McpResponse.Ok(target: canonicalName, code: "CallerSitesUnconfirmed", result: zeroResult);
+                    }
+                    // SDK confirms genuinely zero incoming references.
+                    zeroResult["indexEdgesMissing"] = false;
+                    zeroResult["verifiedZero"] = true;
+                    return McpResponse.Ok(target: canonicalName, code: "CallerSitesFound", result: zeroResult);
                 }
 
                 return McpResponse.Ok(

@@ -99,7 +99,7 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                return McpResponse.Ok(code: "WhatIfComputed", result: new JObject
+                var whatIfResult = new JObject
                 {
                     ["change"] = change,
                     ["kind"] = kind ?? "type_change",
@@ -108,7 +108,24 @@ namespace GxMcp.Worker.Services
                     ["probably_safe"] = probablySafe,
                     ["unknown"] = unknown,
                     ["note"] = "Read-only simulation. No mutation performed. Heuristic: attribute name substring + type-family compatibility."
-                });
+                };
+                // issue #25 follow-up (P0): impact analysis can report that it could
+                // NOT confirm the caller set (index edges not enriched, no SDK cross-check)
+                // — propagate that uncertainty instead of presenting impactedCount:0 as a
+                // confident "this change breaks nothing".
+                if (impact["indexEdgesMissing"] != null)
+                    whatIfResult["indexEdgesMissing"] = impact["indexEdgesMissing"];
+                var upstreamRisk = impact["riskLevel"]?.ToString();
+                if (!string.Equals(upstreamRisk, "None", StringComparison.OrdinalIgnoreCase)
+                    && (string.Equals(upstreamRisk, "Unknown", StringComparison.OrdinalIgnoreCase)
+                        || (impact["verifiedZero"] != null && !(impact["verifiedZero"].ToObject<bool>()))))
+                {
+                    whatIfResult["impactUnconfirmed"] = true;
+                    whatIfResult["note"] = "Read-only simulation, but the caller set could NOT be confirmed (the index isn't enriched for this attribute and no SDK cross-check was available). An empty breaks/impacted list here does NOT mean the change is safe — re-run genexus_analyze(mode=impact) once the index is enriched.";
+                }
+                if (impact["_impactError"] != null)
+                    whatIfResult["impactError"] = impact["_impactError"];
+                return McpResponse.Ok(code: "WhatIfComputed", result: whatIfResult);
             }
             catch (Exception ex)
             {

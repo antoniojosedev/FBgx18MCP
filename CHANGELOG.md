@@ -18,6 +18,17 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 ### Changed
 
 - **`genexus_whoami` is lean by default.** It returns the live health blocks (KB, GeneXus, worker, index, database, update, next-step hints) without the ~3k tokens of static playbooks + skills catalog that used to ship on every call. Pass `verbose=true` once when you want the inline reference material; `genexus_doctor` remains the minimal connection + index health check.
+- **`genexus_inspect` is token-bounded by default.** A default inspect (no `include` filter) no longer dumps the full, unpaginated Rules/Conditions/Events source; each part is capped with a `*Truncated` flag and a pointer to read the full text via `genexus_read` (paginated). `genexus_analyze mode=hierarchy` likewise caps its `calls`/`calledBy` lists so a heavily-referenced base object can't return hundreds of entries in one payload.
+- **Oversize-response retry hints now match the tool.** When a response exceeds the context budget, the follow-up suggestion for `genexus_inspect`/`genexus_analyze`/`genexus_navigation` points at the levers those tools actually accept (`include=[...]`, a narrower target, or `genexus_read`) instead of `page`/`page_size` params they ignore.
+
+### Fixed (agent-safety follow-up)
+
+- **"No callers" / "nothing uses X" answers are now verified, not assumed.** With lazy enrichment the index reports `Ready` while cross-reference edges are still filling in, so `genexus_analyze mode=callers`, `genexus_query usedby:X`, and `genexus_what_if` could return an authoritative-looking zero ("safe to delete / change") that merely meant "not enriched yet." These now cross-check the live SDK reference graph (callers) or flag `indexEdgesMissing` / `enrichmentPending` / `impactUnconfirmed` with a hint, so an unconfirmed zero can't be mistaken for a guarantee. Semantic `genexus_query` similarly flags when ranking ran before embeddings were ready.
+- **Clearer, actionable errors on common failures.** `genexus_delete_object` (missing `confirm`), a busy/opening KB, and unimplemented analyze/scaffold modes now return a typed `code` + `hint` (+ a `nextSteps` follow-up where applicable) instead of a bare free-text string, so an agent can react without parsing prose.
+
+### Added
+
+- **Index enrichment progress.** The `Enriching` phase now reports a `progress` fraction and `etaMs` (previously only the earlier `Reindexing` phase did), so `genexus_lifecycle action=status` shows how far along enrichment is instead of a fixed "Enriching".
 
 ## v2.11.0 — 2026-06-19
 

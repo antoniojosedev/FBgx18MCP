@@ -35,8 +35,13 @@ namespace GxMcp.Worker.Services
             Interlocked.Increment(ref _pendingCount);
         }
 
-        public Task DrainAsync(CancellationToken cancellationToken = default(CancellationToken))
+        // issue #25 follow-up (P3): optional per-item progress callback (processed, total)
+        // so the caller can surface Enriching-phase progress instead of a blind block.
+        public Task DrainAsync(CancellationToken cancellationToken = default(CancellationToken),
+            System.Action<int, int> onProgress = null)
         {
+            int total = Volatile.Read(ref _pendingCount);
+            int processed = 0;
             SearchIndex.IndexEntry entry;
             while (_queue.TryDequeue(out entry))
             {
@@ -45,6 +50,11 @@ namespace GxMcp.Worker.Services
                 {
                     _enricher.Enrich(entry);
                     Interlocked.Decrement(ref _pendingCount);
+                }
+                processed++;
+                if (onProgress != null)
+                {
+                    try { onProgress(processed, total); } catch { }
                 }
             }
             return CompletedTask;
