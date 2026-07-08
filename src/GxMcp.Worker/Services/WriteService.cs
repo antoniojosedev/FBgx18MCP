@@ -848,6 +848,17 @@ namespace GxMcp.Worker.Services
         {
             var facadeArgs = NormalizeFacadeArgs(args);
 
+            // Optimistic-concurrency guard (stale-edit data-loss fix): if the caller
+            // passed the versionToken from the read this edit is based on, refuse the
+            // write when the object changed since (e.g. the user edited it in the IDE).
+            // Better a StaleObject error the agent can recover from than silently
+            // clobbering the user's concurrent change. No token → no guard (back-compat).
+            if (!string.IsNullOrEmpty(facadeArgs.BaseVersion) && !facadeArgs.DryRun)
+            {
+                string staleErr = CheckStaleVersion(target, facadeArgs.TypeFilter, facadeArgs.BaseVersion);
+                if (staleErr != null) return staleErr;
+            }
+
             string raw;
             if (string.Equals(facadeArgs.Mode, "patch", StringComparison.OrdinalIgnoreCase))
             {
@@ -937,6 +948,39 @@ namespace GxMcp.Worker.Services
             return raw;
         }
 
+        // Optimistic-concurrency token for an object: its last-modification timestamp
+        // (UTC ticks). Cheap, and advances on any save — the worker's own writes, the
+        // background enrichment, or an external IDE edit. The watcher keeps the SDK's
+        // LastUpdate current for externally-modified objects, so a token mismatch at
+        // write time means the object moved on since the caller's read.
+        internal static string ComputeVersionToken(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            if (obj == null) return null;
+            try { return obj.LastUpdate.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture); }
+            catch { return null; }
+        }
+
+        // Returns a StaleObject error envelope when the object's current version token
+        // no longer matches the caller-supplied baseVersion, else null (proceed).
+        private string CheckStaleVersion(string target, string typeFilter, string baseVersion)
+        {
+            global::Artech.Architecture.Common.Objects.KBObject obj;
+            try { obj = _objectService.FindObject(target, typeFilter); }
+            catch { return null; }
+            if (obj == null) return null; // not-found is handled by the normal write path
+            string current = ComputeVersionToken(obj);
+            if (current == null) return null; // can't compute a token → don't block the write
+            if (string.Equals(current, baseVersion, StringComparison.Ordinal)) return null; // unchanged — proceed
+
+            return McpResponse.Err(
+                code: "StaleObject",
+                message: "The object changed since you last read it (baseVersion no longer matches its current version). The edit was NOT applied, to avoid overwriting the newer version — e.g. a change made in the GeneXus IDE.",
+                hint: "Re-read with genexus_read to get the current content and versionToken, re-apply your change on top of it, then retry the edit passing the new baseVersion.",
+                nextSteps: new JArray(McpResponse.NextStep("genexus_read", new JObject { ["name"] = target }, "Fetch the current version before re-editing.")),
+                target: target,
+                extra: new JObject { ["expectedVersion"] = baseVersion, ["currentVersion"] = current });
+        }
+
         internal static FacadeWriteArgs NormalizeFacadeArgs(JObject args)
         {
             args = args ?? new JObject();
@@ -974,7 +1018,14 @@ namespace GxMcp.Worker.Services
                 ReturnPostState = args["return_post_state"]?.ToObject<bool?>() ?? true,
                 Verbose = args["verbose"]?.ToObject<bool?>() ?? false,
                 ReplaceAll = args["replaceAll"]?.ToObject<bool?>() ?? false,
-                ExplicitBase64 = string.Equals(encoding, "base64", StringComparison.OrdinalIgnoreCase)
+                ExplicitBase64 = string.Equals(encoding, "base64", StringComparison.OrdinalIgnoreCase),
+                // Optimistic concurrency: the versionToken the caller got from the
+                // genexus_read this edit is based on. When present, the write is
+                // refused if the object changed since (StaleObject) — see the guard
+                // in the facade. Accept a couple of aliases for ergonomics.
+                BaseVersion = args["baseVersion"]?.ToString()
+                    ?? args["expectedVersion"]?.ToString()
+                    ?? args["versionToken"]?.ToString()
             };
         }
 
@@ -994,6 +1045,7 @@ namespace GxMcp.Worker.Services
             public bool Verbose { get; set; }
             public bool ReplaceAll { get; set; }
             public bool ExplicitBase64 { get; set; }
+            public string BaseVersion { get; set; }
         }
 
         // Returns a deduped list of glyphs in the args payload that cannot

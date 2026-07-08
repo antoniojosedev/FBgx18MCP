@@ -22,6 +22,36 @@ namespace GxMcp.Worker.Tests
             Assert.True(normalized.DryRun);
         }
 
+        [Theory]
+        [InlineData("baseVersion")]
+        [InlineData("expectedVersion")]
+        [InlineData("versionToken")]
+        public void NormalizeFacadeArgs_ParsesBaseVersion_FromAliases(string key)
+        {
+            // stale-edit optimistic-concurrency guard: the token can arrive under any
+            // of these aliases and must land in BaseVersion.
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["part"] = "Source",
+                ["content"] = "x",
+                [key] = "637000000000000000"
+            });
+            Assert.Equal("637000000000000000", normalized.BaseVersion);
+        }
+
+        [Fact]
+        public void NormalizeFacadeArgs_NoVersion_LeavesBaseVersionNull()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject { ["part"] = "Source", ["content"] = "x" });
+            Assert.Null(normalized.BaseVersion);
+        }
+
+        [Fact]
+        public void ComputeVersionToken_Null_ReturnsNull()
+        {
+            Assert.Null(WriteService.ComputeVersionToken(null));
+        }
+
         [Fact]
         public void NormalizeFacadeArgs_PatchMode_UnwrapsFindReplaceShape()
         {
