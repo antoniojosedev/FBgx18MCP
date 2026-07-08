@@ -11,6 +11,25 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void WaitStateSignal_ReturnsTrue_WhenTransitionFiresAfterArm()
+        {
+            // issue #25 #1: a lifecycle status wait must wake the moment the index
+            // state transitions. Arm, transition, then wait → already signalled.
+            var cache = NewService();
+            cache.ArmStateSignal();
+            cache.MarkUltraLiteReady(10);
+            Assert.True(cache.WaitStateSignal(2000));
+        }
+
+        [Fact]
+        public void WaitStateSignal_TimesOut_WhenNoTransition()
+        {
+            var cache = NewService();
+            cache.ArmStateSignal();
+            Assert.False(cache.WaitStateSignal(30));
+        }
+
+        [Fact]
         public void MarkLitePassComplete_TransitionsToLiteReady()
         {
             var cache = NewService();

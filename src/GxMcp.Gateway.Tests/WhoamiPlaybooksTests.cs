@@ -13,9 +13,25 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void BuildWhoamiPayload_IncludesPlaybooksBlock()
         {
-            JObject whoami = Program.BuildWhoamiPayload();
-            Assert.True(whoami.ContainsKey("playbooks"), "whoami envelope must include playbooks block");
+            // issue #25 #5: playbooks are opt-in (verbose=true) so the default
+            // whoami stays lean; the block itself is unchanged when requested.
+            JObject whoami = Program.BuildWhoamiPayload(true);
+            Assert.True(whoami.ContainsKey("playbooks"), "whoami(verbose) envelope must include playbooks block");
             Assert.IsType<JObject>(whoami["playbooks"]);
+        }
+
+        [Fact]
+        public void BuildWhoamiPayload_Lean_OmitsPlaybooksAndSkills()
+        {
+            // issue #25 #5: the default (non-verbose) payload must NOT carry the
+            // static playbooks/skills/stats bulk — only a pointer to fetch them.
+            JObject whoami = Program.BuildWhoamiPayload();
+            Assert.False(whoami.ContainsKey("playbooks"), "lean whoami must omit playbooks");
+            Assert.False(whoami.ContainsKey("skills"), "lean whoami must omit skills");
+            Assert.False(whoami.ContainsKey("stats"), "lean whoami must omit stats/heatmap");
+            Assert.True(whoami.ContainsKey("index"), "lean whoami keeps the dynamic index block");
+            Assert.True(whoami.ContainsKey("worker"), "lean whoami keeps the dynamic worker block");
+            Assert.NotNull(whoami["reference"]);
         }
 
         [Theory]
@@ -30,7 +46,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("verify_in_browser")]
         public void Playbooks_ContainsCanonicalRoutes(string key)
         {
-            JObject playbooks = (JObject)Program.BuildWhoamiPayload()["playbooks"]!;
+            JObject playbooks = (JObject)Program.BuildWhoamiPayload(true)["playbooks"]!;
             Assert.True(playbooks.ContainsKey(key), $"playbooks must include '{key}'");
             Assert.False(string.IsNullOrWhiteSpace(playbooks[key]!.ToString()),
                 $"playbooks['{key}'] must be a non-empty route hint");
@@ -41,7 +57,7 @@ namespace GxMcp.Gateway.Tests
         {
             // The original bug was apply WWP on WebPanel binding as Transaction.
             // The playbook MUST steer the LLM to inspect parentType first.
-            JObject playbooks = (JObject)Program.BuildWhoamiPayload()["playbooks"]!;
+            JObject playbooks = (JObject)Program.BuildWhoamiPayload(true)["playbooks"]!;
             string route = playbooks["wwp_on_webpanel"]!.ToString();
             Assert.Contains("PARENT TYPE", route, System.StringComparison.OrdinalIgnoreCase);
             Assert.Contains("inspect", route, System.StringComparison.OrdinalIgnoreCase);
@@ -50,7 +66,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void Playbooks_RecipesIndex_PointsToGenexusRecipeTool()
         {
-            JObject playbooks = (JObject)Program.BuildWhoamiPayload()["playbooks"]!;
+            JObject playbooks = (JObject)Program.BuildWhoamiPayload(true)["playbooks"]!;
             string route = playbooks["recipes_index"]!.ToString();
             Assert.Contains("genexus_recipe", route);
         }

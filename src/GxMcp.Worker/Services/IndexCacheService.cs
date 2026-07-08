@@ -91,6 +91,25 @@ namespace GxMcp.Worker.Services
         private IndexState _state = new IndexState { Status = "Cold", TotalObjects = 0 };
         private readonly object _stateLock = new object();
 
+        // issue #25 #1: an index-state-change signal so a `lifecycle status wait`
+        // call can block and return the moment the state transitions (or a walk
+        // progress tick lands) instead of polling. Fires on every Mark* transition
+        // and on MarkReindexProgress. Arm-then-check pattern in the caller avoids
+        // missing a transition between the state read and the wait.
+        private readonly System.Threading.ManualResetEventSlim _stateSignal =
+            new System.Threading.ManualResetEventSlim(false);
+        private void SignalStateChanged() { try { _stateSignal.Set(); } catch { } }
+        /// <summary>Arm the state-change signal before reading state, so a change
+        /// that lands before the subsequent WaitStateSignal is not missed.</summary>
+        public void ArmStateSignal() { try { _stateSignal.Reset(); } catch { } }
+        /// <summary>Block up to <paramref name="timeoutMs"/> for the next index-state
+        /// transition or walk progress tick. Returns true if signalled, false on timeout.</summary>
+        public bool WaitStateSignal(int timeoutMs)
+        {
+            if (timeoutMs <= 0) return false;
+            try { return _stateSignal.Wait(timeoutMs); } catch { return false; }
+        }
+
         public IndexState GetState()
         {
             lock (_stateLock)
@@ -128,6 +147,7 @@ namespace GxMcp.Worker.Services
             System.Threading.Interlocked.Exchange(ref _enrichEmbeddingTicks, 0);
             System.Threading.Interlocked.Exchange(ref _enrichRefScanTicks, 0);
             System.Threading.Interlocked.Exchange(ref _enrichTextualScanTicks, 0);
+            SignalStateChanged();
         }
 
         public void MarkReindexProgress(double progress, int etaMs)
@@ -137,6 +157,7 @@ namespace GxMcp.Worker.Services
                 _state.Progress = progress;
                 _state.EtaMs = etaMs;
             }
+            SignalStateChanged();
         }
 
         public void MarkIndexFailed()
@@ -147,6 +168,7 @@ namespace GxMcp.Worker.Services
                 _state.Progress = null;
                 _state.EtaMs = null;
             }
+            SignalStateChanged();
         }
 
         public void MarkIndexComplete(int totalObjects)
@@ -159,6 +181,7 @@ namespace GxMcp.Worker.Services
                 _state.Progress = null;
                 _state.EtaMs = null;
             }
+            SignalStateChanged();
         }
 
         // Fase 0: log [TIME-TO-USABLE] once per usable milestone so the SM warmup
@@ -182,6 +205,7 @@ namespace GxMcp.Worker.Services
                 long p = Program.ProcessElapsedMs;
                 Logger.Info($"[TIME-TO-USABLE] event=liteReady processMs={p} sdkReadyMs={Program.SdkReadyAtMs} sinceSdkReadyMs={Math.Max(0, p - Program.SdkReadyAtMs)} objects={totalObjects}");
             }
+            SignalStateChanged();
         }
 
         // v2.6.9 perf: signal that the lite walk has emitted enough entries to
@@ -207,6 +231,7 @@ namespace GxMcp.Worker.Services
                 long p = Program.ProcessElapsedMs;
                 Logger.Info($"[TIME-TO-USABLE] event=ultraLiteReady processMs={p} sdkReadyMs={Program.SdkReadyAtMs} sinceSdkReadyMs={Math.Max(0, p - Program.SdkReadyAtMs)} objects={objectsSoFar}");
             }
+            SignalStateChanged();
         }
 
         public void MarkEnrichmentStarted()
@@ -216,6 +241,7 @@ namespace GxMcp.Worker.Services
                 _state.Status = "Enriching";
                 _state.EnrichmentStartedUtc = DateTime.UtcNow;
             }
+            SignalStateChanged();
         }
 
         public IndexCacheService()
@@ -227,6 +253,15 @@ namespace GxMcp.Worker.Services
         // graph services (CallerGraphService) can drive a deterministic in-memory
         // index without spinning up a KB. Not intended for production code paths.
         internal void LoadFromEntries(IEnumerable<SearchIndex.IndexEntry> entries)
+        {
+            LoadFromEntries(entries, markReady: true);
+        }
+
+        // markReady=false leaves the state where it was (Cold by default) so tests
+        // can drive a partial state (MarkUltraLiteReady/MarkLitePassComplete) after
+        // loading a fixture — MarkIndexComplete would otherwise pin it to Ready and
+        // the downgrade guard would block the transition.
+        internal void LoadFromEntries(IEnumerable<SearchIndex.IndexEntry> entries, bool markReady)
         {
             lock (_lock)
             {
@@ -248,7 +283,7 @@ namespace GxMcp.Worker.Services
             }
             // v2.6.9 perf: flip state to Ready so the gateway-side / list-service
             // fast-fail path doesn't treat fixture-loaded indexes as still-building.
-            MarkIndexComplete(_index.Objects.Count);
+            if (markReady) MarkIndexComplete(_index.Objects.Count);
         }
 
         public void SetBuildService(BuildService bs) { _buildService = bs; }

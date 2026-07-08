@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.12.0 — 2026-07-08
+
+Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong answers, make index progress observable, keep reads whole, and survive worker crashes without a manual reconnect.
+
+### Fixed
+
+- **`genexus_search_source` no longer returns an empty "not found" for tokens that exist.** A search for text that lived in an object's body — but not in its name — was silently dropped for every Procedure, Data Provider, Web Panel, and Transaction, because a pre-filter treated the (never-populated) indexed snippet as proof of absence. The pre-filter now only skips an object when the index genuinely holds its body text; otherwise the full source is read. A zero result is now trustworthy.
+- **Search works while the index is still building.** Instead of hard-failing with `IndexCold` until the entire catalogue is walked, `genexus_search_source` now scans the objects walked so far and marks the result `partial: true`. A zero result on a partial index comes back as `PartialIndexNoMatch` (never a plain empty success), so an in-progress index can't be mistaken for "the token doesn't exist."
+- **`genexus_list_objects` no longer presents a partial catalogue as complete.** While the index is still walking, the page is flagged `partial: true` / `totalIsPartial: true` with `hasMore: true`, and a `typeFilter` / folder miss says the type or folder may simply not have been reached yet — instead of implying it doesn't exist. The misleading authoritative `total` / `hasMore: false` over the walked subset is gone.
+- **Index build progress is observable.** `genexus_lifecycle action=status` reported `processed: 0` for the entire build on the default indexing path; it now advances with the objects walked and flags `totalKnown: false` while the grand total is still unknown, so a running percentage isn't computed against a moving target.
+- **`genexus_lifecycle action=status wait=N` returns the moment the index changes.** Polling the index build with `wait` now blocks and returns as soon as the state transitions (e.g. still-walking → ready) or a progress tick lands, instead of ignoring `wait` and forcing a poll loop. Pass the returned `indexStatus` back as `since` to chain.
+- **`genexus_read` no longer punches a hole in the middle of a file.** A source read that the worker had already paginated to ~200 lines / 16 KB could be char-sliced a second time by the gateway, dropping the middle and leaving `[... TRUNCATED BY GATEWAY TOKEN BUDGET ...]` at an unpredictable spot with pagination hints that pointed past the gap. The gateway now leaves an already-paginated page intact; when it must trim an opted-out full read (`limit=0`), it flags `truncatedByGateway: true` with a hint and no longer discards the file's tail.
+- **A worker crash mid-read no longer forces a manual reconnect.** Read-only tools (`genexus_read`, `genexus_list_objects`, `genexus_inspect`, `genexus_query`, `genexus_search_source`, and similar) now retry once against the automatically respawned worker instead of surfacing `Worker … crashed/exited. Reconnect or try again.` Write and build tools are deliberately not auto-retried.
+- **A respawned worker reuses the index instead of re-walking the whole KB.** After a crash, the replacement worker now reuses the persisted on-disk index (delta refresh of only what changed) rather than starting cold and re-walking every object — previously each reconnect cost another full walk on a large KB.
+
+### Changed
+
+- **`genexus_whoami` is lean by default.** It returns the live health blocks (KB, GeneXus, worker, index, database, update, next-step hints) without the ~3k tokens of static playbooks + skills catalog that used to ship on every call. Pass `verbose=true` once when you want the inline reference material; `genexus_doctor` remains the minimal connection + index health check.
+
 ## v2.11.0 — 2026-06-19
 
 ### Added

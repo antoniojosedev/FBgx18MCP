@@ -61,18 +61,31 @@ namespace GxMcp.Worker.Services
             // Artech.Architecture.Common, so they can run without the GeneXus
             // install on the probing path.
             var state = _index != null ? _index.GetState() : null;
-            if (state != null && state.Status != "Ready")
+            string status = state?.Status ?? "Ready";
+            // issue #25 #1 / #3: only a Cold/Reindexing index is genuinely
+            // unsearchable (nothing stable in memory yet). The lite-walk states
+            // (LiteReady/UltraLiteReady/Enriching) hold a growing-but-stable set
+            // of entries whose full source we can read on demand — search them
+            // and flag the result partial rather than hard-blocking. That keeps
+            // search usable while the walk runs, and a zero result on a partial
+            // index is reported with a DISTINCT code (never a plain empty-success)
+            // so the caller can't read it as "token does not exist".
+            bool cold = string.Equals(status, "Cold", StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(status, "Reindexing", StringComparison.OrdinalIgnoreCase);
+            if (cold)
             {
-                string indexCode = string.Equals(state.Status, "Reindexing", StringComparison.OrdinalIgnoreCase)
+                string indexCode = string.Equals(status, "Reindexing", StringComparison.OrdinalIgnoreCase)
                     ? "Reindexing" : "IndexCold";
-                var indexResult = new JObject { ["retryAfterMs"] = state.EtaMs ?? 5000 };
-                if (state.Progress.HasValue) indexResult["progress"] = state.Progress.Value;
+                var indexResult = new JObject { ["retryAfterMs"] = state?.EtaMs ?? 5000 };
+                if (state?.Progress != null) indexResult["progress"] = state.Progress.Value;
                 return Models.McpResponse.Ok(code: indexCode, result: indexResult);
             }
-            return SearchCore(c, ct);
+            bool partial = !string.Equals(status, "Ready", StringComparison.OrdinalIgnoreCase);
+            return SearchCore(c, ct, partial, status);
         }
 
-        private string SearchCore(SourceSearchCriteria c, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken))
+        private string SearchCore(SourceSearchCriteria c, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken),
+            bool partialIndex = false, string indexStatus = "Ready")
         {
             try
             {
@@ -267,6 +280,11 @@ namespace GxMcp.Worker.Services
                     ["count"] = produced,
                     ["truncated"] = truncated,
                     ["hits"] = hits,
+                    // issue #25 #1/#3: make index coverage explicit so a zero count is
+                    // never mistaken for "does not exist" when the walk is still running.
+                    ["indexStatus"] = indexStatus,
+                    ["partial"] = partialIndex,
+                    ["scannedObjects"] = scanned,
                     // v2.8.0: canonical pagination block — total unknown (source scan has no pre-counted total)
                     ["pagination"] = new JObject
                     {
@@ -278,6 +296,10 @@ namespace GxMcp.Worker.Services
                         ["nextOffset"] = JValue.CreateNull()
                     }
                 };
+                if (partialIndex)
+                {
+                    resultPayload["partialHint"] = "Index walk is still in progress; this scan covered only the objects walked so far. A zero or small count does NOT mean the token is absent — re-run when whoami reports indexStatus=Ready.";
+                }
                 if (hits.Count > 0 && hits[0] is JObject topHit)
                 {
                     resultPayload["_meta"] = new JObject
@@ -293,7 +315,11 @@ namespace GxMcp.Worker.Services
                         }
                     };
                 }
-                return Models.McpResponse.Ok(code: "SourceSearchCompleted", result: resultPayload);
+                // A zero-hit result on a partial index gets its own code so callers
+                // cannot read it as an authoritative "not found" empty-success.
+                string completionCode = (partialIndex && produced == 0)
+                    ? "PartialIndexNoMatch" : "SourceSearchCompleted";
+                return Models.McpResponse.Ok(code: completionCode, result: resultPayload);
             }
             catch (Exception ex)
             {
@@ -316,6 +342,16 @@ namespace GxMcp.Worker.Services
         private static bool MatchesAnyLiteral(Models.SearchIndex.IndexEntry e, System.Collections.Generic.List<string> literals)
         {
             if (literals == null || literals.Count == 0) return true;
+            // issue #25 #3: the literal pre-filter is only SOUND when the index
+            // actually holds this entry's body text. SourceSnippet/Keywords are
+            // never populated for Procedure/DataProvider/WebPanel/Transaction
+            // (the types searched here), so treating an empty snippet as
+            // "no match" silently drops entries whose full source contains the
+            // token — a false empty-success. When there is no indexed text to
+            // prove absence, include the entry so its full source gets read.
+            bool hasIndexedText = !string.IsNullOrEmpty(e.SourceSnippet)
+                || (e.Keywords != null && e.Keywords.Count > 0);
+            if (!hasIndexedText) return true;
             string snip = e.SourceSnippet ?? "";
             string nm = e.Name ?? "";
             foreach (var t in literals)

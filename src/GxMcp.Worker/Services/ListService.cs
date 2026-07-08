@@ -311,11 +311,24 @@ namespace GxMcp.Worker.Services
                     var paged = BuildPagedResponseInternal(array, totalIndex, startIndex, pageSize);
                     // v2.6.9 perf: surface partial-catalogue signal while the lite
                     // walk is still streaming entries.
+                    // issue #25 #4: during UltraLiteReady the catalogue is still
+                    // growing, so `total`/`hasMore:false` reflect only the walked
+                    // subset, not the KB. Make that impossible to ignore: mark the
+                    // total partial and force hasMore=true (more objects ARE coming),
+                    // so callers never treat this page as the complete set.
                     if (isUltraLite)
                     {
                         paged["partial"] = true;
                         paged["indexStatus"] = "UltraLiteReady";
-                        paged["partialHint"] = "Index walk is in progress; the visible catalogue is still growing. Re-issue when whoami reports indexStatus=LiteReady or Ready for the full set.";
+                        paged["totalIsPartial"] = true;
+                        paged["hasMore"] = true;
+                        paged["partialHint"] = "Index walk is in progress; `total` counts only objects walked so far (NOT the KB total) and more are still arriving. An empty/short result or a missing type/folder does NOT mean it is absent. Re-issue when whoami reports indexStatus=LiteReady or Ready for the full set.";
+                        if (paged["pagination"] is JObject pgn)
+                        {
+                            pgn["total"] = JValue.CreateNull();   // true total unknown while walking
+                            pgn["totalIsPartial"] = true;
+                            pgn["hasMore"] = true;
+                        }
                     }
                     if (lastEmitted != null && (startIndex + array.Count) < totalIndex)
                     {
@@ -339,7 +352,12 @@ namespace GxMcp.Worker.Services
                             .ToArray();
                         var meta = paged["_meta"] as JObject ?? new JObject();
                         meta["typesAvailable"] = new JArray(distinctTypes);
-                        meta["filterHint"] = "typeFilter='" + string.Join(",", filterTypes) + "' matched nothing. See typesAvailable for canonical type names actually present in this KB.";
+                        // issue #25 #4: while the walk is partial, typesAvailable only
+                        // lists types walked so far — a "missing" type may simply not
+                        // have been reached yet, so don't imply it is absent.
+                        meta["filterHint"] = isUltraLite
+                            ? "typeFilter='" + string.Join(",", filterTypes) + "' matched nothing SO FAR, but the index is still walking — this type may exist and just hasn't been reached yet. typesAvailable lists only types seen so far. Re-issue when indexStatus=Ready before concluding it is absent."
+                            : "typeFilter='" + string.Join(",", filterTypes) + "' matched nothing. See typesAvailable for canonical type names actually present in this KB.";
                         paged["_meta"] = meta;
                     }
                     return Finalize(paged.ToString());

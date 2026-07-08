@@ -729,7 +729,9 @@ namespace GxMcp.Gateway
         // v2.3.8 Task 1.2: async variant that performs a live fetch against the worker
         // before assembling whoami. The sync BuildWhoamiPayload() is kept for tests and
         // any caller that doesn't want to block on a worker round-trip.
-        internal static async Task<JObject> BuildWhoamiPayloadAsync()
+        internal static Task<JObject> BuildWhoamiPayloadAsync() => BuildWhoamiPayloadAsync(false);
+
+        internal static async Task<JObject> BuildWhoamiPayloadAsync(bool verbose)
         {
             // Skip the worker round-trip when our cached snapshot is recent enough.
             // whoami is the most-called first-turn tool — a stale-by-a-few-seconds
@@ -785,7 +787,7 @@ namespace GxMcp.Gateway
                     }
                 }
             }
-            var payload = BuildWhoamiPayload();
+            var payload = BuildWhoamiPayload(verbose);
             if (!workerHealthy)
             {
                 // v2.6.8 (review C7): workerHealth is purely additive — emit it
@@ -838,7 +840,16 @@ namespace GxMcp.Gateway
             catch { return false; }
         }
 
-        internal static JObject BuildWhoamiPayload()
+        internal static JObject BuildWhoamiPayload() => BuildWhoamiPayload(false);
+
+        // issue #25 #5: whoami defaulted to dumping ~3k tokens of STATIC content
+        // (playbooks + skills catalog) plus a session-growing stats/heatmap block
+        // on EVERY call — wasteful when the agent just wants a health check after a
+        // worker respawn. Lean by default (verbose=false): keep the dynamic health
+        // blocks (kb/geneXus/update/worker/index/database/metricsSummary/suggestedNext)
+        // and drop the static reference blocks. verbose=true restores the full payload.
+        // For a pure connection/index health probe, genexus_doctor is even leaner.
+        internal static JObject BuildWhoamiPayload(bool verbose)
         {
             var cfg = _activeConfig;
             string? kbPath = cfg?.Environment?.KBPath;
@@ -858,7 +869,7 @@ namespace GxMcp.Gateway
             }
             string? gxVersion = DetectGeneXusVersion(gxPath);
 
-            return new JObject
+            var payload = new JObject
             {
                 ["connected"] = cfg != null,
                 ["kb"] = new JObject
@@ -906,20 +917,6 @@ namespace GxMcp.Gateway
                 // the roll-up so first-turn cost stays minimal while still surfacing red
                 // flags (high error/timeout ratio, a tool with a >10s p95).
                 ["metricsSummary"] = _operationTracker?.BuildMetricsSummary() ?? new JObject(),
-                // Item 73: per-tool latency breakdown. In-memory, resets on gateway restart.
-                ["stats"] = BuildStatsWithHeatmap(),
-                // Inline playbooks for the flows that drove the largest token spend
-                // in real sessions (LLMs were exploring WWP/popup structure before
-                // every change). Embedding the routing here means the agent sees it
-                // on the first turn and skips ~3-8k tokens of discovery. Each entry
-                // is a 1-line route, not full docs — for full recipes the agent can
-                // fetch genexus_recipe(name=...).
-                ["playbooks"] = BuildPlaybooksBlock(),
-                // v2.8.0 — first-class skill catalog so a weakly-capable LLM
-                // sees the authoritative reference material on the FIRST call,
-                // without having to know about MCP resources/list. Each entry
-                // is one resources/read away.
-                ["skills"] = BuildSkillsCatalogBlock(),
                 // v2.8.0 — concrete next-action hints so a weakly-capable LLM
                 // doesn't have to guess "what do I call now?" after whoami.
                 // Heuristics inspect KB / index / worker / update state and emit
@@ -927,6 +924,30 @@ namespace GxMcp.Gateway
                 // nextSteps shape. Empty when state is healthy + nothing pending.
                 ["suggestedNext"] = BuildSuggestedNextBlock(kbPath, kbExists, kbValid)
             };
+
+            if (verbose)
+            {
+                // Item 73: per-tool latency breakdown. In-memory, resets on gateway restart.
+                payload["stats"] = BuildStatsWithHeatmap();
+                // Inline playbooks for the flows that drove the largest token spend
+                // in real sessions. Each entry is a 1-line route, not full docs — for
+                // full recipes the agent can fetch genexus_recipe(name=...).
+                payload["playbooks"] = BuildPlaybooksBlock();
+                // v2.8.0 — first-class skill catalog. Each entry is one resources/read away.
+                payload["skills"] = BuildSkillsCatalogBlock();
+            }
+            else
+            {
+                // Lean default: point at where the static reference lives instead of
+                // re-shipping it every call.
+                payload["reference"] = new JObject
+                {
+                    ["hint"] = "Call genexus_whoami(verbose=true) once for inline playbooks + skills catalog, or genexus_recipe / resources/list on demand. genexus_doctor gives a minimal connection+index health check.",
+                    ["playbooksVia"] = "genexus_whoami(verbose=true)",
+                    ["skillsVia"] = "resources/list"
+                };
+            }
+            return payload;
         }
 
         // v2.8.0 — skill catalog block. Mirrors SkillCatalog.All so the
@@ -1788,6 +1809,14 @@ namespace GxMcp.Gateway
                         // worker will push its own state via GetIndexState; clobbering it
                         // would silence real progress info for the 15s cache window.
                         Log($"[Respawn] Replacement worker spawned for KB '{kb.Alias}'.");
+                        // issue #25 #2: the index bootstrap fires once per gateway process,
+                        // so a crash-respawned worker (same gateway) otherwise never gets a
+                        // reindex trigger and its index stays Cold until an explicit
+                        // lifecycle call — forcing the agent to re-walk. Re-arm and re-fire
+                        // the one-shot: BulkIndex(force:false) reuses the persisted on-disk
+                        // snapshot (delta-on-open) instead of a cold 38k re-walk.
+                        Interlocked.Exchange(ref _indexBootstrapStarted, 0);
+                        TriggerIndexBootstrapOnce();
                     }
                     catch (Exception ex)
                     {
@@ -1896,6 +1925,34 @@ namespace GxMcp.Gateway
         // Generous (cold-start is ~50s); only caps a wedged/never-ready worker.
         private const int WorkerSdkReadyCeilingMs = 180000;
 
+        // issue #25 #2: read-only / idempotent tools that are safe to re-send once
+        // after a worker crash. Writes/edits/builds are deliberately excluded — a
+        // blind resend of a mutation could double-apply. The gateway already eagerly
+        // respawns the worker; this retry hides the transient "crashed/exited" error
+        // from the client for reads so the agent doesn't have to reconnect + re-issue.
+        private static readonly HashSet<string> RetrySafeReadTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "genexus_read", "genexus_list_objects", "genexus_inspect", "genexus_query",
+            "genexus_search_source", "genexus_analyze", "genexus_structure", "genexus_navigation",
+            "genexus_whoami", "genexus_doctor"
+        };
+
+        private static bool IsWorkerCrashEnvelope(JObject workerResponse)
+        {
+            var err = workerResponse?["error"];
+            string msg = err is JObject eo ? eo["message"]?.ToString() : err?.ToString();
+            return !string.IsNullOrEmpty(msg) &&
+                   msg.IndexOf("crashed/exited", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool ShouldRetryWorkerCrash(JObject workerResponse, string toolName, int attempt)
+        {
+            return attempt == 1
+                && !string.IsNullOrEmpty(toolName)
+                && RetrySafeReadTools.Contains(toolName)
+                && IsWorkerCrashEnvelope(workerResponse);
+        }
+
         private static async Task<JObject?> SendWorkerCommandAsync(
             JObject workerCommand,
             int timeoutMs,
@@ -1928,68 +1985,93 @@ namespace GxMcp.Gateway
             }
 
             workerCommand["correlationId"] = correlationId;
-            var workerRequest = BuildWorkerRpcRequest(workerCommand, requestId, operationId);
-            var worker = await GetActiveWorkerAsync();
 
-            // Don't bill worker cold-start against the per-tool timeout. If the worker is
-            // still initializing (SDK init ~50s on a large KB), wait for its sdk_ready signal
-            // FIRST — emitting progress heartbeats so the client stays alive — and only then
-            // start the operation's timeout clock below. Capped so a wedged worker can't block
-            // forever; on cap we proceed and let the normal op timeout apply.
-            if (!worker.IsSdkReady)
+            // issue #25 #2: idempotent single retry for read-only tools. When a worker
+            // crashes mid-call the completion resolves with a "crashed/exited" envelope;
+            // the gateway already eagerly respawns, so for retry-safe reads we re-send
+            // once to the replacement instead of surfacing the transient error (which
+            // forced the user to manually /mcp reconnect and re-issue).
+            int workerAttempt = 0;
+            while (true)
             {
-                bool ready = await McpRouter.AwaitWithHeartbeat(
-                    worker.SdkReadyTask, WorkerSdkReadyCeilingMs, progressToken, heartbeat, $"{toolName} (worker starting)");
-                if (!ready)
-                    Log($"[Gateway] worker not SDK-ready after {WorkerSdkReadyCeilingMs}ms for tool {toolName}; proceeding — op timeout applies.");
-            }
+                workerAttempt++;
+                string attemptRequestId = workerAttempt == 1 ? requestId : Guid.NewGuid().ToString();
+                var workerRequest = BuildWorkerRpcRequest(workerCommand, attemptRequestId, operationId);
+                var worker = await GetActiveWorkerAsync();
 
-            var pending = new PendingWorkerRequest
-            {
-                CompletionSource = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously),
-                ToolName = toolName,
-                CorrelationId = correlationId,
-                OperationId = operationId,
-                CreatedAtUtc = DateTime.UtcNow,
-                WorkerAlias = worker.Kb?.NormalizedAlias
-            };
-            _pendingRequests[requestId] = pending;
+                // Don't bill worker cold-start against the per-tool timeout. If the worker is
+                // still initializing (SDK init ~50s on a large KB), wait for its sdk_ready signal
+                // FIRST — emitting progress heartbeats so the client stays alive — and only then
+                // start the operation's timeout clock below. Capped so a wedged worker can't block
+                // forever; on cap we proceed and let the normal op timeout apply.
+                if (!worker.IsSdkReady)
+                {
+                    bool ready = await McpRouter.AwaitWithHeartbeat(
+                        worker.SdkReadyTask, WorkerSdkReadyCeilingMs, progressToken, heartbeat, $"{toolName} (worker starting)");
+                    if (!ready)
+                        Log($"[Gateway] worker not SDK-ready after {WorkerSdkReadyCeilingMs}ms for tool {toolName}; proceeding — op timeout applies.");
+                }
 
-            await worker.SendCommandAsync(workerRequest.ToString(Formatting.None));
+                var pending = new PendingWorkerRequest
+                {
+                    CompletionSource = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously),
+                    ToolName = toolName,
+                    CorrelationId = correlationId,
+                    OperationId = operationId,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    WorkerAlias = worker.Kb?.NormalizedAlias
+                };
+                _pendingRequests[attemptRequestId] = pending;
 
-            if (timeoutMs <= 0)
-            {
-                var workerResponse = JObject.Parse(await pending.CompletionSource.Task.ConfigureAwait(false));
-                if (workerResponse["result"] is JObject workerResultObjNoTimeout && workerResultObjNoTimeout["correlationId"] == null)
-                {
-                    workerResultObjNoTimeout["correlationId"] = correlationId;
-                }
-                if (workerResponse["error"] is JObject workerErrorObjNoTimeout && workerErrorObjNoTimeout["correlationId"] == null)
-                {
-                    workerErrorObjNoTimeout["correlationId"] = correlationId;
-                }
-                return onSuccess(workerResponse);
-            }
+                await worker.SendCommandAsync(workerRequest.ToString(Formatting.None));
 
-            // MCP-spec keepalive for long synchronous tool calls: while waiting on the
-            // worker, emit `notifications/progress` every HeartbeatIntervalSeconds when the
-            // client supplied a progressToken, so it doesn't fire its own request timeout
-            // (the -32001 "Request timed out" users hit on long apply_pattern / delete).
-            // The call stays synchronous and returns the real result inline — not a job.
-            bool workerCompleted = await McpRouter.AwaitWithHeartbeat(
-                pending.CompletionSource.Task, timeoutMs, progressToken, heartbeat, toolName);
-            if (workerCompleted)
-            {
-                var workerResponse = JObject.Parse(await pending.CompletionSource.Task);
-                if (workerResponse["result"] is JObject workerResultObj && workerResultObj["correlationId"] == null)
+                if (timeoutMs <= 0)
                 {
-                    workerResultObj["correlationId"] = correlationId;
+                    var workerResponse = JObject.Parse(await pending.CompletionSource.Task.ConfigureAwait(false));
+                    if (ShouldRetryWorkerCrash(workerResponse, toolName, workerAttempt))
+                    {
+                        Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");
+                        await Task.Delay(750).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (workerResponse["result"] is JObject workerResultObjNoTimeout && workerResultObjNoTimeout["correlationId"] == null)
+                    {
+                        workerResultObjNoTimeout["correlationId"] = correlationId;
+                    }
+                    if (workerResponse["error"] is JObject workerErrorObjNoTimeout && workerErrorObjNoTimeout["correlationId"] == null)
+                    {
+                        workerErrorObjNoTimeout["correlationId"] = correlationId;
+                    }
+                    return onSuccess(workerResponse);
                 }
-                if (workerResponse["error"] is JObject workerErrorObj && workerErrorObj["correlationId"] == null)
+
+                // MCP-spec keepalive for long synchronous tool calls: while waiting on the
+                // worker, emit `notifications/progress` every HeartbeatIntervalSeconds when the
+                // client supplied a progressToken, so it doesn't fire its own request timeout
+                // (the -32001 "Request timed out" users hit on long apply_pattern / delete).
+                // The call stays synchronous and returns the real result inline — not a job.
+                bool workerCompleted = await McpRouter.AwaitWithHeartbeat(
+                    pending.CompletionSource.Task, timeoutMs, progressToken, heartbeat, toolName);
+                if (workerCompleted)
                 {
-                    workerErrorObj["correlationId"] = correlationId;
+                    var workerResponse = JObject.Parse(await pending.CompletionSource.Task);
+                    if (ShouldRetryWorkerCrash(workerResponse, toolName, workerAttempt))
+                    {
+                        Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");
+                        await Task.Delay(750).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (workerResponse["result"] is JObject workerResultObj && workerResultObj["correlationId"] == null)
+                    {
+                        workerResultObj["correlationId"] = correlationId;
+                    }
+                    if (workerResponse["error"] is JObject workerErrorObj && workerErrorObj["correlationId"] == null)
+                    {
+                        workerErrorObj["correlationId"] = correlationId;
+                    }
+                    return onSuccess(workerResponse);
                 }
-                return onSuccess(workerResponse);
+                break; // timeout — fall through to the timeout handling below
             }
 
             if (!string.IsNullOrWhiteSpace(operationId))
@@ -3321,7 +3403,8 @@ namespace GxMcp.Gateway
                     // Gateway-served tools (no worker involvement)
                     if (string.Equals(tName, "genexus_whoami", StringComparison.OrdinalIgnoreCase))
                     {
-                        JObject whoami = await BuildWhoamiPayloadAsync();
+                        bool whoamiVerbose = tArgs?["verbose"]?.ToObject<bool>() ?? false;
+                        JObject whoami = await BuildWhoamiPayloadAsync(whoamiVerbose);
                         return new JObject
                         {
                             ["isError"] = false,
@@ -4342,6 +4425,14 @@ namespace GxMcp.Gateway
                                       string.Equals(readPart, "PatternVirtual", StringComparison.OrdinalIgnoreCase));
 
             string raw = result.ToString(Formatting.None);
+            // issue #25 #6: the worker already paginates genexus_read to ~200 lines /
+            // 16 KB and reports it via `isTruncatedByWorker` + offset/limit/
+            // suggestedNextOffset. When the worker already bounded the page, the
+            // gateway must NOT char-slice `source` again — that re-cut dropped the
+            // middle of an already-bounded page and orphaned the pagination fields.
+            bool workerPaginatedRead =
+                string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) &&
+                ((result as JObject)?["isTruncatedByWorker"]?.ToObject<bool>() ?? false);
             int softBudget = isXmlMetadataRead
                 ? 220000
                 : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)
@@ -4388,37 +4479,60 @@ namespace GxMcp.Gateway
                 
                 foreach (var field in fieldsToTruncate)
                 {
+                    // Never re-slice the `source` of a read the worker already
+                    // paginated — that is the mid-file-hole bug. The worker bounded it
+                    // to ~16 KB and its offset/suggestedNextOffset describe THAT page;
+                    // a second char-slice here would silently drop the middle and
+                    // orphan the pagination fields.
+                    if (workerPaginatedRead && string.Equals(field, "source", StringComparison.OrdinalIgnoreCase))
+                        continue;
                     var fieldValue = obj[field];
                     if (fieldValue != null && fieldValue.Type == JTokenType.String)
                     {
                         string val = fieldValue.ToString();
                         int fieldBudget = isXmlMetadataRead
                             ? 180000
-                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 12000 : 20000;
+                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 20000 : 20000;
                         int headBudget = isXmlMetadataRead
                             ? 140000
-                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 9000 : 15000;
+                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 15000 : 15000;
                         int tailBudget = isXmlMetadataRead
                             ? 40000
-                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 3000 : 5000;
+                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 4000 : 5000;
                         if (val.Length > fieldBudget)
                         {
-                            obj[field] = val.Substring(0, headBudget) + 
-                                           "\n\n[... TRUNCATED BY GATEWAY TOKEN BUDGET ...] \n\n" + 
+                            obj[field] = val.Substring(0, headBudget) +
+                                           "\n\n[... TRUNCATED BY GATEWAY TOKEN BUDGET ...] \n\n" +
                                            val.Substring(val.Length - tailBudget);
                             obj["isTruncated"] = true;
+                            // issue #25 #6: distinguish the gateway cut from the worker's
+                            // line pagination so the caller knows the offset/suggestedNextOffset
+                            // fields describe the worker page, NOT this char-sliced view.
+                            obj["truncatedByGateway"] = true;
+                            obj["gatewayTruncationHint"] = "Gateway trimmed this field to fit the context budget (a middle slice was dropped). Do NOT page across this cut with suggestedNextOffset; re-request with a smaller `limit`/`offset` for exact bytes.";
                         }
                     }
                 }
-                
+
                 string truncatedRaw = obj.ToString(Formatting.None);
                 if (truncatedRaw.Length > 80000)
                 {
+                    // issue #25 #6: for genexus_read, preserve the head+tail-trimmed
+                    // object instead of wiping it to a bare error (the old fallback
+                    // discarded the tail it had just carefully kept). Only non-read
+                    // shapes fall back to the structural error.
+                    if (string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase))
+                    {
+                        obj["isTruncated"] = true;
+                        obj["truncatedByGateway"] = true;
+                        obj["message"] = "Response exceeded the gateway budget even after trimming; re-request with a smaller `limit` or use offset/limit pagination for exact bytes.";
+                        return obj;
+                    }
                     // Fallback to ensuring valid JSON structure when heavily nested Strings overfill
-                    return JToken.FromObject(new { 
+                    return JToken.FromObject(new {
                         jsonrpc = "2.0",
-                        error = "Response exceeded 80k token budget and could not be safely parsed. Try lower limits or pagination.", 
-                        isTruncated = true 
+                        error = "Response exceeded 80k token budget and could not be safely parsed. Try lower limits or pagination.",
+                        isTruncated = true
                     });
                 }
                 return obj;

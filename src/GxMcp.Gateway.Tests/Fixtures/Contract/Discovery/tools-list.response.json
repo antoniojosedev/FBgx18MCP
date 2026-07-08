@@ -2541,12 +2541,21 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "KB context + version + playbooks + skills catalog. Call FIRST every session — the `skills` block lists verified GeneXus reference resources (navigation, GAM, SD panel, WebPanel events). Read those BEFORE invoking properties/methods you aren't 100% sure exist.",
+      "description": "KB context + version + health (worker/index/database) + next-step hints. Call FIRST every session. Lean by default; pass verbose=true ONCE for the inline playbooks + skills catalog of verified GeneXus reference resources (navigation, GAM, SD panel, WebPanel events). For a minimal connection+index health check use genexus_doctor.",
       "inputSchema": {
+        "additionalProperties": false,
         "examples": [
-          {}
+          {},
+          {
+            "verbose": true
+          }
         ],
-        "properties": {},
+        "properties": {
+          "verbose": {
+            "description": "Include the static playbooks + skills catalog + per-tool stats/heatmap. Default false (lean health payload).",
+            "type": "boolean"
+          }
+        },
         "type": "object"
       },
       "name": "genexus_whoami"

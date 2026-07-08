@@ -65,7 +65,21 @@ namespace GxMcp.Gateway.Routers
                                     since = args?["since"]?.ToString()
                                 };
                             }
-                            return new { module = "KB", action = "GetIndexStatus" };
+                            // issue #25 #1: no-target status polls the INDEX build. Forward
+                            // `wait`/`since` so the worker can block and return the moment the
+                            // index state transitions (e.g. UltraLiteReady→LiteReady→Ready) or
+                            // a walk progress tick lands, instead of the agent polling in a loop.
+                            {
+                                int idxWait = args?["wait"]?.ToObject<int?>() ?? 0;
+                                if (idxWait < 0) idxWait = 0;
+                                if (idxWait > 300) idxWait = 300;
+                                return new {
+                                    module = "KB",
+                                    action = "GetIndexStatus",
+                                    wait = idxWait,
+                                    since = args?["since"]?.ToString()
+                                };
+                            }
                         case "result":
                             if (!string.IsNullOrEmpty(target))
                             {

@@ -524,7 +524,37 @@ namespace GxMcp.Worker.Services
                             string startupName = target ?? args?["name"]?.ToString();
                             return _kbStartupService.SetStartup(startupName);
                         }
-                        if (action == "GetIndexStatus") return _kbService.GetIndexStatus();
+                        if (action == "GetIndexStatus")
+                        {
+                            // issue #25 #1: event-driven wait. When `wait` is given, block
+                            // until the index state transitions away from `since` (or a walk
+                            // progress tick lands, or the timeout fires) and return early —
+                            // no more polling loops. Runs on the non-SDK parallel path so
+                            // blocking here never stalls the STA thread.
+                            int waitSec = args?["wait"]?.ToObject<int?>() ?? 0;
+                            string since = args?["since"]?.ToString();
+                            if (waitSec > 0 && !string.IsNullOrEmpty(since))
+                            {
+                                var sw = System.Diagnostics.Stopwatch.StartNew();
+                                long budgetMs = waitSec * 1000L;
+                                while (true)
+                                {
+                                    _indexCacheService.ArmStateSignal();
+                                    string cur = _indexCacheService.GetState()?.Status ?? "Cold";
+                                    if (!string.Equals(cur, since, StringComparison.OrdinalIgnoreCase)) break;
+                                    long remaining = budgetMs - sw.ElapsedMilliseconds;
+                                    if (remaining <= 0) break;
+                                    // Cap each wait so a missed signal still re-checks promptly.
+                                    _indexCacheService.WaitStateSignal((int)Math.Min(remaining, 2000));
+                                }
+                            }
+                            // Merge the state-machine status so callers have a stable field
+                            // to pass back as `since` (the legacy `status` string is descriptive
+                            // prose, not a stable enum).
+                            var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
+                            statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
+                            return statusJson.ToString();
+                        }
                         if (action == "GetIndexState")
                         {
                             // v2.3.8 Task 1.2: surface unified IndexState from IndexCacheService.

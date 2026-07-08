@@ -46,7 +46,7 @@ namespace GxMcp.Gateway.Tests
         public async Task Whoami_BaselineUnder500ms_AndCarriesPlaybooks()
         {
                         var sw = System.Diagnostics.Stopwatch.StartNew();
-            var resp = await _h.CallToolAsync("genexus_whoami", new JObject());
+            var resp = await _h.CallToolAsync("genexus_whoami", new JObject { ["verbose"] = true });
             sw.Stop();
             var payload = LiveGatewayHarness.ParseToolPayload(resp);
 

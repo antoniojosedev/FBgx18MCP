@@ -536,6 +536,12 @@ namespace GxMcp.Worker.Services
                     {
                         long objStart = Stopwatch.GetTimestamp();
                         _totalCount++;
+                        // issue #25 #1: keep the observable "processed" counter moving
+                        // during the lite walk. It sat at 0 the whole pass (only the
+                        // legacy BulkIndexLegacy path advanced it), so status polls
+                        // showed processed:0 with no way to gauge progress. In the lite
+                        // pass every walked object IS processed, so track them together.
+                        _processedCount = _totalCount;
                         string typeName = null;
                         try { typeName = obj.TypeDescriptor?.Name; } catch { }
                         if (string.IsNullOrEmpty(typeName)) typeName = obj.GetType().Name;
@@ -1060,6 +1066,12 @@ namespace GxMcp.Worker.Services
             json["isIndexing"] = _isIndexing;
             json["total"] = _totalCount;
             json["processed"] = _processedCount;
+            // issue #25 #1: while the lite walk runs, `total` is the running
+            // count of objects walked SO FAR, not the KB's grand total (which is
+            // only known once the walk completes). Flag it so a poller doesn't read
+            // `total` as a fixed target / compute a bogus percentage.
+            json["totalKnown"] = !_isIndexing;
+            json["objectsWalked"] = _totalCount;
             json["status"] = _currentStatus;
             json["isBusy"] = _isIndexing || _isOpenInProgress;
             return json.ToString();

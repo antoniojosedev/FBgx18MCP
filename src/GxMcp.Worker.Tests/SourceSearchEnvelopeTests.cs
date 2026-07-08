@@ -44,6 +44,73 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Search_ReadyIndex_EntryWithoutSnippet_IsStillScanned()
+        {
+            // issue #25 #3: SourceSnippet is never populated for the searched
+            // types (Procedure/DataProvider/WebPanel/Transaction) in production,
+            // so the literal pre-filter must NOT exclude an entry just because its
+            // snippet is empty — otherwise a token that lives in the body but not
+            // the object name is silently dropped as an empty-success. The entry
+            // must survive the pre-filter and be scanned (its full source read).
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry
+                {
+                    Name = "Foo",
+                    Type = "Procedure",
+                    Calls = new List<string>(),
+                    CalledBy = new List<string>(),
+                    SourceSnippet = null // real production shape for code objects
+                }
+            };
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries);
+            idx.MarkIndexComplete(entries.Count);
+
+            // ObjectService null → FindObject throws & is swallowed, so no hit is
+            // produced, but the entry still enters the scan loop (scannedObjects>=1).
+            var svc = new SourceSearchService(idx, null);
+            var json = svc.SearchAsJson(new SourceSearchCriteria { Pattern = "TokenNotInObjectName" });
+            var obj = JObject.Parse(json);
+
+            Assert.Equal("SourceSearchCompleted", obj["code"]?.ToString());
+            Assert.False(obj["result"]?["partial"]?.ToObject<bool>() ?? true);
+            // Pre-fix this was 0 (entry wrongly filtered out by the snippet pre-filter).
+            Assert.Equal(1, obj["result"]?["scannedObjects"]?.ToObject<int>());
+        }
+
+        [Fact]
+        public void Search_PartialIndex_ZeroHits_ReturnsDistinctCode()
+        {
+            // issue #25 #1/#3: a zero result on a still-walking index must NOT look
+            // like an authoritative empty-success. It carries a distinct code plus
+            // partial:true and a hint.
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry
+                {
+                    Name = "Foo",
+                    Type = "Procedure",
+                    Calls = new List<string>(),
+                    CalledBy = new List<string>()
+                }
+            };
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries, markReady: false);
+            idx.MarkUltraLiteReady(entries.Count);
+
+            var svc = new SourceSearchService(idx, null);
+            var json = svc.SearchAsJson(new SourceSearchCriteria { Pattern = "Whatever" });
+            var obj = JObject.Parse(json);
+
+            Assert.Equal("ok", obj["status"]?.ToString());
+            Assert.Equal("PartialIndexNoMatch", obj["code"]?.ToString());
+            Assert.True(obj["result"]?["partial"]?.ToObject<bool>());
+            Assert.NotNull(obj["result"]?["partialHint"]);
+            Assert.Equal("UltraLiteReady", obj["result"]?["indexStatus"]?.ToString());
+        }
+
+        [Fact]
         public void Search_HardTimeoutExceeded_ReturnsTimeoutEnvelope()
         {
             // Pathological fixture: enough Procedure entries to make the
