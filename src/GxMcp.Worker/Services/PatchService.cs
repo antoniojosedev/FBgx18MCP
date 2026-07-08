@@ -965,10 +965,8 @@ namespace GxMcp.Worker.Services
                 foreach (int idx in indices)
                 {
                     Logger.Info($"[PATCH] Fuzzy match found at line {idx}.");
-                    string indentation = GetIndentation(sourceLines[idx]);
-                    var indentedReplacement = ApplyIndentation(replacementLines, indentation);
                     resultLines.RemoveRange(idx, contextLines.Length);
-                    resultLines.InsertRange(idx, indentedReplacement);
+                    resultLines.InsertRange(idx, replacementLines);
                 }
                 return string.Join("\n", resultLines);
             }
@@ -1050,11 +1048,9 @@ namespace GxMcp.Worker.Services
                 if (NormalizeWhitespace(window) == normalizedTarget)
                 {
                     var resultLines = new List<string>(sourceLines);
-                    string indentation = GetIndentation(sourceLines[i]);
                     var replacementLines = newContent.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
-                    var indented = ApplyIndentation(replacementLines, indentation);
                     resultLines.RemoveRange(i, contextLines.Length);
-                    resultLines.InsertRange(i, indented);
+                    resultLines.InsertRange(i, replacementLines);
                     return string.Join("\n", resultLines);
                 }
             }
@@ -1170,9 +1166,7 @@ namespace GxMcp.Worker.Services
             indices.Reverse();
             foreach (int idx in indices)
             {
-                string indentation = GetIndentation(sourceLines[idx]);
-                var indentedInsert = ApplyIndentation(insertLinesRaw, indentation);
-                resultLines.InsertRange(idx + contextLines.Length, indentedInsert);
+                resultLines.InsertRange(idx + contextLines.Length, insertLinesRaw);
             }
 
             return string.Join("\n", resultLines);
@@ -1281,19 +1275,6 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrEmpty(s)) return string.Empty;
             return Regex.Replace(s.Trim(), @"\s+", " ");
-        }
-
-        private static string GetIndentation(string line)
-        {
-            var match = Regex.Match(line ?? string.Empty, @"^(\s*)");
-            return match.Success ? match.Groups[1].Value : string.Empty;
-        }
-
-        private static List<string> ApplyIndentation(IEnumerable<string> contentLines, string indentation)
-        {
-            var lines = contentLines.ToList();
-            if (string.IsNullOrEmpty(indentation)) return lines;
-            return lines.Select(line => indentation + line).ToList();
         }
 
         private int CountOccurrences(string text, string pattern)

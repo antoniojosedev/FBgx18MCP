@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+Worker-reliability, KB-lifecycle, and DX pass on large KBs (issue #26): the worker comes back on its own, an opened KB stays put, `genexus_search_source` can no longer take the worker down, and Design System objects write their tokens and styles to the right place.
+
+### Fixed
+
+- **`genexus_search_source` no longer crashes the worker.** Source search was running on a background thread while reaching into the GeneXus SDK, which is single-thread-bound — every call killed the worker and cost a recovery cycle. It now runs on the SDK thread, so searching source is safe and repeatable, even on a large KB and while the index is still building.
+- **The worker recovers on its own; no more phantom "respawning".** After a crash the gateway now retries the respawn and, if a health check finds no live worker, starts one — so you no longer get stranded watching `respawning` while nothing is actually coming up. Worker health reports the truth: `starting` when a process really is booting, `respawn_failed` (with the underlying error and a recovery step) when it isn't, and `no_worker` when no KB is open.
+- **An opened KB stays open across a worker recycle.** A KB opened by alias or path used to become `Unknown KB '…'` after a build or worker restart, forcing you to reopen it before every call. The gateway now remembers KBs you've opened for the whole session and transparently re-attaches (respawning the worker on demand) instead of failing.
+- **`genexus_edit` preserves your indentation.** A Replace whose anchor sat at a deep indent sometimes prepended that indent to every line of your content, stacking spurious tabs. Content is now written exactly as supplied.
+- **`genexus_read` trims cleanly instead of dropping the middle of a file.** When a read is too large for the context budget, the gateway now keeps whole lines from the front and tells you the exact line offset to continue from (`gatewaySafeNextOffset`), so you can page through predictably — no more silent middle gap with an offset that pointed past it.
+- **Design System objects write tokens and styles to their own sections.** Generating a Design System with a combined `tokens { … } styles { … }` source used to put the whole blob in the Tokens section and leave Styles empty. The MCP now routes the `tokens` block to Tokens and the `styles` block to Styles automatically; reading the object's source returns both, and `Tokens` / `Styles` are now addressable as individual parts.
+
+### Changed
+
+- **`genexus_kb action=open` makes the opened KB the active one.** `genexus_whoami` now reports the KB you're actually working against — the alias, its path, and how many workers are live — instead of the empty config scaffold.
+- **`genexus_kb action=set_default` accepts any open KB.** You can promote a KB you just opened (including an ad-hoc one opened by path) to the default; it's added to the config so it survives a restart. Previously this failed unless the alias was already hand-declared in the config.
+- **`genexus_doctor` takes an optional `kb`.** When more than one KB is open, pass `kb=<alias>` to choose which one to diagnose, instead of hitting an unresolvable "which KB?" error.
+- **Partial index results always announce themselves.** While the catalogue is still being walked, `genexus_list_objects` marks the result `partial: true` and nulls out the misleading total; a filter that matches nothing during the walk says the type or folder may simply not have been reached yet, rather than implying it doesn't exist.
+
 ## v2.12.0 — 2026-07-08
 
 Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong answers, make index progress observable, keep reads whole, and survive worker crashes without a manual reconnect.

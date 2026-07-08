@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -206,6 +207,63 @@ namespace GxMcp.Worker.Tests
             string fileLine  = "    &Cod = 1 ";  // extra trailing space
             int dist = PatchService.LevenshteinDistance(agentLine, fileLine);
             Assert.Equal(1, dist);
+        }
+
+        // -----------------------------------------------------------------
+        // BUG P5 — indentation doubling on the fuzzy-match fallback path.
+        //
+        // TryReplace used to call GetIndentation(sourceLines[idx]) on the anchor
+        // line and prepend that indentation to every line of the client-supplied
+        // replacement content via ApplyIndentation. The client always sends
+        // `content` already correctly indented, so this stacked the anchor's
+        // indentation on top of indentation the caller already applied, producing
+        // doubled/garbled indentation whenever the exact-match path failed and
+        // control fell into the fuzzy match (e.g. tabs-vs-spaces context). Fix:
+        // use the replacement lines verbatim, exactly like the exact-match path
+        // (`source.Replace(context, newContent)`) already does.
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public void TryReplace_FuzzyMatchPath_DoesNotDoubleIndentContent()
+        {
+            // Source uses tabs for nested indentation.
+            var sourceLines = new[]
+            {
+                "public void Foo() {",
+                "\t\tif (x) {",
+                "\t\t\tDoOld();",
+                "\t\t}",
+                "\t}"
+            };
+
+            // Context uses spaces instead of tabs, so the exact (Ordinal) match
+            // fails and the fuzzy (whitespace-normalized-per-line) match is what
+            // finds the anchor.
+            var contextLines = new[]
+            {
+                "    if (x) {",
+                "        DoOld();",
+                "    }"
+            };
+
+            // Replacement content sent by the client is ALREADY indented to match
+            // the file's tab style — it must come out verbatim, not re-indented.
+            string newContent = "\t\tif (x) {\n\t\t\tDoNew();\n\t\t}";
+
+            var patchService = new PatchService(null, null, null);
+            var method = typeof(PatchService).GetMethod("TryReplace",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.NotNull(method);
+
+            object[] parameters = { sourceLines, contextLines, newContent, 1, null, null, 0, false };
+            string result = (string)method!.Invoke(patchService, parameters);
+            string status = (string)parameters[4];
+
+            Assert.Equal("Applied", status);
+            Assert.Contains("\t\tif (x) {\n\t\t\tDoNew();\n\t\t}", result);
+            // Regression guard: the anchor's indentation must NOT be stacked on
+            // top of the already-indented content (would produce a 4-tab line).
+            Assert.DoesNotContain("\t\t\t\tif (x) {", result);
         }
     }
 }

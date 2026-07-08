@@ -36,7 +36,7 @@ namespace GxMcp.Gateway
             if (kb == null)
             {
                 // Fall back to default for callers outside a tool-call context (warmup, etc.).
-                kb = _kbResolver!.Resolve(null, _workerPool.ListOpen());
+                kb = _kbResolver!.Resolve(null, _workerPool.ListOpen(), _workerPool.ListKnown());
             }
             return await _workerPool.AcquireAsync(kb, CancellationToken.None);
         }
@@ -97,6 +97,13 @@ namespace GxMcp.Gateway
         }
         private static bool IsEagerRespawnSuppressed() =>
             System.Threading.Volatile.Read(ref _plannedExitSuppression) > 0;
+
+        // issue #26 P1: last eager-respawn failure per KB alias. When eager respawn
+        // exhausts its retries, we record (time, error) here so whoami/health can report
+        // an honest "respawn_failed" with the real cause + a recovery hint, instead of a
+        // perpetual, misleading "respawning" while no process is actually coming up.
+        private static readonly ConcurrentDictionary<string, (DateTime AtUtc, string Error)> _respawnFailures =
+            new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
         private static bool _stdioActive;
         private static readonly TimeSpan _pendingRequestRetention = TimeSpan.FromMinutes(65);
         private static readonly string _logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gateway_debug.log");
@@ -799,11 +806,7 @@ namespace GxMcp.Gateway
                 {
                     idx["status"] = "Booting";
                 }
-                payload["workerHealth"] = new JObject
-                {
-                    ["status"] = "respawning",
-                    ["hint"] = "Worker process is starting (cold load ~10–15s). Retry whoami in a few seconds; tool calls during this window may return a 'crashed/exited' error and should be retried."
-                };
+                payload["workerHealth"] = BuildHonestWorkerHealth(payload);
             }
             return payload;
         }
@@ -840,6 +843,87 @@ namespace GxMcp.Gateway
             catch { return false; }
         }
 
+        // issue #26 P1: report the worker's REAL state instead of a blanket "respawning".
+        // The old code always said "respawning" whenever no live worker was found — even
+        // when nothing was actually spawning and no self-heal would ever happen, stranding
+        // the agent for minutes. This distinguishes:
+        //   starting        — a process really is coming up right now (or we just kicked one)
+        //   respawn_failed   — eager respawn exhausted its retries; needs manual recovery
+        //   no_worker        — no KB opened yet / nothing to run
+        // and, crucially, SELF-HEALS: when there's a known KB but no worker and none
+        // spawning, it kicks an AcquireAsync so the worker actually comes back without the
+        // agent having to run worker_reload force by hand.
+        private static JObject BuildHonestWorkerHealth(JObject payload)
+        {
+            try
+            {
+                var pool = _workerPool;
+                if (pool == null)
+                    return new JObject { ["status"] = "no_worker", ["hint"] = "Gateway not fully initialised yet. Retry whoami shortly." };
+
+                // Which KB does the session care about? Prefer whoami's resolved active
+                // alias, else the AsyncLocal, else the single/first known KB.
+                string? alias = payload?["kb"]?["active"]?.ToString();
+                if (string.IsNullOrEmpty(alias)) alias = _currentKb.Value?.NormalizedAlias;
+                var known = pool.ListKnown();
+                if (string.IsNullOrEmpty(alias)) alias = known.FirstOrDefault()?.NormalizedAlias;
+
+                if (!string.IsNullOrEmpty(alias) && pool.IsSpawning(alias))
+                {
+                    return new JObject
+                    {
+                        ["status"] = "starting",
+                        ["hint"] = "Worker process is coming up (cold load ~10–15s). Retry in a few seconds; tool calls during this window may return 'crashed/exited' and should be retried."
+                    };
+                }
+
+                if (!string.IsNullOrEmpty(alias)
+                    && _respawnFailures.TryGetValue(alias!, out var fail))
+                {
+                    return new JObject
+                    {
+                        ["status"] = "respawn_failed",
+                        ["alias"] = alias,
+                        ["error"] = fail.Error,
+                        ["failedAtUtc"] = fail.AtUtc,
+                        ["hint"] = "The gateway tried and failed to respawn this KB's worker. Recover with genexus_worker_reload mode=soft force=true, then reopen/retry. This is NOT a transient cold-start."
+                    };
+                }
+
+                // No live worker, not spawning, no recorded failure. If we know the KB,
+                // self-heal by kicking a spawn now (fire-and-forget) and report "starting".
+                if (!string.IsNullOrEmpty(alias))
+                {
+                    var handle = known.FirstOrDefault(h =>
+                        string.Equals(h.NormalizedAlias, alias, StringComparison.OrdinalIgnoreCase));
+                    if (handle != null)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try { await pool.AcquireAsync(handle, new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token).ConfigureAwait(false); }
+                            catch (Exception ex) { _respawnFailures[handle.NormalizedAlias] = (DateTime.UtcNow, ex.Message); }
+                        });
+                        return new JObject
+                        {
+                            ["status"] = "starting",
+                            ["alias"] = alias,
+                            ["hint"] = "No live worker was found for this KB; the gateway is starting one now. Retry in a few seconds."
+                        };
+                    }
+                }
+
+                return new JObject
+                {
+                    ["status"] = "no_worker",
+                    ["hint"] = "No KB worker is running. Open a KB with genexus_kb action=open path=<kbPath> (or set a DefaultKb), then retry."
+                };
+            }
+            catch (Exception ex)
+            {
+                return new JObject { ["status"] = "unknown", ["hint"] = "Worker health probe failed: " + ex.Message };
+            }
+        }
+
         internal static JObject BuildWhoamiPayload() => BuildWhoamiPayload(false);
 
         // issue #25 #5: whoami defaulted to dumping ~3k tokens of STATIC content
@@ -852,8 +936,37 @@ namespace GxMcp.Gateway
         internal static JObject BuildWhoamiPayload(bool verbose)
         {
             var cfg = _activeConfig;
-            string? kbPath = cfg?.Environment?.KBPath;
             string? gxPath = cfg?.GeneXus?.InstallationPath;
+
+            // issue #26 P4/P1: report the KB the session is ACTUALLY working against,
+            // not the raw Environment.KBPath scaffold (which `kb open` never updated, so
+            // whoami used to keep showing the empty "YourKB" while real work went to a
+            // different, explicitly-opened KB). Priority: currently-open worker matching
+            // DefaultKb → any open worker → a KB opened this session (known) → the
+            // declared DefaultKb entry → legacy Environment.KBPath.
+            string? activeAlias = null;
+            string? kbPath = null;
+            try
+            {
+                var pool = _workerPool;
+                var open = pool?.ListOpen() ?? new List<KbHandle>();
+                var known = pool?.ListKnown() ?? new List<KbHandle>();
+                string? defAlias = cfg?.Environment?.DefaultKb;
+                KbHandle? pick =
+                    (defAlias != null ? open.FirstOrDefault(h => string.Equals(h.Alias, defAlias, StringComparison.OrdinalIgnoreCase)) : null)
+                    ?? open.FirstOrDefault()
+                    ?? (defAlias != null ? known.FirstOrDefault(h => string.Equals(h.Alias, defAlias, StringComparison.OrdinalIgnoreCase)) : null)
+                    ?? known.FirstOrDefault();
+                if (pick != null) { activeAlias = pick.Alias; kbPath = pick.Path; }
+                else if (!string.IsNullOrWhiteSpace(defAlias))
+                {
+                    var decl = cfg?.Environment?.KBs?.FirstOrDefault(
+                        k => string.Equals(k.Alias, defAlias, StringComparison.OrdinalIgnoreCase));
+                    if (decl != null) { activeAlias = decl.Alias; kbPath = decl.Path; }
+                }
+            }
+            catch { }
+            if (string.IsNullOrEmpty(kbPath)) kbPath = cfg?.Environment?.KBPath;
             string? kbName = !string.IsNullOrEmpty(kbPath) ? Path.GetFileName(kbPath!.TrimEnd('\\', '/')) : null;
             bool kbExists = !string.IsNullOrEmpty(kbPath) && Directory.Exists(kbPath);
             bool kbValid = false;
@@ -877,7 +990,12 @@ namespace GxMcp.Gateway
                     ["name"] = kbName,
                     ["path"] = kbPath,
                     ["exists"] = kbExists,
-                    ["looksValid"] = kbValid
+                    ["looksValid"] = kbValid,
+                    // issue #26 P4: the alias actually active this session (null if none
+                    // opened yet), and how many workers are live — so the agent can tell
+                    // an opened KB apart from the config scaffold.
+                    ["active"] = activeAlias,
+                    ["openCount"] = _workerPool?.ListOpen().Count ?? 0
                 },
                 ["geneXus"] = new JObject
                 {
@@ -1797,31 +1915,48 @@ namespace GxMcp.Gateway
                 }
                 Task.Run(async () =>
                 {
-                    try
+                    // issue #26 P1: retry the respawn a few times with backoff instead of
+                    // giving up after a single throw. A transient spawn failure used to
+                    // leave the pool with no worker AND no process coming up, while whoami
+                    // kept reporting "respawning" forever (nothing was). On final failure we
+                    // record it so health can report the truth.
+                    const int maxAttempts = 3;
+                    Exception? lastEx = null;
+                    for (int attempt = 1; attempt <= maxAttempts; attempt++)
                     {
-                        var ctSrc = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                        // v2.6.8 (review C4): close the dead entry so AcquireAsync's fast path
-                        // can't return the just-exited WorkerProcess if WorkerPool's own
-                        // entry-removal subscriber hasn't run yet.
-                        try { _workerPool!.Close(kb.NormalizedAlias); } catch { }
-                        await _workerPool!.AcquireAsync(kb, ctSrc.Token).ConfigureAwait(false);
-                        // v2.6.8 (review C5): no Booting stamp here — the freshly-spawned
-                        // worker will push its own state via GetIndexState; clobbering it
-                        // would silence real progress info for the 15s cache window.
-                        Log($"[Respawn] Replacement worker spawned for KB '{kb.Alias}'.");
-                        // issue #25 #2: the index bootstrap fires once per gateway process,
-                        // so a crash-respawned worker (same gateway) otherwise never gets a
-                        // reindex trigger and its index stays Cold until an explicit
-                        // lifecycle call — forcing the agent to re-walk. Re-arm and re-fire
-                        // the one-shot: BulkIndex(force:false) reuses the persisted on-disk
-                        // snapshot (delta-on-open) instead of a cold 38k re-walk.
-                        Interlocked.Exchange(ref _indexBootstrapStarted, 0);
-                        TriggerIndexBootstrapOnce();
+                        try
+                        {
+                            var ctSrc = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                            // Drop only the dead LIVE entry so AcquireAsync's fast path can't
+                            // return the just-exited WorkerProcess — but keep the durable
+                            // _known record (issue #26 P3) so the KB stays resolvable.
+                            try { _workerPool!.DropLiveEntry(kb.NormalizedAlias); } catch { }
+                            await _workerPool!.AcquireAsync(kb, ctSrc.Token).ConfigureAwait(false);
+                            _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
+                            Log($"[Respawn] Replacement worker spawned for KB '{kb.Alias}' (attempt {attempt}).");
+                            // issue #25 #2: the index bootstrap fires once per gateway process,
+                            // so a crash-respawned worker (same gateway) otherwise never gets a
+                            // reindex trigger and its index stays Cold until an explicit
+                            // lifecycle call — forcing the agent to re-walk. Re-arm and re-fire
+                            // the one-shot: BulkIndex(force:false) reuses the persisted on-disk
+                            // snapshot (delta-on-open) instead of a cold 38k re-walk.
+                            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
+                            TriggerIndexBootstrapOnce();
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            lastEx = ex;
+                            Log($"[Respawn] Attempt {attempt}/{maxAttempts} to respawn worker for KB '{kb.Alias}' failed: {ex.Message}");
+                            if (attempt < maxAttempts)
+                            {
+                                try { await Task.Delay(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false); } catch { }
+                            }
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        Log($"[Respawn] Failed to eagerly respawn worker for KB '{kb.Alias}': {ex.Message}. Lazy spawn will retry on next call.");
-                    }
+                    _respawnFailures[kb.NormalizedAlias] = (DateTime.UtcNow, lastEx?.Message ?? "unknown");
+                    Log($"[Respawn] Gave up respawning worker for KB '{kb.Alias}' after {maxAttempts} attempts. " +
+                        $"whoami/health will report respawn_failed. Recovery: genexus_worker_reload mode=soft force=true.");
                 });
             };
         }
@@ -2300,7 +2435,7 @@ namespace GxMcp.Gateway
                             // Strip `kb` from worker-bound args (worker is single-KB scoped).
                             argsObj?.Remove("kb");
                         }
-                        _currentKb.Value = _kbResolver.Resolve(kbArg, _workerPool.ListOpen());
+                        _currentKb.Value = _kbResolver.Resolve(kbArg, _workerPool.ListOpen(), _workerPool.ListKnown());
                     }
                     catch (KbResolutionException ex)
                     {
@@ -2747,9 +2882,29 @@ namespace GxMcp.Gateway
                                     throw new InvalidOperationException("No active config to persist.");
                                 var declared = _activeConfig.Environment?.KBs?.FirstOrDefault(
                                     k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
-                                if (declared == null)
-                                    throw new KbResolutionException("KB_NOT_FOUND",
-                                        $"Alias '{alias}' not in config.Environment.KBs[]. Add it first or use 'open' with a path.");
+                                // issue #26 P4: accept any alias that is currently open or was
+                                // opened this session (ad-hoc via `open path=...`), not just the
+                                // ones pre-declared in config.json. When the alias exists only as
+                                // an open/known handle, promote it to a declared KbEntry so the
+                                // default survives a restart — instead of dead-ending with
+                                // KB_NOT_FOUND right after `open` succeeded.
+                                string resolvedAlias;
+                                string? resolvedPath = null;
+                                if (declared != null)
+                                {
+                                    resolvedAlias = declared.Alias;
+                                    resolvedPath = declared.Path;
+                                }
+                                else
+                                {
+                                    var known = _workerPool.ListKnown().FirstOrDefault(
+                                        k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                    if (known == null)
+                                        throw new KbResolutionException("KB_NOT_FOUND",
+                                            $"Alias '{alias}' is neither declared in config.Environment.KBs[] nor currently open. Use 'open' with a path first, or add it to config.");
+                                    resolvedAlias = known.Alias;
+                                    resolvedPath = known.Path;
+                                }
                                 // Patch the JSON on disk to preserve any fields we don't model.
                                 string configPath = Configuration.CurrentConfigPath!;
                                 JObject root;
@@ -2760,13 +2915,33 @@ namespace GxMcp.Gateway
                                     envObj = new JObject();
                                     root["Environment"] = envObj;
                                 }
-                                envObj["DefaultKb"] = declared.Alias;
+                                bool promoted = false;
+                                if (declared == null && !string.IsNullOrWhiteSpace(resolvedPath))
+                                {
+                                    // Persist the ad-hoc KB as a declared entry so it's resolvable
+                                    // after a restart, mirroring the in-memory _known registry.
+                                    if (envObj["KBs"] is not JArray kbsArr)
+                                    {
+                                        kbsArr = new JArray();
+                                        envObj["KBs"] = kbsArr;
+                                    }
+                                    bool alreadyThere = kbsArr.OfType<JObject>().Any(o =>
+                                        string.Equals(o["Alias"]?.ToString(), resolvedAlias, StringComparison.OrdinalIgnoreCase));
+                                    if (!alreadyThere)
+                                    {
+                                        kbsArr.Add(new JObject { ["Alias"] = resolvedAlias, ["Path"] = resolvedPath });
+                                        _activeConfig.Environment!.KBs.Add(new KbEntry { Alias = resolvedAlias, Path = resolvedPath });
+                                        promoted = true;
+                                    }
+                                }
+                                envObj["DefaultKb"] = resolvedAlias;
                                 System.IO.File.WriteAllText(configPath, root.ToString(Formatting.Indented));
-                                _activeConfig.Environment!.DefaultKb = declared.Alias;
+                                _activeConfig.Environment!.DefaultKb = resolvedAlias;
                                 payload = new JObject
                                 {
-                                    ["defaultKb"] = declared.Alias,
-                                    ["persistedTo"] = configPath
+                                    ["defaultKb"] = resolvedAlias,
+                                    ["persistedTo"] = configPath,
+                                    ["promotedToDeclared"] = promoted
                                 };
                                 break;
                             }
@@ -2787,7 +2962,7 @@ namespace GxMcp.Gateway
                                 // No path → resolve the alias against config-declared KBs.
                                 else if (!string.IsNullOrWhiteSpace(alias) && _activeConfig != null)
                                 {
-                                    handleToOpen = new KbResolver(_activeConfig).Resolve(alias, _workerPool.ListOpen());
+                                    handleToOpen = new KbResolver(_activeConfig).Resolve(alias, _workerPool.ListOpen(), _workerPool.ListKnown());
                                 }
                                 else
                                 {
@@ -2795,11 +2970,21 @@ namespace GxMcp.Gateway
                                 }
 
                                 var w = await _workerPool.AcquireAsync(handleToOpen, CancellationToken.None);
+                                // issue #26 P4: opening a KB makes it the active one for this
+                                // session so whoami/doctor and no-`kb`-arg calls reflect it,
+                                // instead of continuing to report the empty scaffold. This is
+                                // in-memory only; `set_default` persists to config.json.
+                                if (_activeConfig?.Environment != null)
+                                {
+                                    _activeConfig.Environment.DefaultKb = handleToOpen.Alias;
+                                }
+                                _currentKb.Value = handleToOpen;
                                 payload = new JObject
                                 {
                                     ["opened"] = handleToOpen.Alias,
                                     ["path"] = handleToOpen.Path,
-                                    ["workerPid"] = w?.Pid
+                                    ["workerPid"] = w?.Pid,
+                                    ["active"] = true
                                 };
                                 break;
                             }
@@ -4474,42 +4659,70 @@ namespace GxMcp.Gateway
                     }
                 }
 
-                // Intelligent Truncation: Preserve metadata, prune large content
-                var fieldsToTruncate = new[] { "source", "content", "code", "fileContent", "details" };
-                
+                bool isRead = string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase);
+
+                // issue #26 P7: for genexus_read source/content, the gateway used to
+                // head+tail slice and DROP THE MIDDLE — leaving a silent hole and an
+                // offset that no longer described the returned bytes. Replace that with a
+                // single, predictable, LINE-ALIGNED PREFIX cut that shares the worker's
+                // line-based pagination model: keep whole lines from the front, tell the
+                // caller exactly which limit hit and the safe line offset to continue from.
+                // No middle is ever dropped.
+                if (isRead && !isXmlMetadataRead)
+                {
+                    foreach (var field in new[] { "source", "content", "code" })
+                    {
+                        // Worker already paginated this page — its offset/suggestedNextOffset
+                        // are authoritative; don't second-guess with a gateway cut.
+                        if (workerPaginatedRead && string.Equals(field, "source", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (obj[field]?.Type != JTokenType.String) continue;
+                        string val = obj[field]!.ToString();
+                        const int readFieldBudget = 20000;
+                        if (val.Length <= readFieldBudget) continue;
+
+                        // Cut on a line boundary at/under the budget so we never split a line.
+                        int cut = val.LastIndexOf('\n', Math.Min(readFieldBudget, val.Length) - 1);
+                        if (cut <= 0) cut = Math.Min(readFieldBudget, val.Length); // no newline: hard prefix
+                        string kept = val.Substring(0, cut);
+                        int keptLines = kept.Length == 0 ? 0 : kept.Split('\n').Length;
+                        int baseOffset = obj["offset"]?.ToObject<int?>() ?? 0;
+                        int safeNextOffset = baseOffset + keptLines;
+
+                        obj[field] = kept;
+                        obj["isTruncated"] = true;
+                        obj["truncatedByGateway"] = true;
+                        obj["truncatedBy"] = "gateway";
+                        obj["gatewaySafeNextOffset"] = safeNextOffset;
+                        obj["gatewayTruncationHint"] =
+                            $"Gateway trimmed '{field}' to the context budget by keeping whole lines from the front (NO middle dropped). " +
+                            $"Continue cleanly with genexus_read offset={safeNextOffset} (line-based) to read the next page.";
+                    }
+                }
+
+                // Non-read tools (and read metadata fields): head+tail trim is fine here —
+                // these are derived blobs, not paginable source, so a middle elision just
+                // fits the budget without a pagination contract to break.
+                var fieldsToTruncate = (isRead && !isXmlMetadataRead)
+                    ? new[] { "fileContent", "details" }
+                    : new[] { "source", "content", "code", "fileContent", "details" };
                 foreach (var field in fieldsToTruncate)
                 {
-                    // Never re-slice the `source` of a read the worker already
-                    // paginated — that is the mid-file-hole bug. The worker bounded it
-                    // to ~16 KB and its offset/suggestedNextOffset describe THAT page;
-                    // a second char-slice here would silently drop the middle and
-                    // orphan the pagination fields.
-                    if (workerPaginatedRead && string.Equals(field, "source", StringComparison.OrdinalIgnoreCase))
-                        continue;
                     var fieldValue = obj[field];
                     if (fieldValue != null && fieldValue.Type == JTokenType.String)
                     {
                         string val = fieldValue.ToString();
-                        int fieldBudget = isXmlMetadataRead
-                            ? 180000
-                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 20000 : 20000;
-                        int headBudget = isXmlMetadataRead
-                            ? 140000
-                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 15000 : 15000;
-                        int tailBudget = isXmlMetadataRead
-                            ? 40000
-                            : string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) ? 4000 : 5000;
+                        int fieldBudget = isXmlMetadataRead ? 180000 : 20000;
+                        int headBudget = isXmlMetadataRead ? 140000 : 15000;
+                        int tailBudget = isXmlMetadataRead ? 40000 : 5000;
                         if (val.Length > fieldBudget)
                         {
                             obj[field] = val.Substring(0, headBudget) +
                                            "\n\n[... TRUNCATED BY GATEWAY TOKEN BUDGET ...] \n\n" +
                                            val.Substring(val.Length - tailBudget);
                             obj["isTruncated"] = true;
-                            // issue #25 #6: distinguish the gateway cut from the worker's
-                            // line pagination so the caller knows the offset/suggestedNextOffset
-                            // fields describe the worker page, NOT this char-sliced view.
                             obj["truncatedByGateway"] = true;
-                            obj["gatewayTruncationHint"] = "Gateway trimmed this field to fit the context budget (a middle slice was dropped). Do NOT page across this cut with suggestedNextOffset; re-request with a smaller `limit`/`offset` for exact bytes.";
+                            obj["gatewayTruncationHint"] = "Gateway trimmed this field to fit the context budget (a middle slice was dropped). This field is not paginable; re-request the specific object/part if you need the full bytes.";
                         }
                     }
                 }

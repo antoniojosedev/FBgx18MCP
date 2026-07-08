@@ -169,10 +169,56 @@ namespace GxMcp.Worker.Structure
             }
         }
 
+        // issue #26 (Humberto DSO case): a Design System object exposes TWO ISource parts —
+        // Tokens (75e52d99-…) and Styles (c6b14574-…). The generic ISource fallback below
+        // treats any non-Events source alias as matching the FIRST ISource part, which
+        // collapsed both onto Tokens. These helpers make the two parts individually
+        // addressable and let the write/read paths route tokens vs styles correctly.
+        internal static readonly Guid DesignSystemTokensPartGuid = Guid.Parse("75e52d99-6edd-4bad-a1d7-dcc9b7f000ef");
+        internal static readonly Guid DesignSystemStylesPartGuid = Guid.Parse("c6b14574-4f5f-4e35-aaa7-e322e88a9a10");
+
+        public static bool IsDesignSystem(KBObject obj)
+        {
+            var n = obj?.TypeDescriptor?.Name;
+            return !string.IsNullOrEmpty(n) &&
+                   n.IndexOf("DesignSystem", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>Resolve the Tokens or Styles part of a Design System object (by descriptor
+        /// name, then GUID). Returns null if not a DSO or the part isn't present.</summary>
+        public static KBObjectPart GetDesignSystemPart(KBObject obj, bool styles)
+        {
+            if (!IsDesignSystem(obj)) return null;
+            string wantName = styles ? "Styles" : "Tokens";
+            Guid wantGuid = styles ? DesignSystemStylesPartGuid : DesignSystemTokensPartGuid;
+            foreach (KBObjectPart p in obj.Parts)
+            {
+                if (p == null) continue;
+                if (string.Equals(p.TypeDescriptor?.Name, wantName, StringComparison.OrdinalIgnoreCase)) return p;
+            }
+            return obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type == wantGuid);
+        }
+
         public static KBObjectPart GetPart(KBObject obj, string partName)
         {
+            // issue #26: DSO Tokens/Styles are addressable by name directly, ahead of the
+            // generic ISource fallback that would otherwise map both to the first source part.
+            if (IsDesignSystem(obj) && !string.IsNullOrEmpty(partName))
+            {
+                if (partName.Equals("Tokens", StringComparison.OrdinalIgnoreCase))
+                {
+                    var tp = GetDesignSystemPart(obj, styles: false);
+                    if (tp != null) return tp;
+                }
+                else if (partName.Equals("Styles", StringComparison.OrdinalIgnoreCase))
+                {
+                    var sp = GetDesignSystemPart(obj, styles: true);
+                    if (sp != null) return sp;
+                }
+            }
+
             Guid partGuid = GetPartGuid(obj.TypeDescriptor.Name, partName);
-            
+
             if (partGuid != Guid.Empty)
             {
                 var part = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type == partGuid);
@@ -243,6 +289,13 @@ namespace GxMcp.Worker.Structure
                 if (string.Equals(sourceName, "Events", StringComparison.OrdinalIgnoreCase))
                 {
                     return "Events";
+                }
+                // issue #26: a Design System has two ISource parts — keep them distinct
+                // instead of collapsing both to "Source" (which hid the Styles part).
+                if (string.Equals(sourceName, "Tokens", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(sourceName, "Styles", StringComparison.OrdinalIgnoreCase))
+                {
+                    return sourceName;
                 }
 
                 return "Source";

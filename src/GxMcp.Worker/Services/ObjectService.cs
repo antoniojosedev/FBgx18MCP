@@ -1588,6 +1588,27 @@ namespace GxMcp.Worker.Services
                 JObject result = new JObject();
                 result["part"] = partName;
 
+                // issue #26 (Humberto DSO case): reading the generic "Source" of a Design
+                // System returns BOTH parts — tokens block then styles block — so the whole
+                // object is visible and an agent can round-trip it back through a single
+                // part="Source" write (which re-splits). Explicit part="Tokens"/"Styles"
+                // still reads just that one part via the normal ISource path below.
+                if (GxMcp.Worker.Structure.PartAccessor.IsDesignSystem(obj)
+                    && (partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
+                        || partName.Equals("Code", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var tp = GxMcp.Worker.Structure.PartAccessor.GetDesignSystemPart(obj, styles: false) as ISource;
+                    var sp = GxMcp.Worker.Structure.PartAccessor.GetDesignSystemPart(obj, styles: true) as ISource;
+                    string tsrc = tp?.Source ?? "";
+                    string ssrc = sp?.Source ?? "";
+                    string combined = tsrc;
+                    if (ssrc.Length > 0)
+                        combined = combined.Length > 0 ? tsrc.TrimEnd() + "\n\n" + ssrc : ssrc;
+                    ProcessSourceContent(obj, combined, offset, limit, result, client);
+                    Logger.Info("ReadSource (DesignSystem tokens+styles) SUCCESS");
+                    return result.ToString();
+                }
+
                 // Virtual/DSL Parts (Structure for Trn/Table/SDT)
                 // We process this BEFORE the generic part check because Tables might not have a physical Part GUID mapped,
                 // and even if they do, we want our custom DSL representation.

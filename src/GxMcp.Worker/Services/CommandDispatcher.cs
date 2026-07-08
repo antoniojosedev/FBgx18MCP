@@ -296,7 +296,14 @@ namespace GxMcp.Worker.Services
                 method = method.ToLower();
 
                 // Only allow strictly non-SDK or pure read-cache operations to bypass STA thread
-                if (method == "ping" || method == "search" || method == "health")
+                if (method == "ping" || method == "health")
+                    return true;
+
+                // issue #26 P2: 'search' is index-only (in-memory) EXCEPT SearchSource,
+                // which reads object Source/WebForm XML via the GeneXus SDK and MUST run
+                // on the STA thread. Routing SearchSource to the MTA thread-pool path
+                // caused a native COM access-violation that crashed the worker 100% of the time.
+                if (method == "search" && !string.Equals(action, "SearchSource", StringComparison.OrdinalIgnoreCase))
                     return true;
 
                 if (method == "list")

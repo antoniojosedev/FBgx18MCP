@@ -113,13 +113,20 @@ namespace GxMcp.Worker.Services
                 // walk is still in progress and the index is growing; we surface
                 // `partial:true` so the agent knows to retry for the full set.
                 string indexStatusUpper = indexState?.Status ?? string.Empty;
-                bool isUltraLite = string.Equals(indexStatusUpper, "UltraLiteReady", StringComparison.OrdinalIgnoreCase);
+                // issue #26 P9: `indexPartial` is the single source of truth for
+                // "the catalogue walk is demonstrably incomplete". Ready/LiteReady/
+                // Enriching all mean the full object catalogue HAS been walked
+                // (lite pass populates every projected field), so only
+                // UltraLiteReady is partial today. Every downstream signal
+                // (total/hasMore/pagination/empty-page hints) must key off this
+                // flag rather than assuming non-UltraLite == complete.
+                bool indexPartial = string.Equals(indexStatusUpper, "UltraLiteReady", StringComparison.OrdinalIgnoreCase);
                 bool indexNotReady = index == null
                     || index.Objects.Count == 0
                     || !(string.Equals(indexStatusUpper, "Ready", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(indexStatusUpper, "LiteReady", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(indexStatusUpper, "Enriching", StringComparison.OrdinalIgnoreCase)
-                        || isUltraLite);
+                        || indexPartial);
                 if (indexNotReady)
                 {
                     _indexCacheService.EnsureLoadStarted();
@@ -140,6 +147,13 @@ namespace GxMcp.Worker.Services
                 {
                     IEnumerable<SearchIndex.IndexEntry> entries;
                     source = "index-all";
+                    // issue #26 P9: a parent/parentPath filter miss during a partial
+                    // walk (indexPartial) is NOT proof the folder is empty/absent —
+                    // the walk may simply not have reached it yet. Track the missed
+                    // key so we can attach the same partial signaling the
+                    // typeFilter-miss path already gets, instead of a bare empty page.
+                    bool parentMiss = false;
+                    string missedParentKey = null;
 
                     if (!string.IsNullOrWhiteSpace(parentPathFilter) &&
                         index.ChildrenByParent != null &&
@@ -152,6 +166,8 @@ namespace GxMcp.Worker.Services
                     {
                         entries = Enumerable.Empty<SearchIndex.IndexEntry>();
                         source = "index-parentPath-miss";
+                        parentMiss = true;
+                        missedParentKey = parentPathFilter;
                     }
                     else if (!string.IsNullOrWhiteSpace(parentFilter) &&
                              index.ChildrenByParent != null &&
@@ -164,6 +180,8 @@ namespace GxMcp.Worker.Services
                     {
                         entries = Enumerable.Empty<SearchIndex.IndexEntry>();
                         source = "index-parent-miss";
+                        parentMiss = true;
+                        missedParentKey = parentFilter;
                     }
                     else
                     {
@@ -316,7 +334,7 @@ namespace GxMcp.Worker.Services
                     // subset, not the KB. Make that impossible to ignore: mark the
                     // total partial and force hasMore=true (more objects ARE coming),
                     // so callers never treat this page as the complete set.
-                    if (isUltraLite)
+                    if (indexPartial)
                     {
                         paged["partial"] = true;
                         paged["indexStatus"] = "UltraLiteReady";
@@ -328,6 +346,21 @@ namespace GxMcp.Worker.Services
                             pgn["total"] = JValue.CreateNull();   // true total unknown while walking
                             pgn["totalIsPartial"] = true;
                             pgn["hasMore"] = true;
+                        }
+                        // issue #26 P9: a parent/parentPath miss during a partial walk
+                        // must not read as an authoritative "folder is empty" — override
+                        // the generic empty_reason and attach a targeted hint (mirrors
+                        // the typeFilter-miss block below, for the case where no
+                        // typeFilter was supplied so that block never runs).
+                        if (array.Count == 0 && parentMiss)
+                        {
+                            var parentMeta = paged["_meta"] as JObject ?? new JObject();
+                            parentMeta["empty_reason"] = "partial_walk_incomplete";
+                            if (parentMeta["filterHint"] == null)
+                            {
+                                parentMeta["filterHint"] = "parent/parentPath '" + missedParentKey + "' matched nothing SO FAR, but the index is still walking — this folder may exist and just hasn't been reached yet. Re-issue when whoami reports indexStatus=Ready before concluding it is absent.";
+                            }
+                            paged["_meta"] = parentMeta;
                         }
                     }
                     if (lastEmitted != null && (startIndex + array.Count) < totalIndex)
@@ -355,7 +388,7 @@ namespace GxMcp.Worker.Services
                         // issue #25 #4: while the walk is partial, typesAvailable only
                         // lists types walked so far — a "missing" type may simply not
                         // have been reached yet, so don't imply it is absent.
-                        meta["filterHint"] = isUltraLite
+                        meta["filterHint"] = indexPartial
                             ? "typeFilter='" + string.Join(",", filterTypes) + "' matched nothing SO FAR, but the index is still walking — this type may exist and just hasn't been reached yet. typesAvailable lists only types seen so far. Re-issue when indexStatus=Ready before concluding it is absent."
                             : "typeFilter='" + string.Join(",", filterTypes) + "' matched nothing. See typesAvailable for canonical type names actually present in this KB.";
                         paged["_meta"] = meta;

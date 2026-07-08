@@ -18,6 +18,14 @@ namespace GxMcp.Gateway
         public KbResolver(Configuration config) { _config = config; }
 
         public KbHandle Resolve(string? kbArg, IReadOnlyCollection<KbHandle> openKbs)
+            => Resolve(kbArg, openKbs, null);
+
+        // issue #26 P3: `knownKbs` (optional) is the durable set of aliases the user has
+        // opened this session — it survives worker recycles, unlike `openKbs`. An explicit
+        // alias is matched against declared → open → known → path, so a KB whose worker is
+        // momentarily down stays resolvable instead of failing with "Unknown KB". The
+        // empty-arg (no kb passed) ambiguity/default logic still uses only `openKbs`.
+        public KbHandle Resolve(string? kbArg, IReadOnlyCollection<KbHandle> openKbs, IReadOnlyCollection<KbHandle>? knownKbs)
         {
             if (string.IsNullOrWhiteSpace(kbArg))
             {
@@ -57,6 +65,14 @@ namespace GxMcp.Gateway
             var openMatch = openKbs.FirstOrDefault(
                 k => string.Equals(k.Alias, kbArg, StringComparison.OrdinalIgnoreCase));
             if (openMatch != null) return openMatch;
+
+            // issue #26 P3: fall back to the durable known set (survives worker recycle).
+            if (knownKbs != null)
+            {
+                var knownMatch = knownKbs.FirstOrDefault(
+                    k => string.Equals(k.Alias, kbArg, StringComparison.OrdinalIgnoreCase));
+                if (knownMatch != null) return knownMatch;
+            }
 
             if (Path.IsPathRooted(kbArg) && Directory.Exists(kbArg))
             {

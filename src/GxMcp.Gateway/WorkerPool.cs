@@ -25,6 +25,15 @@ namespace GxMcp.Gateway
         private readonly ConcurrentDictionary<string, Entry> _entries =
             new ConcurrentDictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
 
+        // issue #26 P3: durable alias→handle registry that OUTLIVES the worker
+        // process. `_entries` is torn down the instant a worker exits (crash, idle
+        // timeout, reload), which used to drop the only record of an ad-hoc opened
+        // KB and made the next call fail with "Unknown KB". This map is populated on
+        // every acquire/open and cleared ONLY on an explicit Close/Evict, so a KB the
+        // user opened stays resolvable (and auto-re-attaches) across worker recycles.
+        private readonly ConcurrentDictionary<string, KbHandle> _known =
+            new ConcurrentDictionary<string, KbHandle>(StringComparer.OrdinalIgnoreCase);
+
         // Item 53: configured warm-spare count. Pre-spawn up to N workers
         // (bound to declared KBs in config.Environment.KBs[]) so the first
         // client tool call after process start doesn't pay the cold-start
@@ -53,6 +62,11 @@ namespace GxMcp.Gateway
             // AcquireAsync callers that hit the fast path while Draining==true wait
             // on DrainComplete before returning the freshly-spawned replacement.
             public volatile bool Draining;
+            // issue #26 P1: true while a worker process is actively being spawned for
+            // this entry (gate held, Start() not yet returned). Lets whoami/health tell
+            // "a process really IS coming up" apart from "no worker and nothing spawning"
+            // instead of reporting a perpetual, misleading "respawning".
+            public volatile bool Spawning;
             public TaskCompletionSource<bool> DrainComplete = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
@@ -61,6 +75,20 @@ namespace GxMcp.Gateway
                 .Where(e => e.Worker != null)
                 .Select(e => e.Handle)
                 .ToArray();
+
+        // issue #26 P3: every KB the user has opened this session, whether or not its
+        // worker is currently alive. Callers resolve aliases against this so a momentarily
+        // down worker doesn't make its KB "Unknown"; AcquireAsync then respawns on demand.
+        public IReadOnlyList<KbHandle> ListKnown() => _known.Values.ToArray();
+
+        // issue #26 P1: true when a worker for this alias is in the middle of spawning
+        // (or a planned drain-and-replace is in progress). whoami uses this to report an
+        // honest "starting" instead of "respawning" when nothing is actually coming up.
+        public bool IsSpawning(string alias)
+        {
+            if (alias == null) return false;
+            return _entries.TryGetValue(alias, out var e) && (e.Spawning || e.Draining);
+        }
 
         public bool IsAtCapacity()
         {
@@ -104,6 +132,9 @@ namespace GxMcp.Gateway
         public async Task<WorkerProcess> AcquireAsync(KbHandle handle, CancellationToken ct)
         {
             var entry = _entries.GetOrAdd(handle.NormalizedAlias, _ => new Entry { Handle = handle });
+            // issue #26 P3: remember this KB durably the moment it's acquired, so it
+            // stays resolvable after the worker exits and gets torn out of _entries.
+            _known[handle.NormalizedAlias] = handle;
             // If this entry is draining (a planned reload is orchestrating a
             // kill → spawn cycle), wait for DrainComplete before proceeding.
             // This covers both the fast path (Worker != null) AND the case where
@@ -155,9 +186,19 @@ namespace GxMcp.Gateway
                 worker.OnWorkerExited += (reason) =>
                 {
                     OnWorkerExited?.Invoke(capturedHandle, reason);
+                    // Drop the live-worker entry (a fresh AcquireAsync respawns) but keep
+                    // the durable _known record — issue #26 P3: the KB must stay resolvable.
                     _entries.TryRemove(capturedHandle.NormalizedAlias, out _);
                 };
-                worker.Start();
+                entry.Spawning = true;   // issue #26 P1: a process really is coming up now.
+                try
+                {
+                    worker.Start();
+                }
+                finally
+                {
+                    entry.Spawning = false;
+                }
                 if (worker.SpawnMs.HasValue)
                 {
                     Program.OperationTracker.RegisterSpawnSample(handle.NormalizedAlias, worker.SpawnMs.Value);
@@ -224,6 +265,8 @@ namespace GxMcp.Gateway
 
         public bool Close(string alias, WorkerStopReason reason = WorkerStopReason.ExplicitClose)
         {
+            // Explicit close is the ONE place the durable record is intentionally forgotten.
+            _known.TryRemove(alias.ToLowerInvariant(), out _);
             if (_entries.TryRemove(alias.ToLowerInvariant(), out var entry))
             {
                 try { entry.Worker?.StopWithReason(reason); } catch { }
@@ -231,6 +274,19 @@ namespace GxMcp.Gateway
             }
 
             return false;
+        }
+
+        // issue #26 P3: drop only the live-worker entry (so the next AcquireAsync spawns
+        // a fresh process) WITHOUT forgetting the durable _known record. Used by the
+        // eager-respawn path, which must not erase the KB the user opened — Close() does
+        // both and would reintroduce the "Unknown KB after recycle" bug.
+        public void DropLiveEntry(string alias)
+        {
+            if (alias == null) return;
+            if (_entries.TryRemove(alias.ToLowerInvariant(), out var entry))
+            {
+                try { entry.Worker?.StopWithReason(WorkerStopReason.ExplicitClose); } catch { }
+            }
         }
 
         public void StopAll(WorkerStopReason reason = WorkerStopReason.GatewayShutdown)
@@ -338,6 +394,8 @@ namespace GxMcp.Gateway
                 Handle = h,
                 LastActivityUtc = lastActivity ?? DateTime.UtcNow
             };
+            // Mirror AcquireAsync: an acquired KB is also durably "known" (issue #26 P3).
+            _known[h.NormalizedAlias] = h;
         }
 
         internal KbHandle? SelectVictimForTest()

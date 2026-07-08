@@ -657,13 +657,21 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Health check: GX install, KB state, worker, cache age, recent telemetry. Paste output for triage when something feels off.",
+      "description": "Health check: GX install, KB state, worker, cache age, recent telemetry. Paste output for triage when something feels off. When more than one KB is open, pass kb=<alias> to pick which one to diagnose.",
       "inputSchema": {
         "additionalProperties": false,
         "examples": [
-          {}
+          {},
+          {
+            "kb": "mykb"
+          }
         ],
-        "properties": {},
+        "properties": {
+          "kb": {
+            "description": "Alias of the KB to diagnose. Optional; required only when multiple KBs are open (otherwise the single open / default KB is used).",
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "name": "genexus_doctor"

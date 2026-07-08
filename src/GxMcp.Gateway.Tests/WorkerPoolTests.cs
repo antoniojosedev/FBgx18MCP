@@ -108,6 +108,34 @@ namespace GxMcp.Gateway.Tests
             Assert.True(pool.IsDrainingForTest("kb1"));
         }
 
+        // issue #26 P3: the durable known set survives a live-entry drop (worker recycle)
+        // but is cleared by an explicit Close.
+        [Fact]
+        public void DropLiveEntry_keeps_known_but_removes_open()
+        {
+            var pool = new WorkerPool(CfgWithMax(3));
+            pool.RegisterForTest(new KbHandle("adhoc", "C:/KB/AdHoc"));
+            Assert.Contains(pool.ListKnown(), h => h.Alias == "adhoc");
+
+            pool.DropLiveEntry("adhoc");
+
+            // Live entry gone (TryGet null), but still resolvable via the known set.
+            Assert.Null(pool.TryGet("adhoc"));
+            Assert.Contains(pool.ListKnown(), h => h.Alias == "adhoc");
+        }
+
+        [Fact]
+        public void Close_clears_known_registry()
+        {
+            var pool = new WorkerPool(CfgWithMax(3));
+            pool.RegisterForTest(new KbHandle("adhoc", "C:/KB/AdHoc"));
+            Assert.Contains(pool.ListKnown(), h => h.Alias == "adhoc");
+
+            pool.Close("adhoc");
+
+            Assert.DoesNotContain(pool.ListKnown(), h => h.Alias == "adhoc");
+        }
+
         // Fix 9b: IsAtCapacity uses ">", matching AcquireAsync's eviction threshold.
         [Fact]
         public void IsAtCapacity_and_AcquireAsync_use_same_threshold()

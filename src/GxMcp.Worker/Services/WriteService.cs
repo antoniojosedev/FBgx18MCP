@@ -1475,6 +1475,41 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
+                // issue #26 (Humberto DSO case): a Design System object keeps tokens and
+                // styles in two separate ISource parts. When the caller writes the generic
+                // "Source"/"Code" alias with a combined `tokens {…} styles {…}` blob, split it
+                // and write the styles block to the Styles part here (side-effect), then
+                // redirect the main write below to the Tokens block. A single obj.Save()
+                // persists both dirtied parts. Without this the whole blob landed in Tokens
+                // and Styles stayed empty. Non-DSO writes and explicit Tokens/Styles targets
+                // are unaffected.
+                if (GxMcp.Worker.Structure.PartAccessor.IsDesignSystem(obj)
+                    && (partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
+                        || partName.Equals("Code", StringComparison.OrdinalIgnoreCase))
+                    && GxMcp.Worker.Helpers.DesignSystemSourceSplitter.TrySplit(decodedCode, out string dsTokens, out string dsStyles))
+                {
+                    if (dsStyles != null)
+                    {
+                        var stylesPart = GxMcp.Worker.Structure.PartAccessor.GetDesignSystemPart(obj, styles: true);
+                        if (stylesPart is global::Artech.Architecture.Common.Objects.ISource stylesSrc)
+                        {
+                            stylesSrc.Source = dsStyles;
+                            Logger.Info("[DSO-SPLIT] Wrote styles block to Styles part (" + dsStyles.Length + " chars).");
+                        }
+                    }
+                    if (dsTokens != null)
+                    {
+                        partName = "Tokens";
+                        decodedCode = dsTokens;
+                    }
+                    else if (dsStyles != null)
+                    {
+                        // Only a styles block was supplied — target it directly.
+                        partName = "Styles";
+                        decodedCode = dsStyles;
+                    }
+                }
+
                 global::Artech.Architecture.Common.Objects.KBObjectPart part = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, partName);
 
                 if (part == null) {

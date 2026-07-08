@@ -107,6 +107,38 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("KB_AMBIGUOUS", ex.Code);
         }
 
+        // issue #26 P3: an alias that is neither declared nor currently open, but WAS opened
+        // this session (durable known set), must still resolve — so a KB whose worker
+        // recycled doesn't become "Unknown KB".
+        [Fact]
+        public void Resolves_alias_from_known_set_when_not_declared_or_open()
+        {
+            var cfg = new Configuration { Environment = new EnvironmentConfig() };
+            var resolver = new KbResolver(cfg);
+            var known = new List<KbHandle> { new KbHandle("adhoc", "C:/KB/AdHoc") };
+
+            var handle = resolver.Resolve("adhoc", Array.Empty<KbHandle>(), known);
+
+            Assert.Equal("adhoc", handle.Alias);
+            Assert.Equal("C:/KB/AdHoc", handle.Path);
+        }
+
+        [Fact]
+        public void Known_set_does_not_affect_null_arg_ambiguity()
+        {
+            // Empty-arg resolution still keys off OPEN kbs only, not the durable known set.
+            var cfg = new Configuration { Environment = new EnvironmentConfig() };
+            var resolver = new KbResolver(cfg);
+            var known = new List<KbHandle>
+            {
+                new KbHandle("a", "C:/KB/A"),
+                new KbHandle("b", "C:/KB/B"),
+            };
+            var ex = Assert.Throws<KbResolutionException>(
+                () => resolver.Resolve(null, Array.Empty<KbHandle>(), known));
+            Assert.Equal("KB_AMBIGUOUS", ex.Code);
+        }
+
         [Fact]
         public void Throws_not_found_when_default_kb_is_missing_from_declared_list()
         {

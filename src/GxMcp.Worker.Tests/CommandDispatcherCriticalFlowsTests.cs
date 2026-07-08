@@ -37,6 +37,23 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void IsThreadSafe_SearchSource_False_ButPlainSearchQuery_True()
+        {
+            // issue #26 P2: 'search' method covers both index-only Query (module=Search,
+            // action=Query) and SDK-touching SearchSource (module=Search, action=SearchSource).
+            // Only SearchSource must be forced onto the STA thread.
+            var dispatcher = CreateDispatcherWithoutCtor();
+
+            string searchSource = @"{""method"":""search"",""action"":""SearchSource""}";
+            string plainQuery = @"{""method"":""search"",""action"":""Query""}";
+            string ping = @"{""method"":""ping""}";
+
+            Assert.False(dispatcher.IsThreadSafe(searchSource));
+            Assert.True(dispatcher.IsThreadSafe(plainQuery));
+            Assert.True(dispatcher.IsThreadSafe(ping));
+        }
+
+        [Fact]
         public void AppendInlineReadsCore_SearchSource_DedupesByObjectName()
         {
             string response = new JObject
