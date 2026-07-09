@@ -23,16 +23,21 @@ namespace GxMcp.Worker.Services
     ///
     /// If the Team Development service isn't loaded in the worker session, or
     /// the SDK throws, it falls back to the legacy file-probe envelopes so the
-    /// caller still gets a stable (if coarser) answer. All read-only — no
-    /// update/commit is executed here.
+    /// caller still gets a stable (if coarser) answer.
+    ///
+    /// commit/update/lock/resolve are WRITE actions and delegate to the
+    /// sibling <see cref="GxServerWriteService"/> instead — kept separate so
+    /// this read path stays a pure query surface.
     /// </summary>
     public class GxServerSyncService
     {
         private readonly KbService _kb;
+        private readonly GxServerWriteService _write;
 
         public GxServerSyncService(KbService kb)
         {
             _kb = kb;
+            _write = new GxServerWriteService(kb);
         }
 
         public string Run(JObject args)
@@ -40,6 +45,15 @@ namespace GxMcp.Worker.Services
             string action = args?["action"]?.ToString();
             if (string.IsNullOrWhiteSpace(action)) action = "status";
             action = action.Trim().ToLowerInvariant();
+
+            switch (action)
+            {
+                case "commit":
+                case "update":
+                case "lock":
+                case "resolve":
+                    return _write.Run(action, args ?? new JObject());
+            }
 
             string kbPath = _kb?.GetKbPath();
             string kbAlias = Environment.GetEnvironmentVariable("GX_KB_ALIAS")
@@ -55,8 +69,8 @@ namespace GxMcp.Worker.Services
                 default:
                     return McpResponse.Err(
                         code: "BadAction",
-                        message: "Unknown action '" + action + "'. Expected one of: status, pending, conflicts, history.",
-                        hint: "Pass action=status, action=pending, action=conflicts, or action=history.",
+                        message: "Unknown action '" + action + "'. Expected one of: status, pending, conflicts, history, commit, update, lock, resolve.",
+                        hint: "Pass action=status, action=pending, action=conflicts, action=history, action=commit, action=update, action=lock, or action=resolve.",
                         nextSteps: new JArray { McpResponse.NextStep("genexus_gxserver", new JObject { ["action"] = "status" }, "Query connection status.") });
             }
 
