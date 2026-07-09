@@ -1626,6 +1626,58 @@
     },
     {
       "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "GeneXus Module Manager over the SDK's IModuleManagerService. action=list (read-only: installed Module KB objects) | install (opcFile=<path to .opc file>, or name[+version] to install a named module) | install_builtin (name=<built-in module>) | update (name+version).",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "list"
+          },
+          {
+            "action": "install_builtin",
+            "name": "GeneXusGAM"
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "install",
+              "install_builtin",
+              "update",
+              "list"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "name": {
+            "description": "install (by name)/install_builtin/update: module name.",
+            "type": "string"
+          },
+          "opcFile": {
+            "description": "install: absolute path to a .opc module package file.",
+            "type": "string"
+          },
+          "version": {
+            "description": "install (by name)/update: target module version.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_module"
+    },
+    {
+      "annotations": {
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,

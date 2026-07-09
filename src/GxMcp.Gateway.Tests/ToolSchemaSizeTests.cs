@@ -142,7 +142,10 @@ namespace GxMcp.Gateway.Tests
             //   genexus_search_source scope surface (objectName + startIndex +
             //   timeoutMs params — object-scoped, resumable search). Measured
             //   ~11423 tokens; ~127 headroom.
-            Assert.True(approxTokens < 11550, $"tool_definitions.json is ~{approxTokens} tokens; budget 11550.");
+            //   2026-07-09 (genexus_module spike): 11550 → 11800 for the new
+            //   genexus_module tool (IModuleManagerService install/install_builtin/
+            //   update/list schema). Measured ~11728 tokens; ~72 headroom.
+            Assert.True(approxTokens < 11800, $"tool_definitions.json is ~{approxTokens} tokens; budget 11800.");
         }
     }
 }
