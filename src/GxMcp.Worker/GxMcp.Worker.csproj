@@ -76,6 +76,16 @@
       <HintPath>$(GX_PATH)\Artech.Architecture.UI.Framework.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- genexus_gam: concrete IIntegratedSecurityService implementation lives in the GAM
+         package assembly, not Artech.Architecture.Common. IIntegratedSecurityService itself
+         doesn't implement IGxService, so it can't go through Services.TryGetService<T>()'s
+         generic constraint directly — GamService resolves the concrete
+         Artech.Packages.GAM.IntegratedSecurityService (which does implement IGxService) and
+         casts to the interface. -->
+    <Reference Include="Artech.Packages.GAM">
+      <HintPath>$(GX_PATH)\Packages\Artech.Packages.GAM.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.Data" />

@@ -1111,6 +1111,55 @@
     },
     {
       "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "GAM / integrated-security provisioning via the SDK's IIntegratedSecurityService — distinct from genexus_security (env-scan/regex audit). action=status (default) is read-only: IsEnabledIntegratedSecurity + GAM-DB-reorganize flag. action=define_api / action=deploy are DESTRUCTIVE — they create/alter GAM security tables in the KB's datastore; no default reaches them, action must be set explicitly.",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "status"
+          },
+          {
+            "action": "deploy",
+            "forceTableCreation": true
+          }
+        ],
+        "properties": {
+          "action": {
+            "description": "status (default, read-only) | define_api | deploy.",
+            "enum": [
+              "status",
+              "define_api",
+              "deploy"
+            ],
+            "type": "string"
+          },
+          "force": {
+            "description": "define_api only: force flag passed to DefineAPI.",
+            "type": "boolean"
+          },
+          "forceTableCreation": {
+            "description": "deploy only: force GAM table creation.",
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "rebuild": {
+            "description": "deploy only: rebuild flag.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_gam"
+    },
+    {
+      "annotations": {
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,
