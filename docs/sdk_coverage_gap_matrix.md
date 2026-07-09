@@ -27,6 +27,21 @@ Sources: agent inventory of `src/GxMcp.Worker/Services` + `Helpers` (current cov
 
 Status legend: **✅ covered** · **🟡 partial** (hand-rolled / reflection / read-only / narrow) · **❌ gap** (no real coverage).
 
+## Build status — 2026-07-09 batch (code done, live-test pending)
+
+Six IDE-parity tools built + integrated on local `main` (not pushed). Full build green; Gateway 548 + Worker 1234 tests pass; golden fixture regenerated (42 tools); schema budget 13300. Each uses the confirmed `Services.TryGetService<T>()` / static-Helper pattern with graceful `*Unavailable` fallback (never crashes the worker). **Input-construction feasibility gate passed for all — no WWP-style wall** (the SDK param objects are headless-constructible POCOs / static accessors, unlike WWP's obfuscated settings).
+
+| Tool | SDK entry | Status | Live-check recipe |
+|---|---|---|---|
+| `genexus_compare` | `IComparerService.AreEqualInContent/AreEqualInProperties` | ✅ built | `objectA=__x__ objectB=__y__` → `ObjectNotFound`=service registers ✓ / `ComparerServiceUnavailable`=not |
+| `genexus_merge` | `IMergeService.MergeObjects` (2-way, no ancestor wall) | ✅ built | `dryRun=true` on two real objects; `mode=models` returns honest `MergeModelsUnsupported` |
+| `genexus_kb_version` | static `KBVersionHelper` (gate passed via live reflection) | ✅ built | `action=list` (read-only) → enumerates versions + active |
+| `genexus_module` | `IModuleManagerService.Install/InstallByName/InstallBuiltIn/Update` | ✅ built | `action=list` (read-only) |
+| `genexus_gam` | concrete `Artech.Packages.GAM.IntegratedSecurityService` (interface lacks `IGxService` → CS0311; cast workaround) | ✅ built | `action=status` (read-only) → IsEnabledIntegratedSecurity |
+| `genexus_gxserver` +write | `IGXserverService.Commit/GetUpdateFile/Lock` + `ITeamDevClientService.MarkAsResolved` | ✅ built | needs GXserver-linked KB; `resolve` reachable, commit/update/lock POCOs constructible; live commit needs authed session |
+
+Known honest caveats (in-code): `genexus_gxserver` `lock` FilePath semantics + `update` only downloads (no apply); `genexus_merge` models-mode unsupported (one KBModel/session). Live functional test of all six deferred to a running-binary round (user request: test at end).
+
 ## Coverage summary by domain
 
 | Domain | Status | MCP tool(s) today | What's missing (SDK entry point to wire) |
