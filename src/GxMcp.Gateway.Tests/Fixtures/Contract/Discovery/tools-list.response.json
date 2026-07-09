@@ -1419,6 +1419,84 @@
     },
     {
       "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "KB model-version management (Create Version/Branch/Activate/Revert) over the SDK's KBVersionHelper — the IDE Version menu's code path. action=list is read-only; freeze/branch/set_active/revert mutate the KB's version tree.",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "list"
+          },
+          {
+            "action": "freeze",
+            "description": "Release 1.0",
+            "name": "v1.0"
+          },
+          {
+            "action": "set_active",
+            "targetVersion": "Trunk"
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "list",
+              "freeze",
+              "branch",
+              "set_active",
+              "revert"
+            ],
+            "type": "string"
+          },
+          "autoUpdate": {
+            "description": "set_active: auto-update the working model. Default false.",
+            "type": "boolean"
+          },
+          "backupModel": {
+            "description": "freeze: back up the KB model. Default false.",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "New version/branch description (freeze/branch).",
+            "type": "string"
+          },
+          "fromVersion": {
+            "description": "revert: source version. Defaults to the active version.",
+            "type": "string"
+          },
+          "includeEnvironments": {
+            "description": "branch: include environments. Default false.",
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "name": {
+            "description": "New version/branch name (freeze/branch).",
+            "type": "string"
+          },
+          "parentVersion": {
+            "description": "Parent version name (freeze/branch). Defaults to the active version.",
+            "type": "string"
+          },
+          "targetVersion": {
+            "description": "Version to activate (set_active) or revert to (revert).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_version"
+    },
+    {
+      "annotations": {
         "destructiveHint": false,
         "idempotentHint": false,
         "openWorldHint": false,

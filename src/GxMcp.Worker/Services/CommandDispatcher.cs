@@ -93,6 +93,8 @@ namespace GxMcp.Worker.Services
         private readonly GamService _gamService;
         // genexus_merge — WRITE IMergeService surface (2-way/3-way object merge).
         private readonly MergeToolService _mergeToolService;
+        // genexus_kb_version — KB model-version management over KBVersionHelper.
+        private readonly KbVersionService _kbVersionService;
         private readonly SdPanelService _sdPanelService;
         private readonly MultiAgentLockService _multiAgentLockService;
         private readonly WhatIfService _whatIfService;
@@ -205,6 +207,7 @@ namespace GxMcp.Worker.Services
             _moduleService = new ModuleService(_kbService, _objectService);
             _gamService = new GamService(_kbService);
             _mergeToolService = new MergeToolService(_kbService, _objectService);
+            _kbVersionService = new KbVersionService(_kbService);
             _sdPanelService = new SdPanelService(_objectService, _writeService);
             _multiAgentLockService = new MultiAgentLockService(_kbService);
             _whatIfService = new WhatIfService(_analyzeService, _objectService);
@@ -1463,6 +1466,11 @@ namespace GxMcp.Worker.Services
                         // genexus_merge — WRITE surface over the SDK's IMergeService.
                         // dryRun defaults true (see MergeToolService). destructiveHint=true.
                         return _mergeToolService.Run(args ?? new JObject());
+                    case "kbversion":
+                        // genexus_kb_version — KB model-version management
+                        // (Create Version / Branch / Activate / Revert) over
+                        // Artech.Architecture.Common.Helpers.KBVersionHelper.
+                        return _kbVersionService.Run(args ?? new JObject());
                     case "sdpanel":
                         return _sdPanelService.Dispatch(action, target ?? args?["name"]?.ToString() ?? args?["target"]?.ToString(), args?["params"] as JObject ?? args);
                     case "multiagentlock":

@@ -344,6 +344,13 @@ namespace GxMcp.Gateway.Routers
                     return new
                     {
                         module = "Merge",
+                // genexus_kb_version — KB model-version management (Create Version /
+                // Branch / Activate / Revert) over the SDK's static KBVersionHelper.
+                // action=list is read-only; freeze/branch/set_active/revert mutate.
+                case "genexus_kb_version":
+                    return new
+                    {
+                        module = "KbVersion",
                         action = "Run",
                         @params = args
                     };
