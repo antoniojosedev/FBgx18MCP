@@ -311,6 +311,17 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                // genexus_kb_version — KB model-version management (Create Version /
+                // Branch / Activate / Revert) over the SDK's static KBVersionHelper.
+                // action=list is read-only; freeze/branch/set_active/revert mutate.
+                case "genexus_kb_version":
+                    return new
+                    {
+                        module = "KbVersion",
+                        action = "Run",
+                        @params = args
+                    };
+
                 // Item 71 — gh CLI passthrough.
                 case "genexus_github":
                     return new
