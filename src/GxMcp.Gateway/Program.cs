@@ -2232,6 +2232,60 @@ namespace GxMcp.Gateway
             return onTimeout(operationId, correlationId);
         }
 
+        // Issue #27 item 1: self-healing status/result reconciliation.
+        //
+        // The async-build background poller (in the genexus_lifecycle build intercept) is
+        // fire-and-forget: it's the ONLY thing that flips a JobEntry from "running" to a
+        // terminal state. If that task wedges — stale worker pipe after a soft-reload,
+        // STA serialization behind a long SDK call, or a worker recycle that drops the
+        // in-memory _tasks map — the job stays "running" forever and every action=status /
+        // action=result poll returns "running" / "Pending" indefinitely (the exact symptom
+        // reported: plain status shows isBusy=false/Ready, yet the job never resolves).
+        //
+        // This makes the READ path self-healing: before returning the passive JobEntry
+        // envelope, actively re-query the worker's build-task status for the job's stored
+        // WorkerTaskId and reconcile the JobEntry to its real terminal state. Cheap (one
+        // short worker round-trip) and only runs while the job is still "running".
+        private static async Task ReconcileJobWithWorkerAsync(JobEntry job, string toolName, JObject? toolArgs)
+        {
+            try
+            {
+                if (job == null) return;
+                if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)) return;
+                if (string.IsNullOrEmpty(job.WorkerTaskId)) return;
+
+                var statusCmd = new JObject
+                {
+                    ["module"] = "Build",
+                    ["action"] = "Status",
+                    ["target"] = job.WorkerTaskId
+                };
+
+                JObject? statusEnv = await SendWorkerCommandAsync(
+                    statusCmd,
+                    8000,
+                    $"Timeout reconciling job status (job={job.Id}, workerTask={job.WorkerTaskId})",
+                    env => env,
+                    (_, correlationId) => new JObject { ["error"] = "reconcile timeout", ["correlationId"] = correlationId },
+                    toolName: toolName, toolArgs: toolArgs, trackOperation: false);
+
+                JObject? ws = (statusEnv?["result"] as JObject) ?? statusEnv;
+
+                var verdict = McpRouter.ClassifyWorkerBuildStatus(ws);
+                if (verdict == null) return; // still running / transient — leave running, next poll retries
+
+                var (success, summary, result) = verdict.Value;
+                if (result["workerTaskId"] == null) result["workerTaskId"] = job.WorkerTaskId;
+                JobRegistry.Complete(job.Id, success, summary, result);
+                Log($"[AsyncBuild] Reconcile resolved job={job.Id} success={success} (background poller had not yet completed it).");
+            }
+            catch (Exception ex)
+            {
+                // Reconciliation is best-effort — never let it break the status/result read.
+                Log($"[AsyncBuild] Reconcile failed for job={job?.Id}: {ex.Message}");
+            }
+        }
+
         internal static int GetToolTimeoutMs(string? toolName, JObject? args)
         {
             if (toolName == "genexus_lifecycle" || toolName == "genexus_analyze" || toolName == "genexus_test")
@@ -3377,6 +3431,10 @@ namespace GxMcp.Gateway
                             var probe = JobRegistry.Get(resultJobId);
                             if (probe != null)
                             {
+                                // Issue #27 item 1: if the job is still "running", actively
+                                // reconcile against the worker before reporting Pending — the
+                                // background poller may have wedged.
+                                await ReconcileJobWithWorkerAsync(probe, "genexus_lifecycle", args);
                                 // Envelope shape extracted into McpRouter.BuildJobResultEnvelope
                                 // for unit-test coverage and parity with status long-poll.
                                 var (resultPayload, isErr) = McpRouter.BuildJobResultEnvelope(probe);
@@ -3399,6 +3457,10 @@ namespace GxMcp.Gateway
                             var probe = JobRegistry.Get(jobId);
                             if (probe != null)
                             {
+                                // Issue #27 item 1: reconcile a still-running job against the
+                                // worker's real build-task state before long-polling, so a wedged
+                                // background poller can't keep a finished build stuck at "running".
+                                await ReconcileJobWithWorkerAsync(probe, "genexus_lifecycle", args);
                                 int waitSeconds = Math.Min(Math.Max(args?["wait_seconds"]?.ToObject<int?>() ?? 0, 0), McpRouter.MaxLongPollSeconds);
                                 var clientProgressToken = (request["params"] as JObject)?["_meta"]?["progressToken"];
                                 bool hasProgressToken = clientProgressToken != null && clientProgressToken.Type != JTokenType.Null;
@@ -3683,11 +3745,21 @@ namespace GxMcp.Gateway
                         && (string.Equals(lcAction, "build", StringComparison.OrdinalIgnoreCase)
                             || string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase)))
                     {
-                        int estimatedSeconds = tArgs?["estimated_seconds"]?.ToObject<int?>()
+                        // Issue #27 item 2: prefer a data-driven estimate (median of recent
+                        // build wall-clocks for this action) over the flat 60/120 the reporter
+                        // saw. Routing still keys on an EXPLICIT caller estimate only, so the
+                        // sync/async split is unchanged for callers that don't pass one — the
+                        // historical value only makes the reported estimated_seconds realistic
+                        // (history is recorded on async builds; letting it force the sync path
+                        // would create an oscillation the caller never asked for).
+                        int? callerEstimate = tArgs?["estimated_seconds"]?.ToObject<int?>();
+                        int estimatedSeconds = callerEstimate
+                                               ?? JobRegistry.EstimateBuildSeconds($"lifecycle/{lcAction}")
                                                ?? (string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase) ? 120 : 60);
                         int threshold = _activeConfig?.Server?.BuildSyncThresholdSeconds ?? 20;
 
-                        if (!BuildPathSelector.UseSync(estimatedSeconds, threshold))
+                        bool useSync = callerEstimate.HasValue && BuildPathSelector.UseSync(callerEstimate.Value, threshold);
+                        if (!useSync)
                         {
                             // --- ASYNC PATH (Task 4.3) ---
                             // Register the job first, then fire-and-forget the actual build.
@@ -3737,6 +3809,10 @@ namespace GxMcp.Gateway
                                     }
 
                                     string? taskId = ack["taskId"]?.ToString();
+                                    // Issue #27 item 1: record the worker task id on the job so a
+                                    // later status/result poll can reconcile against the worker's
+                                    // live build-task state if this background poller wedges.
+                                    if (!string.IsNullOrEmpty(taskId)) job.WorkerTaskId = taskId;
                                     if (string.IsNullOrEmpty(taskId))
                                     {
                                         // No taskId means the worker returned a synchronous result already
@@ -4670,6 +4746,13 @@ namespace GxMcp.Gateway
                 // No middle is ever dropped.
                 if (isRead && !isXmlMetadataRead)
                 {
+                    // Issue #27 item 7: when the caller explicitly asked for the whole part
+                    // (limit=0 → worker sets explicitFullRead), honour it with a much larger
+                    // budget so "read in full" is truthful. Still a line-aligned prefix cut
+                    // (never a middle drop) with a safe continuation offset if the part is
+                    // genuinely enormous, so the contract stays predictable either way.
+                    bool explicitFullRead = (obj["explicitFullRead"]?.ToObject<bool?>() ?? false);
+                    int readFieldBudget = explicitFullRead ? 200000 : 20000;
                     foreach (var field in new[] { "source", "content", "code" })
                     {
                         // Worker already paginated this page — its offset/suggestedNextOffset
@@ -4678,7 +4761,6 @@ namespace GxMcp.Gateway
                             continue;
                         if (obj[field]?.Type != JTokenType.String) continue;
                         string val = obj[field]!.ToString();
-                        const int readFieldBudget = 20000;
                         if (val.Length <= readFieldBudget) continue;
 
                         // Cut on a line boundary at/under the budget so we never split a line.

@@ -1891,5 +1891,50 @@ namespace GxMcp.Gateway
             }
             return (terminal, isErr);
         }
+
+        /// <summary>
+        /// Issue #27 item 1: classify a worker Build/Status payload for job reconciliation.
+        /// Returns <c>null</c> when the job should stay "running" (worker still building, or a
+        /// transient/unparseable status), or a terminal resolution otherwise. Pure and
+        /// side-effect-free so the reconcile decision is unit-testable without a live worker.
+        ///
+        /// <paramref name="workerStatus"/> is the unwrapped BuildTaskStatus JSON (status/Status,
+        /// errorCount/ErrorCount, warningCount/WarningCount, message/Message). A worker "Error"
+        /// whose message mentions "not found" is treated as tracking-lost (worker recycled and
+        /// dropped its in-memory task map), not a build error.
+        /// </summary>
+        internal static (bool success, string summary, JObject result)? ClassifyWorkerBuildStatus(JObject? workerStatus)
+        {
+            if (workerStatus == null) return null;
+            if (workerStatus["error"] != null) return null; // transient poll error
+
+            string? s = workerStatus["status"]?.ToString() ?? workerStatus["Status"]?.ToString();
+            if (string.IsNullOrEmpty(s)) return null;
+
+            bool isError = string.Equals(s, "Error", StringComparison.OrdinalIgnoreCase);
+            string? msg = workerStatus["message"]?.ToString() ?? workerStatus["Message"]?.ToString();
+            bool trackingLost = isError && msg != null
+                                && msg.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (trackingLost)
+            {
+                return (false,
+                    "Build tracking lost — the worker was recycled before this job resolved, so its outcome can't be confirmed. Re-run the build to verify.",
+                    new JObject { ["status"] = "TrackingLost" });
+            }
+
+            bool terminal = string.Equals(s, "Succeeded", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(s, "Failed", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(s, "Error", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(s, "Cancelled", StringComparison.OrdinalIgnoreCase);
+            if (!terminal) return null; // still Running — genuinely in progress
+
+            bool success = string.Equals(s, "Succeeded", StringComparison.OrdinalIgnoreCase);
+            int errs = workerStatus["errorCount"]?.ToObject<int?>() ?? workerStatus["ErrorCount"]?.ToObject<int?>() ?? 0;
+            int warns = workerStatus["warningCount"]?.ToObject<int?>() ?? workerStatus["WarningCount"]?.ToObject<int?>() ?? 0;
+            string summary = success
+                ? $"Build succeeded: {warns} warnings, {errs} errors"
+                : $"Build {s}: {errs} errors, {warns} warnings";
+            return (success, summary, workerStatus);
+        }
     }
 }

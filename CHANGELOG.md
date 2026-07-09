@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.13.2 — 2026-07-09
+
+Reliability + search-ergonomics pass from a long large-KB session (issue #27): a background build now always resolves to a real result, source search can be scoped to a single object and resumed, and a failed patch tells you enough to fix it in one retry.
+
+### Fixed
+
+- **A background build always resolves to a terminal result.** After `genexus_lifecycle action=build`, polling `action=status` / `action=result` could report `running` / `Pending` forever even though the build had already finished — the background progress tracker could wedge (a recycled worker, a stalled pipe) and nothing ever flipped the job to its final state. Every status/result poll now re-checks the worker's real build state and settles the job to `succeeded` / `failed` on the spot. If the worker was recycled and its build outcome is genuinely unrecoverable, the job resolves with a clear "tracking lost — re-run to confirm" instead of hanging.
+
+### Added
+
+- **`genexus_search_source` can be scoped to specific objects.** Pass `objectName="MyProc"` (or a comma-separated list) to search inside just those objects instead of scanning the whole KB — a search inside one known Procedure is now proportional to that object, not to a 9,000-object catalogue, and it works for any object type, not only the default code types.
+- **`genexus_search_source` is resumable and its budget is tunable.** When a scan hits its time budget it returns a `nextCursor`; pass it back as `startIndex` to continue where it stopped instead of rescanning from the top. `timeoutMs` lets you raise the per-call budget (default 30000) to cover more objects at once.
+- **The last build result is one plain status call away.** `genexus_lifecycle action=status` (no target) now carries a `lastBuild` block — the outcome, error/warning counts and duration of the most recent build — so you can answer "did my last build pass?" without tracking the job id.
+
+### Changed
+
+- **A failed `genexus_edit` patch is always actionable.** When a patch's `context` doesn't match, the response now always carries something to correct with: the closest source windows (`nearMatches`) with a byte- and EOL-level diff when there's a near hit, or — when nothing is close — a concrete next step (re-read and copy one exact block, or anchor a single unique line with `Insert_After`). The near-match diagnostics now cover larger multi-line contexts too. The "context is required for Replace" error now spells out the exact shape to use, including the `patch={find,replace}` shorthand.
+- **`genexus_lifecycle` build reports a realistic `estimated_seconds`.** Instead of a flat 60 (rebuild 120), the estimate is now the median of recent build times for that action, so the number tracks your KB instead of misleading you on a large one. The first build of a session still uses the default until there's history.
+- **`genexus_read limit=0` truly reads in full.** An explicit full read (`limit=0`) is now honoured through the gateway instead of being silently re-capped at ~20 KB; it's still a clean line-aligned page with a safe continuation offset for a genuinely enormous part, so nothing is ever dropped from the middle.
+
+### Internal
+
+- Gateway `JobEntry` carries the worker build-task id; `McpRouter.ClassifyWorkerBuildStatus` is the pure reconcile decision (unit-tested in `JobReconcileTests`), invoked from the lifecycle status/result intercepts via `ReconcileJobWithWorkerAsync`. A worker "Task ID not found" is classified as tracking-lost, not a build error.
+- `SourceSearchCriteria` gains `ObjectName` / `StartIndex`; `TimeoutMs` is now settable from the tool call. `objectName` scoping bypasses both the type whitelist and the literal pre-filter. Timeout/Cancel envelopes carry `nextCursor`; the success envelope's pagination block now reports the scoped `total` and `nextOffset`. Covered by `SourceSearchScopeTests`.
+- `PatchService` near-match diagnostics: 50→120-line context cap and a `noNearMatchHint` fallback when no similar window is found.
+- `BuildService.GetLatestBuildSummary()` (static, over the `_tasks` map) feeds the `lastBuild` block in `CommandDispatcher` GetIndexStatus. `BackgroundJobRegistry` records successful build wall-clocks per kind and exposes `EstimateBuildSeconds` (median, clamped 5–1800s); build-path routing still keys only on an explicit caller `estimated_seconds`, so the sync/async split is unchanged. `ReadPagination` sets `ExplicitFullRead` on `limit=0`, plumbed through `ObjectService` to a larger gateway source budget. Covered by `BuildEstimateTests` and `ReadPaginationDefaultsTests`.
+- Tool-schema token budget 11400 → 11550 for the `genexus_search_source` scope params; golden `tools-list` fixture regenerated.
+
 ## v2.13.1 — 2026-07-08
 
 Follow-up to the v2.13.0 Design System work: editing a Design System now actually saves, and a worker that shut down for inactivity comes back on the next call instead of erroring.

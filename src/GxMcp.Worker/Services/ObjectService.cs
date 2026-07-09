@@ -1788,6 +1788,9 @@ namespace GxMcp.Worker.Services
 
             result["isTruncatedByWorker"] = page.Truncated;
             result["truncated"] = page.Truncated;
+            // Issue #27 item 7: signal an explicit full read (limit=0) so the gateway
+            // relaxes its source context-budget cut instead of silently re-capping.
+            if (page.ExplicitFullRead) result["explicitFullRead"] = true;
             if (page.Truncated && mcpDefault)
                 result["message"] = "MCP read defaulted to ~200 lines / 16 KB to control context size. Use offset/limit to paginate, or limit=0 to read in full.";
 

@@ -560,6 +560,10 @@ namespace GxMcp.Worker.Services
                             // prose, not a stable enum).
                             var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
                             statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
+                            // Issue #27 item 1: attach the most-recent terminal build outcome so
+                            // this plain status call answers "did my last build pass?" without a jobId.
+                            var lastBuild = BuildService.GetLatestBuildSummary();
+                            if (lastBuild != null) statusJson["lastBuild"] = lastBuild;
                             return statusJson.ToString();
                         }
                         if (action == "GetIndexState")
@@ -672,7 +676,11 @@ namespace GxMcp.Worker.Services
                                 TypeFilter = args?["typeFilter"]?.ToString(),
                                 CaseSensitive = args?["caseSensitive"]?.ToObject<bool?>() ?? false,
                                 IncludeComments = args?["includeComments"]?.ToObject<bool?>() ?? false,
-                                MaxResults = args?["maxResults"]?.ToObject<int?>() ?? 50
+                                MaxResults = args?["maxResults"]?.ToObject<int?>() ?? 50,
+                                // Issue #27 item 4: object scope + tunable timeout + resume cursor.
+                                ObjectName = args?["objectName"]?.ToString(),
+                                StartIndex = args?["startIndex"]?.ToObject<int?>() ?? 0,
+                                TimeoutMs = args?["timeoutMs"]?.ToObject<int?>() ?? 30000
                             };
                             if (args?["scope"] is JArray scopeArr)
                                 criteria.Scope = scopeArr.Select(t => t.ToString()).ToList();

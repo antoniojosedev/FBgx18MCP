@@ -863,6 +863,35 @@ namespace GxMcp.Worker.Services
             return _msbuildEncodingCached;
         }
 
+        // Issue #27 item 1 follow-up: the most-recent terminal build outcome,
+        // reachable WITHOUT a taskId/jobId. Surfaced in the compact lifecycle
+        // status so an agent that lost the job id (or whose async poller wedged)
+        // can still answer "did my last build pass?" from a plain status call.
+        public static JObject GetLatestBuildSummary()
+        {
+            BuildTaskStatus latest = null;
+            foreach (var t in _tasks.Values)
+            {
+                if (t == null || !IsTerminalStatus(t.Status)) continue;
+                if (latest == null) { latest = t; continue; }
+                // Order by end (fallback start) timestamp; ISO-8601 sorts lexicographically.
+                string a = t.EndTime ?? t.StartTime ?? "";
+                string b = latest.EndTime ?? latest.StartTime ?? "";
+                if (string.CompareOrdinal(a, b) > 0) latest = t;
+            }
+            if (latest == null) return null;
+            return new JObject
+            {
+                ["taskId"] = latest.TaskId,
+                ["status"] = latest.Status,
+                ["target"] = latest.Target,
+                ["errorCount"] = latest.ErrorCount,
+                ["warningCount"] = latest.WarningCount,
+                ["elapsedSeconds"] = latest.ElapsedSeconds,
+                ["endTime"] = latest.EndTime
+            };
+        }
+
         public string GetStatus(string taskId, int page = 1, int pageSize = 50, bool compact = false)
         {
             if (string.IsNullOrEmpty(taskId))

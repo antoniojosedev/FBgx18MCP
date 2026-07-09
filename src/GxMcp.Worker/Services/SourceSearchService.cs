@@ -29,6 +29,18 @@ namespace GxMcp.Worker.Services
         // internal 25s budget — when exceeded we return a structured Timeout
         // envelope with partial hits, never a silently empty result.
         public int TimeoutMs { get; set; } = 30000;
+
+        // Issue #27 item 4: scope the scan to specific object(s) by exact name
+        // (comma/semicolon-separated, case-insensitive). When set, only those
+        // objects are read — a search inside one known Procedure becomes
+        // O(object) instead of O(KB), and bypasses the base type whitelist so any
+        // searchable object type can be targeted directly.
+        public string ObjectName { get; set; }
+
+        // Issue #27 item 4: resume cursor. On Timeout the response returns a
+        // nextCursor; passing it back as StartIndex resumes the scan where it
+        // stopped instead of rescanning from the top.
+        public int StartIndex { get; set; } = 0;
     }
 
     public class SourceSearchService
@@ -115,10 +127,24 @@ namespace GxMcp.Worker.Services
                     .Any(s => string.Equals(s, "webForm", StringComparison.OrdinalIgnoreCase)
                            || string.Equals(s, "layout", StringComparison.OrdinalIgnoreCase));
 
-                var entries = index.Objects.Values
-                    .Where(e => e.Type == "Procedure" || e.Type == "DataProvider" || e.Type == "WebPanel" || e.Type == "Transaction")
+                // Issue #27 item 4: an explicit objectName scope restricts the scan to
+                // those exact objects (bypassing both the base type whitelist and the
+                // literal pre-filter), so a search inside one known object is O(object).
+                var objectNameSet = ParseObjectNames(c.ObjectName);
+
+                IEnumerable<Models.SearchIndex.IndexEntry> query = index.Objects.Values;
+                if (objectNameSet != null)
+                {
+                    query = query.Where(e => objectNameSet.Contains(e.Name));
+                }
+                else
+                {
+                    query = query
+                        .Where(e => e.Type == "Procedure" || e.Type == "DataProvider" || e.Type == "WebPanel" || e.Type == "Transaction")
+                        .Where(e => scopeTouchesWebForm || MatchesAnyLiteral(e, literals));
+                }
+                var entries = query
                     .Where(e => string.IsNullOrEmpty(c.TypeFilter) || string.Equals(e.Type, c.TypeFilter, StringComparison.OrdinalIgnoreCase))
-                    .Where(e => scopeTouchesWebForm || MatchesAnyLiteral(e, literals))
                     .ToList();
 
                 // v2.3.8 (Task 2.1): hard wall-clock timeout — emits a Timeout
@@ -130,8 +156,13 @@ namespace GxMcp.Worker.Services
 
                 int produced = 0;
                 int scanned = 0;
-                foreach (var e in entries)
+                // Issue #27 item 4: index-addressable loop so a Timeout/Cancel can report a
+                // resumable nextCursor (the absolute entry index reached).
+                int startIndex = c.StartIndex > 0 ? c.StartIndex : 0;
+                int cursor = startIndex;
+                for (cursor = startIndex; cursor < entries.Count; cursor++)
                 {
+                    var e = entries[cursor];
                     if (produced >= c.MaxResults) break;
                     if (ct.IsCancellationRequested)
                     {
@@ -139,7 +170,9 @@ namespace GxMcp.Worker.Services
                         {
                             ["partialHits"] = hits,
                             ["totalScanned"] = scanned,
-                            ["totalObjects"] = entries.Count
+                            ["totalObjects"] = entries.Count,
+                            ["nextCursor"] = cursor,
+                            ["resumeHint"] = "Pass startIndex=nextCursor to resume this scan where it stopped."
                         });
                     }
                     if (swBudget.ElapsedMilliseconds > timeoutMs)
@@ -149,7 +182,9 @@ namespace GxMcp.Worker.Services
                             ["partialHits"] = hits,
                             ["totalScanned"] = scanned,
                             ["totalObjects"] = entries.Count,
-                            ["timeoutMs"] = timeoutMs
+                            ["timeoutMs"] = timeoutMs,
+                            ["nextCursor"] = cursor,
+                            ["resumeHint"] = "Pass startIndex=nextCursor (and optionally a larger timeoutMs) to resume this scan where it stopped."
                         });
                     }
                     scanned++;
@@ -275,6 +310,9 @@ namespace GxMcp.Worker.Services
                 }
 
                 bool truncated = produced >= c.MaxResults;
+                // Issue #27 item 4: when maxResults truncated the scan mid-list, expose the
+                // entry cursor so the caller can page forward through the same object set.
+                bool hasMoreEntries = truncated && cursor < entries.Count;
                 var resultPayload = new JObject
                 {
                     ["count"] = produced,
@@ -285,17 +323,19 @@ namespace GxMcp.Worker.Services
                     ["indexStatus"] = indexStatus,
                     ["partial"] = partialIndex,
                     ["scannedObjects"] = scanned,
-                    // v2.8.0: canonical pagination block — total unknown (source scan has no pre-counted total)
+                    ["totalObjects"] = entries.Count,
+                    // v2.8.0: canonical pagination block — total is now the scoped object count.
                     ["pagination"] = new JObject
                     {
-                        ["offset"]     = 0,
+                        ["offset"]     = startIndex,
                         ["limit"]      = c.MaxResults,
                         ["returned"]   = produced,
-                        ["total"]      = JValue.CreateNull(),
-                        ["hasMore"]    = truncated,
-                        ["nextOffset"] = JValue.CreateNull()
+                        ["total"]      = entries.Count,
+                        ["hasMore"]    = hasMoreEntries,
+                        ["nextOffset"] = hasMoreEntries ? (JToken)cursor : JValue.CreateNull()
                     }
                 };
+                if (hasMoreEntries) resultPayload["nextCursor"] = cursor;
                 if (partialIndex)
                 {
                     resultPayload["partialHint"] = "Index walk is still in progress; this scan covered only the objects walked so far. A zero or small count does NOT mean the token is absent — re-run when whoami reports indexStatus=Ready.";
@@ -337,6 +377,19 @@ namespace GxMcp.Worker.Services
             if (!string.IsNullOrEmpty(pattern))
                 foreach (Match m in Regex.Matches(pattern, @"[A-Za-z0-9_]{3,}")) toks.Add(m.Value);
             return toks.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        // Issue #27 item 4: parse the objectName scope (comma/semicolon/newline-separated)
+        // into a case-insensitive set, or null when no scope was supplied.
+        private static HashSet<string> ParseObjectNames(string objectName)
+        {
+            if (string.IsNullOrWhiteSpace(objectName)) return null;
+            var names = objectName
+                .Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .Where(s => s.Length > 0);
+            var set = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+            return set.Count > 0 ? set : null;
         }
 
         private static bool MatchesAnyLiteral(Models.SearchIndex.IndexEntry e, System.Collections.Generic.List<string> literals)

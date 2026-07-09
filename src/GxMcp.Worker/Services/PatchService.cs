@@ -265,7 +265,8 @@ namespace GxMcp.Worker.Services
                 {
                     case "replace":
                         if (string.IsNullOrEmpty(workContext))
-                            return BuildPatchResult("Error", partName, normalizedOperation, expectedCount, 0, "'context' (old_string) is required for Replace.");
+                            return BuildPatchResult("Error", partName, normalizedOperation, expectedCount, 0,
+                                "Replace needs the text to find. Use mode=patch with operation=\"Replace\", context=\"<exact existing lines>\", content=\"<new lines>\" — or the shorthand patch={\"find\":\"<existing>\",\"replace\":\"<new>\"}. A bare patch string / content-only has nothing to match against.");
 
                         if (NormalizeSourceForComparison(workContext) == NormalizeSourceForComparison(workContent))
                         {
@@ -367,9 +368,31 @@ namespace GxMcp.Worker.Services
                     // agent can adjust context in one iteration instead of re-reading the whole
                     // file. Only runs on NoMatch (Ambiguous already gives the matched indices).
                     if (string.Equals(failedStatus, "NoMatch", StringComparison.OrdinalIgnoreCase) &&
-                        contextLines != null && contextLines.Length > 0 && contextLines.Length <= 50)
+                        contextLines != null && contextLines.Length > 0)
                     {
-                        var near = FindNearMatches(sourceLines, contextLines, topN: 3);
+                        // Issue #27 item 6: the near-match scan is O(source × context) so it's
+                        // capped by context size — but 50 lines was too tight and left larger
+                        // multi-line contexts (common when a blank line is included) with a bare
+                        // "not found" and no diagnostics. Raised to 120.
+                        var near = contextLines.Length <= 120
+                            ? FindNearMatches(sourceLines, contextLines, topN: 3)
+                            : new List<NearMatch>();
+                        if (near.Count == 0)
+                        {
+                            // Issue #27 item 6: previously, when no similar window was found the
+                            // response carried NO nearMatches/eolDiff at all — "nothing actionable
+                            // to compare against". Always emit a concrete next step instead.
+                            try
+                            {
+                                var fj = JObject.Parse(failure);
+                                var en = fj["error"] as JObject ?? fj;
+                                en["noNearMatchHint"] = contextLines.Length > 120
+                                    ? "Context too large for near-match diagnostics (>120 lines). Patch a smaller, unique block: pick a few contiguous lines, or anchor a single unique line with operation=Insert_After."
+                                    : "No sufficiently-similar block found in the source. The context likely spans a non-contiguous region, mixes lines from different places, or differs by more than trailing whitespace/EOL. Re-read the object with genexus_read and copy one exact contiguous block, or anchor on a single unique line with operation=Insert_After.";
+                                failure = fj.ToString();
+                            }
+                            catch { /* keep original failure */ }
+                        }
                         if (near.Count > 0)
                         {
                             try

@@ -138,7 +138,11 @@ namespace GxMcp.Gateway.Tests
             //   destructiveHint=true, resolved genexus_versioning hint conflict,
             //   removed EXPERIMENTAL mode=warm from genexus_worker_reload.
             //   Measured ~10925 tokens; ~475 headroom.
-            Assert.True(approxTokens < 11400, $"tool_definitions.json is ~{approxTokens} tokens; budget 11400.");
+            //   v2.13.2 (2026-07-09, issue #27 item 4): 11400 → 11550 for the
+            //   genexus_search_source scope surface (objectName + startIndex +
+            //   timeoutMs params — object-scoped, resumable search). Measured
+            //   ~11423 tokens; ~127 headroom.
+            Assert.True(approxTokens < 11550, $"tool_definitions.json is ~{approxTokens} tokens; budget 11550.");
         }
     }
 }

@@ -22,6 +22,10 @@ namespace GxMcp.Worker.Helpers
         public bool Truncated { get; set; }
         public int? SuggestedNextOffset { get; set; }
         public int? SuggestedNextLimit { get; set; }
+        // Issue #27 item 7: the caller explicitly asked for the whole part (limit=0).
+        // The gateway honours this by relaxing its source context-budget cut, so
+        // "limit=0 to read in full" is truthful instead of being silently re-capped.
+        public bool ExplicitFullRead { get; set; }
     }
 
     public static class ReadPagination
@@ -57,7 +61,8 @@ namespace GxMcp.Worker.Helpers
                     LinesReturned = totalLines - start,
                     TotalLines = totalLines,
                     TotalBytes = totalBytes,
-                    Truncated = false
+                    Truncated = false,
+                    ExplicitFullRead = true
                 };
             }
 

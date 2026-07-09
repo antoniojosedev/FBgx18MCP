@@ -20,7 +20,47 @@ namespace GxMcp.Gateway
         // a follow-up — see CHANGELOG), but the gateway-side response is deterministic.
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _cts = new();
 
+        // Issue #27 item 2: a small rolling history of observed build wall-clock times,
+        // keyed by kind ("lifecycle/build" | "lifecycle/rebuild"), so the async-build
+        // path can report a realistic estimated_seconds instead of the flat 60/120.
+        private readonly object _durationLock = new();
+        private readonly Dictionary<string, List<int>> _buildDurations = new();
+        private const int MaxDurationSamplesPerKind = 24;
+
         public BackgroundJobRegistry(int retentionSeconds = 600) => _retentionSeconds = retentionSeconds;
+
+        // Record a completed build's wall-clock seconds for future estimation.
+        public void RecordBuildDuration(string kind, int seconds)
+        {
+            if (string.IsNullOrEmpty(kind) || seconds <= 0) return;
+            lock (_durationLock)
+            {
+                if (!_buildDurations.TryGetValue(kind, out var list))
+                    _buildDurations[kind] = list = new List<int>();
+                list.Add(seconds);
+                if (list.Count > MaxDurationSamplesPerKind)
+                    list.RemoveAt(0);
+            }
+        }
+
+        // Median of recent samples for a kind, or null when there's no history yet.
+        // Median (not mean) so a single slow outlier doesn't skew the estimate.
+        public int? EstimateBuildSeconds(string kind)
+        {
+            if (string.IsNullOrEmpty(kind)) return null;
+            lock (_durationLock)
+            {
+                if (!_buildDurations.TryGetValue(kind, out var list) || list.Count == 0)
+                    return null;
+                var sorted = list.OrderBy(x => x).ToList();
+                int mid = sorted.Count / 2;
+                int median = (sorted.Count % 2 == 1)
+                    ? sorted[mid]
+                    : (sorted[mid - 1] + sorted[mid] + 1) / 2;
+                // Clamp so a wild sample can't produce an absurd metadata value.
+                return Math.Max(5, Math.Min(median, 1800));
+            }
+        }
 
         public JobEntry Start(string session, string kind, int estimatedSeconds)
         {
@@ -47,6 +87,14 @@ namespace GxMcp.Gateway
             job.CompletedAt = DateTime.UtcNow;
             if (job.Summary == null) job.Summary = summary;
             if (job.Result == null) job.Result = result;
+            // Issue #27 item 2: feed the estimator with the observed wall-clock of a
+            // successful build so the next build's estimated_seconds is realistic.
+            if (success && job.Kind != null
+                && job.Kind.IndexOf("build", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                int elapsed = (int)Math.Round((job.CompletedAt.Value - job.StartedAt).TotalSeconds);
+                RecordBuildDuration(job.Kind, elapsed);
+            }
             DisposeCts(jobId);
         }
 
@@ -191,5 +239,14 @@ namespace GxMcp.Gateway
         public int EstimatedSeconds { get; set; }
         public string? Summary { get; set; }
         public JObject? Result { get; set; }
+
+        // Issue #27 item 1: the worker-side build task id (BuildTaskStatus key) this
+        // job maps to. The async build poller (Program.cs) is fire-and-forget and can
+        // wedge — stale worker pipe, STA serialization, worker recycle — leaving the job
+        // stuck "running" forever even though the worker's build task already terminated.
+        // Storing the worker task id lets any subsequent action=status / action=result
+        // poll actively re-query the worker and reconcile the job to its real terminal
+        // state instead of trusting only the background poller. See ReconcileJobWithWorkerAsync.
+        public string? WorkerTaskId { get; set; }
     }
 }

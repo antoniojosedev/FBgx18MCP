@@ -42,6 +42,17 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(1240, page.TotalLines);
             Assert.Equal(1240, page.LinesReturned);
             Assert.Equal(content.TrimEnd('\r', '\n').Length, page.Content.TrimEnd('\r', '\n').Length);
+            // Issue #27 item 7: limit=0 flags an explicit full read so the gateway honours
+            // it (larger source budget) instead of silently re-capping at ~20 KB.
+            Assert.True(page.ExplicitFullRead);
+        }
+
+        [Fact]
+        public void DefaultPaginatedRead_IsNotFlaggedExplicitFull()
+        {
+            var content = MakeContent(1240, approxBytesPerLine: 40);
+            var page = ReadPagination.ApplyDefault(content, offset: null, limit: null, client: "mcp");
+            Assert.False(page.ExplicitFullRead);
         }
 
         [Fact]

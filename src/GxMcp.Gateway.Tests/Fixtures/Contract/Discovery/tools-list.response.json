@@ -719,6 +719,7 @@
             "type": "string"
           },
           "context": {
+            "description": "Exact existing text to find (Replace) or anchor after (Insert_After). Required for both.",
             "type": "string"
           },
           "dryRun": {
@@ -785,7 +786,7 @@
             "type": "string"
           },
           "patch": {
-            "description": "String or {find,replace} object. Prefer operation+context+content."
+            "description": "Shorthand for {find,replace}. Equivalent to operation=Replace + context=find + content=replace."
           },
           "replaceAll": {
             "description": "patch mode only. Apply to ALL occurrences instead of requiring expectedCount to match exactly.",
@@ -2117,6 +2118,10 @@
           "maxResults": {
             "type": "integer"
           },
+          "objectName": {
+            "description": "Restrict the scan to these exact object name(s), comma-separated. Makes a search inside one known object O(object) not O(KB), and bypasses the type whitelist.",
+            "type": "string"
+          },
           "pattern": {
             "type": "string"
           },
@@ -2134,6 +2139,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "startIndex": {
+            "description": "Resume cursor. On Timeout the response returns nextCursor; pass it here to continue where the scan stopped.",
+            "type": "integer"
+          },
+          "timeoutMs": {
+            "description": "Wall-clock budget (default 30000). Raise it to scan more objects per call.",
+            "type": "integer"
           },
           "typeFilter": {
             "type": "string"
