@@ -85,6 +85,8 @@ namespace GxMcp.Worker.Services
         private readonly LearningReportService _learningReportService;
         // genexus_gxserver — read-only sync-state surface.
         private readonly GxServerSyncService _gxServerSyncService;
+        // genexus_compare — read-only IComparerService surface ("Compare Objects" parity).
+        private readonly CompareService _compareService;
         private readonly SdPanelService _sdPanelService;
         private readonly MultiAgentLockService _multiAgentLockService;
         private readonly WhatIfService _whatIfService;
@@ -193,6 +195,7 @@ namespace GxMcp.Worker.Services
             _wcagCheckService = new WcagCheckService(_objectService);
             _learningReportService = new LearningReportService(_kbService);
             _gxServerSyncService = new GxServerSyncService(_kbService);
+            _compareService = new CompareService(_kbService, _objectService);
             _sdPanelService = new SdPanelService(_objectService, _writeService);
             _multiAgentLockService = new MultiAgentLockService(_kbService);
             _whatIfService = new WhatIfService(_analyzeService, _objectService);
@@ -1432,6 +1435,10 @@ namespace GxMcp.Worker.Services
                         // genexus_gxserver — read-only surface for GxServer sync state.
                         // No SDK calls; probes metadata files under the KB root.
                         return _gxServerSyncService.Run(args ?? new JObject());
+                    case "compare":
+                        // genexus_compare — read-only IDE "Compare Objects" parity over
+                        // the SDK's IComparerService. See docs/sdk_coverage_gap_matrix.md P0 #2.
+                        return _compareService.Run(args ?? new JObject());
                     case "sdpanel":
                         return _sdPanelService.Dispatch(action, target ?? args?["name"]?.ToString() ?? args?["target"]?.ToString(), args?["params"] as JObject ?? args);
                     case "multiagentlock":

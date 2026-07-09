@@ -311,6 +311,18 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                // genexus_compare — read-only IDE "Compare Objects" parity over the
+                // SDK's IComparerService. No SDK calls happen in the gateway; worker
+                // resolves both objects and asks IComparerService.AreEqualInContent/
+                // AreEqualInProperties. See docs/sdk_coverage_gap_matrix.md P0 #2.
+                case "genexus_compare":
+                    return new
+                    {
+                        module = "Compare",
+                        action = "Run",
+                        @params = args
+                    };
+
                 // Item 71 — gh CLI passthrough.
                 case "genexus_github":
                     return new

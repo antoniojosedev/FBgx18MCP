@@ -331,6 +331,58 @@
     {
       "annotations": {
         "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Diff two KB objects — IDE 'Compare Objects' parity over the SDK's IComparerService. mode=content (default) diffs full object content; mode=properties diffs top-level properties only. Read-only.",
+      "inputSchema": {
+        "examples": [
+          {
+            "objectA": "Customer",
+            "objectB": "CustomerV2"
+          },
+          {
+            "mode": "properties",
+            "objectA": "Customer",
+            "objectB": "CustomerV2"
+          }
+        ],
+        "properties": {
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "content (default) or properties.",
+            "enum": [
+              "content",
+              "properties"
+            ],
+            "type": "string"
+          },
+          "objectA": {
+            "type": "string"
+          },
+          "objectB": {
+            "type": "string"
+          },
+          "type": {
+            "description": "Object type filter applied to both lookups, e.g. 'Transaction'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "objectA",
+          "objectB"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_compare"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false

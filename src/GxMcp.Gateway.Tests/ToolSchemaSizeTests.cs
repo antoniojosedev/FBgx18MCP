@@ -142,7 +142,11 @@ namespace GxMcp.Gateway.Tests
             //   genexus_search_source scope surface (objectName + startIndex +
             //   timeoutMs params — object-scoped, resumable search). Measured
             //   ~11423 tokens; ~127 headroom.
-            Assert.True(approxTokens < 11550, $"tool_definitions.json is ~{approxTokens} tokens; budget 11550.");
+            //   2026-07-09 (genexus_compare spike): 11550 → 11750 for the new
+            //   genexus_compare tool (IComparerService "Compare Objects" parity —
+            //   objectA/objectB/type/mode schema, ~150 tokens). Measured ~11699
+            //   tokens; ~51 headroom.
+            Assert.True(approxTokens < 11750, $"tool_definitions.json is ~{approxTokens} tokens; budget 11750.");
         }
     }
 }
