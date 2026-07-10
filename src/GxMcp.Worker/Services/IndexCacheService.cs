@@ -469,6 +469,8 @@ namespace GxMcp.Worker.Services
         private void BuildParentIndex(SearchIndex index)
         {
             var byParent = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.List<SearchIndex.IndexEntry>>(StringComparer.OrdinalIgnoreCase);
+            // O(1) dedup companion, built in lockstep with byParent (see AddOrUpdateEntryInParentIndex).
+            var keysByParent = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             // Fase 2: (re)build the Guid → storage-key map alongside the parent index — both
             // derive from a single full pass over Objects, so do them together.
             var guidToKey = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -481,15 +483,18 @@ namespace GxMcp.Worker.Services
                 {
                     list = new System.Collections.Generic.List<SearchIndex.IndexEntry>();
                     byParent[parent] = list;
+                    keysByParent[parent] = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 }
 
                 // PERFORMANCE: Since we are iterating dictionary values, there are NO duplicates.
                 // Using .Add() directly changes this from an O(N^2) operation to O(N).
                 list.Add(entry);
+                keysByParent[parent].Add(GetEntryStorageKey(entry));
 
                 if (!string.IsNullOrEmpty(entry.Guid)) guidToKey[entry.Guid] = kv.Key;
             }
             index.ChildrenByParent = byParent;
+            index.ChildKeysByParent = keysByParent;
             index.GuidToKey = guidToKey;
         }
 
@@ -594,15 +599,23 @@ namespace GxMcp.Worker.Services
             return string.Format("{0}/{1}", parentPath, entry.Name ?? string.Empty);
         }
 
-        private void AddOrUpdateEntryInParentIndex(System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.List<SearchIndex.IndexEntry>> byParent, SearchIndex.IndexEntry entry)
+        private void AddOrUpdateEntryInParentIndex(SearchIndex index, SearchIndex.IndexEntry entry)
         {
+            if (index?.ChildrenByParent == null || entry == null) return;
             string parent = entry.ParentPath ?? entry.Parent ?? "";
-            var list = byParent.GetOrAdd(parent, _ => new System.Collections.Generic.List<SearchIndex.IndexEntry>());
-            
+            var list = index.ChildrenByParent.GetOrAdd(parent, _ => new System.Collections.Generic.List<SearchIndex.IndexEntry>());
+            var keys = index.ChildKeysByParent?.GetOrAdd(parent, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
             lock (list)
             {
                 string entryKey = GetEntryStorageKey(entry);
-                if (!list.Any(e => string.Equals(GetEntryStorageKey(e), entryKey, StringComparison.OrdinalIgnoreCase)))
+                // O(1) dedup via the companion key-set instead of an O(n) List.Any scan.
+                // HashSet.Add returns false when the key is already present. Fall back to the
+                // linear scan only if the companion set is somehow absent (defensive).
+                bool isNew = keys != null
+                    ? keys.Add(entryKey)
+                    : !list.Any(e => string.Equals(GetEntryStorageKey(e), entryKey, StringComparison.OrdinalIgnoreCase));
+                if (isNew)
                 {
                     list.Add(entry);
                 }
@@ -611,15 +624,17 @@ namespace GxMcp.Worker.Services
 
         // Fase 2: drop an entry from its parent-children list (used by rename collapse and
         // RemoveEntryByGuid). Matches by storage key under the same per-list lock the add path uses.
-        private void RemoveEntryFromParentIndex(System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.List<SearchIndex.IndexEntry>> byParent, SearchIndex.IndexEntry entry)
+        private void RemoveEntryFromParentIndex(SearchIndex index, SearchIndex.IndexEntry entry)
         {
-            if (byParent == null || entry == null) return;
+            if (index?.ChildrenByParent == null || entry == null) return;
             string parent = entry.ParentPath ?? entry.Parent ?? "";
-            if (!byParent.TryGetValue(parent, out var list)) return;
+            if (!index.ChildrenByParent.TryGetValue(parent, out var list)) return;
+            var keys = index.ChildKeysByParent != null && index.ChildKeysByParent.TryGetValue(parent, out var k) ? k : null;
             string entryKey = GetEntryStorageKey(entry);
             lock (list)
             {
                 list.RemoveAll(e => string.Equals(GetEntryStorageKey(e), entryKey, StringComparison.OrdinalIgnoreCase));
+                keys?.Remove(entryKey);
             }
         }
 
@@ -635,7 +650,7 @@ namespace GxMcp.Worker.Services
                 if (index.GuidToKey == null || !index.GuidToKey.TryGetValue(guid, out var key)) return;
                 if (index.Objects.TryRemove(key, out var removed))
                 {
-                    if (index.ChildrenByParent != null) RemoveEntryFromParentIndex(index.ChildrenByParent, removed);
+                    if (index.ChildrenByParent != null) RemoveEntryFromParentIndex(index, removed);
                     if (Guid.TryParse(guid, out var g)) _hierarchyCache.TryRemove(g, out _);
                 }
                 index.GuidToKey.TryRemove(guid, out _);
@@ -1314,14 +1329,14 @@ namespace GxMcp.Worker.Services
                 && !string.Equals(oldKey, key, StringComparison.OrdinalIgnoreCase))
             {
                 if (index.Objects.TryRemove(oldKey, out var stale) && index.ChildrenByParent != null)
-                    RemoveEntryFromParentIndex(index.ChildrenByParent, stale);
+                    RemoveEntryFromParentIndex(index, stale);
             }
 
             // Atomic update using ConcurrentDictionary
             index.Objects.AddOrUpdate(key, entry, (k, existing) => entry);
             if (index.ChildrenByParent != null)
             {
-                AddOrUpdateEntryInParentIndex(index.ChildrenByParent, entry);
+                AddOrUpdateEntryInParentIndex(index, entry);
             }
             if (index.GuidToKey != null && !string.IsNullOrEmpty(entry.Guid))
             {
@@ -1533,7 +1548,7 @@ namespace GxMcp.Worker.Services
                         // implementation rebuilt the ENTIRE parent index via UpdateIndex
                         // per deletion, an O(N) rebuild for an O(1) operation.
                         if (index.ChildrenByParent != null && removedEntry != null)
-                            RemoveEntryFromParentIndex(index.ChildrenByParent, removedEntry);
+                            RemoveEntryFromParentIndex(index, removedEntry);
                         // PERFORMANCE (W-M5): invalidate hierarchy cache for removed objects.
                         if (!string.IsNullOrEmpty(removedEntry?.Guid) && Guid.TryParse(removedEntry.Guid, out var g))
                         {
@@ -1639,7 +1654,7 @@ namespace GxMcp.Worker.Services
                     continue; // never demote an enriched entry to a stub
                 }
                 idx.Objects[key] = e;
-                if (idx.ChildrenByParent != null) AddOrUpdateEntryInParentIndex(idx.ChildrenByParent, e);
+                if (idx.ChildrenByParent != null) AddOrUpdateEntryInParentIndex(idx, e);
                 if (idx.GuidToKey != null && !string.IsNullOrEmpty(e.Guid)) idx.GuidToKey[e.Guid] = key;
                 any = true;
             }

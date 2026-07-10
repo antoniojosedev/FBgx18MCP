@@ -51,13 +51,11 @@ troubleshooting entry, the missing env-var reference doc, and the untested `/mcp
 auth path. The findings below were **deferred** — MED-risk or needing per-site
 verification — and should become numbered plans (012+) before execution:
 
-- **PERF-01 — O(n²) parent-children index insert.** `IndexCacheService.AddOrUpdateEntryInParentIndex`
-  (`src/GxMcp.Worker/Services/IndexCacheService.cs:597-610`) does a `list.Any(...)` linear
-  scan per insert under the per-list lock; for large sibling groups (thousands of
-  attributes under one table, procs under one folder) bulk/incremental indexing is
-  quadratic. Fix needs an O(1) membership structure (companion `HashSet` of storage keys)
-  alongside the ordered `List`, updated in both add and `RemoveEntryFromParentIndex`.
-  Land plan 001 (flush-count regression test) first — same safety-net argument as 003/004.
+- **PERF-01 — O(n²) parent-children index insert. DONE (Unreleased).** Fixed by adding a
+  companion `ChildKeysByParent` key-set to `SearchIndex` for O(1) dedup in
+  `AddOrUpdateEntryInParentIndex`, maintained alongside the list in `BuildParentIndex` and
+  `RemoveEntryFromParentIndex` under the same per-list lock. Readers untouched (the set is
+  `[JsonIgnore]`, rebuilt from `Objects`). Regression coverage in `ParentIndexDedupTests`.
 - **PERF-02 — full index scan per non-quick search.** `SearchService` calls
   `IndexCacheService.HasPendingEnrichment()` inline on qualifying searches; it walks the
   whole in-memory index (`IndexCacheService.cs:987-997`). Replace with an `Interlocked`

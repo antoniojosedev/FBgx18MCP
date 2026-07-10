@@ -7,6 +7,11 @@ plus documentation hygiene; no tool renames or behavior changes a normal caller 
 
 ### Fixed
 
+- **Incremental indexing of large sibling groups is no longer quadratic.** Adding an
+  object to the parent-children index scanned the whole sibling list to dedup on every
+  insert, so bulk/streaming indexing of a folder or table with thousands of children ran
+  in O(n²). Dedup is now O(1) via a companion key-set maintained alongside the list, cutting
+  the cost of warming or incrementally updating large KBs. No change to results or ordering.
 - **Background writes are no longer silently lost when a commit fails.** The background
   flush caught commit exceptions at debug level and then cleared its "pending write"
   flag unconditionally — so a failed commit was never retried, even though the client had

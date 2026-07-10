@@ -13,6 +13,13 @@ namespace GxMcp.Worker.Models
         [JsonIgnore]
         public ConcurrentDictionary<string, List<IndexEntry>> ChildrenByParent { get; set; }
 
+        // O(1) dedup companion to ChildrenByParent: parent -> set of storage keys already in
+        // that parent's list. Lets the incremental insert path skip the O(n) List.Any scan
+        // (see IndexCacheService.AddOrUpdateEntryInParentIndex). Maintained under the same
+        // per-list lock as ChildrenByParent and rebuilt with it; not serialized (derivable).
+        [JsonIgnore]
+        public ConcurrentDictionary<string, HashSet<string>> ChildKeysByParent { get; set; }
+
         // Fase 2: Guid → storage-key reverse map. A rename keeps the Guid stable but changes
         // the Type:Name storage key, so without this a rename leaves a stale entry under the
         // old key. Rebuilt from Objects on load/replace; not serialized (derivable).
