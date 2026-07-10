@@ -35,6 +35,17 @@ namespace GxMcp.Worker.Services
                 var obj = _objectService.FindObject(target);
                 if (obj == null) return McpResponse.Err(code: "ObjectNotFound", message: "Object not found for validation.", hint: "The requested object is not available in the active Knowledge Base. Check the target name and KB state.", nextSteps: new JArray(McpResponse.NextStep("genexus_list_objects", null, "Lists available objects so you can verify the target name.")), target: target);
 
+                // When no code is supplied, validate the object's CURRENT source in place
+                // (lightweight per-object check, e.g. Procedure Source / Rules) rather than
+                // overwriting the part with null. Resolve the part early so we can read it.
+                string normalizedPartNameEarly = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+                if (string.IsNullOrEmpty(code))
+                {
+                    var existingPart = PartAccessor.GetPart(obj, normalizedPartNameEarly);
+                    if (existingPart is ISource existingSource)
+                        code = existingSource.Source ?? string.Empty;
+                }
+
                 // 1. FAST PRE-FLIGHT CHECK (Regex based)
                 var structuralErrors = CodeParser.Validate(code);
                 if (structuralErrors.Count > 0)

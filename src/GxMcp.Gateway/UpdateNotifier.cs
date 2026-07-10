@@ -50,16 +50,25 @@ namespace GxMcp.Gateway
                     };
                 }
 
-                bool available = CompareSemver(cached.LatestVersion!, current!) > 0;
+                int cmp = CompareSemver(cached.LatestVersion!, current!);
+                bool available = cmp > 0;
+                // issue #31.6: the npm "latest" dist-tag can lag behind the installed build
+                // (a release published to GitHub but not yet to npm, or a stale feed). Reporting
+                // an older version as "latest" reads as a downgrade prompt. When the feed is
+                // behind the installed version, report the installed version as latest and note
+                // the lag instead of surfacing the confusing older number.
+                bool feedBehind = cmp < 0;
                 var result = new JObject {
                     ["currentVersion"] = current,
-                    ["latestVersion"] = cached.LatestVersion,
+                    ["latestVersion"] = feedBehind ? current : cached.LatestVersion,
                     ["updateAvailable"] = available,
                     ["checkedAt"] = cached.CheckedAt.ToString("o"),
-                    ["releaseUrl"] = cached.ReleaseUrl,
+                    ["releaseUrl"] = feedBehind ? ReleaseUrlFor(current!) : cached.ReleaseUrl,
                     ["command"] = available ? "npx genexus-mcp@latest init" : null,
                     ["restartRequired"] = available
                 };
+                if (feedBehind)
+                    result["note"] = $"Installed build (v{current}) is newer than the registry's published 'latest' (v{cached.LatestVersion}); the update feed is lagging. You are up to date.";
                 // Corporate self-update: surface a staged build waiting for restart so
                 // the LLM can tell the user "restart to finish updating to vX".
                 var staged = SelfUpdater.GetStagedStatusSync();

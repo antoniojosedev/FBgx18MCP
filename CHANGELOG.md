@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.16.0 — 2026-07-10
+
+Follow-up on two v2.15 authoring sessions (issues #30 and #31): SDT element sizing, per-object validation, batch reads, no-op detection, and folder moves now behave.
+
+### Fixed
+
+- **SDT element Length/Decimals are now settable.** Writing an SDT structure element as `Codigo : Numeric(9)` used to drop the size — the element stayed at the `Numeric(4)` default, which serializes as `xsd:short` and silently truncates any value over 32767. Two causes: the structure write only fired for `part=Structure` while `genexus_read` reports the part as `SDTStructure` (so the write was a silent no-op), and the parser never applied the length even when it ran. Both are fixed — `part=SDTStructure` now writes, and `Numeric(9)` / `Numeric(9.0)` / `Numeric(9,0)` all set length and decimals. Reads round-trip the size (`Codigo : NUMERIC(9)`).
+- **Batch `genexus_read` no longer crashes.** `genexus_read targets=["A","B","C"]` failed with `BatchRead failed: Cannot access child value on Newtonsoft.Json.Linq.JValue`. The batch path expected each entry to be an object but the tool passes bare object-name strings; it now accepts both forms, so reading several objects in one call works. Individual reads were unaffected.
+- **`genexus_lifecycle action=validate` now validates Procedure Source.** It always returned `ValidationSkipped: "Validation not applicable for this part type."` because the dispatch passed the action verb ("Check") where the part name belonged, so the lookup never matched a part. Validation now targets the object's `Source` (pass `part` for another part, e.g. `Rules`); with no `code` argument it validates the object's current Source in place, giving a lightweight per-object syntax check independent of a full build.
+- **No-op edits report `WriteNoChange`.** When the content you write normalizes to exactly what's already persisted, the response now returns `code: WriteNoChange` with `changed: false` instead of a misleading `WriteApplied`, and the pre-write snapshot `.bak` is discarded rather than kept.
+- **`persistedSnippet` shows the edited region.** The write-response snippet was always the first ~10 lines, so an edit lower in the part gave no signal. It's now centered on the first changed line, so the region you touched is visible.
+- **`genexus_read` on an SDT with no `part` no longer errors.** It defaulted to `Source` (which SDTs don't have) and returned `Part 'Source' not found`. Reads now fall back to the object's primary part — `SDTStructure` for an SDT — when no part is given.
+- **`patch` `{find,replace}` shorthand works when the client sends it as a JSON string.** Some clients serialize the nested `patch` object as a string (common when the find/replace text spans lines with CRLF); the shorthand then fell through to the bare-string path and failed with `Replace needs the text to find`. A string `patch` that contains JSON is now reparsed into the object form.
+- **Moving an object to a folder no longer silently no-ops.** `genexus_properties action=set propertyName=Folder` returned `PropertyApplied` while the object never moved. Object folder/module placement is not writable through the GeneXus 18 SDK (the `Parent`/`Module` setters do nothing), so the call now fails loudly with `FolderMoveNotSupported` and points you to the IDE, instead of reporting a success that did nothing.
+- **Created objects no longer land with `Integrated Security Level = (Unknown)`.** A raw SDK create left the property at an unresolved value the IDE rendered as "(Unknown)", instead of one of the real options (None / Authentication / Authorization). New objects are now normalized to `None` (the default when integrated security isn't enabled) on create, so the property panel shows a valid level. Objects that don't have the property (SDT, Domain, Theme, …) are unaffected.
+- **The update check no longer reports an older version as "latest".** When the installed build is newer than the registry's published `latest` (a release live on GitHub but not yet on npm), `genexus_whoami` showed a confusing older `latestVersion`. It now reports the installed version as latest with a note that the feed is lagging; `updateAvailable` was already correctly `false`.
+
+### Added
+
+- **`genexus_create type=Folder` / `type=Module` are documented.** Both were creatable but only `Folder` worked and neither was listed; the `genexus_create` schema now names them and notes that objects cannot be moved into them via the tools (SDK placement is read-only).
+- **Build/spec output flags likely-spurious spec errors.** When a build or spec-check reports `spc####` / `gen####` diagnostics, the envelope now carries a `specErrorsHint`: in an ungenerated or broken build environment the specifier can emit a spec error that is invariant to the Source (fixed line number, fires even on known-good objects). The hint says to regenerate the environment before treating it as an authored-code bug, and points at `action=validate` for build-independent Source checking. The error itself is never suppressed. When environment errors are present too, the hint flags the spec errors as likely environment-induced.
+
+### Documentation
+
+- **API-object routing grammar** is now written down in `AGENTS.md`: `Verb { <route> => <Object>; }`, one HTTP-verb block per API object (mixing verbs / `@`-decorators fails at spec — a GeneXus grammar limit, not the MCP), and use per-procedure REST to expose multiple verbs.
+
+### Internal
+
+- SDT length: `VariableTypeResolver` accepts `[.,]` as the length/decimals separator; `SdtDslParser` applies Length/Decimals via `AttributeTypeApplier` and serializes them; the DSL write interceptor accepts the `SDTStructure` part alias. No-op/snippet: `WrapWithPersistedState` takes a prior-source arg, computes `FirstDiffLine`, flips `WriteApplied`→`WriteNoChange`, and drops the snapshot; `EditSnapshotStore.SnapshotInfo` carries `PriorContent`. New tests: `VariableTypeResolverTests` (dot form), `PersistedSnippetTests`, `BuildErrorCategoryTests` (spec hint). Golden `tools-list` fixture regenerated.
+
 ## v2.15.0 — 2026-07-10
 
 Second pass on the long-session report (issue #28): the remaining authoring and stability gaps. A spec-check that skips the full build, an API object type, no more phantom placeholder KB, and error text that keeps your casing.

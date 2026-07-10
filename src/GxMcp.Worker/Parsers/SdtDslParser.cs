@@ -272,8 +272,35 @@ namespace GxMcp.Worker.Parsers
             {
                 string typeStr = "Unknown";
                 try { typeStr = level.Type != null ? level.Type.ToString() : "Unknown"; } catch { }
+
+                // issue #31.1: surface Length/Decimals so the reader can see (and round-trip)
+                // the element size, e.g. "Numeric(9)" / "Numeric(9,2)". Without this a numeric
+                // element read back as bare "NUMERIC" (default Numeric(4) → xsd:short, silent
+                // truncation past 32767). Comma form matches the Transaction structure DSL.
+                try
+                {
+                    int len = 0, dec = 0;
+                    try { len = (int)level.Length; } catch { }
+                    try { dec = (int)level.Decimals; } catch { }
+                    if (len > 0) typeStr += dec > 0 ? $"({len},{dec})" : $"({len})";
+                }
+                catch { }
+
                 sb.AppendLine($"{indentStr}{level.Name} : {typeStr}{collectionMarker}");
             }
+        }
+
+        // Set an int property (Length/Decimals) on an SDT item via reflection, resolving the
+        // Artech SDK's shadowed-property ambiguity the same way AttributeTypeApplier does.
+        private static void SetIntProperty(object target, string propName, int value)
+        {
+            if (target == null) return;
+            try
+            {
+                var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), propName);
+                if (p != null && p.CanWrite) p.SetValue(target, value, null);
+            }
+            catch (Exception ex) { Logger.Debug("[SDT PARSE] SetIntProperty " + propName + " failed: " + ex.Message); }
         }
 
         private static object ResolveDbType(Type eDBTypeT, string typeStr)
@@ -390,6 +417,18 @@ namespace GxMcp.Worker.Parsers
                             else if (pNode.TypeStr.StartsWith("Bool", StringComparison.OrdinalIgnoreCase)) targetChild.Type = Enum.Parse(eDBType, "Boolean");
                             else targetChild.Type = Enum.Parse(eDBType, "VARCHAR");
                         } catch { }
+
+                        // issue #31.1: apply Length/Decimals when the type carries them
+                        // (e.g. "Numeric(9)" / "Numeric(9.0)"). Previously dropped, so a numeric
+                        // element stayed at the Numeric(4) default (xsd:short) and truncated
+                        // values > 32767. Best-effort: SDT items without these props are skipped.
+                        try
+                        {
+                            var spec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(pNode.TypeStr);
+                            if (spec.Length.HasValue) SetIntProperty((object)targetChild, "Length", spec.Length.Value);
+                            if (spec.Decimals.HasValue) SetIntProperty((object)targetChild, "Decimals", spec.Decimals.Value);
+                        }
+                        catch { }
                     }
                 }
             }

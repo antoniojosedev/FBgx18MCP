@@ -85,7 +85,8 @@ namespace GxMcp.Worker.Helpers
                     Guid = safeGuid,
                     Part = safePart,
                     Compressed = gzip,
-                    Bytes = bytes.Length
+                    Bytes = bytes.Length,
+                    PriorContent = content
                 };
             }
             catch (Exception ex)
@@ -228,6 +229,9 @@ namespace GxMcp.Worker.Helpers
             public string Part;
             public bool Compressed;
             public int Bytes;
+            // The pre-write content captured for this snapshot. Used by the writer to
+            // detect a no-op (persisted == prior) without a second read. issue #31.2.
+            public string PriorContent;
         }
     }
 }

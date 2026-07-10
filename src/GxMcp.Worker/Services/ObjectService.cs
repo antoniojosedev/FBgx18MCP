@@ -213,6 +213,14 @@ namespace GxMcp.Worker.Services
                         });
                 }
 
+                // Raw KBObject.Create does not run GeneXus' property default-resolvers the
+                // way the IDE does, so security-bearing objects (API/Procedure/WebPanel/
+                // Transaction/…) are persisted with IntegratedSecurityLevel left at its
+                // invalid zero value, which the IDE renders as "(Unknown)". The only valid
+                // values are None / Authentication / Authorization; normalize to None (the
+                // default when GAM/integrated security isn't enabled) before saving.
+                NormalizeIntegratedSecurityLevel(newObj);
+
                 newObj.Save();
 
                 // Best-effort: refresh search index so subsequent list/query calls see this object
@@ -300,6 +308,77 @@ namespace GxMcp.Worker.Services
                 Logger.Error("CreateObject failed: " + ex.Message);
                 return "{\"status\":\"Error\", \"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
+        }
+
+        // IntegratedSecurityLevel is a Combo property whose stored value is one of the ids
+        // { SecurityNone, SecurityLow, SecurityHigh } (displayed as None / Authentication /
+        // Authorization). A valid object exposes either the id or its desc; anything else —
+        // notably the unresolved/stale value a raw KBObject.Create leaves behind, which the
+        // IDE renders as "(Unknown)" — is invalid and must be normalized to None.
+        private static readonly string[] _validSecurityLevels =
+        {
+            "SecurityNone", "SecurityLow", "SecurityHigh",   // combo ids
+            "None", "Authentication", "Authorization"        // combo descs
+        };
+
+        private static bool IsValidSecurityLevel(string value)
+            => !string.IsNullOrEmpty(value) &&
+               Array.Exists(_validSecurityLevels, v => string.Equals(v, value, StringComparison.OrdinalIgnoreCase));
+
+        // Set IntegratedSecurityLevel to None when a freshly-created object left it at an
+        // invalid value ("Unknown"). Best-effort and non-throwing: objects without the
+        // property (Domain, SDT, Theme, …) are simply skipped. The Combo accepts the id
+        // ("SecurityNone"), not the desc ("None"), so we try the id first and verify via
+        // read-back — keeping whichever representation the SDK actually applies.
+        private static void NormalizeIntegratedSecurityLevel(KBObject obj)
+        {
+            if (obj == null) return;
+            try
+            {
+                dynamic props = obj.Properties;
+                if (props == null) return;
+
+                dynamic prop = null;
+                try { prop = props["IntegratedSecurityLevel"]; } catch { }
+                if (prop == null) return;
+
+                string current = ReadPropertyValue(prop);
+                if (IsValidSecurityLevel(current)) return; // already None/Authentication/Authorization
+
+                // Try the combo id first, then the desc, verifying each via read-back.
+                foreach (var candidate in new[] { "SecurityNone", "None" })
+                {
+                    TrySetPropertyString(obj, "IntegratedSecurityLevel", candidate);
+                    if (IsValidSecurityLevel(ReadPropertyValue(prop)))
+                    {
+                        Logger.Debug("[CREATE] Normalized IntegratedSecurityLevel '" + (current ?? "<null>") + "' -> None (via '" + candidate + "') on " + obj.Name);
+                        return;
+                    }
+                }
+                Logger.Debug("[CREATE] Could not normalize IntegratedSecurityLevel (value '" + (current ?? "<null>") + "') on " + obj.Name);
+            }
+            catch (Exception ex) { Logger.Debug("[CREATE] NormalizeIntegratedSecurityLevel skipped: " + ex.Message); }
+        }
+
+        private static string ReadPropertyValue(dynamic prop)
+        {
+            try { return prop.Value?.ToString(); } catch { return null; }
+        }
+
+        private static void TrySetPropertyString(KBObject obj, string propName, string value)
+        {
+            try
+            {
+                var t = (Type)((object)obj).GetType();
+                var mi = t.GetMethod("SetPropertyValueString",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+                    null, new[] { typeof(string), typeof(string) }, null);
+                if (mi != null)
+                    mi.Invoke((object)obj, new object[] { propName, value });
+                else
+                    obj.SetPropertyValue(propName, value);
+            }
+            catch (Exception ex) { Logger.Debug("[CREATE] TrySetPropertyString(" + propName + "='" + value + "') failed: " + ex.Message); }
         }
 
         // Item 32: objectFilter added. sinceMode now also accepts an ISO-8601 timestamp;
@@ -1718,13 +1797,34 @@ namespace GxMcp.Worker.Services
 
         private static string ResolvePartName(KBObject obj, string partName)
         {
-            if (!string.IsNullOrWhiteSpace(partName))
-            {
-                return partName;
-            }
+            bool defaulted = string.IsNullOrWhiteSpace(partName);
+            // The gateway sends "Source" as the default when no part is given, so treat both
+            // the empty and the generic-"Source" case as "caller wants the primary part".
+            bool genericSource = defaulted || partName.Equals("Source", StringComparison.OrdinalIgnoreCase);
+            if (!genericSource) return partName; // explicit non-Source part — honor as-is
 
             if (obj is Procedure) return "Source";
-            if (obj is Transaction || obj is WebPanel) return "Events";
+            if (obj is Transaction || obj is WebPanel) return defaulted ? "Events" : "Source";
+
+            // issue #31.5: SDTs (and other objects without a Source part) previously errored
+            // "Part 'Source' not found". Fall back to the object's primary part instead:
+            // keep Source when it really exists, else SDTStructure for an SDT, else the first
+            // available part.
+            try { if (GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Source") != null) return "Source"; }
+            catch { }
+
+            string typeName = obj?.TypeDescriptor?.Name ?? "";
+            if (typeName.Equals("SDT", StringComparison.OrdinalIgnoreCase) ||
+                typeName.IndexOf("StructuredDataType", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "SDTStructure";
+
+            try
+            {
+                var parts = GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj);
+                if (parts != null && parts.Length > 0) return parts[0];
+            }
+            catch { }
+
             return "Source";
         }
 

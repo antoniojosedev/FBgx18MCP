@@ -248,7 +248,7 @@ namespace GxMcp.Worker.Services
             };
         }
 
-        public string BatchRead(JArray items)
+        public string BatchRead(JArray items, string defaultPart = "Source")
         {
             try
             {
@@ -256,16 +256,31 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Err(
                         code: "NoItemsProvided",
                         message: "No items provided.",
-                        hint: "Pass a non-empty items array where each entry has name and optionally part.");
+                        hint: "Pass a non-empty items array where each entry is an object name (string) or an object with name and optionally part.");
                 // no-nextStep: caller controls the items array; no specific tool call can resolve an empty input
 
+                if (string.IsNullOrEmpty(defaultPart)) defaultPart = "Source";
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var results = new JArray();
 
                 foreach (var item in items)
                 {
-                    string name = item["name"]?.ToString();
-                    string part = item["part"]?.ToString() ?? "Source";
+                    // genexus_read targets is an array of bare object-name strings
+                    // (each item is a JValue), while the internal batch form allows
+                    // {name, part} objects. Accept both so `targets:["A","B"]` no
+                    // longer crashes with "Cannot access child value on JValue".
+                    string name;
+                    string part;
+                    if (item is JObject itemObj)
+                    {
+                        name = itemObj["name"]?.ToString();
+                        part = itemObj["part"]?.ToString() ?? defaultPart;
+                    }
+                    else
+                    {
+                        name = item?.ToString();
+                        part = defaultPart;
+                    }
                     if (string.IsNullOrEmpty(name)) continue;
 
                     string readResult = _objectService.ReadObjectSource(name, part, null, null, "mcp");

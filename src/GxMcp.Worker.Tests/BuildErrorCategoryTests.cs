@@ -51,5 +51,34 @@ namespace GxMcp.Worker.Tests
             Assert.Single(status.EnvErrors);
             Assert.Single(status.CodeErrors);
         }
+
+        // issue #30 item 1: spc#### in an ungenerated build environment is invariant to the
+        // Source. The spec-errors hint must surface (never suppressing the error) and, when
+        // environment errors are also present, flag them as likely env-induced.
+        [Fact]
+        public void SpecErrorsHint_FiresOnSpecErrors_AndFlagsEnvInduced()
+        {
+            var mixed = new BuildService.BuildTaskStatus { TaskId = "t3", Status = "Failed" };
+            mixed.ErrorsDetailed.Add(new BuildService.ErrorDetail { raw = "error spc0031: No relationship found among attributes in group starting at line 13.", category = "spec" });
+            mixed.ErrorsDetailed.Add(new BuildService.ErrorDetail { raw = "error MSB3245: unresolved GeneXus.Security.API.Common.dll", category = "environment" });
+
+            Assert.Equal(1, mixed.SpecErrorCount);
+            Assert.NotNull(mixed.SpecErrorsHint);
+            Assert.Contains("INDUCED", mixed.SpecErrorsHint);
+
+            var specOnly = new BuildService.BuildTaskStatus { TaskId = "t4", Status = "Failed" };
+            specOnly.ErrorsDetailed.Add(new BuildService.ErrorDetail { raw = "error spc0031: No relationship found among attributes in group starting at line 13.", category = "spec" });
+            Assert.NotNull(specOnly.SpecErrorsHint);
+            Assert.Contains("genexus_lifecycle action=validate", specOnly.SpecErrorsHint);
+        }
+
+        [Fact]
+        public void SpecErrorsHint_NullWhenNoSpecErrors()
+        {
+            var status = new BuildService.BuildTaskStatus { TaskId = "t5", Status = "Failed" };
+            status.ErrorsDetailed.Add(new BuildService.ErrorDetail { raw = "error CS0246: type 'Foo' could not be found", category = "code" });
+            Assert.Equal(0, status.SpecErrorCount);
+            Assert.Null(status.SpecErrorsHint);
+        }
     }
 }

@@ -168,6 +168,36 @@ These 18 tools graduated from `DEFERRED`/`Future` stubs into live services. Each
 - **`genexus_github action=create_pr title=<t> body=<b>`** — shells out to the `gh` CLI from the KB path (or `workingDir`). Returns `{status, url}` on success, `{code:"GhCliNotInstalled"}` when the CLI is missing, or `{code:"GhExitNonZero", exitCode, stderr}`.
 - **`genexus_kb_import from=<alias> name=<obj> type=<TypeName>`** — gateway-side filesystem copy of one object's part files from another KB into the active KB. Dependencies NOT resolved. Returns `{status, filesCopied, targetDir}`. Must run `genexus_lifecycle action=index force=true` afterwards to make the imported object discoverable.
 
+## Authoring notes (issue #30)
+
+### API-object routing grammar
+
+`genexus_create type=API` scaffolds a REST API object; the Source is a route table
+the GeneXus specifier parses. The grammar (reverse-engineered against GeneXus 18.0.7):
+
+```
+Verb { <route> => <Object>; <route2> => <Object2>; }
+```
+
+- Routes on the LHS are **bare identifiers** (not quoted string literals).
+- The mapped object is on the RHS, separated by `=>` (not `:`), each rule `;`-terminated.
+- **One HTTP-verb block per API object.** A second top-level verb block fails at
+  spec (`Get {…} Post {…}` → `mismatched input 'Post' expecting <EOF>`), and a
+  `@Post`/`@Get` decorator inside a block fails (`mismatched input '@'`). This is
+  the GeneXus grammar itself, not an MCP restriction — the MCP does not rewrite it.
+- To expose multiple verbs on the same resource, use **per-procedure REST**
+  (set the Procedure's `REST=True` / `Expose as ...`) reached at `<app>/rest/<ProcName>`,
+  rather than trying to mix verbs in one API object.
+
+### Folder / module placement is read-only via the SDK
+
+Moving an object into a folder or module is **not** supported through the tools:
+`KBObject`'s `Parent` / `ParentKey` / `Module` setters are no-op stubs at the IL
+level in the GeneXus 18 SDK. `genexus_properties action=set propertyName=Folder`
+now fails with `FolderMoveNotSupported` instead of silently reporting success.
+Create folders/modules with `genexus_create type=Folder|Module`, but place objects
+into them from the GeneXus IDE (KB Explorer drag-and-drop / right-click Move).
+
 ## Release discipline
 
 - Before any release (`./release.ps1`, tag, or GitHub Release), update

@@ -1181,7 +1181,7 @@ namespace GxMcp.Worker.Services
             // (success, no-change, dry-run, rollback, or error).
             // Default sdkPath = typed-sdk; deeper writers (LayoutService raw-XML) tag their own
             // sdkPath first and WrapWithPersistedState is idempotent so it preserves that.
-            string wrapped = WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName, GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk);
+            string wrapped = WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName, GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk, snapshot?.PriorContent);
 
             // Issue #24 — never report WriteApplied when a non-empty source write
             // landed as an empty part on disk. Runs against the persistedHash the
@@ -1189,8 +1189,15 @@ namespace GxMcp.Worker.Services
             if (!dryRun)
                 wrapped = ApplyEmptyPersistGuard(wrapped, target, partName, code);
 
+            // issue #31.2: a no-op write (WrapWithPersistedState flipped code to
+            // WriteNoChange because persisted == prior) shouldn't keep the pre-write
+            // snapshot .bak it just wrote — delete it and skip the snapshot envelope.
+            bool wasNoOp = false;
+            try { wasNoOp = string.Equals(JObject.Parse(wrapped)["code"]?.ToString(), "WriteNoChange", StringComparison.OrdinalIgnoreCase); }
+            catch { }
+
             // Attach snapshot envelope to the response so callers can restore.
-            if (snapshot != null)
+            if (snapshot != null && !wasNoOp)
             {
                 try
                 {
@@ -1210,6 +1217,11 @@ namespace GxMcp.Worker.Services
                 {
                     Logger.Debug("[SNAPSHOT] envelope attach failed: " + ex.Message);
                 }
+            }
+            else if (snapshot != null && wasNoOp)
+            {
+                try { if (!string.IsNullOrEmpty(snapshot.Path) && System.IO.File.Exists(snapshot.Path)) System.IO.File.Delete(snapshot.Path); }
+                catch (Exception ex) { Logger.Debug("[SNAPSHOT] no-op cleanup failed: " + ex.Message); }
             }
             return wrapped;
             } // end lock (AcquirePerTargetLock)
@@ -1377,7 +1389,12 @@ namespace GxMcp.Worker.Services
 
                 // ... (rest of the log)
                 // 1. VIRTUAL/DSL PARTS INTERCEPTOR (Prioritize over physical part resolution for Structure)
-                if (partName.Equals("Structure", StringComparison.OrdinalIgnoreCase))
+                // issue #31.1: genexus_read / availableParts report an SDT's structure part as
+                // "SDTStructure", so authors naturally write to part="SDTStructure". Without
+                // accepting that alias here the write bypassed the DSL parser entirely and was a
+                // silent no-op (the Numeric(len) token — and any structural change — was dropped).
+                if (partName.Equals("Structure", StringComparison.OrdinalIgnoreCase)
+                    || partName.Equals("SDTStructure", StringComparison.OrdinalIgnoreCase))
                 {
                     var objToUpdate = _objectService.FindObject(target, typeFilter);
                     if (objToUpdate != null && (objToUpdate is global::Artech.Genexus.Common.Objects.Transaction || objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)))
@@ -6876,6 +6893,19 @@ namespace GxMcp.Worker.Services
             return string.Join("\n", lines.Skip(start).Take(end - start));
         }
 
+        // First line index (0-based) that differs between two texts, or 0 when identical /
+        // one is empty. Used to center the persisted snippet on the changed region.
+        internal static int FirstDiffLine(string before, string after)
+        {
+            if (string.IsNullOrEmpty(before) || string.IsNullOrEmpty(after)) return 0;
+            var a = before.Replace("\r\n", "\n").Split('\n');
+            var b = after.Replace("\r\n", "\n").Split('\n');
+            int n = Math.Min(a.Length, b.Length);
+            for (int i = 0; i < n; i++)
+                if (!string.Equals(a[i], b[i], StringComparison.Ordinal)) return i;
+            return a.Length == b.Length ? 0 : n;
+        }
+
         internal static JObject AppendPersistedState(JObject response, string finalSource, int? editLine)
         {
             if (response == null) response = new JObject();
@@ -6890,7 +6920,7 @@ namespace GxMcp.Worker.Services
         /// Failures to re-read are swallowed — the original envelope is still augmented with
         /// an empty hash/snippet so downstream parsers always find the keys.
         /// </summary>
-        private string WrapWithPersistedState(string responseJson, string target, string partName, string sdkPath = null)
+        private string WrapWithPersistedState(string responseJson, string target, string partName, string sdkPath = null, string priorSource = null)
         {
             JObject parsed = null;
             try { parsed = JObject.Parse(responseJson); }
@@ -6926,7 +6956,26 @@ namespace GxMcp.Worker.Services
                 Logger.Debug("[PERSISTED-STATE] Re-read failed for " + target + " (" + partName + "): " + ex.Message);
             }
 
-            AppendPersistedState(parsed, finalSource, null);
+            // issue #31.3: center the snippet on the first changed line when we know the
+            // prior source, so the edited region is shown even past the first ~10 lines.
+            int? editLine = priorSource != null ? (int?)FirstDiffLine(priorSource, finalSource) : null;
+            AppendPersistedState(parsed, finalSource, editLine);
+
+            // issue #31.2: when the write left the persisted content byte-identical to the
+            // prior content, this was a no-op — surface WriteNoChange instead of WriteApplied
+            // so callers don't have to diff the hash themselves.
+            if (priorSource != null)
+            {
+                bool changed = !string.Equals(ComputeSha256(priorSource), parsed["persistedHash"]?.ToString(), StringComparison.OrdinalIgnoreCase);
+                parsed["changed"] = changed;
+                string code = parsed["code"]?.ToString();
+                if (!changed && string.Equals(code, "WriteApplied", StringComparison.OrdinalIgnoreCase))
+                {
+                    parsed["code"] = "WriteNoChange";
+                    parsed["noChangeReason"] = "Normalized content is byte-identical to the persisted part; nothing was written.";
+                }
+            }
+
             return parsed.ToString(Newtonsoft.Json.Formatting.None);
         }
     }

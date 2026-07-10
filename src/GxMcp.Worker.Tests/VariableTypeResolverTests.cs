@@ -11,6 +11,10 @@ namespace GxMcp.Worker.Tests
         [InlineData("String(50)", "Character", 50, null)]
         [InlineData("Int", "Numeric", null, null)]
         [InlineData("Numeric(10,2)", "Numeric", 10, 2)]
+        // issue #31.1: accept the GeneXus IDE dot form for length.decimals too.
+        [InlineData("Numeric(9.0)", "Numeric", 9, 0)]
+        [InlineData("Numeric(18.4)", "Numeric", 18, 4)]
+        [InlineData("Numeric(9)", "Numeric", 9, null)]
         [InlineData("Bool", "Boolean", null, null)]
         [InlineData("DateTime", "DateTime", null, null)]
         public void Resolve_KnownSynonyms_ReturnsCanonical(string input, string expType, int? expLen, int? expDec)

@@ -387,7 +387,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard; type='API' scaffolds a REST API object for grouped-route services; SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog).",
+      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers but objects CANNOT be moved into them via the tools (SDK folder/module placement is read-only); SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog).",
       "inputSchema": {
         "examples": [
           {

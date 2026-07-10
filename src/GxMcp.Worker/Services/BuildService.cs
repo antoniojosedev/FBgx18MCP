@@ -460,6 +460,23 @@ namespace GxMcp.Worker.Services
                 (EnvErrorCount > 0 && CodeErrorCount == 0)
                     ? "Build failed only on environment/infra errors (missing generated sources, unresolved DLL references, locked outputs, or NuGet restore) — not on the edited object's spec/code. Fix the KB environment (regenerate/restore) and rebuild; the authored object may already be correct."
                     : null;
+            [JsonProperty("specErrorCount")]
+            public int SpecErrorCount =>
+                (ErrorsDetailed ?? new List<ErrorDetail>()).Count(e => e.category == "spec");
+            // spc####/gen#### diagnostics are only trustworthy when the build environment
+            // is fully generated. In an ungenerated/broken environment the specifier can
+            // emit a spurious spc#### that is invariant to the Source (fixed line number,
+            // fires even on known-good objects). Surface a hint whenever spec errors appear
+            // — especially alongside environment errors — so the agent doesn't chase a
+            // phantom source bug. Never suppresses the error itself.
+            [JsonProperty("specErrorsHint")]
+            public string SpecErrorsHint =>
+                (SpecErrorCount > 0)
+                    ? ((EnvErrorCount > 0
+                            ? "Both spec (spc####/gen####) and environment/infra errors are present — the spec errors are likely INDUCED by the ungenerated/broken build environment, not by the object's Source. "
+                            : "Spec diagnostics (spc####/gen####) depend on a fully generated build environment. ")
+                       + "If a spc#### cites a fixed line unrelated to the actual Source, or fires regardless of what the Source contains (even on known-good objects), regenerate the environment (genexus_lifecycle action=rebuild, then action=reorg) before treating it as an authored-code error. For build-independent Source validation use genexus_lifecycle action=validate (save-time SDK check).")
+                    : null;
             // FR#9 (v2.6.6 Stream E): CS2001 errors referencing "<obj>_bc.cs" where
             // the underlying Transaction no longer exists (or isn't a Transaction)
             // are demoted to warnings — counted here, full lines preserved in

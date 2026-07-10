@@ -672,7 +672,7 @@ namespace GxMcp.Worker.Services
                         if (action == "RestorePatternSnapshot") return _kbValidationService.RestorePatternSnapshot(target, args?["snapshotPath"]?.ToString(), _writeService);
                         break;
                     case "batch":
-                        if (action == "BatchRead") return _batchService.BatchRead(args?["items"] as JArray);
+                        if (action == "BatchRead") return _batchService.BatchRead(args?["items"] as JArray, args?["part"]?.ToString() ?? "Source");
                         if (action == "BatchEdit") return _batchService.BatchEdit(target, args?["changes"] as JArray);
                         if (action == "MultiEdit") return _batchService.MultiEdit(args?["items"] as JArray);
                         if (action == "Process") return _batchService.ProcessBatch(args?["batchAction"]?.ToString(), target, payload);
@@ -1265,7 +1265,11 @@ namespace GxMcp.Worker.Services
                             return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure, fastIncremental);
                         }
                     case "validation":
-                        return _validationService.ValidateCode(target, action, payload);
+                        // The routed `action` here is the umbrella verb ("Check"), NOT a part
+                        // name — passing it through as partName made GetPart(obj,"Check") miss
+                        // every time and the tool always returned ValidationSkipped. Validate
+                        // the requested part (default Source; e.g. Rules) instead.
+                        return _validationService.ValidateCode(target, args?["part"]?.ToString() ?? "Source", payload);
                     case "test":
                         return _testService.RunTest(target);
                     case "wiki":

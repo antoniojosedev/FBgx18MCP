@@ -34,7 +34,7 @@ namespace GxMcp.Gateway.Routers
                         case "reorg": return new { module = "Build", action = "Reorg", target = target };
                         // Item 43 (friction 2026-05-22) — DDL diff/preview pre-reorg.
                         case "reorg_preview": return new { module = "Build", action = "ReorgPreview", target = target };
-                        case "validate": return new { module = "Validation", action = "Check", target = target, payload = args?["code"]?.ToString() };
+                        case "validate": return new { module = "Validation", action = "Check", target = target, payload = args?["code"]?.ToString(), part = args?["part"]?.ToString() };
                         case "validate-kb": return new { module = "KB", action = "ValidateConditions", limit = args?["limit"]?.ToObject<int?>() };
                         case "snapshots-list": return new { module = "KB", action = "ListPatternSnapshots", target = target };
                         case "snapshots-restore": return new { module = "KB", action = "RestorePatternSnapshot", target = target, snapshotPath = args?["snapshotPath"]?.ToString() };
@@ -186,7 +186,7 @@ namespace GxMcp.Gateway.Routers
 
                 // Legados
                 case "genexus_validate":
-                    return new { module = "Validation", action = "Check", target = target, payload = args?["code"]?.ToString() };
+                    return new { module = "Validation", action = "Check", target = target, payload = args?["code"]?.ToString(), part = args?["part"]?.ToString() };
                 case "genexus_build":
                     return new { module = "Build", action = args?["action"]?.ToString(), target = target };
                 // genexus_history routing intentionally NOT handled here — the

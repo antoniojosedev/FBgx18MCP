@@ -31,7 +31,9 @@ namespace GxMcp.Worker.Helpers
             { "GUID", "GUID" }, { "Uuid", "GUID" }
         };
 
-        private static readonly Regex TypeRegex = new Regex(@"^([A-Za-z]+)(?:\((\d+)(?:,(\d+))?\))?$", RegexOptions.Compiled);
+        // Length/decimals separator accepts both ',' (DSL form) and '.' (GeneXus IDE form,
+        // e.g. "Numeric(9.0)") so authors can paste either. issue #31.1.
+        private static readonly Regex TypeRegex = new Regex(@"^([A-Za-z]+)(?:\((\d+)(?:[.,](\d+))?\))?$", RegexOptions.Compiled);
 
         public static TypeResolution Resolve(string input)
         {

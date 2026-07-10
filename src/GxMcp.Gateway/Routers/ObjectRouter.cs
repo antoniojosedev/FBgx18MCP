@@ -136,6 +136,19 @@ namespace GxMcp.Gateway.Routers
                     if (mode == "patch")
                     {
                         var patchTok = args?["patch"];
+                        // issue #31.4: some clients serialize the nested `patch` object as a
+                        // JSON string (common when the find/replace text contains newlines).
+                        // Reparse it so the {find,replace} shorthand resolves to an object
+                        // instead of falling through to the bare-string path (which has no
+                        // context and fails with "Replace needs the text to find").
+                        if (patchTok is JValue pv && pv.Type == JTokenType.String)
+                        {
+                            var s = pv.ToString().TrimStart();
+                            if (s.StartsWith("{") || s.StartsWith("["))
+                            {
+                                try { patchTok = JToken.Parse(pv.ToString()); } catch { /* leave as string */ }
+                            }
+                        }
                         if (patchTok is JArray patchArr)
                         {
                             // RFC 6902 JSON-Patch (array payload)
