@@ -1,0 +1,238 @@
+using System;
+using System.Linq;
+using Newtonsoft.Json.Linq;
+using GxMcp.Worker.Helpers;
+
+namespace GxMcp.Worker.Services
+{
+    // Patch-matching + persisted-state utilities extracted from WriteService.cs (plan 007).
+    // Pure move, no logic changes — see plans/007-decompose-writeservice.md.
+    public partial class WriteService
+    {
+        // ----------------------------------------------------------------------
+        // v2.3.8 Task 3.1 — EOL-normalized matching helpers (friction-report #4)
+        // ----------------------------------------------------------------------
+        // Source bytes are preserved on disk; only the comparison is normalized.
+        // CRLF/LF are unified and per-line trailing whitespace is trimmed before
+        // matching. TryMatch returns indices into the ORIGINAL (non-normalized)
+        // source so callers can splice in replacements without corrupting EOLs.
+
+        internal static string NormalizeForCompare(string s)
+        {
+            if (s == null) return null;
+            var lines = s.Replace("\r\n", "\n").Split('\n');
+            for (int i = 0; i < lines.Length; i++) lines[i] = lines[i].TrimEnd();
+            return string.Join("\n", lines);
+        }
+
+        internal static bool TryMatch(string source, string context, out int startIdx, out int endIdx)
+        {
+            startIdx = endIdx = -1;
+            if (source == null || context == null) return false;
+            var normSource = NormalizeForCompare(source);
+            var normCtx = NormalizeForCompare(context);
+            if (normCtx.Length == 0) return false;
+            int normIdx = normSource.IndexOf(normCtx, StringComparison.Ordinal);
+            if (normIdx < 0) return false;
+
+            int targetLineStart = CountLinesBefore(normSource, normIdx);
+            // Walk to the start of the target line in the original source.
+            int origPos = 0;
+            for (int line = 0; line < targetLineStart && origPos < source.Length; line++)
+            {
+                int nl = source.IndexOfAny(new[] { '\r', '\n' }, origPos);
+                if (nl < 0) { origPos = source.Length; break; }
+                origPos = nl + ((source[nl] == '\r' && nl + 1 < source.Length && source[nl + 1] == '\n') ? 2 : 1);
+            }
+
+            // Compute column within the normalized line where match starts.
+            int prevNL = normSource.LastIndexOf('\n', Math.Max(0, normIdx - 1));
+            int normLineStart = prevNL < 0 ? 0 : prevNL + 1;
+            int colOffset = normIdx - normLineStart;
+            startIdx = Math.Min(source.Length, origPos + colOffset);
+
+            // Walk forward over (ctxLineCount) lines to find the end position in the original source.
+            int ctxLineCount = CountLinesBefore(normCtx, normCtx.Length);
+            int walker = startIdx;
+            for (int i = 0; i < ctxLineCount && walker < source.Length; i++)
+            {
+                int nl = source.IndexOfAny(new[] { '\r', '\n' }, walker);
+                if (nl < 0) { walker = source.Length; break; }
+                walker = nl + ((source[nl] == '\r' && nl + 1 < source.Length && source[nl + 1] == '\n') ? 2 : 1);
+            }
+
+            // Add the residual column length on the last context line.
+            int lastNL = normCtx.LastIndexOf('\n');
+            int lastLineLen = lastNL < 0 ? normCtx.Length : (normCtx.Length - lastNL - 1);
+            endIdx = Math.Min(source.Length, walker + lastLineLen);
+            if (endIdx < startIdx) endIdx = startIdx;
+            return true;
+        }
+
+        private static int CountLinesBefore(string s, int idx)
+        {
+            int c = 0;
+            int limit = Math.Min(idx, s.Length);
+            for (int i = 0; i < limit; i++) if (s[i] == '\n') c++;
+            return c;
+        }
+
+        // ----------------------------------------------------------------------
+        // v2.3.8 Task 3.4 — persistedHash + persistedSnippet on every response
+        // ----------------------------------------------------------------------
+        // Every write/edit response is wrapped with the SHA256 of the final
+        // on-disk source plus a ~10-line snippet, so callers can confirm
+        // post-write state without a follow-up read. Applies uniformly to
+        // success, no-change, dry-run, rollback, and error responses.
+
+        // ----------------------------------------------------------------------
+        // v2.6.6 FR#10 — patch safety guard.
+        // ----------------------------------------------------------------------
+        /// <summary>
+        /// Reject suspicious writes that would silently nuke an object part. A
+        /// patch find-string mismatch (CRLF/LF, encoding drift) used to surface
+        /// as an empty result string; the unguarded SDK save then persisted the
+        /// empty payload and the sha256 of the lost part was e3b0c44... (empty).
+        ///
+        /// Returns <c>true</c> when the proposed write looks safe. When it
+        /// returns <c>false</c>, <paramref name="reason"/> carries a stable
+        /// machine-readable code (<c>patch_no_match</c> / <c>suspicious_shrink</c>)
+        /// the gateway promotes to an <c>isError</c> envelope.
+        /// </summary>
+        public static bool IsPatchWriteSafe(string originalContent, string proposedContent, bool anyOpApplied, out string reason)
+        {
+            reason = null;
+            if (proposedContent == null)
+            {
+                reason = "patch_no_match";
+                return false;
+            }
+
+            int origLen = originalContent?.Length ?? 0;
+            int newLen = proposedContent.Length;
+
+            // Empty proposal with non-empty original is always a patch failure;
+            // never let an empty payload reach the SDK save path.
+            if (origLen > 0 && newLen == 0)
+            {
+                reason = "patch_no_match";
+                return false;
+            }
+
+            // Severe shrink with no recorded op == NoMatch fall-through. The
+            // 0.5 ratio matches the brief; tune via tests rather than ad-hoc.
+            if (!anyOpApplied && origLen > 0 && newLen < origLen / 2)
+            {
+                reason = "suspicious_shrink";
+                return false;
+            }
+
+            return true;
+        }
+
+        internal static string ComputeSha256(string content)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(content ?? ""));
+                return "sha256:" + BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+        internal static string ExtractSnippet(string source, int lineHint, int contextLines = 10)
+        {
+            if (string.IsNullOrEmpty(source)) return "";
+            var lines = source.Replace("\r\n", "\n").Split('\n');
+            var start = Math.Max(0, lineHint - contextLines);
+            var end = Math.Min(lines.Length, lineHint + contextLines + 1);
+            if (end <= start) return "";
+            return string.Join("\n", lines.Skip(start).Take(end - start));
+        }
+
+        // First line index (0-based) that differs between two texts, or 0 when identical /
+        // one is empty. Used to center the persisted snippet on the changed region.
+        internal static int FirstDiffLine(string before, string after)
+        {
+            if (string.IsNullOrEmpty(before) || string.IsNullOrEmpty(after)) return 0;
+            var a = before.Replace("\r\n", "\n").Split('\n');
+            var b = after.Replace("\r\n", "\n").Split('\n');
+            int n = Math.Min(a.Length, b.Length);
+            for (int i = 0; i < n; i++)
+                if (!string.Equals(a[i], b[i], StringComparison.Ordinal)) return i;
+            return a.Length == b.Length ? 0 : n;
+        }
+
+        internal static JObject AppendPersistedState(JObject response, string finalSource, int? editLine)
+        {
+            if (response == null) response = new JObject();
+            response["persistedHash"] = ComputeSha256(finalSource ?? "");
+            response["persistedSnippet"] = ExtractSnippet(finalSource ?? "", editLine ?? 0, 10);
+            return response;
+        }
+
+        /// <summary>
+        /// Wraps a write-response JSON string with persistedHash + persistedSnippet derived
+        /// from the on-disk source after the write attempt (success, partial, or rollback).
+        /// Failures to re-read are swallowed — the original envelope is still augmented with
+        /// an empty hash/snippet so downstream parsers always find the keys.
+        /// </summary>
+        private string WrapWithPersistedState(string responseJson, string target, string partName, string sdkPath = null, string priorSource = null)
+        {
+            JObject parsed = null;
+            try { parsed = JObject.Parse(responseJson); }
+            catch
+            {
+                parsed = new JObject { ["raw"] = responseJson ?? "" };
+            }
+
+            GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(parsed, sdkPath);
+
+            // Skip if the response is already decorated (e.g. nested call).
+            if (parsed["persistedHash"] != null && parsed["persistedSnippet"] != null)
+                return parsed.ToString();
+
+            string finalSource = "";
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(target) && _objectService != null)
+                {
+                    string readJson = _objectService.ReadObjectSource(target, partName, null, null, "mcp", true, null);
+                    if (!string.IsNullOrWhiteSpace(readJson))
+                    {
+                        var readObj = JObject.Parse(readJson);
+                        finalSource = readObj["source"]?.ToString()
+                            ?? readObj["content"]?.ToString()
+                            ?? readObj["parts"]?[partName ?? "Source"]?.ToString()
+                            ?? "";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[PERSISTED-STATE] Re-read failed for " + target + " (" + partName + "): " + ex.Message);
+            }
+
+            // issue #31.3: center the snippet on the first changed line when we know the
+            // prior source, so the edited region is shown even past the first ~10 lines.
+            int? editLine = priorSource != null ? (int?)FirstDiffLine(priorSource, finalSource) : null;
+            AppendPersistedState(parsed, finalSource, editLine);
+
+            // issue #31.2: when the write left the persisted content byte-identical to the
+            // prior content, this was a no-op — surface WriteNoChange instead of WriteApplied
+            // so callers don't have to diff the hash themselves.
+            if (priorSource != null)
+            {
+                bool changed = !string.Equals(ComputeSha256(priorSource), parsed["persistedHash"]?.ToString(), StringComparison.OrdinalIgnoreCase);
+                parsed["changed"] = changed;
+                string code = parsed["code"]?.ToString();
+                if (!changed && string.Equals(code, "WriteApplied", StringComparison.OrdinalIgnoreCase))
+                {
+                    parsed["code"] = "WriteNoChange";
+                    parsed["noChangeReason"] = "Normalized content is byte-identical to the persisted part; nothing was written.";
+                }
+            }
+
+            return parsed.ToString(Newtonsoft.Json.Formatting.None);
+        }
+    }
+}
