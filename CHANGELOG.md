@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.18.0 — 2026-07-10
 
 Second-pass codebase audit plus a large internal-hardening pass. Correctness, data-safety,
 security, and performance fixes; a big round of behavior-preserving refactors and test/
