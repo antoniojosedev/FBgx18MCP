@@ -57,7 +57,7 @@ namespace GxMcp.Worker.Tests
                 System.IO.Path.Combine(
                     System.AppDomain.CurrentDomain.BaseDirectory,
                     "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "WriteService.cs"));
+                    "WriteService.VisualWrite.cs"));
             // The visualMessage local replaces the bare "Visual write failed"
             // with a specific transition message when code == FormTypeTransitionUnsupported.
             Assert.Contains("string visualMessage = \"Visual write failed\"", writeSrc);

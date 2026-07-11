@@ -235,7 +235,7 @@ namespace GxMcp.Worker.Tests
                 System.IO.Path.Combine(
                     System.AppDomain.CurrentDomain.BaseDirectory,
                     "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "WriteService.cs"));
+                    "WriteService.PatternWrite.cs"));
             Assert.Contains("code: \"PatternInvalidXml\"", writeSrc);
             Assert.Contains("code: \"PatternPartNotFound\"", writeSrc);
             Assert.Contains("code: \"PatternVerificationMismatch\"", writeSrc);
@@ -253,7 +253,7 @@ namespace GxMcp.Worker.Tests
                 System.IO.Path.Combine(
                     System.AppDomain.CurrentDomain.BaseDirectory,
                     "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "WriteService.cs"));
+                    "WriteService.PatternWrite.cs"));
             Assert.Contains("JObject sdkSaveError = null", writeSrc);
             Assert.Contains("catch (Exception partSaveEx)", writeSrc);
             Assert.Contains("verifyJobj[\"sdkSaveError\"] = sdkSaveError", writeSrc);
@@ -272,7 +272,7 @@ namespace GxMcp.Worker.Tests
                 System.IO.Path.Combine(
                     System.AppDomain.CurrentDomain.BaseDirectory,
                     "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "WriteService.cs"));
+                    "WriteService.PatternWrite.cs"));
             Assert.Contains("WwpApplyOnSaveHelper.TryEnable(resolvedObject)", writeSrc);
             Assert.Contains("success[\"applyOnSaveReenabled\"] = applyOnSaveReenabled", writeSrc);
         }

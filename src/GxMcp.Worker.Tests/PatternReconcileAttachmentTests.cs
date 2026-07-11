@@ -11,11 +11,12 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void WriteService_AttachReconcileReport_IsWired_ViaConvention()
         {
-            string writeSrc = System.IO.File.ReadAllText(
-                System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "WriteService.cs"));
+            // Definition + call sites now live in split partial files (plan 007).
+            string servicesDir = System.IO.Path.Combine(
+                System.AppDomain.CurrentDomain.BaseDirectory,
+                "..", "..", "..", "..", "GxMcp.Worker", "Services");
+            string writeSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(servicesDir, "WriteService.VisualWrite.cs"))
+                + System.IO.File.ReadAllText(System.IO.Path.Combine(servicesDir, "WriteService.PatternWrite.cs"));
 
             // Helper is defined.
             Assert.Contains("private static void AttachReconcileReport", writeSrc);
