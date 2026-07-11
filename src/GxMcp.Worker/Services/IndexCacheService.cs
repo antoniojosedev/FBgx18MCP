@@ -892,6 +892,13 @@ namespace GxMcp.Worker.Services
         // timer fires at the end of the window and flushes whatever is still dirty.
         private double _flushThrottleSeconds = FlushThrottleSeconds;
         internal void SetFlushThrottleForTest(double seconds) { _flushThrottleSeconds = seconds; }
+
+        // Test observability only — counts real writes (FlushToDisk's success path),
+        // not no-op calls. Lets regression tests pin how many times the on-disk index
+        // is actually re-serialized under a burst of dirty updates (see plans/001).
+        private long _flushWriteCount;
+        internal long FlushWriteCountForTest => System.Threading.Interlocked.Read(ref _flushWriteCount);
+        internal void ResetFlushWriteCountForTest() => System.Threading.Interlocked.Exchange(ref _flushWriteCount, 0);
         private System.Threading.Timer _trailingFlushTimer;
         private int _trailingFlushArmed = 0;
         private readonly object _trailingTimerLock = new object();
@@ -1223,6 +1230,7 @@ namespace GxMcp.Worker.Services
                 long cur;
                 while ((cur = System.Threading.Interlocked.Read(ref _flushedGeneration)) < gen
                        && System.Threading.Interlocked.CompareExchange(ref _flushedGeneration, gen, cur) != cur) { }
+                System.Threading.Interlocked.Increment(ref _flushWriteCount);
                 return true;
             }
             catch (Exception ex) {

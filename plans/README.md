@@ -15,7 +15,7 @@ update your row when done.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | Index flush-count instrumentation + regression test | P1 | S | — | TODO |
+| 001 | Index flush-count instrumentation + regression test | P1 | S | — | DONE |
 | 002 | Secondary type/domain indexes for search & list | P1 | M | — | TODO |
 | 003 | Incremental / sharded index flush | P2 | L | 001 | TODO |
 | 004 | Batch COM property reads in the lite index walk | P2 | L | 001 | TODO |
