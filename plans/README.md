@@ -17,7 +17,7 @@ update your row when done.
 |------|-------|----------|--------|------------|--------|
 | 001 | Index flush-count instrumentation + regression test | P1 | S | — | DONE |
 | 002 | Secondary type/domain indexes for search & list | P1 | M | — | DONE |
-| 003 | Incremental / sharded index flush | P2 | L | 001 | TODO |
+| 003 | Incremental / sharded index flush | P2 | L | 001 | DONE |
 | 004 | Batch COM property reads in the lite index walk | P2 | L | 001 | TODO |
 | 005 | Replace CommandDispatcher switch with a dispatch table | P2 | M | — | DONE |
 | 006 | Shared filter-predicate builder for SearchService/ListService | P2 | S-M | 002 | DONE |
