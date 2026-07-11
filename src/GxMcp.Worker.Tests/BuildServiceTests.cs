@@ -1,0 +1,536 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Reflection;
+using GxMcp.Worker.Models;
+using GxMcp.Worker.Services;
+using Newtonsoft.Json.Linq;
+using Xunit;
+
+namespace GxMcp.Worker.Tests
+{
+    /// <summary>
+    /// Plan 009 — characterization tests for BuildService's public entry points
+    /// that were NOT already covered by the per-stream test files
+    /// (BuildErrorCategoryTests, BuildNotifyOnFailureTests, BuildSegmentedTargetsTests,
+    /// StatusWaitTests, FastIncrementalDecisionTests, GxObjectMappingTests,
+    /// PhaseFailureExtractionTests, EdgeCaseRegressionTests, ReorgPreviewTests).
+    /// These pin CURRENT behavior (bugs and all) — see report for suspected issues.
+    /// </summary>
+    public class BuildServiceTests
+    {
+        // ── ParseTargets (private static) ───────────────────────────────────
+
+        private static List<string> InvokeParseTargets(string target)
+        {
+            var mi = typeof(BuildService).GetMethod("ParseTargets", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(mi);
+            return (List<string>)mi.Invoke(null, new object[] { target });
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public void ParseTargets_NullOrBlank_ReturnsEmpty(string input)
+        {
+            Assert.Empty(InvokeParseTargets(input));
+        }
+
+        [Fact]
+        public void ParseTargets_CommaSeparated_TrimsAndPreservesOrder()
+        {
+            var result = InvokeParseTargets(" A , B ,C");
+            Assert.Equal(new[] { "A", "B", "C" }, result.ToArray());
+        }
+
+        [Fact]
+        public void ParseTargets_SemicolonAndNewlineSeparated_AllSplitTogether()
+        {
+            var result = InvokeParseTargets("A;B\nC\r\nD");
+            Assert.Equal(new[] { "A", "B", "C", "D" }, result.ToArray());
+        }
+
+        [Fact]
+        public void ParseTargets_DedupesCaseInsensitively_KeepsFirstOccurrenceCasing()
+        {
+            var result = InvokeParseTargets("Foo,FOO,foo,Bar");
+            Assert.Equal(new[] { "Foo", "Bar" }, result.ToArray());
+        }
+
+        // ── Build() entry point — Accepted envelope shape ───────────────────
+
+        [Fact]
+        public void Build_SingleTarget_ReturnsSingularAcceptedMessage()
+        {
+            var svc = new BuildService();
+            string json = svc.Build("Build", "MyProc", "none", 200, false);
+            var jo = JObject.Parse(json);
+
+            Assert.Equal("Accepted", jo["status"]?.ToString());
+            Assert.Contains("Build task started in background", jo["message"]?.ToString());
+            Assert.Equal(new[] { "MyProc" }, jo["targets"]?.ToObject<string[]>());
+            Assert.False(string.IsNullOrEmpty(jo["taskId"]?.ToString()));
+        }
+
+        [Fact]
+        public void Build_MultipleTargets_ReturnsPluralBatchMessage()
+        {
+            var svc = new BuildService();
+            string json = svc.Build("Build", "A,B,C", "none", 200, false);
+            var jo = JObject.Parse(json);
+
+            Assert.Equal("Accepted", jo["status"]?.ToString());
+            Assert.Contains("Batch build started for 3 objects", jo["message"]?.ToString());
+            Assert.Equal(new[] { "A", "B", "C" }, jo["targets"]?.ToObject<string[]>());
+        }
+
+        [Fact]
+        public void Build_PlanTruncated_ReturnsBuildPlanTooLarge()
+        {
+            var fx = TestFixtures.LargeCallChain(depth: 250);
+            var graph = new CallerGraphService(fx.Index);
+            var svc = new BuildService();
+            svc.SetCallerGraphService(graph);
+
+            string json = svc.Build("Build", "N0", "transitive", 200, false);
+            var jo = JObject.Parse(json);
+
+            Assert.Equal("BuildPlanTooLarge", jo["status"]?.ToString());
+            Assert.Equal("N0", ((JArray)jo["requested"])!.Single().ToString());
+            Assert.Equal(200, jo["graph"]?["cap"]?.ToObject<int>());
+        }
+
+        [Fact]
+        public void Specify_WrapsBuild_WithSpecifyOnlyAndNoCallees()
+        {
+            var svc = new BuildService();
+            string json = svc.Specify("MyObj");
+            var jo = JObject.Parse(json);
+            Assert.Equal("Accepted", jo["status"]?.ToString());
+
+            string taskId = jo["taskId"]?.ToString();
+            Assert.False(string.IsNullOrEmpty(taskId));
+
+            var status = GetTaskFromRegistry(taskId);
+            Assert.NotNull(status);
+            Assert.True(status.SpecifyOnly);
+            Assert.Equal("Build", status.Action);
+            Assert.Equal("MyObj", status.Target);
+        }
+
+        // ── BuildDryRun() ────────────────────────────────────────────────────
+
+        [Fact]
+        public void BuildDryRun_NoGraph_PreviewsOriginalTargets()
+        {
+            var svc = new BuildService();
+            string json = svc.BuildDryRun("Build", "A,B", "transitive", 200);
+            var jo = JObject.Parse(json);
+
+            Assert.Equal("ok", jo["status"]?.ToString());
+            Assert.Equal("DryRun", jo["code"]?.ToString());
+            var wouldBuild = jo["result"]?["preview"]?["wouldBuild"]?.ToObject<string[]>();
+            Assert.Equal(new[] { "A", "B" }, wouldBuild);
+        }
+
+        [Fact]
+        public void BuildDryRun_WithGraph_ExpandsTransitiveCallees()
+        {
+            var fx = TestFixtures.SmallCallGraph();
+            var graph = new CallerGraphService(fx.Index);
+            var svc = new BuildService();
+            svc.SetCallerGraphService(graph);
+
+            string json = svc.BuildDryRun("Build", "A", "transitive", 200);
+            var jo = JObject.Parse(json);
+            var wouldBuild = jo["result"]?["preview"]?["wouldBuild"]?.ToObject<string[]>();
+            Assert.Equal(new[] { "C", "B", "A" }, wouldBuild);
+        }
+
+        [Fact]
+        public void BuildDryRun_Truncated_ReturnsErrEnvelope()
+        {
+            var fx = TestFixtures.LargeCallChain(depth: 250);
+            var graph = new CallerGraphService(fx.Index);
+            var svc = new BuildService();
+            svc.SetCallerGraphService(graph);
+
+            string json = svc.BuildDryRun("Build", "N0", "transitive", 200);
+            var jo = JObject.Parse(json);
+
+            Assert.Equal("error", jo["status"]?.ToString());
+            Assert.Equal("BuildPlanTooLarge", jo["error"]?["code"]?.ToString());
+            // requestedNodes/cap/includeCallees are passed via McpResponse.Err's
+            // "extra" param, which merges at the top level of the envelope, not
+            // nested under "error".
+            Assert.Equal(200, jo["cap"]?.ToObject<int>());
+        }
+
+        [Fact]
+        public void BuildDryRun_NonBuildAction_SkipsPlanExpansion()
+        {
+            var svc = new BuildService();
+            string json = svc.BuildDryRun("RebuildAll", null, "transitive", 200);
+            var jo = JObject.Parse(json);
+
+            Assert.Equal("ok", jo["status"]?.ToString());
+            var preview = jo["result"]?["preview"];
+            Assert.Equal("RebuildAll", preview?["action"]?.ToString());
+            Assert.Empty(preview?["wouldBuild"]?.ToObject<string[]>() ?? Array.Empty<string>());
+        }
+
+        // ── GetStatus() ──────────────────────────────────────────────────────
+
+        [Fact]
+        public void GetStatus_EmptyTaskId_ReturnsRecentTaskList()
+        {
+            var svc = new BuildService();
+            string json = svc.GetStatus(null);
+            var jo = JObject.Parse(json);
+            Assert.NotNull(jo["tasks"]);
+        }
+
+        [Fact]
+        public void GetStatus_UnknownTaskId_ReturnsNotFound()
+        {
+            var svc = new BuildService();
+            string json = svc.GetStatus("does-not-exist-" + Guid.NewGuid());
+            Assert.Contains("Task ID not found", json);
+        }
+
+        [Fact]
+        public void GetStatus_WhileRunning_StripsOutputField()
+        {
+            var (svc, status, taskId) = RegisterTask("Running", output: "some big build log");
+            string json = svc.GetStatus(taskId);
+            var jo = JObject.Parse(json);
+            Assert.Null(jo["Output"]);
+            Assert.Null(jo["output"]);
+        }
+
+        [Fact]
+        public void GetStatus_WhenTerminal_KeepsOutputField()
+        {
+            var (svc, status, taskId) = RegisterTask("Succeeded", output: "final log");
+            string json = svc.GetStatus(taskId);
+            var jo = JObject.Parse(json);
+            Assert.Equal("final log", jo["Output"]?.ToString());
+        }
+
+        [Fact]
+        public void GetStatus_PaginatesWarnings()
+        {
+            var (svc, status, taskId) = RegisterTask("Succeeded");
+            status.Warnings.Add("w1");
+            status.Warnings.Add("w2");
+            status.Warnings.Add("w3");
+
+            string json = svc.GetStatus(taskId, page: 1, pageSize: 1);
+            var jo = JObject.Parse(json);
+            var warnings = jo["warnings"]?.ToObject<string[]>();
+            Assert.Single(warnings!);
+            Assert.Equal("w1", warnings![0]);
+            Assert.True(jo["_meta"]?["pagination"]?["has_more"]?.ToObject<bool>());
+        }
+
+        [Fact]
+        public void GetStatus_Compact_AddsWarningsAggregated()
+        {
+            var (svc, status, taskId) = RegisterTask("Succeeded");
+            status.Warnings.Add("error spc0022: missing var");
+            string json = svc.GetStatus(taskId, compact: true);
+            var jo = JObject.Parse(json);
+            Assert.NotNull(jo["warningsAggregated"]);
+        }
+
+        // ── GetResult() ──────────────────────────────────────────────────────
+
+        [Fact]
+        public void GetResult_EmptyTaskId_ReturnsError()
+        {
+            var svc = new BuildService();
+            string json = svc.GetResult(null);
+            Assert.Contains("taskId required", json);
+        }
+
+        [Fact]
+        public void GetResult_UnknownTaskId_ReturnsNotFound()
+        {
+            var svc = new BuildService();
+            string json = svc.GetResult("does-not-exist-" + Guid.NewGuid());
+            Assert.Contains("Task ID not found", json);
+        }
+
+        [Fact]
+        public void GetResult_PaginatesErrorsAsItems()
+        {
+            var (svc, status, taskId) = RegisterTask("Failed");
+            status.Errors.Add("err1");
+            status.Errors.Add("err2");
+
+            string json = svc.GetResult(taskId, page: 1, pageSize: 1);
+            var jo = JObject.Parse(json);
+            var items = jo["items"]?.ToObject<string[]>();
+            Assert.Single(items!);
+            Assert.Equal("err1", items![0]);
+        }
+
+        // ── Cancel() ─────────────────────────────────────────────────────────
+
+        [Fact]
+        public void Cancel_EmptyTaskId_ReturnsError()
+        {
+            var svc = new BuildService();
+            string json = svc.Cancel(null);
+            Assert.Contains("taskId required", json);
+        }
+
+        [Fact]
+        public void Cancel_UnknownTaskId_ReturnsStructuredHint()
+        {
+            var svc = new BuildService();
+            string json = svc.Cancel("does-not-exist-" + Guid.NewGuid());
+            var jo = JObject.Parse(json);
+            Assert.Equal("Unknown build taskId", jo["error"]?.ToString());
+            Assert.NotNull(jo["hint"]);
+        }
+
+        [Fact]
+        public void Cancel_NoLiveProcess_ReportsAlreadyFinished()
+        {
+            var (svc, status, taskId) = RegisterTask("Succeeded");
+            string json = svc.Cancel(taskId);
+            var jo = JObject.Parse(json);
+            Assert.Equal("Succeeded", jo["status"]?.ToString());
+            Assert.Equal("Task already finished", jo["message"]?.ToString());
+        }
+
+        [Fact]
+        public void Cancel_LiveProcess_MarksCancelledSynchronously()
+        {
+            var (svc, status, taskId) = RegisterTask("Running");
+            // A short-lived real process stands in for a spawned MSBuild.exe —
+            // Cancel() flips Status=Cancelled synchronously before the
+            // background KillProcessTree runs, regardless of whether the kill
+            // itself succeeds.
+            var psi = new ProcessStartInfo("cmd.exe", "/c ping -n 3 127.0.0.1 >nul")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            var proc = Process.Start(psi);
+            status.Process = proc;
+            try
+            {
+                string json = svc.Cancel(taskId);
+                var jo = JObject.Parse(json);
+                Assert.Equal("Cancelled", jo["status"]?.ToString());
+                Assert.Equal(taskId, jo["taskId"]?.ToString());
+                lock (status._lock) { Assert.Equal("Cancelled", status.Status); }
+            }
+            finally
+            {
+                try { if (!proc.HasExited) proc.Kill(); } catch { }
+                proc.Dispose();
+            }
+        }
+
+        // ── GetLatestBuildSummary() ──────────────────────────────────────────
+
+        [Fact]
+        public void GetLatestBuildSummary_PicksMostRecentByEndTime()
+        {
+            // Far-future EndTime values guarantee these two entries outrank
+            // anything a concurrently-running test writes into the shared
+            // static registry (test isolation workaround for shared state).
+            var (_, olderStatus, olderId) = RegisterTask("Succeeded");
+            olderStatus.EndTime = "9999-01-01 00:00:00";
+            olderStatus.Target = "OlderTarget";
+
+            var (_, newerStatus, newerId) = RegisterTask("Failed");
+            newerStatus.EndTime = "9999-06-01 00:00:00";
+            newerStatus.Target = "NewerTarget";
+
+            var summary = BuildService.GetLatestBuildSummary();
+            Assert.NotNull(summary);
+            Assert.Equal("NewerTarget", summary!["target"]?.ToString());
+            Assert.Equal(newerId, summary["taskId"]?.ToString());
+        }
+
+        // ── NormalizeMissingObjectName (private static) ─────────────────────
+
+        private static string InvokeNormalizeMissingObjectName(string symbol, IndexCacheService lookup = null)
+        {
+            var mi = typeof(BuildService).GetMethod("NormalizeMissingObjectName", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(mi);
+            return (string)mi.Invoke(null, new object[] { symbol, lookup });
+        }
+
+        [Theory]
+        [InlineData("wsfoo", "foo")]
+        [InlineData("foo_bc", "foo")]
+        [InlineData("foo_level", "foo")]
+        [InlineData("foo_detail", "foo")]
+        [InlineData("foo_ws", "foo")]
+        [InlineData("foo_impl", "foo")]
+        [InlineData("foo_client", "foo")]
+        [InlineData("foo_main", "foo")]
+        public void NormalizeMissingObjectName_NoLookup_StripsKnownSuffixesAndWsPrefix(string input, string expected)
+        {
+            Assert.Equal(expected, InvokeNormalizeMissingObjectName(input, null));
+        }
+
+        [Fact]
+        public void NormalizeMissingObjectName_NoLookup_DoesNotStripSingleLetterPrefixes()
+        {
+            // 'a'/'p' prefixes collide with real KB names — never stripped.
+            Assert.Equal("acessoperfil", InvokeNormalizeMissingObjectName("acessoperfil", null));
+            Assert.Equal("painelclassesala", InvokeNormalizeMissingObjectName("painelclassesala", null));
+        }
+
+        [Fact]
+        public void NormalizeMissingObjectName_WithLookup_StrippedFormKnown_ReturnsStripped()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(new[] { new SearchIndex.IndexEntry { Guid = Guid.NewGuid().ToString(), Name = "foo", Type = "Procedure", IsEnriched = true } });
+            Assert.Equal("foo", InvokeNormalizeMissingObjectName("wsfoo", idx));
+        }
+
+        [Fact]
+        public void NormalizeMissingObjectName_WithLookup_StrippedUnknown_OriginalKnown_ReturnsOriginal()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(new[] { new SearchIndex.IndexEntry { Guid = Guid.NewGuid().ToString(), Name = "wsfoo", Type = "Procedure", IsEnriched = true } });
+            Assert.Equal("wsfoo", InvokeNormalizeMissingObjectName("wsfoo", idx));
+        }
+
+        [Fact]
+        public void NormalizeMissingObjectName_WithLookup_NeitherKnown_ReturnsNull()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(Array.Empty<SearchIndex.IndexEntry>());
+            Assert.Null(InvokeNormalizeMissingObjectName("wsfoo", idx));
+        }
+
+        // ── NormalizeErrorIdentifierCase (internal instance method) ─────────
+
+        [Fact]
+        public void NormalizeErrorIdentifierCase_NoIndexCacheService_ReturnsLineUnchanged()
+        {
+            var svc = new BuildService();
+            string line = "&objcod is not defined";
+            Assert.Equal(line, svc.NormalizeErrorIdentifierCase(line));
+        }
+
+        [Fact]
+        public void NormalizeErrorIdentifierCase_KnownDifferentCasing_RewritesToAuthoredCasing()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(new[] { new SearchIndex.IndexEntry { Guid = Guid.NewGuid().ToString(), Name = "ObjCod", Type = "Attribute", IsEnriched = true } });
+            var svc = new BuildService();
+            svc.SetIndexCacheService(idx);
+
+            string result = svc.NormalizeErrorIdentifierCase("&objcod is not defined");
+            Assert.Equal("&ObjCod is not defined", result);
+        }
+
+        [Fact]
+        public void NormalizeErrorIdentifierCase_UnknownToken_LeftUnchanged()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(Array.Empty<SearchIndex.IndexEntry>());
+            var svc = new BuildService();
+            svc.SetIndexCacheService(idx);
+
+            string line = "&NotInIndex is not defined";
+            Assert.Equal(line, svc.NormalizeErrorIdentifierCase(line));
+        }
+
+        // ── HandleLine — TailLines cap + noise filtering ────────────────────
+
+        private static void InvokeHandleLine(BuildService svc, BuildService.BuildTaskStatus status, string line, bool isError = false)
+        {
+            var mi = typeof(BuildService).GetMethod("HandleLine", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(mi);
+            mi.Invoke(svc, new object[] { status, line, isError });
+        }
+
+        [Fact]
+        public void HandleLine_TailLines_CappedAt30_KeepsMostRecent()
+        {
+            var svc = new BuildService();
+            var status = new BuildService.BuildTaskStatus { TaskId = "tail-cap" };
+            for (int i = 0; i < 35; i++)
+                InvokeHandleLine(svc, status, "line " + i);
+
+            Assert.Equal(30, status.TailLines.Count);
+            Assert.Equal("line 34", status.TailLines[status.TailLines.Count - 1]);
+            Assert.Equal("line 5", status.TailLines[0]); // lines 0-4 rolled off
+            Assert.Equal(35, status.LineCount); // LineCount is not capped
+        }
+
+        [Fact]
+        public void HandleLine_ModuleCopyNoise_ExcludedFromTailLines_ButCountsTowardLineCount()
+        {
+            var svc = new BuildService();
+            var status = new BuildService.BuildTaskStatus { TaskId = "noise" };
+            InvokeHandleLine(svc, status, "Copying module Foo.dll");
+            InvokeHandleLine(svc, status, "Real informative line");
+
+            Assert.Equal(2, status.LineCount);
+            Assert.Single(status.TailLines);
+            Assert.Equal("Real informative line", status.TailLines[0]);
+        }
+
+        [Fact]
+        public void HandleLine_ModuleCopyNoiseLine_WithErrorText_IsNotTreatedAsNoise()
+        {
+            // isNoise requires the noise-pattern match AND absence of error/warning
+            // markers — a "Copying module" line that also carries "error:" must
+            // still surface in TailLines.
+            var svc = new BuildService();
+            var status = new BuildService.BuildTaskStatus { TaskId = "noise-error" };
+            InvokeHandleLine(svc, status, "Copying module Foo.dll error CS1002: ; expected", isError: true);
+
+            Assert.Single(status.TailLines);
+            Assert.Equal(1, status.ErrorCount);
+        }
+
+        // ── Shared helpers ───────────────────────────────────────────────────
+
+        private static ConcurrentDictionary<string, BuildService.BuildTaskStatus> TasksRegistry()
+        {
+            var fld = typeof(BuildService).GetField("_tasks", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(fld);
+            return (ConcurrentDictionary<string, BuildService.BuildTaskStatus>)fld!.GetValue(null)!;
+        }
+
+        private static BuildService.BuildTaskStatus GetTaskFromRegistry(string taskId)
+        {
+            TasksRegistry().TryGetValue(taskId, out var status);
+            return status;
+        }
+
+        private static (BuildService svc, BuildService.BuildTaskStatus status, string taskId) RegisterTask(string statusValue, string output = null)
+        {
+            var svc = new BuildService();
+            var taskId = Guid.NewGuid().ToString("N").Substring(0, 8);
+            var status = new BuildService.BuildTaskStatus
+            {
+                TaskId = taskId,
+                Action = "Build",
+                Target = "X",
+                Status = statusValue,
+                Phase = statusValue == "Running" ? "Compiling" : "Done",
+                StartTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                StartedAt = DateTime.UtcNow,
+                Output = output
+            };
+            TasksRegistry()[taskId] = status;
+            return (svc, status, taskId);
+        }
+    }
+}
