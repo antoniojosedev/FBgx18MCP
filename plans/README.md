@@ -22,7 +22,7 @@ update your row when done.
 | 005 | Replace CommandDispatcher switch with a dispatch table | P2 | M | — | DONE |
 | 006 | Shared filter-predicate builder for SearchService/ListService | P2 | S-M | 002 | DONE |
 | 007 | Decompose WriteService (6982 lines) | P3 | L | 009-style char tests | DONE |
-| 008 | Decompose Gateway Program.cs (5657 lines) | P3 | L | — | TODO |
+| 008 | Decompose Gateway Program.cs (5657 lines) | P3 | L | — | DONE |
 | 009 | BuildService characterization test suite | P2 | M | — | DONE |
 | 010 | Repo-wide JS/TS lint + editorconfig, ESLint 9, central pkg versions | P3 | S-M | — | DONE |
 | 011 | Trim ToolSchemaSizeTests comment history | P3 | S | — | DONE |
