@@ -12,6 +12,12 @@ plus documentation hygiene; no tool renames or behavior changes a normal caller 
   insert, so bulk/streaming indexing of a folder or table with thousands of children ran
   in O(n²). Dedup is now O(1) via a companion key-set maintained alongside the list, cutting
   the cost of warming or incrementally updating large KBs. No change to results or ordering.
+- **Searches no longer re-scan the whole index to check enrichment state.** On a large KB,
+  every filtered/`usedby` search walked the entire object index to decide whether to attach
+  the `enrichmentPending` hint — worst case a full walk on each search once enrichment had
+  already drained. The result is now cached against the index's mutation generation, so a
+  stable index answers in O(1) and only genuine index changes trigger a rescan (which
+  early-exits at the first un-enriched entry).
 - **Background writes are no longer silently lost when a commit fails.** The background
   flush caught commit exceptions at debug level and then cleared its "pending write"
   flag unconditionally — so a failed commit was never retried, even though the client had

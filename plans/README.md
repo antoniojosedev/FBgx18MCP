@@ -56,12 +56,13 @@ verification — and should become numbered plans (012+) before execution:
   `AddOrUpdateEntryInParentIndex`, maintained alongside the list in `BuildParentIndex` and
   `RemoveEntryFromParentIndex` under the same per-list lock. Readers untouched (the set is
   `[JsonIgnore]`, rebuilt from `Objects`). Regression coverage in `ParentIndexDedupTests`.
-- **PERF-02 — full index scan per non-quick search.** `SearchService` calls
-  `IndexCacheService.HasPendingEnrichment()` inline on qualifying searches; it walks the
-  whole in-memory index (`IndexCacheService.cs:987-997`). Replace with an `Interlocked`
-  un-enriched counter maintained across every `Objects` mutation path (`ReplaceAll`/
-  `AddOrUpdateBatch`/`RemoveEntry*`). MED risk: a missed increment/decrement site makes
-  the flag lie — wire it into every mutation or don't ship it.
+- **PERF-02 — full index scan per non-quick search. DONE (Unreleased).** Rather than the
+  fragile hand-maintained counter (a missed mutation site would make the flag lie),
+  `HasPendingEnrichment()` now caches its result against the existing `_dirtyGeneration`
+  mutation counter: a cache hit means nothing changed since the last scan, so the answer is
+  reused; any mutation forces a rescan (which early-exits at the first un-enriched entry).
+  A missed generation bump can only cost an extra scan, never a wrong cached answer.
+  Regression coverage in `EnrichmentPendingCacheTests`.
 - **BUG-03 — a hung (not crashed) worker is never idle-reaped.** `WorkerProcess._inFlightCommands`
   only decrements on a real worker response or a write failure; a gateway-side operation
   timeout updates the tracker but not the counter, and `ShouldStopForIdle` refuses to reap

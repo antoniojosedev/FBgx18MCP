@@ -36,6 +36,17 @@ namespace GxMcp.Worker.Services
 
         internal void MarkDirty() => System.Threading.Interlocked.Increment(ref _dirtyGeneration);
         internal long DirtyGeneration => System.Threading.Interlocked.Read(ref _dirtyGeneration);
+
+        // PERF-02: HasPendingEnrichment used to scan the whole Objects map on every
+        // qualifying search — O(n) per call, worst-case a full walk once everything is
+        // enriched (no early exit). Cache the result against _dirtyGeneration: any mutation
+        // bumps the generation, so a cache hit means Objects is byte-for-byte the same set
+        // it was scanned against. Steady state (drained) → cache hit, no scan; during
+        // enrichment the generation moves each write but the rescan early-exits at the
+        // first un-enriched entry. A Tuple<gen,result> read/written through a volatile
+        // reference is torn-read-free. A missed generation bump can only cost an extra
+        // scan, never a wrong-but-cached answer.
+        private volatile System.Tuple<long, bool> _pendingEnrichCache;
         internal long FlushedGeneration => System.Threading.Interlocked.Read(ref _flushedGeneration);
         internal bool IsFullyFlushed => FlushedGeneration >= DirtyGeneration;
         // PERFORMANCE (W-A3): mirror path with .gz extension. Derived from _indexPath so
@@ -1003,12 +1014,23 @@ namespace GxMcp.Worker.Services
         {
             var idx = GetIndex();
             if (idx?.Objects == null) return false;
+
+            // Return the cached answer when nothing has mutated the index since we last
+            // scanned (see _pendingEnrichCache). This turns the common "already drained"
+            // case — a full O(n) walk that finds nothing — into an O(1) generation compare.
+            long gen = System.Threading.Interlocked.Read(ref _dirtyGeneration);
+            var cached = _pendingEnrichCache;
+            if (cached != null && cached.Item1 == gen) return cached.Item2;
+
+            bool pending = false;
             foreach (var e in idx.Objects.Values)
             {
                 if (e == null) continue;
-                if (e.Embedding == null || e.Embedding.Length == 0) return true;
+                if (e.Embedding == null || e.Embedding.Length == 0) { pending = true; break; }
             }
-            return false;
+
+            _pendingEnrichCache = System.Tuple.Create(gen, pending);
+            return pending;
         }
 
         public List<SearchIndex.IndexEntry> GetUnenrichedEntries()
