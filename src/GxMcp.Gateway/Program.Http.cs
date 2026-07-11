@@ -1,0 +1,322 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Diagnostics;
+
+namespace GxMcp.Gateway
+{
+    partial class Program
+    {
+        private static bool IsOriginAllowed(string? origin, ServerConfig? serverConfig)
+        {
+            if (string.IsNullOrWhiteSpace(origin)) return true;
+
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri)) return false;
+            if (originUri.IsLoopback) return true;
+
+            var allowedOrigins = serverConfig?.AllowedOrigins;
+            if (allowedOrigins == null || allowedOrigins.Count == 0) return false;
+
+            return allowedOrigins.Any(allowed => string.Equals(allowed, origin, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static HttpSessionState CreateHttpSession()
+        {
+            return _httpSessions.Create();
+        }
+
+        private static void QueueSessionMessage(HttpSessionState session, string payload)
+        {
+            _httpSessions.Enqueue(session, payload);
+        }
+
+        private static async Task<IResult> HandleMcpSseStream(HttpContext context)
+        {
+            var protocolError = McpHttpProtocol.TryApplyProtocol(context.Request, context.Response.Headers);
+            if (protocolError != null)
+                return Results.Json(new { error = protocolError.Value.Message }, statusCode: protocolError.Value.StatusCode);
+
+            string? sessionId = context.Request.Headers["MCP-Session-Id"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(sessionId))
+                return Results.BadRequest(new { error = "Missing MCP-Session-Id header." });
+
+            if (!_httpSessions.TryGet(sessionId, out var session))
+                return Results.NotFound(new { error = "Unknown or expired MCP session." });
+
+            if (session == null)
+                return Results.NotFound(new { error = "Unknown or expired MCP session." });
+
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            context.Response.Headers["Content-Type"] = "text/event-stream";
+            context.Response.Headers["Cache-Control"] = "no-cache";
+            context.Response.Headers["Connection"] = "keep-alive";
+            context.Response.Headers["MCP-Session-Id"] = session.Id;
+
+            await context.Response.WriteAsync("retry: 5000\n");
+            await context.Response.WriteAsync($"event: session\ndata: {{\"sessionId\":\"{session.Id}\"}}\n\n");
+            await context.Response.Body.FlushAsync();
+
+            try
+            {
+                // Ironclad SSE: No deadline, keep alive indefinitely until client or server disconnects.
+                while (!context.RequestAborted.IsCancellationRequested)
+                {
+                    string? payload = null;
+                    lock (session.PendingMessages)
+                    {
+                        if (session.PendingMessages.Count > 0)
+                            payload = session.PendingMessages.Dequeue();
+                    }
+
+                    if (payload != null)
+                    {
+                        string encodedPayload = payload.Replace("\r", "").Replace("\n", "\ndata: ");
+                        await context.Response.WriteAsync($"event: message\ndata: {encodedPayload}\n\n");
+                        await context.Response.Body.FlushAsync();
+                        continue;
+                    }
+
+                    try
+                    {
+                        await context.Response.WriteAsync(": keepalive\n\n");
+                        await context.Response.Body.FlushAsync();
+                        await Task.Delay(5000, context.RequestAborted);
+                    }
+                    catch (OperationCanceledException) { break; }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[HTTP] SSE stream error for session {session.Id}: {ex.Message}");
+            }
+
+            return Results.Empty;
+        }
+
+        private static async Task<IResult> HandleJsonRpcHttpRequest(HttpRequest request)
+        {
+            using (var reader = new StreamReader(request.Body))
+            {
+                string body = await reader.ReadToEndAsync();
+                string id = "no-id";
+
+                try
+                {
+                    var requestObj = JsonConvert.DeserializeObject<JObject>(body);
+                    if (requestObj == null) return Results.Json(new { jsonrpc = "2.0", id = (string?)null, error = new { code = -32700, message = "Invalid JSON" } }, statusCode: 400);
+
+                    id = requestObj["id"]?.ToString() ?? "no-id";
+                    var sessionError = McpHttpProtocol.TryGetValidSession(_httpSessions, request, requestObj, out var session);
+                    if (sessionError != null)
+                        return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32001, message = sessionError.Value.Message } }, statusCode: sessionError.Value.StatusCode);
+
+                    var protocolError = McpHttpProtocol.TryApplyProtocol(request, request.HttpContext.Response.Headers);
+                    if (protocolError != null)
+                        return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32002, message = protocolError.Value.Message } }, statusCode: protocolError.Value.StatusCode);
+
+                    id = requestObj["id"]?.ToString() ?? "no-id";
+                    string method = requestObj["method"]?.ToString() ?? "unknown";
+                    string bodyBrief = body.Length > 100 ? body.Substring(0, 100) + "..." : body;
+                    Log($"[HTTP] Received {method} (ID: {id}) - Body: {bodyBrief}");
+
+                    string httpSessionId = session?.Id ?? request.Headers["MCP-Session-Id"].FirstOrDefault() ?? "http";
+                    var response = await ProcessMcpRequest(requestObj, httpSessionId);
+
+                    if (McpHttpProtocol.IsInitializeRequest(requestObj))
+                    {
+                        var newSession = CreateHttpSession();
+                        request.HttpContext.Response.Headers["MCP-Session-Id"] = newSession.Id;
+                        QueueSessionMessage(newSession, JsonConvert.SerializeObject(new
+                        {
+                            jsonrpc = "2.0",
+                            method = "notifications/message",
+                            @params = new
+                            {
+                                level = "info",
+                                logger = "transport",
+                                data = "HTTP MCP session initialized."
+                            }
+                        }));
+                    }
+
+                    if (response != null)
+                    {
+                        Log($"[HTTP] Serializing response for {id}...");
+                        string jsonResponse = response.ToString(Formatting.None);
+                        Log($"[HTTP] Sending {jsonResponse.Length} bytes to {id}");
+                        return Results.Content(jsonResponse, "application/json; charset=utf-8", Encoding.UTF8);
+                    }
+
+                    if (requestObj["id"] == null)
+                    {
+                        Log($"[HTTP] Notification {method} completed without response body.");
+                        return Results.NoContent();
+                    }
+
+                    return Results.BadRequest(new { error = "No response generated" });
+                }
+                catch (OperationCanceledException)
+                {
+                    Log($"[HTTP] Request aborted by client: {id}");
+                    return Results.StatusCode(499); // Client Closed Request
+                }
+                catch (Exception ex)
+                {
+                    Log($"[HTTP] Error processing {id}: {ex.Message}");
+                    return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32603, message = $"Gateway Error: {ex.Message}" } });
+                }
+            }
+        }
+
+        // SECURITY: the Origin header only defends against browser-issued cross-site
+        // requests (curl/another local process/a port-forward omit it and sail past
+        // IsOriginAllowed). The /mcp surface grants full tool access (SDK writes, the
+        // `gh` shell-out, the AI-completion proxy that holds a live key), so gate it
+        // with an optional shared secret (env GXMCP_HTTP_TOKEN). Contract:
+        //   token set          -> every /mcp request must present it (Bearer / X-GXMCP-Token)
+        //   no token + loopback -> allowed (preserves the default 127.0.0.1 dev workflow)
+        //   no token + non-loopback bind -> refused (don't silently expose to the network)
+        internal static bool IsLoopbackBind(string bindAddress)
+        {
+            if (string.IsNullOrWhiteSpace(bindAddress)) return false; // blank -> 0.0.0.0, not loopback
+            var b = bindAddress.Trim();
+            return b == "127.0.0.1" || b == "::1" || b.Equals("localhost", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool ConstantTimeEquals(string a, string b)
+        {
+            if (a == null || b == null) return false;
+            var ba = System.Text.Encoding.UTF8.GetBytes(a);
+            var bb = System.Text.Encoding.UTF8.GetBytes(b);
+            int diff = ba.Length ^ bb.Length;
+            for (int i = 0; i < ba.Length && i < bb.Length; i++) diff |= ba[i] ^ bb[i];
+            return diff == 0;
+        }
+
+        internal static bool IsHttpTokenValid(HttpContext context, string expected)
+        {
+            string presented = null;
+            var auth = context.Request.Headers["Authorization"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(auth) && auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                presented = auth.Substring("Bearer ".Length).Trim();
+            if (string.IsNullOrEmpty(presented))
+                presented = context.Request.Headers["X-GXMCP-Token"].FirstOrDefault();
+            return !string.IsNullOrEmpty(presented) && ConstantTimeEquals(presented, expected);
+        }
+
+        static Task StartHttpServer(Configuration config)
+        {
+            var serverConfig = config.Server ?? new ServerConfig();
+            string bindAddress = string.IsNullOrWhiteSpace(serverConfig.BindAddress) ? "0.0.0.0" : serverConfig.BindAddress;
+            string httpToken = Environment.GetEnvironmentVariable("GXMCP_HTTP_TOKEN");
+            bool loopbackBind = IsLoopbackBind(serverConfig.BindAddress);
+            if (string.IsNullOrEmpty(httpToken) && !loopbackBind)
+                Log($"[HTTP] WARNING: binding to non-loopback '{bindAddress}' with no GXMCP_HTTP_TOKEN — /mcp requests will be refused. Set GXMCP_HTTP_TOKEN or bind to 127.0.0.1.");
+            Log($"[HTTP] Starting server on {bindAddress}:{serverConfig.HttpPort}...");
+            var builder = WebApplication.CreateBuilder();
+            builder.WebHost.UseUrls($"http://{bindAddress}:{serverConfig.HttpPort}");
+            builder.Logging.ClearProviders();
+            builder.Services.AddResponseCompression(options => { options.EnableForHttps = true; });
+            var app = builder.Build();
+            app.UseResponseCompression();
+            _ = Task.Run(() => RunSessionCleanupLoop(app.Lifetime.ApplicationStopping));
+            _ = Task.Run(() => RunLeaseHeartbeatLoop(app.Lifetime.ApplicationStopping));
+
+            app.Use(async (context, next) =>
+            {
+                if (context.Request.Path.StartsWithSegments("/mcp"))
+                {
+                    string? origin = context.Request.Headers["Origin"].FirstOrDefault();
+                    if (!IsOriginAllowed(origin, serverConfig))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        await context.Response.WriteAsync("Origin not allowed.");
+                        return;
+                    }
+
+                    if (!string.IsNullOrEmpty(httpToken))
+                    {
+                        if (!IsHttpTokenValid(context, httpToken))
+                        {
+                            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                            await context.Response.WriteAsync("Missing or invalid GXMCP_HTTP_TOKEN.");
+                            return;
+                        }
+                    }
+                    else if (!loopbackBind)
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        await context.Response.WriteAsync("Non-loopback bind requires GXMCP_HTTP_TOKEN.");
+                        return;
+                    }
+                }
+
+                await next();
+            });
+
+            app.MapPost("/mcp", async (HttpRequest request) => await HandleJsonRpcHttpRequest(request));
+            app.MapGet("/mcp", async (HttpContext context) => await HandleMcpSseStream(context));
+            app.MapDelete("/mcp", (HttpRequest request) =>
+            {
+                var protocolError = McpHttpProtocol.TryApplyProtocol(request, request.HttpContext.Response.Headers);
+                if (protocolError != null)
+                    return Results.Json(new { error = protocolError.Value.Message }, statusCode: protocolError.Value.StatusCode);
+
+                string? sessionId = request.Headers["MCP-Session-Id"].FirstOrDefault();
+                if (string.IsNullOrWhiteSpace(sessionId))
+                    return Results.BadRequest(new { error = "Missing MCP-Session-Id header." });
+
+                if (!_httpSessions.Remove(sessionId))
+                    return Results.NotFound(new { error = "Unknown or expired MCP session." });
+
+                Log($"[HTTP] Session {sessionId} terminated by client.");
+                return Results.NoContent();
+            });
+
+            return app.RunAsync();
+        }
+
+        private static void TryKillProcessOnPort(int port)
+        {
+            try {
+               Log($"[PortRecovery] Attempting to find process on port {port}...");
+               var process = new Process();
+               process.StartInfo.FileName = "netstat";
+               process.StartInfo.Arguments = "-ano";
+               process.StartInfo.RedirectStandardOutput = true;
+               process.StartInfo.UseShellExecute = false;
+               process.StartInfo.CreateNoWindow = true;
+               process.Start();
+               string output = process.StandardOutput.ReadToEnd();
+               process.WaitForExit();
+
+               var lines = output.Split('\n');
+               foreach (var line in lines)
+               {
+                   if (line.Contains($":{port}") && line.Contains("LISTENING"))
+                   {
+                       var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                       var pidStr = parts.Last().Trim();
+                       if (int.TryParse(pidStr, out int pid) && pid != Environment.ProcessId)
+                       {
+                           Log($"[PortRecovery] Found zombie process {pid} on port {port}. Killing it...");
+                           try {
+                               var zombie = Process.GetProcessById(pid);
+                               zombie.Kill(true);
+                               zombie.WaitForExit(3000);
+                           } catch { } // Process might already be gone
+                       }
+                   }
+               }
+            } catch (Exception ex) { Log($"[PortRecovery] Error: {ex.Message}"); }
+        }
+    }
+}
