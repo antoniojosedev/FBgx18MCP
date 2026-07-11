@@ -63,7 +63,12 @@ verification — and should become numbered plans (012+) before execution:
   reused; any mutation forces a rescan (which early-exits at the first un-enriched entry).
   A missed generation bump can only cost an extra scan, never a wrong cached answer.
   Regression coverage in `EnrichmentPendingCacheTests`.
-- **BUG-03 — a hung (not crashed) worker is never idle-reaped.** `WorkerProcess._inFlightCommands`
+- **BUG-03 — a hung (not crashed) worker is never idle-reaped. DONE (Unreleased).** Fixed
+  by tracking per-in-flight-command start timestamps on `WorkerProcess` and force-stopping
+  (`WorkerStopReason.Wedged`) from the health check when the oldest exceeds
+  `Server.WedgedCommandTimeoutMinutes` (default 15 min). Idle-reap behavior unchanged;
+  workers with no in-flight command never trip it. Tests: `WorkerWedgedDetectionTests`.
+  Original finding for reference: `WorkerProcess._inFlightCommands`
   only decrements on a real worker response or a write failure; a gateway-side operation
   timeout updates the tracker but not the counter, and `ShouldStopForIdle` refuses to reap
   while in-flight > 0. A worker wedged on an SDK call (never exits) holds its slot forever.
@@ -92,7 +97,11 @@ verification — and should become numbered plans (012+) before execution:
 - **DIR-01 — finish or shelve the v2.8.0 canonical-envelope cleanup.** Dual-shape fallback
   TODOs (`BatchService.cs:146`, `ObjectService.cs:238,1548-1559`, `FeatureScaffoldService.cs:358`)
   still live nine releases later; audit callers, then remove the legacy branch per site.
-- **BUG-04 — `genexus_worker_pool action=warm_spares` reports empty results.**
+- **BUG-04 — `genexus_worker_pool action=warm_spares` reports empty results. DONE (Unreleased).**
+  Fixed by making `ConfigureWarmSpares` async and awaiting the pre-spawns (bounded by a 10s
+  `WarmSpareAwaitCap`) before building the result; spawns still running past the cap are
+  reported as `Skipped` for that call but keep running in the background. Tests:
+  `WarmSpareConfigurationTests`. Original finding for reference:
   `WorkerPool.ConfigureWarmSpares` (`src/GxMcp.Gateway/WorkerPool.cs:334-384`) fires the
   pre-spawns fire-and-forget, then returns `Prespawned`/`Skipped` synchronously — before
   any spawn's continuation runs — so the tool almost always reports nothing pre-spawned even

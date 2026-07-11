@@ -44,6 +44,18 @@ plus documentation hygiene; no tool renames or behavior changes a normal caller 
   `GENEXUS_MCP_CACHE_DIR` environment variable that does not exist; following it
   silently did nothing. The entry now explains the real options for locked-down
   `%LOCALAPPDATA%` machines.
+- **A wedged worker is now recycled instead of holding its slot forever.** If a worker
+  process stayed alive but never answered an in-flight command (e.g. stuck deep in an SDK
+  call), the gateway timed out the client's request but never reaped the worker — its slot
+  stayed occupied until a manual close/reload. The health check now force-stops a worker
+  whose oldest in-flight command has gone unanswered past a generous hard ceiling
+  (`Server.WedgedCommandTimeoutMinutes`, default 15 min — well above any legitimate build).
+  Idle workers with no in-flight work are unaffected.
+- **`genexus_worker_pool action=warm_spares` reports the real pre-spawn outcome.** The call
+  returned its `prespawned` / `skipped` lists before the background spawns had run, so it
+  almost always reported nothing pre-spawned even as workers were coming up. It now waits
+  for the spawns (bounded by a 10s cap) before reporting; a spawn still running past the cap
+  is listed under `skipped` for that call but keeps coming up in the background.
 
 ### Security
 
