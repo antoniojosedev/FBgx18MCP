@@ -355,8 +355,12 @@ namespace GxMcp.Worker.Services
             if (env == null) return false;
             string s = env["status"]?.ToString();
             if (string.IsNullOrEmpty(s)) return env["error"] == null; // no status + no error = treat as ok
-            // TODO(v2.8.0): caller reads dispatcher result — accepts both legacy and canonical statuses
-            // until all dispatcher tool responses are migrated.
+            // Dispatcher.Invoke can reach ANY registered tool, and several producers still
+            // hand-roll legacy PascalCase envelopes instead of going through McpResponse —
+            // confirmed still alive as of this writing: ForgeService ("Success"),
+            // VersionControlService ("Success"), ObjectService.WorkerReload/CreateObject's
+            // catch path ("Accepted"/"Error"), Program.cs soft-reload ("Accepted"). Do not
+            // drop the legacy branch until those are migrated to McpResponse.Ok/Err.
             return string.Equals(s, "ok", StringComparison.OrdinalIgnoreCase)       // canonical v2.8.0
                 || string.Equals(s, "accepted", StringComparison.OrdinalIgnoreCase)  // canonical v2.8.0
                 || string.Equals(s, "Ok", StringComparison.OrdinalIgnoreCase)        // legacy

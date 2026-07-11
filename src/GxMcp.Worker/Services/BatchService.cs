@@ -143,8 +143,9 @@ namespace GxMcp.Worker.Services
                         var parsed = JObject.Parse(result);
                         parsed["object"] = name;
                         allResults.Add(parsed);
-                        // TODO(v2.8.0): caller in BatchService.MultiEdit reads parsed["count"] from inner BatchEdit result
-                        totalChanges += parsed["result"]?["count"]?.ToObject<int>() ?? parsed["count"]?.ToObject<int>() ?? 0;
+                        // BatchEdit (above) only ever returns via McpResponse.Ok/Err — canonical
+                        // envelope only, no legacy top-level "count". Read from result.count.
+                        totalChanges += parsed["result"]?["count"]?.ToObject<int>() ?? 0;
                     } catch {
                         allResults.Add(new JObject { ["object"] = name, ["error"] = result });
                     }

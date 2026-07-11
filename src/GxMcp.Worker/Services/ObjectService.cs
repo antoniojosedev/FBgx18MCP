@@ -235,7 +235,6 @@ namespace GxMcp.Worker.Services
                 Logger.Info(string.Format("Object created successfully in {0}ms", sw.ElapsedMilliseconds));
                 string idStr = "";
                 try { idStr = newObj.Key?.Id.ToString() ?? ""; } catch { try { idStr = newObj.Guid.ToString(); } catch { } }
-                // TODO(v2.8.0): caller in ImportObjectFromText reads response["status"]=="Success"
                 var responsePayload = new JObject
                 {
                     ["type"] = type,
@@ -1560,7 +1559,6 @@ namespace GxMcp.Worker.Services
 
                     string createResult = CreateObject(typeFilter, target);
                     JObject createJson = JObject.Parse(createResult);
-                    // TODO(v2.8.0): caller in ImportObjectFromText reads createJson["status"]=="ok" after migration
                     if (!string.Equals(createJson["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase))
                     {
                         return createResult;
@@ -1571,9 +1569,9 @@ namespace GxMcp.Worker.Services
                 string writeResult = _writeService.WriteObject(target, normalizedPart, importedText, typeFilter, autoValidate: false);
                 JObject writeJson = JObject.Parse(writeResult);
 
-                // TODO(v2.8.0): caller in ImportObjectFromText reads writeJson["status"]=="ok" after WriteService migration
-                if (string.Equals(writeJson["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(writeJson["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase))
+                // WriteService.WriteObject only ever returns via McpResponse.Ok/Err (canonical
+                // envelope) — no legacy "Success" status to fall back to.
+                if (string.Equals(writeJson["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase))
                 {
                     writeJson["path"] = fullPath;
                     writeJson["part"] = normalizedPart;

@@ -94,9 +94,14 @@ verification — and should become numbered plans (012+) before execution:
   code path (this is the root of the flagged flaky `Dispatcher_PatchApply_ValidateOnly`).
   Triage per-file; for the validate-only/dry-run mapping specifically, add a real
   `CommandDispatcher.Dispatch(validate=only)` test asserting no persistence.
-- **DIR-01 — finish or shelve the v2.8.0 canonical-envelope cleanup.** Dual-shape fallback
-  TODOs (`BatchService.cs:146`, `ObjectService.cs:238,1548-1559`, `FeatureScaffoldService.cs:358`)
-  still live nine releases later; audit callers, then remove the legacy branch per site.
+- **DIR-01 — finish or shelve the v2.8.0 canonical-envelope cleanup. DONE.** Traced each dual-shape
+  fallback to its producer: `BatchService.MultiEdit` and `ObjectService.ImportObjectFromText`'s
+  create/write legs all call producers (`BatchEdit`, `WriteService.WriteObject`, `CreateObject`'s
+  success path) that emit exclusively via `McpResponse.Ok`/`Err` — legacy branches removed, TODOs
+  deleted, tests added (`BatchServiceTests`, `ObjectServiceImportTests`). `FeatureScaffoldService.IsOk`
+  fallback stays: `Dispatcher.Invoke` can reach any tool, and `ForgeService`/`VersionControlService`/
+  `ObjectService.WorkerReload`/`Program.cs` soft-reload still hand-roll legacy PascalCase statuses
+  (`Success`/`Accepted`/`Error`) today — comment now names them instead of a bare `TODO(v2.8.0)`.
 - **BUG-04 — `genexus_worker_pool action=warm_spares` reports empty results. DONE (Unreleased).**
   Fixed by making `ConfigureWarmSpares` async and awaiting the pre-spawns (bounded by a 10s
   `WarmSpareAwaitCap`) before building the result; spawns still running past the cap are
