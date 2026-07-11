@@ -774,17 +774,19 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrEmpty(guid)) return;
             var index = GetIndex();
+            string removedKey = null;
             lock (_lock)
             {
                 if (index.GuidToKey == null || !index.GuidToKey.TryGetValue(guid, out var key)) return;
                 if (index.Objects.TryRemove(key, out var removed))
                 {
+                    removedKey = key;
                     if (index.ChildrenByParent != null) RemoveEntryFromParentIndex(index, removed);
                     if (Guid.TryParse(guid, out var g)) _hierarchyCache.TryRemove(g, out _);
                 }
                 index.GuidToKey.TryRemove(guid, out _);
             }
-            MarkDirty();
+            MarkDirtyForKey(removedKey);
         }
 
         private (string ParentName, string ParentPath, string Path, string ModuleName) ResolveHierarchy(global::Artech.Architecture.Common.Objects.KBObject obj)
@@ -1601,8 +1603,11 @@ namespace GxMcp.Worker.Services
                 && index.GuidToKey.TryGetValue(entry.Guid, out var oldKey)
                 && !string.Equals(oldKey, key, StringComparison.OrdinalIgnoreCase))
             {
-                if (index.Objects.TryRemove(oldKey, out var stale) && index.ChildrenByParent != null)
-                    RemoveEntryFromParentIndex(index, stale);
+                if (index.Objects.TryRemove(oldKey, out var stale))
+                {
+                    if (index.ChildrenByParent != null) RemoveEntryFromParentIndex(index, stale);
+                    MarkShardDirty(oldKey); // the old key's shard lost an entry too
+                }
             }
 
             // Atomic update using ConcurrentDictionary
@@ -1638,7 +1643,7 @@ namespace GxMcp.Worker.Services
                 } catch (Exception ex) { Logger.Error("Background Indexing Error: " + ex.Message); }
             });
 
-            MarkDirty();
+            MarkDirtyForKey(key);
             // Fire and forget save to disk (throttled — see ScheduleThrottledFlush)
             ScheduleThrottledFlush();
         }
@@ -1714,7 +1719,7 @@ namespace GxMcp.Worker.Services
                         // Inverted Index (CalledBy) — copy-on-write, see AddEdgeCow.
                         string targetIndexKey = $"{targetType}:{targetName}";
                         if (index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
-                            if (AddCalledByCow(targetEntry, entry.Name)) changed = true;
+                            if (AddCalledByCow(targetEntry, entry.Name)) { changed = true; MarkShardDirty(targetIndexKey); }
                         }
                     } catch { }
                 }
@@ -1735,7 +1740,10 @@ namespace GxMcp.Worker.Services
             catch (Exception scanEx) { Logger.Debug("[FR#3] Textual call scan failed: " + scanEx.Message); }
             System.Threading.Interlocked.Add(ref _enrichTextualScanTicks, System.Diagnostics.Stopwatch.GetTimestamp() - tsStart);
 
-            if (changed) { MarkDirty(); ScheduleThrottledFlush(); }
+            // Plan 003: entry's own shard was marked already (or is marked below); target
+            // shards touched via CalledBy were marked inline above / in the textual scan.
+            // Only bump the generation here — precise per-shard marking already happened.
+            if (changed) { System.Threading.Interlocked.Increment(ref _dirtyGeneration); MarkShardDirty(GetEntryStorageKey(entry)); ScheduleThrottledFlush(); }
         }
 
         // FR#3 (friction-report 2026-05-14): textual call-site scan that augments the SDK
@@ -1786,7 +1794,7 @@ namespace GxMcp.Worker.Services
                     if (!index.Objects.TryGetValue(key, out var target) || target == null) continue;
 
                     if (AddCallCow(entry, target.Name)) changed = true;
-                    if (AddCalledByCow(target, entry.Name)) changed = true;
+                    if (AddCalledByCow(target, entry.Name)) { changed = true; MarkShardDirty(key); }
                     break; // first matching object type wins
                 }
             }
@@ -1804,6 +1812,7 @@ namespace GxMcp.Worker.Services
         {
             var index = GetIndex();
             bool removed = false;
+            var removedKeys = new List<string>();
             lock (_lock)
             {
                 var keysToRemove = index.Objects
@@ -1817,6 +1826,7 @@ namespace GxMcp.Worker.Services
                     if (index.Objects.TryRemove(pair.Key, out var removedEntry))
                     {
                         removed = true;
+                        removedKeys.Add(pair.Key);
                         // Surgical removal (mirrors RemoveEntryByGuid) — the previous
                         // implementation rebuilt the ENTIRE parent index via UpdateIndex
                         // per deletion, an O(N) rebuild for an O(1) operation.
@@ -1836,7 +1846,8 @@ namespace GxMcp.Worker.Services
 
             if (removed)
             {
-                MarkDirty();
+                System.Threading.Interlocked.Increment(ref _dirtyGeneration);
+                foreach (var k in removedKeys) MarkShardDirty(k);
                 ScheduleThrottledFlush();
             }
         }
@@ -1929,12 +1940,13 @@ namespace GxMcp.Worker.Services
                 idx.Objects[key] = e;
                 if (idx.ChildrenByParent != null) AddOrUpdateEntryInParentIndex(idx, e);
                 if (idx.GuidToKey != null && !string.IsNullOrEmpty(e.Guid)) idx.GuidToKey[e.Guid] = key;
+                MarkShardDirty(key);
                 any = true;
             }
             if (any)
             {
                 idx.LastUpdated = DateTime.UtcNow;
-                MarkDirty();
+                System.Threading.Interlocked.Increment(ref _dirtyGeneration);
             }
         }
 
@@ -1956,9 +1968,14 @@ namespace GxMcp.Worker.Services
             {
                 try { if (!string.IsNullOrEmpty(_indexPathGz) && File.Exists(_indexPathGz)) File.Delete(_indexPathGz); } catch (Exception ex) { Logger.Warn("Delete gz snapshot failed: " + ex.Message); }
                 try { if (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath)) File.Delete(_indexPath); } catch (Exception ex) { Logger.Warn("Delete plain snapshot failed: " + ex.Message); }
+                // Plan 003: drop the sharded snapshot directory too.
+                try { if (!string.IsNullOrEmpty(_shardDirPath) && Directory.Exists(_shardDirPath)) Directory.Delete(_shardDirPath, true); } catch (Exception ex) { Logger.Warn("Delete shard dir failed: " + ex.Message); }
                 // Fase 1: drop the validation sidecar + hwm so a forced rebuild starts clean.
                 try { if (!string.IsNullOrEmpty(_metaPath) && File.Exists(_metaPath)) File.Delete(_metaPath); } catch (Exception ex) { Logger.Warn("Delete meta sidecar failed: " + ex.Message); }
                 ResetHighWaterMark();
+                // Nothing durable on disk anymore — every shard needs (re)writing on the
+                // next flush, same as a fresh IndexCacheService instance.
+                MarkAllShardsDirty();
             }
         }
     }
