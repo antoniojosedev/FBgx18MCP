@@ -70,3 +70,7 @@ docs/sdk-probe/raw.json
 
 .gx-smoke-final/
 .gx-smoke*/
+
+# improve skill (shadcn) — local tooling, not part of the package
+.agents/
+skills-lock.json
