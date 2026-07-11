@@ -28,7 +28,7 @@ Knowledge Base on disk
 
 ### Tool surface lives in two synchronized places
 
-- `src/GxMcp.Gateway/tool_definitions.json` — single source of truth for MCP tool schemas. `ToolSchemaSizeTests` enforces a token budget; bumping requires updating both the budget constant and the comment trail in that test.
+- `src/GxMcp.Gateway/tool_definitions.json` — single source of truth for MCP tool schemas. `ToolSchemaSizeTests` enforces a token budget; bumping the constant requires a `CHANGELOG.md` entry recording the new value and why (the test itself only keeps the last few bumps for quick context).
 - `src/GxMcp.Gateway.Tests/Fixtures/Contract/Discovery/tools-list.response.json` — golden fixture for the discovery `tools/list` envelope. **Must stay alphabetically sorted by tool name.** When you add/change a schema field in `tool_definitions.json`, regenerate the corresponding section in the golden fixture or the contract test fails.
 
 ### Adding or modifying a tool

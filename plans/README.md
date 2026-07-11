@@ -25,7 +25,7 @@ update your row when done.
 | 008 | Decompose Gateway Program.cs (5657 lines) | P3 | L | — | TODO |
 | 009 | BuildService characterization test suite | P2 | M | — | TODO |
 | 010 | Repo-wide JS/TS lint + editorconfig, ESLint 9, central pkg versions | P3 | S-M | — | TODO |
-| 011 | Trim ToolSchemaSizeTests comment history | P3 | S | — | TODO |
+| 011 | Trim ToolSchemaSizeTests comment history | P3 | S | — | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (reason) | REJECTED (rationale)
 
