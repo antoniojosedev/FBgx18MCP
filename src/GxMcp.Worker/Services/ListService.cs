@@ -223,9 +223,10 @@ namespace GxMcp.Worker.Services
                     // / descriptionFilter / pathPrefix parameters below.
                     if (!string.IsNullOrEmpty(nameFilter))
                     {
+                        var descriptionMatches = IndexEntryFilterBuilder.DescriptionContains(nameFilter);
                         entries = entries.Where(e =>
                             (e.Name ?? string.Empty).IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            (e.Description ?? string.Empty).IndexOf(nameFilter, StringComparison.OrdinalIgnoreCase) >= 0);
+                            descriptionMatches(e));
                     }
 
                     // v2.3.8 (Task 2.2): targeted discovery filters.
@@ -243,8 +244,7 @@ namespace GxMcp.Worker.Services
 
                     if (!string.IsNullOrEmpty(invokerDescriptionFilter))
                     {
-                        entries = entries.Where(e =>
-                            (e.Description ?? string.Empty).IndexOf(invokerDescriptionFilter, StringComparison.OrdinalIgnoreCase) >= 0);
+                        entries = entries.Where(IndexEntryFilterBuilder.DescriptionContains(invokerDescriptionFilter));
                     }
 
                     if (!string.IsNullOrEmpty(invokerPathPrefix))
@@ -259,11 +259,11 @@ namespace GxMcp.Worker.Services
                     // items with no recorded modification timestamp.
                     if (since > DateTime.MinValue)
                     {
-                        entries = entries.Where(e => e.LastUpdate >= since);
+                        entries = entries.Where(IndexEntryFilterBuilder.SinceInclusive(since));
                     }
                     if (modifiedBefore > DateTime.MinValue)
                     {
-                        entries = entries.Where(e => e.LastUpdate > DateTime.MinValue && e.LastUpdate < modifiedBefore);
+                        entries = entries.Where(IndexEntryFilterBuilder.ModifiedBeforeExclusive(modifiedBefore));
                     }
 
                     // v2.6.8: sort selector. "lastUpdate" returns newest-first and skips

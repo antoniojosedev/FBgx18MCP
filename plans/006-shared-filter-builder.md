@@ -70,9 +70,51 @@ unified, update the specific test with a comment explaining the reconciliation).
 
 ## Done criteria
 
-- [ ] Build 0 errors; full Worker suite green (4 known skips)
-- [ ] Step-1 characterization tests exist and pass; divergences documented in this file
-- [ ] Both services call the shared builder (no duplicated predicate chains remain)
+- [x] Build 0 errors; full Worker suite green (4 known skips)
+- [x] Step-1 characterization tests exist and pass; divergences documented in this file
+- [x] Both services call the shared builder (no duplicated predicate chains remain)
+
+## Executor findings (2026-07-10)
+
+Step 1 characterization tests: `src/GxMcp.Worker.Tests/FilterBuilderCharacterizationTests.cs`.
+
+Confirmed divergences/behaviors, decision per each:
+
+- **Type match — DIVERGENT, deliberately preserved.** SearchService's `IsTypeMatch`
+  is alias/synonym-aware with a substring-containment fallback (`type.Contains(query)`),
+  so `typeFilter="WebForm"` also matches `WebFormAttribute`. ListService's
+  `filterTypes.Contains(e.Type)` is an exact case-insensitive set match — no
+  over-matching, and no alias table (`typeFilter="prc"` matches nothing, since no
+  type is literally named "prc"). Unifying on `IsTypeMatch` would change List's
+  observable results (over-matching), which existing List tests implicitly rely
+  on not happening. **Decision: keep both.** `IsTypeMatchAliasAware` was moved into
+  the new `IndexEntryFilterBuilder` as the single source of truth for Search's four
+  call sites (was previously copy-pasted logic sitting in `SearchService` only);
+  List's exact-set match stayed untouched inline in `ListService.ListObjects`.
+- **Domain filter — not actually duplicated.** Grepped `ListService.cs` for
+  `BusinessDomain`/`domainFilter`/`DomainFilter` — zero matches. ListService has no
+  domain-filtering concept at all (`ListCriteria` has no domain field). Nothing to
+  commonize; left inline in SearchService only.
+- **Parent/parentPath equality-as-safety-net — not actually duplicated.**
+  SearchService applies a redundant `.Where` equality check after a
+  `ChildrenByParent` index hit (gated on `sourceSet == index.Objects.Values` by
+  reference), for defense-in-depth. ListService's index path only does the
+  `ChildrenByParent` dictionary lookup and never re-applies an equality `.Where`
+  afterward. Since List has no matching duplicate, left inline in SearchService.
+- **Description substring match — TRUE duplicate.** Identical
+  `(e.Description ?? "").IndexOf(x, OrdinalIgnoreCase) >= 0` logic in both. Factored
+  into `IndexEntryFilterBuilder.DescriptionContains(filter)`; both services now call it
+  (List also uses it for the description half of its legacy name-or-description filter).
+- **Date range (Since inclusive / ModifiedBefore exclusive) — TRUE duplicate.**
+  Byte-for-byte identical in both, including the "`DateTime.MinValue` never satisfies
+  ModifiedBefore" edge case. Factored into `IndexEntryFilterBuilder.SinceInclusive` /
+  `ModifiedBeforeExclusive`; both services now call them.
+- **Runtime-SDK fallback path (ListService, no index available) — out of scope.**
+  Operates over `RuntimeListEntry`/`KBObject`, not `SearchIndex.IndexEntry`; the plan's
+  "Current state" section scopes this to the `IEnumerable<IndexEntry>` path only.
+
+Ranking/scoring in SearchService was untouched — only the pre-ranking filter
+predicates route through the shared builder.
 
 ## STOP conditions
 

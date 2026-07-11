@@ -232,7 +232,7 @@ namespace GxMcp.Worker.Services
                     queryResults = queryResults.Where(e => string.Equals(e.BusinessDomain, criteria.DomainFilter, StringComparison.OrdinalIgnoreCase));
 
                 if (!string.IsNullOrEmpty(criteria.DescriptionFilter))
-                    queryResults = queryResults.Where(e => (e.Description ?? "").IndexOf(criteria.DescriptionFilter, StringComparison.OrdinalIgnoreCase) >= 0);
+                    queryResults = queryResults.Where(IndexEntryFilterBuilder.DescriptionContains(criteria.DescriptionFilter));
 
                 if (!string.IsNullOrEmpty(criteria.MetadataFilter))
                     queryResults = queryResults.Where(e => 
@@ -251,9 +251,9 @@ namespace GxMcp.Worker.Services
                 // inclusive, ModifiedBefore exclusive. Applied before ranking so
                 // the score budget doesn't get spent on out-of-window items.
                 if (since > DateTime.MinValue)
-                    queryResults = queryResults.Where(e => e.LastUpdate >= since);
+                    queryResults = queryResults.Where(IndexEntryFilterBuilder.SinceInclusive(since));
                 if (modifiedBefore > DateTime.MinValue)
-                    queryResults = queryResults.Where(e => e.LastUpdate > DateTime.MinValue && e.LastUpdate < modifiedBefore);
+                    queryResults = queryResults.Where(IndexEntryFilterBuilder.ModifiedBeforeExclusive(modifiedBefore));
 
                 if (!string.IsNullOrEmpty(criteria.UsedByFilter))
                 {
@@ -695,19 +695,10 @@ namespace GxMcp.Worker.Services
             return score;
         }
 
-        private bool IsTypeMatch(string type, string query)
-        {
-            if (string.IsNullOrEmpty(type) || string.IsNullOrEmpty(query)) return false;
-            string t = type.ToLower(); string q = query.ToLower();
-            if (q == "prc" || q == "procedure" || q == "proc") return t.Contains("procedure");
-            if (q == "trn" || q == "transaction") return t.Contains("transaction");
-            if (q == "tab" || q == "table") return t == "table";
-            if (q == "wp" || q == "webpanel") return t.Contains("webpanel");
-            if (q == "dp" || q == "dataprovider") return t.Contains("dataprovider");
-            if (q == "sdt") return t.Contains("sdt");
-            if (q == "attr" || q == "attribute") return t.Contains("attribute");
-            return t.Contains(q);
-        }
+        // Plan 006: alias/synonym-aware type match, factored into the shared
+        // IndexEntryFilterBuilder (see that file for why ListService keeps its own
+        // exact-match instead of calling this).
+        private static bool IsTypeMatch(string type, string query) => IndexEntryFilterBuilder.IsTypeMatchAliasAware(type, query);
 
         private SearchCriteria ParseQuery(string query)
         {
