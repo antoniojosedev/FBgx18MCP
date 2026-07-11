@@ -2,8 +2,11 @@
 
 ## Unreleased
 
-Second-pass codebase audit. Correctness, data-safety, and security-hardening fixes
-plus documentation hygiene; no tool renames or behavior changes a normal caller sees.
+Second-pass codebase audit plus a large internal-hardening pass. Correctness, data-safety,
+security, and performance fixes; a big round of behavior-preserving refactors and test/
+tooling cleanup. No tool renames. The only behavior a normal caller notices is faster
+search/list on large KBs, the new `Server.WedgedCommandTimeoutMinutes` knob, and
+`warm_spares` now reporting its real outcome.
 
 ### Fixed
 
@@ -18,6 +21,10 @@ plus documentation hygiene; no tool renames or behavior changes a normal caller 
   already drained. The result is now cached against the index's mutation generation, so a
   stable index answers in O(1) and only genuine index changes trigger a rescan (which
   early-exits at the first un-enriched entry).
+- **Type- and domain-filtered search/list are faster on large KBs.** These filters used to
+  scan every object; the index now maintains secondary type/domain lookups so a filtered
+  query starts from just the matching set. Results and ordering are unchanged (the previous
+  full-scan filter is retained as a verified safety net).
 - **Background writes are no longer silently lost when a commit fails.** The background
   flush caught commit exceptions at debug level and then cleared its "pending write"
   flag unconditionally — so a failed commit was never retried, even though the client had
@@ -85,10 +92,33 @@ plus documentation hygiene; no tool renames or behavior changes a normal caller 
   pinning the crash-then-retry contract: status transitions to Completed while the tool
   metric is counted exactly once. Backed by a `MetricRegistered` guard on the operation
   record; retry-linked request ids are now also dropped by `CleanupExpired`.
-- Additional deferred audit findings captured as backlog entries under `plans/`
-  (O(n²) parent-index insert, per-search enrichment scan, hung-worker reaping, shared
-  path-safety helper, error-envelope normalization, additional god-object decomposition,
-  and the `warm_spares` result-reporting gap).
+- **God-object decomposition (behavior-preserving `partial class` splits).** `WriteService`
+  6982→1804 lines across 7 partials; gateway `Program.cs` 5657→716 across 7 partials;
+  `LayoutService` and `PatternApplyService` partially split (remaining cores tracked in
+  `plans/`). Whole members moved verbatim; full suites green at every step.
+- **`CommandDispatcher` switch → dispatch table.** The ~83-case `switch(method)` is now a
+  case-insensitive handler dictionary; each case became a `Handle_<Name>` method, routing and
+  unknown-method fallthrough preserved exactly.
+- **Shared filter-predicate builder.** Extracted the genuinely-duplicated Search/List filter
+  predicates into `IndexEntryFilterBuilder`, deliberately preserving the intentional
+  Search-vs-List type-match divergence (alias-aware vs exact); characterization tests pin both.
+- **Shared `PathSafety` helper.** Consolidated the several drifted "is this path inside the KB
+  root?" / make-relative implementations; the by-design arbitrary-path sites (`genexus_io`
+  export/import) were confirmed and left ungated.
+- **Error-envelope normalization.** Several worker services that hand-built `{error,…}` /
+  `{status:"Success"}` shapes now use canonical `McpResponse.Ok`/`Err` where the shape is
+  backward-compatible; observable-shape sites were deliberately left alone. Dead legacy
+  dual-shape parsing fallbacks (a v2.8.0 migration leftover) were removed after tracing each
+  producer; the one still-live fallback is now documented rather than a bare TODO.
+- **Index flush-count regression test** (`IndexFlushBoundTests`) pins the flush-write count
+  under a burst, guarding future index-flush work against a re-serialize-per-tick regression.
+- **BuildService characterization suite** (46 tests) and one brittle source-text guard replaced
+  with a real behavioral test (`NormalizeFacadeArgs` dry-run mapping).
+- **Repo tooling**: ESLint 9 flat config + `.editorconfig`, `nexus-ide` migrated to flat
+  config, test package versions centralized via `src/Directory.Build.props`. Trimmed the
+  accreting comment history in `ToolSchemaSizeTests` to a short rationale + pointer.
+- **Deferred (tracked in `plans/`)**: the L-effort index-persistence re-architecture
+  (incremental/sharded flush, batched COM reads) and the remaining god-object cores.
 
 ## v2.17.0 — 2026-07-10
 
