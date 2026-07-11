@@ -1,0 +1,13 @@
+<Project>
+  <!--
+    Shared test-package versions for GxMcp.Gateway.Tests and GxMcp.Worker.Tests so
+    they can't silently diverge. Auto-imported by MSBuild for every project under
+    src/; only the two test projects reference these properties.
+  -->
+  <PropertyGroup>
+    <GxMcpTestSdkVersion>17.11.1</GxMcpTestSdkVersion>
+    <GxMcpXunitVersion>2.9.2</GxMcpXunitVersion>
+    <GxMcpXunitRunnerVersion>2.8.2</GxMcpXunitRunnerVersion>
+    <GxMcpCoverletVersion>6.0.2</GxMcpCoverletVersion>
+  </PropertyGroup>
+</Project>

@@ -79,11 +79,11 @@ adding the config — do style fixes in a separate `chore:` commit (CONTRIBUTING
 
 ## Done criteria
 
-- [ ] Root `npm run lint` runs and is wired into CI
-- [ ] `.editorconfig` present at repo root
-- [ ] nexus-ide on ESLint 9, `npm run lint` exit 0, CI lint step green
-- [ ] Both test csproj resolve xunit/test-SDK from one central version source
-- [ ] `dotnet build` + `npm test` still green
+- [x] Root `npm run lint` runs and is wired into CI
+- [x] `.editorconfig` present at repo root
+- [x] nexus-ide on ESLint 9, `npm run lint` exit 0, CI lint step green
+- [x] Both test csproj resolve xunit/test-SDK from one central version source
+- [x] `dotnet build` + `npm test` still green
 
 ## STOP conditions
 
