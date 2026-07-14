@@ -245,7 +245,25 @@ namespace GxMcp.Gateway
         private static void WriteLeaseFile(string leasePath, GatewayLeaseRecord record)
         {
             string json = JsonConvert.SerializeObject(record, Formatting.Indented);
-            File.WriteAllText(leasePath, json, Encoding.UTF8);
+            // Atomic publish: write to a unique temp file on the same volume, then rename over
+            // the target. A plain File.WriteAllText is NOT atomic — a gateway starting
+            // concurrently could read a half-written (or momentarily empty) lease, conclude
+            // "no active master", and register a second master (startup split-brain). A rename
+            // is atomic on NTFS, so a reader always sees either the old lease or the complete
+            // new one, never a partial.
+            string tmp = leasePath + ".tmp." + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.WriteAllText(tmp, json, Encoding.UTF8);
+                if (File.Exists(leasePath))
+                    File.Replace(tmp, leasePath, null);
+                else
+                    File.Move(tmp, leasePath);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
         }
 
         private static GatewayLeaseRecord? FindActiveLeaseForPort(int httpPort, int currentProcessId, string currentLeasePath)

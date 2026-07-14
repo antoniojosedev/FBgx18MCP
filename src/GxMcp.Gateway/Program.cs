@@ -105,6 +105,9 @@ namespace GxMcp.Gateway
         private static readonly ConcurrentDictionary<string, (DateTime AtUtc, string Error)> _respawnFailures =
             new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
         private static bool _stdioActive;
+        // #3: the client request that triggered a proxy→master promotion, buffered so the new
+        // master can replay it once instead of dropping it across the takeover.
+        private static string? _promotionReplayLine;
         private static readonly TimeSpan _pendingRequestRetention = TimeSpan.FromMinutes(65);
         private static readonly string _logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gateway_debug.log");
         // Rotation: when the log exceeds this many bytes the current file is renamed to
@@ -341,6 +344,7 @@ namespace GxMcp.Gateway
             Log("[Gateway] Startup orphan-kill disabled. Existing gateway reuse is handled by the extension client.");
             AppDomain.CurrentDomain.ProcessExit += (_, __) =>
             {
+                try { _gatewayLifetime.Cancel(); } catch { }
                 if (_activeConfig != null)
                 {
                     GatewayProcessLease.ReleaseCurrentProcess(_activeConfig);
@@ -491,6 +495,26 @@ namespace GxMcp.Gateway
                 Log("[Gateway] Entering Stdio Loop...");
                 _stdioActive = true;
                 var reader = Console.In;
+
+                // #3: replay the request that triggered a promotion (see RunMcpProxyAsync).
+                // It already parsed as JSON in the proxy, so process it through the normal
+                // path once and emit its response, so the client's call isn't lost across the
+                // proxy→master takeover.
+                var replayLine = System.Threading.Interlocked.Exchange(ref _promotionReplayLine, null);
+                if (!string.IsNullOrWhiteSpace(replayLine) && replayLine!.Trim().StartsWith("{"))
+                {
+                    Log("[Gateway] Replaying the request that triggered promotion.");
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var req = JObject.Parse(replayLine);
+                            var resp = await ProcessMcpRequest(req);
+                            if (resp != null) await TryWriteStdout(resp.ToString(Formatting.None));
+                        }
+                        catch (Exception ex) { Log("[Gateway] Promotion replay failed: " + ex.Message); }
+                    });
+                }
                 while (true)
                 {
                     string? line = null;
@@ -724,10 +748,11 @@ namespace GxMcp.Gateway
                         if (retryCount >= 3)
                         {
                             Log("[Proxy] Master unresponsive. Triggering promotion...");
-                            // We return true but we need to keep the last line for the Master to process!
-                            // To keep it simple, we let Main know to promote. 
-                            // The IDE will likely retry the last command or we can buffer it.
-                            return true; 
+                            // Buffer the request that triggered promotion so the newly-promoted
+                            // master can replay it — otherwise this one client call is silently
+                            // lost across the takeover (it was read off stdin and never answered).
+                            _promotionReplayLine = line;
+                            return true;
                         }
                         await Task.Delay(1000);
                     }

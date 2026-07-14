@@ -15,6 +15,12 @@ namespace GxMcp.Gateway
 {
     partial class Program
     {
+        // Guards the heartbeat/cleanup loops so they start once across all bind-retry attempts,
+        // tied to the gateway process lifetime rather than a per-attempt WebApplication.
+        private static int _backgroundLoopsStarted;
+        private static readonly System.Threading.CancellationTokenSource _gatewayLifetime =
+            new System.Threading.CancellationTokenSource();
+
         private static bool IsOriginAllowed(string? origin, ServerConfig? serverConfig)
         {
             if (string.IsNullOrWhiteSpace(origin)) return true;
@@ -227,8 +233,18 @@ namespace GxMcp.Gateway
             builder.Services.AddResponseCompression(options => { options.EnableForHttps = true; });
             var app = builder.Build();
             app.UseResponseCompression();
-            _ = Task.Run(() => RunSessionCleanupLoop(app.Lifetime.ApplicationStopping));
-            _ = Task.Run(() => RunLeaseHeartbeatLoop(app.Lifetime.ApplicationStopping));
+            // Start the heartbeat/cleanup loops exactly once, tied to the gateway's own
+            // lifetime — NOT app.Lifetime. StartHttpServer runs once per bind-retry attempt
+            // (up to 5×), so starting them here per-call leaked a set of loops per failed
+            // attempt, each bound to a WebApplication whose ApplicationStopping may never fire
+            // (it never fully started). One guarded set, cancelled on process exit, avoids the
+            // orphaned-loop churn during a bind-recovery storm.
+            if (System.Threading.Interlocked.Exchange(ref _backgroundLoopsStarted, 1) == 0)
+            {
+                var ct = _gatewayLifetime.Token;
+                _ = Task.Run(() => RunSessionCleanupLoop(ct));
+                _ = Task.Run(() => RunLeaseHeartbeatLoop(ct));
+            }
 
             app.Use(async (context, next) =>
             {

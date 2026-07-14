@@ -86,6 +86,43 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void LeaseWrite_IsAtomic_ProducesCompleteJson_AndLeavesNoTempFiles()
+        {
+            // The lease is now published via temp-file + atomic rename so a concurrently
+            // starting gateway can never read a half-written (partial/empty) lease and wrongly
+            // conclude "no master" → startup split-brain. Exercise both write branches
+            // (create via Move, overwrite via Replace) through register + refresh, and assert
+            // the on-disk lease always parses and no .tmp scratch files are left behind.
+            var config = CreateConfig(
+                Path.Combine(Path.GetTempPath(), "GenexusMcpTests", Guid.NewGuid().ToString("N"), "kb"),
+                Path.Combine(Path.GetTempPath(), "GenexusMcpTests", Guid.NewGuid().ToString("N"), "gx"),
+                null,
+                5512
+            );
+            var leasePath = GatewayProcessLease.GetLeasePath(GatewayProcessLease.BuildInstanceKey(config));
+            var leaseDir = Path.GetDirectoryName(leasePath)!;
+            try
+            {
+                var reg = GatewayProcessLease.TryRegisterCurrentProcess(config);   // create branch
+                Assert.True(reg.Success);
+                var parsed1 = JsonConvert.DeserializeObject<GatewayLeaseRecord>(File.ReadAllText(leasePath));
+                Assert.Equal(Environment.ProcessId, parsed1!.ProcessId);
+
+                GatewayProcessLease.RefreshCurrentProcess(config);                 // overwrite branch
+                var parsed2 = JsonConvert.DeserializeObject<GatewayLeaseRecord>(File.ReadAllText(leasePath));
+                Assert.Equal(Environment.ProcessId, parsed2!.ProcessId);
+
+                // No .tmp.* scratch files left in the lease directory.
+                Assert.Empty(Directory.GetFiles(leaseDir, "*.tmp.*"));
+            }
+            finally
+            {
+                GatewayProcessLease.ReleaseCurrentProcess(config);
+                TryDelete(leasePath);
+            }
+        }
+
+        [Fact]
         public void TryRegisterCurrentProcess_ShouldRejectActiveDuplicateLease()
         {
             var config = CreateConfig(

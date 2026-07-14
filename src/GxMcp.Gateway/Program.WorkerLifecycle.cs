@@ -99,8 +99,42 @@ namespace GxMcp.Gateway
                         }
                     }
                     _respawnFailures[kb.NormalizedAlias] = (DateTime.UtcNow, lastEx?.Message ?? "unknown");
-                    Log($"[Respawn] Gave up respawning worker for KB '{kb.Alias}' after {maxAttempts} attempts. " +
-                        $"whoami/health will report respawn_failed. Recovery: genexus_worker_reload mode=soft force=true.");
+                    Log($"[Respawn] Fast respawn for KB '{kb.Alias}' failed after {maxAttempts} attempts; entering slow background retry (every 60s).");
+
+                    // Slow self-heal instead of a dead-end. The old behavior gave up here and
+                    // left the KB stuck in respawn_failed until a manual genexus_worker_reload.
+                    // Keep retrying on a long interval so a transient cause (host under load,
+                    // an IDE holding the KB, a brief file lock) recovers on its own. Bounded at
+                    // ~30 min so a genuinely unspawnable worker can't loop forever, and it bails
+                    // early if a worker came up by any path or the gateway is shutting down.
+                    for (int slow = 1; slow <= 30; slow++)
+                    {
+                        try { await Task.Delay(TimeSpan.FromSeconds(60), _gatewayLifetime.Token).ConfigureAwait(false); }
+                        catch { return; } // gateway shutting down
+                        if (IsEagerRespawnSuppressed()) return;
+                        if (_workerPool!.TryGet(kb.NormalizedAlias) != null)
+                        {
+                            _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
+                            return;
+                        }
+                        try
+                        {
+                            var slowCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                            try { _workerPool!.DropLiveEntry(kb.NormalizedAlias); } catch { }
+                            await _workerPool!.AcquireAsync(kb, slowCts.Token).ConfigureAwait(false);
+                            _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
+                            Log($"[Respawn] Slow-retry respawn succeeded for KB '{kb.Alias}' (retry {slow}).");
+                            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
+                            TriggerIndexBootstrapOnce();
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            _respawnFailures[kb.NormalizedAlias] = (DateTime.UtcNow, ex.Message);
+                            Log($"[Respawn] Slow-retry {slow}/30 for KB '{kb.Alias}' failed: {ex.Message}");
+                        }
+                    }
+                    Log($"[Respawn] Slow retry exhausted for KB '{kb.Alias}' (~30 min). whoami reports respawn_failed. Recovery: genexus_worker_reload mode=soft force=true.");
                 });
             };
         }
