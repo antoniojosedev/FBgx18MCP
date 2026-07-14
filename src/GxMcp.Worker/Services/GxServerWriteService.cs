@@ -61,14 +61,12 @@ namespace GxMcp.Worker.Services
                 return McpResponse.Err(code: "KbUnavailable", message: "No KB is open in this worker.", hint: "Open a KB first (genexus_kb action=open).");
             }
 
-            ITeamDevClientService tdSvc;
-            try { tdSvc = SdkServices.TryGetService<ITeamDevClientService>(); }
-            catch { tdSvc = null; }
+            ITeamDevClientService tdSvc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<ITeamDevClientService>();
             if (tdSvc == null)
             {
                 return McpResponse.Err(
                     code: "GxServerServiceUnavailable",
-                    message: "The GeneXus SDK's ITeamDevClientService is not registered in this worker session.",
+                    message: "The GeneXus SDK's ITeamDevClientService is not registered in this worker session (self-heal retries were exhausted).",
                     hint: "Restart the worker (genexus_worker_reload mode=hard) and retry.");
             }
 
@@ -93,7 +91,7 @@ namespace GxMcp.Worker.Services
 
             switch (action)
             {
-                case "commit": return DoCommit(model, kbAlias, args);
+                case "commit": return DoCommit(tdSvc, model, kbAlias, args);
                 case "update": return DoUpdate(model, kbAlias, args);
                 case "lock": return DoLock(model, kbAlias, args);
                 case "resolve": return DoResolve(tdSvc, model, args);
@@ -102,7 +100,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string DoCommit(KBModel model, string kbAlias, JObject args)
+        private string DoCommit(ITeamDevClientService tdSvc, KBModel model, string kbAlias, JObject args)
         {
             string message = args?["message"]?.ToString();
             if (string.IsNullOrWhiteSpace(message))
@@ -113,13 +111,73 @@ namespace GxMcp.Worker.Services
                     hint: "Pass action=commit, message=\"<commit comment>\".");
             }
 
-            IGXserverService svc;
-            try { svc = SdkServices.TryGetService<IGXserverService>(); }
-            catch { svc = null; }
+            IGXserverService svc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IGXserverService>();
             if (svc == null) return ServerServiceUnavailable();
 
+            // issue #32 item 6: optional partial commit. IGXserverService.Commit has no
+            // per-object selection — it commits the whole non-ignored changelist. The IDE's
+            // "commit these objects" works by marking every OTHER pending object
+            // IgnoreForCommit, committing, then restoring the flags. We mirror that. When
+            // `targets` is omitted this is the previous whole-changelist behavior.
+            var targetsToken = args?["targets"] as JArray;
+            HashSet<string> wanted = null;
+            if (targetsToken != null && targetsToken.Count > 0)
+            {
+                wanted = new HashSet<string>(
+                    targetsToken.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)),
+                    StringComparer.OrdinalIgnoreCase);
+                if (wanted.Count == 0)
+                    return McpResponse.Err(code: "BadArgs", message: "targets must contain at least one non-empty object name.");
+            }
+
+            var ignored = new List<KBObjectHistory>();
             try
             {
+                if (wanted != null)
+                {
+                    // Partial commit requires enumerating + toggling the local changelist,
+                    // which is the ITeamDevClientService surface (resolved by the caller).
+                    List<KBObjectHistory> pending;
+                    try
+                    {
+                        pending = (tdSvc.GetLocalChanges(model) ?? Enumerable.Empty<KBObjectHistory>())
+                            .Where(h => h != null).ToList();
+                    }
+                    catch (Exception ex)
+                    {
+                        return McpResponse.Err(code: "CommitFailed", message: "Could not read the pending changelist for partial commit: " + ex.Message, hint: "Retry without targets to commit the whole changelist, or check the worker log.");
+                    }
+
+                    var pendingNames = new HashSet<string>(
+                        pending.Select(h => SafeStr(() => h.ObjectName)).Where(n => !string.IsNullOrEmpty(n)),
+                        StringComparer.OrdinalIgnoreCase);
+
+                    var unknown = wanted.Where(w => !pendingNames.Contains(w)).ToList();
+                    if (unknown.Count > 0)
+                    {
+                        // Refuse rather than commit everything — the caller asked for a subset.
+                        return McpResponse.Err(
+                            code: "NoMatchingPending",
+                            message: "These targets are not in the pending changelist: " + string.Join(", ", unknown) + ". Nothing was committed.",
+                            hint: "Check action=pending for the exact committable object names, then retry.");
+                    }
+
+                    // Exclude every pending object the caller did NOT ask for; ensure the
+                    // wanted ones are enabled. Track excluded keys so we can restore them.
+                    foreach (var h in pending)
+                    {
+                        string name = SafeStr(() => h.ObjectName);
+                        if (name != null && !wanted.Contains(name))
+                        {
+                            try { tdSvc.IgnoreForCommit(model, h.Key); ignored.Add(h); } catch { /* best-effort */ }
+                        }
+                        else
+                        {
+                            try { tdSvc.EnableForCommit(model, h.Key); } catch { /* best-effort */ }
+                        }
+                    }
+                }
+
                 var data = new ServerCommitData
                 {
                     Model = model,
@@ -139,26 +197,39 @@ namespace GxMcp.Worker.Services
                         hint: "Check for pending conflicts (action=conflicts) before retrying.");
                 }
 
-                return McpResponse.Ok(
-                    code: "GxServerCommitCompleted",
-                    result: new JObject
-                    {
-                        ["committed"] = true,
-                        ["message"] = message,
-                        ["source"] = "sdk:IGXserverService"
-                    });
+                var result = new JObject
+                {
+                    ["committed"] = true,
+                    ["message"] = message,
+                    ["source"] = "sdk:IGXserverService"
+                };
+                if (wanted != null)
+                {
+                    result["partial"] = true;
+                    result["committedTargets"] = new JArray(wanted);
+                    result["excludedCount"] = ignored.Count;
+                }
+                return McpResponse.Ok(code: "GxServerCommitCompleted", result: result);
             }
             catch (Exception ex)
             {
                 return McpResponse.Err(code: "CommitFailed", message: ex.Message, hint: "Check the worker log for details.");
             }
+            finally
+            {
+                // Restore ignore flags on the objects we excluded so a later whole-changelist
+                // commit doesn't silently skip them. Best-effort — a failure here only means
+                // the excluded objects stay ignored until re-enabled manually.
+                foreach (var h in ignored)
+                {
+                    try { tdSvc.EnableForCommit(model, h.Key); } catch { /* best-effort */ }
+                }
+            }
         }
 
         private string DoUpdate(KBModel model, string kbAlias, JObject args)
         {
-            IGXserverService svc;
-            try { svc = SdkServices.TryGetService<IGXserverService>(); }
-            catch { svc = null; }
+            IGXserverService svc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IGXserverService>();
             if (svc == null) return ServerServiceUnavailable();
 
             try
@@ -198,9 +269,7 @@ namespace GxMcp.Worker.Services
                     hint: "Pass action=lock, target=<object name>.");
             }
 
-            IGXserverService svc;
-            try { svc = SdkServices.TryGetService<IGXserverService>(); }
-            catch { svc = null; }
+            IGXserverService svc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IGXserverService>();
             if (svc == null) return ServerServiceUnavailable();
 
             try
@@ -301,9 +370,10 @@ namespace GxMcp.Worker.Services
         {
             return McpResponse.Err(
                 code: "GxServerServiceUnavailable",
-                message: "The GeneXus SDK's IGXserverService is not registered in this worker session.",
+                message: "The GeneXus SDK's IGXserverService is not registered in this worker session (self-heal retries were exhausted).",
                 hint: "Restart the worker (genexus_worker_reload mode=hard) and retry.");
         }
+
 
         private static string SafeStr(Func<string> f)
         {

@@ -59,18 +59,15 @@ namespace GxMcp.Worker.Services
                     hint: "Pass mode=content or mode=properties.");
             }
 
-            IComparerService svc;
-            try
-            {
-                svc = SdkServices.TryGetService<IComparerService>();
-            }
-            catch { svc = null; }
+            // issue #32 item 2 (generalized): resilient resolve — retries a lazy/late SDK
+            // registration and force-resolves before hard-failing (self-heals a respawn).
+            IComparerService svc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IComparerService>();
 
             if (svc == null)
             {
                 return McpResponse.Err(
                     code: "ComparerServiceUnavailable",
-                    message: "The GeneXus SDK's IComparerService is not registered in this worker session.",
+                    message: "The GeneXus SDK's IComparerService is not registered in this worker session (self-heal retries were exhausted).",
                     hint: "The Comparer package may not be loaded in this worker. Restart the worker (genexus_worker_reload mode=hard) and retry.");
             }
 

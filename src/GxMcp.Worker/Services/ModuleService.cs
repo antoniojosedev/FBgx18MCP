@@ -64,15 +64,15 @@ namespace GxMcp.Worker.Services
                 return ListModules(kb);
             }
 
-            IModuleManagerService svc;
-            try { svc = SdkServices.TryGetService<IModuleManagerService>(); }
-            catch { svc = null; }
+            // issue #32 item 2 (generalized): resilient resolve — self-heals a lazy/late
+            // SDK registration after a worker respawn before hard-failing.
+            IModuleManagerService svc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IModuleManagerService>();
 
             if (svc == null)
             {
                 return McpResponse.Err(
                     code: "ModuleManagerServiceUnavailable",
-                    message: "The GeneXus SDK's IModuleManagerService is not registered in this worker session.",
+                    message: "The GeneXus SDK's IModuleManagerService is not registered in this worker session (self-heal retries were exhausted).",
                     hint: "The Module Manager package may not be loaded in this worker. Restart the worker (genexus_worker_reload mode=hard) and retry.");
             }
 

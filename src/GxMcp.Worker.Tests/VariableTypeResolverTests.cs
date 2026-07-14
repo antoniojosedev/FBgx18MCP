@@ -7,7 +7,8 @@ namespace GxMcp.Worker.Tests
     {
         [Theory]
         [InlineData("Character", "Character", null, null)]
-        [InlineData("VarChar(120)", "Character", 120, null)]
+        // issue #32 item 4: VarChar is its own canonical type (round-trips to eDBType.VARCHAR).
+        [InlineData("VarChar(120)", "VarChar", 120, null)]
         [InlineData("String(50)", "Character", 50, null)]
         [InlineData("Int", "Numeric", null, null)]
         [InlineData("Numeric(10,2)", "Numeric", 10, 2)]

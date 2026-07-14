@@ -19,7 +19,11 @@ namespace GxMcp.Worker.Helpers
     {
         private static readonly Dictionary<string, string> Synonyms = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            { "Character", "Character" }, { "Char", "Character" }, { "String", "Character" }, { "VarChar", "Character" },
+            // issue #32 item 4: VarChar is its OWN canonical type — it must round-trip to
+            // eDBType.VARCHAR (via VariableInjector.TryParseDbType), NOT be flattened to
+            // Character. Persisting CHARACTER for a requested VarChar forced callers to
+            // Trim() padding defensively when the target column was VARCHAR2.
+            { "Character", "Character" }, { "Char", "Character" }, { "String", "Character" }, { "VarChar", "VarChar" },
             { "Numeric", "Numeric" }, { "Number", "Numeric" }, { "Decimal", "Numeric" }, { "Int", "Numeric" }, { "Integer", "Numeric" },
             { "Boolean", "Boolean" }, { "Bool", "Boolean" },
             { "Date", "Date" },

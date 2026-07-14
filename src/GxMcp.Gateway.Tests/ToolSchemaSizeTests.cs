@@ -51,7 +51,10 @@ namespace GxMcp.Gateway.Tests
             //   genexus_variable length/decimals/collection params + genexus_create
             //   firstItem/firstItemType SDT-seed params. Measured ~13378 tokens;
             //   ~222 headroom.
-            Assert.True(approxTokens < 13600, $"tool_definitions.json is ~{approxTokens} tokens; budget 13600.");
+            //   2026-07-14 (issue #32): 13600 → 14100 for genexus_variable batch
+            //   `variables[]` add + typeName/VarChar docs and genexus_gxserver commit
+            //   `targets[]` (partial commit). Measured ~13856 tokens; ~244 headroom.
+            Assert.True(approxTokens < 14100, $"tool_definitions.json is ~{approxTokens} tokens; budget 14100.");
         }
     }
 }

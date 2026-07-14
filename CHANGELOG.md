@@ -1,5 +1,66 @@
 # Changelog
 
+## v2.19.0 — 2026-07-14
+
+Agentic-DX fixes from a real session authoring a SOAP-exposed Procedure (issue #32).
+
+### Added
+
+- **`genexus_variable` batch add.** `action=add` now accepts a `variables` array —
+  `variables:[{varName,typeName,length,decimals,collection}, …]` — adding every variable
+  in one call with a single save instead of one round-trip per variable. The response
+  reports a per-item outcome (`Added` / `Exists` / `Failed`) and aggregate counts, so a
+  proc that needs eighteen variables is one tool call, not eighteen. The single-variable
+  `varName` form is unchanged.
+- **`genexus_gxserver` partial commit.** `action=commit` accepts an optional `targets`
+  array to commit only the named pending objects, leaving everyone else's pending changes
+  uncommitted — the same selective commit the GeneXus IDE allows. Object names must appear
+  in `action=pending`; an unknown name refuses the whole commit rather than committing
+  everything. Omitting `targets` keeps the previous whole-changelist behavior.
+
+### Fixed
+
+- **`VarChar` now persists as `VARCHAR`, not `CHARACTER`.** A variable requested as
+  `VarChar(80)` was silently stored as `CHARACTER(80)`, which forced callers to `Trim()`
+  padding when writing to a `VARCHAR2` column. `VarChar` is now its own type and round-trips
+  to the SDK's `VARCHAR`. The same fix applies to attribute typing, which shared the type
+  resolver and had the identical `VarChar → Character` flattening.
+- **Spurious "object not found in the Knowledge Base" warning on a successful spec-check.**
+  Spec-checking a freshly created object finished `Succeeded / 0 errors` but still emitted a
+  warning claiming the object wasn't found — a misleading signal, since the object being
+  specified plainly exists. That warning is now dropped when it names one of the objects
+  being built.
+- **`genexus_gxserver commit` after a worker restart no longer needs a manual reload.** When
+  the worker restarted (e.g. the developer touched the GeneXus IDE), the write-side commit
+  service could lag the read-side in the SDK's lazy service registration, so `commit` failed
+  with `GxServerServiceUnavailable` while `pending` still worked — clearing only after a
+  manual `genexus_worker_reload`. Commit and the other write actions now retry service
+  resolution (and fall back to the forcing resolver) so a late registration self-heals.
+  The same self-heal was applied to every tool that resolved an SDK service the same way
+  and hit the same wall — `genexus_compare`, `genexus_gam`, `genexus_merge`, and
+  `genexus_module` — so none of them require a manual worker reload after a respawn either.
+
+### Changed
+
+- **`init` registers detected AI clients by default.** Non-interactive `init` used to write
+  only `config.json` and report `clientsPatchedCount: 0` unless `--write-clients` was passed,
+  so the client still had to be wired up by hand. It now patches already-installed clients
+  automatically; pass `--no-write-clients` to skip, `--all-clients` to write every known
+  client, or `--clients <csv>` to pick. When nothing is patched, the output points at
+  `GX_CONFIG_PATH` for a directory-independent global registration (now documented in
+  `docs/environment_variables.md`).
+
+### Internal
+
+- Tool-schema token budget raised 13600 → 14100 for the new `genexus_variable` `variables[]`
+  and `genexus_gxserver` `targets[]` fields (measured ~13856; ~244 headroom). Discovery
+  golden fixture regenerated.
+- `AddVariable`'s SDK construction extracted into shared `BuildResolvedVariableInto` /
+  `AddInferredVariableInto` helpers, reused by the new batch path.
+- New `SdkServiceResolver.Resolve<T>()` helper (bounded retry + forcing `GetService<T>`
+  fallback) centralizes the lazy-SDK-service resolution that GxServer, Compare, GAM, Merge,
+  and Module previously each open-coded as a single `TryGetService<T>()`.
+
 ## v2.18.0 — 2026-07-10
 
 Second-pass codebase audit plus a large internal-hardening pass. Correctness, data-safety,

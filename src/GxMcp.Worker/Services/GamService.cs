@@ -62,20 +62,16 @@ namespace GxMcp.Worker.Services
             // IIntegratedSecurityService itself doesn't implement IGxService, so it fails
             // the `where TSrv : IGxService` constraint on Services.TryGetService<TSrv>().
             // The concrete implementation (Artech.Packages.GAM.IntegratedSecurityService)
-            // does implement IGxService — resolve that and cast to the interface.
-            IIntegratedSecurityService svc;
-            try
-            {
-                var concrete = SdkServices.TryGetService<Artech.Packages.GAM.IntegratedSecurityService>();
-                svc = concrete as IIntegratedSecurityService;
-            }
-            catch { svc = null; }
+            // does implement IGxService — resolve that (resiliently; issue #32 item 2
+            // generalized) and cast to the interface.
+            var concrete = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<Artech.Packages.GAM.IntegratedSecurityService>();
+            IIntegratedSecurityService svc = concrete as IIntegratedSecurityService;
 
             if (svc == null)
             {
                 return McpResponse.Err(
                     code: "IntegratedSecurityServiceUnavailable",
-                    message: "The GeneXus SDK's IIntegratedSecurityService is not registered in this worker session.",
+                    message: "The GeneXus SDK's IIntegratedSecurityService is not registered in this worker session (self-heal retries were exhausted).",
                     hint: "The GAM package may not be loaded in this worker. Restart the worker (genexus_worker_reload mode=hard) and retry.");
             }
 

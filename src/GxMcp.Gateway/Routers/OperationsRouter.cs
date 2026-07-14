@@ -102,6 +102,8 @@ namespace GxMcp.Gateway.Routers
                         length = args?["length"]?.ToObject<int?>(),
                         decimals = args?["decimals"]?.ToObject<int?>(),
                         collection = args?["collection"]?.ToObject<bool?>(),
+                        // issue #32 item 1: batch add — array of {varName,typeName,length,decimals,collection}.
+                        variables = args?["variables"],
                         dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
                     };
                 }

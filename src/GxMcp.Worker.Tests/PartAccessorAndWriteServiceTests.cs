@@ -246,15 +246,17 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void AddVariable_VarCharSynonym_ResolvesToCharacterCanonical()
+        public void AddVariable_VarChar_PreservesVarCharCanonical()
         {
-            // Drives the resolver directly to lock in the synonym mapping that the
-            // gate relies on: VarChar(120) → Character(120). The end-to-end SDK path
-            // would require a fixture KB; the helper unit tests in
-            // VariableTypeResolverTests already cover the wider matrix.
+            // issue #32 item 4: VarChar(120) must resolve to its own canonical VarChar so
+            // it persists as eDBType.VARCHAR (not CHARACTER, which forced defensive Trim()
+            // against VARCHAR2 columns). The end-to-end SDK path would require a fixture KB;
+            // the helper unit tests in VariableTypeResolverTests cover the wider matrix.
             var resolution = GxMcp.Worker.Helpers.VariableTypeResolver.Resolve("VarChar(120)");
             Assert.True(resolution.Recognized);
-            Assert.Equal("Character", resolution.CanonicalType);
+            // Canonical VarChar (not Character) — this is what maps to eDBType.VARCHAR in
+            // VariableInjector.TryParseDbType's alias table, so the var persists as VARCHAR.
+            Assert.Equal("VarChar", resolution.CanonicalType);
             Assert.Equal(120, resolution.Length);
         }
 

@@ -66,6 +66,12 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_RESILIENT_SPEC` | Set to `1` to opt into the resilient specifier path (slower; opt-in). | off |
 | `GXMCP_OCR_ENGINE` | Set to `tesseract` to select the Tesseract OCR engine (requires the Tesseract.NET dependency). | unset |
 
+## Client registration / config location
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GX_CONFIG_PATH` | Absolute path to the `config.json` the gateway loads (KB aliases + GeneXus path). This is the **global / multi-project** registration mechanism: point every MCP-client entry at one config regardless of the current working directory. Without it, the launcher looks for `config.json` in the cwd and aborts if absent (`No config.json was found`). `init` writes this into any client config it patches; set it by hand when registering a client manually (e.g. `claude mcp add genexus -e GX_CONFIG_PATH="<path>" -- <launcher>`). | cwd `config.json` |
+
 ## Set internally (do not set by hand)
 
 | Variable | Purpose |

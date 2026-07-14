@@ -1389,7 +1389,12 @@ async function handleInit(options, ctx) {
         addKbToConfig(created.targetConfigPath, kbName, resolution.kb.value);
 
         let patchResult = { patched: [], failed: [], skipped: [] };
-        if (options.writeClients) {
+        // issue #32 item 3: register the client(s) by default. Previously init wrote only
+        // config.json and returned clientsPatchedCount:0 unless --write-clients was passed —
+        // non-obvious, so users had to `claude mcp add` manually. Now non-interactive init
+        // patches DETECTED (already-installed) clients unless --no-write-clients is given.
+        const shouldWriteClients = !options.noWriteClients;
+        if (shouldWriteClients) {
             const ids = resolveClientIds(options);
             const validation = validateClientIds(ids);
             if (!validation.ok) {
@@ -1417,8 +1422,11 @@ async function handleInit(options, ctx) {
         }
 
         const help = [];
-        if (patchResult.patched.length === 0 && !options.writeClients) {
-            help.push('Run `genexus-mcp init --kb "<kbPath>" --gx "<geneXusPath>" --write-clients` to patch supported clients.');
+        if (patchResult.patched.length === 0 && shouldWriteClients) {
+            help.push('No installed AI client config was found to patch. Pass --all-clients to write configs for all known clients, or register manually.');
+            help.push(`For a GLOBAL (all-projects) registration that does not depend on the current directory, point your client at this config via the GX_CONFIG_PATH env var, e.g.: claude mcp add genexus -e GX_CONFIG_PATH="${created.targetConfigPath}" -- <launcher>`);
+        } else if (patchResult.patched.length === 0 && !shouldWriteClients) {
+            help.push('Client patching was skipped (--no-write-clients). Register manually, or set GX_CONFIG_PATH to this config for global use.');
         }
         if (patchResult.patched.length > 0 && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
             help.push('Windows + corporate AppLocker: the npx launcher resolves the gateway from %LOCALAPPDATA%\\npm-cache, which is commonly blocked. If clients fail with "Failed to connect" / Access denied, reinstall to a whitelisted path via scripts/install.ps1.');
@@ -2001,13 +2009,14 @@ function commandHelpMap() {
             examples: ['genexus-mcp config show', 'genexus-mcp config show --full --format json']
         },
         init: {
-            usage: 'genexus-mcp init [--kb <path>] [--gx <path>] [--write-clients] [--clients <csv>] [--all-clients] [--no-smoke] [--warm] [--format ...] OR genexus-mcp init --interactive',
+            usage: 'genexus-mcp init [--kb <path>] [--gx <path>] [--no-write-clients] [--clients <csv>] [--all-clients] [--no-smoke] [--warm] [--format ...] OR genexus-mcp init --interactive',
             examples: [
-                'genexus-mcp init   # zero-config: auto-discovers GX from registry/Program Files and KB from cwd',
+                'genexus-mcp init   # zero-config: auto-discovers GX + KB, and registers detected AI clients',
                 'genexus-mcp init --kb "C:\\KBs\\MyKB" --gx "C:\\Program Files (x86)\\GeneXus\\GeneXus18"',
                 'genexus-mcp init --interactive   # prompts per detected agent (Claude Desktop/Code, Gemini CLI, Cursor, Codex CLI, OpenCode, ...)',
-                'genexus-mcp init --kb <path> --gx <path> --write-clients --clients claude-code,gemini-cli,cursor',
-                'genexus-mcp init --kb <path> --gx <path> --no-smoke'
+                'genexus-mcp init --kb <path> --gx <path> --clients claude-code,gemini-cli,cursor   # register only these',
+                'genexus-mcp init --kb <path> --gx <path> --no-write-clients   # write config.json only; register clients yourself',
+                'genexus-mcp init --kb <path> --gx <path> --all-clients   # register every known client, installed or not'
             ]
         },
         whoami: {

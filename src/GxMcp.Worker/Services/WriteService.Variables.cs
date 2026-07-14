@@ -288,6 +288,239 @@ namespace GxMcp.Worker.Services
             return sb.ToString();
         }
 
+        // issue #32 item 1 — shared SDK construction used by AddVariable (single) and
+        // AddVariables (batch). Result of building one typed variable into a part.
+        private enum VarBuildResult { Added, DomainNotFound }
+
+        // Builds one Variable from an already-validated TypeResolution and adds it to
+        // varPart IN MEMORY (no save, no envelope — the caller owns those). Returns
+        // DomainNotFound when the typeName looked like an SDT/BC/Domain reference but the
+        // SDK couldn't resolve it in the KB, so the caller can surface UnknownType.
+        private VarBuildResult BuildResolvedVariableInto(
+            global::Artech.Genexus.Common.Parts.VariablesPart varPart, string varName,
+            GxMcp.Worker.Helpers.TypeResolution resolution, string resolvedTypeForSdk,
+            int? resolvedLength, int? resolvedDecimals,
+            int? length, int? decimals, bool? collection, string originalTypeName)
+        {
+            var newVar = new global::Artech.Genexus.Common.Variable(varPart);
+            newVar.Name = varName;
+
+            if (resolution != null && resolution.CanonicalType != "DomainReference"
+                && VariableInjector.TryParseDbType(resolvedTypeForSdk, out var dbType))
+            {
+                newVar.Type = dbType;
+                try
+                {
+                    // Explicit length/decimals args (issue #28 item 8) win over the
+                    // value parsed out of typeName; otherwise fall back to the parsed one.
+                    int? effLen = length ?? resolvedLength;
+                    int? effDec = decimals ?? resolvedDecimals;
+                    if (effLen.HasValue) newVar.Length = effLen.Value;
+                    if (effDec.HasValue) newVar.Decimals = effDec.Value;
+                }
+                catch { /* best-effort — SDK may reject for some types */ }
+            }
+            else
+            {
+                var targetObj = VariableInjector.ResolveTypeObject(varPart.Model, resolvedTypeForSdk);
+                if (targetObj != null)
+                {
+                    if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
+                        newVar.DomainBasedOn = dom;
+                    else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                        VariableInjector.BindVariableToSdt(newVar, targetObj);
+                    else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
+                        VariableInjector.BindVariableToBC(newVar, targetObj);
+                }
+                else if (resolution != null && resolution.CanonicalType == "DomainReference"
+                         && !string.IsNullOrEmpty(originalTypeName) && !originalTypeName.StartsWith("&"))
+                {
+                    return VarBuildResult.DomainNotFound;
+                }
+            }
+            if (collection == true) { try { newVar.IsCollection = true; } catch { /* not all types collectible */ } }
+            varPart.Variables.Add(newVar);
+            return VarBuildResult.Added;
+        }
+
+        // No typeName: CreateVariable inherits a same-named attribute's type (issue #28
+        // item 11) or applies the naming heuristic. Explicit length/decimals/collection
+        // args still override the result. Adds to varPart in memory (no save).
+        private void AddInferredVariableInto(global::Artech.Genexus.Common.Parts.VariablesPart varPart,
+            string varName, int? length, int? decimals, bool? collection)
+        {
+            var newVar = VariableInjector.CreateVariable(varPart, varName);
+            try
+            {
+                if (length.HasValue) newVar.Length = length.Value;
+                if (decimals.HasValue) newVar.Decimals = decimals.Value;
+            }
+            catch { /* best-effort */ }
+            if (collection == true) { try { newVar.IsCollection = true; } catch { } }
+            varPart.Variables.Add(newVar);
+        }
+
+        // issue #32 item 1 — batch add. Resolves the target once and adds every variable in
+        // `variables` before a single EnsureSave / ScheduleFlush. Each item is
+        // { varName|name, typeName?, length?, decimals?, collection? }. Per-item outcomes let
+        // the agent see which vars were Added / already Exist / Failed without N round-trips.
+        public string AddVariables(string target, JArray variables, bool dryRun = false)
+        {
+            if (dryRun)
+            {
+                var preview = new JArray();
+                if (variables != null)
+                    foreach (var v in variables) preview.Add(v.DeepClone());
+                return McpResponse.Ok(
+                    target: target,
+                    code: "DryRun",
+                    result: new JObject
+                    {
+                        ["preview"] = new JObject
+                        {
+                            ["action"] = "add",
+                            ["target"] = target,
+                            ["variables"] = preview
+                        }
+                    });
+            }
+            var raw = AddVariablesInternal(target, variables);
+            MarkDirtyIfSuccess(raw, target);
+            return WrapWithPersistedState(raw, target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);
+        }
+
+        private string AddVariablesInternal(string target, JArray variables)
+        {
+            try
+            {
+                if (variables == null || variables.Count == 0)
+                    return McpResponse.Ok(target: target, code: "WriteNoChange",
+                        result: new JObject { ["details"] = "No variables provided." });
+
+                // Resolve the target object / VariablesPart once for the whole batch.
+                string scratch = "_";
+                var err = ResolveVariableTarget(target, ref scratch, out var obj, out var varPart, out _);
+                if (err != null) return err;
+
+                var outcomes = new JArray();
+                int added = 0, existed = 0, failed = 0;
+
+                foreach (var item in variables)
+                {
+                    var jo = item as JObject;
+                    if (jo == null)
+                    {
+                        failed++;
+                        outcomes.Add(new JObject { ["status"] = "Failed", ["reason"] = "Item is not an object." });
+                        continue;
+                    }
+
+                    string vName = (jo["varName"] ?? jo["name"])?.ToString();
+                    if (string.IsNullOrWhiteSpace(vName))
+                    {
+                        failed++;
+                        outcomes.Add(new JObject { ["status"] = "Failed", ["reason"] = "Missing varName." });
+                        continue;
+                    }
+                    vName = vName.TrimStart('&');
+
+                    string vType = jo["typeName"]?.ToString();
+                    int? vLen = jo["length"]?.ToObject<int?>();
+                    int? vDec = jo["decimals"]?.ToObject<int?>();
+                    bool? vColl = jo["collection"]?.ToObject<bool?>();
+
+                    if (varPart.Variables.Any(v => string.Equals(v.Name, vName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        existed++;
+                        outcomes.Add(new JObject { ["name"] = vName, ["itemStatus"] = "Exists" });
+                        continue;
+                    }
+
+                    // Type resolution (mirrors AddVariableInternal's Task 4.2 gate).
+                    GxMcp.Worker.Helpers.TypeResolution res = null;
+                    string rSdk = vType;
+                    int? rLen = null, rDec = null;
+                    if (!string.IsNullOrEmpty(vType))
+                    {
+                        res = GxMcp.Worker.Helpers.VariableTypeResolver.Resolve(vType);
+                        if (!res.Recognized)
+                        {
+                            failed++;
+                            outcomes.Add(new JObject
+                            {
+                                ["name"] = vName,
+                                ["status"] = "Failed",
+                                ["reason"] = "UnknownType",
+                                ["suggestion"] = res.Suggestion
+                            });
+                            continue;
+                        }
+                        if (res.CanonicalType == "DomainReference" && !string.IsNullOrEmpty(res.DomainName))
+                            rSdk = res.DomainName;
+                        else { rLen = res.Length; rDec = res.Decimals; rSdk = res.CanonicalType; }
+                    }
+
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(vType))
+                        {
+                            if (BuildResolvedVariableInto(varPart, vName, res, rSdk, rLen, rDec, vLen, vDec, vColl, vType)
+                                == VarBuildResult.DomainNotFound)
+                            {
+                                failed++;
+                                outcomes.Add(new JObject
+                                {
+                                    ["name"] = vName,
+                                    ["status"] = "Failed",
+                                    ["reason"] = "UnknownType",
+                                    ["details"] = $"Type '{vType}' not found in KB."
+                                });
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            AddInferredVariableInto(varPart, vName, vLen, vDec, vColl);
+                        }
+                        added++;
+                        outcomes.Add(new JObject { ["name"] = vName, ["status"] = "Added" });
+                    }
+                    catch (Exception exItem)
+                    {
+                        failed++;
+                        outcomes.Add(new JObject { ["name"] = vName, ["status"] = "Failed", ["reason"] = exItem.Message });
+                    }
+                }
+
+                if (added > 0)
+                {
+                    obj.EnsureSave();
+                    ScheduleFlush();
+                }
+
+                return McpResponse.Ok(
+                    target: target,
+                    code: added > 0 ? "VariableAdded" : "WriteNoChange",
+                    result: new JObject
+                    {
+                        ["counts"] = new JObject { ["added"] = added, ["existed"] = existed, ["failed"] = failed },
+                        ["outcomes"] = outcomes
+                    });
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "AddVariableFailed",
+                    message: ex.Message,
+                    hint: "Verify each variable name and type. Check that the object exists and has a Variables part.",
+                    nextSteps: new JArray(McpResponse.NextStep(
+                        tool: "genexus_read",
+                        args: new JObject { ["name"] = target, ["part"] = "Variables" },
+                        why: "Lists current variables to confirm state.")),
+                    target: target);
+            }
+        }
+
         public string AddVariable(string target, string varName, string typeName = null, bool dryRun = false,
             int? length = null, int? decimals = null, bool? collection = null)
         {
@@ -378,76 +611,29 @@ namespace GxMcp.Worker.Services
 
                 if (!string.IsNullOrEmpty(typeName))
                 {
-                    global::Artech.Genexus.Common.Variable newVar = new global::Artech.Genexus.Common.Variable(varPart);
-                    newVar.Name = varName;
-
-                    if (resolution != null && resolution.CanonicalType != "DomainReference"
-                        && VariableInjector.TryParseDbType(resolvedTypeForSdk, out var dbType))
+                    // issue #32 item 1: construction extracted into BuildResolvedVariableInto so
+                    // the batch AddVariables path reuses the exact same SDK binding logic.
+                    if (BuildResolvedVariableInto(varPart, varName, resolution, resolvedTypeForSdk,
+                            resolvedLength, resolvedDecimals, length, decimals, collection, typeName)
+                        == VarBuildResult.DomainNotFound)
                     {
-                        newVar.Type = dbType;
-                        try
-                        {
-                            // Explicit length/decimals args (issue #28 item 8) win over the
-                            // value parsed out of typeName; otherwise fall back to the parsed one.
-                            int? effLen = length ?? resolvedLength;
-                            int? effDec = decimals ?? resolvedDecimals;
-                            if (effLen.HasValue) newVar.Length = effLen.Value;
-                            if (effDec.HasValue) newVar.Decimals = effDec.Value;
-                        }
-                        catch { /* best-effort — SDK may reject for some types */ }
+                        // FR#4 (friction-report 2026-05-19): resolver accepted the bare name as a
+                        // potential SDT/BC/Domain reference but SDK couldn't find it in the KB.
+                        return McpResponse.Err(
+                            code: "UnknownType",
+                            message: $"Type '{typeName}' not found in KB. Expected primitive (Character/Numeric/etc), SDT name (e.g. SdtFoo), BC, or Domain.",
+                            hint: "Verify the SDT/Domain name via genexus_list_objects or use a primitive type like Character(40).",
+                            nextSteps: new JArray(McpResponse.NextStep(
+                                tool: "genexus_list_objects",
+                                args: new JObject { ["name"] = typeName },
+                                why: "Finds SDTs and Domains whose name matches, confirming the correct spelling.")),
+                            target: target,
+                            extra: new JObject { ["typeName"] = typeName });
                     }
-                    else
-                    {
-                        var targetObj = VariableInjector.ResolveTypeObject(varPart.Model, resolvedTypeForSdk);
-                        if (targetObj != null)
-                        {
-                            if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
-                                newVar.DomainBasedOn = dom;
-                            else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
-                            {
-                                VariableInjector.BindVariableToSdt(newVar, targetObj);
-                            }
-                            else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
-                            {
-                                VariableInjector.BindVariableToBC(newVar, targetObj);
-                            }
-                        }
-                        else if (resolution != null && resolution.CanonicalType == "DomainReference"
-                                 && !string.IsNullOrEmpty(typeName) && !typeName.StartsWith("&"))
-                        {
-                            // FR#4 (friction-report 2026-05-19): resolver accepted the bare name as a
-                            // potential SDT/BC/Domain reference but SDK couldn't find it in the KB.
-                            // Surface a clear UnknownType so the agent knows to check the spelling.
-                            // Skip when input had explicit "&" prefix (legacy domain ref behavior).
-                            return McpResponse.Err(
-                                code: "UnknownType",
-                                message: $"Type '{typeName}' not found in KB. Expected primitive (Character/Numeric/etc), SDT name (e.g. SdtFoo), BC, or Domain.",
-                                hint: "Verify the SDT/Domain name via genexus_list_objects or use a primitive type like Character(40).",
-                                nextSteps: new JArray(McpResponse.NextStep(
-                                    tool: "genexus_list_objects",
-                                    args: new JObject { ["name"] = typeName },
-                                    why: "Finds SDTs and Domains whose name matches, confirming the correct spelling.")),
-                                target: target,
-                                extra: new JObject { ["typeName"] = typeName });
-                        }
-                    }
-                    if (collection == true) { try { newVar.IsCollection = true; } catch { /* not all types collectible */ } }
-                    varPart.Variables.Add(newVar);
                 }
                 else
                 {
-                    // No typeName: CreateVariable inherits a same-named attribute's type
-                    // (issue #28 item 11) or applies the naming heuristic. Explicit
-                    // length/decimals/collection args still override the result.
-                    var newVar = VariableInjector.CreateVariable(varPart, varName);
-                    try
-                    {
-                        if (length.HasValue) newVar.Length = length.Value;
-                        if (decimals.HasValue) newVar.Decimals = decimals.Value;
-                    }
-                    catch { /* best-effort */ }
-                    if (collection == true) { try { newVar.IsCollection = true; } catch { } }
-                    varPart.Variables.Add(newVar);
+                    AddInferredVariableInto(varPart, varName, length, decimals, collection);
                 }
 
                 obj.EnsureSave();

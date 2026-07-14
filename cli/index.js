@@ -274,6 +274,10 @@ function parseArgs(argv) {
             case 'write-clients':
                 result.options.writeClients = true;
                 break;
+            // issue #32 item 3: init now patches detected clients by default; this opts out.
+            case 'no-write-clients':
+                result.options.noWriteClients = true;
+                break;
             case 'mcp-smoke':
                 result.options.mcpSmoke = true;
                 break;

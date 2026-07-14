@@ -182,6 +182,15 @@ namespace GxMcp.Worker.Services
         // and MSBuild surfaces some lines as 'error : <message>' (no code). Capture all three forms.
         private static readonly Regex _rxError      = new Regex(@"\berror\s*(:|[A-Z]{2,4}\d+\s*:)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxWarning    = new Regex(@"\bwarning\s*(:|[A-Z]{2,4}\d+\s*:)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // issue #32 item 5: the GeneXus specifier emits "Object 'X' was not found in the
+        // Knowledge Base" (EN) / "Objeto 'X' não foi encontrado na Knowledge Base" (PT-BR)
+        // as a warning during a single-object spec pass on a freshly created/edited object,
+        // even when the spec Succeeds with 0 errors. It's a spurious signal (the object plainly
+        // exists — it's the one being specified) that reads as "the object vanished". Suppress
+        // it when the named object is one of the build targets. Captures the quoted object name.
+        private static readonly Regex _rxObjectNotFoundWarning = new Regex(
+            @"(?:Object|Objeto)\s+['""]?(?<obj>[A-Za-z_][A-Za-z0-9_.]*)['""]?\s+(?:was not found|(?:não|nao)\s+foi\s+encontrad[oa])\s+.*Knowledge\s*Base",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxOpenKb     = new Regex(@"^\s*Opening Knowledge Base\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxBuildDone  = new Regex(@"^\s*(Build|Specification|Compilation)\s+(succeeded|failed|complete)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxBuildOneEnd = new Regex(@"Build One Task\s+(terminado|finished|Sucesso|completed|ended)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -307,6 +316,22 @@ namespace GxMcp.Worker.Services
         // current index (either missing entirely, or renamed to a different type).
         // Conservative: if the index lookup is unavailable, the predicate returns
         // false so the legacy "error stands" behaviour holds.
+        // issue #32 item 5: is `name` one of the objects this build/spec pass targets?
+        // Matches Target, any entry in Targets, or the CurrentObject being specified —
+        // all case-insensitive. Used to suppress the spurious "not found in KB" warning.
+        internal static bool IsBuildTarget(string name, BuildTaskStatus status)
+        {
+            if (string.IsNullOrWhiteSpace(name) || status == null) return false;
+            if (string.Equals(name, status.Target, StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(name, status.CurrentObject, StringComparison.OrdinalIgnoreCase)) return true;
+            if (status.Targets != null)
+            {
+                foreach (var t in status.Targets)
+                    if (string.Equals(name, t, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
         internal static bool IsBcOrphanError(string line, IndexCacheService lookup)
         {
             if (lookup == null || string.IsNullOrEmpty(line)) return false;
@@ -1619,6 +1644,14 @@ namespace GxMcp.Worker.Services
                 }
                 else if (_rxWarning.IsMatch(line))
                 {
+                    // issue #32 item 5: drop the spurious "<obj> not found in the Knowledge
+                    // Base" warning when <obj> is one of the objects we're building — the
+                    // object exists (it's the spec target); the warning is misleading noise.
+                    var nf = _rxObjectNotFoundWarning.Match(line);
+                    if (nf.Success && IsBuildTarget(nf.Groups["obj"].Value, status))
+                    {
+                        return;
+                    }
                     status.WarningCount++;
                     if (status.Warnings.Count < 50) status.Warnings.Add(line.Trim());
                 }

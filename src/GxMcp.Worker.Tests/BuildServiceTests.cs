@@ -499,6 +499,50 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(1, status.ErrorCount);
         }
 
+        // ── issue #32 item 5: spurious "not found in KB" warning suppression ──
+
+        [Theory]
+        [InlineData("warning: Objeto 'ApiCtlObjTransicionar' não foi encontrado na Knowledge Base.")]
+        [InlineData("warning: Object 'ApiCtlObjTransicionar' was not found in the Knowledge Base")]
+        public void HandleLine_ObjectNotFoundWarning_ForBuildTarget_IsSuppressed(string line)
+        {
+            var svc = new BuildService();
+            var status = new BuildService.BuildTaskStatus { TaskId = "nf-warn", Target = "ApiCtlObjTransicionar" };
+            InvokeHandleLine(svc, status, line);
+
+            Assert.Equal(0, status.WarningCount);
+            Assert.Empty(status.Warnings);
+        }
+
+        [Fact]
+        public void HandleLine_ObjectNotFoundWarning_ForUnrelatedObject_IsKept()
+        {
+            // Only the build target's spurious warning is dropped; a genuine "not found"
+            // for some OTHER object stays visible.
+            var svc = new BuildService();
+            var status = new BuildService.BuildTaskStatus { TaskId = "nf-keep", Target = "SomethingElse" };
+            InvokeHandleLine(svc, status, "warning: Object 'MissingDependency' was not found in the Knowledge Base");
+
+            Assert.Equal(1, status.WarningCount);
+            Assert.Single(status.Warnings);
+        }
+
+        [Fact]
+        public void IsBuildTarget_MatchesTarget_TargetsList_AndCurrentObject()
+        {
+            var status = new BuildService.BuildTaskStatus
+            {
+                Target = "Proc1",
+                CurrentObject = "Proc3",
+                Targets = new List<string> { "Proc1", "Proc2" }
+            };
+            Assert.True(BuildService.IsBuildTarget("proc1", status));
+            Assert.True(BuildService.IsBuildTarget("PROC2", status));
+            Assert.True(BuildService.IsBuildTarget("Proc3", status));
+            Assert.False(BuildService.IsBuildTarget("Nope", status));
+            Assert.False(BuildService.IsBuildTarget("", status));
+        }
+
         // ── Shared helpers ───────────────────────────────────────────────────
 
         private static ConcurrentDictionary<string, BuildService.BuildTaskStatus> TasksRegistry()

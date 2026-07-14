@@ -84,15 +84,15 @@ namespace GxMcp.Worker.Services
                     hint: "Pass both objectLeft and objectRight as existing object names. objectBase is optional (enables a 3-way merge).");
             }
 
-            IMergeService mergeSvc;
-            try { mergeSvc = SdkServices.TryGetService<IMergeService>(); }
-            catch { mergeSvc = null; }
+            // issue #32 item 2 (generalized): resilient resolve — self-heals a lazy/late
+            // SDK registration after a worker respawn before hard-failing.
+            IMergeService mergeSvc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IMergeService>();
 
             if (mergeSvc == null)
             {
                 return McpResponse.Err(
                     code: "MergeServiceUnavailable",
-                    message: "The GeneXus SDK's IMergeService is not registered in this worker session.",
+                    message: "The GeneXus SDK's IMergeService is not registered in this worker session (self-heal retries were exhausted).",
                     hint: "Restart the worker (genexus_worker_reload mode=hard) and retry.");
             }
 
@@ -199,9 +199,7 @@ namespace GxMcp.Worker.Services
         /// </summary>
         private static string DryRunReport(KBObject left, KBObject right, KBObject baseObj, bool threeWay, bool ignoreConflicts)
         {
-            IComparerService cmp;
-            try { cmp = SdkServices.TryGetService<IComparerService>(); }
-            catch { cmp = null; }
+            IComparerService cmp = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IComparerService>();
 
             bool? leftEqualsRight = null;
             bool? baseEqualsLeft = null;

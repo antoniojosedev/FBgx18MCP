@@ -1022,6 +1022,13 @@ namespace GxMcp.Worker.Services
             if (action == "AddVariable")
             {
                 bool varDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
+                // issue #32 item 1: batch form — a `variables` array adds many in one call
+                // (one save/flush), avoiding N sequential round-trips + concurrent-write risk.
+                var varBatch = (args?["variables"] ?? request["variables"]) as JArray;
+                if (varBatch != null)
+                {
+                    return _writeService.AddVariables(target, varBatch, varDryRun);
+                }
                 return _writeService.AddVariable(
                     target,
                     args?["varName"]?.ToString(),
