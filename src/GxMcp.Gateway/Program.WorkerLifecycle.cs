@@ -176,6 +176,20 @@ namespace GxMcp.Gateway
             } catch (Exception ex) { Log($"HandleWorkerResponse Error: {ex.Message}"); }
         }
 
+        // Records end-to-end tool latency (from just before the worker send to the response)
+        // into ToolLatencyStats and emits one [TOOL-LATENCY] log line. Cold-start is already
+        // awaited before CreatedAtUtc is stamped, so this measures real tool cost, not boot.
+        private static void RecordToolLatency(string toolName, DateTime createdAtUtc)
+        {
+            try
+            {
+                double ms = (DateTime.UtcNow - createdAtUtc).TotalMilliseconds;
+                ToolLatencyStats.Record(toolName, ms);
+                Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms}");
+            }
+            catch { /* instrumentation must never break the call */ }
+        }
+
         private static JObject BuildWorkerRpcRequest(JObject workerCommand, string requestId, string? operationId = null)
         {
             var rpc = new JObject
@@ -328,6 +342,7 @@ namespace GxMcp.Gateway
                     {
                         workerErrorObjNoTimeout["correlationId"] = correlationId;
                     }
+                    RecordToolLatency(toolName, pending.CreatedAtUtc);
                     return onSuccess(workerResponse);
                 }
 
@@ -355,6 +370,7 @@ namespace GxMcp.Gateway
                     {
                         workerErrorObj["correlationId"] = correlationId;
                     }
+                    RecordToolLatency(toolName, pending.CreatedAtUtc);
                     return onSuccess(workerResponse);
                 }
                 break; // timeout — fall through to the timeout handling below

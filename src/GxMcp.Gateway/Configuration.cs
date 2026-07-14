@@ -225,6 +225,14 @@ namespace GxMcp.Gateway
         /// (idle reaping is governed solely by WorkerIdleTimeoutMinutes).
         /// </summary>
         public int WedgedCommandTimeoutMinutes { get; set; } = 15;
+        // Proactive heap recycle: when an IDLE worker's working set exceeds this many MB, the
+        // gateway recycles it (and eager-respawns a fresh warm one in the background) so a long
+        // heavy session can't drift toward the x86 ~4GB ceiling / a fragmented, unstable heap.
+        // Measured baseline is small (~130MB small KB, ~158MB for 38k objects), so 1500 only
+        // trips after sustained heavy work — the same threshold as the whoami reload hint.
+        // Only fires when the worker is idle (no in-flight/queued work), so it never interrupts
+        // an active operation. Set to 0 to disable.
+        public int WorkerHeapRecycleMB { get; set; } = 1500;
         public int IdempotencyTtlMinutes { get; set; } = 15;
         public int IdempotencyCacheSize { get; set; } = 1000;
         /// <summary>

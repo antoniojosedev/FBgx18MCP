@@ -20,7 +20,9 @@ namespace GxMcp.Gateway
         BusyReject,      // exit code 17 — sibling already owns this KB
         ExplicitClose,   // genexus_kb action=close
         PlannedReload,   // genexus_worker_reload (non-force); gateway is orchestrating drain+respawn
-        Wedged           // BUG-03: an in-flight command exceeded WedgedCommandTimeoutMinutes with no response
+        Wedged,          // BUG-03: an in-flight command exceeded WedgedCommandTimeoutMinutes with no response
+        HeapRecycle      // idle worker exceeded WorkerHeapRecycleMB; recycled proactively so a long
+                         // session can't drift into an OOM/fragmented state. Eager-respawns.
     }
 
     public class WorkerProcess
@@ -69,6 +71,10 @@ namespace GxMcp.Gateway
         // alive but never responds).
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _inFlightStartTimes = new();
         private readonly TimeSpan _wedgedCommandTimeout;
+        // Proactive idle heap-recycle ceiling (bytes; 0 = disabled) and a grace so we only
+        // recycle a worker that has been genuinely idle, not one momentarily between commands.
+        private readonly long _heapRecycleBytes;
+        private static readonly TimeSpan HeapRecycleIdleGrace = TimeSpan.FromSeconds(30);
         private long _spawnMs = -1;
         private long _sdkInitMs = -1;
         private System.Diagnostics.Stopwatch? _spawnWatch;
@@ -124,6 +130,7 @@ namespace GxMcp.Gateway
             // aggressive setting into the worst 90s-tax generator.
             int idleMin = _config.Server?.WorkerIdleTimeoutMinutes ?? 60;
             _workerIdleTimeout = idleMin <= 0 ? TimeSpan.Zero : TimeSpan.FromMinutes(idleMin);
+            _heapRecycleBytes = (long)Math.Max(0, _config.Server?.WorkerHeapRecycleMB ?? 1500) * 1024 * 1024;
             _wedgedCommandTimeout = TimeSpan.FromMinutes(Math.Max(1, _config.Server?.WedgedCommandTimeoutMinutes ?? 15));
             _writerTask = Task.Run(ProcessQueueAsync);
         }
@@ -142,6 +149,13 @@ namespace GxMcp.Gateway
                         {
                             Program.Log($"[Gateway] worker_idle_shutdown pid={_process.Id} idleTimeoutMinutes={_workerIdleTimeout.TotalMinutes}");
                             StopProcess(WorkerStopReason.IdleTimeout);
+                            continue;
+                        }
+
+                        if (ShouldRecycleForHeap(out long wsBytes))
+                        {
+                            Program.Log($"[Gateway] worker_heap_recycle pid={_process.Id} workingSetMB={wsBytes / (1024 * 1024)} thresholdMB={_heapRecycleBytes / (1024 * 1024)} — recycling idle bloated worker (eager respawn).");
+                            StopProcess(WorkerStopReason.HeapRecycle);
                             continue;
                         }
 
@@ -965,6 +979,22 @@ namespace GxMcp.Gateway
             _lastActivityUtc = DateTime.UtcNow;
         }
 
+        // True when the worker should be proactively recycled for heap: recycling is enabled,
+        // NOTHING is in flight or queued (never interrupt real work), it has been idle past the
+        // grace window, and its working set is over the ceiling. The gateway eager-respawns a
+        // fresh warm worker so the next burst of work starts clean rather than on a bloated,
+        // fragmentation-prone heap heading for the x86 ceiling. `wsBytes` returns the last
+        // snapshotted working set for the log line.
+        internal bool ShouldRecycleForHeap(out long wsBytes)
+        {
+            wsBytes = _lastWorkingSetBytes;
+            if (_heapRecycleBytes <= 0) return false;
+            if (_isStarting) return false;
+            if (Volatile.Read(ref _queuedCommands) > 0 || Volatile.Read(ref _inFlightCommands) > 0) return false;
+            if (DateTime.UtcNow - _lastActivityUtc < HeapRecycleIdleGrace) return false;
+            return wsBytes > 0 && wsBytes > _heapRecycleBytes;
+        }
+
         private bool ShouldStopForIdle()
         {
             if (_workerIdleTimeout <= TimeSpan.Zero)
@@ -1132,5 +1162,13 @@ namespace GxMcp.Gateway
 
         // Idle-reap window resolved from config in the ctor. TimeSpan.Zero == disabled.
         internal TimeSpan IdleTimeoutForTest => _workerIdleTimeout;
+
+        // Drives the heap-recycle decision without a live OS process: seed the last-known
+        // working set and last-activity time, then call ShouldRecycleForHeap.
+        internal void SetHeapProbeForTest(long workingSetBytes, DateTime lastActivityUtc)
+        {
+            _lastWorkingSetBytes = workingSetBytes;
+            _lastActivityUtc = lastActivityUtc;
+        }
     }
 }

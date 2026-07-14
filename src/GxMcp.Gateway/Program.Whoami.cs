@@ -934,6 +934,16 @@ namespace GxMcp.Gateway
                 }
                 catch { /* forensics are best-effort — never break whoami */ }
 
+                // Per-tool latency (top by total time). Lets the agent see where session time
+                // actually goes instead of guessing which tool is slow. Only when there's data.
+                try
+                {
+                    var latency = ToolLatencyStats.Summarize(topN: 5);
+                    if ((latency["totalCalls"]?.ToObject<long?>() ?? 0) > 0)
+                        workerBlock["toolLatency"] = latency;
+                }
+                catch { /* instrumentation is best-effort — never break whoami */ }
+
                 return workerBlock;
             }
             catch (Exception ex)

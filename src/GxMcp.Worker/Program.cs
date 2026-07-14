@@ -41,6 +41,10 @@ namespace GxMcp.Worker
             BackgroundQueue.Enqueue(work);
             try { BackgroundSignal.Set(); } catch { }
         }
+        // Last time a real command was dispatched — drives idle LOH compaction below.
+        private static long _lastActivityTicks = DateTime.UtcNow.Ticks;
+        internal static void MarkWorkerActivity() => Interlocked.Exchange(ref _lastActivityTicks, DateTime.UtcNow.Ticks);
+
         private static readonly BlockingCollection<string> _outputQueue = new BlockingCollection<string>();
         private static readonly BlockingCollection<string> _errorQueue = new BlockingCollection<string>();
         private static CommandDispatcher _dispatcher;
@@ -347,6 +351,14 @@ namespace GxMcp.Worker
                 backgroundWorker.SetApartmentState(ApartmentState.STA);
                 backgroundWorker.Start();
 
+                // Idle LOH compaction: the x86 heap fragments over a long session (big JSON
+                // serializations, SDK part buffers). When the worker has been idle a while,
+                // compact the LOH once and collect — zero user-visible latency (nobody's
+                // waiting) and it reclaims address space that would otherwise push the worker
+                // toward the ~4GB ceiling / a heap-recycle. One compaction per idle period.
+                var idleGcWorker = new Thread(IdleMemoryMaintenance) { IsBackground = true, Name = "IdleMemoryMaintenance" };
+                idleGcWorker.Start();
+
                 // MAIN DISPATCHER LOOP
                 while (!CommandQueue.IsCompleted || CommandQueue.Count > 0)
                 {
@@ -594,8 +606,42 @@ namespace GxMcp.Worker
             finally { swTotal.Stop(); _sdkInitMs = swTotal.ElapsedMilliseconds; }
         }
 
+        // Idle-driven LOH compaction. Runs one CompactOnce+collect per idle period (reset
+        // when activity resumes), so a long session can't accumulate fragmentation
+        // indefinitely on the x86 heap. Opt out with GXMCP_IDLE_GC=0.
+        private static void IdleMemoryMaintenance()
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("GXMCP_IDLE_GC"), "0", StringComparison.OrdinalIgnoreCase))
+                return;
+            bool compactedThisIdle = false;
+            while (!CommandQueue.IsCompleted)
+            {
+                try
+                {
+                    Thread.Sleep(30000);
+                    double idleMs = (DateTime.UtcNow - new DateTime(Interlocked.Read(ref _lastActivityTicks))).TotalMilliseconds;
+                    bool busy = CommandQueue.Count > 0 || SdkCommandQueue.Count > 0 || !BackgroundQueue.IsEmpty;
+                    if (busy || idleMs < 60000)
+                    {
+                        compactedThisIdle = false; // activity resumed — re-arm for the next idle window
+                        continue;
+                    }
+                    if (compactedThisIdle) continue;
+                    long beforeMb = GC.GetTotalMemory(false) / (1024 * 1024);
+                    System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+                    GC.WaitForPendingFinalizers();
+                    long afterMb = GC.GetTotalMemory(true) / (1024 * 1024);
+                    Logger.Info($"[IDLE-GC] LOH compaction gcMemMB {beforeMb}->{afterMb} (idleMs={(int)idleMs})");
+                    compactedThisIdle = true;
+                }
+                catch (Exception ex) { Logger.Warn("[IDLE-GC] " + ex.Message); }
+            }
+        }
+
         private static void ProcessCommand(string line)
         {
+            MarkWorkerActivity();
             string idJson = "null";
             try {
                 var obj = JObject.Parse(line);
