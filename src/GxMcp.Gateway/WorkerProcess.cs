@@ -71,6 +71,10 @@ namespace GxMcp.Gateway
         // alive but never responds).
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _inFlightStartTimes = new();
         private readonly TimeSpan _wedgedCommandTimeout;
+        // A worker with an old in-flight command is only "wedged" if it has ALSO gone silent
+        // (no stdout/stderr) this long. Below it, an old-but-chatty command is treated as
+        // progressing (long update/build), not reaped.
+        private const int WedgedSilenceSeconds = 120;
         // Proactive idle heap-recycle ceiling (bytes; 0 = disabled) and a grace so we only
         // recycle a worker that has been genuinely idle, not one momentarily between commands.
         private readonly long _heapRecycleBytes;
@@ -176,9 +180,22 @@ namespace GxMcp.Gateway
                         // branch is only reached when _inFlightCommands > 0.
                         if (HasWedgedCommand(out var oldestAge))
                         {
-                            Program.Log($"[Gateway] worker_wedged_shutdown pid={_process.Id} oldestInFlightAgeMinutes={oldestAge.TotalMinutes:F1} ceilingMinutes={_wedgedCommandTimeout.TotalMinutes}");
-                            StopProcess(WorkerStopReason.Wedged);
-                            continue;
+                            // Progress-aware guard: a worker still EMITTING OUTPUT (applying a
+                            // huge GXserver update, a long build) is slow, not wedged — only a
+                            // truly hung STA call goes silent. `_lastResponse` advances on every
+                            // worker stdout/stderr line, so reap only when the old in-flight
+                            // command is paired with silence past WedgedSilenceSeconds. Without
+                            // this, a 15-min-but-actively-progressing update was falsely killed
+                            // (worker_wedged_shutdown at 15.1min while still applying an object
+                            // every second).
+                            double silentSec = (DateTime.UtcNow - _lastResponse).TotalSeconds;
+                            if (silentSec >= WedgedSilenceSeconds)
+                            {
+                                Program.Log($"[Gateway] worker_wedged_shutdown pid={_process.Id} oldestInFlightAgeMinutes={oldestAge.TotalMinutes:F1} silentSec={silentSec:F0} ceilingMinutes={_wedgedCommandTimeout.TotalMinutes}");
+                                StopProcess(WorkerStopReason.Wedged);
+                                continue;
+                            }
+                            Program.Log($"[Gateway] worker in-flight command old ({oldestAge.TotalMinutes:F1}min) but still emitting output ({silentSec:F0}s ago) — progressing, not wedged.");
                         }
 
                         if ((DateTime.UtcNow - _lastResponse).TotalSeconds > 45)

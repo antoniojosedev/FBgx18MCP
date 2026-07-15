@@ -180,7 +180,7 @@ namespace GxMcp.Worker.Services
                             {
                                 conflicts.Add(new JObject
                                 {
-                                    ["object"] = SafeStr(() => e.ToString()),
+                                    ["object"] = ConflictObjectName(model, e),
                                     ["conflictType"] = ct.ToString()
                                 });
                             }
@@ -251,6 +251,21 @@ namespace GxMcp.Worker.Services
             IEnumerable raw = svc.GetLocalChanges(model);
             if (raw == null) yield break;
             foreach (var h in raw) yield return h;
+        }
+
+        // A conflict entity's ToString() is the type FQN (e.g. "...Objects.WebPanel"), not the
+        // object name. Resolve the real name via the KBObject behind the entity key so
+        // action=conflicts is actionable (the name feeds action=resolve targets=[...]).
+        private static string ConflictObjectName(KBModel model, dynamic e)
+        {
+            try
+            {
+                var o = Artech.Architecture.Common.Objects.KBObject.Get(model, e.Key);
+                if (o != null && !string.IsNullOrEmpty((string)o.Name)) return (string)o.Name;
+            }
+            catch { }
+            try { string n = (string)e.Name; if (!string.IsNullOrEmpty(n)) return n; } catch { }
+            try { return (string)e.ToString(); } catch { return "<unknown>"; }
         }
 
         private static IEnumerable<dynamic> EnumConflicts(ITeamDevClientService svc, KBModel model, UpdateConflict ct)

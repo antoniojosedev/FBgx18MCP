@@ -86,6 +86,13 @@
       <HintPath>$(GX_PATH)\Packages\Artech.Packages.GAM.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- Team Development headless auth: TokenAuthorizationManager.GetToken + CommunicationData
+         live here. The GeneXus Server uses OAuth; the UI.Framework login path that registers
+         the session credential doesn't resolve headless, so we acquire the token directly. -->
+    <Reference Include="Artech.Packages.TeamDevClient.BL">
+      <HintPath>$(GX_PATH)\Packages\Artech.Packages.TeamDevClient.BL.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.Data" />

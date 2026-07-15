@@ -494,6 +494,15 @@ namespace GxMcp.Gateway
                 return 600000;
             }
 
+            // genexus_gxserver update/commit talk to the GeneXus Server and apply a full
+            // changelist — on a large KB that runs for minutes (the 60s default cut it off
+            // while the worker was still legitimately applying). Reads (status/pending/…) are
+            // fast but share the tool name, so the generous ceiling is harmless for them.
+            if (toolName == "genexus_gxserver")
+            {
+                return 600000;
+            }
+
             string? part = args?["part"]?.ToString();
             if (string.Equals(toolName, "genexus_edit", StringComparison.OrdinalIgnoreCase))
             {

@@ -94,7 +94,7 @@ namespace GxMcp.Worker.Services
 
             switch (action)
             {
-                case "commit": return DoCommit(tdSvc, model, kbAlias, args);
+                case "commit": return DoCommit(tdSvc, kb, model, kbAlias, args);
                 case "update": return DoUpdate(tdSvc, kb, model, kbAlias, args);
                 case "lock": return DoLock(model, kbAlias, args);
                 case "resolve": return DoResolve(tdSvc, kb, model, args);
@@ -103,7 +103,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string DoCommit(ITeamDevClientService tdSvc, KBModel model, string kbAlias, JObject args)
+        private string DoCommit(ITeamDevClientService tdSvc, KnowledgeBase kb, KBModel model, string kbAlias, JObject args)
         {
             string message = args?["message"]?.ToString();
             if (string.IsNullOrWhiteSpace(message))
@@ -114,14 +114,6 @@ namespace GxMcp.Worker.Services
                     hint: "Pass action=commit, message=\"<commit comment>\".");
             }
 
-            IGXserverService svc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IGXserverService>();
-            if (svc == null) return ServerServiceUnavailable();
-
-            // issue #32 item 6: optional partial commit. IGXserverService.Commit has no
-            // per-object selection — it commits the whole non-ignored changelist. The IDE's
-            // "commit these objects" works by marking every OTHER pending object
-            // IgnoreForCommit, committing, then restoring the flags. We mirror that. When
-            // `targets` is omitted this is the previous whole-changelist behavior.
             var targetsToken = args?["targets"] as JArray;
             HashSet<string> wanted = null;
             if (targetsToken != null && targetsToken.Count > 0)
@@ -133,112 +125,119 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Err(code: "BadArgs", message: "targets must contain at least one non-empty object name.");
             }
 
-            // Snapshot the pre-commit changelist names for a WHOLE commit so the response can
-            // report exactly which objects went in — the SDK's Commit returns only a success
-            // bool + error string, so without this the caller can't tell what was committed
-            // (the previous response was just {committed:true, message}). Partial commits
-            // already know their set (`wanted`). Read-only; failure only costs the report.
-            List<string> wholeCommitNames = null;
-            if (wanted == null)
-            {
-                try
-                {
-                    wholeCommitNames = (tdSvc.GetLocalChanges(model) ?? Enumerable.Empty<KBObjectHistory>())
-                        .Where(h => h != null)
-                        .Select(h => SafeStr(() => h.ObjectName))
-                        .Where(n => !string.IsNullOrEmpty(n))
-                        .ToList();
-                }
-                catch { /* reporting only — never block the commit */ }
-            }
-
-            var ignored = new List<KBObjectHistory>();
+            // Read the pending changelist via ITeamDevClientService — which resolves in a
+            // headless worker (IGXserverService does NOT; live-verified 2026-07-14).
+            List<KBObjectHistory> pending;
             try
             {
-                if (wanted != null)
-                {
-                    // Partial commit requires enumerating + toggling the local changelist,
-                    // which is the ITeamDevClientService surface (resolved by the caller).
-                    List<KBObjectHistory> pending;
-                    try
-                    {
-                        pending = (tdSvc.GetLocalChanges(model) ?? Enumerable.Empty<KBObjectHistory>())
-                            .Where(h => h != null).ToList();
-                    }
-                    catch (Exception ex)
-                    {
-                        return McpResponse.Err(code: "CommitFailed", message: "Could not read the pending changelist for partial commit: " + ex.Message, hint: "Retry without targets to commit the whole changelist, or check the worker log.");
-                    }
+                pending = (tdSvc.GetLocalChanges(model) ?? Enumerable.Empty<KBObjectHistory>())
+                    .Where(h => h != null).ToList();
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(code: "CommitFailed", message: "Could not read the pending changelist: " + ex.Message, hint: "Check the worker log.");
+            }
 
-                    var pendingNames = new HashSet<string>(
-                        pending.Select(h => SafeStr(() => h.ObjectName)).Where(n => !string.IsNullOrEmpty(n)),
-                        StringComparer.OrdinalIgnoreCase);
+            // Build the EXACT list of objects to commit. A partial commit passes an explicit
+            // ObjectList to SendChanges, so it can never accidentally push another developer's
+            // unrelated pending work — only the named objects reach the server.
+            List<KBObjectHistory> toCommit;
+            if (wanted != null)
+            {
+                var pendingNames = new HashSet<string>(
+                    pending.Select(h => SafeStr(() => h.ObjectName)).Where(n => !string.IsNullOrEmpty(n)),
+                    StringComparer.OrdinalIgnoreCase);
+                var unknown = wanted.Where(w => !pendingNames.Contains(w)).ToList();
+                if (unknown.Count > 0)
+                    return McpResponse.Err(
+                        code: "NoMatchingPending",
+                        message: "These targets are not in the pending changelist: " + string.Join(", ", unknown) + ". Nothing was committed.",
+                        hint: "Check action=pending for the exact committable object names, then retry.");
+                toCommit = pending.Where(h => wanted.Contains(SafeStr(() => h.ObjectName) ?? "\0")).ToList();
+            }
+            else
+            {
+                toCommit = pending;
+            }
 
-                    var unknown = wanted.Where(w => !pendingNames.Contains(w)).ToList();
-                    if (unknown.Count > 0)
-                    {
-                        // Refuse rather than commit everything — the caller asked for a subset.
-                        return McpResponse.Err(
-                            code: "NoMatchingPending",
-                            message: "These targets are not in the pending changelist: " + string.Join(", ", unknown) + ". Nothing was committed.",
-                            hint: "Check action=pending for the exact committable object names, then retry.");
-                    }
+            if (toCommit.Count == 0)
+                return McpResponse.Err(code: "NothingToCommit", message: "The pending changelist is empty.", hint: "Edit or create an object first (action=pending to inspect).");
 
-                    // Exclude every pending object the caller did NOT ask for; ensure the
-                    // wanted ones are enabled. Track excluded keys so we can restore them.
-                    foreach (var h in pending)
-                    {
-                        string name = SafeStr(() => h.ObjectName);
-                        if (name != null && !wanted.Contains(name))
-                        {
-                            try { tdSvc.IgnoreForCommit(model, h.Key); ignored.Add(h); } catch { /* best-effort */ }
-                        }
-                        else
-                        {
-                            try { tdSvc.EnableForCommit(model, h.Key); } catch { /* best-effort */ }
-                        }
-                    }
-                }
+            // Commit talks to the server → credentials required (url auto from the linked KB).
+            var creds = ReadCreds(tdSvc, kb, args);
+            if (string.IsNullOrWhiteSpace(creds.Url))
+                return CredentialsRequired("commit");
+            string authToken = AcquireAuthToken(tdSvc, kb, model, creds, out string authErr);
 
-                var data = new ServerCommitData
+            // Clear any "ignore for commit" flag on the objects we intend to send — the IDE's
+            // "Ignored Objects" list is exactly these, and SendChanges silently skips ignored
+            // objects (a partial/whole send of only-ignored objects then returns false).
+            foreach (var h in toCommit)
+            {
+                try { tdSvc.EnableForCommit(model, h.Key); } catch { /* best-effort */ }
+            }
+
+            try
+            {
+                var scd = new ClientTeamDev.SendChangesData
                 {
                     Model = model,
-                    KBAlias = kbAlias,
+                    // Identify WHICH server KB — the url alone isn't enough (a server hosts many
+                    // KBs). Without this the send has no target and SendChanges returns false.
+                    KnowledgeBase = SafeStr(() => tdSvc.GetRemoteKBName(kb)),
                     Comments = message,
-                    CommitDate = DateTime.Now,
-                    ForceCommit = args?["force"]?.ToObject<bool?>() ?? false
+                    ObjectList = toCommit,
+                    Options = ExportOptions.SilentDefault,
+                    MinUnselectedTimestamp = DateTime.Now,
+                    Url = creds.Url,
+                    User = creds.User,
+                    Password = creds.Password,
+                    AuthenticationToken = string.IsNullOrEmpty(authToken) ? creds.Token : authToken
                 };
 
-                string errorMsg;
-                bool ok = svc.Commit(data, null, out errorMsg);
+                bool ok = tdSvc.SendChanges(scd);
                 if (!ok)
                 {
+                    // On failure, attach a conclusive diagnostic: did the server accept the
+                    // credentials, is there a broken commit, and were the target objects staged.
+                    var diag = new JObject { ["authTokenAcquired"] = !string.IsNullOrEmpty(authToken) };
+                    if (!string.IsNullOrEmpty(authErr)) diag["authError"] = authErr;
+                    try { diag["serverReachableWithCreds"] = tdSvc.GetServerInfo(creds.Url, creds.User, creds.Password) != null; }
+                    catch (Exception dx) { diag["serverInfoError"] = dx.Message; }
+                    try { diag["hasBrokenCommits"] = tdSvc.HasBrokenCommits(model); } catch { }
+                    try
+                    {
+                        var states = new JArray();
+                        foreach (var h in toCommit)
+                            states.Add(new JObject { ["name"] = SafeStr(() => h.ObjectName), ["insertedForCommit"] = TryBool(() => tdSvc.IsInsertedForCommit(model, h.Key)) });
+                        diag["objects"] = states;
+                    }
+                    catch { }
+                    // Fold the diagnostic into the message too: the gateway trims error envelopes
+                    // to code/message/hint, so `extra` alone wouldn't reach the caller.
                     return McpResponse.Err(
                         code: "CommitFailed",
-                        message: string.IsNullOrEmpty(errorMsg) ? "Commit returned false." : errorMsg,
-                        hint: "Check for pending conflicts (action=conflicts) before retrying.");
+                        message: "SendChanges returned false. " + diag.ToString(Newtonsoft.Json.Formatting.None),
+                        hint: "authError set → token/credentials; serverReachableWithCreds=false → auth; true → server rejected the changelist.",
+                        extra: diag);
                 }
 
-                var committedList = wanted != null
-                    ? (IEnumerable<string>)wanted
-                    : (wholeCommitNames ?? new List<string>());
+                var committedNames = toCommit
+                    .Select(h => SafeStr(() => h.ObjectName)).Where(n => !string.IsNullOrEmpty(n)).ToList();
 
                 var result = new JObject
                 {
                     ["committed"] = true,
                     ["message"] = message,
-                    ["committedObjects"] = new JArray(committedList),
-                    ["committedCount"] = committedList.Count(),
-                    // The new remote version/revision after the commit lands, so the caller can
-                    // confirm the changelist reached the server (and reference it).
+                    ["committedObjects"] = new JArray(committedNames),
+                    ["committedCount"] = committedNames.Count,
                     ["remoteVersion"] = SafeStr(() => tdSvc.RemoteVersionName(model)),
-                    ["source"] = "sdk:IGXserverService"
+                    ["source"] = "sdk:ITeamDevClientService.SendChanges"
                 };
                 if (wanted != null)
                 {
                     result["partial"] = true;
                     result["committedTargets"] = new JArray(wanted);
-                    result["excludedCount"] = ignored.Count;
                 }
                 return McpResponse.Ok(code: "GxServerCommitCompleted", result: result);
             }
@@ -246,76 +245,35 @@ namespace GxMcp.Worker.Services
             {
                 return McpResponse.Err(code: "CommitFailed", message: ex.Message, hint: "Check the worker log for details.");
             }
-            finally
-            {
-                // Restore ignore flags on the objects we excluded so a later whole-changelist
-                // commit doesn't silently skip them. Best-effort — a failure here only means
-                // the excluded objects stay ignored until re-enabled manually.
-                foreach (var h in ignored)
-                {
-                    try { tdSvc.EnableForCommit(model, h.Key); } catch { /* best-effort */ }
-                }
-            }
         }
 
         private string DoUpdate(ITeamDevClientService tdSvc, KnowledgeBase kb, KBModel model, string kbAlias, JObject args)
         {
-            IGXserverService svc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IGXserverService>();
-            if (svc == null) return ServerServiceUnavailable();
-
-            bool apply = args?["apply"]?.ToObject<bool?>() ?? true;
             bool exportAll = args?["all"]?.ToObject<bool?>() ?? false;
 
-            // Step 1: fetch the pending-changes package from the server (download).
-            string updateFile;
-            try
-            {
-                var data = new ServerUpdateData
-                {
-                    Model = model,
-                    KBAlias = kbAlias,
-                    UpdateStatistics = false,
-                    ExportAll = exportAll
-                };
-                updateFile = svc.GetUpdateFile(data);
-            }
-            catch (Exception ex)
-            {
-                return McpResponse.Err(code: "UpdateFailed", message: ex.Message, hint: "Check the worker log for details.");
-            }
-
-            // apply=false preserves the old download-only behavior (no local mutation).
-            if (!apply)
-            {
-                return McpResponse.Ok(
-                    code: "GxServerUpdateFileRetrieved",
-                    result: new JObject
-                    {
-                        ["applied"] = false,
-                        ["updateFile"] = updateFile ?? string.Empty,
-                        ["note"] = "Downloaded the pending-changes package only (apply=false). Pass apply=true (default) to receive the changes into local KB objects.",
-                        ["source"] = "sdk:IGXserverService"
-                    });
-            }
-
-            // Step 2: apply into local KB objects via ITeamDevClientUpdate (obtained from
-            // ITeamDevClientService.JustReceiveChanges). This hits the server, so it needs
-            // credentials — url auto-resolves from the linked KB; user/password come from args
-            // or GXMCP_TEAMDEV_* env. Conflicting objects are left flagged for action=resolve.
+            // Update applies the server's pending changes into the local KB via
+            // ITeamDevClientService.JustReceiveChanges(...).Update() — which resolves in a
+            // headless worker (IGXserverService.GetUpdateFile does NOT; live-verified
+            // 2026-07-14). Talks to the server, so credentials are required (url auto-resolves
+            // from the linked KB; user/password from args or GXMCP_TEAMDEV_* env). Conflicting
+            // objects are left flagged for action=resolve.
             var creds = ReadCreds(tdSvc, kb, args);
             if (string.IsNullOrWhiteSpace(creds.Url))
                 return CredentialsRequired("update");
+            string authToken = AcquireAuthToken(tdSvc, kb, model, creds, out _);
 
             try
             {
                 var rc = new ClientTeamDev.ReceiveChangesData
                 {
                     Model = model,
+                    // Identify WHICH server KB (see commit) — without it JustReceiveChanges
+                    // can't resolve the remote and returns null.
+                    KnowledgeBase = SafeStr(() => tdSvc.GetRemoteKBName(kb)),
                     Url = creds.Url,
                     User = creds.User,
                     Password = creds.Password,
-                    AuthenticationToken = creds.Token,
-                    FilePath = updateFile,
+                    AuthenticationToken = string.IsNullOrEmpty(authToken) ? creds.Token : authToken,
                     ExportAll = exportAll,
                     IncludeReferencesDependencies = true
                 };
@@ -330,7 +288,6 @@ namespace GxMcp.Worker.Services
                 var result = new JObject
                 {
                     ["applied"] = ok,
-                    ["updateFile"] = updateFile ?? string.Empty,
                     ["conflictCount"] = conflicts.Count,
                     ["conflicts"] = new JArray(conflicts),
                     ["source"] = "sdk:ITeamDevClientUpdate"
@@ -430,7 +387,10 @@ namespace GxMcp.Worker.Services
                     if (raw == null) continue;
                     foreach (Entity e in raw)
                     {
-                        string name = SafeStr(() => e.Name);
+                        // Resolve the real object name via the KBObject behind the key (the
+                        // entity's own Name isn't the object name) — must match how
+                        // action=conflicts reports names so the caller's targets line up.
+                        string name = ResolveConflictName(model, e);
                         if (name != null && wanted.Contains(name))
                             matches.Add((name, e.Key));
                     }
@@ -566,6 +526,58 @@ namespace GxMcp.Worker.Services
             return new Creds { Url = url, User = user, Password = pass, Token = token };
         }
 
+        // The GeneXus SDK authenticates server ops from an OAuth token, NOT from the inline
+        // User/Password on the data objects — the IDE obtains the token at login and the SDK
+        // reuses it; headless never logged in, so every call goes out unauthenticated ("requer
+        // credenciais de usuário"). The UI.Framework login path doesn't resolve headless, so we
+        // acquire the token directly via TokenAuthorizationManager.GetToken (a static in the
+        // TeamDevClient BL that performs the OAuth exchange), set it as the default token on the
+        // Common service, and return it so the data objects carry it too. Returns null on
+        // failure (bad creds / unreachable server).
+        private static string AcquireAuthToken(ITeamDevClientService tdSvc, KnowledgeBase kb, KBModel model, Creds creds, out string authError)
+        {
+            authError = null;
+            try
+            {
+                // Pre-fill url / remote-KB name / instance from the KB's own server link, then
+                // add the credentials.
+                var td = new ClientTeamDev.TeamDevelopmentData(model);
+                if (string.IsNullOrWhiteSpace(td.Url)) td.Url = creds.Url;
+                if (string.IsNullOrWhiteSpace(td.KnowledgeBase)) td.KnowledgeBase = SafeStr(() => tdSvc.GetRemoteKBName(kb));
+                // The OAuth token endpoint requires the username as "AuthType\user"
+                // (TokenRequestBodyFields splits on '\\' and indexes [0]=authType, [1]=user —
+                // a bare username throws IndexOutOfRange). This KB's Authentication Type is
+                // "Local" (see the IDE's Team Development settings), so prefix it when the
+                // caller passed a bare user. An explicit "Domain\user" is used as-is.
+                string authUser = creds.User ?? string.Empty;
+                if (!authUser.Contains("\\"))
+                {
+                    string authType = Environment.GetEnvironmentVariable("GXMCP_TEAMDEV_AUTHTYPE");
+                    if (string.IsNullOrWhiteSpace(authType)) authType = "Local";
+                    authUser = authType + "\\" + authUser;
+                }
+                td.User = authUser;
+                td.Password = creds.Password;
+
+                var comm = new Artech.Packages.TeamDevClient.BL.Data.CommunicationData(td);
+                string token = Artech.Packages.TeamDevClient.BL.Connectivity.TokenAuthorizationManager.GetToken(comm, true);
+                if (!string.IsNullOrEmpty(token))
+                {
+                    try { tdSvc.SetDefaultAuthenticationToken(token); } catch { }
+                }
+                return token;
+            }
+            catch (Exception ex)
+            {
+                var sb = new System.Text.StringBuilder();
+                for (Exception e = ex; e != null; e = e.InnerException)
+                    sb.Append(e.GetType().Name).Append(": ").Append(e.Message).Append(" || ");
+                authError = sb.ToString();
+                GxMcp.Worker.Helpers.Logger.Error("[GxServer] AcquireAuthToken failed: " + authError);
+                return null;
+            }
+        }
+
         private static string CredentialsRequired(string op)
         {
             return McpResponse.Err(
@@ -585,7 +597,7 @@ namespace GxMcp.Worker.Services
                     if (raw == null) continue;
                     foreach (Entity e in raw)
                     {
-                        string n = SafeStr(() => e.Name);
+                        string n = ResolveConflictName(model, e);
                         if (!string.IsNullOrEmpty(n) && !names.Contains(n)) names.Add(n);
                     }
                 }
@@ -609,6 +621,24 @@ namespace GxMcp.Worker.Services
 
 
         private static string SafeStr(Func<string> f)
+        {
+            try { return f(); } catch { return null; }
+        }
+
+        // The real object name behind a conflict entity (its own ToString/Name is the type,
+        // not the object). Resolve via the KBObject at the entity key.
+        private static string ResolveConflictName(KBModel model, Entity e)
+        {
+            try
+            {
+                var o = KBObject.Get(model, e.Key);
+                if (o != null && !string.IsNullOrEmpty(o.Name)) return o.Name;
+            }
+            catch { }
+            return SafeStr(() => e.Name);
+        }
+
+        private static bool? TryBool(Func<bool> f)
         {
             try { return f(); } catch { return null; }
         }
