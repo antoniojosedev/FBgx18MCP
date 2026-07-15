@@ -105,7 +105,10 @@ namespace GxMcp.Worker.Services
             {
                 kb = _kb?.GetKB() as KnowledgeBase;
                 if (kb == null) return null;
-                svc = SdkServices.TryGetService<ITeamDevClientService>();
+                // Self-healing resolve (issue #32 idiom): a single TryGetService can return null
+                // when the Team-Dev service lags after a worker respawn, needlessly dropping to
+                // the coarse file-heuristic. The resolver retries + forces resolution first.
+                svc = GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<ITeamDevClientService>();
                 if (svc == null) return null;
             }
             catch { return null; }

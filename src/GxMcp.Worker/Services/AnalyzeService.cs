@@ -39,6 +39,20 @@ namespace GxMcp.Worker.Services
             = new System.Collections.Concurrent.ConcurrentDictionary<string, InspectCacheEntry>(System.StringComparer.OrdinalIgnoreCase);
         private static readonly System.TimeSpan ImpactCacheTtl = System.TimeSpan.FromSeconds(30);
 
+        // These caches only evict a stale entry when its key is re-read, so keys inspected once
+        // and never revisited would accumulate (one JSON-holding entry per distinct object over
+        // a long session). Sweep expired entries opportunistically on write, once the cache has
+        // grown past a small floor — keeps it to roughly "entries touched within the TTL".
+        private static void SweepExpired(
+            System.Collections.Concurrent.ConcurrentDictionary<string, InspectCacheEntry> cache, System.TimeSpan ttl)
+        {
+            if (cache.Count <= 256) return;
+            var cutoff = System.DateTime.UtcNow - ttl;
+            foreach (var kv in cache)
+                if (kv.Value == null || kv.Value.FilledAtUtc < cutoff)
+                    cache.TryRemove(kv.Key, out _);
+        }
+
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
@@ -380,6 +394,7 @@ namespace GxMcp.Worker.Services
                 // v2.6.9 perf: populate impact cache (see _impactCache decl).
                 if (!string.IsNullOrEmpty(targetName))
                 {
+                    SweepExpired(_impactCache, ImpactCacheTtl);
                     _impactCache[targetName] = new InspectCacheEntry
                     {
                         Json = impactJson,
@@ -1251,6 +1266,7 @@ namespace GxMcp.Worker.Services
                 // v2.6.9 perf: populate inspect cache. Bounded by 30 s TTL +
                 // WriteService.WasTargetWrittenSince invalidation; safe to skip
                 // SDK reads on the next hit.
+                SweepExpired(_inspectCache, InspectCacheTtl);
                 _inspectCache[inspectKey] = new InspectCacheEntry
                 {
                     Json = json,

@@ -224,7 +224,8 @@ namespace GxMcp.Gateway
         /// 5. Signals DrainComplete so waiting callers may proceed.
         /// Returns the new WorkerProcess on success, throws on failure.
         /// </summary>
-        public async Task<WorkerProcess> DrainAndReplaceAsync(KbHandle handle, int drainTimeoutMs, CancellationToken ct)
+        public async Task<WorkerProcess> DrainAndReplaceAsync(KbHandle handle, int drainTimeoutMs, CancellationToken ct,
+            Func<WorkerProcess?, Task>? afterDrainBeforeSpawn = null)
         {
             if (!_entries.TryGetValue(handle.NormalizedAlias, out var entry))
                 throw new InvalidOperationException($"No pool entry for alias '{handle.Alias}'.");
@@ -250,6 +251,15 @@ namespace GxMcp.Gateway
 
             // Remove the old entry so AcquireAsync below creates a fresh one.
             _entries.TryRemove(handle.NormalizedAlias, out _);
+
+            // mode=hard hook: with the old worker exited (its exe unlocked) and eager respawn
+            // suppressed by the caller, this is the ONLY safe window to swap the worker binary.
+            // The old worker's SpawnedExePath tells the caller where to copy the new bits.
+            if (afterDrainBeforeSpawn != null)
+            {
+                try { await afterDrainBeforeSpawn(oldWorker).ConfigureAwait(false); }
+                catch (Exception ex) { Program.Log($"[Gateway] worker_reload afterDrain hook failed: {ex.Message}"); }
+            }
 
             try
             {

@@ -385,12 +385,26 @@ namespace GxMcp.Gateway
                             new JObject { ["status"] = "NoWorker", ["detail"] = "No open KB worker found to reload." },
                             isError: false, toolName: toolName, toolArgs: args);
                     }
+                    // mode=hard: sourceDir carries new worker binaries to swap in. The gateway
+                    // does the copy in the drain window (old worker exited → exe unlocked → eager
+                    // respawn suppressed) so it can't lose the race to a respawn. Previously
+                    // sourceDir was ignored here (plain drain+respawn ran the OLD binary).
+                    string? reloadSrcDir = args?["sourceDir"]?.ToString();
                     try
                     {
                         using (SuppressEagerRespawn())
                         {
+                            Func<WorkerProcess?, Task>? swapHook = string.IsNullOrWhiteSpace(reloadSrcDir)
+                                ? (Func<WorkerProcess?, Task>?)null
+                                : (oldW =>
+                                {
+                                    string? tgtDir = null;
+                                    try { tgtDir = System.IO.Path.GetDirectoryName(oldW?.SpawnedExePath); } catch { }
+                                    CopyWorkerBinaries(reloadSrcDir!, tgtDir);
+                                    return Task.CompletedTask;
+                                });
                             // Drain timeout: 30s for the old worker process to exit.
-                            var newWorker = await _workerPool.DrainAndReplaceAsync(reloadKb, drainTimeoutMs: 30_000, ct: CancellationToken.None).ConfigureAwait(false);
+                            var newWorker = await _workerPool.DrainAndReplaceAsync(reloadKb, drainTimeoutMs: 30_000, ct: CancellationToken.None, afterDrainBeforeSpawn: swapHook).ConfigureAwait(false);
                             // Wait for the new worker's SDK to be ready (cap at 180s to avoid hanging).
                             bool sdkReady = await McpRouter.AwaitWithHeartbeat(
                                 newWorker.SdkReadyTask, timeoutMs: 180_000,
@@ -1114,8 +1128,13 @@ namespace GxMcp.Gateway
                     string lcAction = tArgs?["action"]?.ToString()?.ToLowerInvariant();
                     bool isLiveLifecycle = string.Equals(tName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
                                            && (lcAction == "status" || lcAction == "result" || lcAction == "cancel");
+                    // genexus_gxserver reflects live server/model state — its reads
+                    // (status/pending/conflicts/history) change after a commit/update/resolve,
+                    // so a cached snapshot goes stale (an identical action=conflicts after a
+                    // resolve returned the pre-resolve count). Never cache it.
                     bool isLiveTool = isLiveLifecycle
-                                      || string.Equals(tName, "genexus_logs", StringComparison.OrdinalIgnoreCase);
+                                      || string.Equals(tName, "genexus_logs", StringComparison.OrdinalIgnoreCase)
+                                      || string.Equals(tName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase);
 
                     string cKey = $"{tName}:{tArgs?.ToString(Formatting.None)}";
                     if (!isLiveTool && _semanticCache.TryGetValue(cKey, out var cachedResponse))
