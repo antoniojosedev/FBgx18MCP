@@ -1618,12 +1618,17 @@ namespace GxMcp.Gateway
                     int timeoutMs = GetToolTimeoutMs(tName, tArgs);
 
                     // async=true on edit/variable tools → fire-and-forget; result piggybacks via _meta.background_jobs.
-                    bool editAsync = (tArgs?["async"]?.ToObject<bool?>() ?? false)
-                                     && IsAsyncMutationTool(tName);
+                    bool isAsyncGxServer = (tArgs?["async"]?.ToObject<bool?>() ?? false)
+                                           && IsAsyncGxServerAction(tName, tArgs);
+                    bool editAsync = ((tArgs?["async"]?.ToObject<bool?>() ?? false)
+                                     && IsAsyncMutationTool(tName)) || isAsyncGxServer;
                     if (editAsync)
                     {
-                        int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? 30;
-                        var editJob = JobRegistry.Start(sessionId, $"edit/{tName}", estEdit);
+                        // gxserver update on a stale KB runs many minutes; give it a longer
+                        // default estimate so the poll cadence is sensible.
+                        int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? (isAsyncGxServer ? 120 : 30);
+                        string jobLabel = isAsyncGxServer ? $"gxserver/{tArgs?["action"]?.ToString()}" : $"edit/{tName}";
+                        var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit);
                         Log($"[AsyncEdit] Dispatching job={editJob.Id} tool={tName} estimated={estEdit}s");
                         // v2.6.2 (Item B): inject cancelToken=jobId so the worker's
                         // blanket-register at dispatch entry makes lifecycle cancel resolvable.
@@ -1654,12 +1659,14 @@ namespace GxMcp.Gateway
                                 Log($"[AsyncEdit] Exception in job={editJob.Id}: {ex.Message}");
                             }
                         });
-                        var asyncEditResponse = string.Equals(tName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
+                        var asyncEditResponse = isAsyncGxServer
+                            ? BuildAsyncAcceptedPayload(editJob, $"GXserver {tArgs?["action"]?.ToString()} accepted;")
+                            : (string.Equals(tName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
                                                 || string.Equals(tName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
                                                 || string.Equals(tName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
                                                 || string.Equals(tName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase)
                             ? BuildAsyncVariableAcceptedPayload(editJob)
-                            : BuildAsyncEditAcceptedPayload(editJob);
+                            : BuildAsyncEditAcceptedPayload(editJob));
                         return new JObject
                         {
                             ["isError"] = false,

@@ -177,19 +177,28 @@ namespace GxMcp.Worker.Services
                     }
                     if (swBudget.ElapsedMilliseconds > timeoutMs)
                     {
+                        int pct = entries.Count > 0 ? (int)(100L * cursor / entries.Count) : 100;
                         return Models.McpResponse.Ok(code: "Timeout", result: new JObject
                         {
                             ["partialHits"] = hits,
                             ["totalScanned"] = scanned,
                             ["totalObjects"] = entries.Count,
+                            ["coveragePercent"] = pct,
                             ["timeoutMs"] = timeoutMs,
                             ["nextCursor"] = cursor,
-                            ["resumeHint"] = "Pass startIndex=nextCursor (and optionally a larger timeoutMs) to resume this scan where it stopped."
+                            // Full-source scan reads each object's source via the SDK (~tens of ms
+                            // each), so a whole-KB scan spans many budget windows. Prefer scoping
+                            // for an instant search; resume only for an exhaustive sweep.
+                            ["resumeHint"] = $"Scanned {pct}% ({cursor}/{entries.Count}). FASTEST: narrow the scan — objectName=\"A,B\" (searches only those, O(objects)), or typeFilter / pathPrefix. To keep sweeping the whole KB, resume with startIndex={cursor} (optionally a larger timeoutMs)."
                         });
                     }
                     scanned++;
                     KBObject obj;
-                    try { obj = _objectService.FindObject(e.Name); } catch { continue; }
+                    // Pass the type so FindObject takes the O(1) typed fast path (Type:Name index
+                    // hit → Objects.Get(guid)) instead of the global, type-iterating search — the
+                    // scan already has the entry's exact type, so re-resolving by bare name per
+                    // object was needless overhead across thousands of objects.
+                    try { obj = _objectService.FindObject(e.Name, e.Type); } catch { continue; }
                     if (obj == null) continue;
 
                     foreach (var part in c.Scope ?? new List<string> { "source" })

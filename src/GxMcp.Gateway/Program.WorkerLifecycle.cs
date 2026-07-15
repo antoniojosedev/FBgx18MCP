@@ -582,6 +582,18 @@ namespace GxMcp.Gateway
             return 60000;
         }
 
+        // genexus_gxserver update/commit talk to the server and can run many minutes on a stale
+        // KB (a first update applied ~850 objects, exceeding even the 600s sync ceiling). With
+        // async=true they go through the same background-job path as edits: return an
+        // operationId immediately, poll via genexus_lifecycle status/result. Reads
+        // (status/pending/conflicts/history) and lock are fast and always stay synchronous.
+        internal static bool IsAsyncGxServerAction(string? toolName, JObject? args)
+        {
+            if (!string.Equals(toolName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase)) return false;
+            string? action = args?["action"]?.ToString()?.ToLowerInvariant();
+            return action == "update" || action == "commit";
+        }
+
         internal static bool IsAsyncMutationTool(string? toolName)
         {
             if (string.IsNullOrWhiteSpace(toolName)) return false;
@@ -625,6 +637,8 @@ namespace GxMcp.Gateway
 
         internal static string BuildAsyncMutationCompletionSummary(string? toolName, bool success)
         {
+            if (string.Equals(toolName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase))
+                return success ? "GXserver operation succeeded" : "GXserver operation failed";
             bool isVariableTool = string.Equals(toolName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
                                   || string.Equals(toolName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
                                   || string.Equals(toolName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)

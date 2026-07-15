@@ -1224,6 +1224,10 @@
             "description": "update: apply changes into local KB (default true); false = download package only.",
             "type": "boolean"
           },
+          "async": {
+            "description": "update/commit: run as a background job — returns an operationId immediately; poll genexus_lifecycle(action=status|result, target=op:<id>). Use for a large update that would exceed the sync window.",
+            "type": "boolean"
+          },
           "force": {
             "description": "commit: force commit despite pending server-side changes.",
             "type": "boolean"
