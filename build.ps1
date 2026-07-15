@@ -1,4 +1,4 @@
-# GeneXus MCP - Build & Deploy Script
+﻿# GeneXus MCP - Build & Deploy Script
 # ==========================================
 
 Set-StrictMode -Version Latest

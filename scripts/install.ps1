@@ -220,11 +220,15 @@ function Get-RunningAiClients {
     foreach ($c in $known) {
         $procs = Get-Process -Name $c.Process -ErrorAction SilentlyContinue
         if ($procs) {
+            # NB: try/catch as an *expression* is PowerShell 7+ only; this script
+            # bootstraps under Windows PowerShell 5.1, so resolve the path first.
+            $mainPath = $null
+            try { $mainPath = $procs[0].MainModule.FileName } catch { $mainPath = $null }
             $running += [pscustomobject]@{
                 Display = $c.Display
                 Name    = $c.Name
                 Pids    = ($procs | Select-Object -ExpandProperty Id)
-                Path    = (try { $procs[0].MainModule.FileName } catch { $null })
+                Path    = $mainPath
             }
         }
     }
