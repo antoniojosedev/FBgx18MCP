@@ -351,7 +351,7 @@ namespace GxMcp.Worker.Services
                             if (other.Normalized.Length == 0) continue;
 
                             bool redundant = other.Normalized == survivorNorm ||
-                                (other.Normalized.Length < survivorNorm.Length && survivorNorm.Contains(other.Normalized));
+                                IsSupersetRedundant(other.Normalized, survivorNorm);
                             if (!redundant) continue;
 
                             absorbed.Add(other.Record);
@@ -454,9 +454,10 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
-        /// Crash-safe rewrite: writes every record to a temp file first, then copies
-        /// it over the real path and removes the temp — a crash mid-write leaves the
-        /// original memory.jsonl untouched.
+        /// Crash-safe rewrite: writes every record to a temp file first, then swaps it
+        /// onto the real path with an atomic NTFS rename (File.Replace) — a crash at any
+        /// point leaves either the old complete file or the new complete file, never a
+        /// half-written one. Mirrors the write-temp-then-rename idiom in IndexCacheService.
         /// </summary>
         private static void WriteCompacted(string filePath, List<JObject> records)
         {
@@ -469,8 +470,10 @@ namespace GxMcp.Worker.Services
                 sb.Append(Environment.NewLine);
             }
             File.WriteAllText(tmpPath, sb.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            File.Copy(tmpPath, filePath, overwrite: true);
-            File.Delete(tmpPath);
+            if (File.Exists(filePath))
+                File.Replace(tmpPath, filePath, null);   // atomic swap on NTFS; consumes tmp
+            else
+                File.Move(tmpPath, filePath);
         }
 
         /// <summary>
@@ -602,6 +605,31 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrEmpty(fact)) return "";
             string collapsed = Regex.Replace(fact.Trim(), @"\s+", " ");
             return collapsed.ToLowerInvariant();
+        }
+
+        // Minimum normalized length before a fact may be absorbed by a longer one
+        // during consolidation. Guards against a short/generic fragment ("on", "id")
+        // being silently destroyed just because its text happens to appear inside a
+        // longer, semantically-unrelated fact.
+        private const int MinSupersetMergeLength = 15;
+
+        // True when 'shorter' is redundant with the longer 'survivor' — i.e. the
+        // survivor contains the shorter fact as a whole-word phrase. Requires a
+        // minimum length and word boundaries on both sides so mid-word or generic
+        // substring coincidences never trigger an (irreversible) merge.
+        private static bool IsSupersetRedundant(string shorter, string survivor)
+        {
+            if (string.IsNullOrEmpty(shorter) || string.IsNullOrEmpty(survivor)) return false;
+            if (shorter.Length >= survivor.Length) return false;
+            if (shorter.Length < MinSupersetMergeLength) return false;
+
+            int idx = survivor.IndexOf(shorter, StringComparison.Ordinal);
+            if (idx < 0) return false;
+
+            bool leftBoundary = idx == 0 || survivor[idx - 1] == ' ';
+            int end = idx + shorter.Length;
+            bool rightBoundary = end == survivor.Length || survivor[end] == ' ';
+            return leftBoundary && rightBoundary;
         }
 
         private static void AppendLine(string filePath, JObject entry)

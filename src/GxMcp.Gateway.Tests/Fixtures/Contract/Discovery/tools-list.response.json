@@ -2421,6 +2421,7 @@
             "type": "string"
           },
           "type": {
+            "description": "RenameObject: object type (e.g. WebPanel, Transaction, Procedure) to disambiguate when several objects share the name — e.g. a WebPanel vs the same-named Table behind a Transaction. Ignored by RenameAttribute/RenameVariable.",
             "type": "string"
           },
           "value": {

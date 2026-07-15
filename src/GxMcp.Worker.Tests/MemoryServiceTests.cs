@@ -356,6 +356,49 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ConsolidateCore_DoesNotAbsorbShortGenericFact()
+        {
+            string kb = NewKb();
+            string objName = "Obj_" + Guid.NewGuid().ToString("N");
+            try
+            {
+                // "on" is a raw substring of the longer fact but far too short/generic to
+                // be a real duplicate — it must survive consolidation, not be silently
+                // absorbed (that would permanently destroy an unrelated memory).
+                MemoryService.SaveCore(kb, "on", objName, "Transaction", null);
+                AppendRawLine(kb, Guid.NewGuid().ToString("N"), "This behavior depends on the GAM configuration flag", objName, "Transaction", null);
+
+                var json = JObject.Parse(MemoryService.ConsolidateCore(kb, objName, null, null, dryRun: false));
+                Assert.Equal("MemoryConsolidated", (string)json["code"]!);
+
+                var live = MemoryService.LoadLive(kb);
+                Assert.Equal(2, live.Count);
+                Assert.Contains("on", live.Select(r => (string)r["fact"]!));
+            }
+            finally { try { Directory.Delete(kb, true); } catch { } }
+        }
+
+        [Fact]
+        public void ConsolidateCore_LeavesNoTempFile_AndValidJsonl()
+        {
+            string kb = NewKb();
+            string objName = "Obj_" + Guid.NewGuid().ToString("N");
+            try
+            {
+                MemoryService.SaveCore(kb, "duplicate fact one", objName, "Transaction", null);
+                AppendRawLine(kb, Guid.NewGuid().ToString("N"), "duplicate fact one", objName, "Transaction", null);
+
+                MemoryService.ConsolidateCore(kb, objName, null, null, dryRun: false);
+
+                string dir = Path.Combine(kb, ".gx", "memory");
+                Assert.False(File.Exists(Path.Combine(dir, "memory.jsonl.tmp")));
+                foreach (var line in File.ReadAllLines(Path.Combine(dir, "memory.jsonl")))
+                    JObject.Parse(line);   // every surviving line stays valid JSON
+            }
+            finally { try { Directory.Delete(kb, true); } catch { } }
+        }
+
+        [Fact]
         public void ConsolidateCore_DryRun_DoesNotModifyFile()
         {
             string kb = NewKb();
