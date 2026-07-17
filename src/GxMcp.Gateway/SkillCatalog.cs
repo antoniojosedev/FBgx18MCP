@@ -270,6 +270,27 @@ Initialise variables that accumulate data across the multiple Load iterations �
 - Fires before Refresh.
 - Use for one-time setup that doesn't need a database query (defaults for input variables, etc.).
 
+## Control-bound events — ordering + WWP userAction stub (issue #36.4)
+
+### Edit the layout/PatternInstance BEFORE the Events part
+Control-bound events and properties only validate once the control exists in the
+projected form. Writing them first fails spec:
+- `Event &Var.ControlValueChanged` / `Event &Var.Click` → `src0233 '…' is not a valid event`.
+- `&Var.Display = 1` → `src0216 'Display' invalid property`.
+
+**Order:** first add the control (`genexus_edit part=PatternInstance` on a WWP host,
+or `part=WebForm`/layout otherwise), THEN add the control-bound `Event`/property to
+`part=Events`. Reversing the order fails validation.
+
+### A WWP `userAction` auto-generates its own empty event stub
+Adding `userAction name=""Foo""` makes WWP emit an **empty `'DoFoo'` event stub**
+automatically. So appending your own `Event 'DoFoo'` collides:
+- `src0208 event already defined`.
+
+**Do not add `Event 'DoFoo'` yourself.** Instead FILL the generated stub: `part=Events`
+`operation=Insert_After` anchored on the `Event 'DoFoo'` header line, inserting your
+body before the generated end markers. Read the Events part first to see the stub.
+
 ## Scope
 
 Applicable to:

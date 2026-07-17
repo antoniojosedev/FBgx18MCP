@@ -889,7 +889,7 @@ namespace GxMcp.Worker.Services
             // (success, no-change, dry-run, rollback, or error).
             // Default sdkPath = typed-sdk; deeper writers (LayoutService raw-XML) tag their own
             // sdkPath first and WrapWithPersistedState is idempotent so it preserves that.
-            string wrapped = WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName, GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk, snapshot?.PriorContent);
+            string wrapped = WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName, GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk, snapshot?.PriorContent, code);
 
             // Issue #24 — never report WriteApplied when a non-empty source write
             // landed as an empty part on disk. Runs against the persistedHash the
@@ -1185,6 +1185,21 @@ namespace GxMcp.Worker.Services
                                 target: target,
                                 code: "WriteApplied",
                                 result: okPayload);
+                        } catch (GxMcp.Worker.Parsers.StructureRemovalException remEx) {
+                            // issue #36.1 — mode:full / remove_attribute is authoritative. When the
+                            // SDK refuses to drop an attribute, abort the whole write (nothing is
+                            // saved — EnsureSave never ran) and return a hard error instead of a
+                            // silent additive merge reported as success.
+                            Logger.Error("[DEBUG-SAVE] Structure removal failed for " + target + ": " + remEx.Message);
+                            return Models.McpResponse.Err(
+                                code: "StructureAttributeNotRemoved",
+                                message: remEx.Message + ". The write was aborted; nothing was persisted.",
+                                hint: "mode:full and remove_attribute are authoritative — they will not silently keep an attribute. The SDK refused to drop the attribute(s) above, usually because a key is still referenced by a foreign key, relation, or index elsewhere. Remove those usages first (or rename the attribute instead of replacing it), then retry.",
+                                nextSteps: new JArray(McpResponse.NextStep(
+                                    tool: "genexus_read",
+                                    args: new JObject { ["name"] = target, ["part"] = "Structure" },
+                                    why: "Returns the current Structure so you can see which attributes remain and plan the removal.")),
+                                target: target);
                         } catch (Exception ex) {
                             Logger.Error("[DEBUG-SAVE] Error parsing Structure DSL: " + ex.Message);
                             return Models.McpResponse.Err(

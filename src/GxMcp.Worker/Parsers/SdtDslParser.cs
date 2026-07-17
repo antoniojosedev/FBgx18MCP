@@ -404,9 +404,21 @@ namespace GxMcp.Worker.Parsers
             else if (typeStr.StartsWith("Date", StringComparison.OrdinalIgnoreCase)) name = "DATE";
             else if (typeStr.StartsWith("Bool", StringComparison.OrdinalIgnoreCase)) name = "Boolean";
             else if (typeStr.StartsWith("LongVarchar", StringComparison.OrdinalIgnoreCase)) name = "LONGVARCHAR";
+            // issue #36.2 — eDBType has no BLOB/IMAGE member: blob-family = BINARY, image = BITMAP.
+            // Mirror VariableInjector's variable-path table so an SDT member typed Blob/Binary
+            // persists correctly instead of silently coercing to VARCHAR (the old fallback below).
+            else if (typeStr.StartsWith("Blob", StringComparison.OrdinalIgnoreCase)
+                  || typeStr.StartsWith("Binary", StringComparison.OrdinalIgnoreCase)
+                  || typeStr.StartsWith("Audio", StringComparison.OrdinalIgnoreCase)
+                  || typeStr.StartsWith("Video", StringComparison.OrdinalIgnoreCase)) name = "BINARY";
+            else if (typeStr.StartsWith("Image", StringComparison.OrdinalIgnoreCase)
+                  || typeStr.StartsWith("Bitmap", StringComparison.OrdinalIgnoreCase)) name = "BITMAP";
             else name = typeStr.ToUpperInvariant();
+            // issue #36.2 — no silent VARCHAR coercion: an unknown type token returns null so the
+            // member fails loudly (SyncSDTNodes logs + does not add it) instead of persisting as
+            // the wrong type and reporting success.
             try { return Enum.Parse(eDBTypeT, name, true); }
-            catch { try { return Enum.Parse(eDBTypeT, "VARCHAR", true); } catch { return null; } }
+            catch { return null; }
         }
 
         private void SyncSDTNodes(dynamic node, List<DslParserUtils.ParsedNode> parsedNodes)

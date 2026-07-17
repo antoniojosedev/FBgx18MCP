@@ -176,7 +176,7 @@ namespace GxMcp.Worker.Services
         /// Failures to re-read are swallowed — the original envelope is still augmented with
         /// an empty hash/snippet so downstream parsers always find the keys.
         /// </summary>
-        private string WrapWithPersistedState(string responseJson, string target, string partName, string sdkPath = null, string priorSource = null)
+        private string WrapWithPersistedState(string responseJson, string target, string partName, string sdkPath = null, string priorSource = null, string requestedContent = null)
         {
             JObject parsed = null;
             try { parsed = JObject.Parse(responseJson); }
@@ -228,11 +228,42 @@ namespace GxMcp.Worker.Services
                 if (!changed && string.Equals(code, "WriteApplied", StringComparison.OrdinalIgnoreCase))
                 {
                     parsed["code"] = "WriteNoChange";
-                    parsed["noChangeReason"] = "Normalized content is byte-identical to the persisted part; nothing was written.";
+
+                    // issue #36.6 — `changed:false` (persisted == prior) was ambiguous: callers
+                    // could not tell "the requested content was already present" (idempotent,
+                    // safe) from "the write was dropped" (bug). When we know what was requested,
+                    // compare it (whitespace-insensitive) against the persisted state and, ONLY
+                    // when they match, assert requestedApplied:true — a positive idempotent
+                    // signal. We never assert a "drop" here (normalization differences could
+                    // false-alarm); absence of the flag means "verify via persistedSnippet".
+                    bool? requestedApplied = null;
+                    if (requestedContent != null)
+                        requestedApplied = WhitespaceInsensitiveEquals(finalSource, requestedContent);
+
+                    if (requestedApplied == true)
+                    {
+                        parsed["requestedApplied"] = true;
+                        parsed["noChangeReason"] = "The requested content is already present — this was an idempotent no-op (persisted state matches your request). Nothing needed to change.";
+                    }
+                    else
+                    {
+                        parsed["noChangeReason"] = "Persisted content is byte-identical to what was there before this call. If you expected a change, compare your requested content against persistedSnippet — the edit may have been a no-op or dropped.";
+                    }
                 }
             }
 
             return parsed.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        // issue #36.6 — compare two content blobs ignoring all whitespace differences, so a
+        // pure re-formatting by the serializer isn't mistaken for a content divergence when we
+        // decide whether the requested content is already present.
+        private static bool WhitespaceInsensitiveEquals(string a, string b)
+        {
+            if (a == null || b == null) return false;
+            string na = System.Text.RegularExpressions.Regex.Replace(a, @"\s+", "");
+            string nb = System.Text.RegularExpressions.Regex.Replace(b, @"\s+", "");
+            return string.Equals(na, nb, StringComparison.Ordinal);
         }
     }
 }

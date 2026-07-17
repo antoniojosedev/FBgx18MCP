@@ -187,8 +187,26 @@ namespace GxMcp.Worker.Helpers
                 // string.IsNullOrWhiteSpace lumps them together, breaking the singleton path.
                 if (identifier == null)
                 {
+                    // issue #36.3 — group tables (`<table isGroup="True" title="…">`) carry
+                    // no name/controlName/Name/BlockName. WWP addresses them in the parent's
+                    // childrenOrderedList by their title/caption. We REUSE that identifier ONLY
+                    // when it already appears in the existing list (i.e. the IDE itself wrote
+                    // it): matching a known entry lets us preserve it and rebuild the list for
+                    // the siblings that DID change. We never *invent* a title-based entry —
+                    // that could overwrite a good list with a wrong slot — so if the title is
+                    // absent from the existing list we still bail (now as a hard render warning).
+                    string weakId = GetWeakTableIdentifier(child);
+                    if (weakId != null && oldByIdentifier.TryGetValue(weakId, out var weakExisting))
+                    {
+                        newEntries.Add(string.Join(";", weakExisting));
+                        continue;
+                    }
+
                     incomplete = true;
-                    report.Skips.Add(GetPath(parent) + " : cannot derive identifier for <" + child.Name.LocalName + ">");
+                    string detail = weakId != null
+                        ? " (title=\"" + weakId + "\" is not in the existing childrenOrderedList; give this container a name in the IDE or fix the list by hand — otherwise the edit will NOT render)"
+                        : " (container has no name/title to address it by — the edit will NOT render until it is named or the list is fixed in the IDE)";
+                    report.Skips.Add(GetPath(parent) + " : cannot derive identifier for <" + child.Name.LocalName + ">" + detail);
                     break;
                 }
 
@@ -329,6 +347,18 @@ namespace GxMcp.Worker.Helpers
                 ?? (string)child.Attribute("controlName")
                 ?? (string)child.Attribute("Name")
                 ?? (string)child.Attribute("BlockName");
+        }
+
+        // issue #36.3 — a group table (`<table isGroup="True" title="…">`) has no
+        // name-style attribute; WWP addresses it in the parent's childrenOrderedList by
+        // its title/caption. Returned as a WEAK identifier: the caller only reuses it when
+        // it already matches an existing list entry (never invents a new slot from it).
+        private static string GetWeakTableIdentifier(XElement child)
+        {
+            if (!child.Name.LocalName.Equals("table", StringComparison.OrdinalIgnoreCase))
+                return null;
+            string t = (string)child.Attribute("title") ?? (string)child.Attribute("caption");
+            return string.IsNullOrWhiteSpace(t) ? null : t;
         }
 
         private static string GetPath(XElement element)

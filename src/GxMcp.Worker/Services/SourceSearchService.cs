@@ -135,7 +135,10 @@ namespace GxMcp.Worker.Services
                 IEnumerable<Models.SearchIndex.IndexEntry> query = index.Objects.Values;
                 if (objectNameSet != null)
                 {
-                    query = query.Where(e => objectNameSet.Contains(e.Name));
+                    // issue #36.7 — tolerate module-qualified vs bare names in EITHER direction
+                    // so passing "Foo" finds "MyModule.Foo" and vice-versa (exact match was too
+                    // strict and quietly yielded an empty set that looked like a full-KB scan).
+                    query = query.Where(e => ObjectNameMatches(objectNameSet, e.Name));
                 }
                 else
                 {
@@ -146,6 +149,20 @@ namespace GxMcp.Worker.Services
                 var entries = query
                     .Where(e => string.IsNullOrEmpty(c.TypeFilter) || string.Equals(e.Type, c.TypeFilter, StringComparison.OrdinalIgnoreCase))
                     .ToList();
+
+                // issue #36.7 — an objectName scope that resolved to zero entries must say so
+                // explicitly, not silently return "no hits" (indistinguishable from "found
+                // nothing in the object", and the symptom reporters read as "filter ignored").
+                if (objectNameSet != null && entries.Count == 0)
+                {
+                    return Models.McpResponse.Ok(code: "ObjectNameNoMatch", result: new JObject
+                    {
+                        ["hits"] = new JArray(),
+                        ["totalObjects"] = 0,
+                        ["requestedObjectNames"] = new JArray(objectNameSet.ToArray()),
+                        ["note"] = "objectName matched no objects in the index. Names match module-qualified OR bare; if you expected a hit, confirm the object exists and the index is Ready (genexus_lifecycle action=status)."
+                    });
+                }
 
                 // v2.3.8 (Task 2.1): hard wall-clock timeout — emits a Timeout
                 // envelope with partial hits, replacing the legacy budgetExceeded
@@ -399,6 +416,22 @@ namespace GxMcp.Worker.Services
                 .Where(s => s.Length > 0);
             var set = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
             return set.Count > 0 ? set : null;
+        }
+
+        // issue #36.7 — match an object name against the requested set, tolerant of
+        // module qualification on EITHER side (index-qualified vs user-bare and vice-versa).
+        private static bool ObjectNameMatches(HashSet<string> wanted, string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            if (wanted.Contains(name)) return true;
+            int dot = name.LastIndexOf('.');
+            if (dot >= 0 && wanted.Contains(name.Substring(dot + 1))) return true; // index qualified, user bare
+            foreach (var w in wanted)
+            {
+                int wd = w.LastIndexOf('.'); // user qualified, index bare
+                if (wd >= 0 && string.Equals(w.Substring(wd + 1), name, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
         }
 
         private static bool MatchesAnyLiteral(Models.SearchIndex.IndexEntry e, System.Collections.Generic.List<string> literals)

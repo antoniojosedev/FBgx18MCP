@@ -58,6 +58,56 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void UnnamedGroupTable_PreservedByTitle_WhenAlreadyInList()
+        {
+            // issue #36.3 — a group table (`<table isGroup title=…>`) has no name.
+            // WWP addresses it in the parent list by its title. When the title already
+            // appears in the existing childrenOrderedList (IDE wrote it), the reconciler
+            // must REUSE that entry so a reorder of the siblings still rebuilds cleanly —
+            // instead of bailing on the whole parent (the old additive-skip behavior).
+            var doc = XDocument.Parse(@"
+<instance>
+  <transaction>
+    <table name='TableMain' childrenOrderedList='2;27;TxtA-2;01;Análise e Parecer'>
+      <table isGroup='True' title='Análise e Parecer' />
+      <textBlock controlName='TxtA' />
+    </table>
+  </transaction>
+</instance>");
+
+            var report = PatternChildOrderReconciler.Reconcile(doc);
+
+            Assert.Empty(report.Skips);
+            Assert.Equal(1, report.ParentsUpdated);
+            var updated = (string)doc.Descendants("table").Single(t => (string)t.Attribute("name") == "TableMain").Attribute("childrenOrderedList");
+            Assert.Equal("2;01;Análise e Parecer-2;27;TxtA", updated);
+        }
+
+        [Fact]
+        public void UnnamedGroupTable_HardSkip_WhenTitleNotInList()
+        {
+            // issue #36.3 — if the group table's title is NOT in the existing list, we do
+            // NOT invent an entry (could corrupt a good list). We still bail, but now as a
+            // clear, actionable skip the caller can surface as a hard render warning.
+            var doc = XDocument.Parse(@"
+<instance>
+  <transaction>
+    <table name='TableMain' childrenOrderedList='2;27;TxtA'>
+      <textBlock controlName='TxtA' />
+      <table isGroup='True' title='Unknown Group' />
+    </table>
+  </transaction>
+</instance>");
+
+            var report = PatternChildOrderReconciler.Reconcile(doc);
+
+            Assert.Equal(0, report.ParentsUpdated);
+            Assert.Single(report.Skips);
+            Assert.Contains("cannot derive identifier", report.Skips[0]);
+            Assert.Contains("Unknown Group", report.Skips[0]);
+        }
+
+        [Fact]
         public void DropsOrphanEntries_WhenChildIsRemoved()
         {
             // Caller deleted a <standardAction> but left it in the list.

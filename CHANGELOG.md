@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.24.0 — 2026-07-17
+
+Closes the gaps reported in issue #36 from an end-to-end WorkWithPlus feature build: schema edits that silently no-op'd, misleading success signals, and an unnamed-container layout skip. The theme is honesty — a write that didn't take effect now fails or warns instead of reporting success.
+
+### Fixed
+
+- **Structure edits are authoritative — no more silent additive-only merges.** `genexus_edit part=Structure` with `mode:full` now replaces the whole attribute list, including keys: sending a different key line no longer leaves you with a composite double key. Removals run after additions, so replacing a key works (the new key exists before the old one is dropped). When the SDK genuinely refuses to drop an attribute (e.g. a key still referenced by a foreign key, relation, or index), the write is aborted with a `StructureAttributeNotRemoved` error explaining why — instead of quietly keeping the attribute and reporting success.
+- **`remove_attribute` persists or errors — never `ok:true` on a no-op.** A `mode:ops remove_attribute` (or a textual patch that deletes an attribute) that the SDK does not actually persist now surfaces the failure on the envelope, rather than returning a green `opResults` list while the attribute remains.
+- **`genexus_variable action=modify` reports the type it actually persisted.** The success message showed the requested type name even when the SDK stored a different one; it now reports the persisted type (and, when they differ, both) plus `requestedType`/`persistedType` fields.
+- **SDT structure members typed `Blob`/`Binary` (and `Image`/`Bitmap`, `Audio`/`Video`) persist with the right type** instead of silently degrading to `VARCHAR`. An unknown member type token is now rejected loudly rather than coerced.
+- **WorkWithPlus layout edits inside an unnamed group table now reconcile correctly.** A group table with a title but no name (`<table isGroup="True" title="…">`) is matched by its title against the existing render order, so retargeting a control inside it projects to the Web Form. When the container still can't be addressed, the response carries a top-level `warning` that the affected controls will NOT render — instead of a footnote that was easy to miss.
+- **`changed:false` writes now say whether your change is already in place.** A write whose persisted content equals the prior content is still reported as `WriteNoChange`, but now includes `requestedApplied:true` when the persisted state matches what you asked for (an idempotent no-op, safe) — so callers can tell "already applied" from "possibly dropped, verify via persistedSnippet."
+- **`genexus_search_source objectName` matches module-qualified and bare names alike**, and when the filter resolves to zero objects it returns an explicit `ObjectNameNoMatch` (with the names you passed) instead of an empty result that looked like the filter was ignored and the whole KB scanned.
+- **A timed-out long write now carries an actionable next step.** Large Transaction/Structure writes that exceed the gateway wait budget report a `hint` on `genexus_lifecycle action=status`/`result` explaining the change may already have persisted and to re-read the target to confirm — rather than a bare, frozen `Running`.
+
+### Added
+
+- **Web Panel events skill: control-bound events + WorkWithPlus `userAction` stub.** `genexus://kb/skills/webpanel-events` now documents that control-bound events/properties (`&Var.ControlValueChanged`, `&Var.Click`, `&Var.Display`) must be written after the control exists in the form, and that a WWP `userAction` auto-generates an empty `'DoFoo'` event stub you fill rather than redefine.
+
+### Changed
+
+- `genexus_edit part=Structure` `mode:full` is now replace-semantics (authoritative), not merge-semantics. Writes that relied on the old additive merge to keep unlisted attributes must now include those attributes in the DSL.
+
+### Internal
+
+- `TransactionDslParser.SyncTransactionNodes` moves removals after adds/updates and no longer swallows removal failures; it accumulates them and `Parse` throws `StructureRemovalException`, caught by the Structure interceptor in `WriteService` (`StructureAttributeNotRemoved`). `ApplyTransactionStructureOpsViaDsl` now propagates a failed persist as the envelope. `WrapWithPersistedState` takes an optional `requestedContent` and sets `requestedApplied` via a whitespace-insensitive compare. `PatternChildOrderReconciler` gains a guarded title/caption fallback (`GetWeakTableIdentifier`) that only reuses an identifier already present in the existing list; `WriteService.PatternWrite` escalates the skip to a top-level warning. `SourceSearchService.ObjectNameMatches` handles qualified/bare names and emits `ObjectNameNoMatch`. `SdtDslParser.ResolveDbType` maps blob/image family types and returns null (no VARCHAR fallback) on unknown. `OperationTracker.AttachTimedOutHint` adds the read-back hint on timed-out-but-Running ops. `reorg_preview` remains a stub: the net48 SDK exposes no non-mutating reorg-plan API (`CheckAndInstallDatabase` always touches the live DB); the response says so and points at `action=reorg` on a non-prod environment / `action=validate-kb`. New tests: `PatternChildOrderReconcilerTests` (+2, unnamed-table title fallback and hard-skip).
+
 ## v2.23.0 — 2026-07-17
 
 Fixes issue #33 — SDT-typed collections and `WebSession` variables can now be authored entirely through the MCP, without dropping to the IDE or an XPZ import — and hardens the worker against native SDK faults that were taking it down mid-edit (issue #35).

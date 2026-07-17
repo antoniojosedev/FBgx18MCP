@@ -10,8 +10,27 @@ using GxMcp.Worker.Helpers;
 
 namespace GxMcp.Worker.Parsers
 {
+    // issue #36.1 — raised when the SDK could not remove one or more attributes that a
+    // Structure write intended to drop (mode:full replacement, or a remove_attribute op).
+    // The interceptor turns this into a StructureAttributeNotRemoved error so the caller
+    // never sees a false success for an additive-only no-op.
+    public class StructureRemovalException : Exception
+    {
+        public IReadOnlyList<string> Failures { get; }
+        public StructureRemovalException(IReadOnlyList<string> failures)
+            : base("Could not remove attribute(s): " + string.Join("; ", failures))
+        {
+            Failures = failures;
+        }
+    }
+
     public class TransactionDslParser : IDslParser
     {
+        // Accumulates removal failures across all (recursive) SyncTransactionNodes calls;
+        // checked once after the top-level sync in Parse(). A fresh parser is created per
+        // ParseFromText call (StructureParser.GetParser), so this is never shared.
+        private readonly List<string> _removalFailures = new List<string>();
+
         public void Serialize(KBObject obj, StringBuilder sb)
         {
             if (obj is Transaction trn)
@@ -36,6 +55,9 @@ namespace GxMcp.Worker.Parsers
                 }
 
                 SyncTransactionNodes(trn.Structure.Root, targetNodes, obj.Model);
+
+                if (_removalFailures.Count > 0)
+                    throw new StructureRemovalException(_removalFailures.AsReadOnly());
             }
         }
 
@@ -109,15 +131,6 @@ namespace GxMcp.Worker.Parsers
         {
             var existingItems = new Dictionary<string, dynamic>(StringComparer.OrdinalIgnoreCase);
             if (sdkLevel.Attributes != null) { foreach (dynamic attr in sdkLevel.Attributes) existingItems[attr.Name] = attr; }
-
-            if (sdkLevel.Attributes != null)
-            {
-                var toRemove = new List<dynamic>();
-                foreach (dynamic attr in sdkLevel.Attributes) {
-                    if (!parsedNodes.Any(p => !p.IsCompound && p.Name.Equals(attr.Name, StringComparison.OrdinalIgnoreCase))) toRemove.Add(attr);
-                }
-                foreach (dynamic dead in toRemove) { try { sdkLevel.Attributes.Remove(dead); } catch {} }
-            }
 
             foreach (var pNode in parsedNodes)
             {
@@ -205,6 +218,40 @@ namespace GxMcp.Worker.Parsers
                             Logger.Error("[TransactionDslParser] Failed to add attribute '" + pNode.Name + "': " + (addEx.InnerException?.Message ?? addEx.Message));
                         }
                     }
+                }
+            }
+
+            // issue #36.1 — removals run AFTER adds/updates so a key REPLACEMENT succeeds:
+            // the new key already exists when the old one is dropped (the SDK refuses to
+            // leave a transaction momentarily keyless). Failures are no longer swallowed —
+            // a removal the SDK rejects (key still in use, referenced by an FK/relation/index)
+            // is recorded and surfaced by Parse() as a hard error, instead of a silent merge
+            // that leaves the attribute in place and reports success ("additive-only" bug).
+            if (sdkLevel.Attributes != null)
+            {
+                var toRemove = new List<dynamic>();
+                foreach (dynamic attr in sdkLevel.Attributes)
+                {
+                    if (!parsedNodes.Any(p => !p.IsCompound && p.Name.Equals(attr.Name, StringComparison.OrdinalIgnoreCase)))
+                        toRemove.Add(attr);
+                }
+                foreach (dynamic dead in toRemove)
+                {
+                    string deadName = dead.Name;
+                    try { sdkLevel.Attributes.Remove(dead); }
+                    catch (Exception remEx)
+                    {
+                        _removalFailures.Add(deadName + " (" + (remEx.InnerException?.Message ?? remEx.Message) + ")");
+                        continue;
+                    }
+                    // Remove() can no-op WITHOUT throwing when the SDK refuses — verify it is gone.
+                    bool stillPresent = false;
+                    foreach (dynamic a in sdkLevel.Attributes)
+                    {
+                        if (((string)a.Name).Equals(deadName, StringComparison.OrdinalIgnoreCase)) { stillPresent = true; break; }
+                    }
+                    if (stillPresent)
+                        _removalFailures.Add(deadName + " (SDK kept the attribute — it is likely a key in use, or referenced by a relation/index)");
                 }
             }
         }

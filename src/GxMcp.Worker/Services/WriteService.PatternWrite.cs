@@ -448,7 +448,14 @@ namespace GxMcp.Worker.Services
                         if (reconcileReport.Skips.Count > 0)
                         {
                             ordering["skipped"] = new JArray(reconcileReport.Skips);
+                            ordering["willRender"] = false;
                             ordering["skipNote"] = "These parents were left untouched because their childrenOrderedList could not be inferred safely; the affected children may not render in the IDE until the list is corrected manually.";
+                            // issue #36.3 — escalate the skip from a footnote to a top-level
+                            // warning: the write persisted but the affected controls will NOT
+                            // render in the IDE, which is an actionable failure the caller
+                            // must see, not a note buried in the reconciliation block.
+                            success["warning"] = "Layout persisted, but " + reconcileReport.Skips.Count +
+                                " container(s) could not be reconciled and their controls will NOT render in the IDE. Give the container a name/title, or fix its childrenOrderedList in the IDE. See childrenOrderedListReconciliation.skipped.";
                         }
                         success["childrenOrderedListReconciliation"] = ordering;
                     }

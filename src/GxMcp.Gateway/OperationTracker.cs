@@ -204,7 +204,7 @@ namespace GxMcp.Gateway
 
             lock (record.SyncRoot)
             {
-                return new JObject
+                var status = new JObject
                 {
                     ["status"] = record.Status,
                     ["operationId"] = record.OperationId,
@@ -217,6 +217,21 @@ namespace GxMcp.Gateway
                     ["completedAtUtc"] = record.CompletedAtUtc,
                     ["error"] = record.LastError
                 };
+                AttachTimedOutHint(status, record);
+                return status;
+            }
+        }
+
+        // issue #36.5 — a gateway wall-clock timeout leaves the op Status="Running" while the
+        // worker keeps going (large Transaction/Structure writes routinely exceed the wait
+        // budget yet persist). `timedOut:true` alone was easy to miss; spell out the ambiguous
+        // state and the read-back contract so callers have a definitive next step instead of
+        // polling a frozen "Running" record.
+        private static void AttachTimedOutHint(JObject payload, OperationRecord record)
+        {
+            if (record.TimedOut && string.Equals(record.Status, "Running", StringComparison.OrdinalIgnoreCase))
+            {
+                payload["hint"] = "Exceeded the gateway wait budget but the worker may still be finishing — or may already have persisted (common for large Transaction/Structure writes). Re-read the target with genexus_read to confirm whether the change landed. The op terminalizes on its own if the worker's reply still arrives.";
             }
         }
 
@@ -258,9 +273,12 @@ namespace GxMcp.Gateway
                 }
                 else if (string.Equals(record.Status, "Running", StringComparison.OrdinalIgnoreCase))
                 {
-                    payload["message"] = "Operation is still running. Query status again later.";
+                    payload["message"] = record.TimedOut
+                        ? "Operation exceeded the gateway wait budget; the worker may still be finishing or may already have persisted."
+                        : "Operation is still running. Query status again later.";
                 }
 
+                AttachTimedOutHint(payload, record);
                 return payload;
             }
         }

@@ -852,6 +852,10 @@ namespace GxMcp.Worker.Services
                 // Atomic delete + add: keep the VariablesPart change in memory until
                 // obj.Save() either succeeds or we restore the original variable.
                 global::Artech.Genexus.Common.Variable originalSnapshot = existing;
+                // issue #36.2 — track whether a primitive eDBType was actually applied so the
+                // success message can report the REAL persisted type (e.g. Blob→BINARY), never
+                // a bare echo of the requested canonical.
+                bool appliedPrimitive = false;
                 try
                 {
                     varPart.Variables.Remove(existing);
@@ -867,6 +871,7 @@ namespace GxMcp.Worker.Services
                         && VariableInjector.TryParseDbType(resolvedTypeForSdk, out var dbType))
                     {
                         newVar.Type = dbType;
+                        appliedPrimitive = true;
                         try
                         {
                             // Explicit length/decimals args (issue #28 item 8) win over the parsed value.
@@ -910,14 +915,35 @@ namespace GxMcp.Worker.Services
                     obj.EnsureSave();
                     ScheduleFlush();
 
+                    // issue #36.2 — report the ACTUAL persisted type. For a primitive, read the
+                    // eDBType the SDK stored (Blob/Binary persist as BINARY) plus the effective
+                    // length/decimals; if it differs from what was requested, say so explicitly so
+                    // a coercion can never masquerade as the requested type. Non-primitive (SDT /
+                    // Domain / BC / WebSession) binds keep the canonical name, which is meaningful.
+                    var resultPayload = new JObject { ["requestedType"] = resolution.CanonicalType };
+                    string persistedDesc = resolution.CanonicalType;
+                    if (appliedPrimitive)
+                    {
+                        try
+                        {
+                            persistedDesc = newVar.Type.ToString();
+                            int? shownLen = length ?? resolvedLength;
+                            int? shownDec = decimals ?? resolvedDecimals;
+                            if (shownLen.HasValue)
+                                persistedDesc += "(" + shownLen.Value + (shownDec.HasValue && shownDec.Value > 0 ? "," + shownDec.Value : "") + ")";
+                        }
+                        catch { persistedDesc = resolution.CanonicalType; }
+                    }
+                    resultPayload["persistedType"] = persistedDesc;
+                    bool coerced = appliedPrimitive && !string.Equals(persistedDesc.Split('(')[0], resolution.CanonicalType, StringComparison.OrdinalIgnoreCase);
+                    resultPayload["details"] = coerced
+                        ? $"Variable '&{varName}' retyped to '{persistedDesc}' (requested '{resolution.CanonicalType}', persisted as its SDK type)."
+                        : $"Variable '&{varName}' retyped to '{persistedDesc}'.";
+
                     return McpResponse.Ok(
                         target: target,
                         code: "VariableRenamed",
-                        result: new JObject
-                        {
-                            ["details"] = $"Variable '&{varName}' retyped to '{resolution.CanonicalType}" +
-                                          (resolvedLength.HasValue ? "(" + resolvedLength.Value + (resolvedDecimals.HasValue && resolvedDecimals.Value > 0 ? "." + resolvedDecimals.Value : "") + ")" : "") + "'."
-                        });
+                        result: resultPayload);
                 }
                 catch (Exception ex)
                 {

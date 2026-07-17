@@ -243,7 +243,21 @@ namespace GxMcp.Worker.Services
             bool writeOk = string.Equals(writeStatus, "Success", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(writeStatus, "ok", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(writeStatus, "partial", StringComparison.OrdinalIgnoreCase);
-            string persistedAfter = writeOk ? ReadPersistedPartSafely(target, "Structure") : null;
+
+            // issue #36.1/#36.2 — the DSL text ops all "succeeded" (opResults ok:true), but the
+            // PERSIST step can still fail (e.g. the SDK refused a remove_attribute of a key →
+            // StructureAttributeNotRemoved). Previously the response reported isError:false with a
+            // green opResults list regardless, hiding the failure. Surface the write error as the
+            // envelope so callers never see ok:true on a persist no-op.
+            if (!writeOk)
+            {
+                writeJson["opResults"] = opResultsJson;
+                writeJson["opsAttempted"] = ops.Count;
+                writeJson["note"] = "The ops parsed cleanly but the persist step failed — nothing was persisted. See code/message above; opResults reflect the in-memory DSL edit only.";
+                return writeJson.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            string persistedAfter = ReadPersistedPartSafely(target, "Structure");
 
             var resp = new JObject
             {
