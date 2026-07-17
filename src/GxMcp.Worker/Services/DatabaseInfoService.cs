@@ -43,11 +43,13 @@ namespace GxMcp.Worker.Services
                 foreach (dynamic ds in EnumerateDataStores(kb))
                 {
                     if (ds == null) continue;
-                    var entry = BuildEntry(ds);
+                    // Cast the dynamic BuildEntry(ds) result to JObject so the generic
+                    // .Value<bool>() below binds statically (dynamic generic call fails).
+                    JObject entry = BuildEntry(ds);
                     stores.Add(entry);
                     if (defaultStore == null && entry["isDefault"]?.Value<bool>() == true)
                     {
-                        defaultStore = (JObject)entry;
+                        defaultStore = entry;
                     }
                 }
 
@@ -81,6 +83,28 @@ namespace GxMcp.Worker.Services
                     hint: "Check that the KB environment exposes DataStores via the SDK.");
             }
         }
+
+        // issue #37 item 4: default-datastore summary reachable without going through
+        // the full GetInfo envelope. Returns the default GxDataStore entry (dialect,
+        // type, reorganizeServerTables, …) or null when no datastore resolves. Used by
+        // BuildService.ReorgPreview to report whether reorg is even possible.
+        public static JObject GetDefaultDataStoreInfo(dynamic kb)
+        {
+            if (kb == null) return null;
+            JObject first = null;
+            foreach (dynamic ds in EnumerateDataStores(kb))
+            {
+                if (ds == null) continue;
+                // ds is dynamic, so BuildEntry(ds) is a dynamic call — cast to JObject so
+                // entry["isDefault"]?.Value<bool>() binds statically (a dynamic generic call
+                // fails: "no overload for method 'Value' takes 0 arguments").
+                JObject entry = BuildEntry(ds);
+                if (first == null) first = entry;
+                if (entry["isDefault"]?.Value<bool>() == true) return entry;
+            }
+            return first;
+        }
+
 
         private static IEnumerable<dynamic> EnumerateDataStores(dynamic kb)
         {
@@ -213,15 +237,28 @@ namespace GxMcp.Worker.Services
                 catch { }
             }
 
-            string provider = TryProperty(ds, "AdoNetProvider")
+            // issue #37: the GxDataStore stores these under GeneXus internal descriptor
+            // names (CS_SERVER, CS_SCHEMA, USER_ID, ACCESS_TECHNO, ADONET_DRIVER/JDBC_DRIVER),
+            // confirmed by descriptor dump against a live Oracle KB. The friendly names
+            // (ServerName/Schema/UserId) return empty. Try the real names first, keep the
+            // friendly ones as cross-version fallbacks.
+            string provider = TryProperty(ds, "ADONET_DRIVER")
+                              ?? TryProperty(ds, "JDBC_DRIVER")
+                              ?? TryProperty(ds, "AdoNetProvider")
                               ?? TryProperty(ds, "Provider")
                               ?? "";
-            string serverName = TryProperty(ds, "ServerName") ?? "";
-            string schema = TryProperty(ds, "DatabaseSchema")
+            string serverName = TryProperty(ds, "CS_SERVER")
+                              ?? TryProperty(ds, "ServerName")
+                              ?? "";
+            string schema = TryProperty(ds, "CS_SCHEMA")
+                            ?? TryProperty(ds, "DatabaseSchema")
                             ?? TryProperty(ds, "Schema")
                             ?? "";
-            string accessTech = TryProperty(ds, "AccessTechnology") ?? "";
-            string userId = TryProperty(ds, "UserId")
+            string accessTech = TryProperty(ds, "ACCESS_TECHNO")
+                            ?? TryProperty(ds, "AccessTechnology")
+                            ?? "";
+            string userId = TryProperty(ds, "USER_ID")
+                            ?? TryProperty(ds, "UserId")
                             ?? TryProperty(ds, "User")
                             ?? "";
 
@@ -238,7 +275,77 @@ namespace GxMcp.Worker.Services
                 ["accessTechnology"] = accessTech,
                 ["userId"] = userId
             };
+
+            // issue #37 item 4: best-effort read of a reorg-server-tables toggle so an
+            // agent can detect a DBA-managed no-reorg environment. NOTE: GeneXus 18's SDK
+            // does not expose "Reorganize server tables" as a discrete datastore /
+            // environment / target-model property (verified by descriptor dump against a
+            // live Oracle KB — the reorg-named properties are all generator selectors).
+            // This resolver therefore returns null on stock GeneXus 18 and the field is
+            // omitted; it is kept so a KB/version that DOES surface the toggle lights it up.
+            var reorg = ResolveReorganizeServerTables(ds);
+            if (reorg != null)
+            {
+                entry["reorganizeServerTables"] = reorg.Value; // true = GeneXus applies DDL; false = DBA-managed
+                entry["reorgEnabled"] = reorg.Value;
+            }
             return entry;
+        }
+
+        // Read the datastore's "Reorganize Server tables" property. Returns true when
+        // GeneXus is allowed to apply the schema delta itself, false when it's disabled
+        // (DBA-managed), or null when the property can't be resolved on this SDK surface.
+        internal static bool? ResolveReorganizeServerTables(dynamic ds)
+        {
+            string[] candidates =
+            {
+                "ReorganizeServerTables", "ReorganizeServerTable",
+                "REORGANIZE_SERVER_TABLES", "ReorgServerTables"
+            };
+            foreach (var name in candidates)
+            {
+                var raw = TryProperty(ds, name);
+                var parsed = ParseYesNo(raw);
+                if (parsed != null) return parsed;
+            }
+            // Fallback: scan every property for a name containing both "reorganize" and
+            // "server". PropertiesObject is not directly IEnumerable — its entries hang off
+            // the inner `Properties` IEnumerable, reached by reflection (a plain dynamic
+            // foreach throws "cannot convert PropertiesObject to IEnumerable").
+            try
+            {
+                object po = (object)ds.Properties;
+                var inner = po?.GetType().GetProperty("Properties")?.GetValue(po) as System.Collections.IEnumerable;
+                if (inner != null)
+                {
+                    foreach (var prop in inner)
+                    {
+                        var pt = prop?.GetType();
+                        string pname = pt?.GetProperty("Name")?.GetValue(prop)?.ToString();
+                        if (string.IsNullOrEmpty(pname)) continue;
+                        var lower = pname.ToLowerInvariant();
+                        if (lower.Contains("reorganize") && lower.Contains("server"))
+                        {
+                            var parsed = ParseYesNo(pt.GetProperty("Value")?.GetValue(prop)?.ToString());
+                            if (parsed != null) return parsed;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // GeneXus Yes/No properties round-trip as "True"/"False", "Yes"/"No", "1"/"0".
+        private static bool? ParseYesNo(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            var s = raw.Trim();
+            if (s.Equals("true", StringComparison.OrdinalIgnoreCase) || s.Equals("yes", StringComparison.OrdinalIgnoreCase) || s == "1")
+                return true;
+            if (s.Equals("false", StringComparison.OrdinalIgnoreCase) || s.Equals("no", StringComparison.OrdinalIgnoreCase) || s == "0")
+                return false;
+            return null;
         }
 
         private static string TryProperty(dynamic ds, string propertyName)

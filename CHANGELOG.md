@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.25.0 — 2026-07-17
+
+Addresses the deploy/database-apply gaps reported in issue #37: reorg couldn't run, builds and F5 previews could hang forever, and a DBA-managed "no reorg" database was invisible to an agent driving GeneXus headlessly.
+
+### Fixed
+
+- **Builds and previews can no longer hang indefinitely.** A build (or `buildFirst` preview) that wedges in a late deploy/reorg step used to sit at `Running` with no terminal state, forcing you to cancel by hand. Each build task now has a wall-clock cap: on expiry it is force-failed with a clear reason and any spawned MSBuild process tree is killed. Default 900s (2400s for a full rebuild); override with `GXMCP_BUILD_TIMEOUT_SEC`.
+- **`genexus_lifecycle action=reorg` no longer fails with `MSB4036` (task `CheckAndInstallDatabase` not found).** The generated MSBuild project was resolving under the CLR-2.0 toolset, where the .NET 4.x GeneXus task assemblies can't load. It now pins `ToolsVersion="4.0"` so the reorg task resolves.
+
+### Added
+
+- **`genexus_lifecycle action=reorg_preview` now reports the target datastore.** The response carries a `datastore` block (type, dialect, DBMS, provider/driver, access technology) so an agent driving a deploy headlessly can see what it's about to reorganize against. When a KB *does* expose a "Reorganize server tables" toggle, `reorg_preview` surfaces `reorgEnabled` and `action=reorg` fast-fails with `ReorgDisabled` instead of queueing a build that can never apply the schema.
+
+### Fixed
+
+- **Datastore `provider` / `accessTechnology` are no longer blank.** These were read under friendly names (`ServerName`, `Provider`, …) that GeneXus doesn't use; the introspection now reads the real internal descriptors (`CS_SERVER`, `ADONET_DRIVER`/`JDBC_DRIVER`, `ACCESS_TECHNO`, …). This also unblocks the `whoami` database block, which shared the same latent dynamic-dispatch bug and was stuck at `Pending`.
+
+### Internal
+
+- `BuildService.ResolveBuildTimeoutSeconds` + a `System.Threading.Timer` watchdog in `RunBuild` (terminalizes + `KillProcessTree` on cap); the MSBuild.exe path now uses a bounded `WaitForExit`. `DatabaseInfoService.GetDefaultDataStoreInfo(kb)` reused by `BuildService.ReorgPreview`/`CheckReorgDisabled`; `BuildEntry`/`GetInfo` cast the dynamic `BuildEntry(ds)` result to `JObject` so `entry["isDefault"]?.Value<bool>()` binds statically (a dynamic generic call threw "no overload for 'Value' takes 0 arguments"). **Known limitation, verified live against an Oracle KB:** GeneXus 18's SDK does not expose "Reorganize server tables" as a discrete datastore/environment/target-model property (the reorg-named properties are all generator selectors: `REORG_GEN`, `ReorgEnvironment`), so `reorgEnabled` auto-detection is dormant on stock GeneXus 18 — `reorg_preview` says so and points at the IDE. New tests: `BuildTimeoutAndReorgModeTests` (+4).
+
 ## v2.24.0 — 2026-07-17
 
 Closes the gaps reported in issue #36 from an end-to-end WorkWithPlus feature build: schema edits that silently no-op'd, misleading success signals, and an unnamed-container layout skip. The theme is honesty — a write that didn't take effect now fails or warns instead of reporting success.

@@ -826,6 +826,15 @@ namespace GxMcp.Worker.Services
 
         public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly)
         {
+            // issue #37 item 4: fast-fail reorg on a DBA-managed datastore
+            // (Reorganize Server tables = No). GeneXus never applies the delta there,
+            // so CheckAndInstallDatabase is a no-op the agent should not queue+poll.
+            if (action != null && action.Equals("Reorg", StringComparison.OrdinalIgnoreCase))
+            {
+                var reorgGuard = CheckReorgDisabled();
+                if (reorgGuard != null) return reorgGuard;
+            }
+
             // Parse target: single name OR comma/semicolon-separated list for batch "Build With These Only"
             var targets = ParseTargets(target);
 
@@ -1283,14 +1292,59 @@ namespace GxMcp.Worker.Services
             catch { return null; }
         }
 
+        // issue #37 items 2/3: build/preview could run unbounded (>9min observed) and
+        // never terminalize, forcing the agent to poll "Running" forever. Wall-clock cap
+        // (seconds) after which the task is force-failed and any spawned MSBuild.exe tree
+        // is killed. Override with GXMCP_BUILD_TIMEOUT_SEC; RebuildAll gets a larger default
+        // (a full KB rebuild is legitimately long). Clamped to [60, 7200].
+        internal static int ResolveBuildTimeoutSeconds(string action)
+        {
+            int def = (action != null && action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase)) ? 2400 : 900;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_TIMEOUT_SEC");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v) && v > 0)
+                def = v;
+            if (def < 60) def = 60;
+            if (def > 7200) def = 7200;
+            return def;
+        }
+
         private void RunBuild(BuildTaskStatus status, string action, List<string> targets)
         {
             string tempFile = null;
             // FR#24: thread-tag the Logger so worker_debug.log carries [phase=...]
             // on every line emitted from this build (and only this build).
             Helpers.Logger.CurrentPhase = "Starting";
+            // issue #37 items 2/3: wall-clock watchdog. Terminalizes the task (and kills any
+            // external MSBuild tree) if it exceeds the cap, so a wedged SDK build/deploy step
+            // doesn't leave the status stuck at "Running". The underlying thread may still be
+            // blocked inside the SDK, but the agent gets a terminal Failed/TimedOut it can act on.
+            int timeoutSec = ResolveBuildTimeoutSeconds(action);
+            System.Threading.Timer watchdog = null;
             try
             {
+                watchdog = new System.Threading.Timer(_ =>
+                {
+                    try
+                    {
+                        if (IsTerminalStatus(status.Status)) return;
+                        Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " exceeded " + timeoutSec
+                                    + "s (phase=" + status.Phase + ") — force-failing and killing any MSBuild tree.");
+                        try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
+                        lock (status._lock)
+                        {
+                            if (IsTerminalStatus(status.Status)) return;
+                            status.Status = "Failed";
+                            status.Phase = "Done";
+                            status.Error = "Build timed out after " + timeoutSec + "s at phase '" + (status.Phase ?? "?")
+                                + "' and was terminated. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer.";
+                            status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                            status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                        }
+                        MaybeNotifyOnFailure(status);
+                        try { status.StateChangeSignal.Set(); } catch { }
+                    }
+                    catch (Exception ex) { Logger.Warn("[BUILD-TIMEOUT] watchdog threw: " + ex.Message); }
+                }, null, timeoutSec * 1000, System.Threading.Timeout.Infinite);
                 if (_kbService != null)
                 {
                     int waits = 0;
@@ -1397,7 +1451,11 @@ namespace GxMcp.Worker.Services
                 string kbPathEsc = SecurityElement.Escape(kbPath);
 
                 var sb = new StringBuilder();
-                sb.AppendLine("<Project DefaultTargets=\"Execute\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">");
+                // issue #37 item 1: without an explicit ToolsVersion the 2003-schema project
+                // resolves under the CLR-2.0 toolset (tasks searched in Framework\v2.0.50727),
+                // where the .NET 4.x GeneXus task assemblies can't load — CheckAndInstallDatabase
+                // (reorg) then fails MSB4036 "task not found". Pin 4.0 so the tasks resolve.
+                sb.AppendLine("<Project DefaultTargets=\"Execute\" ToolsVersion=\"4.0\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">");
                 sb.AppendLine("  <Import Project=\"" + importPath + "\" />");
                 sb.AppendLine("  <Target Name=\"Execute\">");
                 // Open with Output="IDE" — same flag the GeneXus IDE passes. Without it
@@ -1481,9 +1539,18 @@ namespace GxMcp.Worker.Services
                     EmitPhaseProgress(status.Phase);
                     process.BeginOutputReadLine();
                     process.BeginErrorReadLine();
-                    process.WaitForExit();
+                    // issue #37 items 2/3: bound the wait so a wedged MSBuild step doesn't
+                    // block this thread forever. The watchdog also fires at the same cap;
+                    // killing here lets us record ExitCode and terminalize cleanly.
+                    if (!process.WaitForExit(timeoutSec * 1000))
+                    {
+                        Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " MSBuild.exe exceeded "
+                                    + timeoutSec + "s — killing process tree.");
+                        KillProcessTree(process);
+                        try { process.WaitForExit(5000); } catch { }
+                    }
 
-                    status.ExitCode = process.ExitCode;
+                    status.ExitCode = process.HasExited ? process.ExitCode : -1;
                     status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                     status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
 
@@ -1498,17 +1565,21 @@ namespace GxMcp.Worker.Services
                     Helpers.Logger.CurrentPhase = "Done";
                     EmitPhaseProgress(status.Phase);
 
-                    if (process.ExitCode == 0 && status.ErrorCount == 0)
-                        status.Status = "Succeeded";
-                    else
-                        status.Status = "Failed";
+                    // Don't clobber a terminal state the watchdog already set on timeout.
+                    if (!IsTerminalStatus(status.Status))
+                    {
+                        if (status.ExitCode == 0 && status.ErrorCount == 0)
+                            status.Status = "Succeeded";
+                        else
+                            status.Status = "Failed";
+                    }
 
                     // Friction 2026-05-22: when ErrorCount==0 and ExitCode!=0, the
                     // failure is a late MSBuild step (WebAppConfig, deploy task,
                     // file-missing) that doesn't emit a proper "error <code>:" line.
                     // Parse the raw output for >RO/>E0 markers so the agent gets a
                     // named phase_failure instead of "Failed: 0 errors, 0 warnings".
-                    if (status.ErrorCount == 0 && process.ExitCode != 0)
+                    if (status.ErrorCount == 0 && status.ExitCode != 0)
                     {
                         status.PhaseFailure = ExtractPhaseFailure(fullText);
                         if (DidGenerationAndCompilationSucceed(fullText))
@@ -1534,6 +1605,7 @@ namespace GxMcp.Worker.Services
             }
             finally
             {
+                try { watchdog?.Dispose(); } catch { }
                 try { if (tempFile != null && File.Exists(tempFile)) File.Delete(tempFile); } catch { }
                 status.Process = null;
                 // Don't leak the phase tag onto unrelated work on this thread.
@@ -1760,9 +1832,43 @@ namespace GxMcp.Worker.Services
         // point on net48 (CheckAndInstallDatabase always touches the live DB).
         // Stub: return an empty plan + a hint pointing at the live reorg.
         // Refined when the SDK surface probe finds a non-mutating entry point.
+        // issue #37 item 4: returns a terminal ReorgDisabled envelope when the default
+        // datastore has 'Reorganize Server tables = No', else null (proceed with reorg).
+        // Null when the mode can't be resolved — never blocks reorg on uncertainty.
+        internal string CheckReorgDisabled()
+        {
+            try
+            {
+                dynamic kb = _kbService?.GetKB();
+                if (kb == null) return null;
+                // Statically type the result — kb is dynamic, so leaving `ds` inferred
+                // makes it dynamic and turns re.Value<bool>() into a dynamic generic call
+                // that fails to bind ("no overload for 'Value' takes 0 arguments").
+                JObject ds = DatabaseInfoService.GetDefaultDataStoreInfo(kb);
+                JToken re = ds?["reorgEnabled"];
+                if (re != null && re.Type == JTokenType.Boolean && re.Value<bool>() == false)
+                {
+                    return McpResponse.Ok(
+                        code: "ReorgDisabled",
+                        result: new JObject
+                        {
+                            ["reorgEnabled"] = false,
+                            ["datastore"] = ds,
+                            ["message"] = "This datastore has 'Reorganize Server tables = No' (DBA-managed). GeneXus does not apply schema changes to the server here, so action=reorg would be a no-op. No build was queued.",
+                            ["nextSteps"] = "Obtain the schema DDL from the GeneXus IDE Impact Analysis report (or genexus_lifecycle action=reorg_preview for the reorg mode) and apply it via your DB tooling / hand it to the DBA. To let GeneXus manage the schema, set 'Reorganize Server tables = Yes' on the datastore in the IDE."
+                        });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[REORG-GUARD] reorg-disabled check failed (proceeding): " + ex.Message);
+            }
+            return null;
+        }
+
         public string ReorgPreview(string target)
         {
-            return new JObject
+            var result = new JObject
             {
                 ["status"] = "Stub",
                 ["target"] = target ?? string.Empty,
@@ -1773,9 +1879,49 @@ namespace GxMcp.Worker.Services
                     ["tables_changed"] = 0,
                     ["columns_added"] = 0,
                     ["columns_dropped"] = 0
-                },
-                ["note"] = "reorg_preview is a stub. The CheckAndInstallDatabase MSBuild task that powers genexus_lifecycle action=reorg executes against the live DB; a non-mutating SDK plan API has not yet been wired. Run action=reorg on a non-production environment to obtain the actual ALTER TABLE statements, or use action=validate-kb to surface schema-drift findings without touching the DB."
-            }.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            };
+
+            // issue #37 item 4: report the datastore + reorg mode so the agent can tell
+            // WHETHER reorg is even possible. In a DBA-managed environment
+            // (Reorganize Server tables = No) GeneXus never applies the delta — action=reorg
+            // there is a no-op the agent should not keep retrying.
+            bool? reorgEnabled = null;
+            try
+            {
+                dynamic kb = _kbService?.GetKB();
+                if (kb != null)
+                {
+                    // Statically type — see CheckReorgDisabled: a dynamic `ds` would make
+                    // re.Value<bool>() a dynamic generic call that fails to bind.
+                    JObject ds = DatabaseInfoService.GetDefaultDataStoreInfo(kb);
+                    if (ds != null)
+                    {
+                        result["datastore"] = ds;
+                        JToken re = ds["reorgEnabled"];
+                        if (re != null && re.Type == JTokenType.Boolean) reorgEnabled = re.Value<bool>();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[REORG-PREVIEW] datastore introspection failed: " + ex.Message);
+            }
+            result["reorgEnabled"] = reorgEnabled.HasValue ? (JToken)reorgEnabled.Value : JValue.CreateNull();
+
+            if (reorgEnabled == false)
+            {
+                result["note"] = "This datastore has 'Reorganize Server tables = No' (DBA-managed). GeneXus generates the DDL during Impact Analysis but NEVER applies it to the server — action=reorg is a no-op here. Obtain the DDL from the GeneXus IDE Impact Analysis report and hand it to your DBA / apply it via a DB tool; do not keep retrying action=reorg. reorg_preview does not yet extract the generated DDL text on this worker.";
+            }
+            else
+            {
+                result["note"] = "reorg_preview does not extract the generated DDL text (no non-mutating SDK plan API is wired on net48). "
+                    + (reorgEnabled == true
+                        ? "This datastore has reorg ENABLED, so action=reorg on a non-production environment will apply and surface the actual CREATE/ALTER statements."
+                        : "The 'Reorganize server tables' toggle is not exposed by the GeneXus 18 SDK object model, so the MCP cannot auto-detect a DBA-managed no-reorg environment — confirm it in the IDE (datastore/environment Properties). If it is set to No, GeneXus generates the DDL during Impact Analysis but never applies it; apply the script via your DB tooling.")
+                    + " For build-independent schema-drift findings use action=validate-kb.";
+            }
+            return result.ToString(Newtonsoft.Json.Formatting.None);
         }
     }
 }

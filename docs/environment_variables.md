@@ -56,6 +56,7 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 |----------|---------|---------|
 | `GENEXUS_MCP_REAPPLY_TIMEOUT_MS` | Worker reapply timeout; the gateway aligns its wait to it. | 300000 (5 min) |
 | `GXMCP_PREVIEW_BUDGET_MS` | Time budget for the headless preview render before it stops blocking. | see `PreviewService` |
+| `GXMCP_BUILD_TIMEOUT_SEC` | Wall-clock cap for a single `genexus_lifecycle` build/reorg task. On expiry the task is force-failed and any spawned MSBuild tree is killed, so a wedged deploy/reorg step can't leave the status stuck at `Running`. Clamped to `[60, 7200]`. | 900 (2400 for `rebuild`/RebuildAll) |
 
 ## Diagnostics / advanced
 
