@@ -28,6 +28,10 @@ namespace GxMcp.Worker
         // (clean shutdown / soft reload), 1 (init failure), and the process-crash codes.
         public const int ExitCodeBusy = 17;
         public const int ExitCodeSoftReload = 0;
+        // Distinct exit code for a recovered native/corrupted-state SDK crash: the in-flight call
+        // was answered with an error and the worker is exiting so the gateway respawns a fresh one
+        // (the AppDomain is unsafe to reuse after a corrupted-state exception). Issue #35.
+        public const int ExitCodePoisoned = 70;
 
         public static SingleInstanceLock InstanceLock { get; private set; }
         // PERFORMANCE (W-B3): signal that wakes the background worker immediately on Enqueue,
@@ -639,6 +643,11 @@ namespace GxMcp.Worker
             }
         }
 
+        // HandleProcessCorruptedStateExceptions (+ App.config legacyCorruptedStateExceptionsPolicy)
+        // lets the catch below see an AccessViolation/SEH raised by the GeneXus SDK instead of the
+        // CLR killing the process first. Issue #35: a single bad SDK call must not silently take
+        // the worker down mid-request.
+        [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions, System.Security.SecurityCritical]
         private static void ProcessCommand(string line)
         {
             MarkWorkerActivity();
@@ -651,6 +660,26 @@ namespace GxMcp.Worker
                 Logger.Info($"[WORKER] Command: {method} ({idJson}) [cid:{correlationId}]");
                 string result = _dispatcher.Dispatch(line);
                 SendResponse(result, idJson);
+            } catch (Exception ex) when (GxMcp.Worker.Helpers.WorkerCrashGuard.IsCorruptedState(ex)) {
+                // Native/corrupted-state SDK crash: the heap may be inconsistent, so answer THIS
+                // call with a structured error and then exit — the gateway respawns a fresh worker
+                // rather than us continuing to serve from a poisoned AppDomain. Keep the work here
+                // minimal (log + one stdout line + schedule exit); don't touch the SDK again.
+                string reason = GxMcp.Worker.Helpers.WorkerCrashGuard.CrashReason(ex);
+                Logger.Error("[WORKER-CRASH] recovered corrupted-state exception reason=" + reason
+                    + " exType=" + ex.GetType().FullName + " exMsg=" + ex.Message
+                    + Environment.NewLine + "Stack: " + ex);
+                try {
+                    string errResult = GxMcp.Worker.Models.McpResponse.Err(
+                        code: "WorkerNativeCrashRecovered",
+                        message: "The GeneXus SDK raised a native fault (" + reason + ") on this call. "
+                               + "The worker is restarting; retry the operation (consider a smaller/simpler edit).");
+                    SendResponse(errResult, idJson);
+                } catch (Exception sendEx) {
+                    Logger.Error("[WORKER-CRASH] failed to send recovery response: " + sendEx.Message);
+                }
+                SchedulePoisonedExit();
+                return;
             } catch (Exception ex) {
                 Logger.Error("ProcessCommand Error: " + ex.Message);
                 // Never leave a request unanswered: an exception escaping Dispatch (e.g.
@@ -666,6 +695,22 @@ namespace GxMcp.Worker
                     Logger.Error("ProcessCommand failed to send error response: " + sendEx.Message);
                 }
             }
+        }
+
+        private static int _poisonedExitScheduled;
+        // Exit shortly after a recovered corrupted-state crash so the last stdout response flushes
+        // to the gateway first; the nonzero code marks it unexpected so the gateway respawns fresh.
+        private static void SchedulePoisonedExit()
+        {
+            if (System.Threading.Interlocked.Exchange(ref _poisonedExitScheduled, 1) != 0) return;
+            ShuttingDown = true;
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                try { await System.Threading.Tasks.Task.Delay(500); } catch { }
+                try { InstanceLock?.Dispose(); } catch { }
+                Logger.Error("[WORKER-CRASH] exiting code=" + ExitCodePoisoned + " for gateway respawn after corrupted-state recovery");
+                Environment.Exit(ExitCodePoisoned);
+            });
         }
 
         private static void SendResponse(string result, string id)
