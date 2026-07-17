@@ -832,6 +832,84 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // KB-wide source analytics over the index (zero SDK reads). Aggregates the per-object
+        // CodeMetrics captured at enrichment: totals + optimization candidates (nested for-each,
+        // where-heavy procedures). typeFilter defaults to Procedure+DataProvider.
+        public string GetCodeMetrics(string typeFilter = null, int top = 25)
+        {
+            try
+            {
+                var index = _indexCacheService?.GetIndex();
+                if (index == null || index.Objects == null)
+                    return Models.McpResponse.Err(code: "SearchIndexMissing", message: "Index not found.",
+                        hint: "Run genexus_lifecycle action=index, then retry.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_lifecycle", new JObject { ["action"] = "index" }, "Builds the on-disk SearchIndex code metrics aggregate over.")),
+                        retryAfterMs: 10000);
+                if (top <= 0) top = 25;
+                if (top > 200) top = 200;
+
+                bool typed = !string.IsNullOrWhiteSpace(typeFilter);
+                long fe = 0, nfe = 0, wh = 0, nw = 0, cm = 0, lines = 0;
+                int objects = 0, withMetrics = 0, missing = 0;
+                var withM = new List<Models.SearchIndex.IndexEntry>();
+
+                foreach (var e in index.Objects.Values)
+                {
+                    if (e == null) continue;
+                    if (typed) { if (!string.Equals(e.Type, typeFilter, StringComparison.OrdinalIgnoreCase)) continue; }
+                    else if (!(string.Equals(e.Type, "Procedure", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(e.Type, "DataProvider", StringComparison.OrdinalIgnoreCase))) continue;
+                    objects++;
+                    if (e.Metrics == null) { missing++; continue; }
+                    withMetrics++;
+                    var mm = e.Metrics;
+                    fe += mm.ForEach; nfe += mm.NestedForEach; wh += mm.Where;
+                    nw += mm.New; cm += mm.Commit; lines += mm.Lines;
+                    withM.Add(e);
+                }
+
+                Func<Models.SearchIndex.IndexEntry, JObject> row = e => new JObject
+                {
+                    ["name"] = e.Name, ["type"] = e.Type,
+                    ["forEach"] = e.Metrics.ForEach, ["nestedForEach"] = e.Metrics.NestedForEach,
+                    ["where"] = e.Metrics.Where, ["new"] = e.Metrics.New, ["commit"] = e.Metrics.Commit,
+                    ["lines"] = e.Metrics.Lines
+                };
+
+                var candidates = new JArray(withM
+                    .Where(e => e.Metrics.NestedForEach > 0)
+                    .OrderByDescending(e => e.Metrics.NestedForEach)
+                    .ThenByDescending(e => e.Metrics.ForEach)
+                    .Take(top).Select(row).ToArray());
+
+                var topForEach = new JArray(withM
+                    .Where(e => e.Metrics.ForEach > 0)
+                    .OrderByDescending(e => e.Metrics.ForEach)
+                    .Take(top).Select(row).ToArray());
+
+                var result = new JObject
+                {
+                    ["scope"] = typed ? typeFilter : "Procedure+DataProvider",
+                    ["totals"] = new JObject
+                    {
+                        ["objects"] = objects, ["withMetrics"] = withMetrics, ["missingMetrics"] = missing,
+                        ["forEach"] = fe, ["nestedForEach"] = nfe, ["where"] = wh,
+                        ["new"] = nw, ["commit"] = cm, ["lines"] = lines
+                    },
+                    ["optimizationCandidates"] = candidates,
+                    ["topByForEach"] = topForEach
+                };
+                if (missing > 0)
+                    result["note"] = missing + " object(s) have no metrics yet (indexed before code-metrics landed, or not re-enriched). Run genexus_lifecycle action=index force=true for complete coverage.";
+                result["hint"] = "optimizationCandidates = procedures with nested 'for each' (a for-each inside another) — the classic smell that often collapses to a single navigation or a data selector. Cross-check where counts; open one with genexus_read part=Source.";
+                return Models.McpResponse.Ok(code: "CodeMetricsAggregated", result: result);
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(code: "CodeMetricsFailed", message: ex.Message);
+            }
+        }
+
         public string GetConversionContext(string name, JArray include = null, string typeFilter = null, string projection = "standard")
         {
             // Wire the long-advertised (but previously unimplemented) projection knob:

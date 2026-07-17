@@ -59,6 +59,9 @@ namespace GxMcp.Gateway.Routers
                             return new { module = "Analyze", action = "GetPatternMetadata", target = target, type = type };
                         case "summary":
                             return new { module = "Analyze", action = "Summarize", target = target, type = type };
+                        case "code_metrics":
+                            // KB-wide source analytics over the index (no target needed).
+                            return new { module = "Analyze", action = "GetCodeMetrics", type = type, top = args?["top"]?.ToObject<int?>() ?? 25 };
                         case "explain":
                             return new { module = "Analyze", action = "ExplainCode", target = target, payload = args?["code"]?.ToString(), type = type };
                         case "callers":

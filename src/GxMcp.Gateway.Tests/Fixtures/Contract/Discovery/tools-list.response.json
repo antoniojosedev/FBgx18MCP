@@ -45,7 +45,8 @@
               "ui_context",
               "pattern_metadata",
               "summary",
-              "dependency_heatmap"
+              "dependency_heatmap",
+              "code_metrics"
             ],
             "type": "string"
           },
@@ -59,7 +60,6 @@
           }
         },
         "required": [
-          "name",
           "mode"
         ],
         "type": "object"

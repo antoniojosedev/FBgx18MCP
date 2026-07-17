@@ -1590,6 +1590,9 @@ namespace GxMcp.Worker.Services
                     if (sourcePart != null) {
                         string src = sourcePart.Source ?? "";
                         entry.Complexity = src.Split('\n').Length;
+                        // Source is already in hand here — extract code metrics for KB-wide
+                        // analytics (genexus_analyze mode=code_metrics) at ~no extra cost.
+                        entry.Metrics = GxMcp.Worker.Helpers.CodeMetricsExtractor.Extract(src);
                     }
                 } catch { }
             }

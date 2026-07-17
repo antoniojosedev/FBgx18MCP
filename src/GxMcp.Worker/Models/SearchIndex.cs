@@ -87,6 +87,11 @@ namespace GxMcp.Worker.Models
             public string SourceSnippet { get; set; }
             public string FullSource { get; set; }
             public int Complexity { get; set; }
+
+            // Code metrics (Procedure/DataProvider source), extracted once at enrichment so
+            // KB-wide analytics (genexus_analyze mode=code_metrics) is instant + accurate with
+            // zero SDK reads. Null on non-source objects / pre-metrics index snapshots.
+            public CodeMetrics Metrics { get; set; }
             public string ParmRule { get; set; }
             public float[] Embedding { get; set; }
 
@@ -102,6 +107,18 @@ namespace GxMcp.Worker.Models
                 get { return _storageKey; }
                 set { _storageKey = value; }
             }
+        }
+
+        // Compact per-object source metrics for KB-wide analytics.
+        public class CodeMetrics
+        {
+            public int ForEach { get; set; }         // 'for each' loops
+            public int NestedForEach { get; set; }   // 'for each' inside another 'for each' — optimization smell
+            public int Where { get; set; }           // 'where' clauses
+            public int New { get; set; }             // 'new()' insert blocks
+            public int Commit { get; set; }          // explicit commit statements
+            public int Calls { get; set; }           // sub/proc call statements (best-effort)
+            public int Lines { get; set; }           // source line count
         }
 
         public string ToJson() => JsonConvert.SerializeObject(this, Formatting.Indented);

@@ -1202,6 +1202,7 @@ namespace GxMcp.Worker.Services
         private string Handle_Analyze(JObject request, string method, string action, string target, string payload, JObject args)
         {
             var analyzeType = args?["type"]?.ToString();
+            if (action == "GetCodeMetrics") return _analyzeService.GetCodeMetrics(analyzeType, args?["top"]?.ToObject<int?>() ?? 25);
             if (action == "GetNavigation") return _navigationService.GetNavigation(target);
             if (action == "GetSqlForNavigation")
             {
