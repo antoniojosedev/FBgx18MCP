@@ -1013,6 +1013,22 @@ namespace GxMcp.Worker.Helpers
         private static bool TryAddBandToCollection(object layout, object band)
         {
             if (layout == null || band == null) return false;
+
+            // ReportLayout exposes AddBand(ReportBand) / InsertBand(int, ReportBand) directly on
+            // the layout; ReportBands is a read-only iterator (yield-return, no Add). Prefer the
+            // layout's own AddBand — this is the mutator the SDK actually provides. (Verified on
+            // GeneXus 18: Artech.Genexus.Common.Parts.Layout.ReportLayout.AddBand(ReportBand).)
+            var addBand = layout.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .FirstOrDefault(m =>
+                    string.Equals(m.Name, "AddBand", StringComparison.OrdinalIgnoreCase) &&
+                    m.GetParameters().Length == 1 &&
+                    m.GetParameters()[0].ParameterType.IsAssignableFrom(band.GetType()));
+            if (addBand != null)
+            {
+                addBand.Invoke(layout, new[] { band });
+                return true;
+            }
+
             var bandsProp = layout.GetType().GetProperty("ReportBands", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
             var bandsCollection = bandsProp?.GetValue(layout, null);
             if (bandsCollection != null)
