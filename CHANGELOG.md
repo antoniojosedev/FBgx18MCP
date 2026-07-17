@@ -12,14 +12,22 @@ Addresses the deploy/database-apply gaps reported in issue #37: reorg couldn't r
 ### Added
 
 - **`genexus_lifecycle action=reorg_preview` now reports the target datastore.** The response carries a `datastore` block (type, dialect, DBMS, provider/driver, access technology) so an agent driving a deploy headlessly can see what it's about to reorganize against. When a KB *does* expose a "Reorganize server tables" toggle, `reorg_preview` surfaces `reorgEnabled` and `action=reorg` fast-fails with `ReorgDisabled` instead of queueing a build that can never apply the schema.
+- **`genexus_inspect projection` levels are now live.** `projection=minimal` returns just name/type/lastUpdate/availableParts for a cheap orient; `standard` (default) is the new lean shape; `verbose` restores full detail. Previously the parameter was advertised but ignored.
 
 ### Fixed
 
+- **Enumerated ("combobox") Domains now render their options.** `genexus_create` for a Character/VarChar Domain stored `enumValues` raw (`A`), but GeneXus needs quoted literals (`"A"`) — a raw value produced an empty combobox in the IDE. Character-family enum values are now auto-quoted (pass the bare value; already-quoted input is left alone); numeric/date domains are unchanged.
+- **`genexus_layout action=add_printblock` works on any report Procedure.** It previously failed with "no compatible AddBand/collection mutator found" unless the layout already had a `footer` band. It now uses the report layout's own `AddBand` method, so a print block can be added to a freshly-created Procedure.
 - **Datastore `provider` / `accessTechnology` are no longer blank.** These were read under friendly names (`ServerName`, `Provider`, …) that GeneXus doesn't use; the introspection now reads the real internal descriptors (`CS_SERVER`, `ADONET_DRIVER`/`JDBC_DRIVER`, `ACCESS_TECHNO`, …). This also unblocks the `whoami` database block, which shared the same latent dynamic-dispatch bug and was stuck at `Pending`.
+
+### Changed
+
+- **`genexus_inspect` default response is ~73% smaller.** The default now caps each inlined source part (Rules/Conditions/Events) to a 1200-char head and returns variables as name+type (capped at 40) — a WebPanel snapshot dropped from ~4150 to ~1100 tokens in testing. Full source is always available via `genexus_read`; pass `projection=verbose` for the previous full shape.
 
 ### Internal
 
 - `BuildService.ResolveBuildTimeoutSeconds` + a `System.Threading.Timer` watchdog in `RunBuild` (terminalizes + `KillProcessTree` on cap); the MSBuild.exe path now uses a bounded `WaitForExit`. `DatabaseInfoService.GetDefaultDataStoreInfo(kb)` reused by `BuildService.ReorgPreview`/`CheckReorgDisabled`; `BuildEntry`/`GetInfo` cast the dynamic `BuildEntry(ds)` result to `JObject` so `entry["isDefault"]?.Value<bool>()` binds statically (a dynamic generic call threw "no overload for 'Value' takes 0 arguments"). **Known limitation, verified live against an Oracle KB:** GeneXus 18's SDK does not expose "Reorganize server tables" as a discrete datastore/environment/target-model property (the reorg-named properties are all generator selectors: `REORG_GEN`, `ReorgEnvironment`), so `reorgEnabled` auto-detection is dormant on stock GeneXus 18 — `reorg_preview` says so and points at the IDE. New tests: `BuildTimeoutAndReorgModeTests` (+4).
+- `ObjectService.InitializeDomain` auto-quotes char-family enum values via `QuoteCharEnumValue` (`IsStringDataType`/`IsStringDomainByName` gate); new `DomainEnumQuotingTests` (+7). `ReportLayoutHelper.TryAddBandToCollection` now calls `ReportLayout.AddBand(ReportBand)` before falling back to the (read-only) `ReportBands` iterator. `AnalyzeService.GetConversionContext` takes a `projection` arg (minimal short-circuits before the SDK task fan-out; standard caps source heads at `InspectSourceCapLean=1200` + variables ≤40 name/type; verbose keeps 8000 + full detail); threaded via `CommandDispatcher` (honors legacy `verbose:true`) and `AnalyzeRouter`. Golden fixture + `genexus_inspect` schema description updated (schema budget unchanged).
 
 ## v2.24.0 — 2026-07-17
 
