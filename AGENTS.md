@@ -80,6 +80,24 @@ After editing Worker code, you can hot-swap the running worker:
 
 After a worker-reload the gateway's pipe handle can go stale — if the next call returns `Worker for KB '…' crashed/exited`, reconnect MCP via `/mcp` (Claude Code) once.
 
+### Iterate against a running gateway over HTTP (default dev loop — no client restart)
+
+The gateway serves a Streamable-HTTP MCP endpoint on `http://127.0.0.1:5000/mcp`
+alongside the stdio link (port from `Server.HttpPort`, default 5000; loopback needs no
+token). **Prefer driving this endpoint over asking the user to restart their MCP client
+for every change** — a client restart and an HTTP call reach the same running gateway, so
+the HTTP path is the default way to live-iterate.
+
+- **Handshake:** `POST /mcp` with `Accept: application/json, text/event-stream` and an
+  `initialize` request; reuse the `MCP-Session-Id` response header on every later call.
+  Tool results come back as `result.content[0].text` holding the worker's JSON (parse twice
+  — it's JSON-in-JSON).
+- **No gateway up?** Launch one: `publish/start_mcp.bat` (or the client's own). On stdin EOF
+  a detached gateway stays alive (`Program.cs` falls into `Task.Delay(-1)`), so the HTTP
+  endpoint keeps serving. Then open a KB with `genexus_kb action=open path=<kb>`.
+- After editing Worker code, hot-swap via `genexus_worker_reload` (above); over HTTP the
+  reload survives even when the stdio `/mcp` link would need a reconnect.
+
 ## Permissions granted to the assistant
 
 Each entry must include: **trigger** (the precise condition that activates the
