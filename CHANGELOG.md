@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+See `docs/sdk_uncovered_endpoints_2026-07-20.md` + `docs/sdk_endpoints_roadmap.md` for the coverage analysis behind this batch.
+
+### Added
+
+- **`genexus_transfer` — real XPZ export / import.** Export objects to a `.xpz` (`action=export targets=["Customer"] outputFile=…`), explore an `.xpz` without importing (`action=inspect file=…`), or import one into the KB (`action=import`, `dryRun` defaults true = preview, `dryRun=false` needs `confirm=true`). Unlike the filesystem part-copies of `genexus_io`/`genexus_kb_import`, this is the IDE Export/Import code path — dependency-aware.
+- **`genexus_deploy` — deployment targets.** `action=list_targets` (default, read-only) lists the KB's configured deployment target types (e.g. AWS Elastic Beanstalk, Tomcat, IIS); `action=deploy` (requires `confirm=true`) runs a deploy.
+- **`genexus_security action=scan_native` — the native GeneXus Security Scanner.** Runs the SDK's own scanner (the engine behind the IDE's Security Scanner), returning `errorCount`/`warningCount`/`findings`. Complements `action=scan_secrets` (regex over Source) and `action=audit_gam` (env-prop scan).
+- **`genexus_analyze mode=kb_stats` — KB activity & freshness.** Reports last object change, last table change, last reorg, and a derived `reorgLikelyNeeded`. Optional per-object-type operation history when a `typeGuid` is given.
+- **`genexus_db action=reorg_impact` — reorg impact preview.** A cheap timestamp heuristic by default; `deep=true` runs the specifier for the authoritative impact (build-heavy — off by default).
+- **`genexus_gxserver action=pipeline_*` — CI pipelines.** `pipeline_list` / `pipeline_runs` / `pipeline_output` (read) and `pipeline_run` / `pipeline_abort` (require `confirm=true`) over Team Development's continuous-integration service, on a GXserver-linked KB.
+
+### Internal
+
+- All six wrap SDK services whose registration differs between the IDE and the headless worker. Four (`IModelInformationService`, `ISpecifierService`, `IDeploymentService`/`IDeploymentTargetService`, `ISecurityScannerService`) are **not** in the headless worker's service registry — `Services.TryGetService` (by type or interface GUID) returns null. New `SdkServiceLocator.ConstructOrResolve<T>(factory)` constructs the public concrete impl directly and casts to the interface (the `GamService` idiom), falling back to the registry. Concrete impls: `SecurityScannerService` (+`Initialize(<gx>\Security\Commands)`), `Artech.Packages.Genexus.BL.Services.{ModelInformationService,DeploymentTargetService,DeployService}`, `Artech.Packages.Specifier.Services.SpecifierService`, `Artech.Architecture.Common.Services.StatisticsService`. New csproj refs: `Artech.Packages.GenexusBL`, `Artech.Packages.Specifier`, `GeneXus.SecurityScanner.Common`, `GeneXus.TeamDevClient.Architecture.BL`. Schema budget 15600 → 16200 (measured ~16049). Golden discovery fixture regenerated (46 tools). Live-verified over HTTP on a real KB; Gateway 637 + Worker 1484 tests green.
+
 ## v2.27.1 — 2026-07-20
 
 ### Added
