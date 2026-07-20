@@ -47,7 +47,8 @@
               "summary",
               "dependency_heatmap",
               "code_metrics",
-              "kb_stats"
+              "kb_stats",
+              "table_relations"
             ],
             "type": "string"
           },
@@ -486,7 +487,8 @@
               "scaffold",
               "translate",
               "sample",
-              "template"
+              "template",
+              "curl_procedure"
             ],
             "type": "string"
           },
@@ -500,6 +502,10 @@
           },
           "content": {
             "description": "sd_panel_edit/scaffold/translate.",
+            "type": "string"
+          },
+          "curl": {
+            "description": "curl_procedure: the curl command to import as a Procedure.",
             "type": "string"
           },
           "dataType": {
@@ -1731,7 +1737,8 @@
               "get_preview",
               "scan_mutators",
               "rename_printblock",
-              "add_printblock"
+              "add_printblock",
+              "list_controls"
             ],
             "type": "string"
           },

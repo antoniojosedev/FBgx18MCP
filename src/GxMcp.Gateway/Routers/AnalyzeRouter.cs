@@ -66,6 +66,10 @@ namespace GxMcp.Gateway.Routers
                             // P1 #6: KB activity & freshness over IModelInformationService
                             // (+ optional IStatisticsService). Read-only; no target needed.
                             return new { module = "KbStats", action = "Run", @params = args };
+                        case "table_relations":
+                            // P2 #7: table↔transaction relations + redundant-attribute
+                            // detection over ITablesService. Read-only. Needs a Transaction name.
+                            return new { module = "TableRelations", action = "Run", @params = args };
                         case "explain":
                             return new { module = "Analyze", action = "ExplainCode", target = target, payload = args?["code"]?.ToString(), type = type };
                         case "callers":

@@ -109,6 +109,12 @@ namespace GxMcp.Worker.Services
         private readonly SecurityScanService _securityScanService;
         // genexus_gxserver action=pipeline_* — CI pipelines over IContinuousIntegrationService.
         private readonly CiPipelineService _ciPipelineService;
+        // genexus_analyze mode=table_relations — table↔transaction relations over ITablesService.
+        private readonly TableRelationsService _tableRelationsService;
+        // genexus_layout action=list_controls — control/theme catalog over IUserControlsManagerService.
+        private readonly UserControlsListService _userControlsListService;
+        // genexus_create action=curl_procedure — curl→Procedure over ICurlGeneratorService.
+        private readonly CurlProcService _curlProcService;
         private readonly SdPanelService _sdPanelService;
         private readonly MultiAgentLockService _multiAgentLockService;
         private readonly WhatIfService _whatIfService;
@@ -232,6 +238,9 @@ namespace GxMcp.Worker.Services
             _kbStatsService = new KbStatsService(_kbService);
             _securityScanService = new SecurityScanService(_kbService);
             _ciPipelineService = new CiPipelineService(_kbService);
+            _tableRelationsService = new TableRelationsService(_kbService, _objectService);
+            _userControlsListService = new UserControlsListService(_kbService);
+            _curlProcService = new CurlProcService(_kbService, _objectService);
             _sdPanelService = new SdPanelService(_objectService, _writeService);
             _multiAgentLockService = new MultiAgentLockService(_kbService);
             _whatIfService = new WhatIfService(_analyzeService, _objectService);
@@ -575,6 +584,9 @@ namespace GxMcp.Worker.Services
                 ["deploy"] = Handle_Deploy,
                 ["reorgimpact"] = Handle_ReorgImpact,
                 ["kbstats"] = Handle_KbStats,
+                ["tablerelations"] = Handle_TableRelations,
+                ["usercontrols"] = Handle_UserControls,
+                ["curlproc"] = Handle_CurlProc,
                 ["sdpanel"] = Handle_SdPanel,
                 ["multiagentlock"] = Handle_MultiAgentLock,
                 ["whatif"] = Handle_WhatIf,
@@ -1951,6 +1963,24 @@ namespace GxMcp.Worker.Services
         {
             // genexus_analyze mode=kb_stats — KB activity & freshness (read-only).
             return _kbStatsService.Run(args ?? new JObject());
+        }
+
+        private string Handle_TableRelations(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_analyze mode=table_relations — table↔transaction relations (read-only).
+            return _tableRelationsService.Run(args ?? new JObject());
+        }
+
+        private string Handle_UserControls(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_layout action=list_controls — control/theme catalog (read-only).
+            return _userControlsListService.Run(args ?? new JObject());
+        }
+
+        private string Handle_CurlProc(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_create action=curl_procedure — scaffold a Procedure from a curl command (write).
+            return _curlProcService.Run(args ?? new JObject());
         }
 
         private string Handle_SdPanel(JObject request, string method, string action, string target, string payload, JObject args)

@@ -596,6 +596,15 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                // P2 #9: scaffold a Procedure from a curl command over ICurlGeneratorService.
+                case "curl_procedure":
+                    return new
+                    {
+                        module = "CurlProc",
+                        action = "Run",
+                        @params = args
+                    };
+
                 default:
                     return new
                     {
@@ -1171,6 +1180,12 @@ namespace GxMcp.Gateway.Routers
         {
             string? action = args?["action"]?.ToString();
             if (string.IsNullOrWhiteSpace(action)) return null;
+
+            // P2 #10: control/theme catalog over IUserControlsManagerService — a distinct
+            // service, not a Layout mutator, so route it to its own worker module.
+            if (string.Equals(action, "list_controls", System.StringComparison.OrdinalIgnoreCase))
+                return new { module = "UserControls", action = "Run", @params = args };
+
             string? objectName = args?["name"]?.ToString();
             if (string.IsNullOrWhiteSpace(objectName))
             {

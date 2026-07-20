@@ -107,15 +107,19 @@ Discipline: read-only default; destructive actions must be explicit (mirror `gen
 
 ---
 
-## P2 — next task (not this one)
+## P2 — DONE (2026-07-20), except two dropped after the gate
 
-| Item | Tool | SDK entry |
+Shipped + live-verified (all via `ConstructOrResolve` concrete-impl, `Artech.Packages.GenexusBL`):
+
+| Item | Tool | Result |
 |---|---|---|
-| #7 Table/Transaction relation graph | `genexus_analyze mode=table_relations` | `ITablesService`, `ITableRelationsService`, `ITransactionRelationsService` |
-| #8 Multi-language / translations | `genexus_db action=translations_*` | `ILanguageService.CreateManager` |
-| #9 curl → Procedure | `genexus_create type=Procedure fromCurl=…` | `ICurlGeneratorService.Generate` |
-| #10 User-control / theme introspection | `genexus_layout action=list_controls` | `IUserControlsManagerService` |
-| #11 Data-type catalog | `genexus_db action=types_catalog` | `IDataTypesService.GetSortedTypes` |
+| #7 Table/Transaction relations | `genexus_analyze mode=table_relations` | ✅ associated table + transactions + redundant attrs (over `ITablesService`; the FK-graph `ITableRelationsService`/`ITransactionRelationsService` have no public concrete — deferred) |
+| #9 curl → Procedure | `genexus_create action=curl_procedure` | ✅ `ICurlGeneratorService.Generate` (resolves + validates input) |
+| #10 User-control / theme catalog | `genexus_layout action=list_controls` | ✅ `IUserControlsManagerService.GetControlDefinitionCollection` |
+
+**Dropped after the feasibility gate (parede = informação):**
+- #8 translations — `ILanguageService` is the **source-code parser / type manager** (GetClass, ResolveMethod, GetNamespaces), NOT human-language i18n. Wrong entry point; `genexus_db action=translations_import` (CSV) already covers i18n.
+- #11 data-type catalog — `IDataTypesService.GetSortedTypes` needs a CLR-`Type` arg and duplicates the existing `genexus_db action=types_list` (Domains/SDTs). Low marginal value.
 
 ## P3 — later
 
