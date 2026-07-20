@@ -1495,6 +1495,9 @@ namespace GxMcp.Worker.Services
             if (action == "Cancel") return _buildService.Cancel(target);
             // issue #28 item 12: spec-check only (Spec+Gen, no Compile/deploy).
             if (action == "Specify") return _buildService.Specify(target);
+            // mode=compile_check: spec+gen+compile the target(s) + transitive callers,
+            // skipping the KB-wide DeveloperMenu regen (the dominant build-all cost).
+            if (action == "CompileCheck") return _buildService.CompileCheck(target, args?["buildPlanCap"]?.ToObject<int?>() ?? 200);
             // Item 43 (friction 2026-05-22) — DDL diff/preview pre-reorg.
             if (action == "ReorgPreview") return _buildService.ReorgPreview(target);
             {

@@ -15,7 +15,20 @@ namespace GxMcp.Gateway.Routers
                 case "genexus_lifecycle":
                     switch (action)
                     {
-                        case "build": return new {
+                        case "build":
+                            // mode=compile_check: spec+gen+compile the target(s) plus their
+                            // transitive callers, skipping the ~200s DeveloperMenu regen a
+                            // full build-all pays. Routed to the CompileCheck worker action.
+                            if (string.Equals(args?["mode"]?.ToString(), "compile_check", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return new {
+                                    module = "Build",
+                                    action = "CompileCheck",
+                                    target = target,
+                                    buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>()
+                                };
+                            }
+                            return new {
                             module = "Build",
                             action = "Build",
                             target = target,

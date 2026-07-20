@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.26.0 — 2026-07-20
+
+### Added
+
+- **`genexus_lifecycle action=build mode=compile_check` — a fast "did my edit break the build?" check.** A full build-all spends most of its time regenerating the KB-wide Developer Menu (measured ~200s of a ~260s run), which has nothing to do with whether your code compiles. `compile_check` builds the object(s) you name **plus everything that calls them** (transitive callers, so a changed signature surfaces errors in every caller) and skips the Developer Menu regeneration entirely — spec + generate + compile only. It requires a `target` (that's the point: it scopes the check to what you changed). When the caller graph isn't available yet (index not built), it checks the named objects alone and says so in the response. For a full from-scratch KB build, use `action=build` with no target.
+
 ## v2.25.2 — 2026-07-17
 
 Fixes the build-hang reported against v2.25.1, where `genexus_lifecycle action=build` — most visibly a build with no target ("build all") — would generate the KB, then sit at `Running` for many minutes with no phase progress and never reach a terminal state until cancelled by hand.

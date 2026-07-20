@@ -1742,6 +1742,13 @@
           "limit": {
             "type": "integer"
           },
+          "mode": {
+            "description": "With action=build: compile_check spec+gen+compiles target(s) plus their transitive callers and SKIPS the KB-wide DeveloperMenu regen (the dominant build-all cost). Fast 'did my edit break the build?' check; requires target.",
+            "enum": [
+              "compile_check"
+            ],
+            "type": "string"
+          },
           "since": {
             "description": "Status: prior _meta.snapshot for chained waits.",
             "type": "string"

@@ -559,6 +559,16 @@ namespace GxMcp.Worker.Services
             // issue #28 item 12: spec-check only — run SpecifyOneOnly (Spec+Gen), skip
             // Compile + deploy, so spc*/gen* diagnostics surface without a full build.
             [JsonIgnore] internal bool SpecifyOnly { get; set; }
+            // compile_check: spec+gen+compile the targets plus everything that calls
+            // them (transitive callers), routed through the targeted BuildOne path so
+            // the KB-wide DeveloperMenu regeneration (the dominant cost of a full
+            // build-all) is skipped. Surfaced in the status/accepted envelope.
+            public bool CompileCheck { get; set; }
+            // Callers pulled in by compile_check beyond the objects the user named,
+            // and whether the caller graph was capped. Echoed so the agent knows
+            // the coverage of the check.
+            public List<string> CompileCheckCallers { get; set; }
+            public bool CompileCheckTruncated { get; set; }
             // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental decision metadata.
             // Surfaced under top-level response fields (not status output) so the
             // agent sees the decision exactly once, with the Accepted envelope.
@@ -794,6 +804,56 @@ namespace GxMcp.Worker.Services
             => Build("Build", target, includeCallees: "none", buildPlanCap: 200,
                      skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false, specifyOnly: true);
 
+        // mode=compile_check: "did my edits break the build?" without the ~200s
+        // DeveloperMenu regeneration a full build-all pays. Expands the requested
+        // objects to include everything that CALLS them (transitive, via the caller
+        // graph), then builds that set through the targeted BuildOne path — which
+        // spec+gen+compiles each object (surfacing CS/spc/gen errors) but never
+        // regenerates the KB-wide DeveloperMenu. Requires target(s): the whole point
+        // is to scope the check to the edited objects and their blast radius. For a
+        // from-scratch full-KB compile, use action=build with no target.
+        public string CompileCheck(string target, int buildPlanCap = 200)
+        {
+            var seeds = ParseTargets(target);
+            if (seeds.Count == 0)
+            {
+                return McpResponse.Err(
+                    code: "CompileCheckNeedsTarget",
+                    message: "mode=compile_check requires target=<object(s)> (comma-separated). It compiles the named objects plus everything that calls them, skipping the DeveloperMenu regeneration — so it must know which objects you changed. For a full from-scratch KB compile, use action=build with no target.");
+            }
+
+            // Expand to transitive callers so a changed signature surfaces errors in
+            // every object that invokes it — the KB-wide breakage a plain targeted
+            // build misses. Callers unavailable (no caller graph / index not built)
+            // degrades gracefully to just the named objects, with a note.
+            var expanded = new List<string>(seeds);
+            var seen = new HashSet<string>(seeds, StringComparer.OrdinalIgnoreCase);
+            var addedCallers = new List<string>();
+            bool truncated = false;
+            bool graphAvailable = _callerGraphService != null;
+            if (graphAvailable)
+            {
+                foreach (var s in seeds)
+                {
+                    TransitiveResult tr;
+                    try { tr = _callerGraphService.GetCallersTransitive(s, buildPlanCap); }
+                    catch { continue; }
+                    if (tr == null) continue;
+                    if (tr.Truncated) truncated = true;
+                    foreach (var c in tr.Nodes)
+                        if (seen.Add(c)) { expanded.Add(c); addedCallers.Add(c); }
+                }
+            }
+
+            string result = Build("Build", string.Join(",", expanded),
+                includeCallees: "transitive", buildPlanCap: buildPlanCap,
+                skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false,
+                specifyOnly: false, compileCheck: true,
+                compileCheckCallers: addedCallers, compileCheckTruncated: truncated,
+                compileCheckGraphAvailable: graphAvailable);
+            return result;
+        }
+
         /// <summary>
         /// dryRun=true: expands the build plan without dispatching a build task.
         /// Returns code=DryRun with the resolved targets list so the agent can
@@ -852,6 +912,11 @@ namespace GxMcp.Worker.Services
             => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, notifyOnFailure, fastIncremental, specifyOnly: false);
 
         public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly)
+            => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, notifyOnFailure, fastIncremental, specifyOnly,
+                     compileCheck: false, compileCheckCallers: null, compileCheckTruncated: false, compileCheckGraphAvailable: true);
+
+        public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly,
+                            bool compileCheck, List<string> compileCheckCallers, bool compileCheckTruncated, bool compileCheckGraphAvailable)
         {
             // issue #37 item 4: fast-fail reorg on a DBA-managed datastore
             // (Reorganize Server tables = No). GeneXus never applies the delta there,
@@ -944,7 +1009,10 @@ namespace GxMcp.Worker.Services
                 FastIncrementalFallback = fiDecision?.ForceFullBuild == true,
                 FastIncrementalFallbackReason = fiDecision?.ForceFullBuild == true ? fiDecision.FallbackReason : null,
                 FastIncrementalCanSkipDeploy = fiDecision?.CanSkipDeploy == true && fiDecision.ForceFullBuild == false,
-                FastIncrementalCanSkipSpecify = fiDecision?.ForceFullBuild == false ? fiDecision.CanSkipSpecify : null
+                FastIncrementalCanSkipSpecify = fiDecision?.ForceFullBuild == false ? fiDecision.CanSkipSpecify : null,
+                CompileCheck = compileCheck,
+                CompileCheckCallers = (compileCheck && compileCheckCallers != null && compileCheckCallers.Count > 0) ? compileCheckCallers : null,
+                CompileCheckTruncated = compileCheck && compileCheckTruncated
             };
 
             // Best-effort caller lookup for hint (only meaningful for single-object builds)
@@ -962,13 +1030,37 @@ namespace GxMcp.Worker.Services
 
             Task.Run(() => RunBuild(status, action, targets));
 
+            string acceptedMessage;
+            if (compileCheck)
+            {
+                acceptedMessage = $"compile_check started for {targets.Count} object(s) "
+                    + (compileCheckGraphAvailable
+                        ? $"(named objects + their transitive callers) — spec+gen+compile only, DeveloperMenu regeneration skipped. "
+                        : "(named objects only — caller graph unavailable, run genexus_lifecycle action=index to check the full blast radius). ")
+                    + "Poll action='status' target=<taskId> for progress.";
+            }
+            else
+            {
+                acceptedMessage = targets.Count > 1
+                    ? $"Batch build started for {targets.Count} objects in a single KB-open cycle. Poll action='status' target=<taskId> for progress."
+                    : "Build task started in background. Poll genexus_lifecycle action='status' with target=<taskId> for progress.";
+            }
+
             return JsonConvert.SerializeObject(new {
                 status = "Accepted",
-                message = targets.Count > 1
-                    ? $"Batch build started for {targets.Count} objects in a single KB-open cycle. Poll action='status' target=<taskId> for progress."
-                    : "Build task started in background. Poll genexus_lifecycle action='status' with target=<taskId> for progress.",
+                message = acceptedMessage,
                 taskId = taskId,
                 targets = targets.Count > 0 ? targets : null,
+                compileCheck = compileCheck ? new {
+                    callersAdded = status.CompileCheckCallers,
+                    truncated = status.CompileCheckTruncated,
+                    callerGraphAvailable = compileCheckGraphAvailable,
+                    note = compileCheckTruncated
+                        ? "Caller graph hit the buildPlanCap — some callers were not included. Raise buildPlanCap or check the omitted callers separately."
+                        : (!compileCheckGraphAvailable
+                            ? "Caller graph unavailable (index not built) — only the named objects were checked, not their callers."
+                            : null)
+                } : null,
                 callersToAlsoBuild = status.CallersToAlsoBuild,
                 hint = status.Hint,
                 // Item 28 — EXPERIMENTAL. Surfaces decision outcome when fastIncremental=true.
