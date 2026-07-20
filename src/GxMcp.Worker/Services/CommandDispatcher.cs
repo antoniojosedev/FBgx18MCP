@@ -1484,6 +1484,7 @@ namespace GxMcp.Worker.Services
             if (action == "AddExternalMethod") return _authoringService.AddExternalMethod(target, payload);
             if (action == "AddExternalProperty") return _authoringService.AddExternalProperty(target, payload);
             if (action == "AddMenuOption") return _authoringService.AddMenuOption(target, payload);
+            if (action == "AddDataSelectorCondition") return _authoringService.AddDataSelectorCondition(target, payload);
             return null;
         }
 

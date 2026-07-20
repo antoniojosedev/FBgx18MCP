@@ -188,5 +188,54 @@ namespace GxMcp.Worker.Services.Structure
                     target: objName);
             }
         }
+
+        // issue #39 batch 3: add a filter condition to a Data Selector. A condition is just a
+        // GeneXus source expression (e.g. "CategoryId = &CategoryId"). payload = { source }.
+        public string AddDataSelectorCondition(string objName, string payload)
+        {
+            try
+            {
+                var obj = _objectService.FindObject(objName);
+                if (obj == null) return HealingService.FormatNotFoundError(objName, _objectService.GetKbService().GetIndexCache().GetIndex());
+                if (!(obj is DataSelector)) return Models.McpResponse.Err(
+                    code: "NotADataSelector", message: $"'{objName}' is not a Data Selector.", target: objName);
+
+                var part = FindPart<DataSelectorStructurePart>(obj);
+                if (part == null) return Models.McpResponse.Err(
+                    code: "StructurePartNotFound", message: "Data Selector has no structure part.", target: objName);
+
+                var json = string.IsNullOrWhiteSpace(payload) ? new JObject() : JObject.Parse(payload);
+                string source = json["source"]?.ToString();
+                if (string.IsNullOrWhiteSpace(source)) return Models.McpResponse.Err(
+                    code: "InvalidPayload", message: "payload.source is required.",
+                    hint: "e.g. { \"source\": \"CategoryId = &CategoryId\" }.", target: objName);
+
+                try
+                {
+                    if (part.Root == null) part.Root = new DataSelectorLevel(part);
+                    part.Root.AddCondition(source);
+                    obj.EnsureSave();
+                    int count = part.Root.Conditions?.Count() ?? 0;
+                    return Models.McpResponse.Ok(
+                        target: objName,
+                        code: "DataSelectorConditionAdded",
+                        result: new JObject { ["dataSelector"] = obj.Name, ["source"] = source, ["count"] = count });
+                }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(
+                        code: "DataSelectorConditionAddFailed", message: ex.Message,
+                        hint: "Check the worker log. Verify the source expression references valid attributes/variables.",
+                        target: objName, extra: new JObject { ["stackTrace"] = ex.StackTrace });
+                }
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "DataSelectorConditionAddFailed", message: ex.Message,
+                    hint: "Ensure the object is a Data Selector and payload is valid JSON.", target: objName);
+            }
+        }
+
     }
 }

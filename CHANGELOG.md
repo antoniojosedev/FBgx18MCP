@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.27.1 — 2026-07-20
+
+### Added
+
+- **`genexus_authoring action=add_condition` — add a filter condition to a Data Selector.** A condition is a GeneXus source expression: `genexus_authoring action=add_condition name="ActiveCustomers" payload={"source":"CustomerActive = True"}`. Invalid expressions are rejected with the SDK's exact diagnostic (e.g. `src0265: invalid attribute`).
+
+### Internal
+
+- `AuthoringService.AddDataSelectorCondition` routes through `DataSelectorStructurePart.Root.AddCondition(source)` (creates the root level if absent) + `obj.EnsureSave`; verified to persist across a worker reload via a condition-count differential. Adds the `add_condition` case to the `Authoring` dispatcher module + `ConvertAuthoringToolCall`. Schema-budget note bumped to 15600 (measured ~15349). A `add_theme_color` action was prototyped and dropped: a classic `Theme`'s colors are exposed only as a `ThemeColorsVirtualPart` projection (IDE-only, same class as the SDPanel virtual parts in issue #29), so writes through a concrete `ThemeColorsPart` don't attach.
+
 ## v2.27.0 — 2026-07-20
 
 ### Added

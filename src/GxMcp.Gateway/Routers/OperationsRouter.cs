@@ -1125,6 +1125,7 @@ namespace GxMcp.Gateway.Routers
                 "add_external_method" => "AddExternalMethod",
                 "add_external_property" => "AddExternalProperty",
                 "add_menu_option" => "AddMenuOption",
+                "add_condition" => "AddDataSelectorCondition",
                 _ => null
             };
 

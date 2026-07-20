@@ -74,7 +74,11 @@ namespace GxMcp.Gateway.Tests
             //   2026-07-20 (issue #39 batch 2 authoring): 15100 → 15400 for the new
             //   genexus_authoring tool (add_external_method / add_external_property /
             //   add_menu_option). Measured ~15300 tokens; ~100 headroom.
-            Assert.True(approxTokens < 15400, $"tool_definitions.json is ~{approxTokens} tokens; budget 15400.");
+            //   2026-07-20 (issue #39 batch 3): 15400 → 15600 for genexus_authoring
+            //   add_condition (Data Selector filter). (add_theme_color was prototyped
+            //   then dropped — classic Theme colors are a virtual-part projection,
+            //   IDE-only, like SDPanel parts.) Measured ~15330 tokens; ~270 headroom.
+            Assert.True(approxTokens < 15600, $"tool_definitions.json is ~{approxTokens} tokens; budget 15600.");
         }
     }
 }

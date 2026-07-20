@@ -198,7 +198,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Author members of object types the structure DSL doesn't cover. add_external_method / add_external_property add a method (with parameters) or property to an External Object; add_menu_option adds an option to a Menu (target = a KB object to call). name = the ExternalObject/Menu name.",
+      "description": "Author members of object types the structure DSL doesn't cover. add_external_method / add_external_property add a method (with parameters) or property to an External Object; add_menu_option adds an option to a Menu (target = a KB object to call); add_condition adds a filter expression to a Data Selector. name = the target object.",
       "inputSchema": {
         "examples": [
           {
@@ -216,6 +216,13 @@
               "description": "Customers",
               "target": "CustomerWW"
             }
+          },
+          {
+            "action": "add_condition",
+            "name": "ActiveCustomers",
+            "payload": {
+              "source": "CustomerActive = True"
+            }
           }
         ],
         "properties": {
@@ -223,7 +230,8 @@
             "enum": [
               "add_external_method",
               "add_external_property",
-              "add_menu_option"
+              "add_menu_option",
+              "add_condition"
             ],
             "type": "string"
           },
@@ -232,11 +240,11 @@
             "type": "string"
           },
           "name": {
-            "description": "ExternalObject or Menu name.",
+            "description": "ExternalObject / Menu / DataSelector name.",
             "type": "string"
           },
           "payload": {
-            "description": "add_external_method:{name,returnType?,parameters?:[{name,type?,inout?}]}. add_external_property:{name,type?}. add_menu_option:{description,target?,optionCode?}.",
+            "description": "add_external_method:{name,returnType?,parameters?:[{name,type?,inout?}]}. add_external_property:{name,type?}. add_menu_option:{description,target?,optionCode?}. add_condition:{source}.",
             "type": "object"
           }
         },
