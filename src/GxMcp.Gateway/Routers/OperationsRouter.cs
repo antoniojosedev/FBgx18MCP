@@ -1186,6 +1186,10 @@ namespace GxMcp.Gateway.Routers
             if (string.Equals(action, "list_controls", System.StringComparison.OrdinalIgnoreCase))
                 return new { module = "UserControls", action = "Run", @params = args };
 
+            // P3: Design System Object tokens/classes/images over DesignSystemHelper.
+            if (string.Equals(action, "design_system", System.StringComparison.OrdinalIgnoreCase))
+                return new { module = "DesignSystem", action = "Run", @params = args };
+
             string? objectName = args?["name"]?.ToString();
             if (string.IsNullOrWhiteSpace(objectName))
             {

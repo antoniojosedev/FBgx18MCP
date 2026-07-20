@@ -20,20 +20,20 @@ In practice: you point the MCP at your KB, then ask your AI assistant things lik
 
 ## What you can do with it
 
-A quick map of what the agent can do against your real KB through the **44 tools** (details in [Tool Surface](#tool-surface)):
+A quick map of what the agent can do against your real KB through the **46 tools** (details in [Tool Surface](#tool-surface)):
 
 | Area | What the agent can do |
 |---|---|
 | 🔎 **Explore** | Search & list objects, read any part (source, rules, events, structure, docs, pattern XML), inspect metadata & callers, regex-search source, view the navigation report |
-| ✏️ **Edit code** | Edit any object part (`full`/`patch`/`ops` modes), variables CRUD, format, create & delete objects, edit + rebuild callers in one shot |
-| 🗄️ **Author the data model** | Transaction structure (DSL), **unique/non-unique indexes** (create & drop), **attribute formulas & subtypes**, level Description/Image attributes, **Domain enum values**, folders & modules |
+| ✏️ **Edit code** | Edit any object part (`full`/`patch`/`ops` modes), variables CRUD, format, create & delete objects, scaffold a Procedure from a **curl command**, edit + rebuild callers in one shot |
+| 🗄️ **Author the data model** | Transaction structure (DSL), **unique/non-unique indexes** (create & drop), **attribute formulas & subtypes**, level Description/Image attributes, **Domain enum values**, folders & modules, table↔transaction relations & redundant-attribute detection |
 | 🧩 **Author other objects** | External Object methods & properties, Menu options, REST API objects, WorkWithPlus / WorkWith patterns |
-| 🎨 **UI & WorkWithPlus** | Full read/write of pattern XML (controls, actions, grids, orders, groups), theme classes & styling, native WebForm/layout edits, headless-browser verification |
-| 🔬 **Analyze** | Impact/dependency analysis, complexity & code metrics, naming, explain-what-this-does, security audit, generated-SQL & DDL preview, schema-drift check |
-| 🛠️ **Build & test** | Build (full or fast `compile_check`), validate, reorg, index, run native GXtest tests |
+| 🎨 **UI & WorkWithPlus** | Full read/write of pattern XML (controls, actions, grids, orders, groups), theme classes & styling, native WebForm/layout edits, **control catalog & design-system tokens/classes/images**, headless-browser verification |
+| 🔬 **Analyze** | Impact/dependency analysis, complexity & code metrics, naming, explain-what-this-does, KB activity/freshness, reorg/DDL impact preview, native security scan, schema-drift check |
+| 🛠️ **Build, test & deploy** | Build (full or fast `compile_check`), validate, reorg, index, run native GXtest tests, deploy the application (targets + deploy) |
 | 🔀 **Refactor & compare** | Rename across the KB, extract procedure, compare & merge objects (IDE parity) |
-| 🌿 **Versioning & teams** | KB model versions/branches, GXserver (Team Development) sync, git-style history, multi-KB parallel work |
-| 🔐 **Security** | GAM / integrated-security provisioning, KB security audit |
+| 🌿 **Versioning, transfer & teams** | KB model versions/branches, **real XPZ export/import** (dependency-aware), GXserver (Team Development) sync + **CI pipelines**, git-style history, multi-KB parallel work |
+| 🔐 **Security** | GAM / integrated-security provisioning, KB security audit + native Security Scanner |
 
 It works through the **native GeneXus SDK** — the same code paths the IDE uses — so edits are real and validated, not text hacks on KB files.
 
@@ -234,7 +234,7 @@ Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) 
 
 ## Tool Surface
 
-The worker exposes **44 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
+The worker exposes **46 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
 
 **Orientation & health**
 - `genexus_whoami` — KB context, version, worker/index/database health, self-update check, next-step hints
@@ -255,7 +255,7 @@ The worker exposes **44 tools** to the MCP router, grouped by capability below. 
 - `genexus_edit_and_build` — edit + rebuild callers in one call
 - `genexus_edit_form` — semantic WebForm edits
 - `genexus_variable` — Variables-part CRUD
-- `genexus_create` — creation umbrella (Transaction, Procedure, Domain, SDT, API, Folder, Module, …)
+- `genexus_create` — creation umbrella (Transaction, Procedure, Domain, SDT, API, Folder, Module, `curl_procedure` = scaffold a Procedure from a curl command, …)
 - `genexus_delete_object` — delete an object
 - `genexus_format` — format a code snippet with the worker's rules
 
@@ -271,26 +271,28 @@ The worker exposes **44 tools** to the MCP router, grouped by capability below. 
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
 
 **Analysis, docs & API**
-- `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, explain, …)
+- `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, explain, `kb_stats` = KB activity/freshness, `table_relations` = table↔transaction relations + redundant attrs, …)
 - `genexus_doc` — generate wiki / sequence diagrams / health reports
 - `genexus_api` — introspect REST endpoints exposed by HTTP procedures
-- `genexus_security` — audit KB security
+- `genexus_security` — audit KB security: `audit_gam` (env/GAM props), `scan_secrets` (regex over Source), `scan_native` (the SDK's own Security Scanner, `ISecurityScannerService`)
 
 **Lifecycle, build, test & DB**
 - `genexus_lifecycle` — build (incl. `compile_check`), validate, index, reorg, poll status
 - `genexus_test` — run native GXtest tests
-- `genexus_db` — DB umbrella: schema-drift, `sql_ddl`/`sql_navigation`, static index advisor, `sample_data`, Domain/SDT type introspection, translation import
+- `genexus_db` — DB umbrella: schema-drift, `sql_ddl`/`sql_navigation`, static index advisor, `sample_data`, Domain/SDT type introspection, translation import, `reorg_impact` (reorg/DDL impact preview; `deep=true` runs specification)
+- `genexus_deploy` — deploy application (`IDeploymentService`): `list_targets` (read) / `deploy` (destructive, `confirm=true`)
 - `genexus_run_object` / `genexus_browser` — resolve runtime URL and headless-browser verification
 
 **Native layout / UI**
-- `genexus_layout` — SDK layout/WebForm ops (`get_tree`, `find_controls`, `set_property`, `add_printblock`, `get_preview`, …)
+- `genexus_layout` — SDK layout/WebForm ops (`get_tree`, `find_controls`, `set_property`, `add_printblock`, `get_preview`, `list_controls` = control/theme-class catalog, `design_system` = DSO tokens/classes/images, …)
 
 **KB pool, versioning & team dev**
 - `genexus_kb` — multi-KB pool (`list`/`open`/`close`/`set_default`)
 - `genexus_module` — Module Manager (`IModuleManagerService`)
 - `genexus_kb_version` — model version/branch management (Create/Activate/Revert)
 - `genexus_versioning` — versioning umbrella (git-style history over the KB)
-- `genexus_gxserver` — GXserver / Team Development sync
+- `genexus_gxserver` — GXserver / Team Development sync, incl. `pipeline_*` (CI pipelines via `IContinuousIntegrationService`)
+- `genexus_transfer` — real XPZ export/import (`IKnowledgeManagerService`, dependency-aware): `export` / `inspect` / `import`
 - `genexus_memory` — per-KB fact store for the agent
 
 **Security provisioning, IO & meta**

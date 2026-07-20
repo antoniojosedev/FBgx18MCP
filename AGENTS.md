@@ -188,6 +188,21 @@ These 18 tools graduated from `DEFERRED`/`Future` stubs into live services. Each
 - **`genexus_github action=create_pr title=<t> body=<b>`** — shells out to the `gh` CLI from the KB path (or `workingDir`). Returns `{status, url}` on success, `{code:"GhCliNotInstalled"}` when the CLI is missing, or `{code:"GhExitNonZero", exitCode, stderr}`.
 - **`genexus_kb_import from=<alias> name=<obj> type=<TypeName>`** — gateway-side filesystem copy of one object's part files from another KB into the active KB. Dependencies NOT resolved. Returns `{status, filesCopied, targetDir}`. Must run `genexus_lifecycle action=index force=true` afterwards to make the imported object discoverable.
 
+## Tool playbook — SDK-endpoint expansion (P0/P1/P2 + one P3)
+
+Ten SDK capabilities wired from `docs/sdk_uncovered_endpoints_2026-07-20.md` (see `docs/sdk_endpoints_roadmap.md`). Several wrap services **not registered in the headless worker** — resolved by constructing the public concrete impl directly (`SdkServiceLocator.ConstructOrResolve`, see `reference_headless_service_registration_wall` and the roadmap's "wall" table). All live-verified over HTTP on a real KB.
+
+- **`genexus_transfer action=export|inspect|import`** — real XPZ over `IKnowledgeManagerService` (dependency-aware, unlike the fs-copy `genexus_io`/`genexus_kb_import`). `export` needs `targets[]`+`outputFile`; `inspect file=<xpz>` explores without importing; `import` is destructive — `dryRun` defaults true (previews via ExploreExport), `dryRun=false` needs `confirm=true`.
+- **`genexus_deploy action=list_targets|deploy`** — `IDeploymentService`/`IDeploymentTargetService`. `list_targets` (default, read-only) enumerates configured targets (AWS EB, Tomcat, IIS, …); `deploy` needs `confirm=true`.
+- **`genexus_security action=scan_native`** — the SDK's own Security Scanner (`ISecurityScannerService.Scan` via a `SecurityScanPlan.GetForModel` plan + an `IScannerOuput` collector). Distinct from `scan_secrets` (regex) and `audit_gam` (env props).
+- **`genexus_analyze mode=kb_stats`** — last object/table change + last reorg + derived `reorgLikelyNeeded` (`IModelInformationService`); optional per-object-type operation history with `typeGuid`.
+- **`genexus_analyze mode=table_relations name=<Transaction>`** — associated table, other transactions on it, and redundant / possibly-redundant attributes (`ITablesService`; table read via `transaction.Structure.Root.AssociatedTable`).
+- **`genexus_db action=reorg_impact`** — cheap timestamp heuristic by default; `deep=true` runs `ISpecifierService.ImpactDatabase` (specification, build-heavy). For the DDL SQL use `sql_ddl`.
+- **`genexus_gxserver action=pipeline_list|pipeline_runs|pipeline_output|pipeline_run|pipeline_abort`** — CI pipelines over `IContinuousIntegrationService` on a GXserver-linked KB. `pipeline_run`/`pipeline_abort` need `confirm=true`; off a linked KB returns `{connected:false}`.
+- **`genexus_layout action=list_controls`** — control-definition catalog (user controls + built-ins) via `IUserControlsManagerService`.
+- **`genexus_layout action=design_system [name=<DSO>]`** — a Design System Object's token groups, theme classes, images and referenced DSOs (`DesignSystemHelper`). Omit `name` to use the first DSO. Read-only (DSO write ops exist in the SDK but aren't wired).
+- **`genexus_create action=curl_procedure name=<Proc> curl="curl …"`** — scaffold a REST-consumer Procedure from a curl command (`ICurlGeneratorService`, IDE "Import from cURL").
+
 ## Authoring notes (issue #30)
 
 ### API-object routing grammar

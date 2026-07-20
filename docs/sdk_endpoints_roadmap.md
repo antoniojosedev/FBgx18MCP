@@ -121,12 +121,23 @@ Shipped + live-verified (all via `ConstructOrResolve` concrete-impl, `Artech.Pac
 - #8 translations — `ILanguageService` is the **source-code parser / type manager** (GetClass, ResolveMethod, GetNamespaces), NOT human-language i18n. Wrong entry point; `genexus_db action=translations_import` (CSV) already covers i18n.
 - #11 data-type catalog — `IDataTypesService.GetSortedTypes` needs a CLR-`Type` arg and duplicates the existing `genexus_db action=types_list` (Domains/SDTs). Low marginal value.
 
-## P3 — later
+## P3 — gated 2026-07-20; one built, rest dropped
 
-Service-DL generation (`IRestServiceDLGeneratorService` / OData / gRPC), chatbot
-(`IBotGeneratorService`), app help (`IHelpGeneratorService`), native full-text search
-(`ISearchService`), KB conversion (`IKBConversionService`), GXplorer SQL
-(`IGXplorerSpecifierService`), BPM (`IGxpm*`). Each gets a feasibility gate before build.
+Built + live-verified:
+- **`genexus_layout action=design_system`** — DSO token groups / theme classes / images / referenced DSOs via `DesignSystemHelper`. The one P3 helper with real value + clean input (complements `list_controls`).
+
+Dropped after the gate (niche / duplicate / wrong-surface / build-time):
+- **Full-text search** (`ISearchService`) — duplicates `genexus_query` + `genexus_search_source`.
+- **Service-DL generation** (`IRestServiceDLGeneratorService`/OData/gRPC) — build-time codegen, not a discrete agent action.
+- **Chatbot** (`IBotGeneratorService`) — needs a pre-existing Chatbot object + Dialogflow config; niche.
+- **App help** (`IHelpGeneratorService`) — complex `ApplicationHelpGeneratorOptions`; niche output.
+- **KB conversion** (`IKBConversionService`) — pointless for an already-open KB (it converts on open).
+- **GXplorer SQL** (`IGXplorerSpecifierService`) — `Initialize`+`StartDaemon` (uncertain runtime); value overlaps `genexus_analyze mode=impact/dependencies`.
+- **BPM** (`IGxpm*`) — large niche process-modeling surface.
+
+Not built = deliberate (every tool costs schema-budget tokens each session); the valuable
+agent-facing SDK surface is now covered. Remaining gaps are the model-axis walls
+(folder move, WWP persist, full pattern build sequence) tracked in `sdk_coverage_gap_matrix.md`.
 
 ## Build order (this task)
 

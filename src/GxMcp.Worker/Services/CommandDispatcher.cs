@@ -115,6 +115,8 @@ namespace GxMcp.Worker.Services
         private readonly UserControlsListService _userControlsListService;
         // genexus_create action=curl_procedure — curl→Procedure over ICurlGeneratorService.
         private readonly CurlProcService _curlProcService;
+        // genexus_layout action=design_system — DSO tokens/classes/images over DesignSystemHelper.
+        private readonly DesignSystemService _designSystemService;
         private readonly SdPanelService _sdPanelService;
         private readonly MultiAgentLockService _multiAgentLockService;
         private readonly WhatIfService _whatIfService;
@@ -241,6 +243,7 @@ namespace GxMcp.Worker.Services
             _tableRelationsService = new TableRelationsService(_kbService, _objectService);
             _userControlsListService = new UserControlsListService(_kbService);
             _curlProcService = new CurlProcService(_kbService, _objectService);
+            _designSystemService = new DesignSystemService(_kbService, _objectService);
             _sdPanelService = new SdPanelService(_objectService, _writeService);
             _multiAgentLockService = new MultiAgentLockService(_kbService);
             _whatIfService = new WhatIfService(_analyzeService, _objectService);
@@ -587,6 +590,7 @@ namespace GxMcp.Worker.Services
                 ["tablerelations"] = Handle_TableRelations,
                 ["usercontrols"] = Handle_UserControls,
                 ["curlproc"] = Handle_CurlProc,
+                ["designsystem"] = Handle_DesignSystem,
                 ["sdpanel"] = Handle_SdPanel,
                 ["multiagentlock"] = Handle_MultiAgentLock,
                 ["whatif"] = Handle_WhatIf,
@@ -1981,6 +1985,12 @@ namespace GxMcp.Worker.Services
         {
             // genexus_create action=curl_procedure — scaffold a Procedure from a curl command (write).
             return _curlProcService.Run(args ?? new JObject());
+        }
+
+        private string Handle_DesignSystem(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_layout action=design_system — DSO tokens/classes/images (read-only).
+            return _designSystemService.Run(args ?? new JObject());
         }
 
         private string Handle_SdPanel(JObject request, string method, string action, string target, string payload, JObject args)
