@@ -447,6 +447,8 @@ namespace GxMcp.Gateway.Routers
 
                 case "genexus_structure":
                     return ConvertStructureToolCall(args);
+                case "genexus_authoring":
+                    return ConvertAuthoringToolCall(args);
                 case "genexus_layout":
                     return ConvertLayoutToolCall(args);
 
@@ -1093,6 +1095,11 @@ namespace GxMcp.Gateway.Routers
                 "get_visual" => "GetVisualStructure",
                 "update_visual" => "UpdateVisualStructure",
                 "get_indexes" => "GetVisualIndexes",
+                "create_index" => "CreateIndex",
+                "drop_index" => "DropIndex",
+                "set_attribute" => "SetAttributeProperties",
+                "set_level" => "SetLevelProperties",
+                "set_domain" => "SetDomainProperties",
                 "get_logic" => "GetLogicStructure",
                 _ => null
             };
@@ -1107,6 +1114,28 @@ namespace GxMcp.Gateway.Routers
                 payload = args?["payload"]?.Type == JTokenType.Object || args?["payload"]?.Type == JTokenType.Array
                     ? args?["payload"]?.ToString()
                     : args?["payload"]?.ToString()
+            };
+        }
+
+        private static object? ConvertAuthoringToolCall(JObject? args)
+        {
+            string? action = args?["action"]?.ToString();
+            string? mappedAction = action switch
+            {
+                "add_external_method" => "AddExternalMethod",
+                "add_external_property" => "AddExternalProperty",
+                "add_menu_option" => "AddMenuOption",
+                _ => null
+            };
+
+            if (mappedAction == null) return null;
+
+            return new
+            {
+                module = "Authoring",
+                action = mappedAction,
+                target = args?["name"]?.ToString(),
+                payload = args?["payload"]?.ToString()
             };
         }
 

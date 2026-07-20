@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.27.0 — 2026-07-20
+
+### Added
+
+- **`genexus_structure action=create_index` — author a unique index on a Transaction/Table (issue #39).** GeneXus has no `Unique(...)` rule; uniqueness is enforced with an index. This new action creates one over one or more attributes: `genexus_structure action=create_index name="Country" payload={"attributes":["CountryName"],"unique":true}`. Pass `unique:false` for a non-unique index, `name` to set the index name, `order:"Descending"` to flip sort order. Run `genexus_lifecycle action=reorg` afterward to apply the constraint to the physical database. This closes the MCP-only workflow for uniqueness constraints — no IDE round-trip.
+- **`genexus_structure action=drop_index` — remove a user-defined index.** Pairs with `create_index`: `payload={"indexName":"IX..."}`. Only indexes with `source:User` can be dropped; SDK-generated (`Automatic`) indexes are refused. `get_indexes` now reports each index's `source` so you can tell them apart.
+- **`genexus_structure action=set_attribute` — write attribute-level properties the structure DSL can't express.** On a KB-global attribute: `formula` (define a computed attribute, e.g. `payload={"formula":"sum(InvoiceAmount)"}`), `subtypeOf` (make it a subtype of another attribute), `title`, `columnTitle`, `contextualTitle`, `isCollection`, `basedOnDomain`. Previously these required the IDE.
+- **`genexus_structure action=set_level` — set a Transaction level's Description / Image attribute.** `payload={"descriptionAttribute":"CustomerName"}` (optionally `imageAttribute`, and `level` to target a sub-level). The attribute must belong to that level.
+- **`genexus_structure action=set_domain` — edit an existing Domain's enum values and base type.** `payload={"enumValues":[{"name":"Active","value":"A"},…]}` replaces the domain's enum set (character-family values are auto-quoted); optional `dataType`/`length`/`decimals`/`signed`. Domain *creation* already accepted enum values; this closes the edit-after gap.
+- **`genexus_authoring` — a new tool for authoring members of object types the structure DSL doesn't cover.** `add_external_method` / `add_external_property` add a method (with parameters) or a property to an **External Object** (`payload={"name":"apiKey","type":"Character"}`); `add_menu_option` adds an option to a **Menu** that calls a KB object (`payload={"description":"Customers","target":"CustomerWW"}` — a target object is required). Auto-assigns the next menu option code when you don't pass one.
+
+### Fixed
+
+- **Editing a Transaction's `Rules` with an invalid rule now tells you what's wrong instead of a bare "Erro" (issue #39).** Writing `Rules` that contained `Unique(Attribute);` failed with `Part save failed: Erro` and no detail, which looked like the whole `Rules` part was broken. It wasn't — valid `Rules` writes (`Default`, `Error`, `NoAccept`, assignments, conditional rules, proc calls) always worked and still do. The one bad rule was `Unique`, which GeneXus does not recognize (the SDK reports `src0295: unknown rule 'Unique'`). `genexus_edit part=Rules` now returns an actionable `hint` for this: enforce uniqueness with `genexus_structure action=create_index` instead. The `Unique` clause only ever existed for queries and was removed after GeneXus 18 Upgrade 9.
+
+### Internal
+
+- **create_index:** `IndexService.CreateIndex` resolves the transaction's associated table, then `Index.Create(model)` + `IndexType.Unique`/`Duplicate` + `IndexSource.User`, populates `IndexStructure.Members` (`IndexMember` = `Attribute` + `IndexOrder`), attaches via `TableIndexesPart.AddIndex` (the `Index.Table` setter is read-only, so association is through the part), then `index.EnsureSave()` + `tbl.EnsureSave()` inside a `BeginTransaction`. Verified to persist across a full worker kill+respawn (disk re-read). Routed through `genexus_structure` (`OperationsRouter.ConvertStructureToolCall` → dispatcher `CreateIndex`).
+- **Rules hint:** the rules specifier throws `ValidationException` with a bare "Erro" from `part.Save()` and empty `GetSdkMessages`/`GetDiagnostics`. `WritePolicy.FindInvalidRuleKeywords` scans the statement-leading keyword of each `;`-delimited rule against a curated denylist (`InvalidRuleKeywords`, currently `Unique`) after stripping comments; `BuildInvalidRuleHint` maps hits to guidance. `WritePolicy.IsUninformativeSaveError` strips the `Part save failed:` wrapper before the bareness check. `CreateTransactionErrorResponse` attaches the hint only when the part is `Rules`, the error is uninformative, and a keyword matches — it never blocks a write. Note: routing Rules through the `IsLogicalSourcePart` retry path (as proposed in a community patch) was evaluated and rejected — it exposes Rules to the pre-existing `EnsureSave(false)` validation-bypass branch, which can persist a rule that fails `obj.Validate()`. New tests: `WritePolicyErrorEnrichmentTests` (+20).
+
 ## v2.26.1 — 2026-07-20
 
 ### Changed

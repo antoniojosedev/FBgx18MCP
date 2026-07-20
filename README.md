@@ -18,6 +18,27 @@ In practice: you point the MCP at your KB, then ask your AI assistant things lik
 
 ---
 
+## What you can do with it
+
+A quick map of what the agent can do against your real KB through the **44 tools** (details in [Tool Surface](#tool-surface)):
+
+| Area | What the agent can do |
+|---|---|
+| 🔎 **Explore** | Search & list objects, read any part (source, rules, events, structure, docs, pattern XML), inspect metadata & callers, regex-search source, view the navigation report |
+| ✏️ **Edit code** | Edit any object part (`full`/`patch`/`ops` modes), variables CRUD, format, create & delete objects, edit + rebuild callers in one shot |
+| 🗄️ **Author the data model** | Transaction structure (DSL), **unique/non-unique indexes** (create & drop), **attribute formulas & subtypes**, level Description/Image attributes, **Domain enum values**, folders & modules |
+| 🧩 **Author other objects** | External Object methods & properties, Menu options, REST API objects, WorkWithPlus / WorkWith patterns |
+| 🎨 **UI & WorkWithPlus** | Full read/write of pattern XML (controls, actions, grids, orders, groups), theme classes & styling, native WebForm/layout edits, headless-browser verification |
+| 🔬 **Analyze** | Impact/dependency analysis, complexity & code metrics, naming, explain-what-this-does, security audit, generated-SQL & DDL preview, schema-drift check |
+| 🛠️ **Build & test** | Build (full or fast `compile_check`), validate, reorg, index, run native GXtest tests |
+| 🔀 **Refactor & compare** | Rename across the KB, extract procedure, compare & merge objects (IDE parity) |
+| 🌿 **Versioning & teams** | KB model versions/branches, GXserver (Team Development) sync, git-style history, multi-KB parallel work |
+| 🔐 **Security** | GAM / integrated-security provisioning, KB security audit |
+
+It works through the **native GeneXus SDK** — the same code paths the IDE uses — so edits are real and validated, not text hacks on KB files.
+
+---
+
 ## Prerequisites
 
 Before you start, make sure you have:
@@ -145,6 +166,13 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Add a new attribute CreatedAt of type DateTime to the Customer transaction."*
 - *"Rename the variable &qty to &quantity in procedure CreateOrder."*
 
+**Data model authoring** (no IDE round-trip)
+- *"Make CustomerEmail unique on the Customer transaction."* (creates a unique index)
+- *"Turn CustomerBalance into a formula: sum(InvoiceAmount)."*
+- *"Add the enum values Active/Inactive/Pending to the Status domain."*
+- *"Add a property apiKey and a method Connect(url) to the PaymentGateway external object."*
+- *"Add a menu option 'Customers' to MainMenu that opens CustomerWW."*
+
 **WorkWithPlus pattern editing** (full structural + theming control)
 - *"In WorkWithPlusOrder, add a 'Duplicate' button to the transaction view alongside Save/Cancel/Delete."*
 - *"Group the Customer transaction attributes into a 'Contact Info' section with theme class GroupTelaResp."*
@@ -162,7 +190,7 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Build the KB and report any errors."*
 - *"Run the unit tests and show me which failed."*
 
-The agent picks the right tool from the **30+ tools** the MCP exposes (read, edit, refactor, analyze, build, layout automation, history, SQL preview, etc.). The full tool list is in [Tool Surface](#tool-surface) below.
+The agent picks the right tool from the **40+ tools** the MCP exposes (read, edit, refactor, analyze, build, data-model authoring, layout automation, DB/DDL, versioning, security, SQL preview, etc.). The full tool list is in [Tool Surface](#tool-surface) below.
 
 ---
 
@@ -206,21 +234,78 @@ Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) 
 
 ## Tool Surface
 
-The worker exposes these tool families to the MCP router. *(Detailed schemas in [`GEMINI.md`](GEMINI.md).)*
+The worker exposes **44 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
 
-- **Search & Discovery** — `genexus_query`, `genexus_read`, `genexus_inspect`, `genexus_list_objects`, `genexus_properties`
-- **Editing & Architecture** — `genexus_edit`, `genexus_create_object`, `genexus_delete_object`, `genexus_refactor`, `genexus_forge`, `genexus_add_variable`
-- **Analysis** — `genexus_analyze` (modes: `linter`, `navigation`, `hierarchy`, `impact`, `data_context`, `ui_context`, `pattern_metadata`, `summary`, `explain`), `genexus_inject_context`, `genexus_doc`, `genexus_search_source`
-- **File System & Assets** — `genexus_asset`, `genexus_export_object`, `genexus_import_object`
-- **History & DB** — `genexus_history`, `genexus_sql` (`action=ddl` or `action=navigation`), `genexus_structure`
-- **Lifecycle & Build** — `genexus_lifecycle`, `genexus_test`, `genexus_format`
-- **Native Layout SDK** — `genexus_layout` (`get_tree`, `find_controls`, `set_property`, `rename_printblock`, `add_printblock`, `get_preview`, …)
-- **KB pool (v2.3.0+)** — `genexus_kb` (`list`, `open`, `close`, `set_default`) for multi-KB parallel work
-- **WorkWithPlus pattern editing** — full read/write of `PatternInstance` and `PatternVirtual` parts via `genexus_read` / `genexus_edit`. Supports the entire pattern XML surface: containers (`<table>`, groups), controls (`<textBlock>`, `<errorViewer>`, `<attribute>`, `<gridAttribute>`, `<filterAttribute>`), actions (`<standardAction>`, `<userAction>`), grids, orders, rules, and event blocks. Both **Transaction** and **Selection** views are addressable independently (XPath `/instance/transaction/...` vs `/instance/level/selection/...`).
-- **Documentation & Help parts** — `Documentation` (rich text / markdown) and `Help` (HTML) are now first-class write targets via `genexus_edit` (fixed in v2.4.4 — both parts had a silent no-op bug previously).
-- **Theme classes & styling** — apply real ThemeClass values (`themeClass`, `buttonClass`, `groupThemeClass`, `cellThemeClass`, etc) so generated screens use the KB's design system. Discover the available classes with `genexus_list_objects --typeFilter ThemeClass --nameFilter <Button|TextBlock|Title>` and apply them in the pattern XML.
+**Orientation & health**
+- `genexus_whoami` — KB context, version, worker/index/database health, self-update check, next-step hints
+- `genexus_doctor` — connection + install + cache health check
+- `genexus_recipe` — named playbooks / self-extending macros
+- `genexus_telemetry` — observability (metrics, latency, errors)
+
+**Search & discovery**
+- `genexus_query` — object search (prefixes `name:`, `type:`, `usedby:`, `parent:`, …)
+- `genexus_list_objects` — paginated object listing with aggregates
+- `genexus_read` — read any part of an object (source, structure, rules, events, docs, pattern XML, …)
+- `genexus_inspect` — one-shot object snapshot (metadata, variables, structure, signature, callers)
+- `genexus_search_source` — regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source
+- `genexus_navigation` — the IDE "View Navigation" report
+
+**Editing**
+- `genexus_edit` — edit any object part; modes `full` / `patch` / `ops`
+- `genexus_edit_and_build` — edit + rebuild callers in one call
+- `genexus_edit_form` — semantic WebForm edits
+- `genexus_variable` — Variables-part CRUD
+- `genexus_create` — creation umbrella (Transaction, Procedure, Domain, SDT, API, Folder, Module, …)
+- `genexus_delete_object` — delete an object
+- `genexus_format` — format a code snippet with the worker's rules
+
+**Data model & structure authoring**
+- `genexus_structure` — read/write the data model: `get_visual`/`get_logic`, `update_visual` (structure DSL), `create_index`/`drop_index` (unique/non-unique indexes — the GeneXus way to enforce uniqueness), `set_attribute` (Formula, subtype, Title/ColumnTitle, IsCollection, basedOnDomain), `set_level` (level Description/Image attribute), `set_domain` (edit an existing Domain's enum values / base type)
+- `genexus_authoring` — members of object types the structure DSL doesn't cover: `add_external_method`/`add_external_property` (External Objects), `add_menu_option` (Menus)
+- `genexus_properties` — read/update object-level properties
+
+**Refactor, patterns & compare**
+- `genexus_refactor` — rename, extract procedure, WWP condition set
+- `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …)
+- `genexus_compare` — IDE "Compare Objects" parity (`IComparerService`)
+- `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
+
+**Analysis, docs & API**
+- `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, explain, …)
+- `genexus_doc` — generate wiki / sequence diagrams / health reports
+- `genexus_api` — introspect REST endpoints exposed by HTTP procedures
+- `genexus_security` — audit KB security
+
+**Lifecycle, build, test & DB**
+- `genexus_lifecycle` — build (incl. `compile_check`), validate, index, reorg, poll status
+- `genexus_test` — run native GXtest tests
+- `genexus_db` — DB umbrella: schema-drift, `sql_ddl`/`sql_navigation`, static index advisor, `sample_data`, Domain/SDT type introspection, translation import
+- `genexus_run_object` / `genexus_browser` — resolve runtime URL and headless-browser verification
+
+**Native layout / UI**
+- `genexus_layout` — SDK layout/WebForm ops (`get_tree`, `find_controls`, `set_property`, `add_printblock`, `get_preview`, …)
+
+**KB pool, versioning & team dev**
+- `genexus_kb` — multi-KB pool (`list`/`open`/`close`/`set_default`)
+- `genexus_module` — Module Manager (`IModuleManagerService`)
+- `genexus_kb_version` — model version/branch management (Create/Activate/Revert)
+- `genexus_versioning` — versioning umbrella (git-style history over the KB)
+- `genexus_gxserver` — GXserver / Team Development sync
+- `genexus_memory` — per-KB fact store for the agent
+
+**Security provisioning, IO & meta**
+- `genexus_gam` — GAM / integrated-security provisioning (`IIntegratedSecurityService`)
+- `genexus_io` — assets, part-text exchange, screenshots, OCR
+- `genexus_sdk_probe` — dump the live SDK surface (types/methods/props) for capability discovery
+- `genexus_worker_reload` — hot-swap the worker without restarting the client
 
 > **Multi-KB (v2.3.0+):** every non-meta tool takes an optional `kb` argument (alias or absolute path). The gateway can hold up to `Server.MaxOpenKbs` (default 3) KBs open at once, each in its own Worker process — calls to different KBs run truly in parallel. See [Advanced Configuration](#advanced-configuration) for the `KBs[]` schema.
+
+### WorkWithPlus & theming (via `genexus_read` / `genexus_edit`)
+
+- Full read/write of `PatternInstance` / `PatternVirtual` XML: containers (`<table>`, groups), controls (`<textBlock>`, `<attribute>`, `<gridAttribute>`, `<filterAttribute>`, `<errorViewer>`), actions (`<standardAction>`, `<userAction>`), grids, orders, rules, event blocks. Transaction and Selection views are addressable independently.
+- `Documentation` (markdown) and `Help` (HTML) are first-class write targets.
+- Apply real ThemeClass values (`themeClass`, `buttonClass`, `groupThemeClass`, …); discover them with `genexus_list_objects --typeFilter ThemeClass`.
 
 **Edit modes** (`genexus_edit`): `full` (whole-part replacement, default), `patch` (Replace/Insert_After/Append over a context anchor — works on source code AND pattern XML), `ops` (typed semantic ops like `set_attribute`, `add_rule` for source-bearing parts).
 

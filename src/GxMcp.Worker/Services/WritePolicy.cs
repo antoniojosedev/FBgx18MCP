@@ -85,6 +85,25 @@ namespace GxMcp.Worker.Services
             return false;
         }
 
+        // Same as IsBareGenericError but tolerant of the "Part save failed: " / "Part save
+        // reported errors: " wrappers WriteService adds around the raw SDK exception text.
+        // "Part save failed: Erro" is still an uninformative error even though it isn't the
+        // bare token "Erro".
+        public static bool IsUninformativeSaveError(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return true;
+            string trimmed = message.Trim();
+            foreach (var prefix in new[] { "Part save failed:", "Part save reported errors:" })
+            {
+                if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    trimmed = trimmed.Substring(prefix.Length).Trim();
+                    break;
+                }
+            }
+            return IsBareGenericError(trimmed);
+        }
+
         // Picks the most informative message available. When the SDK raises a bare "Erro" but
         // part.GetSdkMessages() or SdkDiagnosticsHelper.GetDiagnostics returned the real text
         // (e.g. "src0059: Esperando 'EndFor'..."), prefer that text. Otherwise return the
@@ -177,6 +196,66 @@ namespace GxMcp.Worker.Services
             if (undeclaredVars == null || undeclaredVars.Count == 0) return null;
             string list = string.Join(", ", undeclaredVars.Select(v => "&" + v));
             return $"src0216 likely caused by undeclared variable(s) {list}. Use genexus_add_variable with typeName=<SDT|domain> to declare and bind before re-saving the Source.";
+        }
+
+        // issue #39: agents (coming from SQL / other ORMs) commonly write pseudo-rules that
+        // GeneXus does not accept in the Rules part. The rules specifier rejects them with a
+        // bare "Erro" and no line diagnostic, so the failure is uninformative. Map each such
+        // statement-leading keyword to actionable guidance. Consulted ONLY to enrich an
+        // already-failed Rules save — never to block a write (a real object could legitimately
+        // be named the same, and blocking would be a false negative).
+        private static readonly Dictionary<string, string> InvalidRuleKeywords =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Unique"] =
+                    "'Unique' is not a GeneXus transaction rule (the SDK reports src0295 \"Regra desconhecida\"). " +
+                    "Enforce attribute uniqueness with a unique index: call genexus_structure action=create_index " +
+                    "name=<Transaction> payload={\"attributes\":[\"<Attr>\"],\"unique\":true}, then " +
+                    "genexus_lifecycle action=reorg to apply it to the database. The Unique clause only ever " +
+                    "existed for queries (For Each) and was removed after GeneXus 18 Upgrade 9.",
+            };
+
+        // Statement-leading identifier immediately followed by '(' — i.e. the rule keyword of a
+        // `Keyword(args) ...;` rule. Statements are ';'-delimited in the Rules DSL; the first has
+        // no leading ';', hence (?:^|;). A member call like `Obj.Method(` is not matched because
+        // the '.' breaks the (?:^|;)\s* anchor.
+        private static readonly Regex RuleStatementLeadRegex = new Regex(
+            @"(?:^|;)\s*(?<kw>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        // Removes /* block */ and // line comments so a keyword mentioned in a comment doesn't
+        // produce a spurious hint.
+        private static string StripRuleComments(string source)
+        {
+            if (string.IsNullOrEmpty(source)) return source;
+            source = Regex.Replace(source, @"/\*.*?\*/", " ", RegexOptions.Singleline);
+            source = Regex.Replace(source, @"//[^\r\n]*", " ");
+            return source;
+        }
+
+        // Returns the distinct statement-leading keywords in a Transaction Rules source that
+        // GeneXus rejects as rules (see InvalidRuleKeywords). Order-preserving, de-duplicated.
+        public static IReadOnlyList<string> FindInvalidRuleKeywords(string rulesSource)
+        {
+            if (string.IsNullOrWhiteSpace(rulesSource)) return Array.Empty<string>();
+            string stripped = StripRuleComments(rulesSource);
+            var hits = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Match m in RuleStatementLeadRegex.Matches(stripped))
+            {
+                string kw = m.Groups["kw"].Value;
+                if (InvalidRuleKeywords.ContainsKey(kw) && seen.Add(kw))
+                {
+                    hits.Add(kw);
+                }
+            }
+            return hits;
+        }
+
+        public static string BuildInvalidRuleHint(IReadOnlyList<string> invalidKeywords)
+        {
+            if (invalidKeywords == null || invalidKeywords.Count == 0) return null;
+            return string.Join(" ", invalidKeywords.Select(k => InvalidRuleKeywords[k]));
         }
 
         public static bool ShouldRetryWithoutPartSave(string partName, string exceptionMessage, string diagnosticText)

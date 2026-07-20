@@ -311,8 +311,30 @@ namespace GxMcp.Worker.Services
                 Logger.Debug("[CreateTransactionErrorResponse] undeclared-var hint failed: " + hintEx.Message);
             }
 
+            // issue #39: a Rules save that fails with a bare "Erro" and no SDK diagnostic is
+            // almost always an invalid pseudo-rule (e.g. `Unique(att);`). Surface the specific
+            // offending keyword with actionable guidance the SDK never gives us.
+            string invalidRuleHint = null;
+            try
+            {
+                if (!string.IsNullOrEmpty(partName) &&
+                    partName.Equals("Rules", System.StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrEmpty(decodedCode) &&
+                    WritePolicy.IsUninformativeSaveError(enrichedError))
+                {
+                    invalidRuleHint = WritePolicy.BuildInvalidRuleHint(
+                        WritePolicy.FindInvalidRuleKeywords(decodedCode));
+                }
+            }
+            catch (Exception hintEx)
+            {
+                Logger.Debug("[CreateTransactionErrorResponse] invalid-rule hint failed: " + hintEx.Message);
+            }
+
             string detailText = WritePolicy.BuildFailureDetails(sdkMessages, issues);
-            string hint = undeclaredHint ?? (string.IsNullOrWhiteSpace(detailText) ? null : detailText);
+            string hint = undeclaredHint
+                ?? invalidRuleHint
+                ?? (string.IsNullOrWhiteSpace(detailText) ? null : detailText);
 
             var nextSteps = new JArray(
                 McpResponse.NextStep(

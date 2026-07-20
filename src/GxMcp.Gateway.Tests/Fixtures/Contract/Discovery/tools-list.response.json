@@ -195,6 +195,63 @@
       "annotations": {
         "destructiveHint": false,
         "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Author members of object types the structure DSL doesn't cover. add_external_method / add_external_property add a method (with parameters) or property to an External Object; add_menu_option adds an option to a Menu (target = a KB object to call). name = the ExternalObject/Menu name.",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "add_external_property",
+            "name": "MyExternalObject",
+            "payload": {
+              "name": "apiKey",
+              "type": "Character"
+            }
+          },
+          {
+            "action": "add_menu_option",
+            "name": "MainMenu",
+            "payload": {
+              "description": "Customers",
+              "target": "CustomerWW"
+            }
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "add_external_method",
+              "add_external_property",
+              "add_menu_option"
+            ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "name": {
+            "description": "ExternalObject or Menu name.",
+            "type": "string"
+          },
+          "payload": {
+            "description": "add_external_method:{name,returnType?,parameters?:[{name,type?,inout?}]}. add_external_property:{name,type?}. add_menu_option:{description,target?,optionCode?}.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_authoring"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
         "openWorldHint": true,
         "readOnlyHint": false
       },
@@ -2661,16 +2718,36 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or update visual and logical structure of GeneXus objects. For layout control trees use genexus_layout get_tree; for object-level visual structure use get_visual here.",
+      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable). Write: update_visual (structure DSL); create_index/drop_index (unique/non-unique indexes — the GeneXus way to enforce uniqueness, there is no Unique() rule); set_attribute (Formula, subtype, Title/ColumnTitle, IsCollection, basedOnDomain on a KB-global attribute); set_level (Transaction level DescriptionAttribute/ImageAttribute); set_domain (edit an existing Domain's enumValues/dataType). After index/type changes run genexus_lifecycle action=reorg. For layout control trees use genexus_layout.",
       "inputSchema": {
         "examples": [
           {
-            "action": "get_visual",
+            "action": "get_indexes",
             "name": "Customer"
           },
           {
-            "action": "get_indexes",
-            "name": "Customer"
+            "action": "create_index",
+            "name": "Country",
+            "payload": {
+              "attributes": [
+                "CountryName"
+              ],
+              "unique": true
+            }
+          },
+          {
+            "action": "set_attribute",
+            "name": "CustomerBalance",
+            "payload": {
+              "formula": "sum(InvoiceAmount)"
+            }
+          },
+          {
+            "action": "set_level",
+            "name": "Customer",
+            "payload": {
+              "descriptionAttribute": "CustomerName"
+            }
           }
         ],
         "properties": {
@@ -2679,6 +2756,11 @@
               "get_visual",
               "update_visual",
               "get_indexes",
+              "create_index",
+              "drop_index",
+              "set_attribute",
+              "set_level",
+              "set_domain",
               "get_logic"
             ],
             "type": "string"
@@ -2688,10 +2770,11 @@
             "type": "string"
           },
           "name": {
+            "description": "Object name. For set_attribute it is the attribute name; for set_domain the domain name.",
             "type": "string"
           },
           "payload": {
-            "description": "Update payload for update_visual.",
+            "description": "update_visual:{children:[...]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?}. drop_index:{indexName}. set_attribute:{formula?,subtypeOf?,title?,columnTitle?,contextualTitle?,isCollection?,basedOnDomain?}. set_level:{level?,descriptionAttribute?,imageAttribute?}. set_domain:{enumValues:[{name,value,description?}],dataType?,length?,decimals?,signed?}.",
             "type": "object"
           }
         },

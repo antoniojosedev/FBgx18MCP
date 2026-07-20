@@ -63,7 +63,18 @@ namespace GxMcp.Gateway.Tests
             //   2026-07-20 (compile_check): 14550 → 14750 for the genexus_lifecycle
             //   `mode` param (compile_check) + discoverability copy in the tool
             //   description and an example. Measured ~14693 tokens; ~57 headroom.
-            Assert.True(approxTokens < 14750, $"tool_definitions.json is ~{approxTokens} tokens; budget 14750.");
+            //   2026-07-20 (issue #39 create_index): 14750 → 14900 for the
+            //   genexus_structure `create_index` action (enum value + payload docs +
+            //   example) — the GeneXus-parity way to enforce attribute uniqueness.
+            //   Measured ~14823 tokens; ~77 headroom.
+            //   2026-07-20 (issue #39 data-model batch): 14900 → 15100 for the
+            //   genexus_structure drop_index / set_attribute / set_level / set_domain
+            //   actions (enum values + expanded payload docs + examples). Measured
+            //   ~15008 tokens; ~92 headroom.
+            //   2026-07-20 (issue #39 batch 2 authoring): 15100 → 15400 for the new
+            //   genexus_authoring tool (add_external_method / add_external_property /
+            //   add_menu_option). Measured ~15300 tokens; ~100 headroom.
+            Assert.True(approxTokens < 15400, $"tool_definitions.json is ~{approxTokens} tokens; budget 15400.");
         }
     }
 }

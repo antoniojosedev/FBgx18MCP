@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using Artech.Genexus.Common.Objects;
+using Artech.Genexus.Common.Parts;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Services.Structure;
 
@@ -12,6 +13,8 @@ namespace GxMcp.Worker.Services
         private readonly ObjectService _objectService;
         private readonly VisualStructureService _visualStructureService;
         private readonly IndexService _indexService;
+        private readonly AttributeWriteService _attributeWriteService;
+        private readonly DomainWriteService _domainWriteService;
         private readonly SDTService _sdtService;
 
         public StructureService(ObjectService objectService)
@@ -19,6 +22,8 @@ namespace GxMcp.Worker.Services
             _objectService = objectService;
             _visualStructureService = new VisualStructureService(objectService);
             _indexService = new IndexService(objectService);
+            _attributeWriteService = new AttributeWriteService(objectService);
+            _domainWriteService = new DomainWriteService(objectService);
             _sdtService = new SDTService(objectService);
         }
 
@@ -132,7 +137,129 @@ namespace GxMcp.Worker.Services
         }
 
         public string GetVisualIndexes(string targetName) => _indexService.GetVisualIndexes(targetName);
-        
+
+        public string CreateIndex(string targetName, string payload) => _indexService.CreateIndex(targetName, payload);
+
+        public string DropIndex(string targetName, string payload) => _indexService.DropIndex(targetName, payload);
+
+        public string SetAttributeProperties(string attrName, string payload) => _attributeWriteService.SetAttributeProperties(attrName, payload);
+
+        public string SetDomainProperties(string domainName, string payload) => _domainWriteService.SetDomainProperties(domainName, payload);
+
+        // issue #39 follow-up: set a Transaction level's Description / Image attribute — level
+        // properties the structure DSL doesn't express. payload = { level?, descriptionAttribute?, imageAttribute? }.
+        // level omitted → the root (first) level.
+        public string SetLevelProperties(string targetName, string payload)
+        {
+            try
+            {
+                var obj = _objectService.FindObject(targetName);
+                if (obj == null) return HealingService.FormatNotFoundError(targetName, _objectService.GetKbService().GetIndexCache().GetIndex());
+                if (!(obj is Transaction trn)) return Models.McpResponse.Err(
+                    code: "NotATransaction",
+                    message: "Level properties apply only to Transactions.",
+                    target: targetName);
+                if (string.IsNullOrWhiteSpace(payload)) return Models.McpResponse.Err(
+                    code: "InvalidPayload",
+                    message: "payload is required.",
+                    hint: "e.g. { \"descriptionAttribute\": \"CustomerName\" } or { \"imageAttribute\": \"CustomerPhoto\" }.",
+                    target: targetName);
+
+                var json = JObject.Parse(payload);
+                string levelName = json["level"]?.ToString();
+
+                TransactionLevel level = trn.Structure.Root;
+                if (!string.IsNullOrWhiteSpace(levelName))
+                {
+                    level = FindLevel(trn.Structure.Root, levelName);
+                    if (level == null) return Models.McpResponse.Err(
+                        code: "LevelNotFound",
+                        message: $"Level '{levelName}' not found in transaction '{trn.Name}'.",
+                        hint: "Omit 'level' to target the root level, or pass an existing sub-level name.",
+                        target: targetName);
+                }
+
+                TransactionAttribute FindLevelAttr(string an) =>
+                    level.Attributes.FirstOrDefault(a => string.Equals(a.Name, an, StringComparison.OrdinalIgnoreCase));
+
+                var applied = new JArray();
+                using (var sdkTrans = trn.Model.KB.BeginTransaction())
+                {
+                    try
+                    {
+                        if (json["descriptionAttribute"] != null)
+                        {
+                            string an = json["descriptionAttribute"].ToString();
+                            var ta = FindLevelAttr(an);
+                            if (ta == null) { try { sdkTrans.Rollback(); } catch { } return Models.McpResponse.Err(
+                                code: "AttributeNotInLevel",
+                                message: $"Attribute '{an}' is not part of level '{level.Name}'.",
+                                hint: "The description attribute must be one of the level's own attributes.",
+                                target: targetName); }
+                            level.IsDescriptionAttributeDefault = false;
+                            level.DescriptionAttribute = ta;
+                            applied.Add("descriptionAttribute");
+                        }
+                        if (json["imageAttribute"] != null)
+                        {
+                            string an = json["imageAttribute"].ToString();
+                            var ta = FindLevelAttr(an);
+                            if (ta == null) { try { sdkTrans.Rollback(); } catch { } return Models.McpResponse.Err(
+                                code: "AttributeNotInLevel",
+                                message: $"Attribute '{an}' is not part of level '{level.Name}'.",
+                                target: targetName); }
+                            level.IsImageAttributeDefault = false;
+                            level.ImageAttribute = ta;
+                            applied.Add("imageAttribute");
+                        }
+
+                        if (applied.Count == 0) { try { sdkTrans.Rollback(); } catch { } return Models.McpResponse.Err(
+                            code: "NoPropertiesToApply",
+                            message: "payload contained no recognized level properties.",
+                            hint: "Recognized: descriptionAttribute, imageAttribute (optionally scoped by level).",
+                            target: targetName); }
+
+                        trn.EnsureSave();
+                        sdkTrans.Commit();
+                        return Models.McpResponse.Ok(
+                            target: targetName,
+                            code: "LevelUpdated",
+                            result: new JObject { ["level"] = level.Name, ["applied"] = applied });
+                    }
+                    catch (Exception ex)
+                    {
+                        try { sdkTrans.Rollback(); } catch { }
+                        return Models.McpResponse.Err(
+                            code: "LevelUpdateFailed",
+                            message: ex.Message,
+                            hint: "Check the worker log for the SDK stack trace.",
+                            target: targetName,
+                            extra: new JObject { ["stackTrace"] = ex.StackTrace });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "LevelUpdateFailed",
+                    message: ex.Message,
+                    hint: "Ensure the transaction exists and payload is valid JSON.",
+                    target: targetName);
+            }
+        }
+
+        private static TransactionLevel FindLevel(TransactionLevel root, string name)
+        {
+            if (root == null) return null;
+            if (string.Equals(root.Name, name, StringComparison.OrdinalIgnoreCase)) return root;
+            foreach (var child in root.Levels)
+            {
+                var found = FindLevel(child, name);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
         public string GetLogicStructure(string targetName)
         {
             try {

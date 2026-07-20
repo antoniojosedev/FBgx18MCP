@@ -1,0 +1,192 @@
+using System;
+using System.Linq;
+using Newtonsoft.Json.Linq;
+using Artech.Architecture.Common.Objects;
+using Artech.Genexus.Common.Objects;
+using Artech.Genexus.Common.Parts;
+using Artech.Genexus.Common.Parts.ExternalObject;
+using GxMcp.Worker.Helpers;
+
+namespace GxMcp.Worker.Services.Structure
+{
+    // issue #39 batch 2: authoring for object types the structure DSL doesn't cover —
+    // ExternalObject methods/properties and Menu options. Both follow the "build an item,
+    // add it to the owning part's collection, EnsureSave" pattern.
+    public class AuthoringService
+    {
+        private readonly ObjectService _objectService;
+
+        public AuthoringService(ObjectService objectService)
+        {
+            _objectService = objectService;
+        }
+
+        private static T FindPart<T>(KBObject obj) where T : class
+        {
+            foreach (var p in obj.Parts) if (p is T tp) return tp;
+            return null;
+        }
+
+        // payload = { name, returnType?, parameters?:[{name, type?, inout?:"in"|"out"|"inout"}] }
+        public string AddExternalMethod(string objName, string payload)
+        {
+            return AddExternalMember(objName, payload, isMethod: true);
+        }
+
+        // payload = { name, type? }
+        public string AddExternalProperty(string objName, string payload)
+        {
+            return AddExternalMember(objName, payload, isMethod: false);
+        }
+
+        private string AddExternalMember(string objName, string payload, bool isMethod)
+        {
+            try
+            {
+                var obj = _objectService.FindObject(objName);
+                if (obj == null) return HealingService.FormatNotFoundError(objName, _objectService.GetKbService().GetIndexCache().GetIndex());
+                if (!(obj is ExternalObject)) return Models.McpResponse.Err(
+                    code: "NotAnExternalObject",
+                    message: $"'{objName}' is not an External Object.",
+                    target: objName);
+
+                var exo = FindPart<EXOStructurePart>(obj);
+                if (exo == null) return Models.McpResponse.Err(
+                    code: "StructurePartNotFound",
+                    message: "External Object has no structure part.",
+                    target: objName);
+
+                var json = string.IsNullOrWhiteSpace(payload) ? new JObject() : JObject.Parse(payload);
+                string memberName = json["name"]?.ToString();
+                if (string.IsNullOrWhiteSpace(memberName)) return Models.McpResponse.Err(
+                    code: "InvalidPayload", message: "payload.name is required.", target: objName);
+
+                try
+                {
+                    if (isMethod)
+                    {
+                        var m = new ExternalObjectMethod(exo) { Name = memberName };
+                        string rt = json["returnType"]?.ToString();
+                        if (!string.IsNullOrWhiteSpace(rt)) m.ExternalType = rt;
+
+                        if (json["parameters"] is JArray pars)
+                        {
+                            foreach (var p in pars.OfType<JObject>())
+                            {
+                                string pn = p["name"]?.ToString();
+                                if (string.IsNullOrWhiteSpace(pn)) continue;
+                                var par = new ExternalObjectParameter(m) { Name = pn };
+                                string pt = p["type"]?.ToString();
+                                if (!string.IsNullOrWhiteSpace(pt)) par.ExternalType = pt;
+                                m.AddParameter(par);
+                            }
+                        }
+                        exo.ExternalMethods.Add(m);
+                    }
+                    else
+                    {
+                        var prop = new ExternalObjectProperty(exo) { Name = memberName };
+                        string pt = json["type"]?.ToString();
+                        if (!string.IsNullOrWhiteSpace(pt)) prop.ExternalType = pt;
+                        exo.ExternalProperties.Add(prop);
+                    }
+
+                    obj.EnsureSave();
+                    int count = isMethod ? exo.ExternalMethods.Count : exo.ExternalProperties.Count;
+                    return Models.McpResponse.Ok(
+                        target: objName,
+                        code: isMethod ? "ExternalMethodAdded" : "ExternalPropertyAdded",
+                        result: new JObject { ["object"] = obj.Name, ["member"] = memberName, ["count"] = count });
+                }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(
+                        code: "ExternalMemberAddFailed",
+                        message: ex.Message,
+                        hint: "Check the worker log for the SDK stack trace.",
+                        target: objName,
+                        extra: new JObject { ["stackTrace"] = ex.StackTrace });
+                }
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "ExternalMemberAddFailed", message: ex.Message,
+                    hint: "Ensure the object is an External Object and payload is valid JSON.",
+                    target: objName);
+            }
+        }
+
+        // payload = { description, target?, optionCode? }. target = a KB object to call from the option.
+        public string AddMenuOption(string objName, string payload)
+        {
+            try
+            {
+                var obj = _objectService.FindObject(objName);
+                if (obj == null) return HealingService.FormatNotFoundError(objName, _objectService.GetKbService().GetIndexCache().GetIndex());
+                if (!(obj is Menu menu)) return Models.McpResponse.Err(
+                    code: "NotAMenu", message: $"'{objName}' is not a Menu.", target: objName);
+
+                var menuPart = FindPart<MenuPart>(obj);
+                if (menuPart == null) return Models.McpResponse.Err(
+                    code: "MenuPartNotFound", message: "Menu has no part.", target: objName);
+
+                var json = string.IsNullOrWhiteSpace(payload) ? new JObject() : JObject.Parse(payload);
+                string description = json["description"]?.ToString();
+                if (string.IsNullOrWhiteSpace(description)) return Models.McpResponse.Err(
+                    code: "InvalidPayload", message: "payload.description is required.", target: objName);
+
+                KBObject targetObj = null;
+                string targetName = json["target"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(targetName))
+                {
+                    targetObj = _objectService.FindObject(targetName);
+                    if (targetObj == null) return Models.McpResponse.Err(
+                        code: "TargetNotFound",
+                        message: $"Menu option target '{targetName}' not found.",
+                        target: objName);
+                }
+
+                // OptionCode is an int; auto-assign next free code when not supplied.
+                int optionCode;
+                if (json["optionCode"] != null) optionCode = json["optionCode"].ToObject<int>();
+                else optionCode = menuPart.Options.Count == 0 ? 1 : menuPart.Options.Max(o => o.OptionCode) + 1;
+
+                try
+                {
+                    var opt = new MenuOption(menu) { OptionCode = optionCode, Description = description };
+                    if (targetObj != null) opt.GenexusObject = new KBObjectReference(targetObj);
+                    menuPart.Options.Add(opt);
+
+                    obj.EnsureSave();
+                    return Models.McpResponse.Ok(
+                        target: objName,
+                        code: "MenuOptionAdded",
+                        result: new JObject
+                        {
+                            ["menu"] = obj.Name,
+                            ["optionCode"] = optionCode,
+                            ["description"] = description,
+                            ["target"] = targetObj?.Name
+                        });
+                }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(
+                        code: "MenuOptionAddFailed",
+                        message: ex.Message,
+                        hint: "Check the worker log for the SDK stack trace.",
+                        target: objName,
+                        extra: new JObject { ["stackTrace"] = ex.StackTrace });
+                }
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "MenuOptionAddFailed", message: ex.Message,
+                    hint: "Ensure the object is a Menu and payload is valid JSON.",
+                    target: objName);
+            }
+        }
+    }
+}

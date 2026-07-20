@@ -42,6 +42,7 @@ namespace GxMcp.Worker.Services
         private readonly PatchService _patchService;
         private readonly SDTService _sdtService;
         private readonly StructureService _structureService;
+        private readonly Structure.AuthoringService _authoringService;
         private readonly FormatService _formatService;
         private readonly PropertyService _propertyService;
         private readonly AssetService _assetService;
@@ -177,6 +178,7 @@ namespace GxMcp.Worker.Services
             _patternApplyService = new PatternApplyService(_objectService);
             _sdtService = new SDTService(_objectService);
             _structureService = new StructureService(_objectService);
+            _authoringService = new Structure.AuthoringService(_objectService);
             _propertyService = new PropertyService(_objectService);
             _conversionService = new ConversionService(_objectService);
             _selfTestService = new SelfTestService(_kbService, _searchService, _linterService);
@@ -515,6 +517,7 @@ namespace GxMcp.Worker.Services
                 ["ui"] = Handle_Ui,
                 ["layout"] = Handle_Layout,
                 ["structure"] = Handle_Structure,
+                ["authoring"] = Handle_Authoring,
                 ["build"] = Handle_Build,
                 ["validation"] = Handle_Validation,
                 ["test"] = Handle_Test,
@@ -1467,7 +1470,20 @@ namespace GxMcp.Worker.Services
             if (action == "GetVisualStructure") return _structureService.GetVisualStructure(target);
             if (action == "UpdateVisualStructure") return _structureService.UpdateVisualStructure(target, payload);
             if (action == "GetVisualIndexes") return _structureService.GetVisualIndexes(target);
+            if (action == "CreateIndex") return _structureService.CreateIndex(target, payload);
+            if (action == "DropIndex") return _structureService.DropIndex(target, payload);
+            if (action == "SetAttributeProperties") return _structureService.SetAttributeProperties(target, payload);
+            if (action == "SetLevelProperties") return _structureService.SetLevelProperties(target, payload);
+            if (action == "SetDomainProperties") return _structureService.SetDomainProperties(target, payload);
             if (action == "GetLogicStructure") return _structureService.GetLogicStructure(target);
+            return null;
+        }
+
+        private string Handle_Authoring(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            if (action == "AddExternalMethod") return _authoringService.AddExternalMethod(target, payload);
+            if (action == "AddExternalProperty") return _authoringService.AddExternalProperty(target, payload);
+            if (action == "AddMenuOption") return _authoringService.AddMenuOption(target, payload);
             return null;
         }
 

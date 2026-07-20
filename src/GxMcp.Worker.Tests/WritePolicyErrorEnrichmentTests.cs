@@ -72,5 +72,59 @@ namespace GxMcp.Worker.Tests
             string result = WritePolicy.PreferDetailedMessage("Erro", null, null);
             Assert.Equal("Erro", result);
         }
+
+        // issue #39: `Unique(att);` is not a GeneXus rule; the SDK rejects the Rules save with a
+        // bare "Erro". FindInvalidRuleKeywords lets CreateTransactionErrorResponse surface a hint.
+        [Theory]
+        [InlineData("Unique(CountryName);", "Unique")]
+        [InlineData("Default(City, 'N/A');\nUnique(Name);", "Unique")]
+        [InlineData("unique(Name);", "unique")]                 // case-insensitive
+        [InlineData("Unique( Name );", "Unique")]               // whitespace tolerated
+        public void FindInvalidRuleKeywords_FlagsInvalidPseudoRules(string source, string expected)
+        {
+            var hits = WritePolicy.FindInvalidRuleKeywords(source);
+            Assert.Contains(expected, hits, System.StringComparer.OrdinalIgnoreCase);
+        }
+
+        [Theory]
+        [InlineData("Error('x') if Name.IsEmpty();")]           // valid rule
+        [InlineData("NoAccept(Name);\nDefault(City, 'N/A');")]  // valid rules
+        [InlineData("Name = &Name if not &Name.IsEmpty();")]    // assignment rule
+        [InlineData("MyProc.Call(Id) On BeforeInsert;")]        // member call, not a leading keyword
+        [InlineData("// Unique(Name) noted for later")]         // keyword only in a comment
+        [InlineData("/* Unique(Name); */ Default(City, 'X');")] // keyword only in a block comment
+        [InlineData("")]
+        [InlineData(null)]
+        public void FindInvalidRuleKeywords_LeavesValidRulesAlone(string source)
+        {
+            Assert.Empty(WritePolicy.FindInvalidRuleKeywords(source));
+        }
+
+        [Fact]
+        public void BuildInvalidRuleHint_MentionsUniqueIndexRemedy()
+        {
+            string hint = WritePolicy.BuildInvalidRuleHint(new[] { "Unique" });
+            Assert.NotNull(hint);
+            Assert.Contains("unique index", hint, System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void BuildInvalidRuleHint_EmptyInput_ReturnsNull()
+        {
+            Assert.Null(WritePolicy.BuildInvalidRuleHint(new string[0]));
+        }
+
+        // The exception WriteService throws is wrapped ("Part save failed: Erro"), so the plain
+        // IsBareGenericError misses it — IsUninformativeSaveError strips the wrapper first.
+        [Theory]
+        [InlineData("Part save failed: Erro", true)]
+        [InlineData("Part save reported errors: Error", true)]
+        [InlineData("Erro", true)]
+        [InlineData("Part save failed: src0059: Esperando 'EndFor'", false)]
+        [InlineData("Part save failed: 'Unique' is not a known object", false)]
+        public void IsUninformativeSaveError_StripsWrapperPrefix(string message, bool expected)
+        {
+            Assert.Equal(expected, WritePolicy.IsUninformativeSaveError(message));
+        }
     }
 }
