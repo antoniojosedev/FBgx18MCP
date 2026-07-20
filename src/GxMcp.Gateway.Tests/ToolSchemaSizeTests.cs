@@ -78,7 +78,12 @@ namespace GxMcp.Gateway.Tests
             //   add_condition (Data Selector filter). (add_theme_color was prototyped
             //   then dropped — classic Theme colors are a virtual-part projection,
             //   IDE-only, like SDPanel parts.) Measured ~15330 tokens; ~270 headroom.
-            Assert.True(approxTokens < 15600, $"tool_definitions.json is ~{approxTokens} tokens; budget 15600.");
+            //   2026-07-20 (SDK-endpoints P0/P1 batch): 15600 → 16200 for the new
+            //   genexus_transfer (XPZ export/import) + genexus_deploy tools, plus
+            //   genexus_analyze mode=kb_stats, genexus_db action=reorg_impact,
+            //   genexus_security action=scan_native, and genexus_gxserver
+            //   pipeline_* actions/params. Measured ~16049 tokens; ~151 headroom.
+            Assert.True(approxTokens < 16200, $"tool_definitions.json is ~{approxTokens} tokens; budget 16200.");
         }
     }
 }

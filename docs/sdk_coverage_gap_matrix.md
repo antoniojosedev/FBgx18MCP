@@ -1,5 +1,10 @@
 # SDK coverage-gap matrix — IDE-parity target
 
+> **Status refresh 2026-07-20:** the `❌ gap` rows below for Comparer, Merge, Module Manager,
+> GAM provisioning, GXserver write, and KB version/branch have since **shipped**. For a current
+> (v2.27.1, fresh-probe) list of what is *still* uncovered, see
+> [`sdk_uncovered_endpoints_2026-07-20.md`](sdk_uncovered_endpoints_2026-07-20.md).
+
 Goal: make the MCP cover every **GeneXus IDE user action** via the native SDK, so an
 agent can use the MCP *instead of* opening the GeneXus 18 IDE. This document maps each
 IDE-capability domain to its concrete SDK entry point(s) and marks current MCP coverage,

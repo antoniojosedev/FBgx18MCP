@@ -62,6 +62,10 @@ namespace GxMcp.Gateway.Routers
                         case "code_metrics":
                             // KB-wide source analytics over the index (no target needed).
                             return new { module = "Analyze", action = "GetCodeMetrics", type = type, top = args?["top"]?.ToObject<int?>() ?? 25 };
+                        case "kb_stats":
+                            // P1 #6: KB activity & freshness over IModelInformationService
+                            // (+ optional IStatisticsService). Read-only; no target needed.
+                            return new { module = "KbStats", action = "Run", @params = args };
                         case "explain":
                             return new { module = "Analyze", action = "ExplainCode", target = target, payload = args?["code"]?.ToString(), type = type };
                         case "callers":

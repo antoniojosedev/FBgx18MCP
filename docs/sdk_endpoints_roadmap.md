@@ -1,0 +1,96 @@
+# SDK-endpoint expansion roadmap (P0 → P3)
+
+Execution plan for wiring the uncovered SDK capabilities from
+[`sdk_uncovered_endpoints_2026-07-20.md`](sdk_uncovered_endpoints_2026-07-20.md) into MCP
+endpoints. Each item lists the SDK entry point, the input-construction gate result, the
+tool surface, and the wiring touch-points.
+
+## Feasibility gate (done 2026-07-20)
+
+Ran against `docs/sdk-probe/raw.json`. **All P0/P1 input types are headless-constructible — no WWP-style wall.**
+
+| Input type | Verdict |
+|---|---|
+| `ExportOptions` (23 props) / `ImportOptions` (26) / `ExploreExportOptions` | public parameterless ctor ✓ |
+| `KBObjectQuery` (Model/WhiteList/AuthorizationProcedure) | public ctor; WhiteList+AuthProc from `SecurityScanPlan.GetForModel(model)` ✓ |
+| `SecurityScanPlan` | public ctor + static `GetForModel(KBModel)` ✓ |
+| `IScannerOuput` | interface → Worker implements a collecting adapter ✓ |
+| `BuildOptions` | **`[Flags]` enum** (probe showed 0 ctors — it's an enum, `ImpactAnalysis`/`CreateAnalysis`/…) ✓ |
+| `AnalysisResult` | **enum** — `{NoReorgNeeded, ReorganizationNeeded, NoReorgButShowImpact, ErrorInSomeTable, Exception}` = the impact signal ✓ |
+| `DeploymentTarget` (19 props) | public ctor ✓ |
+| `TeamDevelopmentData` | public ctor + `ctor(KBModel)` ✓ |
+| `OperationEvent` | return type (read-only, not constructed by us) ✓ |
+
+## Wiring pattern (every SDK tool follows this)
+
+Established by `CompareService`/`ModuleService`/`GamService`:
+
+1. **Schema** → `src/GxMcp.Gateway/tool_definitions.json` (keep `ToolSchemaSizeTests` budget; bump w/ CHANGELOG note).
+2. **Gateway route** → `Routers/OperationsRouter.cs`: `case "genexus_X": return new { module = "X", action = "Run", @params = args };`
+3. **Worker dispatch** → `Services/CommandDispatcher.cs`: field + ctor construct + `["x"] = Handle_X` in the action map + `Handle_X` method delegating to the service.
+4. **Service** → `src/GxMcp.Worker/Services/XService.cs`: resolve via `SdkServiceResolver.Resolve<T>()`, guard every null/throw, never crash the worker, return `*Unavailable` on missing service.
+5. **Golden fixture** → `src/GxMcp.Gateway.Tests/Fixtures/Contract/Discovery/tools-list.response.json` (alphabetically sorted) + tests.
+
+Discipline: read-only default; destructive actions must be explicit (mirror `genexus_gam` `status` vs `deploy`). Never let a slow SDK call (specification/deploy) hide behind a "preview".
+
+---
+
+## P0 — this task
+
+### #1 `genexus_transfer` — XPZ export / import (real, dependency-aware)
+- **SDK:** `IKnowledgeManagerService.Export(model, IEnumerable<KBObject>, outputFile, ExportOptions)`; `ExploreExport(file, model, ExploreExportOptions, out objects/actions/idMap, …)`; `GetCurrentImport(kb)`.
+- **Surface:** `action=export` (targets[]+outputFile) · `action=inspect` (explore an .xpz without importing) · `action=import` (file, dryRun default true — destructive on false).
+- **Why:** the promote-to-prod flow (`project_controleobjetos_promotion_flow`); today's `genexus_io`/`kb_import` are filesystem copies that don't resolve deps.
+
+### #2 `genexus_security action=scan_native` — real Security Scanner
+- **SDK:** `plan = SecurityScanPlan.GetForModel(model)` → `query = new KBObjectQuery{Model, WhiteList=plan.GetWhiteList(), AuthorizationProcedure=plan.GetAuthorizationProcedure()}` → `ISecurityScannerService.Scan(query, plan, output)` with a Worker-side `IScannerOuput` collector.
+- **Surface:** adds `scan_native` to `genexus_security` (alongside `audit_gam`/`scan_secrets`). Read-only.
+
+---
+
+## P1 — this task
+
+### #5 `genexus_db action=reorg_impact` — reorg / DDL impact
+- **SDK (cheap, primary):** `IModelInformationService.{GetLastReorgTimestamp, GetLastModifiedTableTimestamp, GetLastModifiedObjectTimestamp, NeedReorg}` → derive `reorgLikelyNeeded`.
+- **SDK (deep, opt-in `deep=true`):** `ISpecifierService.ImpactDatabase(model, BuildOptions.ImpactAnalysis|CreateAnalysis)` → `AnalysisResult` enum. **Runs specification (build-heavy) — gated behind `deep=true` with an explicit warning; never the default.**
+- **Surface:** `genexus_db action=reorg_impact [deep=true]`. Read-only.
+
+### #6 `genexus_analyze mode=kb_stats` — KB activity & freshness
+- **SDK:** `IStatisticsService.{GetOperationsByDate, GetEntitiesByDate}` + `IModelInformationService` timestamps.
+- **Surface:** new `mode=kb_stats` on `genexus_analyze`. Read-only.
+
+### #4 `genexus_gxserver action=pipeline_*` — CI pipelines
+- **SDK:** `IContinuousIntegrationService.{GetPipelines, GetPipelineRuns, GetPipelineRunInfo, GetPipelineRunOutput, RunPipeline(data, project, isRebuild, runTests), AbortRunPipeline}` with `TeamDevelopmentData(model)`.
+- **Surface:** `genexus_gxserver` actions `pipeline_list` / `pipeline_runs` / `pipeline_run` (destructive: triggers a build) / `pipeline_abort`. Read actions default; `pipeline_run`/`pipeline_abort` explicit. Returns `{connected:false}` off a linked KB (mirror existing gxserver).
+
+### #3 `genexus_deploy` — deploy application
+- **SDK:** `IDeploymentTargetService.{GetTargetTypes, GetTarget}` (read); `IDeploymentService.Deploy(model)` / `ILibraryService.DeployLibrary(...)` (destructive).
+- **Surface:** `action=list_targets` (read-only default) · `action=deploy` (explicit, destructive, `confirm=true`).
+- **Note:** deploy needs a configured target; ship `list_targets` solid first, `deploy` guarded like `genexus_gam deploy`.
+
+---
+
+## P2 — next task (not this one)
+
+| Item | Tool | SDK entry |
+|---|---|---|
+| #7 Table/Transaction relation graph | `genexus_analyze mode=table_relations` | `ITablesService`, `ITableRelationsService`, `ITransactionRelationsService` |
+| #8 Multi-language / translations | `genexus_db action=translations_*` | `ILanguageService.CreateManager` |
+| #9 curl → Procedure | `genexus_create type=Procedure fromCurl=…` | `ICurlGeneratorService.Generate` |
+| #10 User-control / theme introspection | `genexus_layout action=list_controls` | `IUserControlsManagerService` |
+| #11 Data-type catalog | `genexus_db action=types_catalog` | `IDataTypesService.GetSortedTypes` |
+
+## P3 — later
+
+Service-DL generation (`IRestServiceDLGeneratorService` / OData / gRPC), chatbot
+(`IBotGeneratorService`), app help (`IHelpGeneratorService`), native full-text search
+(`ISearchService`), KB conversion (`IKBConversionService`), GXplorer SQL
+(`IGXplorerSpecifierService`), BPM (`IGxpm*`). Each gets a feasibility gate before build.
+
+## Build order (this task)
+
+Read-only wins first (fast, low risk), destructive last:
+**#6 kb_stats → #5 reorg_impact → #2 native security scan → #1 XPZ transfer → #4 CI pipelines → #3 deploy.**
+Each: service + wiring + fixture + a unit test asserting the graceful `*Unavailable` path
+(the live SDK-success path is smoke-tested over HTTP against the running gateway, since the
+test KBs don't guarantee a registered service).

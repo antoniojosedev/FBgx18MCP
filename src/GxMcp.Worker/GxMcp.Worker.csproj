@@ -93,6 +93,17 @@
       <HintPath>$(GX_PATH)\Packages\Artech.Packages.TeamDevClient.BL.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- genexus_security action=scan_native: the native GeneXus Security Scanner
+         (ISecurityScannerService.Scan) + its query/plan/output types. -->
+    <Reference Include="GeneXus.SecurityScanner.Common">
+      <HintPath>$(GX_PATH)\GeneXus.SecurityScanner.Common.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <!-- genexus_gxserver action=pipeline_*: IContinuousIntegrationService (CI pipelines). -->
+    <Reference Include="GeneXus.TeamDevClient.Architecture.BL">
+      <HintPath>$(GX_PATH)\GeneXus.TeamDevClient.Architecture.BL.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.Data" />

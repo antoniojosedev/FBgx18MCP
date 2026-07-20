@@ -5,7 +5,7 @@
 > Compose/Materialize/Wire/Bind/Attach). First 8 public methods shown per type — see
 > `raw.json` for the complete member list.
 
-**Count:** 2665
+**Count:** 2478
 
 ## `Artech.Architecture.BL.Framework`
 
@@ -1608,24 +1608,6 @@ static SetProductInfo(String productName,String productFlavor,String versionName
 static TryGetString(ResourceManager instance,String key,CultureInfo culture) -> String
 ```
 
-## `Artech.Common.Controls`
-
-### `Artech.Common.Controls.Descriptors.PropertiesPanelBuilder`
-
-```
-RefreshControls() -> Void
-Update() -> Void
-Construct() -> Void
-Construct(Font defaFont) -> Void
-```
-
-### `Artech.Common.Controls.ToolStrip.ToolStripHelper`
-
-```
-static AddToolStripMenu(ToolStripDropDownButton dropDownButton,String text,Image image,Int32 index) -> ToolStripMenuItem
-static AddToolStripMenuWithType(ToolStripDropDownButton dropDownButton,String text,Image image,Int32 index) -> ITEM
-```
-
 ## `Artech.Common.Framework`
 
 ### `Artech.Architecture.UI.Framework.Controls.IDynamicMenuUpdater`
@@ -2071,20 +2053,6 @@ static ZoomFactorFromIndex(Object indexObj) -> Int32
 
 ```
 
-## `Artech.Common.IPC`
-
-### `Artech.Common.IPC.IPCService`
-
-```
-
-```
-
-### `Artech.Common.IPC.ProcessExitedException`
-
-```
-
-```
-
 ## `Artech.Common.Language`
 
 ### `Artech.Common.Language.ComponentModel.ServiceDefinitionTokenizer`
@@ -2104,24 +2072,6 @@ static IsProgramName(IParserData valdata,String name) -> Boolean
 static IsModuleName(IParserData valdata,String name) -> Boolean
 static GetProgramDefinition(IParserData valdata,KBObject obj) -> ITypedObjectInfo
 static GetProgramDefinition(KBModel model,Boolean onlyMetadata) -> ITypedObjectInfo
-```
-
-## `Artech.Common.Language.Parser`
-
-### `Artech.Common.Language.Parser.CParserEngine`
-
-```
-Parse() -> Boolean
-Dispose() -> Void
-```
-
-## `Artech.Common.Language.Parser.v2`
-
-### `Artech.Common.Language.ParserV2.CParserEngine`
-
-```
-Parse() -> Boolean
-Dispose() -> Void
 ```
 
 ## `Artech.Common.Properties`
@@ -2486,386 +2436,6 @@ static Login(IPLoginData loginData) -> OAuthLoginResult
 
 ```
 
-## `Artech.Core.UI`
-
-### `Artech.Core.UI.Dialogs.SaveMultiDocumentDialog`
-
-```
-
-```
-
-### `Artech.Core.UI.Help.ErrorListItem+LocationHelper`
-
-```
-
-```
-
-### `Artech.Core.UI.Help.ObjectSpec+GeneratorObj`
-
-```
-
-```
-
-### `Artech.Core.UI.InfragisticsHelpers.UltraComboHelper`
-
-```
-static LoadFilterCombo(UltraComboEditor combo,IEnumerable`1<KBObject> objects) -> Void
-static ClearCombo(UltraComboEditor combo) -> Void
-```
-
-### `Artech.Core.UI.Services.CallBrowserService`
-
-```
-ShowObjectReferences(KBObject obj) -> Void
-```
-
-### `Artech.Core.UI.Services.ClipboardService`
-
-```
-AddData(KBObject obj) -> Void
-SetData(KBObject obj) -> Void
-AddData(IEnumerable`1<KBObject> objects) -> Void
-SetData(IEnumerable`1<KBObject> objects) -> Void
-AddData(TData obj) -> Void
-SetData(TData obj) -> Void
-AddData(TData obj,TextFormat`1<TData> textFormat,String separator) -> Void
-SetData(TData obj,TextFormat`1<TData> textFormat) -> Void
-```
-
-### `Artech.Core.UI.Services.CommandDispatcherService`
-
-```
-Dispatch(CommandKey key) -> Void
-Dispatch(CommandKey key,CommandData commandData) -> Void
-Dispatch(ICommandTarget target,CommandKey key) -> Void
-Dispatch(ICommandTarget target,CommandKey key,CommandData commandData) -> Void
-Invoke(Delegate method) -> Object
-QueryObjectDefinedPackage(KBObject obj,CommandKey cmdKey,CommandData commandData,CommandStatus& status) -> Boolean
-ExecObjectDefinedPackage(KBObject obj,CommandKey cmdKey,CommandData commandData) -> Boolean
-GetCommandStatus(CommandKey cmdKey) -> CommandStatus
-```
-
-### `Artech.Core.UI.Services.DCOListViewService`
-
-```
-CreateListView(Guid listViewId,Icon icon,String contextMenu,ICommandTarget commantTarget) -> IListView
-CreateListView(Guid listViewId,Icon icon,String contextMenu) -> IListView
-GetListView(Guid listViewId) -> IListView
-```
-
-### `Artech.Core.UI.Services.DCOStartPageService`
-
-```
-Initialize() -> Void
-OpenPage(String url,String title) -> Void
-OpenPage(String url,String title,Object scriptingFunctions) -> Void
-OpenPage(StartPageSettings settings) -> Void
-OpenPage(StartPageSettings settings,StartPageSettings staticStartPage) -> Void
-SetPage(String htmlPage) -> Void
-SetSmartPart(String idSmartPart,String content) -> Void
-RefreshContents() -> Void
-```
-
-### `Artech.Core.UI.Services.DCOStatusBarService`
-
-```
-Initialize() -> Void
-ShowStatusBar(Boolean show) -> Void
-GetStatusBar() -> IStatusBar
-DisplayText(String text) -> Void
-```
-
-### `Artech.Core.UI.Services.DefaultModelTreeResolver`
-
-```
-GetRootNode() -> IModelTreeNode
-GetRootObjects() -> IEnumerable`1<IModelTreeNode>
-GetNode(KBObject kbObject) -> IModelTreeNode
-```
-
-### `Artech.Core.UI.Services.DefaultUITypeBuilder`
-
-```
-Construct(KBObjectDescriptor descriptor,String name,String description,IKBObjectParent parent,KBCategory inCategory) -> KBObject
-DoDefaultAction(KBObject obj) -> Void
-```
-
-### `Artech.Core.UI.Services.DocumentManagerService`
-
-```
-Initialize() -> Void
-AddDocumentManager(Guid objType,IDocumentManagerService manager) -> Void
-IsOpenable(KBObjectDescriptor descriptor) -> Boolean
-OpenDocument(KBObject obj,OpenDocumentOptions options) -> Boolean
-IsOpenDocument(KBObject obj,IGxDocument& documentInfo) -> Boolean
-IsOpenDocument(KBObject obj) -> Boolean
-SaveAll(Boolean showUI) -> Boolean
-Save(Boolean showUI,IEnumerable`1<EntityKey> kbObjs) -> Boolean
-```
-
-### `Artech.Core.UI.Services.DragAndDropService`
-
-```
-AddData(IDataObject container,KBObject obj) -> Void
-AddData(IDataObject container,IEnumerable`1<KBObject> objects) -> Void
-AddData(IDataObject container,TData obj) -> Void
-AddData(IDataObject container,TData obj,TextFormat`1<TData> textFormat,String separator) -> Void
-AddData(IDataObject container,IEnumerable`1<TData> objects) -> Void
-AddData(IDataObject container,IEnumerable`1<TData> objects,TextFormat`1<TData> textFormat,String separator) -> Void
-CreateDataObject(KBObject obj) -> IDataObject
-CreateDataObject(IEnumerable`1<KBObject> objs) -> IDataObject
-```
-
-### `Artech.Core.UI.Services.EditorManagerService`
-
-```
-GetEditor(Guid partId) -> IGxView
-GetEditor(Guid preferredPackageId,Guid partId) -> IGxView
-GetController(Guid partId) -> IGxPartController
-GetController(Guid preferredPackageId,Guid partId) -> IGxPartController
-```
-
-### `Artech.Core.UI.Services.EnvironmentService`
-
-```
-ShowModalDialog(Form dialog) -> DialogResult
-DropDownControl(Control control,IWindowsFormsEditorService service) -> Void
-DisableQueryState() -> Void
-EnableQueryState() -> Void
-StartFeedbackDialog(String text) -> Guid
-StartFeedbackDialog(String text,Boolean showDetails) -> Guid
-StartFeedbackDialog(String text,Int32 totalSteps) -> Guid
-StartFeedbackDialog(String text,Int32 totalSteps,Boolean showDetails) -> Guid
-```
-
-### `Artech.Core.UI.Services.FindReplaceService`
-
-```
-CreateFindForm(FindReplaceAction actionTarget,IFindReplaceOptions options) -> FindForm
-ExecuteFind(FindReplaceAction actionTarget,IFindReplaceOptions options) -> Void
-CreateFindReplaceForm(FindReplaceAction actionTarget,IFindReplaceOptions options) -> FindReplaceForm
-Find(FindReplaceAction actionTarget,IFindReplaceOptions options) -> IFindReplaceResult
-Replace(FindReplaceAction actionTarget,IFindReplaceOptions options) -> IFindReplaceResult
-ReplaceAll(FindReplaceAction actionTarget,IFindReplaceOptions options) -> IFindReplaceResult
-MarkAll(FindReplaceAction actionTarget,IFindReplaceOptions options) -> IFindReplaceResult
-```
-
-### `Artech.Core.UI.Services.HelpService`
-
-```
-AddKeyword(String keyword) -> Void
-ReplaceKeyword(String keyword,String newKeyword) -> Boolean
-RemoveKeyword(String keyword) -> Boolean
-AddFilter(String name,String value) -> Void
-RemoveFilter(String name) -> Boolean
-ShowSearch(String requestText) -> Void
-ShowSearch(IHelpSearchRequest request) -> Void
-Search(IHelpSearchRequest request) -> IEnumerable`1<IHelpSearchResult>
-```
-
-### `Artech.Core.UI.Services.HistoryManagerService`
-
-```
-OnAfterOpenKB(Object sender,KBEventArgs e) -> Void
-ShowKBObjectHistory(KBObject obj) -> Void
-ShowEntityHistory(Entity ent) -> Void
-```
-
-### `Artech.Core.UI.Services.MenuService`
-
-```
-ShowContextMenu(Guid packageId,String menuId,Point screenPoint) -> Void
-ShowContextMenu(Int32 activeItemIndex,Guid packageId,String menuId,Point screenPoint) -> Void
-ShowContextMenu(String activeItemKey,Guid packageId,String menuId,Point screenPoint) -> Void
-ShowContextMenu(Guid packageId,String menuId,Point screenPoint,Object contextData) -> Void
-ShowContextMenu(Int32 activeItemIndex,Guid packageId,String menuId,Point screenPoint,Object contextData) -> Void
-ShowContextMenu(String activeItemKey,Guid packageId,String menuId,Point screenPoint,Object contextData) -> Void
-CloseContextMenu() -> Void
-GetMenuItem(Guid packageId,String menuId) -> IMenuItem
-```
-
-### `Artech.Core.UI.Services.ModelTreeService`
-
-```
-GetModelTree() -> IModelTree
-```
-
-### `Artech.Core.UI.Services.NavigatorService`
-
-```
-GetNavigator() -> INavigator
-```
-
-### `Artech.Core.UI.Services.NewObjectDialogService`
-
-```
-CreateObject(CreateObjectOptions options) -> KBObject
-AttachBuilder(IUIObjectBuilder builder,KBObjectDescriptor descriptor) -> Void
-```
-
-### `Artech.Core.UI.Services.ObjectsService`
-
-```
-Create(CreateObjectOptions options) -> KBObject
-Copy(KBObject kbObject) -> KBObject
-Copy(KBObject kbObject,IKBObjectParent destinationParent,String destinationName) -> KBObject
-GetCopyName(KBObject obj,Module parent) -> String
-Open() -> Boolean
-Open(KBObject obj,OpenDocumentOptions options) -> Boolean
-IsVisible(IKBObject kbObject) -> Boolean
-GetKBObjectState(IKBObject kbobject) -> KBObjectStateInfo
-```
-
-### `Artech.Core.UI.Services.OutlinerService`
-
-```
-GetOutliner() -> IOutliner
-Reload(IOutlinerItemsDescriptor desc) -> Void
-```
-
-### `Artech.Core.UI.Services.OutputService`
-
-```
-MakeVisible() -> Void
-AddOutput(String outputId) -> Boolean
-GetOutput(String outputId) -> IOutputTarget
-```
-
-### `Artech.Core.UI.Services.ProductInfoService`
-
-```
-IsFirstTimeUse() -> Boolean
-IsRemote() -> Boolean
-TransformCommand(CommandDefinition def) -> Void
-GetLandingPage() -> StartPageSettings
-GetAfterKBCreatedPage() -> StartPageSettings
-HasProductInfoProvider() -> Boolean
-Support(Features features) -> Boolean
-Support(String category) -> Boolean
-```
-
-### `Artech.Core.UI.Services.PropertyService`
-
-```
-GetPropertyInspector() -> IPropertyInspector
-```
-
-### `Artech.Core.UI.Services.RecentKBsService`
-
-```
-GetRecentKBs() -> IRecentList`1<IRecentKB>
-SaveRecentKBs(IRecentList`1<IRecentKB> recentKBs) -> Boolean
-UpdateRecentKBsStartPage() -> Void
-UpdateRecentKBsMenu() -> Void
-GenerateRecentsSmartPart() -> String
-```
-
-### `Artech.Core.UI.Services.ReportViewService`
-
-```
-CreateReportView(String xslFileName,String title) -> IReportView
-CreateReportView(String xslFileName,String title,Boolean enableStatusStrip) -> IReportView
-```
-
-### `Artech.Core.UI.Services.SearchProviderService`
-
-```
-AddProvider(UISearchProvider provider) -> Void
-GetSearchProviders() -> IEnumerable`1<UISearchProvider>
-Search(Guid providerId,String text) -> Void
-```
-
-### `Artech.Core.UI.Services.SelectObjectDialogService`
-
-```
-SelectObjects(SelectObjectOptions options) -> IList`1<KBObject>
-SelectObject(SelectObjectOptions options) -> KBObject
-SelectObjectPartItems(String title,String subTitle,KBObject obj,Guid partType) -> ICollection
-SelectObjectPartItems(SelectObjectPartOptions options) -> ICollection
-RegisterCustom(KBObjectDescriptor type,ICustomSelectObjectDialog customDialog) -> Void
-```
-
-### `Artech.Core.UI.Services.TasksService`
-
-```
-Run(ITask task) -> Boolean
-```
-
-### `Artech.Core.UI.Services.ToolboxService`
-
-```
-GetToolbox() -> IToolbox
-ReloadCategories(IToolboxItemsDescriptor desc) -> Void
-```
-
-### `Artech.Core.UI.Services.ToolsOptionsService`
-
-```
-RegisterCategory(ConfigurationCategory category,String parentCategory) -> Void
-RegisterCategory(ConfigurationCategory category) -> Void
-ShowOptions() -> Void
-ShowOptions(String categoryName) -> Void
-```
-
-### `Artech.Core.UI.Services.ToolTipService`
-
-```
-AddContentProvider(IToolTipContentProvider contentProvider) -> Void
-ShowToolTip(Control control,Object obj) -> Boolean
-ShowToolTip(Control control,Object obj,Int32 delay) -> Boolean
-ShowToolTip(Control control,ToolTipData toolTipData) -> Void
-ShowToolTip(Control control,ToolTipData toolTipData,Int32 delay) -> Void
-HideToolTip() -> Void
-CanProvideToolTipData(Object data) -> Boolean
-GetToolTipData(Object data) -> ToolTipData
-```
-
-### `Artech.Core.UI.Services.ToolWindowService`
-
-```
-Initialize() -> Void
-CreateToolWindow(Guid toolWindowId) -> IToolWindow
-ShowToolWindow(Guid toolWindowId) -> Boolean
-PinToolWindow(Guid toolWindowId,Boolean pin) -> Boolean
-FocusToolWindow(Guid toolWindowId) -> Boolean
-FocusToolWindow(Guid toolWindowId,CommandData data) -> Boolean
-HighlightToolWindow(Guid toolWindowId) -> Boolean
-SelectToolWindow(Guid toolWindowId) -> Boolean
-```
-
-### `Artech.Core.UI.Services.TrackSelectionService`
-
-```
-Initialize() -> Void
-OnSelectChange(ISelectionContainer pSC) -> Boolean
-Subscribe(Guid guid,ISelectionListener listener) -> Void
-Unsubscribe(Guid guid) -> Void
-OnSelectChange(Object obj,Object objToSave) -> Void
-OnSelectChange(ICollection objs,ICollection objToSave) -> Void
-OnSelectChange(Object objs,Object objToSave,IPosition position) -> Void
-```
-
-### `Artech.Core.UI.Templates.ITemplateEngine`
-
-```
-CreateKnowledgeBase(KbTemplate template) -> Boolean
-```
-
-### `Artech.Core.UI.ToolWindows.ObjectBrowserUIHelper`
-
-```
-static LoadTypesCombo(IObjectBrowserUI browser,SelectObjectOptions options) -> Void
-static LoadTypesCombo(UltraComboEditor cboType,SelectObjectOptions options) -> Void
-static LoadFilterCombo(UltraComboEditor combo,IEnumerable`1<KBObject> objects) -> Void
-static HandleDateTimeTool(IObjectBrowserUI browser,ToolClickEventArgs e) -> Void
-```
-
-### `Artech.Core.UI.UX.JumpListHelper`
-
-```
-static LoadRecentKBs() -> Void
-```
-
 ## `Artech.Debugx.Common`
 
 ### `Artech.Debugx.Common.Data.EntityKeyHelper`
@@ -2946,349 +2516,6 @@ UnRegister(Type invokerType) -> Void
 Register(Type invokerType,Type adapterType) -> Void
 CreateAdapter(Type invokerType) -> CommandAdapter
 UnRegister(Type invokerType) -> Void
-```
-
-## `Artech.Generators`
-
-### `Artech.Generators.Definitions.Generator`
-
-```
-
-```
-
-### `Artech.Generators.Definitions.GeneratorApply`
-
-```
-
-```
-
-### `Artech.Generators.Definitions.GeneratorImplementation`
-
-```
-
-```
-
-### `Artech.Generators.Definitions.GeneratorPropertyDefinition`
-
-```
-
-```
-
-### `Artech.Generators.Definitions.GeneratorResource`
-
-```
-
-```
-
-### `Artech.Generators.ExtensionHelper`
-
-```
-static NormalizeActionName(String s) -> String
-```
-
-### `Artech.Generators.Extensions.GeneratorInstructions`
-
-```
-ExecuteGeneratorIntructions(List`1<IGeneratorInstruction> instructions,ITransformable md,String modulesOutputDirectory,String outputFileName,String objectName,String buildOptions) -> Void
-ApplyTemplate(Object input,String outputFile,String templateFile,String templateLibraryRuntimeClass) -> Void
-ApplyTemplateGroup(Object input,String outputFile,String templateFile,String groupName,String templateLibraryRuntimeClass) -> Void
-```
-
-### `Artech.Generators.Extensions.GeneratorMacros`
-
-```
-Add(String name,String value) -> Void
-Get(String name) -> String
-ApplyMacros(String inp) -> String
-```
-
-### `Artech.Generators.Extensions.Helper`
-
-```
-static GetModulesDirectory(IMetadataKBObject data,Boolean forWeb) -> String
-static CallToName(String call,String instanceComponent) -> String
-static FullName(String objectName,String instanceComponent) -> String
-```
-
-### `Artech.Generators.Extensions.StringTemplateFunctionsHelper`
-
-```
-static Create(String runtimeClass) -> IDictionary`2<String,Object>
-```
-
-### `Artech.Generators.Extensions.UIGeneratorExtension`
-
-```
-GetFunctionObject() -> Object
-GetTransformsDefinitions() -> IEnumerable`1<IMetadataTransformDefinition>
-static GetPatternExtension(Guid type) -> String
-Generate(IModelData modelData,Object mainData,ITemplateRunner templateRunner,IDictionary`2<String,Object> context) -> Boolean
-```
-
-### `Artech.Generators.FilterGenerator`
-
-```
-Invoke(String genName,IModelData modelData) -> Boolean
-BeginInvoke(String genName,IModelData modelData,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Boolean
-```
-
-### `Artech.Generators.GeneratorController`
-
-```
-SetBasePath(String path) -> Void
-SetRelativeOutput(String path) -> Void
-SetExtensionAssemblyPath(String path) -> Void
-Generate(GeneratorSpecificationStrategy genStrategy,Object item,IDictionary`2<String,Object> context,CancellationToken cancellationToken) -> Boolean
-```
-
-### `Artech.Generators.GeneratorEngine`
-
-```
-AddInstanceGenerator(String instanceName,ICustomGenerator generator) -> Void
-AddInstanceGenerator(String instanceName,ICustomGenerator generator,GeneratorKind kind) -> Void
-AddInstanceGenerator(String instanceName,CustomGeneratorFilter filter,ICustomGenerator generator) -> Void
-AddInstanceGenerator(String instanceName,CustomGeneratorFilter filter,ICustomGenerator generator,GeneratorKind kind) -> Void
-AddGenerator(ICustomGenerator generator,GeneratorKind kind) -> Void
-RunBeforeGenerate(IDictionary`2<String,Object> context,CancellationToken cancellationToken) -> Boolean
-RunAfterGenerate(IDictionary`2<String,Object> context,CancellationToken cancellationToken) -> Boolean
-RunAfterInstanceGenerators(String instanceName,Object data,IDictionary`2<String,Object> context,CancellationToken cancellationToken) -> Boolean
-```
-
-### `Artech.Generators.GeneratorEngine+CustomGeneratorFilter`
-
-```
-Invoke(Object data,IDictionary`2<String,Object> context) -> Boolean
-BeginInvoke(Object data,IDictionary`2<String,Object> context,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Boolean
-```
-
-### `Artech.Generators.GeneratorEngine+FilterAndGenerator`
-
-```
-
-```
-
-### `Artech.Generators.GeneratorEngine+GeneratorKind`
-
-```
-
-```
-
-### `Artech.Generators.GeneratorEngine+ICustomGenerator`
-
-```
-Generate(Object data,IDictionary`2<String,Object> context) -> Boolean
-```
-
-### `Artech.Generators.GeneratorEngine+ICustomGeneratorWithCancellation`
-
-```
-Generate(Object data,IDictionary`2<String,Object> context,CancellationToken token) -> Boolean
-```
-
-### `Artech.Generators.GeneratorExtensionFactory`
-
-```
-static LoadGeneratorDefinition(String generator) -> GeneratorExtension
-```
-
-### `Artech.Generators.GeneratorInstance`
-
-```
-
-```
-
-### `Artech.Generators.GeneratorType`
-
-```
-static CreateParameterizedType(String type,GeneratorType[] typeParameters) -> GeneratorType
-static FromType(String type,String typeName,String length,String decimals,Boolean isCollection) -> GeneratorType
-static FromType(String type,String typeName,Int32 length,Int32 decimals,Boolean isCollection) -> GeneratorType
-static FromType(String exprDataType) -> GeneratorType
-static FromType(String type,Int32 length,Int32 decimals) -> GeneratorType
-static FromType(Int32 internalType) -> GeneratorType
-ToString() -> String
-Parse(String s) -> GeneratorType
-```
-
-### `Artech.Generators.IEngineOutput`
-
-```
-AddLine(String v) -> Void
-AddErrorLine(String message) -> Void
-AddText(String v) -> Void
-```
-
-### `Artech.Generators.IExtensionGenerator`
-
-```
-Generate(IModelData model,Object main,ITemplateRunner templateRunner,IDictionary`2<String,Object> context) -> Boolean
-```
-
-### `Artech.Generators.IGenerator`
-
-```
-Generate(Object input,ITemplateRunner templateRunner,IDictionary`2<String,Object> context) -> Boolean
-Generate(Object main,Object param,ITemplateRunner templateRunner,IDictionary`2<String,Object> context) -> Boolean
-```
-
-### `Artech.Generators.IGeneratorController`
-
-```
-SetBasePath(String path) -> Void
-SetRelativeOutput(String path) -> Void
-SetExtensionAssemblyPath(String path) -> Void
-Generate(GeneratorSpecificationStrategy genStrategy,Object item,IDictionary`2<String,Object> context,CancellationToken cancellationToken) -> Boolean
-```
-
-### `Artech.Generators.IGeneratorExtensionStatus`
-
-```
-
-```
-
-### `Artech.Generators.IGeneratorMetadataManager`
-
-```
-CanGenerate(ISmartDevicesData sdata,IMainData main,IDictionary`2<String,Object> context,IGeneratorExtensionStatus& generatorStatus) -> Boolean
-ShouldRebuild(IMetadataKBObject obj,IMainData main) -> Boolean
-Initialize(ISmartDevicesData sdata,IMainData main,IDictionary`2<String,Object> context) -> Void
-LoadBusinessComponent(IMetadataKBObject obj,IMainData main) -> ITransformable
-GetKBModelData() -> ITransformable
-GetMainData() -> ITransformable
-GetPanels(String metadataFile,String metadataName,String metadataQualifiedName) -> IEnumerable`1<ITransformable>
-LoadSDT(IMetadataKBObject obj,IMainData main) -> ITransformable
-```
-
-### `Artech.Generators.ITemplateGenerator`
-
-```
-
-```
-
-### `Artech.Generators.ITemplateInputProcessor`
-
-```
-GetParameters(Object input) -> Dictionary`2<String,Object>
-```
-
-### `Artech.Generators.Metadata.GeneratorMetadata`1`
-
-```
-SaveTransformState() -> Void
-ApplyTransform(IMetadataTransform transform) -> Boolean
-ResetTransformState() -> Void
-GetMetadata() -> Object
-```
-
-### `Artech.Generators.Metadata.UIMetadataHelper`
-
-```
-static DeepCopy(T obj) -> T
-```
-
-### `Artech.Generators.TypesHelper`
-
-```
-static NormalizeTypeName(String s) -> String
-static NormalizeVariableName(String s) -> String
-static ToFirstUpper(String s) -> String
-static ToCamel(String s) -> String
-static GetBCType(String bcName) -> GeneratorType
-static GetBCTypes(GeneratorType bcType,GeneratorType& serviceType,GeneratorType& dataType,GeneratorType& instanceType) -> Boolean
-```
-
-### `Artech.Packages.Generators.GeneratorExtension`
-
-```
-CompareOperationKey(String key,String key2) -> Boolean
-ToString() -> String
-GetUsedStandardMessages() -> IEnumerable`1<String>
-```
-
-### `Artech.Packages.Generators.GeneratorExtension+Generator`
-
-```
-
-```
-
-### `Artech.Packages.Generators.GeneratorExtension+IGeneratorInstruction`
-
-```
-
-```
-
-### `Artech.Packages.Generators.GeneratorExtension+IGeneratorMonitorSetting`
-
-```
-
-```
-
-### `Artech.Packages.Generators.GeneratorExtension+IGeneratorOperation`
-
-```
-
-```
-
-### `Artech.Packages.Generators.GeneratorExtension+RenderTemplateGroupInstruction`
-
-```
-
-```
-
-### `Artech.Packages.Generators.GeneratorExtension+RenderTemplateInstruction`
-
-```
-
-```
-
-### `GeneratorSpecification`
-
-```
-
-```
-
-### `GeneratorSpecificationStrategy`
-
-```
-
-```
-
-### `GeneratorSpecificationStrategyCopyDirectory`
-
-```
-
-```
-
-### `GeneratorSpecificationStrategyCopyFile`
-
-```
-
-```
-
-### `GeneratorSpecificationStrategyExtension`
-
-```
-
-```
-
-### `GeneratorSpecificationStrategyGroup`
-
-```
-
-```
-
-### `GeneratorSpecificationStrategyTemplate`
-
-```
-
-```
-
-### `GeneratorSpecificationStrategyVariable`
-
-```
-
 ```
 
 ## `Artech.Genexus.Common`
@@ -11254,44 +10481,6 @@ IsApplicable(IPropertyBag properties) -> Boolean
 GetDependencies() -> String[]
 ```
 
-## `Artech.Genexus.Debugx.SocketServer`
-
-### `Artech.Genexus.Debugx.SocketServer.WebSocket.IIMageService`
-
-```
-GetFile(String imageName,String themeName,String langName) -> Stream
-```
-
-### `Artech.Genexus.Debugx.SocketServer.WebSocket.WSImageService`
-
-```
-GetFile(String imageName,String themeName,String langName) -> Stream
-```
-
-### `Artech.Genexus.Debugx.SocketServer.WebSocket.WSService`
-
-```
-Send(Message msg) -> Void
-```
-
-## `Artech.Genexus.Language`
-
-### `Artech.Genexus.Language.ComponentModel.SavedAttributeFinder`
-
-```
-GetByName(String name) -> KBObject
-```
-
-### `Artech.Genexus.Language.ComponentModel.SavedObjectFinder`
-
-```
-GetObject(Module fromModule,Nullable`1<Guid> type,String name) -> ResolveResult
-GetObject(Module fromModule,IList`1<Guid> types,String name) -> ResolveResult
-GetCallableObject(Module fromModule,String name) -> ResolveResult
-ResolveCallableObject(Module fromModule,String name,Guid[] additionalTypes) -> ResolveResult
-IsValidCallableType(Guid type) -> Boolean
-```
-
 ## `Artech.Genexus.Resolvers`
 
 ### `Artech.Genexus.Resolvers.ActionGroupClassThemeStylePropertyResolverFactory`
@@ -12656,100 +11845,12 @@ Accept(PropDefinitionCollection properties) -> Void
 
 ```
 
-## `Artech.Genexus.Resolvers.SMARTDEVICE`
-
-### `Artech.Genexus.Resolvers.SMARTDEVICEPropertyResolverFactory`
-
-```
-
-```
-
 ## `Artech.Genexus.Resolvers.SWIFT`
 
 ### `Artech.Genexus.Resolvers.SWIFTPropertyResolverFactory`
 
 ```
 
-```
-
-## `Artech.Genexus.UI.Common`
-
-### `Artech.Genexus.UI.Common.Dialogs.FileContentSaveAsDialog`
-
-```
-ShowDialog() -> Void
-```
-
-### `Artech.Genexus.UI.Common.MsHtml.GxControlHelperUI`
-
-```
-static CreateHTMLElement(IHTMLDocument2 doc2,GxControlType type) -> IHTMLElement
-static CreateHTMLElement(IHTMLDocument2 doc2,String type) -> IHTMLElement
-static ControlElem(IHTMLElement elem) -> IHTMLElement2
-static GetRenderElement(IHTMLElement elem) -> IHTMLElement
-static LoadInnerElements(IHTMLElement e,Dictionary`2<String,IHTMLElement> innerElements) -> Void
-static LoadInnerElements(IHTMLElement e,Dictionary`2<String,String> innerElements) -> Void
-static RestoreInnerElements(IHTMLElement e,Dictionary`2<String,String> innerElements) -> Void
-static BeforeRender(IHTMLElement element) -> Void
-```
-
-### `Artech.Genexus.UI.Common.MsHtml.HelpItemHelper`
-
-```
-static GetHtmlContent(HelpItem item) -> IHTMLDocument2
-static SetHtmlContent(HelpItem item,IHTMLDocument2 value) -> Void
-```
-
-### `Artech.Genexus.UI.Common.MsHtml.HtmlHelperUI`
-
-```
-static GetChildByName(IHTMLDOMNode parentNode,String childName,Int32 maxDepth) -> IHTMLDOMNode
-static GetChildren(IHTMLElement parent) -> IEnumerable`1<IHTMLElement>
-```
-
-### `Artech.Genexus.UI.Common.MsHtml.HtmlTagHelperUI`
-
-```
-static IsFreeStyleGrid(IHTMLElement e) -> Boolean
-static CheckProperties(IHTMLElement elem,IPropertyBag propBag,PropertyDescriptorCollection propertyDescriptionCollection,Object instance) -> Void
-static SerializeFromHtml(IHTMLElement elem,Hashtable props) -> Boolean
-```
-
-### `Artech.Genexus.UI.Common.MsHtml.WebFormRenderUI`
-
-```
-static RenderForm(WebFormPart webForm,GetXmlOptions options) -> String
-```
-
-### `Artech.Genexus.UI.Common.MsHtml.WebRenderHelperUI`
-
-```
-static UpdateClass(PropertiesObject propObj,IHTMLElement elem) -> Void
-static UpdateImage(KBObject kbObj,PropertiesObject propObj,IHTMLElement elem,String propertyName,String htmlAttribute) -> Void
-static UpdateImageStyle(KBObject kbObj,PropertiesObject propObj,IHTMLElement elem,String propertyName,String htmlStyleAttribute) -> Void
-static GetImageUrl(KBObject kbObj,PropertiesObject propObj,String propertyName) -> String
-```
-
-### `Artech.Genexus.UI.Common.ObjectBuilders.DomainBuilder`
-
-```
-Construct(KBObjectDescriptor type,String name,String description,IKBObjectParent parent,KBCategory inCategory) -> KBObject
-DoDefaultAction(KBObject obj) -> Void
-```
-
-### `Artech.Genexus.UI.Common.ObjectBuilders.FileBuilder`
-
-```
-Construct(KBObjectDescriptor type,String name,String description,IKBObjectParent parent,KBCategory inCategory) -> KBObject
-DoDefaultAction(KBObject obj) -> Void
-```
-
-### `Artech.Genexus.UI.Common.ObjectBuilders.ImageBuilder`
-
-```
-Construct(KBObjectDescriptor type,String name,String description,IKBObjectParent parent,KBCategory inCategory) -> KBObject
-DoDefaultAction(KBObject obj) -> Void
-static Create(String name) -> Image
 ```
 
 ## `Artech.Genexus.UI.Resources`
@@ -14290,138 +13391,6 @@ Accept(PropDefinitionCollection properties) -> Void
 
 ```
 
-## `Artech.Gxpm.Utils`
-
-### `Artech.Gxpm.Utils.ClasspathHelper`
-
-```
-AddLibDirectory(String directory,String inclussionPattern,String exclusionPattern) -> Void
-AddPath(String path) -> Void
-ToString() -> String
-```
-
-### `Artech.Gxpm.Utils.DamengDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.Db2UdbDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.DBConnectionHelper`
-
-```
-GetJdbcDriverDescriptor(String name) -> JdbcDriverDescriptor
-BuildJdbcUrl(DBConnectionConfig config) -> String
-GetIntegratedSecurityAttrs(Boolean useIngratedSecurity) -> String
-```
-
-### `Artech.Gxpm.Utils.DBConnectionHelperFactory`
-
-```
-static GetHelper(Int32 dbmsCode) -> DBConnectionHelper
-```
-
-### `Artech.Gxpm.Utils.ExecHelper`
-
-```
-ExecuteCommand(Dictionary`2<String,String> envVars,String baseDir,String fileName,String[] args) -> Boolean
-ExecuteCommandWithSyncOutput(Dictionary`2<String,String> envVars,String baseDir,String fileName,String[] args) -> Boolean
-ExecuteWFJavaReorg(String interpreterPath,String platformDir,String workingDir,String metadataDir,String extraClasspath,String reorgLibName,IEnumerable`1<DBConnectionConfig> dbConfigs,Boolean overwriteConfig) -> Boolean
-ExecuteWFJavaUtilityProc(String interpreterPath,String platformDir,String workingDir,String metadataDir,String extraClasspath,IEnumerable`1<DBConnectionConfig> dbConfigs,Boolean overwriteConfig,String className,String[] args) -> Boolean
-ExecuteWFNetReorg(String platformDir,String workingDir,IEnumerable`1<DBConnectionConfig> dbConfigs,Boolean overwriteConfig,String asmName) -> Boolean
-ExecuteWFNetCoreReorg(String platformDir,String workingDir,IEnumerable`1<DBConnectionConfig> dbConfigs,Boolean overwriteConfig,String asmName) -> Boolean
-ExecuteWFNetUtilityProc(String platformDir,String workingDir,IEnumerable`1<DBConnectionConfig> dbConfigs,Boolean overwriteConfig,String exeName,String[] args) -> Boolean
-ExecuteWFNetCoreUtilityProc(String platformDir,String workingDir,IEnumerable`1<DBConnectionConfig> dbConfigs,Boolean overwriteConfig,String fileName,String[] args) -> Boolean
-```
-
-### `Artech.Gxpm.Utils.InformixDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.IOHelper`
-
-```
-static RenameFile(String fileName,String newFileName) -> Void
-static CopyFileTo(String srcDir,String fileName,String targetDir,Boolean overwrite) -> Void
-static CopyFileTo(String filePath,String targetDir,Boolean overwrite) -> Void
-static GetMatchingFiles(String path,String searchPattern) -> IEnumerable`1<String>
-static CopyFiles(String sourceDir,String targetDir,String searchPattern,Boolean overwrite) -> Void
-static CopyFiles(String sourceDir,String targetDir,String searchPattern,SearchOption searchOption,Boolean overwrite) -> Void
-static CopyFiles(String sourceDir,String targetDir,String searchPattern,SearchOption searchOption,Boolean overwrite,String excludePattern) -> Void
-static CopyDirectory(String sourceDir,String targetDir,Boolean recursive,Boolean overwrite) -> Void
-```
-
-### `Artech.Gxpm.Utils.JdkInfoHelper`
-
-```
-static GetJreHomePath() -> String
-static GetJdkHomePath() -> String
-static GetJdkInterpreterPath() -> String
-```
-
-### `Artech.Gxpm.Utils.MySqlDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.OracleDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.PostgreSqlDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.ReflectionHelper`
-
-```
-static GetAttributes(Object obj) -> IEnumerable`1<TAttribute>
-static GetDynamicAddedAttributes(Object obj) -> IEnumerable`1<TAttribute>
-```
-
-### `Artech.Gxpm.Utils.SapHanaDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.SeriesDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.SqlServerDBConnectionHelper`
-
-```
-BuildJdbcUrl(DBConnectionConfig config) -> String
-```
-
-### `Artech.Gxpm.Utils.TwoFishHelper`
-
-```
-static Encrypt64(String value,String key) -> String
-static Encrypt64Reverse(String value,String key) -> String
-static encrypt16(String value,String key) -> String
-static decrypt16(String value,String key) -> String
-static Decrypt64(String value,String key) -> String
-static getCheckSumLength() -> Int32
-static GetServerKey() -> String
-static GetSiteKey() -> String
-```
-
 ## `Artech.Layers.Framework`
 
 ### `Artech.Layers.Framework.GxServiceManager`
@@ -15207,9 +14176,9 @@ GetTransationFor(PatternInstanceElement panelElement,Int32 languageId,String mes
 ### `Artech.Packages.Patterns.PatternEngine`
 
 ```
+static AddPatternDefinition(String definitionPath) -> PatternDefinition
 static GetPatternDefinition(Guid id) -> PatternDefinition
 static GetPatternDefinition(String name) -> PatternDefinition
-static AddPatternDefinition(String definitionPath) -> PatternDefinition
 static GetPatternDefinitionBySettingsGuid(Guid id,String name) -> PatternDefinition
 static ApplyPattern(PatternInstance instance,ApplySettings settings) -> Boolean
 static ApplyPattern(KBObject parentObject,PatternDefinition pattern) -> Void
@@ -16566,34 +15535,6 @@ UpdateObject(PatternBase instance) -> Void
 
 ```
 
-## `Artech.Template.Base`
-
-### `Artech.TemplateEngine.DefaultTemplateEngineResolver`
-
-```
-DefaultCustomReferenceAssemblies() -> List`1<String>
-DefaultCustomImportNamespaces() -> List`1<String>
-AttributeResolve(String name) -> String
-TemplateResolve(String name) -> String
-```
-
-### `Artech.TemplateEngine.ITemplateResolver`
-
-```
-DefaultCustomReferenceAssemblies() -> List`1<String>
-DefaultCustomImportNamespaces() -> List`1<String>
-AttributeResolve(String name) -> String
-TemplateResolve(String name) -> String
-```
-
-## `Artech.Template.Helper`
-
-### `Artech.Template.Helper.HelperFileInfo`
-
-```
-GetHelperDirectory() -> String
-```
-
 ## `Artech.Template.Parser`
 
 ### `Artech.TemplateEngine.CodeDomTemplateHelper`
@@ -17212,161 +16153,6 @@ GetCustomVisibleResolver(String propName) -> IVisibleResolver
 
 ```
 
-```
-
-## `Artech.Wiki.Services`
-
-### `Artech.Wiki.Services.GxWiki.DeletePage.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.DeletePage.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.DeletePageByName.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.DeletePageByName.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.GetByPartialName.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.GetByPartialName.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.GetCurrentVersion.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.GetCurrentVersion.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.GetInfo.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.GetInfo.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.GetPageById.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.GetPageById.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.GetPageByName.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.GetPageByName.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.GetPageId.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.GetPageId.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.InsertFile.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.InsertFile.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWiki.InsertPage.ExecuteCompletedEventArgs`
-
-```
-
-```
-
-### `Artech.Wiki.Services.GxWiki.InsertPage.ExecuteCompletedEventHandler`
-
-```
-Invoke(Object sender,ExecuteCompletedEventArgs e) -> Void
-BeginInvoke(Object sender,ExecuteCompletedEventArgs e,AsyncCallback callback,Object object) -> IAsyncResult
-EndInvoke(IAsyncResult result) -> Void
-```
-
-### `Artech.Wiki.Services.GxWikiServices`
-
-```
-GetInfo(GxWikiServer server,WikiInfo& info) -> ErrorCode
-DeletePageByName(GxWikiServer server,String name,IStatus[]& status) -> Boolean
-DeletePage(GxWikiServer server,Int32 id,IStatus[]& status) -> Boolean
-GetPageId(GxWikiServer server,String name,IStatus[]& status) -> Int32
-GetCurrentVersion(GxWikiServer server,Int32 id,DateTime& timestamp,String& user,IStatus[]& status) -> Int32
-InsertFile(GxWikiServer server,GxWikiPage page,IStatus[]& status) -> Int32
-InsertPage(GxWikiServer server,GxWikiPage page,IStatus[]& status) -> Int32
-GetPageById(GxWikiServer server,Int32 id,IStatus[]& status) -> GxWikiPage
 ```
 
 ## `DVelop.Extensions.UserControls`
@@ -18703,420 +17489,95 @@ IsVisible(IPropertyBag properties) -> Boolean
 
 ```
 
-## `GeneXus.Design.Grammars`
+## `Genexus.MsBuild.Tasks`
 
-### `GeneXus.Design.Grammars.DesignStyles.DesignStylesModifier+UpdaterFocus`
+### `Genexus.MsBuild.Tasks.AndroidHelper`
 
 ```
-
-```
-
-### `GeneXus.Design.Grammars.DesignStyles.DesignStylesModifier+UpdaterModes`
-
-```
-
-```
-
-### `Genexus.Design.Grammars.DesignStylesGrammarHelper`
-
-```
-static TryGetClassName(String selectorName,String& className,Boolean& fullMatch) -> Boolean
-static TryGetClassName(String selectorName,String& className) -> Boolean
-```
-
-## `GeneXus.Grammar.ServiceGroupSource`
-
-### `GeneXus.Grammar.ServiceGroupSource.IServiceGroupSourcePartListener`
-
-```
-ExitAnycomment(AnycommentContext context) -> Void
-EnterServiceInterface(ServiceInterfaceContext context) -> Void
-ExitServiceInterface(ServiceInterfaceContext context) -> Void
-EnterServicemapping(ServicemappingContext context) -> Void
-ExitServicemapping(ServicemappingContext context) -> Void
-EnterServiceDefinition(ServiceDefinitionContext context) -> Void
-ExitServiceDefinition(ServiceDefinitionContext context) -> Void
-EnterServiceattributelist(ServiceattributelistContext context) -> Void
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.IServiceGroupSourcePartVisitor`1`
-
-```
-VisitServiceInterface(ServiceInterfaceContext context) -> Result
-VisitServicemapping(ServicemappingContext context) -> Result
-VisitServiceDefinition(ServiceDefinitionContext context) -> Result
-VisitServiceattributelist(ServiceattributelistContext context) -> Result
-VisitServiceattribute(ServiceattributeContext context) -> Result
-VisitAttri_desc(Attri_descContext context) -> Result
-VisitAttri_rest(Attri_restContext context) -> Result
-VisitAttri_path(Attri_pathContext context) -> Result
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupPartListenerEntryPoints`
-
-```
-EnterExternal_service(External_serviceContext context) -> Void
-ExitExternal_service(External_serviceContext context) -> Void
-EnterServiceattribute(ServiceattributeContext context) -> Void
-ExitServiceattribute(ServiceattributeContext context) -> Void
-EnterAttriparameter(AttriparameterContext context) -> Void
-EnterAttripathparameter(AttripathparameterContext context) -> Void
-EnterAttrisecuritymodename(AttrisecuritymodenameContext context) -> Void
-EnterAttrisecurityname(AttrisecuritynameContext context) -> Void
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupPartListenerTokenizer`
-
-```
-EnterServiceName(ServiceNameContext context) -> Void
-ExitServiceGroup(ServiceGroupContext context) -> Void
-EnterExternal_service(External_serviceContext context) -> Void
-EnterServiceattribute(ServiceattributeContext context) -> Void
-ExitServiceDefinition(ServiceDefinitionContext context) -> Void
-EnterImplementation_name(Implementation_nameContext context) -> Void
-EnterImplementation_reference(Implementation_referenceContext context) -> Void
-ExitServiceList(ServiceListContext context) -> Void
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartBaseListener`
-
-```
-EnterServiceInterface(ServiceInterfaceContext context) -> Void
-ExitServiceInterface(ServiceInterfaceContext context) -> Void
-EnterServicemapping(ServicemappingContext context) -> Void
-ExitServicemapping(ServicemappingContext context) -> Void
-EnterServiceDefinition(ServiceDefinitionContext context) -> Void
-ExitServiceDefinition(ServiceDefinitionContext context) -> Void
-EnterServiceattributelist(ServiceattributelistContext context) -> Void
-ExitServiceattributelist(ServiceattributelistContext context) -> Void
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartBaseVisitor`1`
-
-```
-VisitServiceInterface(ServiceInterfaceContext context) -> Result
-VisitServicemapping(ServicemappingContext context) -> Result
-VisitServiceDefinition(ServiceDefinitionContext context) -> Result
-VisitServiceattributelist(ServiceattributelistContext context) -> Result
-VisitServiceattribute(ServiceattributeContext context) -> Result
-VisitAttri_desc(Attri_descContext context) -> Result
-VisitAttri_rest(Attri_restContext context) -> Result
-VisitAttri_path(Attri_pathContext context) -> Result
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartBaseVisitorAlt`1`
-
-```
-VisitImplementation(ImplementationContext context) -> Result
-VisitVarparameter(VarparameterContext context) -> Result
-VisitImplementation_name(Implementation_nameContext context) -> Result
-VisitService_placeholder(Service_placeholderContext context) -> Result
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartLexer`
-
-```
-
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartListenerCommon`
-
-```
-EnterAttri_rest(Attri_restContext context) -> Void
-ExitAttri_rest(Attri_restContext context) -> Void
-EnterAttri_path(Attri_pathContext context) -> Void
-ExitAttri_path(Attri_pathContext context) -> Void
-EnterAttri_security(Attri_securityContext context) -> Void
-EnterAttri_desc(Attri_descContext context) -> Void
-EnterAttridescriptionpar(AttridescriptionparContext context) -> Void
-EnterAttripars(AttriparsContext context) -> Void
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser`
-
-```
-serviceInterface() -> ServiceInterfaceContext
-servicemapping() -> ServicemappingContext
-serviceDefinition() -> ServiceDefinitionContext
-serviceattributelist() -> ServiceattributelistContext
-serviceattribute() -> ServiceattributeContext
-attri_desc() -> Attri_descContext
-attri_rest() -> Attri_restContext
-attri_path() -> Attri_pathContext
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+External_serviceContext`
-
+static DirectoryCopy(String sourceDirName,String destDirName,Boolean copySubDirs,Boolean filesToLower) -> Void
+static DirectoryRename(String sourceDirName,String findName,String replaceTo,Boolean subDirs) -> Void
+static ReplaceInFiles(String filePath,String oldValue,String newValue) -> Void
+static ReplaceInFiles(String filePath,String[] oldValues,String[] newValues) -> Void
+static ReplaceInFilesOfDirectory(String directoryPath,String[] oldValues,String[] newValues) -> Void
+static RenameInFilesOfDirectoryJson(String directoryPath) -> Void
 ```
-service_entry_name() -> Service_entry_nameContext
-service_parameters() -> Service_parametersContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+Service_entry_nameContext`
-
-```
-Ident() -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+Service_parametersContext`
-
-```
-OPEN_PAR() -> ITerminalNode
-CLOSE_PAR() -> ITerminalNode
-parameter() -> ParameterContext[]
-parameter(Int32 i) -> ParameterContext
-COMMA() -> ITerminalNode[]
-COMMA(Int32 i) -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+Service_placeholderContext`
-
-```
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServiceattributeContext`
-
-```
-attri_rest() -> Attri_restContext
-attri_path() -> Attri_pathContext
-attri_security() -> Attri_securityContext
-attri_desc() -> Attri_descContext
-attri_securitymode() -> Attri_securitymodeContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServiceattributelistContext`
-
-```
-serviceattribute() -> ServiceattributeContext[]
-serviceattribute(Int32 i) -> ServiceattributeContext
-COMMA() -> ITerminalNode[]
-COMMA(Int32 i) -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServiceDefinitionContext`
-
-```
-servicemapping() -> ServicemappingContext
-serviceattributelist() -> ServiceattributelistContext[]
-serviceattributelist(Int32 i) -> ServiceattributelistContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServiceGroupContext`
-
-```
-serviceName() -> ServiceNameContext
-OPEN_BRACE() -> ITerminalNode
-serviceList() -> ServiceListContext
-CLOSE_BRACE() -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServiceInterfaceContext`
-
-```
-external_service() -> External_serviceContext
-serviceattributelist() -> ServiceattributelistContext[]
-serviceattributelist(Int32 i) -> ServiceattributelistContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServiceListContext`
-
-```
-serviceDefinition() -> ServiceDefinitionContext[]
-serviceDefinition(Int32 i) -> ServiceDefinitionContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServiceListInterfaceContext`
-
-```
-serviceInterface() -> ServiceInterfaceContext[]
-serviceInterface(Int32 i) -> ServiceInterfaceContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
-```
 
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServicemappingContext`
+### `Genexus.MsBuild.Tasks.GenerateChatbot`
 
 ```
-ARROW() -> ITerminalNode
-implementation() -> ImplementationContext
-service_placeholder() -> Service_placeholderContext
-external_service() -> External_serviceContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupSourcePartParser+ServiceNameContext`
+### `Genexus.MsBuild.Tasks.GenerateOnly`
 
 ```
-Ident() -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.ServiceGroupSource.ServiceGroupToken`
+### `Genexus.MsBuild.Tasks.GenerateOpenAPI`
 
 ```
-
-```
-
-### `GeneXus.Grammar.ServiceGroupSource.ServiceParameter`
-
-```
-
-```
-
-### `GeneXus.Grammar.SuperAppSource.ServiceParameter`
-
-```
-
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+External_serviceContext`
+### `Genexus.MsBuild.Tasks.GeneratorDaemon`
 
 ```
-service_entry_name() -> Service_entry_nameContext
-service_parameters() -> Service_parametersContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+Service_entry_nameContext`
+### `Genexus.MsBuild.Tasks.GetGeneratorProperty`
 
 ```
-Ident() -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+Service_parametersContext`
+### `Genexus.MsBuild.Tasks.HasGenerator`
 
-```
-OPEN_PAR() -> ITerminalNode
-CLOSE_PAR() -> ITerminalNode
-parameter() -> ParameterContext[]
-parameter(Int32 i) -> ParameterContext
-COMMA() -> ITerminalNode[]
-COMMA(Int32 i) -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+ServiceDefinitionContext`
-
-```
-servicemapping() -> ServicemappingContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+ServiceGroupContext`
+### `Genexus.MsBuild.Tasks.Helper.ExportItemFilterHelper`
 
 ```
-serviceName() -> ServiceNameContext
-OPEN_BRACE() -> ITerminalNode
-serviceList() -> ServiceListContext
-CLOSE_BRACE() -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Initialize(IList`1<IExportItem> itemsInExportFile,ITaskItem[] includeItems,ITaskItem[] excludeItems) -> Void
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+ServiceInterfaceContext`
+### `Genexus.MsBuild.Tasks.HelpGenerator`
 
 ```
-external_service() -> External_serviceContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+ServiceListContext`
+### `Genexus.MsBuild.Tasks.ResetGeneratorProperty`
 
 ```
-serviceDefinition() -> ServiceDefinitionContext[]
-serviceDefinition(Int32 i) -> ServiceDefinitionContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+ServiceListInterfaceContext`
+### `Genexus.MsBuild.Tasks.SetGeneratorProperty`
 
 ```
-serviceInterface() -> ServiceInterfaceContext[]
-serviceInterface(Int32 i) -> ServiceInterfaceContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+ServicemappingContext`
+### `Genexus.MsBuild.Tasks.UpdateModule`
 
 ```
-ARROW() -> ITerminalNode
-implementation() -> ImplementationContext
-superapp_placeholder() -> Superapp_placeholderContext
-external_service() -> External_serviceContext
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.SuperAppSource.SuperAppSourcePartParser+ServiceNameContext`
+### `Genexus.MsBuild.Tasks.UpdateUserControls`
 
 ```
-Ident() -> ITerminalNode
-EnterRule(IParseTreeListener listener) -> Void
-ExitRule(IParseTreeListener listener) -> Void
-Accept(IParseTreeVisitor`1<TResult> visitor) -> TResult
+Execute() -> Boolean
 ```
 
-### `GeneXus.Grammar.UserControlSource.UserControlParser+Mustache_projectionContext`
+### `Genexus.MsBuild.Tasks.UpdateWorkingModel`
 
 ```
-LL() -> ITerminalNode
-Eq() -> ITerminalNode[]
-Eq(Int32 i) -> ITerminalNode
-Lt() -> ITerminalNode
-Pct() -> ITerminalNode[]
-Pct(Int32 i) -> ITerminalNode
-Ws_Signficant() -> ITerminalNode
-Gtp() -> ITerminalNode
+Execute() -> Boolean
 ```
 
 ## `Genexus.Packages.BotGenerator`
@@ -19331,89 +17792,6 @@ GetCommand(Int32 code) -> ISecurityCommand
 RegisterSecurityCommand(ISecurityCommand command) -> Void
 Scan(KBObjectQuery query,SecurityScanPlan plan,IScannerOuput output) -> Void
 static CompareStrings(String one,String two) -> Boolean
-```
-
-## `GeneXus.Server.Contracts`
-
-### `GeneXus.Server.Contracts.ContractsHelper`
-
-```
-
-```
-
-### `GeneXus.Server.Contracts.Helpers.VersionMetadataHelper`
-
-```
-static FromString(String metadata) -> VersionMetadata
-static ToString(VersionMetadata metadata) -> String
-```
-
-### `GeneXus.Server.Contracts.IKBModelObjectsService`
-
-```
-Get(String kbName,Int32 modelId,Guid type,Int32 id) -> KBObjectData
-GetKeys(String kbName,Int32 modelId) -> IEnumerable`1<EntityKeyData>
-GetByPropertyValue(String kbName,Int32 modelId,String propName,Object propValue) -> IEnumerable`1<KBObjectData>
-GetChildren(String kbName,Int32 modelId,KBObjectData parent) -> IEnumerable`1<KBObjectData>
-GetChangesStartingAt(String kbName,Int32 modelId,DateTime date) -> IEnumerable`1<EntityHistoryData>
-```
-
-### `GeneXus.Server.Contracts.IServerHelper`
-
-```
-IsServerAlive(String clientVersion) -> Boolean
-IsKBHosted(String kbName) -> Boolean
-IsServerSecure() -> Boolean
-AuthenticationTypes() -> List`1<String>
-ServerInfo(SimpleTransfer request) -> SimpleTransfer
-ServerUTCTime() -> DateTime
-```
-
-### `GeneXus.Server.Contracts.ISyndicationService`
-
-```
-GetRevisions(String kbName,String versionName) -> Rss20FeedFormatter
-```
-
-### `GeneXus.Server.Contracts.ITeamWorkService`
-
-```
-GetKBVersions(String kbName) -> List`1<KBVersionData>
-HostedKBs() -> List`1<String>
-GetTemplateData(String kbName,Int32 versionId) -> List`1<ModelTemplateData>
-GetTDataVersionName(String kbName,String versionName) -> List`1<ModelTemplateData>
-GetServerVersionId(String kbName,String versionName) -> Int32
-Cancel(Guid guid) -> Void
-GetRevisions(String kbName,Int32 versionId) -> List`1<KBRevisionData>
-CheckConectivitySecure() -> Boolean
-```
-
-### `GeneXus.Server.Contracts.ITeamWorkService2`
-
-```
-Update(SimpleTransfer request) -> FileTransfer
-Commit(FileTransfer request) -> SimpleTransfer
-Update2(FileTransfer request) -> FileTransfer
-Commit2(FileTransfer request) -> FileTransfer
-CheckOut(SimpleTransfer request) -> FileTransfer
-PublishKB(FileTransfer request) -> SimpleTransfer
-WhatsUp(SimpleTransfer request) -> SimpleTransfer
-GetServerVersion(SimpleTransfer request) -> FileTransfer
-```
-
-### `GeneXus.Server.Contracts.Resources.UriHelper`
-
-```
-static GetXName(String name) -> XName
-```
-
-### `GeneXus.Server.Contracts.ServiceHelper`
-
-```
-static GetStringEnvironments(KBEnvironment env) -> String
-static GetKBInfo(KnowledgeBaseRequest request,String fileName) -> KnowledgeBaseInfo
-static WriteStream(Stream inputStream,String filePath) -> Void
-static IsRemoteVersionCompatible(String remoteVersion,String supportedVersion) -> Boolean
 ```
 
 ## `GeneXus.TeamDevClient.Architecture.BL`

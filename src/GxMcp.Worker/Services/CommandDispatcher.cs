@@ -97,6 +97,18 @@ namespace GxMcp.Worker.Services
         private readonly MergeToolService _mergeToolService;
         // genexus_kb_version — KB model-version management over KBVersionHelper.
         private readonly KbVersionService _kbVersionService;
+        // genexus_transfer — real XPZ export/import over IKnowledgeManagerService.
+        private readonly TransferService _transferService;
+        // genexus_deploy — deploy application over IDeploymentService/IDeploymentTargetService.
+        private readonly DeployService _deployService;
+        // genexus_db action=reorg_impact — reorg/DDL impact over IModelInformationService/ISpecifierService.
+        private readonly ReorgImpactService _reorgImpactService;
+        // genexus_analyze mode=kb_stats — KB activity/freshness over IModelInformationService/IStatisticsService.
+        private readonly KbStatsService _kbStatsService;
+        // genexus_security action=scan_native — native Security Scanner over ISecurityScannerService.
+        private readonly SecurityScanService _securityScanService;
+        // genexus_gxserver action=pipeline_* — CI pipelines over IContinuousIntegrationService.
+        private readonly CiPipelineService _ciPipelineService;
         private readonly SdPanelService _sdPanelService;
         private readonly MultiAgentLockService _multiAgentLockService;
         private readonly WhatIfService _whatIfService;
@@ -214,6 +226,12 @@ namespace GxMcp.Worker.Services
             _gamService = new GamService(_kbService);
             _mergeToolService = new MergeToolService(_kbService, _objectService);
             _kbVersionService = new KbVersionService(_kbService);
+            _transferService = new TransferService(_kbService, _objectService);
+            _deployService = new DeployService(_kbService);
+            _reorgImpactService = new ReorgImpactService(_kbService);
+            _kbStatsService = new KbStatsService(_kbService);
+            _securityScanService = new SecurityScanService(_kbService);
+            _ciPipelineService = new CiPipelineService(_kbService);
             _sdPanelService = new SdPanelService(_objectService, _writeService);
             _multiAgentLockService = new MultiAgentLockService(_kbService);
             _whatIfService = new WhatIfService(_analyzeService, _objectService);
@@ -553,6 +571,10 @@ namespace GxMcp.Worker.Services
                 ["gam"] = Handle_Gam,
                 ["merge"] = Handle_Merge,
                 ["kbversion"] = Handle_KbVersion,
+                ["transfer"] = Handle_Transfer,
+                ["deploy"] = Handle_Deploy,
+                ["reorgimpact"] = Handle_ReorgImpact,
+                ["kbstats"] = Handle_KbStats,
                 ["sdpanel"] = Handle_SdPanel,
                 ["multiagentlock"] = Handle_MultiAgentLock,
                 ["whatif"] = Handle_WhatIf,
@@ -1596,6 +1618,8 @@ namespace GxMcp.Worker.Services
                 return _securityAuditService.AuditGam();
             if (string.Equals(action, "scan_secrets", StringComparison.OrdinalIgnoreCase))
                 return _securityAuditService.ScanSecrets();
+            if (string.Equals(action, "scan_native", StringComparison.OrdinalIgnoreCase))
+                return _securityScanService.Run(args ?? new JObject());
             return Models.McpResponse.Err(
                 code: "UnknownAction",
                 message: $"Unsupported security action '{action}'.",
@@ -1856,7 +1880,12 @@ namespace GxMcp.Worker.Services
             // genexus_gxserver — GxServer sync state (SDK-backed) plus
             // write actions (commit/update/lock/resolve), routed inside
             // GxServerSyncService.Run to the sibling GxServerWriteService.
-            return _gxServerSyncService.Run(args ?? new JObject());
+            // P1 #4: pipeline_* actions route to the CI pipeline service.
+            var a = args ?? new JObject();
+            string gxsAction = a["action"]?.ToString() ?? "";
+            if (gxsAction.StartsWith("pipeline", StringComparison.OrdinalIgnoreCase))
+                return _ciPipelineService.Run(gxsAction, a);
+            return _gxServerSyncService.Run(a);
         }
 
         private string Handle_Compare(JObject request, string method, string action, string target, string payload, JObject args)
@@ -1895,6 +1924,33 @@ namespace GxMcp.Worker.Services
             // (Create Version / Branch / Activate / Revert) over
             // Artech.Architecture.Common.Helpers.KBVersionHelper.
             return _kbVersionService.Run(args ?? new JObject());
+        }
+
+        private string Handle_Transfer(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_transfer — real XPZ export/import over IKnowledgeManagerService.
+            // action=export|inspect|import (import destructive; see TransferService guards).
+            return _transferService.Run(args ?? new JObject());
+        }
+
+        private string Handle_Deploy(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_deploy — deploy application over IDeploymentService/
+            // IDeploymentTargetService. list_targets read-only; deploy destructive.
+            return _deployService.Run(args ?? new JObject());
+        }
+
+        private string Handle_ReorgImpact(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_db action=reorg_impact — reorg/DDL impact preview.
+            // Cheap timestamp heuristic default; deep=true runs specification.
+            return _reorgImpactService.Run(args ?? new JObject());
+        }
+
+        private string Handle_KbStats(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_analyze mode=kb_stats — KB activity & freshness (read-only).
+            return _kbStatsService.Run(args ?? new JObject());
         }
 
         private string Handle_SdPanel(JObject request, string method, string action, string target, string payload, JObject args)

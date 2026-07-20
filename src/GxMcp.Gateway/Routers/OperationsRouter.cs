@@ -389,6 +389,28 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                // genexus_transfer — real XPZ export/import over IKnowledgeManagerService
+                // (dependency-aware, IDE Export/Import parity). action=export|inspect|import.
+                // import is destructive (dryRun defaults true; confirm=true to apply).
+                case "genexus_transfer":
+                    return new
+                    {
+                        module = "Transfer",
+                        action = "Run",
+                        @params = args
+                    };
+
+                // genexus_deploy — deploy application over IDeploymentService /
+                // IDeploymentTargetService. action=list_targets (read-only) | deploy
+                // (destructive, confirm=true).
+                case "genexus_deploy":
+                    return new
+                    {
+                        module = "Deploy",
+                        action = "Run",
+                        @params = args
+                    };
+
                 // Item 71 — gh CLI passthrough.
                 case "genexus_github":
                     return new
@@ -883,6 +905,11 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
                 }
+
+                // P1 #5: reorg / DDL impact preview. Cheap timestamp heuristic by default;
+                // deep=true runs ISpecifierService.ImpactDatabase (specification, build-heavy).
+                case "reorg_impact":
+                    return new { module = "ReorgImpact", action = "Run", @params = args };
 
                 // SDK translations import — was genexus_translations action=import.
                 case "translations_import":

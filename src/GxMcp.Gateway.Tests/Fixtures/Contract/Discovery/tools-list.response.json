@@ -46,7 +46,8 @@
               "pattern_metadata",
               "summary",
               "dependency_heatmap",
-              "code_metrics"
+              "code_metrics",
+              "kb_stats"
             ],
             "type": "string"
           },
@@ -618,9 +619,14 @@
               "types_list",
               "types_describe",
               "types_validate",
-              "translations_import"
+              "translations_import",
+              "reorg_impact"
             ],
             "type": "string"
+          },
+          "deep": {
+            "description": "reorg_impact only: run ISpecifierService.ImpactDatabase (specification, build-heavy) for the authoritative AnalysisResult. Default false (cheap timestamp heuristic).",
+            "type": "boolean"
           },
           "format": {
             "description": "optimize_report only.",
@@ -740,6 +746,45 @@
         "type": "object"
       },
       "name": "genexus_delete_object"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Deploy application over the SDK. action=list_targets (read-only, default) enumerates deployment target types (IDeploymentTargetService); action=deploy (destructive, confirm=true) runs IDeploymentService.Deploy(model).",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "list_targets"
+          },
+          {
+            "action": "deploy",
+            "confirm": true
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "list_targets",
+              "deploy"
+            ],
+            "type": "string"
+          },
+          "confirm": {
+            "description": "deploy: required (builds + ships the app).",
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_deploy"
     },
     {
       "annotations": {
@@ -1281,7 +1326,12 @@
               "commit",
               "update",
               "lock",
-              "resolve"
+              "resolve",
+              "pipeline_list",
+              "pipeline_runs",
+              "pipeline_output",
+              "pipeline_run",
+              "pipeline_abort"
             ],
             "type": "string"
           },
@@ -1291,6 +1341,14 @@
           },
           "async": {
             "description": "update/commit: run as a background job — returns an operationId immediately; poll genexus_lifecycle(action=status|result, target=op:<id>). Use for a large update that would exceed the sync window.",
+            "type": "boolean"
+          },
+          "buildId": {
+            "description": "pipeline_output: build id to fetch output for.",
+            "type": "integer"
+          },
+          "confirm": {
+            "description": "pipeline_run/pipeline_abort: required (these trigger/cancel a build).",
             "type": "boolean"
           },
           "force": {
@@ -1308,6 +1366,18 @@
           "message": {
             "description": "commit: commit comment.",
             "type": "string"
+          },
+          "project": {
+            "description": "pipeline_*: CI pipeline/project name (from pipeline_list).",
+            "type": "string"
+          },
+          "rebuild": {
+            "description": "pipeline_run: full rebuild instead of incremental.",
+            "type": "boolean"
+          },
+          "runTests": {
+            "description": "pipeline_run: run tests as part of the pipeline.",
+            "type": "boolean"
           },
           "strategy": {
             "description": "resolve: which version wins — mine (keep local, default, creds-free), theirs (take server), automerge (3-way merge). theirs/automerge need server creds.",
@@ -2703,7 +2773,8 @@
           "action": {
             "enum": [
               "audit_gam",
-              "scan_secrets"
+              "scan_secrets",
+              "scan_native"
             ],
             "type": "string"
           },
@@ -2930,6 +3001,76 @@
         "type": "object"
       },
       "name": "genexus_test"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Real XPZ export/import over the SDK's IKnowledgeManagerService — dependency-aware, IDE Export/Import parity (NOT the filesystem copy genexus_io/kb_import do). action=export (targets[]+outputFile) | inspect (explore an .xpz, read-only) | import (apply into KB; dryRun defaults true=preview via ExploreExport; dryRun=false requires confirm=true).",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "export",
+            "outputFile": "C:\\tmp\\cust.xpz",
+            "targets": [
+              "Customer"
+            ]
+          },
+          {
+            "action": "inspect",
+            "file": "C:\\tmp\\cust.xpz"
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "export",
+              "inspect",
+              "import"
+            ],
+            "type": "string"
+          },
+          "confirm": {
+            "description": "import with dryRun=false: required.",
+            "type": "boolean"
+          },
+          "dryRun": {
+            "description": "import: true (default) previews; false applies (needs confirm).",
+            "type": "boolean"
+          },
+          "file": {
+            "description": "inspect/import: absolute .xpz path.",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "outputFile": {
+            "description": "export: absolute .xpz output path.",
+            "type": "string"
+          },
+          "targets": {
+            "description": "export: object names to export.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": {
+            "description": "export: disambiguate object type.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_transfer"
     },
     {
       "annotations": {
