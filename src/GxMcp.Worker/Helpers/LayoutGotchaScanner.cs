@@ -74,6 +74,27 @@ namespace GxMcp.Worker.Helpers
             bool isHtmlForm = doc.Descendants("Form")
                 .Any(f => string.Equals((string)f.Attribute("type"), "html", StringComparison.OrdinalIgnoreCase));
 
+            // C18 — a pathologically deep element tree can blow the SDK's recursive
+            // WebTag walker's stack (StackOverflowException → uncatchable worker crash).
+            // Real layouts nest well under ~50 levels; a cap of 300 only trips on
+            // malformed/adversarial input. Reject before the SDK ever parses it.
+            if (doc.Root != null)
+            {
+                int maxDepth = MaxElementDepth(doc.Root, 1, 320);
+                if (maxDepth >= 300)
+                {
+                    hits.Add(new Gotcha
+                    {
+                        Code = "GotchaLayoutNestingTooDeep",
+                        Severity = "Error",
+                        Element = doc.Root.Name.LocalName,
+                        ControlId = null,
+                        Message = $"Layout element nesting is {maxDepth}+ levels deep. This can overflow the GeneXus SDK's recursive layout parser and crash the worker process.",
+                        Workaround = "Flatten the nesting — no legitimate WebForm layout needs hundreds of nested tables/controls."
+                    });
+                }
+            }
+
             // Reserved — kept as a no-op placeholder so existing helpers that referenced an
             // attribute-existence cache (in the v2.5.1 shadow-hypothesis design) still compile
             // without runtime cost. The current detection does not require KB attribute lookup.
@@ -112,6 +133,27 @@ namespace GxMcp.Worker.Helpers
                             });
                         }
                     }
+                }
+
+                // C18 — a gxButton nested inside another gxButton is structurally invalid
+                // (a control leaf cannot contain a control). This malformed shape is a
+                // plausible trigger for the unbounded recursion in the SDK's gxButton
+                // event-reference resolver that takes down the whole worker process with a
+                // StackOverflowException (uncatchable — no try/catch can save it, so it MUST
+                // be rejected before it reaches ApplyEditableXml). Error severity → the
+                // write path blocks the save.
+                if (elName.Equals("gxButton", StringComparison.OrdinalIgnoreCase)
+                    && el.Descendants().Any(d => d.Name.LocalName.Equals("gxButton", StringComparison.OrdinalIgnoreCase)))
+                {
+                    hits.Add(new Gotcha
+                    {
+                        Code = "GotchaGxButtonNestedInvalid",
+                        Severity = "Error",
+                        Element = elName,
+                        ControlId = (string)el.Attribute("id"),
+                        Message = "A <gxButton> contains another <gxButton>. This is structurally invalid and can crash the GeneXus SDK (worker process) while resolving the control's event reference.",
+                        Workaround = "Flatten the layout so each <gxButton> is a sibling inside a table cell, not nested inside another button."
+                    });
                 }
 
                 // FR#2 (revised 2026-05-19) — gxAttribute with ControlType="Radio Button" or
@@ -312,6 +354,24 @@ namespace GxMcp.Worker.Helpers
             "Picture", "Hyperlink", "Button", "Static", "Description", "Embedded Page",
             "Dynamic Combo Box", "List Box", "Multi Selection List Box", "Textarea", "Password"
         };
+
+        // C18 — iterative (never recursive, so this guard can't itself overflow) max
+        // element depth, short-circuited at `cap` so a huge tree isn't fully walked.
+        private static int MaxElementDepth(XElement root, int startDepth, int cap)
+        {
+            int max = startDepth;
+            var stack = new Stack<(XElement el, int depth)>();
+            stack.Push((root, startDepth));
+            while (stack.Count > 0)
+            {
+                var (el, depth) = stack.Pop();
+                if (depth > max) max = depth;
+                if (max >= cap) return max;
+                foreach (var child in el.Elements())
+                    stack.Push((child, depth + 1));
+            }
+            return max;
+        }
 
         private static string AttrAny(XElement el, params string[] names)
         {

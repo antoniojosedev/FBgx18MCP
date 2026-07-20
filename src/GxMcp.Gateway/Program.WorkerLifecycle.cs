@@ -205,6 +205,16 @@ namespace GxMcp.Gateway
                     }
                     else if (method == "notifications/progress" || method == "notifications/message")
                     {
+                        // A4: correlate the frame to its tracked operation (the worker
+                        // command's progressToken is the operationId) and bump UpdatedAtUtc
+                        // so a status poll shows live progress instead of a frozen timestamp.
+                        if (method == "notifications/progress")
+                        {
+                            var pp = val["params"];
+                            string opId = pp?["progressToken"]?.ToString();
+                            if (!string.IsNullOrWhiteSpace(opId))
+                                _operationTracker.TouchProgress(opId, pp?["stage"]?.ToString(), pp?["message"]?.ToString());
+                        }
                         if (ShouldForwardNotificationToStdio(method, val["params"]))
                         {
                             EmitStdioNotification(json);
@@ -421,8 +431,22 @@ namespace GxMcp.Gateway
                 // client supplied a progressToken, so it doesn't fire its own request timeout
                 // (the -32001 "Request timed out" users hit on long apply_pattern / delete).
                 // The call stays synchronous and returns the real result inline — not a job.
+                //
+                // A4: without a client progressToken we can't keep the connection alive, so
+                // blocking the stdio response for the full (multi-minute) timeout makes the
+                // client treat the request as dead (~120s) and shove it to the background —
+                // exactly the "batch specify fell to background" symptom. For a TRACKED op we
+                // already have an interim "still running, poll op:<id>" envelope (onTimeout),
+                // so cap the synchronous wait at the safe window; the op keeps running in the
+                // worker and the client re-polls. Non-tracked calls and calls WITH a token are
+                // unchanged (full timeout + heartbeats).
+                bool noClientProgressToken = progressToken == null
+                    || progressToken.Type == JTokenType.Null;
+                int effectiveTimeoutMs = timeoutMs;
+                if (noClientProgressToken && !string.IsNullOrWhiteSpace(operationId))
+                    effectiveTimeoutMs = Math.Min(timeoutMs, McpRouter.SafeLongPollSecondsWithoutProgress * 1000);
                 bool workerCompleted = await McpRouter.AwaitWithHeartbeat(
-                    pending.CompletionSource.Task, timeoutMs, progressToken, heartbeat, toolName);
+                    pending.CompletionSource.Task, effectiveTimeoutMs, progressToken, heartbeat, toolName);
                 if (workerCompleted)
                 {
                     var workerResponse = JObject.Parse(await pending.CompletionSource.Task);

@@ -1854,11 +1854,23 @@
             "description": "Build: max nodes before BuildPlanTooLarge (default 200).",
             "type": "integer"
           },
+          "callerCap": {
+            "description": "compile_check: max callers to pull into the check (default 40). Closure beyond this is truncated and flagged.",
+            "type": "integer"
+          },
+          "callers": {
+            "description": "compile_check: expand transitive callers of the target (default true). Set false for a target-only check when the target is a base transaction/BC with a huge caller closure.",
+            "type": "boolean"
+          },
           "code": {
             "type": "string"
           },
           "compact": {
             "description": "Status: counts + top-10 errors (default true).",
+            "type": "boolean"
+          },
+          "deploy": {
+            "description": "Build: force the full deploy (Theme/Image/Style/Module copy to web/bin + WebAppConfig) so the built object is runnable, not just compiled. Default false (fast compile-only path). Slower; use when you need to run/preview the object.",
             "type": "boolean"
           },
           "dryRun": {

@@ -556,6 +556,11 @@ namespace GxMcp.Worker.Services
             // build path is taken, skip the IdeWebBuildAndDeploy step. See
             // InProcessBuildRunner.Run for the safety story.
             [JsonIgnore] internal bool SkipFullDeploy { get; set; }
+            // A2: force the full IdeWebBuildAndDeploy path (Theme/Image/Style/Module
+            // copy + WebAppConfig) for a targeted build, so the compiled .dll/.aspx
+            // are actually copied to web/bin and the object is runnable — the fast
+            // BuildOne path skips that copy. Opt-in per call (deploy=true).
+            [JsonIgnore] internal bool FullDeploy { get; set; }
             // issue #28 item 12: spec-check only — run SpecifyOneOnly (Spec+Gen), skip
             // Compile + deploy, so spc*/gen* diagnostics surface without a full build.
             [JsonIgnore] internal bool SpecifyOnly { get; set; }
@@ -812,7 +817,17 @@ namespace GxMcp.Worker.Services
         // regenerates the KB-wide DeveloperMenu. Requires target(s): the whole point
         // is to scope the check to the edited objects and their blast radius. For a
         // from-scratch full-KB compile, use action=build with no target.
-        public string CompileCheck(string target, int buildPlanCap = 200)
+        // A3: a base transaction (a BC called everywhere) has a huge transitive
+        // caller closure — expanding it pulls in fan-in orchestrators like the
+        // KB-wide DeveloperMenu and can drag dozens of DLLs / 20-30 min, defeating
+        // the whole "fast check" purpose. Default the caller closure to a modest
+        // cap and let the agent opt out of caller expansion entirely (callers=false
+        // → target-only). When the closure is truncated or large, the result echoes
+        // CompileCheckTruncated so the agent knows coverage was bounded.
+        public const int CompileCheckDefaultCallerCap = 40;
+
+        public string CompileCheck(string target, int buildPlanCap = 200,
+            bool includeCallers = true, int callerCap = 0)
         {
             var seeds = ParseTargets(target);
             if (seeds.Count == 0)
@@ -826,27 +841,42 @@ namespace GxMcp.Worker.Services
             // every object that invokes it — the KB-wide breakage a plain targeted
             // build misses. Callers unavailable (no caller graph / index not built)
             // degrades gracefully to just the named objects, with a note.
+            // callers=false skips this entirely (target-only check).
             var expanded = new List<string>(seeds);
             var seen = new HashSet<string>(seeds, StringComparer.OrdinalIgnoreCase);
             var addedCallers = new List<string>();
             bool truncated = false;
+            // Cap the caller closure so a base BC doesn't drag the whole KB. An
+            // explicit callerCap>0 overrides the modest default; both stay under
+            // buildPlanCap (the hard BuildPlanTooLarge ceiling in ExpandTargets).
+            int effectiveCallerCap = callerCap > 0
+                ? Math.Min(callerCap, buildPlanCap)
+                : Math.Min(CompileCheckDefaultCallerCap, buildPlanCap);
             bool graphAvailable = _callerGraphService != null;
-            if (graphAvailable)
+            if (includeCallers && graphAvailable)
             {
                 foreach (var s in seeds)
                 {
                     TransitiveResult tr;
-                    try { tr = _callerGraphService.GetCallersTransitive(s, buildPlanCap); }
+                    try { tr = _callerGraphService.GetCallersTransitive(s, effectiveCallerCap); }
                     catch { continue; }
                     if (tr == null) continue;
                     if (tr.Truncated) truncated = true;
                     foreach (var c in tr.Nodes)
+                    {
+                        if (addedCallers.Count >= effectiveCallerCap) { truncated = true; break; }
                         if (seen.Add(c)) { expanded.Add(c); addedCallers.Add(c); }
+                    }
                 }
             }
 
+            // A3: callers already gives the objects that must recompile against the
+            // changed target; re-expanding CALLEES (transitive) here would pull each
+            // caller's whole dependency graph back in — re-dragging orchestrators and
+            // the DeveloperMenu the check is meant to skip. Keep the plan to exactly
+            // {seeds + callers}: includeCallees=none.
             string result = Build("Build", string.Join(",", expanded),
-                includeCallees: "transitive", buildPlanCap: buildPlanCap,
+                includeCallees: "none", buildPlanCap: buildPlanCap,
                 skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false,
                 specifyOnly: false, compileCheck: true,
                 compileCheckCallers: addedCallers, compileCheckTruncated: truncated,
@@ -908,15 +938,15 @@ namespace GxMcp.Worker.Services
         //   - nothingDirty=true                    → no build queued
         //   - fastIncrementalFallback=true         → legacy full build queued
         //   - fastIncremental={canSkipDeploy,...}  → fast build queued
-        public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental)
-            => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, notifyOnFailure, fastIncremental, specifyOnly: false);
+        public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool fullDeploy = false)
+            => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, notifyOnFailure, fastIncremental, specifyOnly: false, fullDeploy: fullDeploy);
 
-        public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly)
+        public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly, bool fullDeploy = false)
             => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, notifyOnFailure, fastIncremental, specifyOnly,
-                     compileCheck: false, compileCheckCallers: null, compileCheckTruncated: false, compileCheckGraphAvailable: true);
+                     compileCheck: false, compileCheckCallers: null, compileCheckTruncated: false, compileCheckGraphAvailable: true, fullDeploy: fullDeploy);
 
         public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly,
-                            bool compileCheck, List<string> compileCheckCallers, bool compileCheckTruncated, bool compileCheckGraphAvailable)
+                            bool compileCheck, List<string> compileCheckCallers, bool compileCheckTruncated, bool compileCheckGraphAvailable, bool fullDeploy = false)
         {
             // issue #37 item 4: fast-fail reorg on a DBA-managed datastore
             // (Reorganize Server tables = No). GeneXus never applies the delta there,
@@ -1003,6 +1033,8 @@ namespace GxMcp.Worker.Services
                     && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase)
                     && targets.Count == 1
                     && string.Equals(includeCallees ?? "transitive", "none", StringComparison.OrdinalIgnoreCase),
+                FullDeploy = fullDeploy
+                    && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase),
                 NotifyOnFailureUrl = notifyOnFailure,
                 // Item 28 — surface decision on the task so status/result echo it.
                 FastIncrementalRequested = fastIncremental,
@@ -1390,6 +1422,45 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // A7: an abort (genexus_lifecycle action=cancel on op:<id>) fans out a
+        // Control:Cancel to the worker, but RunBuild has no CancellationToken to
+        // observe, so its MSBuild.exe (and the /m child nodes) kept running and
+        // piled up as orphans across sessions. Called from the Control:Cancel
+        // handler: kill the process tree of every still-running build task so an
+        // abort reaps its nodes the same way an explicit Cancel(taskId) or the
+        // timeout watchdog already does. Returns how many builds were cancelled.
+        public int CancelAllRunning()
+        {
+            int cancelled = 0;
+            foreach (var status in _tasks.Values.ToArray())
+            {
+                try
+                {
+                    Process p;
+                    lock (status._lock)
+                    {
+                        if (!string.Equals(status.Status, "Running", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        p = status.Process;
+                        if (p == null || p.HasExited) continue;
+                        status.Status = "Cancelled";
+                        status.Phase = "Done";
+                        status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                        try { status.StateChangeSignal.Set(); } catch { }
+                    }
+                    var pt = p;
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { KillProcessTree(pt); }
+                        catch (Exception ex) { Logger.Warn("[KILL-TREE-BG] CancelAllRunning: " + ex.Message); }
+                    });
+                    cancelled++;
+                }
+                catch (Exception ex) { Logger.Warn("[CancelAllRunning] " + ex.Message); }
+            }
+            return cancelled;
+        }
+
         private List<string> TryGetDirectCallers(string target)
         {
             if (string.IsNullOrEmpty(target) || _indexCacheService == null) return null;
@@ -1510,7 +1581,8 @@ namespace GxMcp.Worker.Services
                             _kbService.KbObject, _kbService.KbLock,
                             skipFullDeploy: status.SkipFullDeploy,
                             kbPath: _kbService.GetKbPath(),
-                            specifyOnly: status.SpecifyOnly);
+                            specifyOnly: status.SpecifyOnly,
+                            fullDeploy: status.FullDeploy);
                     }
                     catch (Exception ex)
                     {
@@ -1544,6 +1616,20 @@ namespace GxMcp.Worker.Services
                         bool failed = outcome == InProcessBuildOutcome.FailedWithDiagnostics
                                       || status.ErrorCount > 0;
                         status.Status = failed ? "Failed" : "Succeeded";
+                        // A1 (parity with the MSBuild.exe branch below): when the
+                        // in-process pipeline reports failure but emitted zero code
+                        // errors AND the captured output shows Generation + Compilation
+                        // both succeeded, the failure is a downstream/late step
+                        // (WebAppConfig, a standalone-module deploy like GAMUser) —
+                        // the target's .cs/.dll are already written. Flag it as a
+                        // partial success so the gateway renders effective_status=
+                        // PartialSuccess (isError=false) instead of a contradictory
+                        // "Failed with 0 errors".
+                        if (failed && status.ErrorCount == 0
+                            && DidGenerationAndCompilationSucceed(fullText))
+                        {
+                            status.PartialSuccess = true;
+                        }
                         status.Phase = "Done";
                         EmitPhaseProgress(status.Phase);
 

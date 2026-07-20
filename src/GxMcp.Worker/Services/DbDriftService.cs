@@ -35,6 +35,14 @@ namespace GxMcp.Worker.Services
         }
 
         private readonly IReorgSource _source;
+        // B15: the reorg *plan* DDL (exact ALTER delta vs the live DB) requires a DB
+        // connection the net48 worker deliberately doesn't open, so ReorgPreview stays a
+        // stub. But the SDK DOES expose an authoritative "does the model diverge from the
+        // last reorg?" signal via ISpecifierService.ImpactDatabase (ReorgImpactService).
+        // Wire it in so drift_check returns a real reorg-needed verdict instead of an empty
+        // "no signal" envelope, and point the agent at the DDL that IS available (sql_ddl).
+        private ReorgImpactService _reorgImpact;
+        public void SetReorgImpact(ReorgImpactService reorgImpact) { _reorgImpact = reorgImpact; }
 
         public DbDriftService(BuildService buildService)
             : this(new BuildServiceReorgSource(buildService)) { }
@@ -133,7 +141,36 @@ namespace GxMcp.Worker.Services
 
             if (reorgIsStub)
             {
-                resultPayload["note"] = "reorg_preview is currently a stub on this worker; drift detection cannot be confirmed without running action=reorg on a non-production environment. Empty 'tables' array means 'no signal' rather than 'no drift'.";
+                // B15: the fs/model reorg plan is unavailable, but ask the SDK whether the
+                // model has diverged since the last reorg (authoritative, no DB write).
+                bool signalAdded = false;
+                if (_reorgImpact != null)
+                {
+                    try
+                    {
+                        var impactJson = _reorgImpact.Run(new JObject { ["deep"] = true, ["target"] = target ?? string.Empty });
+                        var impact = JObject.Parse(impactJson ?? "{}");
+                        var ir = impact["result"] as JObject ?? impact;
+                        var driftSignal = new JObject
+                        {
+                            ["reorgLikelyNeeded"] = ir["reorgLikelyNeeded"],
+                            ["reorgNeeded"] = ir["reorgNeeded"],
+                            ["deepAnalysis"] = ir["deepAnalysis"],
+                            ["lastModifiedTable"] = ir["lastModifiedTable"],
+                            ["lastReorg"] = ir["lastReorg"],
+                            ["source"] = "sdk:ISpecifierService.ImpactDatabase"
+                        };
+                        resultPayload["reorgSignal"] = driftSignal;
+                        signalAdded = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        resultPayload["reorgSignalError"] = ex.Message;
+                    }
+                }
+                resultPayload["note"] = signalAdded
+                    ? "The exact table-level DDL delta (ALTER/ADD/DROP) requires a live DB connection the worker doesn't open, so 'tables' is not itemized here. 'reorgSignal' above is the authoritative SDK verdict on whether the model diverged from the last reorg. For the desired-schema DDL use genexus_db action=sql_ddl; to apply the delta run genexus_lifecycle action=reorg on a non-production environment."
+                    : "reorg_preview is a stub on this worker and the SDK impact signal is unavailable; drift cannot be confirmed here. Use genexus_db action=reorg_impact deep=true for the reorg-needed verdict and genexus_db action=sql_ddl for the schema DDL. Empty 'tables' means 'no signal', not 'no drift'.";
             }
 
             if (includeReport)

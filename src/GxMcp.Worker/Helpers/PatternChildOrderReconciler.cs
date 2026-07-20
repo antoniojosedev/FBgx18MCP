@@ -202,9 +202,33 @@ namespace GxMcp.Worker.Helpers
                         continue;
                     }
 
+                    // issue #36.3 / C16 — a group table (`<table isGroup="True" title="…">`)
+                    // with no name and no matching prior entry used to bail the WHOLE parent
+                    // scan, so a genuine edit to a SIBLING control (e.g. swapping a static
+                    // Combo for a Dynamic Combo) silently didn't render. When the title is
+                    // UNAMBIGUOUS among this parent's children, invent a slot keyed by it
+                    // (typeCode is known for <table>) so the list stays complete and the
+                    // sibling change reconciles. Only bail when we truly can't address it.
+                    if (weakId != null)
+                    {
+                        int sameTitle = 0;
+                        foreach (var sib in parent.Elements())
+                        {
+                            if (string.Equals(GetWeakTableIdentifier(sib), weakId, StringComparison.OrdinalIgnoreCase))
+                                sameTitle++;
+                        }
+                        string weakTypeCode = GetTypeCode(child, context);
+                        if (sameTitle == 1 && !string.IsNullOrEmpty(weakTypeCode))
+                        {
+                            newEntries.Add(sharedLevel + ";" + weakTypeCode + ";" + weakId);
+                            report.Changes.Add(GetPath(parent) + " : derived childrenOrderedList slot for unnamed <table> from title=\"" + weakId + "\"");
+                            continue;
+                        }
+                    }
+
                     incomplete = true;
                     string detail = weakId != null
-                        ? " (title=\"" + weakId + "\" is not in the existing childrenOrderedList; give this container a name in the IDE or fix the list by hand — otherwise the edit will NOT render)"
+                        ? " (title=\"" + weakId + "\" is not in the existing childrenOrderedList and is not uniquely addressable; give this container a name in the IDE or fix the list by hand — otherwise the edit will NOT render)"
                         : " (container has no name/title to address it by — the edit will NOT render until it is named or the list is fixed in the IDE)";
                     report.Skips.Add(GetPath(parent) + " : cannot derive identifier for <" + child.Name.LocalName + ">" + detail);
                     break;

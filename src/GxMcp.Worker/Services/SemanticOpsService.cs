@@ -312,7 +312,8 @@ namespace GxMcp.Worker.Services
 
             var structure = doc.Descendants("Structure").FirstOrDefault();
             if (structure == null)
-                throw new UsageException("usage_error", "add_attribute: <Structure> not found");
+                throw new UsageException("usage_error",
+                    "add_attribute: this part's XML has no <Structure> root. For a Transaction, attribute ops are handled by the DSL path (route via genexus_structure or a patch with part=Structure and only add_attribute/set_attribute/remove_attribute ops) — the XML-ops path does not apply here.");
 
             structure.Add(new XElement("Attribute",
                 new XElement("Name", name),

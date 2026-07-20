@@ -96,7 +96,12 @@ namespace GxMcp.Gateway
                 bool isErrorEnvelope = workerPayload["error"] != null;
                 var resultObj = workerPayload["result"] as JObject;
                 bool isErrorStatus = string.Equals(resultObj?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
-                record.Status = (isErrorEnvelope || isErrorStatus) ? "Failed" : "Completed";
+                // A5: a late worker reply must NOT resurrect a client-observed Cancelled
+                // op back to Completed/Failed. The client already saw "Cancelled"; flipping
+                // it here is a state-consistency wedge. Keep the terminal Cancelled status,
+                // but still capture the payload/metric for diagnostics.
+                if (!string.Equals(record.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                    record.Status = (isErrorEnvelope || isErrorStatus) ? "Failed" : "Completed";
                 record.CompletedAtUtc = now;
                 record.UpdatedAtUtc = now;
                 record.WorkerPayload = workerPayload.DeepClone();
@@ -162,6 +167,26 @@ namespace GxMcp.Gateway
                 : 0L;
             metric.RegisterCompletion(elapsedMs, isError: true, workerPayload: null, reqBytes: 0, respBytes: 0);
             return true;
+        }
+
+        // A4: a worker progress frame carries progressToken == operationId (see
+        // SendWorkerCommandAsync). Bump the record's UpdatedAtUtc so a status poll
+        // (genexus_lifecycle action=status target=op:<id>) shows real liveness
+        // instead of a frozen timestamp for the whole run. Optional phase/message
+        // are surfaced for the poller. No-op once terminal.
+        public void TouchProgress(string operationId, string phase = null, string message = null)
+        {
+            if (string.IsNullOrWhiteSpace(operationId)) return;
+            if (!_operations.TryGetValue(operationId, out var record)) return;
+            lock (record.SyncRoot)
+            {
+                if (!string.Equals(record.Status, "Running", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(record.Status, "Accepted", StringComparison.OrdinalIgnoreCase))
+                    return;
+                record.UpdatedAtUtc = DateTime.UtcNow;
+                if (!string.IsNullOrEmpty(phase)) record.Phase = phase;
+                if (!string.IsNullOrEmpty(message)) record.LastProgressMessage = message;
+            }
         }
 
         public void MarkFailedByRequest(string requestId, string errorMessage)
@@ -714,6 +739,10 @@ namespace GxMcp.Gateway
             public DateTime UpdatedAtUtc { get; set; }
             public DateTime? CompletedAtUtc { get; set; }
             public string? LastError { get; set; }
+            // A4: last progress phase/message from a worker notifications/progress frame,
+            // surfaced on status polls so a long op shows live progress, not a frozen state.
+            public string? Phase { get; set; }
+            public string? LastProgressMessage { get; set; }
             public JObject? ToolArguments { get; set; }
             public JToken? WorkerPayload { get; set; }
             // Guard against registering more than one metric completion per logical

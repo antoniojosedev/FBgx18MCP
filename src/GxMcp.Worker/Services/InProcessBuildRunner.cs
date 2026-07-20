@@ -75,7 +75,8 @@ namespace GxMcp.Worker.Services
             object kbLock,
             bool skipFullDeploy = false,
             string kbPath = null,
-            bool specifyOnly = false)
+            bool specifyOnly = false,
+            bool fullDeploy = false)
         {
             if (status == null) return InProcessBuildOutcome.CouldNotRun;
             if (kbHandle == null)
@@ -160,9 +161,13 @@ namespace GxMcp.Worker.Services
                     // RebuildAll (force-rebuild whole KB) still goes through
                     // IdeWebBuildAndDeploy because BuildOne is per-object. Opt-out
                     // with GXMCP_INPROCESS_BUILD_FASTPATH=0.
+                    // A2: fullDeploy=true forces the legacy IdeWebBuildAndDeploy path
+                    // (module/theme copy → web/bin + WebAppConfig) so a targeted build
+                    // produces runnable output, instead of BuildOne's compile-only fast path.
                     bool useBuildOne =
                         isBuildWithTargets
                         && !forceRebuild
+                        && !fullDeploy
                         && _typeBuildOne != null
                         && !string.Equals(Environment.GetEnvironmentVariable("GXMCP_INPROCESS_BUILD_FASTPATH"), "0", StringComparison.OrdinalIgnoreCase);
 

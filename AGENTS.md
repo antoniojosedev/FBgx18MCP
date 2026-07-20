@@ -233,6 +233,16 @@ now fails with `FolderMoveNotSupported` instead of silently reporting success.
 Create folders/modules with `genexus_create type=Folder|Module`, but place objects
 into them from the GeneXus IDE (KB Explorer drag-and-drop / right-click Move).
 
+### Control-bound events must be written AFTER the layout
+
+A control-bound event (`Event &Ctrl.Click`, `&Ctrl.ControlValueChanged`, `&Ctrl.Display=…`)
+references a control that must already exist in the projected form, or the SDK rejects
+it with `src0233`/`src0216`. Write the layout / apply the PatternInstance **first**, then
+the Events part. Also: a `userAction name="Foo"` auto-generates an empty `Event 'DoFoo'`
+stub — **fill that stub**, don't add a second `Event 'DoFoo'` (that collides with
+`src0208 "event already defined"`). Write errors carrying these codes now surface the
+actionable hint inline; see `WritePolicy.BuildEventDiagnosticHint`.
+
 ### SDPanel (Smart Device Panel) parts are WorkWithDevices projections (issue #29)
 
 An `SDPanel` is not a plain object with self-contained parts — it's driven by the

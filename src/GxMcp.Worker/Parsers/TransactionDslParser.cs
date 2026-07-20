@@ -235,25 +235,96 @@ namespace GxMcp.Worker.Parsers
                     if (!parsedNodes.Any(p => !p.IsCompound && p.Name.Equals(attr.Name, StringComparison.OrdinalIgnoreCase)))
                         toRemove.Add(attr);
                 }
+                object attrsColl = sdkLevel.Attributes;
                 foreach (dynamic dead in toRemove)
                 {
                     string deadName = dead.Name;
-                    try { sdkLevel.Attributes.Remove(dead); }
-                    catch (Exception remEx)
-                    {
-                        _removalFailures.Add(deadName + " (" + (remEx.InnerException?.Message ?? remEx.Message) + ")");
-                        continue;
-                    }
-                    // Remove() can no-op WITHOUT throwing when the SDK refuses — verify it is gone.
+                    // B8/B9: the previous `dynamic sdkLevel.Attributes.Remove(dead)` threw a
+                    // C# RuntimeBinderException ("...Attribute does not contain a definition
+                    // for 'Remove'") when the SDK collection exposes no such member — which
+                    // was then mis-reported as "key in use". Probe the real removal API via
+                    // reflection and classify the outcome accurately.
+                    string reflError;
+                    bool apiMissing;
+                    bool removed = TryRemoveAttribute(attrsColl, (object)dead, deadName, out apiMissing, out reflError);
+
+                    // Verify (a removal method can no-op without throwing when the SDK refuses).
                     bool stillPresent = false;
                     foreach (dynamic a in sdkLevel.Attributes)
                     {
                         if (((string)a.Name).Equals(deadName, StringComparison.OrdinalIgnoreCase)) { stillPresent = true; break; }
                     }
-                    if (stillPresent)
+                    if (removed && !stillPresent) continue;
+
+                    if (apiMissing)
+                        _removalFailures.Add(deadName + " (SDK-API-UNSUPPORTED: this GeneXus SDK build exposes no attribute-removal method on the transaction structure — removing an attribute from a Transaction is not writable through the SDK; remove it in the GeneXus IDE)");
+                    else if (!string.IsNullOrEmpty(reflError))
+                        _removalFailures.Add(deadName + " (" + reflError + ")");
+                    else
                         _removalFailures.Add(deadName + " (SDK kept the attribute — it is likely a key in use, or referenced by a relation/index)");
                 }
             }
+        }
+
+        // B8: probe the SDK collection for a working attribute-removal API instead of a
+        // blind `dynamic .Remove(dead)` (which throws RuntimeBinderException — a missing
+        // member — when no such method exists, and was mis-reported as "key in use").
+        // Tries, in order: collection.Remove(item), collection.Remove(name),
+        // collection.RemoveAt(index), then the item's own Remove()/Delete(). Sets
+        // apiMissing=true only when NONE of these members exist on the types involved.
+        private static bool TryRemoveAttribute(object attrsColl, object dead, string deadName,
+            out bool apiMissing, out string error)
+        {
+            apiMissing = false;
+            error = null;
+            if (attrsColl == null) { apiMissing = true; return false; }
+            var collType = attrsColl.GetType();
+            bool anyMemberFound = false;
+
+            // 1) collection.Remove(item)  2) collection.Remove(string)
+            foreach (var m in collType.GetMethods().Where(mi => mi.Name == "Remove"))
+            {
+                var ps = m.GetParameters();
+                if (ps.Length != 1) continue;
+                object arg = null;
+                if (ps[0].ParameterType.IsInstanceOfType(dead)) arg = dead;
+                else if (ps[0].ParameterType == typeof(string)) arg = deadName;
+                else continue;
+                anyMemberFound = true;
+                try { m.Invoke(attrsColl, new[] { arg }); return true; }
+                catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
+            }
+
+            // 3) collection.RemoveAt(index)
+            var removeAt = collType.GetMethod("RemoveAt", new[] { typeof(int) });
+            if (removeAt != null)
+            {
+                anyMemberFound = true;
+                try
+                {
+                    int idx = 0, found = -1;
+                    foreach (dynamic a in (System.Collections.IEnumerable)attrsColl)
+                    {
+                        if (((string)a.Name).Equals(deadName, StringComparison.OrdinalIgnoreCase)) { found = idx; break; }
+                        idx++;
+                    }
+                    if (found >= 0) { removeAt.Invoke(attrsColl, new object[] { found }); return true; }
+                }
+                catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
+            }
+
+            // 4) item.Remove() / item.Delete()
+            foreach (var name in new[] { "Remove", "Delete" })
+            {
+                var im = dead.GetType().GetMethod(name, Type.EmptyTypes);
+                if (im == null) continue;
+                anyMemberFound = true;
+                try { im.Invoke(dead, null); return true; }
+                catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
+            }
+
+            if (!anyMemberFound) apiMissing = true;
+            return false;
         }
 
         private static void ApplyTypeFromDsl(dynamic trnAttrOrAttribute, string typeStr, KBModel model)

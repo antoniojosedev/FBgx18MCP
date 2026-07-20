@@ -83,7 +83,10 @@ namespace GxMcp.Gateway.Tests
             //   genexus_analyze mode=kb_stats, genexus_db action=reorg_impact,
             //   genexus_security action=scan_native, and genexus_gxserver
             //   pipeline_* actions/params. Measured ~16049 tokens; ~151 headroom.
-            Assert.True(approxTokens < 16200, $"tool_definitions.json is ~{approxTokens} tokens; budget 16200.");
+            //   2026-07-20 (reliability batch): 16200 → 16400 for genexus_lifecycle's
+            //   new compile_check `callers`/`callerCap` (target-only scoping) and build
+            //   `deploy` (full deploy → runnable output) params. Measured ~16254; ~146 headroom.
+            Assert.True(approxTokens < 16400, $"tool_definitions.json is ~{approxTokens} tokens; budget 16400.");
         }
     }
 }

@@ -1,5 +1,40 @@
 # Changelog
 
+## [Unreleased]
+
+Reliability & authoring batch — build/deploy status honesty, long-op resilience, and schema/layout fixes.
+
+### Added
+
+- **`genexus_lifecycle action=build deploy=true` — produce runnable output.** The default fast build compiles the object but skips the Theme/Image/Style/Module copy to `web/bin`, so the compiled `.dll`/`.aspx` isn't deployed and the screen can't be run from the MCP. Pass `deploy=true` to run the full deploy (module/theme copy + WebAppConfig) when you need to actually run or preview the object. Slower; the default stays compile-only.
+- **`genexus_lifecycle mode=compile_check callers=false` / `callerCap=N` — scope the check.** A base transaction (a business component called everywhere) has a huge transitive caller closure; expanding it pulled in fan-in orchestrators like the KB-wide DeveloperMenu and could drag dozens of DLLs over 20–30 min. `callers=false` runs a target-only check; `callerCap` (default 40) bounds the closure and flags truncation.
+
+### Fixed
+
+- **`compile_check` no longer re-expands the whole KB.** It now builds exactly the target plus its (capped) callers with `includeCallees=none`, instead of also walking every caller's dependency graph — which re-dragged the DeveloperMenu the check is meant to skip and left `CompileCheck:false` on the run.
+- **A build that compiled cleanly but hit a late deploy step no longer reports a bare `Failed`.** When Generation and Compilation both succeeded and there are zero code errors, an in-process build whose only failure is a downstream step (WebAppConfig, a standalone module like GAMUser) is now flagged `partial_success` — the gateway renders `effective_status=PartialSuccess` (not an error), matching the external-build path. No more contradictory "Failed with 0 errors".
+- **Long specify/build calls no longer get dropped to the background at ~120s.** With no client progress token the gateway now returns an interim "still running — poll `op:<id>`" within its safe window instead of blocking the connection until the client gives up. Progress frames also keep the operation's `updatedAtUtc` live so a status poll shows real movement instead of a frozen timestamp.
+- **The gateway no longer wedges after a background op is cancelled.** Cancelling an `op:<id>` now signals the worker (freeing its single SDK queue) instead of only marking it locally; a late worker reply can't resurrect a cancelled op; and a write retried under the same idempotency key with different arguments returns a clean error instead of an uncaught exception that rejected every later call for the rest of the session.
+- **Aborted builds no longer leak MSBuild processes.** Cancelling a running build now kills its MSBuild process tree (the timeout path already did), so orphaned `MSBuild.exe /m` nodes don't accumulate across sessions and contend for node reuse.
+- **Health/status calls answer even while a long build or index is running.** `genexus_doctor` and build `status`/`result` polls no longer queue behind the in-flight SDK operation on the worker's single thread, so "is my build done yet?" doesn't block on the very build it's asking about.
+- **`genexus_variable` — removing an attribute from a Transaction now fails honestly.** When the SDK build exposes no attribute-removal API, the write is rejected with a clear "IDE-only" message instead of blaming a phantom foreign key, and `mode:full` no longer silently leaves a composite key behind. Removal is attempted through every removal shape the SDK exposes before giving up.
+- **`genexus_structure` attribute ops give an actionable error instead of `<Structure> not found`.** A Transaction Structure patch that mixed in a non-attribute op used to fall through to the XML path and fail cryptically; it now reports exactly which op is unsupported and how to phrase attribute ops.
+- **`genexus_edit` no longer reports `changed:false` on a write that actually landed.** The post-write re-read was matching the cache by the raw part name while the cache is keyed by the resolved name (e.g. `SDTStructure` → `Structure`), so a real change could read back stale and be mislabeled `WriteNoChange`. The cache is now invalidated by the resolved part name.
+- **Structure writes on a duplicate-name Transaction are fast again.** The advisory ambiguity pre-check no longer triggers a blocking 30 s–3 min synchronous index load on the write path; it uses the already-loaded index and is skipped when the index isn't warm (the object still resolves).
+- **Editing a control inside an unnamed group table now renders.** When a `<table isGroup="True" title="…">` has no name and isn't already in the WorkWithPlus ordering list, the reconciler derives its slot from the title (when unambiguous) so the container's edited siblings render, instead of bailing on the whole parent.
+- **A malformed `<gxButton>` in a WebForm layout no longer crashes the worker.** Structurally invalid layouts (a `gxButton` nested inside another, or pathologically deep nesting) are rejected before they reach the SDK's recursive parser, which could take down the whole worker process.
+- **`genexus_sdk_probe` no longer surfaces a spurious error** when called with an empty `outputDir` (it now falls back to the default directory).
+- **`genexus_whoami` update block is trustworthy when the check is stale.** On a long-lived gateway it now re-checks the registry when the cached result has aged past its TTL and marks the result `stale` instead of confidently reporting "the update feed is lagging" off outdated data.
+
+### Changed
+
+- **`genexus_db action=drift_check` returns a real signal.** Instead of an empty stub it now reports the authoritative "does the model diverge from the last reorg?" verdict (via the specifier) and points at `action=sql_ddl` for the schema DDL. The exact table-level ALTER delta still requires running a reorg — the worker doesn't open a DB connection — and the response says so.
+
+### Internal
+
+- Control-bound event failures (`src0208` auto-stub collision, `src0233`/`src0216` control-not-yet-projected) now attach an actionable hint on write errors.
+- Schema budget 16200 → 16400 for the new `callers`/`callerCap`/`deploy` params (measured ~16254). Golden discovery fixture updated. New tests cover the unnamed-group-table invent/ambiguous paths. Worker 1485 + Gateway 637 green.
+
 ## v2.28.0 — 2026-07-20
 
 See `docs/sdk_uncovered_endpoints_2026-07-20.md` + `docs/sdk_endpoints_roadmap.md` for the coverage analysis behind this batch.

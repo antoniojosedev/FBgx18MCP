@@ -60,7 +60,14 @@ namespace GxMcp.Worker.Services
         public static ProbeResult Run(string outputDirOverride = null)
         {
             var result = new ProbeResult();
-            string outDir = outputDirOverride ?? ResolveDefaultOutputDir();
+            // D20: an omitted arg arrives as null, but an empty/whitespace outputDir
+            // string ("") slips past a plain `?? default` and makes
+            // Directory.CreateDirectory throw "path cannot be empty" — which then
+            // surfaces as a spurious SdkProbeError in whoami.lastError. Treat
+            // empty/whitespace exactly like omitted.
+            string outDir = string.IsNullOrWhiteSpace(outputDirOverride)
+                ? ResolveDefaultOutputDir()
+                : outputDirOverride;
             Directory.CreateDirectory(outDir);
 
             var raw = new JObject();

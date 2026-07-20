@@ -97,9 +97,23 @@ namespace GxMcp.Worker.Services
             // document, so the XML handlers failed with "<Structure> not found" on a real KB.
             bool isTrnStructure = kind.Equals("Transaction", StringComparison.OrdinalIgnoreCase)
                 && (partName.Equals("Structure", StringComparison.OrdinalIgnoreCase));
-            if (isTrnStructure && ops.Count > 0 && ops.All(o => SemanticOpsService.IsTransactionStructureAttrOp(o.Op)))
+            if (isTrnStructure && ops.Count > 0)
             {
-                return ApplyTransactionStructureOpsViaDsl(target, obj, ops, dryRun, returnPostState, verbose, validate, typeFilter);
+                // B11: a Transaction Structure does NOT serialize to a <Structure>-rooted XML
+                // document, so ANY op that reaches the XML path below fails with the cryptic
+                // "<Structure> not found". Route attribute ops to the DSL path; if the batch
+                // mixes in a non-attribute op, reject it here with an actionable message
+                // instead of letting it fall through to that misleading error.
+                if (ops.All(o => SemanticOpsService.IsTransactionStructureAttrOp(o.Op)))
+                {
+                    return ApplyTransactionStructureOpsViaDsl(target, obj, ops, dryRun, returnPostState, verbose, validate, typeFilter);
+                }
+                var badOps = ops.Where(o => !SemanticOpsService.IsTransactionStructureAttrOp(o.Op))
+                                .Select(o => o.Op).Distinct().ToList();
+                throw new UsageException("usage_error",
+                    "Transaction Structure ops must all be attribute ops (add_attribute, set_attribute, remove_attribute); unsupported op(s): "
+                    + string.Join(", ", badOps)
+                    + ". The Structure part is not XML-addressable — split these into a separate patch against the right part, or use the attribute ops only. Op args go under args:{name,type,...} (nested) or at the op top level.");
             }
 
             var part = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, partName);

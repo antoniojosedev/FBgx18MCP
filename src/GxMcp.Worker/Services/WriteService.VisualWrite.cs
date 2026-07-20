@@ -166,6 +166,28 @@ namespace GxMcp.Worker.Services
                             ["workaround"] = g.Workaround
                         });
                     }
+
+                    // C18: an Error-severity gotcha means the input is structurally
+                    // dangerous (e.g. gxButton-in-gxButton, pathological nesting) and can
+                    // crash the worker via an UNCATCHABLE StackOverflow in the SDK's
+                    // recursive layout parser. Refuse the write BEFORE ApplyEditableXml —
+                    // this is the only defense (no try/catch survives a StackOverflow).
+                    GxMcp.Worker.Helpers.LayoutGotchaScanner.Gotcha blocker = null;
+                    foreach (var h in hits)
+                    {
+                        if (string.Equals(h.Severity, "Error", StringComparison.OrdinalIgnoreCase))
+                        {
+                            blocker = h;
+                            break;
+                        }
+                    }
+                    if (blocker != null)
+                    {
+                        return CreateWriteError(
+                            "Rejected structurally invalid layout to protect the worker",
+                            target, partName,
+                            blocker.Message + " " + blocker.Workaround, obj);
+                    }
                 }
             }
             catch (Exception scanEx)

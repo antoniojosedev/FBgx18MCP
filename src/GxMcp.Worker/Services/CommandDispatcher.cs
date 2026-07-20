@@ -237,6 +237,8 @@ namespace GxMcp.Worker.Services
             _transferService = new TransferService(_kbService, _objectService);
             _deployService = new DeployService(_kbService);
             _reorgImpactService = new ReorgImpactService(_kbService);
+            // B15: give drift_check the authoritative reorg-needed signal.
+            _dbDriftService.SetReorgImpact(_reorgImpactService);
             _kbStatsService = new KbStatsService(_kbService);
             _securityScanService = new SecurityScanService(_kbService);
             _ciPipelineService = new CiPipelineService(_kbService);
@@ -373,6 +375,17 @@ namespace GxMcp.Worker.Services
                     return true;
                 // v2.3.8 Task 1.2: GetIndexState reads in-memory IndexCacheService snapshot only – no SDK access
                 if (method == "kb" && action == "GetIndexState")
+                    return true;
+
+                // D21: health/status polls must never be starved behind an in-flight
+                // long SDK op (build/index/edit) on the single STA queue.
+                // - doctor: filesystem + loaded-assembly checks only (no KB/COM touch).
+                // - build Status/Result: lock-guarded read of the in-memory _tasks
+                //   dict (the very "is my build done?" poll that must not queue behind
+                //   the build it's asking about).
+                if (method == "doctor")
+                    return true;
+                if (method == "build" && (action == "Status" || action == "Result"))
                     return true;
 
                 
@@ -632,11 +645,20 @@ namespace GxMcp.Worker.Services
             {
                 string ct = args?["cancelToken"]?.ToString() ?? target;
                 bool ok = GxMcp.Worker.Helpers.WorkerCancellationRegistry.Cancel(ct);
+                // A7: RunBuild doesn't observe the CTS, so also reap any running
+                // build's MSBuild process tree here — otherwise an aborted build
+                // leaks orphaned MSBuild.exe /m nodes that accumulate across sessions
+                // and contend for node-reuse. Best-effort; independent of the CTS trip.
+                int buildsCancelled = 0;
+                try { buildsCancelled = _buildService?.CancelAllRunning() ?? 0; }
+                catch { /* best-effort */ }
+                ok = ok || buildsCancelled > 0;
                 // Item 11: wrap in canonical McpResponse envelope.
                 return ok
                     ? Models.McpResponse.Ok(code: "Cancelled", result: new JObject
                         {
                             ["cancelToken"] = ct,
+                            ["buildsCancelled"] = buildsCancelled,
                             ["message"] = "Cancellation signalled to in-flight command. The handler may still take a few iterations to terminate."
                         })
                     : Models.McpResponse.Err(code: "NotFound",
@@ -1552,7 +1574,13 @@ namespace GxMcp.Worker.Services
             if (action == "Specify") return _buildService.Specify(target);
             // mode=compile_check: spec+gen+compile the target(s) + transitive callers,
             // skipping the KB-wide DeveloperMenu regen (the dominant build-all cost).
-            if (action == "CompileCheck") return _buildService.CompileCheck(target, args?["buildPlanCap"]?.ToObject<int?>() ?? 200);
+            if (action == "CompileCheck") return _buildService.CompileCheck(
+                target,
+                args?["buildPlanCap"]?.ToObject<int?>() ?? 200,
+                // callers=false → target-only check (no caller expansion), so a base
+                // transaction doesn't drag its whole caller closure. Default true.
+                includeCallers: args?["callers"]?.ToObject<bool?>() ?? true,
+                callerCap: args?["callerCap"]?.ToObject<int?>() ?? 0);
             // Item 43 (friction 2026-05-22) — DDL diff/preview pre-reorg.
             if (action == "ReorgPreview") return _buildService.ReorgPreview(target);
             {
@@ -1565,10 +1593,13 @@ namespace GxMcp.Worker.Services
                 string notifyOnFailure = args?["notifyOnFailure"]?.ToString();
                 // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
                 bool fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false;
+                // A2: deploy=true forces the full IdeWebBuildAndDeploy (copy to web/bin)
+                // so the built object is runnable, not just compiled.
+                bool fullDeploy = args?["deploy"]?.ToObject<bool?>() ?? false;
                 bool buildDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
                 if (buildDryRun)
                     return _buildService.BuildDryRun(action, target, includeCallees, cap);
-                return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure, fastIncremental);
+                return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure, fastIncremental, fullDeploy);
             }
         }
 

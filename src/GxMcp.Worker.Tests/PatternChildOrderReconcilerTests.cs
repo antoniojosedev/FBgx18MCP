@@ -84,11 +84,13 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void UnnamedGroupTable_HardSkip_WhenTitleNotInList()
+        public void UnnamedGroupTable_InventsSlot_WhenTitleUniqueButNotInList()
         {
-            // issue #36.3 — if the group table's title is NOT in the existing list, we do
-            // NOT invent an entry (could corrupt a good list). We still bail, but now as a
-            // clear, actionable skip the caller can surface as a hard render warning.
+            // C16 — a group table's title is NOT in the existing list, but it IS a real
+            // child of the parent and its title is unambiguous among siblings, so we now
+            // INVENT a complete slot (level;typeCode;title) using the same formula named
+            // children use. Without this the reconciler bailed the whole parent, so a
+            // genuine edit to a SIBLING control silently didn't render.
             var doc = XDocument.Parse(@"
 <instance>
   <transaction>
@@ -101,10 +103,38 @@ namespace GxMcp.Worker.Tests
 
             var report = PatternChildOrderReconciler.Reconcile(doc);
 
+            Assert.Empty(report.Skips);
+            Assert.Equal(1, report.ParentsUpdated);
+            var updated = (string)doc.Descendants("table")
+                .Single(t => (string)t.Attribute("name") == "TableMain")
+                .Attribute("childrenOrderedList");
+            Assert.Contains("01;Unknown Group", updated);
+            Assert.Contains("27;TxtA", updated);
+        }
+
+        [Fact]
+        public void UnnamedGroupTable_HardSkip_WhenTitleAmbiguous()
+        {
+            // C16 — inventing a slot is only safe when the title is UNIQUE among the
+            // parent's children. Two group tables sharing a title can't be told apart, so
+            // we must NOT guess — bail with a clear, actionable skip instead.
+            var doc = XDocument.Parse(@"
+<instance>
+  <transaction>
+    <table name='TableMain' childrenOrderedList='2;27;TxtA'>
+      <textBlock controlName='TxtA' />
+      <table isGroup='True' title='Dup Group' />
+      <table isGroup='True' title='Dup Group' />
+    </table>
+  </transaction>
+</instance>");
+
+            var report = PatternChildOrderReconciler.Reconcile(doc);
+
             Assert.Equal(0, report.ParentsUpdated);
             Assert.Single(report.Skips);
             Assert.Contains("cannot derive identifier", report.Skips[0]);
-            Assert.Contains("Unknown Group", report.Skips[0]);
+            Assert.Contains("Dup Group", report.Skips[0]);
         }
 
         [Fact]

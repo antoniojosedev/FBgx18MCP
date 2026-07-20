@@ -198,6 +198,33 @@ namespace GxMcp.Worker.Services
             return $"src0216 likely caused by undeclared variable(s) {list}. Use genexus_add_variable with typeName=<SDT|domain> to declare and bind before re-saving the Source.";
         }
 
+        // C17: map the SDK diagnostic codes seen on Events-part writes to their known
+        // (previously undocumented) causes so the agent gets an actionable next step
+        // instead of a bare code. Returns null when no known code is present.
+        //   src0208 — "event already defined": a userAction name="Foo" auto-generates an
+        //             empty 'DoFoo' event stub, so appending your own Event 'DoFoo' collides.
+        //   src0233/src0216 — a control-bound event (&Ctrl.Click / &Ctrl.ControlValueChanged /
+        //             &Ctrl.Display=…) references a control that does not yet exist in the
+        //             projected form, so Events must be written AFTER the layout/PatternInstance.
+        public static string BuildEventDiagnosticHint(string sdkErrorText)
+        {
+            if (string.IsNullOrWhiteSpace(sdkErrorText)) return null;
+            string t = sdkErrorText;
+            bool has(string code) => t.IndexOf(code, StringComparison.OrdinalIgnoreCase) >= 0;
+
+            if (has("src0208") || t.IndexOf("already defined", StringComparison.OrdinalIgnoreCase) >= 0
+                                || t.IndexOf("ya está definido", StringComparison.OrdinalIgnoreCase) >= 0
+                                || t.IndexOf("já está definido", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "src0208 (event already defined): a userAction name=\"Foo\" auto-generates an empty 'DoFoo' event stub. Don't add a second Event 'DoFoo' — edit/fill the existing stub instead (patch the Events part where 'Event DoFoo … EndEvent' already exists).";
+            }
+            if (has("src0233") || has("src0216"))
+            {
+                return "src0233/src0216 on a control-bound event: the referenced control must exist in the projected form BEFORE the event compiles. Write the layout / apply the PatternInstance FIRST, then write the Events part that references &Control.Click / &Control.ControlValueChanged / &Control.Display.";
+            }
+            return null;
+        }
+
         // issue #39: agents (coming from SQL / other ORMs) commonly write pseudo-rules that
         // GeneXus does not accept in the Rules part. The rules specifier rejects them with a
         // bare "Erro" and no line diagnostic, so the failure is uninformative. Map each such

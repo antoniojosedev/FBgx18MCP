@@ -1213,10 +1213,17 @@ namespace GxMcp.Worker.Services
                             // saved — EnsureSave never ran) and return a hard error instead of a
                             // silent additive merge reported as success.
                             Logger.Error("[DEBUG-SAVE] Structure removal failed for " + target + ": " + remEx.Message);
+                            // B9: the cause is not always "key in use". When the SDK build
+                            // exposes no removal API at all (SDK-API-UNSUPPORTED marker from
+                            // TransactionDslParser), blaming an FK/relation sends the agent
+                            // chasing a dependency that doesn't exist. Branch the hint.
+                            bool apiUnsupported = remEx.Message?.IndexOf("SDK-API-UNSUPPORTED", StringComparison.OrdinalIgnoreCase) >= 0;
                             return Models.McpResponse.Err(
-                                code: "StructureAttributeNotRemoved",
+                                code: apiUnsupported ? "StructureAttributeRemovalUnsupported" : "StructureAttributeNotRemoved",
                                 message: remEx.Message + ". The write was aborted; nothing was persisted.",
-                                hint: "mode:full and remove_attribute are authoritative — they will not silently keep an attribute. The SDK refused to drop the attribute(s) above, usually because a key is still referenced by a foreign key, relation, or index elsewhere. Remove those usages first (or rename the attribute instead of replacing it), then retry.",
+                                hint: apiUnsupported
+                                    ? "Removing an attribute from a Transaction is not writable through the GeneXus SDK in this build — it is IDE-only. The MCP will not silently keep the attribute. Remove the attribute from the KB Explorer / Transaction Structure editor in the GeneXus IDE. (Renaming and adding attributes ARE supported via the MCP.)"
+                                    : "mode:full and remove_attribute are authoritative — they will not silently keep an attribute. The SDK refused to drop the attribute(s) above, usually because a key is still referenced by a foreign key, relation, or index elsewhere. Remove those usages first (or rename the attribute instead of replacing it), then retry.",
                                 nextSteps: new JArray(McpResponse.NextStep(
                                     tool: "genexus_read",
                                     args: new JObject { ["name"] = target, ["part"] = "Structure" },
@@ -1772,6 +1779,12 @@ namespace GxMcp.Worker.Services
 
             // Build hint from suggestion and nextSteps from availableParts.
             string hint = BuildSuggestion(error, partName);
+
+            // C17: enrich Events-part SDK failures (src0208 auto-stub collision;
+            // src0233/src0216 control-not-yet-projected) with the actionable cause.
+            string eventHint = WritePolicy.BuildEventDiagnosticHint(details) ?? WritePolicy.BuildEventDiagnosticHint(error);
+            if (eventHint != null)
+                hint = string.IsNullOrEmpty(hint) ? eventHint : hint + " " + eventHint;
 
             JArray nextSteps = null;
             JArray availablePartsArr = null;

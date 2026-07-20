@@ -58,16 +58,27 @@ namespace GxMcp.Gateway
                 // behind the installed version, report the installed version as latest and note
                 // the lag instead of surfacing the confusing older number.
                 bool feedBehind = cmp < 0;
+                // D22: the fetch only ran once (at initialize), so on a long-lived gateway
+                // this cache can be older than its own TTL — e.g. captured before the new
+                // release was published to npm. Confidently reporting "feed is lagging / you
+                // are up to date" off stale data is exactly the confusing false positive
+                // reported. When stale, kick a background refresh and downgrade the note to
+                // "stale, rechecking" instead of a confident verdict.
+                bool stale = (DateTime.UtcNow - cached.CheckedAt) >= CacheTtl;
+                if (stale) MaybeRefreshIfStale();
                 var result = new JObject {
                     ["currentVersion"] = current,
                     ["latestVersion"] = feedBehind ? current : cached.LatestVersion,
                     ["updateAvailable"] = available,
                     ["checkedAt"] = cached.CheckedAt.ToString("o"),
+                    ["stale"] = stale,
                     ["releaseUrl"] = feedBehind ? ReleaseUrlFor(current!) : cached.ReleaseUrl,
                     ["command"] = available ? "npx genexus-mcp@latest init" : null,
                     ["restartRequired"] = available
                 };
-                if (feedBehind)
+                if (stale)
+                    result["note"] = $"Update-check data is stale (last checked {cached.CheckedAt:o}, older than the {CacheTtl.TotalHours:0}h TTL); a fresh check has been queued. Last-known registry 'latest' was v{cached.LatestVersion}, installed is v{current}. Re-run whoami shortly for a current answer before deciding to update.";
+                else if (feedBehind)
                     result["note"] = $"Installed build (v{current}) is newer than the registry's published 'latest' (v{cached.LatestVersion}); the update feed is lagging. You are up to date.";
                 // Corporate self-update: surface a staged build waiting for restart so
                 // the LLM can tell the user "restart to finish updating to vX".
@@ -88,6 +99,24 @@ namespace GxMcp.Gateway
             if (Environment.GetEnvironmentVariable("GENEXUS_MCP_NO_UPDATE_CHECK") == "1") return;
 
             _ = Task.Run(RunAsync);
+        }
+
+        // D22: re-arm the registry fetch when the on-disk cache has aged past its TTL.
+        // TriggerOnce fires only once per process (at initialize); without this a
+        // long-lived gateway would keep answering whoami off a stale snapshot forever.
+        // Guarded so at most one background refresh runs at a time; ResolveLatestVersionAsync
+        // rewrites the cache, so the next whoami reads fresh data.
+        private static int _refreshInFlight;
+        internal static void MaybeRefreshIfStale()
+        {
+            if (Environment.GetEnvironmentVariable("GENEXUS_MCP_NO_UPDATE_CHECK") == "1") return;
+            if (Interlocked.CompareExchange(ref _refreshInFlight, 1, 0) != 0) return;
+            _ = Task.Run(async () =>
+            {
+                try { await ResolveLatestVersionAsync(); }
+                catch (Exception ex) { Program.Log($"[UpdateCheck] MaybeRefreshIfStale: {ex.Message}"); }
+                finally { Interlocked.Exchange(ref _refreshInFlight, 0); }
+            });
         }
 
         private static async Task RunAsync()

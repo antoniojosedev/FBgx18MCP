@@ -85,7 +85,13 @@ namespace GxMcp.Worker.Services
         public List<SearchIndex.IndexEntry> FindCandidateEntries(string name)
         {
             if (string.IsNullOrEmpty(name)) return new List<SearchIndex.IndexEntry>();
-            var index = GetIndex();
+            // B14: this feeds the advisory homonym/ambiguity pre-check on the write hot
+            // path. It MUST NOT trigger a blocking 30s-3min synchronous index load — that
+            // is exactly what stalled Structure writes on a duplicate-name Transaction and
+            // hit the gateway timeout. Use the non-blocking accessor; when the index isn't
+            // warm yet the ambiguity hint is simply skipped and FindObject (already
+            // non-blocking) resolves the object anyway.
+            var index = GetLoadedIndexOrNull();
             if (index?.Objects == null) return new List<SearchIndex.IndexEntry>();
             var results = new List<SearchIndex.IndexEntry>();
             foreach (var entry in index.Objects.Values)
@@ -1529,7 +1535,14 @@ namespace GxMcp.Worker.Services
                 return;
             }
 
-            string normalizedPart = string.IsNullOrWhiteSpace(partName) ? null : partName.Trim().ToLowerInvariant();
+            // B13: the read cache is keyed by the RESOLVED part name (ResolvePartName,
+            // e.g. "SDTStructure" -> "Structure"), but this was matching on the raw
+            // partName. When they differed the dirty-mark missed the live cache entry,
+            // so the post-write re-read returned stale content and the write was falsely
+            // reported changed:false / WriteNoChange even though the diff and disk showed
+            // the change. Resolve the part name the same way ReadObjectSource does.
+            string resolvedPart = string.IsNullOrWhiteSpace(partName) ? null : ResolvePartName(obj, partName);
+            string normalizedPart = string.IsNullOrWhiteSpace(resolvedPart) ? null : resolvedPart.Trim().ToLowerInvariant();
             string objectPrefix = obj.Guid.ToString("N").ToLowerInvariant() + "|";
             foreach (var key in _readCache.Keys)
             {

@@ -990,6 +990,22 @@ namespace GxMcp.Gateway
                     {
                         string operationId = lifecycleTarget.Substring(3);
                         bool existed = _operationTracker.MarkCancelled(operationId, "Cancelled by client via lifecycle action=cancel.");
+                        // A5: fan a Control:Cancel out to the worker (mirroring the job_id
+                        // path above) so cooperative handlers trip their CTS and free the
+                        // single STA queue, instead of leaving the worker running the
+                        // cancelled op to completion while every later call queues behind it.
+                        _ = SendWorkerCommandAsync(
+                            new JObject
+                            {
+                                ["method"] = "control",
+                                ["module"] = "Control",
+                                ["action"] = "Cancel",
+                                ["params"] = new JObject { ["cancelToken"] = operationId }
+                            },
+                            5000, "cancel-fanout",
+                            env => env,
+                            (_, __) => new JObject(),
+                            toolName: "genexus_lifecycle", toolArgs: args, trackOperation: false);
                         // Try to find and abandon the pending request bound to this op.
                         string? abandonedRequestId = null;
                         foreach (var kvp in _pendingRequests.ToArray())
@@ -2028,6 +2044,26 @@ namespace GxMcp.Gateway
                             ["code"] = -32602,
                             ["message"] = ux.Message,
                             ["data"] = new JObject { ["usageCode"] = ux.Code }
+                        }
+                    };
+                }
+                catch (IdempotencyConflictException icx)
+                {
+                    // A5: a write retried under the same idempotencyKey with a DIFFERENT
+                    // payload (e.g. after a TaskStop cancelled the first attempt and the
+                    // agent retries with fresh args) previously threw uncaught — bubbling
+                    // to the outer handler and surfacing as a generic error / null →
+                    // permanent BadRequest wall for the whole session until the TTL expired.
+                    // Return a clean, actionable JSON-RPC error instead.
+                    return new JObject
+                    {
+                        ["jsonrpc"] = "2.0",
+                        ["id"] = idToken?.DeepClone(),
+                        ["error"] = new JObject
+                        {
+                            ["code"] = -32602,
+                            ["message"] = icx.Message,
+                            ["data"] = new JObject { ["usageCode"] = "IdempotencyConflict" }
                         }
                     };
                 }
