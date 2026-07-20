@@ -43,7 +43,8 @@ namespace GxMcp.Worker.Services
                     message: "No open KB / design model available.",
                     hint: "Open a KB first (genexus_kb action=open).");
 
-            var info = SdkServiceLocator.TryResolve<GenexusServices.IModelInformationService>();
+            var info = SdkServiceLocator.ConstructOrResolve<GenexusServices.IModelInformationService>(
+                () => new Artech.Packages.Genexus.BL.Services.ModelInformationService());
             if (info == null)
                 return McpResponse.Err(
                     code: "ModelInformationServiceUnavailable",
@@ -66,7 +67,8 @@ namespace GxMcp.Worker.Services
             bool deep = args?["deep"]?.ToObject<bool?>() ?? false;
             if (deep)
             {
-                var spec = SdkServiceLocator.TryResolve<GenexusServices.ISpecifierService>();
+                var spec = SdkServiceLocator.ConstructOrResolve<GenexusServices.ISpecifierService>(
+                    () => new Artech.Packages.Specifier.Services.SpecifierService());
                 if (spec == null)
                 {
                     result["deepError"] = "ISpecifierService unavailable";

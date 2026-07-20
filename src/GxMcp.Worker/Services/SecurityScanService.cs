@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
@@ -42,12 +43,29 @@ namespace GxMcp.Worker.Services
                     message: "No open KB / design model available.",
                     hint: "Open a KB first (genexus_kb action=open).");
 
-            var scanner = SdkServiceLocator.TryResolve<ScannerServices.ISecurityScannerService>();
+            // ISecurityScannerService is registered only by the IDE's Security Scanner
+            // package (not loaded headless), so the service registry is empty here. But the
+            // concrete SecurityScannerService is a public class with a public ctor — construct
+            // it directly (same idiom as GamService's concrete resolve) and load its command
+            // plugins from <gxInstall>\Security\Commands. Fall back to the registry if present.
+            ScannerServices.ISecurityScannerService scanner = null;
+            try
+            {
+                var concrete = new ScannerServices.SecurityScannerService();
+                string commandsFolder = ResolveCommandsFolder();
+                if (commandsFolder != null)
+                {
+                    try { concrete.Initialize(commandsFolder); } catch { /* commands optional; model-level checks still run */ }
+                }
+                scanner = concrete;
+            }
+            catch { scanner = SdkServiceLocator.TryResolve<ScannerServices.ISecurityScannerService>(); }
+
             if (scanner == null)
                 return McpResponse.Err(
                     code: "SecurityScannerServiceUnavailable",
-                    message: "The GeneXus SDK's ISecurityScannerService is not registered in this worker session.",
-                    hint: "The Security Scanner package may not be loaded. Restart the worker (genexus_worker_reload mode=hard) and retry.");
+                    message: "Could not construct or resolve the GeneXus SDK's SecurityScannerService in this worker session.",
+                    hint: "Confirm GeneXus.SecurityScanner.Common is present in the install. Restart the worker (genexus_worker_reload mode=hard) and retry.");
 
             try
             {
@@ -86,6 +104,24 @@ namespace GxMcp.Worker.Services
         }
 
         private static string SafeStr(Func<string> f) { try { return f(); } catch { return null; } }
+
+        // <gxInstall>\Security\Commands holds the scanner's command plugins. Try GX_PATH env,
+        // the default install path, then the process cwd (InitializeSdk sets it to gxPath).
+        private static string ResolveCommandsFolder()
+        {
+            foreach (var root in new[]
+            {
+                Environment.GetEnvironmentVariable("GX_PATH"),
+                @"C:\Program Files (x86)\GeneXus\GeneXus18",
+                Directory.GetCurrentDirectory()
+            })
+            {
+                if (string.IsNullOrWhiteSpace(root)) continue;
+                var folder = System.IO.Path.Combine(root, "Security", "Commands");
+                if (Directory.Exists(folder)) return folder;
+            }
+            return null;
+        }
 
         /// <summary>
         /// Worker-side <c>IScannerOuput</c> that accumulates scan findings instead of driving

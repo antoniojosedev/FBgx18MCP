@@ -5,6 +5,43 @@ Execution plan for wiring the uncovered SDK capabilities from
 endpoints. Each item lists the SDK entry point, the input-construction gate result, the
 tool surface, and the wiring touch-points.
 
+## Live verification (2026-07-20) — all 6 P0/P1 tools working
+
+Smoke-tested over HTTP against a running worker on KB `AcademicoHomolog1`. All six resolve
+and execute:
+
+| Tool | Result |
+|---|---|
+| `genexus_transfer` | ✅ IKnowledgeManagerService resolves; Export reached (dependency-aware) |
+| `genexus_gxserver pipeline_*` | ✅ IContinuousIntegrationService resolves + invokes |
+| `genexus_security scan_native` | ✅ `SecurityScanCompleted` |
+| `genexus_analyze kb_stats` | ✅ real timestamps + `reorgLikelyNeeded` |
+| `genexus_db reorg_impact` | ✅ timestamps + heuristic |
+| `genexus_deploy list_targets` | ✅ 13 real targets (AWS EB, Tomcat, IIS8, …) |
+
+**The wall we hit and solved.** The static input-construction gate passed for all six, but
+at runtime the *service-registration* gate failed for four: `IModelInformationService`,
+`ISpecifierService`, `IDeploymentService`/`IDeploymentTargetService`, and
+`ISecurityScannerService` are **not registered in the headless worker's service registry**
+(they are registered by IDE-only packages the worker never loads). `Services.TryGetService`
+(by type or by interface GUID) returns null for them — a wall only a live probe reveals.
+
+**Resolution:** construct the **public concrete impl** directly and cast to the interface —
+the same idiom `GamService` already uses. Every impl has a public parameterless ctor:
+
+| Interface | Concrete class (assembly) |
+|---|---|
+| `ISecurityScannerService` | `GeneXus.SecurityScanner.Common.Services.SecurityScannerService` (+ `Initialize(<gx>\Security\Commands)`) |
+| `IModelInformationService` | `Artech.Packages.Genexus.BL.Services.ModelInformationService` (GenexusBL) |
+| `ISpecifierService` | `Artech.Packages.Specifier.Services.SpecifierService` (Specifier) |
+| `IDeploymentTargetService` | `Artech.Packages.Genexus.BL.Services.DeploymentTargetService` (GenexusBL) |
+| `IDeploymentService` | `Artech.Packages.Genexus.BL.Services.DeployService` (GenexusBL) |
+| `IStatisticsService` | `Artech.Architecture.Common.Services.StatisticsService` |
+
+`SdkServiceLocator.ConstructOrResolve<T>(factory)` encapsulates "construct-concrete-first,
+fall back to registry". New csproj refs: `Artech.Packages.GenexusBL`, `Artech.Packages.Specifier`,
+`GeneXus.SecurityScanner.Common`, `GeneXus.TeamDevClient.Architecture.BL`.
+
 ## Feasibility gate (done 2026-07-20)
 
 Ran against `docs/sdk-probe/raw.json`. **All P0/P1 input types are headless-constructible — no WWP-style wall.**

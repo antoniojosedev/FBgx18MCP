@@ -30,6 +30,19 @@ namespace GxMcp.Worker.Helpers
         /// bounded self-heal retry (mirrors <see cref="SdkServiceResolver"/> — a service can
         /// lag registration right after a worker respawn). Returns null when unavailable.
         /// </summary>
+        /// <summary>
+        /// Prefer constructing the concrete service impl directly (its public parameterless
+        /// ctor) and casting to the interface — the idiom GamService uses — because several
+        /// IDE-package services (ModelInformation, Specifier, Deployment, …) are never
+        /// registered in the headless worker's service registry. Falls back to the
+        /// interface-GUID registry lookup if construction fails. Returns null when neither works.
+        /// </summary>
+        public static T ConstructOrResolve<T>(Func<object> concreteFactory, int attempts = 5, int delayMs = 200) where T : class
+        {
+            try { if (concreteFactory() is T t && t != null) return t; } catch { /* concrete unavailable; try registry */ }
+            return TryResolve<T>(attempts, delayMs);
+        }
+
         public static T TryResolve<T>(int attempts = 5, int delayMs = 200) where T : class
         {
             Guid id = typeof(T).GUID;

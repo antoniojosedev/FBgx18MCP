@@ -104,6 +104,18 @@
       <HintPath>$(GX_PATH)\GeneXus.TeamDevClient.Architecture.BL.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- Concrete service impls not registered in the headless worker's service registry
+         (IDE-package services). We construct them directly (public parameterless ctors) and
+         cast to the interface — same idiom as GamService. GenexusBL: ModelInformationService,
+         DeploymentTargetService, DeployService. Specifier: SpecifierService. -->
+    <Reference Include="Artech.Packages.GenexusBL">
+      <HintPath>$(GX_PATH)\Packages\Artech.Packages.GenexusBL.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Artech.Packages.Specifier">
+      <HintPath>$(GX_PATH)\Packages\Artech.Packages.Specifier.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.Data" />

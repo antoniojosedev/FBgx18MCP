@@ -46,7 +46,8 @@ namespace GxMcp.Worker.Services
 
             if (action == "list_targets")
             {
-                var tgtSvc = SdkServiceLocator.TryResolve<GenexusServices.IDeploymentTargetService>();
+                var tgtSvc = SdkServiceLocator.ConstructOrResolve<GenexusServices.IDeploymentTargetService>(
+                    () => new Artech.Packages.Genexus.BL.Services.DeploymentTargetService());
                 if (tgtSvc == null)
                     return McpResponse.Err(
                         code: "DeploymentTargetServiceUnavailable",
@@ -84,7 +85,8 @@ namespace GxMcp.Worker.Services
                         message: "action=deploy builds and ships the application; pass confirm=true.",
                         hint: "Review the target with action=list_targets, then set confirm=true.");
 
-                var svc = SdkServiceResolver.Resolve<IDeploymentService>();
+                var svc = SdkServiceLocator.ConstructOrResolve<IDeploymentService>(
+                    () => new Artech.Packages.Genexus.BL.Services.DeployService());
                 if (svc == null)
                     return McpResponse.Err(
                         code: "DeploymentServiceUnavailable",
