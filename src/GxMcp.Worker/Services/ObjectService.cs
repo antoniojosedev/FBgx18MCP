@@ -401,10 +401,11 @@ namespace GxMcp.Worker.Services
                 if (lines <= 0) lines = 100;
                 if (lines > 2000) lines = 2000;
 
-                string exeDir = Path.GetDirectoryName(System.Reflection.Assembly.GetEntryAssembly()?.Location ?? Process.GetCurrentProcess().MainModule.FileName) ?? "";
+                // issue #40: read from the same resolved dir the Logger writes to
+                // (may be relocated out of node_modules).
                 string logPath = !string.IsNullOrEmpty(logPathOverride)
                     ? logPathOverride
-                    : Path.Combine(exeDir, "worker_debug.log");
+                    : Path.Combine(GxMcp.Worker.Helpers.Logger.LogDirectory, "worker_debug.log");
                 if (!File.Exists(logPath))
                 {
                     return "{\"status\":\"Error\", \"error\":\"Log file not found at " + CommandDispatcher.EscapeJsonString(logPath) + "\"}";
@@ -499,7 +500,7 @@ namespace GxMcp.Worker.Services
                     ["logPath"] = logPath,
                     // Back-compat alias: prior shape exposed the file location as "path".
                     ["path"] = logPath,
-                    ["logDir"] = exeDir,
+                    ["logDir"] = GxMcp.Worker.Helpers.Logger.LogDirectory,
                     ["totalLines"] = allLines.Count,
                     ["matched"] = tail.Count,
                     ["lines"] = string.Join("\n", tail)

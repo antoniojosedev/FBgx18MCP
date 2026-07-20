@@ -16,7 +16,36 @@ namespace GxMcp.Worker.Helpers
     // and so a crash never loses the very latest log line.
     public static class Logger
     {
-        private static readonly string LogFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "worker_debug.log");
+        // issue #40: the log MUST NOT live inside node_modules. Under an npm install the
+        // exe dir is node_modules\genexus-mcp\publish\...; keeping an open file handle
+        // there makes `npx genexus-mcp@latest` fail with EBUSY on Windows when it refreshes
+        // the package. LogDirectory relocates to a stable per-user dir in that case (and
+        // honours GXMCP_LOG_DIR); readers use it too so log-tail still finds the file.
+        public static readonly string LogDirectory = ResolveLogDirectory();
+        private static readonly string LogFile = Path.Combine(LogDirectory, "worker_debug.log");
+
+        private static string ResolveLogDirectory()
+        {
+            try
+            {
+                var env = Environment.GetEnvironmentVariable("GXMCP_LOG_DIR");
+                if (!string.IsNullOrWhiteSpace(env))
+                {
+                    Directory.CreateDirectory(env);
+                    return env;
+                }
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+                if (baseDir.Replace('/', '\\').IndexOf("\\node_modules\\", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                    string dir = Path.Combine(local, "GenexusMCP", "logs");
+                    Directory.CreateDirectory(dir);
+                    return dir;
+                }
+                return baseDir;
+            }
+            catch { return AppDomain.CurrentDomain.BaseDirectory ?? ""; }
+        }
         private static readonly BlockingCollection<string> _queue = new BlockingCollection<string>();
         private static readonly Thread _writer;
 

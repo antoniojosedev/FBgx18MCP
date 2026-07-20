@@ -105,6 +105,21 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
+                // issue #41: ControlValues is a STRUCTURED property (the static combo's
+                // list of value/description pairs), not a scalar. The generic string setter
+                // can't represent it, so the SDK writes an empty collection — silently
+                // WIPING the existing values while the call still "succeeds". Reject up
+                // front instead of destroying data and reporting PropertyApplied.
+                if (IsNonScalarProperty(propName))
+                {
+                    return Models.McpResponse.Err(
+                        code: "PropertyNotScalarWritable",
+                        message: $"'{propName}' is a structured property (a list of value/description pairs), not a scalar. Setting it through genexus_properties would write an empty collection and WIPE the existing values.",
+                        hint: "Edit the static values in the GeneXus IDE (the control/attribute's Control Info > Values editor). This property is not writable as a plain string through the SDK.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_properties", new JObject { ["action"] = "get", ["name"] = target, ["control"] = controlName }, "Read the current ControlValues so you don't lose them.")),
+                        target: target);
+                }
+
                 dynamic container = obj;
                 if (!string.IsNullOrEmpty(controlName))
                 {
@@ -117,7 +132,20 @@ namespace GxMcp.Worker.Services
                     bool committed = false;
                     try
                     {
+                        // issue #41 (general safety net): capture the prior value so a silent
+                        // wipe (non-empty → empty for a non-empty request) is caught even for
+                        // properties not on the explicit non-scalar list, and rolled back.
+                        string beforeVal = TryReadPropertyString(container, propName);
+
                         ApplyPropertyValue(container, propName, value, controlName, obj);
+
+                        string afterVal = TryReadPropertyString(container, propName);
+                        if (!string.IsNullOrEmpty(value)
+                            && !string.IsNullOrEmpty(beforeVal)
+                            && string.IsNullOrEmpty(afterVal))
+                        {
+                            throw new PropertyWipeException(propName, beforeVal);
+                        }
 
                         try { if (container != obj) container.Dirty = true; } catch { }
                         obj.EnsureSave();
@@ -136,10 +164,64 @@ namespace GxMcp.Worker.Services
 
                 return Models.McpResponse.Ok(target: target, code: "PropertyApplied", result: new JObject { ["property"] = propName, ["value"] = value });
             }
+            catch (PropertyWipeException pwe)
+            {
+                // issue #41: the write was rolled back — the property still has its prior value.
+                return Models.McpResponse.Err(
+                    code: "PropertyWriteWipedValue",
+                    message: $"Setting '{pwe.PropertyName}' emptied a previously non-empty value; the write was rolled back to avoid data loss. This property is likely structured (not a scalar string) and can't be set through genexus_properties.",
+                    hint: "The prior value is preserved. Edit this property in the GeneXus IDE. If it should be scalar-writable, report the property name.",
+                    target: target);
+            }
             catch (Exception ex)
             {
                 return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
+        }
+
+        // issue #41: structured properties the generic scalar setter can't represent —
+        // writing them as a string wipes the underlying collection. Reject up front.
+        private static readonly HashSet<string> _nonScalarProps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "ControlValues"
+        };
+
+        private static bool IsNonScalarProperty(string propName)
+            => !string.IsNullOrEmpty(propName) && _nonScalarProps.Contains(propName.Trim());
+
+        // Best-effort read of a property's current value as a string (for the wipe check).
+        private static string TryReadPropertyString(dynamic container, string propName)
+        {
+            try
+            {
+                dynamic existing = null;
+                try { existing = container.Properties?[propName]; } catch { }
+                if (existing == null)
+                {
+                    try
+                    {
+                        foreach (dynamic p in container.Properties)
+                        {
+                            string n = null;
+                            try { n = (string)p.Name; } catch { }
+                            if (string.Equals(n, propName, StringComparison.OrdinalIgnoreCase)) { existing = p; break; }
+                        }
+                    }
+                    catch { }
+                }
+                object val = null;
+                try { val = existing?.Value; } catch { }
+                return val?.ToString();
+            }
+            catch { return null; }
+        }
+
+        private sealed class PropertyWipeException : Exception
+        {
+            public string PropertyName { get; }
+            public PropertyWipeException(string propName, string priorValue)
+                : base($"Property '{propName}' would be wiped (prior value: '{priorValue}').")
+            { PropertyName = propName; }
         }
 
         // Object-level placement "properties" that the SDK exposes but cannot persist

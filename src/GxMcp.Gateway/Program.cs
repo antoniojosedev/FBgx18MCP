@@ -109,7 +109,31 @@ namespace GxMcp.Gateway
         // master can replay it once instead of dropping it across the takeover.
         private static string? _promotionReplayLine;
         private static readonly TimeSpan _pendingRequestRetention = TimeSpan.FromMinutes(65);
-        private static readonly string _logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gateway_debug.log");
+        // issue #40: never keep the log handle open inside node_modules — that makes
+        // `npx genexus-mcp@latest` fail with EBUSY on Windows when it refreshes the package.
+        // Relocate to a stable per-user dir when the exe is under node_modules (honours
+        // GXMCP_LOG_DIR). Dev/source/test builds keep the log next to the exe.
+        private static readonly string _logDir = ResolveLogDirectory();
+        private static readonly string _logPath = Path.Combine(_logDir, "gateway_debug.log");
+
+        private static string ResolveLogDirectory()
+        {
+            try
+            {
+                var env = Environment.GetEnvironmentVariable("GXMCP_LOG_DIR");
+                if (!string.IsNullOrWhiteSpace(env)) { Directory.CreateDirectory(env); return env; }
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+                if (baseDir.Replace('/', '\\').IndexOf("\\node_modules\\", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                    string dir = Path.Combine(local, "GenexusMCP", "logs");
+                    Directory.CreateDirectory(dir);
+                    return dir;
+                }
+                return baseDir;
+            }
+            catch { return AppDomain.CurrentDomain.BaseDirectory ?? ""; }
+        }
         // Rotation: when the log exceeds this many bytes the current file is renamed to
         // gateway_debug.log.1 and a fresh file is opened.  Only two files are kept.
         private const long _logRotateBytes = 10 * 1024 * 1024; // 10 MB
