@@ -1842,6 +1842,18 @@ namespace GxMcp.Worker.Services
             finally
             {
                 try { watchdog?.Dispose(); } catch { }
+                // Guaranteed MSBuild cleanup: on ANY exit path (success, failure, or
+                // exception — not just cancel/timeout) reap the spawned MSBuild process
+                // tree if anything is still alive. /nodeReuse:false already tears the /m
+                // worker nodes down on normal completion, but a hung/slow child (or an
+                // exception before WaitForExit returned) could otherwise linger on the
+                // user's machine. This keeps the MCP from ever leaving MSBuild behind.
+                try
+                {
+                    var p = status.Process;
+                    if (p != null && !p.HasExited) KillProcessTree(p);
+                }
+                catch (Exception ex) { Logger.Warn("[BUILD-CLEANUP] MSBuild reap: " + ex.Message); }
                 try { if (tempFile != null && File.Exists(tempFile)) File.Delete(tempFile); } catch { }
                 status.Process = null;
                 // Don't leak the phase tag onto unrelated work on this thread.
