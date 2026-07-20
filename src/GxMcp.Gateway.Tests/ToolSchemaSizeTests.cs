@@ -61,7 +61,8 @@ namespace GxMcp.Gateway.Tests
             //   + message/dryRun params to genexus_memory. Measured ~14469 tokens;
             //   ~81 headroom — still under the 14550 budget, no bump needed.
             //   2026-07-20 (compile_check): 14550 → 14750 for the genexus_lifecycle
-            //   `mode` param (compile_check). Measured ~14631 tokens; ~119 headroom.
+            //   `mode` param (compile_check) + discoverability copy in the tool
+            //   description and an example. Measured ~14693 tokens; ~57 headroom.
             Assert.True(approxTokens < 14750, $"tool_definitions.json is ~{approxTokens} tokens; budget 14750.");
         }
     }

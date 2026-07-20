@@ -1671,7 +1671,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Build, validate, index, or poll the KB. action=specify runs a spec-check (Spec+Gen only, no Compile/deploy) returning spc*/gen* diagnostics for the target fast — use it to catch spec errors without a full build. Long ops are async with operationId. dryRun=true (build/rebuild/index) returns the build plan or index plan without executing. See genexus://kb/tool-help/genexus_lifecycle for actions and target formats.",
+      "description": "Build, validate, index, or poll the KB. action=specify runs a spec-check (Spec+Gen only, no Compile/deploy) returning spc*/gen* diagnostics for the target fast (catch spec errors without a full build). action=build with mode=compile_check spec+gen+compiles the target(s) PLUS their transitive callers and skips the KB-wide DeveloperMenu regen (the dominant build-all cost) -- a fast 'did my edit break the build?' check that requires a target. Long ops are async with operationId. dryRun=true (build/rebuild/index) returns the build plan or index plan without executing. See genexus://kb/tool-help/genexus_lifecycle for actions and target formats.",
       "inputSchema": {
         "examples": [
           {
@@ -1680,6 +1680,11 @@
           {
             "action": "status",
             "target": "op:abc123"
+          },
+          {
+            "action": "build",
+            "mode": "compile_check",
+            "target": "MyObject"
           }
         ],
         "properties": {

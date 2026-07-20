@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.26.1 — 2026-07-20
+
+### Changed
+
+- **`mode=compile_check` is now discoverable from the tool description.** The fast "did my edit break the build?" check added in v2.26.0 was only visible if you read the `mode` parameter; the `genexus_lifecycle` description now calls it out next to `action=specify`, and there's a worked example (`{"action":"build","mode":"compile_check","target":"MyObject"}`). No behavior change.
+
 ## v2.26.0 — 2026-07-20
 
 ### Added

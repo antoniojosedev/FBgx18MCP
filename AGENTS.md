@@ -237,6 +237,16 @@ e.g. Web Events `c44bd5ff-…` → SD Events `144bd5ff-…`). Consequences the t
 
 ## Release discipline
 
+> **HARD RULE — releases require the maintainer's explicit go-ahead, every time.**
+> Do **not** run `./release.ps1`, create a tag, or publish a GitHub Release
+> because you judged the work "done" or "ready to ship". A release happens
+> **only** when the maintainer explicitly says to release *this* change (e.g.
+> "sobe a 2.26.1", "pode soltar", "release it"). Implementing, building, and
+> testing a change is authorized by the task; **shipping it is a separate,
+> explicit decision that is the maintainer's alone.** Finishing the code is not
+> permission to release — when in doubt, stop after tests pass and ask. Approval
+> for one release never carries to the next.
+
 - Before any release (`./release.ps1`, tag, or GitHub Release), update
   `CHANGELOG.md` with an entry for the exact version being released.
 
