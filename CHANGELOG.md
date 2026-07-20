@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## v2.28.0 — 2026-07-20
 
 See `docs/sdk_uncovered_endpoints_2026-07-20.md` + `docs/sdk_endpoints_roadmap.md` for the coverage analysis behind this batch.
 
