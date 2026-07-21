@@ -22,14 +22,36 @@ left **Unreleased**.
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|----------|--------|------|------------|--------|
-| 032 | `CallerGraphService.GetCallees` drops per-candidate regex compile (mirror of 022) | P1 | S-M | LOW | — | TODO |
-| 033 | `KbValidationService` passes known type to `FindObject` (O(n²) → O(n)) | P2 | S | LOW | — | TODO |
-| 034 | `SourceParser.SkipString` uses GeneXus doubled-quote grammar, not backslash | P1 | S | LOW | — | TODO |
-| 035 | `BrowserDriverInvoker.ResolveDriverPath` drains stderr (pipe-deadlock fix) | P2 | S | LOW | — | TODO |
-| 036 | Wire `BackgroundJobRegistry.SweepExpired()` + seen-set prune into cleanup loop | P1 | S | LOW | — | TODO |
-| 037 | `KbWatcherService` must not touch the SDK from a second STA thread | P2 | M | MED | — | TODO |
-| 038 | `AutoTypeInjector` name→type cache scoped per KB (cross-KB contamination) | P2 | M | MED | — | TODO |
-| 039 | `GeneratedDiffService.FindGeneratedFiles` walks each root once (not per-ext) | P3 | S | LOW | — | TODO |
+| 032 | `CallerGraphService.GetCallees` drops per-candidate regex compile (mirror of 022) | P1 | S-M | LOW | — | DONE |
+| 033 | `KbValidationService` passes known type to `FindObject` (O(n²) → O(n)) | P2 | S | LOW | — | DONE |
+| 034 | `SourceParser.SkipString` uses GeneXus doubled-quote grammar, not backslash | P1 | S | LOW | — | DONE |
+| 035 | `BrowserDriverInvoker.ResolveDriverPath` drains stderr (pipe-deadlock fix) | P2 | S | LOW | — | DONE |
+| 036 | Wire `BackgroundJobRegistry.SweepExpired()` + seen-set prune into cleanup loop | P1 | S | LOW | — | DONE |
+| 037 | `KbWatcherService` must not touch the SDK from a second STA thread | P2 | M | MED | — | DONE |
+| 038 | `AutoTypeInjector` name→type cache scoped per KB (cross-KB contamination) | P2 | M | MED | — | DONE |
+| 039 | `GeneratedDiffService.FindGeneratedFiles` walks each root once (not per-ext) | P3 | S | LOW | — | DONE |
+
+All eight merged to `main` (commits `944cfd0`,`24a914b`,`5232a5c`,`5a6b7d2`,`abc362b`,`72653ac`,`d63feba`,`df5e8a6`), left **Unreleased**. Full suites green: Worker 1529 passed / 4 skipped; Gateway 660 passed / 7 skipped; solution builds 0 errors. Advisor-reviewed each diff; notable review actions:
+- **037** (MED): executor found no pre-existing "post a job onto the command STA thread"
+  API, so it added a minimal additive `Program.SdkActionQueue` drained by the existing
+  sdkWorker poll tick **only when the command queue is idle** (non-starving, strictly
+  lower priority), and routed `KbWatcher` onto it with a bounded 15s wait on its own
+  thread. Serialization verified (same STA thread as `ProcessCommand`); no deadlock;
+  timeout→dispose→`Set()` is try/catch-guarded. Accepted tradeoff: `CheckForChanges`
+  now runs on the command thread when idle (correctness over the COM-corruption it
+  replaces). In-scope (`Program.cs` + `KbWatcherService.cs`).
+- **038** (MED): grep found a third caller (`McpRouter` completion), so the change also
+  touched `McpRouter.cs` and added a 1-line `Program.GetCurrentKb()` accessor (mirroring
+  the existing `GetWorkerPool`/`GetKbResolver`) — covered by the plan's "update any
+  caller found via grep" clause. Only the name→type cache is KB-keyed; the schema-shape
+  cache stays global. `whoami`'s feeder resolves current-KB → single-open-KB → skip
+  (never mis-attributes across KBs). Single-KB behavior byte-identical; 4 new + 15
+  adapted tests pass.
+- **Test caveats (honest)**: 033, 035, 037 shipped **build-only** for their new behavior
+  (all need a live opened KB/SDK to exercise; each plan's Step allowed this fallback).
+  037 additionally relies on the full-suite run + the mechanism's structural guarantee
+  (single-consumer STA thread). 032, 034, 039 got new passing unit tests; 036, 038 got
+  new gateway tests.
 
 Order: LOW-risk first (033, 034, 032, 035, 036, 039) then MED-risk (037, 038). All
 independent (disjoint files). Tier-A LOW-risk ships on green tests; 037/038 ship only on
