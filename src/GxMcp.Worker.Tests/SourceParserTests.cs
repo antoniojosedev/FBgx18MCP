@@ -87,5 +87,21 @@ namespace GxMcp.Worker.Tests
             Assert.Single(calls);
             Assert.Equal("Foo", calls[0].Callee);
         }
+
+        [Fact]
+        public void ParseCalls_StringEndingInBackslash_DoesNotDesyncTokenization()
+        {
+            string src = "msg(\"C:\\Temp\\\")\nDoThing()";
+            var calls = SourceParser.ParseCalls(src);
+            Assert.Contains(calls, c => c.Callee == "DoThing");
+        }
+
+        [Fact]
+        public void ParseCalls_DoubledQuoteEscape_SkipsCorrectlyAndDetectsFollowingCall()
+        {
+            string src = "&x = \"say \"\"hi\"\"\"\nDoThing()";
+            var calls = SourceParser.ParseCalls(src);
+            Assert.Contains(calls, c => c.Callee == "DoThing");
+        }
     }
 }

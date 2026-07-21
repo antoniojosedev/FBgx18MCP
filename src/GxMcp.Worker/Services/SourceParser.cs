@@ -134,9 +134,12 @@ namespace GxMcp.Worker.Services
             i++;
             while (i < s.Length)
             {
-                if (s[i] == '\\' && i + 1 < s.Length) { i += 2; continue; }
                 if (s[i] == '\n') { line++; lineStart = i + 1; }
-                if (s[i] == quote) return i + 1;
+                if (s[i] == quote)
+                {
+                    if (i + 1 < s.Length && s[i + 1] == quote) { i += 2; continue; } // escaped ""
+                    return i + 1;                                                    // terminator
+                }
                 i++;
             }
             return i;
