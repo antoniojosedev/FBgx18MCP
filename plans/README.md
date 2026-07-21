@@ -11,6 +11,48 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Sixth-pass audit (2026-07-21, against `f63f204`) — performance + bug-fixing only
+
+Third focused `improve` pass of the day, scoped to **performance and correctness bugs
+only**, against tip `f63f204`. Three parallel read-only audits over the surface NOT
+deeply reviewed in passes 1–5: perf in un-audited worker services; worker correctness;
+gateway helpers/routers + the Node CLI. Nine findings vetted against live code; one
+rejected, one deferred (below). Maintainer authorized auto-apply + commit to `main`,
+left **Unreleased**.
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 032 | `CallerGraphService.GetCallees` drops per-candidate regex compile (mirror of 022) | P1 | S-M | LOW | — | TODO |
+| 033 | `KbValidationService` passes known type to `FindObject` (O(n²) → O(n)) | P2 | S | LOW | — | TODO |
+| 034 | `SourceParser.SkipString` uses GeneXus doubled-quote grammar, not backslash | P1 | S | LOW | — | TODO |
+| 035 | `BrowserDriverInvoker.ResolveDriverPath` drains stderr (pipe-deadlock fix) | P2 | S | LOW | — | TODO |
+| 036 | Wire `BackgroundJobRegistry.SweepExpired()` + seen-set prune into cleanup loop | P1 | S | LOW | — | TODO |
+| 037 | `KbWatcherService` must not touch the SDK from a second STA thread | P2 | M | MED | — | TODO |
+| 038 | `AutoTypeInjector` name→type cache scoped per KB (cross-KB contamination) | P2 | M | MED | — | TODO |
+| 039 | `GeneratedDiffService.FindGeneratedFiles` walks each root once (not per-ext) | P3 | S | LOW | — | TODO |
+
+Order: LOW-risk first (033, 034, 032, 035, 036, 039) then MED-risk (037, 038). All
+independent (disjoint files). Tier-A LOW-risk ships on green tests; 037/038 ship only on
+a clean diff + green full suite (037 STOPs and defers to human design if the dispatcher
+STA-queue seam isn't cleanly reusable).
+
+Considered and rejected/deferred this pass (so nobody re-audits):
+- **`HistoryService.SaveSnapshot` `"error"` substring check** — REJECTED. `ReadObjectSource`
+  returns a `JObject`-serialized payload, so any `"` in the source is escaped to `\"`;
+  the bare substring `"error"` can only false-positive if an object's entire Source is
+  literally the 5 chars `error`. Not reachable in practice.
+- **CLI `kb add/remove/switch` config read-modify-write race** (`cli/lib/config.js`) —
+  DEFERRED. Real lost-update across concurrent CLI processes (`writeFileAtomic` prevents
+  torn writes but not the RMW race), but the commands are rare and user-invoked, and a
+  robust fix needs cross-process advisory locking with stale-lock/TTL handling that
+  fights the package's zero-runtime-dependency constraint — cure risks worse than the
+  disease. Revisit if it actually bites (e.g. scripted multi-KB registration).
+- Areas reviewed clean: `GatewayProcessLease` (named Mutex + atomic lease), `CrashLedger`
+  (single-writer, lock-guarded), `OperationTracker` (per-record locks; sweep already
+  wired), most of `ObjectService`/`AnalyzeService`/`PropertyService` (index-keyed or
+  single-object-scoped). Next-pass candidates if needed: `Program.Http.cs` SSE loop,
+  `KbHandle.cs`/`Configuration.cs`.
+
 ## Fifth-pass audit (2026-07-21, against `00573c3` / v2.29.2) — performance + bug-fixing only
 
 Second focused `improve` pass of the day, again scoped to **performance and
