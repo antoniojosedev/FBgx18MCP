@@ -44,9 +44,12 @@ namespace GxMcp.Worker.Services
         /// index and return "Both" if reachable from both, single-platform otherwise.
         /// </summary>
         internal static string ClassifyCallerPlatform(string callerName, SearchIndex index, int depth = 3)
+            => ClassifyCallerPlatform(callerName, index, BuildNameMap(index), depth);
+
+        internal static string ClassifyCallerPlatform(string callerName, SearchIndex index, Dictionary<string, SearchIndex.IndexEntry> nameMap, int depth = 3)
         {
             if (index?.Objects == null || string.IsNullOrEmpty(callerName)) return "Unknown";
-            if (!TryFindEntry(index, callerName, out var entry)) return "Unknown";
+            if (!TryFindEntry(index, callerName, nameMap, out var entry)) return "Unknown";
 
             string t = entry.Type ?? "";
             if (WebTypes.Contains(t)) return "Web";
@@ -61,11 +64,11 @@ namespace GxMcp.Worker.Services
             {
                 var (cur, d) = frontier.Dequeue();
                 if (d >= depth) continue;
-                if (!TryFindEntry(index, cur, out var curEntry)) continue;
+                if (!TryFindEntry(index, cur, nameMap, out var curEntry)) continue;
                 foreach (var up in curEntry.CalledBy ?? new List<string>())
                 {
                     if (string.IsNullOrWhiteSpace(up) || !visited.Add(up)) continue;
-                    if (!TryFindEntry(index, up, out var upEntry)) continue;
+                    if (!TryFindEntry(index, up, nameMap, out var upEntry)) continue;
                     string ut = upEntry.Type ?? "";
                     if (WebTypes.Contains(ut)) web = true;
                     else if (SdTypes.Contains(ut)) sd = true;
@@ -80,22 +83,34 @@ namespace GxMcp.Worker.Services
             return "Unknown";
         }
 
-        private static bool TryFindEntry(SearchIndex index, string bareName, out SearchIndex.IndexEntry entry)
+        // Case-insensitive name→entry map, first-wins on duplicate bare names —
+        // matches the linear-scan semantics it replaces. Built once per Analyze
+        // invocation; not cached on SearchIndex (index is shared/mutable state).
+        private static Dictionary<string, SearchIndex.IndexEntry> BuildNameMap(SearchIndex index)
+        {
+            var map = new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
+            if (index?.Objects == null) return map;
+            foreach (var kv in index.Objects)
+            {
+                if (kv.Value == null || string.IsNullOrEmpty(kv.Value.Name)) continue;
+                if (!map.ContainsKey(kv.Value.Name)) map[kv.Value.Name] = kv.Value;
+            }
+            return map;
+        }
+
+        private static bool TryFindEntry(SearchIndex index, string bareName, Dictionary<string, SearchIndex.IndexEntry> nameMap, out SearchIndex.IndexEntry entry)
         {
             entry = null;
             if (index?.Objects == null || string.IsNullOrEmpty(bareName)) return false;
-            // Try common keys first; fall back to a value scan.
+            // Try common keys first; fall back to the pre-built name map.
             foreach (var prefix in new[] { "Procedure", "Transaction", "WebPanel", "SDPanel", "DataProvider", "WebComponent", "MasterPage", "SDT", "Domain", "Object", "Menu", "Panel", "WorkWithDevices", "Dashboard" })
             {
                 if (index.Objects.TryGetValue(prefix + ":" + bareName, out var hit) && hit != null) { entry = hit; return true; }
             }
-            foreach (var kv in index.Objects)
+            if (nameMap != null && nameMap.TryGetValue(bareName, out var mapped) && mapped != null)
             {
-                if (kv.Value != null && string.Equals(kv.Value.Name, bareName, StringComparison.OrdinalIgnoreCase))
-                {
-                    entry = kv.Value;
-                    return true;
-                }
+                entry = mapped;
+                return true;
             }
             return false;
         }
@@ -130,14 +145,15 @@ namespace GxMcp.Worker.Services
             var r = new Result { TargetName = targetName, TargetType = targetType };
 
             if (index?.Objects == null) return r;
-            if (!TryFindEntry(index, targetName, out var targetEntry)) return r;
+            var nameMap = BuildNameMap(index);
+            if (!TryFindEntry(index, targetName, nameMap, out var targetEntry)) return r;
 
             // 1) Bucket each caller by surface.
             foreach (var caller in (targetEntry.CalledBy ?? new List<string>()).Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 if (string.IsNullOrWhiteSpace(caller)) continue;
-                string callerType = TryFindEntry(index, caller, out var ce) ? (ce.Type ?? "Object") : "Object";
-                string platform = ClassifyCallerPlatform(caller, index);
+                string callerType = TryFindEntry(index, caller, nameMap, out var ce) ? (ce.Type ?? "Object") : "Object";
+                string platform = ClassifyCallerPlatform(caller, index, nameMap);
                 var node = new JObject
                 {
                     ["name"] = caller,
