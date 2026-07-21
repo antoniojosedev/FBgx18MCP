@@ -47,16 +47,41 @@ namespace GxMcp.Worker.Services
             }
             else
             {
-                // No name → use the first DesignSystem object in the KB.
+                // Fast path: the search index already buckets objects by type. Resolve the
+                // first DesignSystem via TypeIndex["DesignSystem"] instead of a full-KB
+                // COM scan (mirrors SearchService/ListService type-bucket lookups).
                 try
                 {
-                    foreach (KBObject o in model.Objects.GetAll())
+                    var index = _objects?.GetLoadedIndexOrNull();
+                    if (index?.TypeIndex != null && index.Objects != null
+                        && index.TypeIndex.TryGetValue("DesignSystem", out var dsKeys))
                     {
-                        if (string.Equals(o?.TypeDescriptor?.Name, "DesignSystem", StringComparison.OrdinalIgnoreCase))
-                        { dso = o as DSObject; if (dso != null) { name = o.Name; break; } }
+                        string firstKey = null;
+                        lock (dsKeys) { foreach (var k in dsKeys) { firstKey = k; break; } }
+                        if (firstKey != null && index.Objects.TryGetValue(firstKey, out var entry)
+                            && !string.IsNullOrEmpty(entry?.Name))
+                        {
+                            dso = _objects.FindObject(entry.Name, "DesignSystem") as DSObject;
+                            if (dso != null) name = entry.Name;
+                        }
                     }
                 }
-                catch { }
+                catch { /* fall through to the full scan below */ }
+
+                // Fallback: cold/absent index → the original full-KB scan.
+                if (dso == null)
+                {
+                    try
+                    {
+                        foreach (KBObject o in model.Objects.GetAll())
+                        {
+                            if (string.Equals(o?.TypeDescriptor?.Name, "DesignSystem", StringComparison.OrdinalIgnoreCase))
+                            { dso = o as DSObject; if (dso != null) { name = o.Name; break; } }
+                        }
+                    }
+                    catch { }
+                }
+
                 if (dso == null)
                     return McpResponse.Err("NoDesignSystem", "This KB has no Design System Object.", "DSOs are created in the GeneXus IDE; nothing to read.");
             }
