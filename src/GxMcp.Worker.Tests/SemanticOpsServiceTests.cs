@@ -8,6 +8,26 @@ namespace GxMcp.Worker.Tests
 {
     public class SemanticOpsServiceTests
     {
+        // Bug #1: dryRun capability check for Transaction Structure remove_attribute.
+        [Theory]
+        [InlineData("CustomerId : Numeric(8.0)\nCustomerName : Character(40)", "CustomerId", false)]
+        [InlineData("CustomerId* : Numeric(8.0)\nCustomerName : Character(40)", "CustomerId", true)]
+        [InlineData("CustomerId* : Numeric(8.0)\nCustomerName : Character(40)", "CustomerName", false)]
+        [InlineData("CustomerId* : Numeric(8.0)", "customerid", true)]        // case-insensitive
+        [InlineData("CustomerId* : Numeric(8.0)", "Missing", false)]          // not present
+        public void IsKeyAttributeInDsl_DetectsKeyMarker(string dsl, string name, bool expected)
+        {
+            Assert.Equal(expected, SemanticOpsService.IsKeyAttributeInDsl(dsl, name));
+        }
+
+        [Fact]
+        public void IsKeyAttributeInDsl_NullOrEmpty_IsFalse()
+        {
+            Assert.False(SemanticOpsService.IsKeyAttributeInDsl(null, "X"));
+            Assert.False(SemanticOpsService.IsKeyAttributeInDsl("X* : Numeric(4.0)", null));
+            Assert.False(SemanticOpsService.IsKeyAttributeInDsl("", "X"));
+        }
+
         [Fact]
         public void SetAttribute_UpdatesType()
         {

@@ -243,6 +243,35 @@ namespace GxMcp.Worker.Services
                 env["opResults"] = opResultsJson;
                 env["opsApplied"] = okCount;
                 env["opsTotal"] = ops.Count;
+
+                // Bug #1: the ops above are a text-only projection of the Structure DSL — they
+                // do NOT execute the SDK write, so a dryRun/validate that reports ok:true can
+                // still be refused at persist time. Consult the one deterministic capability we
+                // can read straight from the DSL: GeneXus refuses removing a key attribute.
+                // Surface predicted refusals so dryRun stops silently promising a write the SDK
+                // will reject.
+                var capabilityRisks = new JArray();
+                foreach (var op in ops)
+                {
+                    if (!string.Equals(op.Op, "remove_attribute", StringComparison.OrdinalIgnoreCase)) continue;
+                    string an = op.Args?["name"]?.ToString();
+                    if (string.IsNullOrEmpty(an)) continue;
+                    if (SemanticOpsService.IsKeyAttributeInDsl(currentDsl, an))
+                        capabilityRisks.Add(new JObject
+                        {
+                            ["op"] = op.Op,
+                            ["name"] = an,
+                            ["risk"] = "remove_key_attribute",
+                            ["note"] = "'" + an + "' is a KEY attribute; GeneXus will refuse removing it from the transaction level. The real write will fail even though this dryRun shows the edit applied."
+                        });
+                }
+                if (capabilityRisks.Count > 0)
+                {
+                    env["capabilityRisks"] = capabilityRisks;
+                    env["willLikelyFail"] = true;
+                }
+                env["dryRunCaveat"] = "dryRun/validate is an in-memory projection of the Structure DSL edit; it does not execute the SDK persist, so a green opResults list is NOT a guarantee the SDK will accept the write (e.g. removing a key or still-referenced attribute is refused). Run without dryRun for the authoritative result; 'capabilityRisks' lists refusals detectable up-front.";
+
                 if (returnPostState)
                     env["post_state"] = JsonPatchService.BuildPostState(currentDsl, newDsl, verbose);
                 return env.ToString(Newtonsoft.Json.Formatting.None);

@@ -54,6 +54,24 @@ namespace GxMcp.Worker
         private static long _lastActivityTicks = DateTime.UtcNow.Ticks;
         internal static void MarkWorkerActivity() => Interlocked.Exchange(ref _lastActivityTicks, DateTime.UtcNow.Ticks);
 
+        // Bug #4: single-flight visibility. Every SDK-touching command runs serially on the
+        // SdkWorker STA thread; a long op (build / reorg_impact deep / drift deep / big edit)
+        // holds it for minutes while a second SDK command queues behind it. The gateway then
+        // reports a misleading "Gateway timeout starting build" 60s later. We track what the
+        // SDK thread is doing so a new heavy command that arrives while the thread has been
+        // busy longer than the reject threshold gets an immediate, clear WorkerBusy envelope
+        // instead of silently queuing behind the long op.
+        private static volatile int _sdkBusy;        // 1 while a command runs on the SdkWorker STA thread
+        private static long _sdkBusySinceTicks;       // DateTime.UtcNow.Ticks when the current SDK command started (x86: use Interlocked)
+        private static volatile string _sdkBusyOp;    // "method/action" of the in-flight SDK command (diagnostics)
+        private static readonly int _busyRejectThresholdMs = ResolveBusyRejectThresholdMs();
+        private static int ResolveBusyRejectThresholdMs()
+        {
+            var s = Environment.GetEnvironmentVariable("GXMCP_BUSY_REJECT_MS");
+            if (s != null && int.TryParse(s, out var v)) return v <= 0 ? int.MaxValue : v; // 0/negative disables rejection
+            return 3000;
+        }
+
         private static readonly BlockingCollection<string> _outputQueue = new BlockingCollection<string>();
         private static readonly BlockingCollection<string> _errorQueue = new BlockingCollection<string>();
         private static CommandDispatcher _dispatcher;
@@ -325,8 +343,15 @@ namespace GxMcp.Worker
                     pollTimer.Tick += (s, e) => {
                         if (SdkCommandQueue.TryTake(out string line))
                         {
+                            // Bug #4: publish in-flight state so the main dispatch loop can
+                            // fast-reject a heavy command that races in behind this one.
+                            // (x86 worker: 64-bit writes need Interlocked to be atomic.)
+                            Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
+                            _sdkBusyOp = DescribeCommand(line);
+                            _sdkBusy = 1;
                             try { ProcessCommand(line); }
                             catch (Exception ex) { Logger.Error("SDK Command Error: " + ex.Message); }
+                            finally { _sdkBusy = 0; _sdkBusyOp = null; }
                         }
                         // Plan 037: low-priority SDK jobs (KbWatcher polling) only run when no
                         // real dispatched command is waiting this tick — never starves normal traffic.
@@ -382,6 +407,8 @@ namespace GxMcp.Worker
                     {
                         if (_dispatcher.IsThreadSafe(line))
                             System.Threading.Tasks.Task.Run(() => ProcessCommand(line));
+                        else if (TryRejectBusy(line))
+                        { /* answered with a WorkerBusy envelope — do not queue behind the long op */ }
                         else
                             SdkCommandQueue.Add(line);
                     }
@@ -660,6 +687,63 @@ namespace GxMcp.Worker
         // CLR killing the process first. Issue #35: a single bad SDK call must not silently take
         // the worker down mid-request.
         [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions, System.Security.SecurityCritical]
+        // Bug #4: compact "method/action" label for the in-flight SDK command.
+        private static string DescribeCommand(string line)
+        {
+            try
+            {
+                var o = JObject.Parse(line);
+                string m = o["method"]?.ToString();
+                string a = o["action"]?.ToString() ?? o["params"]?["action"]?.ToString();
+                return string.IsNullOrEmpty(a) ? (m ?? "?") : (m + "/" + a);
+            }
+            catch { return "?"; }
+        }
+
+        // Bug #4: when the SdkWorker STA thread has been busy with another command longer than
+        // the reject threshold, answer this non-thread-safe command immediately with a clear
+        // WorkerBusy envelope instead of silently queuing it behind the long op (which makes the
+        // gateway time out with a misleading "Gateway timeout starting build"). Control/recovery
+        // commands are never rejected so a wedged worker stays recoverable. Returns true when it
+        // handled (answered) the command.
+        private static bool TryRejectBusy(string line)
+        {
+            if (_sdkBusy != 1) return false;
+
+            long sinceTicks = Interlocked.Read(ref _sdkBusySinceTicks);
+            double ageMs = (DateTime.UtcNow - new DateTime(sinceTicks, DateTimeKind.Utc)).TotalMilliseconds;
+            if (ageMs < _busyRejectThresholdMs) return false;
+
+            string idJson = "null";
+            string method = null, action = null;
+            try
+            {
+                var o = JObject.Parse(line);
+                idJson = o["id"]?.ToString() ?? "null";
+                method = o["method"]?.ToString()?.ToLowerInvariant();
+                action = (o["action"]?.ToString() ?? o["params"]?["action"]?.ToString())?.ToLowerInvariant();
+            }
+            catch { return false; } // unparseable → let the normal path handle it
+
+            // Never reject control / recovery / health ops.
+            if (method == "control" || method == "ping" || method == "health"
+                || (method != null && method.IndexOf("reload", StringComparison.OrdinalIgnoreCase) >= 0)
+                || action == "cancel" || action == "reload")
+                return false;
+
+            string busy = GxMcp.Worker.Models.McpResponse.Err(
+                code: "WorkerBusy",
+                message: "The worker is executing a long-running SDK operation (" + (_sdkBusyOp ?? "unknown")
+                       + ", running " + Math.Round(ageMs / 1000.0, 1) + "s) and runs SDK commands one at a time, so your "
+                       + "request was not queued behind it. Retry when it finishes, poll genexus_lifecycle action=status, "
+                       + "or cancel the running op with genexus_lifecycle action=cancel.",
+                hint: "The GeneXus model is single-threaded — only one SDK operation runs at a time. Tune the reject window with GXMCP_BUSY_REJECT_MS (ms; 0 disables).");
+            SendResponse(busy, idJson);
+            Logger.Warn("[BUSY-REJECT] " + DescribeCommand(line) + " id=" + idJson
+                + " — SDK thread busy with " + (_sdkBusyOp ?? "?") + " for " + Math.Round(ageMs) + "ms");
+            return true;
+        }
+
         private static void ProcessCommand(string line)
         {
             MarkWorkerActivity();

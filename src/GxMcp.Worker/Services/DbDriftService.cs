@@ -53,17 +53,22 @@ namespace GxMcp.Worker.Services
             _source = source;
         }
 
-        public string Check(string target)
+        // deep=false (default): cheap timestamp heuristic only (IModelInformationService).
+        // deep=true (opt-in): also runs ISpecifierService.ImpactDatabase (specification,
+        // build-heavy, minutes). Bug #2: drift_check MUST NOT force the deep path — it used
+        // to hardcode deep=true here, so a plain drift_check ran a full ImpactDatabase and
+        // held the worker's single SDK thread hostage for minutes.
+        public string Check(string target, bool deep = false)
         {
-            return BuildEnvelope(target, includeReport: false);
+            return BuildEnvelope(target, includeReport: false, deep: deep);
         }
 
-        public string Report(string target)
+        public string Report(string target, bool deep = false)
         {
-            return BuildEnvelope(target, includeReport: true);
+            return BuildEnvelope(target, includeReport: true, deep: deep);
         }
 
-        private string BuildEnvelope(string target, bool includeReport)
+        private string BuildEnvelope(string target, bool includeReport, bool deep = false)
         {
             string reorgJson;
             try
@@ -148,7 +153,7 @@ namespace GxMcp.Worker.Services
                 {
                     try
                     {
-                        var impactJson = _reorgImpact.Run(new JObject { ["deep"] = true, ["target"] = target ?? string.Empty });
+                        var impactJson = _reorgImpact.Run(new JObject { ["deep"] = deep, ["target"] = target ?? string.Empty });
                         var impact = JObject.Parse(impactJson ?? "{}");
                         var ir = impact["result"] as JObject ?? impact;
                         var driftSignal = new JObject
@@ -168,9 +173,12 @@ namespace GxMcp.Worker.Services
                         resultPayload["reorgSignalError"] = ex.Message;
                     }
                 }
-                resultPayload["note"] = signalAdded
-                    ? "The exact table-level DDL delta (ALTER/ADD/DROP) requires a live DB connection the worker doesn't open, so 'tables' is not itemized here. 'reorgSignal' above is the authoritative SDK verdict on whether the model diverged from the last reorg. For the desired-schema DDL use genexus_db action=sql_ddl; to apply the delta run genexus_lifecycle action=reorg on a non-production environment."
-                    : "reorg_preview is a stub on this worker and the SDK impact signal is unavailable; drift cannot be confirmed here. Use genexus_db action=reorg_impact deep=true for the reorg-needed verdict and genexus_db action=sql_ddl for the schema DDL. Empty 'tables' means 'no signal', not 'no drift'.";
+                if (!signalAdded)
+                    resultPayload["note"] = "reorg_preview is a stub on this worker and the SDK impact signal is unavailable; drift cannot be confirmed here. Use genexus_db action=reorg_impact deep=true for the reorg-needed verdict and genexus_db action=sql_ddl for the schema DDL. Empty 'tables' means 'no signal', not 'no drift'.";
+                else if (deep)
+                    resultPayload["note"] = "The exact table-level DDL delta (ALTER/ADD/DROP) requires a live DB connection the worker doesn't open, so 'tables' is not itemized here. 'reorgSignal' above is the authoritative SDK verdict (ISpecifierService.ImpactDatabase) on whether the model diverged from the last reorg. For the desired-schema DDL use genexus_db action=sql_ddl; to apply the delta run genexus_lifecycle action=reorg on a non-production environment.";
+                else
+                    resultPayload["note"] = "The exact table-level DDL delta requires a live DB connection the worker doesn't open, so 'tables' is not itemized here. 'reorgSignal' above is the CHEAP timestamp heuristic (reorgLikelyNeeded = a table changed after the last reorg); it does NOT run specification. For the authoritative verdict pass deep=true (runs ISpecifierService.ImpactDatabase: specification, build-heavy, minutes). For the desired-schema DDL use genexus_db action=sql_ddl.";
             }
 
             if (includeReport)

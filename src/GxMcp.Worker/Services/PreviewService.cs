@@ -486,6 +486,10 @@ namespace GxMcp.Worker.Services
             string network = null)
         {
             var result = new JObject { ["name"] = name };
+            // Bug #5: the preview URL is served by the IIS vroot, which reflects the last
+            // FULL deploy — a fast-path MCP build compiles but does not publish the .aspx
+            // there, so a rendered page can lag a recent MCP edit.
+            result["deploymentNote"] = "Preview opens the IIS vroot URL, which serves the last FULL deploy — a fast-path build (genexus_lifecycle action=build) compiles the object but does not publish the .aspx to the vroot. If the page looks stale, build with deploy=true (or action=rebuild) or publish from the GeneXus IDE.";
             var sw = System.Diagnostics.Stopwatch.StartNew();
             int budgetMs = ResolvePreviewBudgetMs();
             bool BudgetExceeded() => sw.ElapsedMilliseconds > budgetMs;

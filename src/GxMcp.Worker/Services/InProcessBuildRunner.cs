@@ -202,6 +202,23 @@ namespace GxMcp.Worker.Services
                     {
                         lineSink("[BUILD-INPROCESS] fast path: BuildOne x" + targets.Count + " — Theme/Image/Style/Module deploy steps are SKIPPED. If your change touches theme CSS, generated JS, or shared module DLLs and they don't appear in web/, set GXMCP_INPROCESS_BUILD_FASTPATH=0 to use the full deploy.", false);
 
+                        // Bug #3: BuildOne/BuildBatch silently no-op (return true) on an object
+                        // name that doesn't resolve in the DesignModel, so a build could report
+                        // "succeeded, 0 objects" and leave the .dll stale (e.g. a WorkWith-pattern
+                        // panel whose object name differs from the name passed). Pre-resolve the
+                        // targets: fail loud when NONE resolve, warn when some are skipped.
+                        int resolvedCount = CountResolvableTargets(kbHandle, targets, out var unresolvedNames);
+                        if (resolvedCount == 0)
+                        {
+                            lineSink("[BUILD-INPROCESS] none of the " + targets.Count + " requested target(s) resolved to a KBObject: "
+                                + string.Join(", ", unresolvedNames)
+                                + ". Nothing was built — the .dll was NOT refreshed. Check the object name/type; pattern-generated objects (WorkWith panels, etc.) may have a different object name than the pattern instance.", true);
+                            return InProcessBuildOutcome.FailedWithDiagnostics;
+                        }
+                        if (unresolvedNames != null && unresolvedNames.Count > 0)
+                            lineSink("[BUILD-INPROCESS] warning: " + unresolvedNames.Count + " requested target(s) not found and skipped (their .dll will NOT change): "
+                                + string.Join(", ", unresolvedNames), false);
+
                         // 2026-05-22: Multi-target batch path (Option D, "BuildBatch").
                         // BuildOne is a thin wrapper around
                         //   GenexusBLServices.Build.Build(workingSet, BuildOptions, IEnumerable<EntityKey>, token)
@@ -642,6 +659,45 @@ namespace GxMcp.Worker.Services
             {
                 LogExceptionChain("BuildOne(" + objectName + ")", ex);
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Bug #3: count how many requested target names resolve to a KBObject via
+        /// ObjectNameHelper.Get(DesignModel, name) — the exact lookup BuildOne/BuildBatch
+        /// use. Returns -1 when resolution can't be determined (missing type / DesignModel /
+        /// Get method) so the caller does NOT gate and preserves legacy behavior. Otherwise
+        /// returns the resolved count and reports unresolved names via <paramref name="unresolved"/>.
+        /// </summary>
+        private static int CountResolvableTargets(object kbHandle, List<string> names, out List<string> unresolved)
+        {
+            unresolved = new List<string>();
+            try
+            {
+                if (names == null || names.Count == 0) return -1;
+                if (_typeObjectNameHelper == null) return -1;
+                var designModelProp = kbHandle?.GetType().GetProperty("DesignModel", BindingFlags.Public | BindingFlags.Instance);
+                object designModel = designModelProp?.GetValue(kbHandle);
+                if (designModel == null) return -1;
+                var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
+                if (getMi == null) return -1;
+
+                int resolved = 0;
+                foreach (var name in names)
+                {
+                    object kbObject = null;
+                    try { kbObject = getMi.Invoke(null, new object[] { designModel, name }); }
+                    catch { return -1; } // resolution itself threw — don't gate on a partial answer
+                    if (kbObject == null) unresolved.Add(name);
+                    else resolved++;
+                }
+                return resolved;
+            }
+            catch
+            {
+                unresolved = new List<string>();
+                return -1;
             }
         }
 

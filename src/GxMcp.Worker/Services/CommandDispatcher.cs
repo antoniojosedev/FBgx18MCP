@@ -1769,10 +1769,13 @@ namespace GxMcp.Worker.Services
         private string Handle_DbDrift(JObject request, string method, string action, string target, string payload, JObject args)
         {
             // Item 41 (mcp-improvements-2026-05-22) — Transaction ↔ DB drift.
+            // Bug #2: deep is opt-in; default false runs the cheap timestamp heuristic
+            // instead of the build-heavy ISpecifierService.ImpactDatabase.
+            bool deep = args?["deep"]?.ToObject<bool?>() ?? false;
             if (string.Equals(action, "Check", StringComparison.OrdinalIgnoreCase))
-                return _dbDriftService.Check(target);
+                return _dbDriftService.Check(target, deep);
             if (string.Equals(action, "Report", StringComparison.OrdinalIgnoreCase))
-                return _dbDriftService.Report(target);
+                return _dbDriftService.Report(target, deep);
             return null;
         }
 

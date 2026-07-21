@@ -64,6 +64,13 @@ namespace GxMcp.Worker.Services
 
                 string url = baseUrl + "/" + aspxName + (string.IsNullOrEmpty(query) ? string.Empty : "?" + query);
 
+                // Bug #5: the URL points at the IIS vroot (e.g. localhost/portal3_desenv),
+                // which serves the last FULL deploy. A fast-path MCP build (genexus_lifecycle
+                // action=build) compiles the object but does NOT publish the generated .aspx
+                // to that vroot, so the page opened here may not reflect a recent MCP edit.
+                const string deploymentNote =
+                    "This URL is served by the IIS virtual directory (its own vroot), which reflects the last FULL deploy — not necessarily your most recent MCP build. Fast-path builds (genexus_lifecycle action=build) compile+targeted-deploy but skip publishing the .aspx to the vroot. If the page looks stale, run genexus_lifecycle action=build with deploy=true (or action=rebuild), or publish from the GeneXus IDE (F5 / Run).";
+
                 // dryRun: return the resolved URL without performing GAM login.
                 if (dryRun)
                 {
@@ -77,7 +84,8 @@ namespace GxMcp.Worker.Services
                                 ["url"] = url,
                                 ["aspxName"] = aspxName,
                                 ["baseUrl"] = baseUrl,
-                                ["note"] = "dryRun=true: GAM login not performed."
+                                ["note"] = "dryRun=true: GAM login not performed.",
+                                ["deploymentNote"] = deploymentNote
                             }
                         });
                 }
@@ -86,7 +94,8 @@ namespace GxMcp.Worker.Services
                 {
                     ["url"] = url,
                     ["signedIn"] = false,
-                    ["hint"] = "Pass the url to `chrome-devtools-axi open <url>` to drive the object in a browser."
+                    ["hint"] = "Pass the url to `chrome-devtools-axi open <url>` to drive the object in a browser.",
+                    ["deploymentNote"] = deploymentNote
                 };
 
                 // 4) Optional GAM login. Accepted shapes:

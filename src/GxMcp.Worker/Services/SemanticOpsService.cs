@@ -130,6 +130,27 @@ namespace GxMcp.Worker.Services
         public static bool IsTransactionStructureAttrOp(string op)
             => op == "add_attribute" || op == "set_attribute" || op == "remove_attribute";
 
+        /// <summary>
+        /// Bug #1: dryRun capability check. GeneXus refuses removing a key attribute from a
+        /// Transaction level (the persist fails, but the text-only dryRun would report ok:true).
+        /// Detect the key marker (<c>name*</c>) straight from the Structure DSL so dryRun can
+        /// warn about the refusal the real write will hit. Returns true when <paramref name="name"/>
+        /// is a key attribute in <paramref name="dsl"/>.
+        /// </summary>
+        public static bool IsKeyAttributeInDsl(string dsl, string name)
+        {
+            if (string.IsNullOrEmpty(dsl) || string.IsNullOrEmpty(name)) return false;
+            var lines = dsl.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+            foreach (var line in lines)
+            {
+                var m = _dslAttrLine.Match(line);
+                if (m.Success
+                    && string.Equals(m.Groups["name"].Value, name, StringComparison.OrdinalIgnoreCase))
+                    return m.Groups["key"].Value == "*";
+            }
+            return false;
+        }
+
         public OpsApplyOutcome ApplyTransactionStructureDsl(string dsl, IList<SemanticOp> ops, string validate)
         {
             string mode = NormalizeMode(validate);

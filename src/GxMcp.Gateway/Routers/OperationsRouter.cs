@@ -865,10 +865,12 @@ namespace GxMcp.Gateway.Routers
 
             switch (action)
             {
+                // Bug #2: forward deep so drift_check defaults to the cheap timestamp
+                // heuristic; deep=true is the opt-in build-heavy ImpactDatabase path.
                 case "drift_check":
-                    return new { module = "DbDrift", action = "Check", target };
+                    return new { module = "DbDrift", action = "Check", target, deep = args?["deep"]?.ToObject<bool?>() ?? false };
                 case "drift_report":
-                    return new { module = "DbDrift", action = "Report", target };
+                    return new { module = "DbDrift", action = "Report", target, deep = args?["deep"]?.ToObject<bool?>() ?? false };
 
                 case "optimize_analyze":
                     return new { module = "DbOptimize", action = "Analyze", target, format = args?["format"]?.ToString() };
