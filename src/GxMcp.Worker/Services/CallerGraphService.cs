@@ -49,33 +49,23 @@ namespace GxMcp.Worker.Services
 
             var callers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // Fast path: inverted index already populated by IndexCacheService.
-            foreach (var e in idx.Objects.Values)
-            {
-                if (e == null || string.Equals(e.Name, targetName, StringComparison.OrdinalIgnoreCase)) continue;
-                if (e.CalledBy != null && e.Name != null)
-                {
-                    // (no-op here; CalledBy is on the target, not the caller)
-                }
-            }
-
-            if (idx.Objects.Values.Any(v => v != null && string.Equals(v.Name, targetName, StringComparison.OrdinalIgnoreCase)))
-            {
-                var target = idx.Objects.Values.FirstOrDefault(v => v != null && string.Equals(v.Name, targetName, StringComparison.OrdinalIgnoreCase));
-                if (target != null && target.CalledBy != null)
-                {
-                    foreach (var c in target.CalledBy) callers.Add(c);
-                }
-            }
-
-            // Slow path / augmentation: regex over SourceSnippet. This catches the
-            // case where Calls/CalledBy wasn't populated yet (e.g. tests using
-            // LoadFromEntries) or where the SDK reference walker missed a call.
+            // Single pass over the index. For the target entry itself, pull its
+            // pre-computed CalledBy (inverted-index fast path). For every other
+            // entry, apply the augmentation checks (regex over SourceSnippet and
+            // the entry's own Calls list) that catch callers the SDK reference
+            // walker missed or that CalledBy hasn't been populated for yet.
             var pattern = new Regex(@"\b" + Regex.Escape(targetName) + @"\s*\(", RegexOptions.IgnoreCase);
             foreach (var e in idx.Objects.Values)
             {
                 if (e == null) continue;
-                if (string.Equals(e.Name, targetName, StringComparison.OrdinalIgnoreCase)) continue;
+
+                if (string.Equals(e.Name, targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (e.CalledBy != null)
+                        foreach (var c in e.CalledBy) callers.Add(c);
+                    continue;
+                }
+
                 if (!string.IsNullOrEmpty(e.SourceSnippet) && pattern.IsMatch(e.SourceSnippet))
                     callers.Add(e.Name);
 

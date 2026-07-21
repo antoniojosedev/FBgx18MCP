@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Linq;
+using GxMcp.Worker.Models;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -178,6 +180,104 @@ namespace GxMcp.Worker.Tests
                     Assert.Contains(caller, callers);
                 }
             }
+        }
+
+        // Plan 022: GetCallers collapsed from four index passes to one. These
+        // tests lock the three source signals it must still combine (CalledBy,
+        // regex-over-SourceSnippet, forward Calls) and their union.
+
+        [Fact]
+        public void GetCallers_CalledByPath_ReturnsInvertedIndexEntries()
+        {
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry { Name = "Target", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string> { "A", "B" }, SourceSnippet = "" },
+                new SearchIndex.IndexEntry { Name = "A", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" },
+                new SearchIndex.IndexEntry { Name = "B", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" }
+            };
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries);
+            var svc = new CallerGraphService(idx);
+
+            var callers = svc.GetCallers("Target");
+            Assert.Contains("A", callers);
+            Assert.Contains("B", callers);
+            Assert.Equal(2, callers.Distinct(System.StringComparer.OrdinalIgnoreCase).Count());
+        }
+
+        [Fact]
+        public void GetCallers_RegexOnlyPath_FindsCallerViaSourceSnippet()
+        {
+            // No CalledBy/Calls populated anywhere — only "Caller"'s snippet
+            // textually invokes Target(. The augmentation scan must still run.
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry { Name = "Target", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" },
+                new SearchIndex.IndexEntry { Name = "Caller", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "Target()" }
+            };
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries);
+            var svc = new CallerGraphService(idx);
+
+            var callers = svc.GetCallers("Target");
+            Assert.Contains("Caller", callers);
+            Assert.Single(callers);
+        }
+
+        [Fact]
+        public void GetCallers_ForwardCallsPath_ReturnsEntryListingTargetInCalls()
+        {
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry { Name = "Target", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" },
+                new SearchIndex.IndexEntry { Name = "Caller", Type = "Procedure",
+                    Calls = new List<string> { "Target" }, CalledBy = new List<string>(), SourceSnippet = "" }
+            };
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries);
+            var svc = new CallerGraphService(idx);
+
+            var callers = svc.GetCallers("Target");
+            Assert.Contains("Caller", callers);
+            Assert.Single(callers);
+        }
+
+        [Fact]
+        public void GetCallers_UnionOfAllThreeSignals_NoDuplicates()
+        {
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry { Name = "Target", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string> { "ByCalledBy" }, SourceSnippet = "" },
+                new SearchIndex.IndexEntry { Name = "ByCalledBy", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" },
+                new SearchIndex.IndexEntry { Name = "ByRegex", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "Target()" },
+                new SearchIndex.IndexEntry { Name = "ByForwardCalls", Type = "Procedure",
+                    Calls = new List<string> { "Target" }, CalledBy = new List<string>(), SourceSnippet = "" },
+                // Present in more than one signal — must still appear only once.
+                new SearchIndex.IndexEntry { Name = "ByBoth", Type = "Procedure",
+                    Calls = new List<string> { "Target" }, CalledBy = new List<string>(), SourceSnippet = "Target()" }
+            };
+            // Also wire ByBoth into Target's CalledBy so all three signals overlap on it.
+            entries[0].CalledBy.Add("ByBoth");
+
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries);
+            var svc = new CallerGraphService(idx);
+
+            var callers = svc.GetCallers("Target");
+            Assert.Contains("ByCalledBy", callers);
+            Assert.Contains("ByRegex", callers);
+            Assert.Contains("ByForwardCalls", callers);
+            Assert.Contains("ByBoth", callers);
+            Assert.Equal(4, callers.Distinct(System.StringComparer.OrdinalIgnoreCase).Count());
         }
     }
 }
