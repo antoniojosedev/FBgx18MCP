@@ -96,11 +96,14 @@ namespace GxMcp.Gateway
                 // instance we actually hold, so a concurrent GetOrAdd that already
                 // returned this same instance is unaffected, and a replacement
                 // instance installed by a racing caller is never clobbered.
-                if (gate.CurrentCount == 1 &&
-                    _gates.TryRemove(new KeyValuePair<(string, string, string), SemaphoreSlim>((kbPath, tool, key), gate)))
-                {
-                    gate.Dispose();
-                }
+                // Deliberately do NOT Dispose() the removed gate: between our
+                // CurrentCount check and TryRemove, another caller could have already
+                // GetOrAdd'd this same instance and be inside WaitAsync — disposing it
+                // would throw ObjectDisposedException on that caller's later Release().
+                // This semaphore is only ever used via WaitAsync/Release, never
+                // AvailableWaitHandle, so it allocates no OS wait handle and skipping
+                // Dispose() loses nothing; the GC reclaims it once unreferenced.
+                _gates.TryRemove(new KeyValuePair<(string, string, string), SemaphoreSlim>((kbPath, tool, key), gate));
             }
         }
 
