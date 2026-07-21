@@ -895,7 +895,6 @@ namespace GxMcp.Gateway
 
         public void StopWithReason(WorkerStopReason reason)
         {
-            _cts.Cancel();
             StopProcess(reason);
         }
 
@@ -930,6 +929,13 @@ namespace GxMcp.Gateway
 
         private void StopProcess(WorkerStopReason reason)
         {
+            // Every stop path (idle/heap/wedged reap from the health loop, and
+            // StopWithReason for gateway shutdown / pool teardown) funnels here.
+            // Cancel _cts so the writer loop (ProcessQueueAsync) and health loop
+            // (RunHealthCheckAsync) actually exit instead of leaking for the life of
+            // the gateway. Idempotent — safe when StopWithReason already cancelled.
+            try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+
             lock (_processLock)
             {
                 _stopReason = reason;
@@ -1176,6 +1182,12 @@ namespace GxMcp.Gateway
         internal void CompleteInFlightForTest(string id) => CompleteInFlight(id);
 
         internal int InFlightStartTimesCountForTest => _inFlightStartTimes.Count;
+
+        // Test seam: lets a reap-path test assert the background loops were told to stop.
+        internal bool CancellationRequestedForTest => _cts.IsCancellationRequested;
+
+        // Test seam: invoke the private teardown sink directly (no real process needed).
+        internal void StopProcessForTest(WorkerStopReason reason) => StopProcess(reason);
 
         // Idle-reap window resolved from config in the ctor. TimeSpan.Zero == disabled.
         internal TimeSpan IdleTimeoutForTest => _workerIdleTimeout;
