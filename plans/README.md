@@ -23,16 +23,38 @@ isolated worktrees, advisor-reviewed, merged the passing ones to `main`.
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|----------|--------|------|------------|--------|
-| 022 | `CallerGraphService.GetCallers` single index pass (impact-analysis hot path) | P1 | S-M | LOW | — | TODO |
-| 023 | `ResolveWWPInstance` resolves WWP host by name, not full-KB scan (every WebForm/Layout edit) | P1 | S | LOW | — | TODO |
-| 024 | `genexus_gam` define_api/deploy require `confirm=true` | P1 | S | LOW | — | TODO |
-| 025 | `CiPipelineService` surfaces run/abort failures as errors, not "not connected" | P1 | S | LOW | — | TODO |
-| 026 | `BackgroundJobRegistry` guards status transitions with a per-job lock | P1 | S | LOW | — | TODO |
-| 027 | `MultiAgentLockService` writes the lock file atomically | P2 | S | LOW | — | TODO |
-| 028 | `IdempotencyCache` evicts per-key gates (unbounded-growth fix) | P2 | S | MED | — | TODO |
-| 029 | `CrossPlatformImpactAnalyzer` name→entry map instead of linear scan | P3 | S-M | LOW | — | TODO |
-| 030 | `RefactorService` rename atomic (transaction around patch+rename) | P2 | M | MED | — | TODO |
-| 031 | `worker_reload mode=hard` keeps drain window closed to concurrent spawns | P2 | M | MED | — | TODO |
+| 022 | `CallerGraphService.GetCallers` single index pass (impact-analysis hot path) | P1 | S-M | LOW | — | DONE |
+| 023 | `ResolveWWPInstance` resolves WWP host by name, not full-KB scan (every WebForm/Layout edit) | P1 | S | LOW | — | DONE |
+| 024 | `genexus_gam` define_api/deploy require `confirm=true` | P1 | S | LOW | — | DONE |
+| 025 | `CiPipelineService` surfaces run/abort failures as errors, not "not connected" | P1 | S | LOW | — | DONE |
+| 026 | `BackgroundJobRegistry` guards status transitions with a per-job lock | P1 | S | LOW | — | DONE |
+| 027 | `MultiAgentLockService` writes the lock file atomically | P2 | S | LOW | — | DONE |
+| 028 | `IdempotencyCache` evicts per-key gates (unbounded-growth fix) | P2 | S | MED | — | DONE |
+| 029 | `CrossPlatformImpactAnalyzer` name→entry map instead of linear scan | P3 | S-M | LOW | — | DONE |
+| 030 | `RefactorService` rename atomic (transaction around patch+rename) | P2 | M | MED | — | DONE |
+| 031 | `worker_reload mode=hard` keeps drain window closed to concurrent spawns | P2 | M | MED | — | DONE |
+
+All ten merged to `main` (commits `28e38fc`..`16646a5`), left **Unreleased**. Full
+suites green: Worker 1524 passed / 4 skipped; Gateway 654 passed / 7 skipped; solution
+builds 0 errors. Advisor-reviewed each diff; notable review actions:
+- **028**: first cut disposed the evicted `SemaphoreSlim` — sent back (REVISE); a
+  concurrent holder mid-`WaitAsync` could hit `ObjectDisposedException` on `Release()`.
+  Final version removes the entry without disposing (no OS wait handle is ever
+  allocated), commit `8e67972`.
+- **031**: executor correctly found the real entry-removal path was `OnWorkerExited`
+  firing synchronously from `StopProcess` (deeper than the plan's cited line); fix
+  makes that handler skip removal while `Draining`, keeps the entry across the swap,
+  and installs a fresh `DrainComplete` TCS per drain cycle. Documented, in-scope
+  (`WorkerPool.cs` only), approved on merit.
+- **Test caveats (honest)**: 023, 025, and 030 shipped **build-only** for their new
+  behavior — `ResolveWWPInstance`/`RunPipeline`/rename all require a live opened KB +
+  SDK to exercise, so a unit failure-injection test would need an SDK harness the
+  suite doesn't have (each plan's Step 3 explicitly allowed this fallback). Their code
+  was advisor-read against the plan intent and the existing per-file suites stayed
+  green. 022/024/027/029 and 026/028/031 got new passing tests.
+- **029 out-of-scope leftover**: `PatternAnalysisService.GetWWPStructure` still has a
+  `model.Objects.GetAll()` scan (line ~215) and a now-slightly-stale comment (~line
+  39); both are out of 023's scope and were deliberately left untouched (surgical).
 
 Recommended execution order: 024, 025, 026 (P1 correctness) → 022, 023 (P1 perf) →
 027, 028, 031, 030 (P2) → 029 (P3). All ten are independent (different files, no
