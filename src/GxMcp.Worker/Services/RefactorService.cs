@@ -426,33 +426,55 @@ namespace GxMcp.Worker.Services
 
             var patched = new List<string>();
             var failed = new List<JObject>();
+            var patchedKbObjects = new List<KBObject>();
 
-            foreach (var objName in affectedObjects.Distinct()) {
-                var obj = _objectService.FindObject(objName);
-                if (obj == null) { failed.Add(new JObject { ["name"] = objName, ["reason"] = "object not found" }); continue; }
-                bool changed = false;
+            // Patch-callers + target rename are wrapped in a single SDK transaction
+            // so a hard failure (including the final EnsureSave) rolls back every
+            // caller save too, instead of leaving callers referencing newName while
+            // the attribute itself still has oldName. Index updates are deferred
+            // until after Commit() (mirrors StructureService.UpdateVisualStructure).
+            using (var sdkTrans = attrObj.Model.KB.BeginTransaction())
+            {
                 try
                 {
-                    foreach (var part in obj.Parts.Cast<KBObjectPart>()) {
-                        if (part is ISource sourcePart) {
-                            string original = sourcePart.Source;
-                            if (!string.IsNullOrEmpty(original)) {
-                                string updated = System.Text.RegularExpressions.Regex.Replace(original, pattern, newName);
-                                if (updated != original) { sourcePart.Source = updated; changed = true; }
+                    foreach (var objName in affectedObjects.Distinct()) {
+                        var obj = _objectService.FindObject(objName);
+                        if (obj == null) { failed.Add(new JObject { ["name"] = objName, ["reason"] = "object not found" }); continue; }
+                        bool changed = false;
+                        try
+                        {
+                            foreach (var part in obj.Parts.Cast<KBObjectPart>()) {
+                                if (part is ISource sourcePart) {
+                                    string original = sourcePart.Source;
+                                    if (!string.IsNullOrEmpty(original)) {
+                                        string updated = System.Text.RegularExpressions.Regex.Replace(original, pattern, newName);
+                                        if (updated != original) { sourcePart.Source = updated; changed = true; }
+                                    }
+                                }
                             }
+                            if (changed) { obj.EnsureSave(); patched.Add(objName); patchedKbObjects.Add(obj); }
+                        }
+                        catch (Exception patchEx)
+                        {
+                            // Preserve the existing partial-success contract: a caller that
+                            // can't be patched is recorded and tolerated, not a transaction abort.
+                            failed.Add(new JObject { ["name"] = objName, ["reason"] = patchEx.Message });
                         }
                     }
-                    if (changed) { obj.EnsureSave(); _indexCacheService.UpdateEntry(obj); patched.Add(objName); }
+
+                    // Now rename the attribute itself.
+                    attrObj.Name = newName;
+                    attrObj.EnsureSave();
+                    sdkTrans.Commit();
                 }
-                catch (Exception patchEx)
+                catch (Exception)
                 {
-                    failed.Add(new JObject { ["name"] = objName, ["reason"] = patchEx.Message });
+                    sdkTrans.Rollback();
+                    throw;
                 }
             }
 
-            // Now rename the attribute itself.
-            attrObj.Name = newName;
-            attrObj.EnsureSave();
+            foreach (var pObj in patchedKbObjects) _indexCacheService.UpdateEntry(pObj);
             _indexCacheService.UpdateEntry(attrObj);
 
             bool hasFailures = failed.Count > 0;
@@ -529,33 +551,55 @@ namespace GxMcp.Worker.Services
 
             var patched = new List<string>();
             var failed = new List<JObject>();
+            var patchedKbObjects = new List<KBObject>();
 
-            foreach (var objName in affectedObjects.Distinct()) {
-                var caller = _objectService.FindObject(objName);
-                if (caller == null) { failed.Add(new JObject { ["name"] = objName, ["reason"] = "object not found" }); continue; }
-                bool changed = false;
+            // Patch-callers + target rename are wrapped in a single SDK transaction
+            // so a hard failure (including the final EnsureSave) rolls back every
+            // caller save too, instead of leaving callers referencing newName while
+            // the object itself still has oldName. Index updates are deferred until
+            // after Commit() (mirrors StructureService.UpdateVisualStructure).
+            using (var sdkTrans = obj.Model.KB.BeginTransaction())
+            {
                 try
                 {
-                    foreach (var part in caller.Parts.Cast<KBObjectPart>()) {
-                        if (part is ISource sourcePart) {
-                            string original = sourcePart.Source;
-                            if (!string.IsNullOrEmpty(original)) {
-                                string updated = System.Text.RegularExpressions.Regex.Replace(original, pattern, newName);
-                                if (updated != original) { sourcePart.Source = updated; changed = true; }
+                    foreach (var objName in affectedObjects.Distinct()) {
+                        var caller = _objectService.FindObject(objName);
+                        if (caller == null) { failed.Add(new JObject { ["name"] = objName, ["reason"] = "object not found" }); continue; }
+                        bool changed = false;
+                        try
+                        {
+                            foreach (var part in caller.Parts.Cast<KBObjectPart>()) {
+                                if (part is ISource sourcePart) {
+                                    string original = sourcePart.Source;
+                                    if (!string.IsNullOrEmpty(original)) {
+                                        string updated = System.Text.RegularExpressions.Regex.Replace(original, pattern, newName);
+                                        if (updated != original) { sourcePart.Source = updated; changed = true; }
+                                    }
+                                }
                             }
+                            if (changed) { caller.EnsureSave(); patched.Add(objName); patchedKbObjects.Add(caller); }
+                        }
+                        catch (Exception patchEx)
+                        {
+                            // Preserve the existing partial-success contract: a caller that
+                            // can't be patched is recorded and tolerated, not a transaction abort.
+                            failed.Add(new JObject { ["name"] = objName, ["reason"] = patchEx.Message });
                         }
                     }
-                    if (changed) { caller.EnsureSave(); _indexCacheService.UpdateEntry(caller); patched.Add(objName); }
+
+                    // Now rename the object itself.
+                    obj.Name = newName;
+                    obj.EnsureSave();
+                    sdkTrans.Commit();
                 }
-                catch (Exception patchEx)
+                catch (Exception)
                 {
-                    failed.Add(new JObject { ["name"] = objName, ["reason"] = patchEx.Message });
+                    sdkTrans.Rollback();
+                    throw;
                 }
             }
 
-            // Now rename the object itself.
-            obj.Name = newName;
-            obj.EnsureSave();
+            foreach (var pObj in patchedKbObjects) _indexCacheService.UpdateEntry(pObj);
             _indexCacheService.UpdateEntry(obj);
 
             bool hasFailures = failed.Count > 0;
