@@ -80,19 +80,28 @@ namespace GxMcp.Gateway
         public void Complete(string jobId, bool success, string? summary, JObject? result = null)
         {
             if (!_jobs.TryGetValue(jobId, out var job)) return;
-            // Don't clobber a Cancelled status with succeeded/failed — the cancel
-            // raced ahead of the worker's response.
-            if (!string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
-                job.Status = success ? "succeeded" : "failed";
-            job.CompletedAt = DateTime.UtcNow;
-            if (job.Summary == null) job.Summary = summary;
-            if (job.Result == null) job.Result = result;
-            // Issue #27 item 2: feed the estimator with the observed wall-clock of a
-            // successful build so the next build's estimated_seconds is realistic.
-            if (success && job.Kind != null
-                && job.Kind.IndexOf("build", StringComparison.OrdinalIgnoreCase) >= 0)
+            bool shouldRecordDuration;
+            DateTime startedAt;
+            DateTime completedAt;
+            lock (job.SyncRoot)
             {
-                int elapsed = (int)Math.Round((job.CompletedAt.Value - job.StartedAt).TotalSeconds);
+                // Don't clobber a Cancelled status with succeeded/failed — the cancel
+                // raced ahead of the worker's response.
+                if (!string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                    job.Status = success ? "succeeded" : "failed";
+                job.CompletedAt = DateTime.UtcNow;
+                if (job.Summary == null) job.Summary = summary;
+                if (job.Result == null) job.Result = result;
+                // Issue #27 item 2: feed the estimator with the observed wall-clock of a
+                // successful build so the next build's estimated_seconds is realistic.
+                shouldRecordDuration = success && job.Kind != null
+                    && job.Kind.IndexOf("build", StringComparison.OrdinalIgnoreCase) >= 0;
+                startedAt = job.StartedAt;
+                completedAt = job.CompletedAt.Value;
+            }
+            if (shouldRecordDuration)
+            {
+                int elapsed = (int)Math.Round((completedAt - startedAt).TotalSeconds);
                 RecordBuildDuration(job.Kind, elapsed);
             }
             DisposeCts(jobId);
@@ -114,9 +123,12 @@ namespace GxMcp.Gateway
             {
                 try { cts.Cancel(); } catch { /* already disposed */ }
             }
-            job.Status = "cancelled";
-            job.CompletedAt = DateTime.UtcNow;
-            job.Summary = reason ?? "Cancelled by client";
+            lock (job.SyncRoot)
+            {
+                job.Status = "cancelled";
+                job.CompletedAt = DateTime.UtcNow;
+                job.Summary = reason ?? "Cancelled by client";
+            }
             return true;
         }
 
@@ -248,5 +260,10 @@ namespace GxMcp.Gateway
         // poll actively re-query the worker and reconcile the job to its real terminal
         // state instead of trusting only the background poller. See ReconcileJobWithWorkerAsync.
         public string? WorkerTaskId { get; set; }
+
+        // Plan 026: guards read-modify-write of Status/CompletedAt/Summary/Result so
+        // Complete() and Cancel() can't race and clobber a terminal "cancelled" status.
+        [Newtonsoft.Json.JsonIgnore]
+        public readonly object SyncRoot = new object();
     }
 }
