@@ -6,6 +6,7 @@ namespace GxMcp.Gateway.Tests
     // v2.8.0 (S1) — MCP completion/complete autocompletes object names from
     // the cached index. Real wire is exercised via the AutoTypeInjector
     // surface that completion/complete delegates to.
+    [Collection("AutoTypeInjectorState")]
     public class CompletionNameTests
     {
         public CompletionNameTests() => AutoTypeInjector.ClearAll();

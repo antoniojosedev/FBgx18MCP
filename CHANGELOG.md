@@ -17,6 +17,7 @@ Security and reliability hardening for the recently added SDK-endpoint tools.
 ### Internal
 
 - Added guard-test coverage for the ten SDK-endpoint services introduced across v2.27–2.29 (confirm gates, no-KB handling), and extracted their duplicated design-model resolution into a shared `KbModelGuard` helper (behavior-preserving). Worker 1507 + Gateway 643 green. See `plans/012`–`016` for design context.
+- Fixed a parallel-test race: `CompletionNameTests` and `AutoTypeInjectorTests` share `AutoTypeInjector`'s static index and now run in a single non-parallel xUnit collection, so one class's `ClearAll`/`PrimeIndex` can no longer wipe the other's mid-assertion.
 
 ## v2.29.0 — 2026-07-20
 

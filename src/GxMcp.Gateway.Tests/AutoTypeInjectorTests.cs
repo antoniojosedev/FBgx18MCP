@@ -7,6 +7,7 @@ namespace GxMcp.Gateway.Tests
     /// <summary>
     /// Unit tests for AutoTypeInjector.TryInject.
     /// </summary>
+    [Collection("AutoTypeInjectorState")]
     public class AutoTypeInjectorTests
     {
         // Wipe all cached state before each test so tests are independent.
