@@ -11,6 +11,43 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Fourth-pass audit (2026-07-21, against `4885c1c` / v2.29.1) — performance + bug-fixing only
+
+Focused `improve` pass scoped to **performance and correctness bugs only** (no
+security/tech-debt/docs), against the current tip `4885c1c`. Three parallel
+read-only audits: perf hot-paths, bugs in the v2.27–2.29 SDK-endpoint services,
+and bugs/concurrency in the high-churn core. Every finding was vetted against the
+live code by the advisor before planning. Prior passes had already fixed the big
+index/concurrency items, so fresh findings concentrate in code added after the
+last audit cutoff. All five plans are **TODO** — none applied in this pass.
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 017 | Worker reaps cancel `_cts` (idle/heap/wedged task leak) | P1 | S | — | TODO |
+| 018 | `search_source` metadata-field branch O(n²) → O(n) + honor `objectName` scope | P1 | S | — | TODO |
+| 019 | `BuildService.Cancel()` mutates task status under `status._lock` | P2 | S | — | TODO |
+| 020 | `design_system` (no name) uses TypeIndex instead of full-KB COM scan | P3 | S | — | TODO |
+| 021 | Input-validation hardening for the 4 new-service papercuts | P2 | S | — | TODO |
+
+No dependencies between 017–021; execute in priority order (017, 018, 019, 021, 020).
+
+Recommended order rationale: 017 (recurring leak) and 018 (quadratic scan) are
+the real-impact fixes; 019 (cancel race) is a real but lower-frequency bug; 021
+bundles four low-severity papercuts; 020 is a rare-path micro-optimization.
+
+Considered and rejected this pass (so nobody re-audits):
+- **Idempotency-cache TOCTOU** (`IdempotencyCache.TryServe`/`BeginInflight`):
+  inert — every mutating/SDK command is funneled onto the single STA
+  `SdkCommandQueue` thread (`Worker/Program.cs`), so only harmless read-only
+  commands can reach the parallel `Task.Run` path. Not a bug.
+- **`OperationTracker.BuildMetricsSummary` dirty read** of `LastError`/`UpdatedAtUtc`
+  outside the record lock: reporting-only rollup, not correctness-critical. Skip.
+- **`KbStats`/`ReorgImpact` duplicated `reorgLikelyNeeded` heuristic**: tech-debt,
+  not a bug, and this pass excludes tech-debt. Logic is correct for all cases.
+- No new full-KB-scan-where-index-exists, redundant-reserialization, or O(n²)
+  patterns beyond 018/020. WorkerPool, McpRouter, Program.Http, PatchService, and
+  all of WriteService (7.6k lines) reviewed clean for concurrency.
+
 ## Third-pass audit (2026-07-20, against `9fe6817` / v2.29.0)
 
 A follow-up `improve` audit ran after v2.29.0, focused on the recently-added
