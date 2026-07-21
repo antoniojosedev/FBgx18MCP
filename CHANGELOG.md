@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.29.4 — 2026-07-21
+
+Bug-fix pass — five agent-friction fixes across dry-run, DB drift, targeted build, worker concurrency, and preview. No new features.
+
+### Fixed
+
+- **`genexus_edit` dry-run no longer promises a Transaction attribute removal the SDK will reject.** Removing a key attribute from a transaction always fails at save, but a `dryRun` / `validate=only` run reported the edit applied (`opsApplied:1`) because it only projected the change against the Structure text in memory. Dry-run now flags removals the SDK will refuse up front (`capabilityRisks`, `willLikelyFail`), and every dry-run carries a `dryRunCaveat` making clear the preview is a projection, not a guarantee the persist will succeed.
+- **`genexus_db action=drift_check` is fast again.** It unconditionally ran the build-heavy database-impact specification (minutes on a real Knowledge Base), holding the worker's single SDK thread for the whole run. Drift check now uses the cheap timestamp heuristic by default; the specification pass is opt-in with `deep=true`.
+- **A targeted build that matches no object fails loud instead of reporting success.** `genexus_lifecycle action=build` for a name that didn't resolve to a KB object built nothing, left the `.dll` untouched, and still reported "succeeded" — so a pattern-generated panel whose object name differs from the name passed (WorkWith panels, etc.) looked built when nothing happened. The build now returns a clear error naming the unresolved target(s), and warns when only some targets of a multi-target build are skipped.
+- **A clear "worker busy" reply instead of a misleading build timeout.** The worker runs SDK operations one at a time, so firing a second operation while a long one was still running made the gateway wait and then report "Gateway timeout starting build" after 60s. The worker now answers immediately with a `WorkerBusy` message naming the in-flight operation and how long it has been running, so you can wait, poll status, or cancel it. Cancel / reload / health commands are never blocked. Tunable via `GXMCP_BUSY_REJECT_MS` (milliseconds; `0` disables).
+- **`genexus_preview` and `genexus_run_object` explain when a page may be stale.** Both responses now include a `deploymentNote`: the URL is served by the IIS virtual directory, which reflects the last full deploy — a fast-path build compiles the object but does not publish the `.aspx` there. If the page looks out of date, build with `deploy=true` (or `action=rebuild`), or publish from the GeneXus IDE.
+
+### Internal
+
+- New unit test `SemanticOpsServiceTests.IsKeyAttributeInDsl` covers the dry-run key-attribute capability check. Worker 1529 + Gateway 660 tests green (+6 new); solution builds clean. End-to-end live smoke against the running KB was deferred due to dev-environment instability (reload/stdio reconnect cycling and slow large-KB warmup), not a code issue.
+
 ## v2.29.3 — 2026-07-21
 
 Two more performance + bug-fix passes (no new features). Fixes span the analysis/edit hot paths, destructive-action safety, background-job and cache memory hygiene, and several latent concurrency and parsing bugs.
