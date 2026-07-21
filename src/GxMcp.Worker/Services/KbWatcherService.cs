@@ -99,12 +99,7 @@ namespace GxMcp.Worker.Services
                     }
                     else
                     {
-                        var kb = _kbService.GetKB();
-                        if (kb != null)
-                        {
-                            CheckForChanges(kb);
-                            CheckForEnvironmentChange();
-                        }
+                        RunTickOnDispatcherStaThread();
                     }
                 }
                 catch (Exception ex)
@@ -114,6 +109,44 @@ namespace GxMcp.Worker.Services
 
                 // Poll interval: 5 seconds (standard for metadata checks)
                 Thread.Sleep(5000);
+            }
+        }
+
+        // Plan 037: this thread must not touch the SDK directly — a second STA apartment
+        // calling kb.DesignModel.*/GetActiveEnvironment can interleave with any SDK call
+        // the dispatcher issues on its own STA thread (Program's sdkWorker). Instead, post
+        // the SDK-touching part of the tick onto Program.SdkActionQueue, which that same
+        // STA thread drains (only when no real dispatched command is pending), and wait
+        // here — bounded — for it to finish before scheduling the next tick.
+        private void RunTickOnDispatcherStaThread()
+        {
+            using (var done = new ManualResetEventSlim(false))
+            {
+                Program.SdkActionQueue.Enqueue(() =>
+                {
+                    try
+                    {
+                        var kb = _kbService.GetKB();
+                        if (kb != null)
+                        {
+                            CheckForChanges(kb);
+                            CheckForEnvironmentChange();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug($"KbWatcher tick error: {ex.Message}");
+                    }
+                    finally
+                    {
+                        try { done.Set(); } catch { }
+                    }
+                });
+
+                // Bounded wait: if the dispatcher STA thread is busy with a long-running
+                // command, don't block this thread forever — the queued job still runs
+                // and completes on its own; the next tick is simply posted a cycle later.
+                done.Wait(15000);
             }
         }
 

@@ -18,6 +18,11 @@ namespace GxMcp.Worker
         public static readonly BlockingCollection<string> CommandQueue = new BlockingCollection<string>();
         public static readonly BlockingCollection<string> SdkCommandQueue = new BlockingCollection<string>();
         public static readonly ConcurrentQueue<Action> BackgroundQueue = new ConcurrentQueue<Action>();
+        // Plan 037: low-priority jobs that must run on the SAME STA thread as ordinary
+        // dispatched commands (the sdkWorker/WinForms-bridge thread below), drained by
+        // its poll timer only when no real command is pending. Used by KbWatcherService
+        // so its SDK polling no longer touches the SDK from a second STA apartment.
+        public static readonly ConcurrentQueue<Action> SdkActionQueue = new ConcurrentQueue<Action>();
 
         // FR#20 (v2.6.6 Stream B): soft-reload coordination. When a genexus_worker_reload
         // with mode=soft arrives, we flip this flag, drain the queues, persist
@@ -322,6 +327,13 @@ namespace GxMcp.Worker
                         {
                             try { ProcessCommand(line); }
                             catch (Exception ex) { Logger.Error("SDK Command Error: " + ex.Message); }
+                        }
+                        // Plan 037: low-priority SDK jobs (KbWatcher polling) only run when no
+                        // real dispatched command is waiting this tick — never starves normal traffic.
+                        else if (SdkActionQueue.TryDequeue(out var job))
+                        {
+                            try { job(); }
+                            catch (Exception ex) { Logger.Error("SDK Action Error: " + ex.Message); }
                         }
                     };
                     
