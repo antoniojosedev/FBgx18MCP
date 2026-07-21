@@ -95,4 +95,34 @@ public class BackgroundJobRegistryTests
         var r = new BackgroundJobRegistry(600);
         Assert.Null(r.Get("nonexistent"));
     }
+
+    [Fact]
+    public void Sweep_RemovesExpiredTerminalJobs_ThenPruneRemovesSeenId()
+    {
+        var r = new BackgroundJobRegistry(0);
+        var j = r.Start("s1", "build", 0);
+        r.Complete(j.Id, true, "ok");
+        r.MarkSeen("s1", new[] { j.Id });
+        Assert.True(r.IsSeenForTest("s1", j.Id));
+
+        Thread.Sleep(50);
+        r.SweepExpired();
+        Assert.Null(r.Get(j.Id));
+
+        r.PruneSeenBySession();
+
+        Assert.False(r.IsSeenForTest("s1", j.Id));
+    }
+
+    [Fact]
+    public void PruneSeenBySession_KeepsIdsStillInJobs()
+    {
+        var r = new BackgroundJobRegistry(600);
+        var j = r.Start("s1", "build", 30);
+        r.Complete(j.Id, true, "ok");
+        r.MarkSeen("s1", new[] { j.Id });
+        // Not expired (retention 600s), so PruneSeenBySession must not drop it.
+        r.PruneSeenBySession();
+        Assert.True(r.IsSeenForTest("s1", j.Id));
+    }
 }

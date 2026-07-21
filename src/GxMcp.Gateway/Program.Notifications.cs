@@ -53,6 +53,12 @@ namespace GxMcp.Gateway
                     {
                         Log($"[Gateway] Removed {stalePending} stale pending worker request(s).");
                     }
+
+                    // Plan 036: sweep _jobs first, then prune each session's seen-set
+                    // against the now-reduced _jobs so retained ids can't reference
+                    // already-swept jobs.
+                    JobRegistry.SweepExpired();
+                    JobRegistry.PruneSeenBySession();
                 }
             }
             catch (OperationCanceledException)

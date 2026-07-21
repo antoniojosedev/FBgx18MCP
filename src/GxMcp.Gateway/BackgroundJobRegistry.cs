@@ -177,6 +177,32 @@ namespace GxMcp.Gateway
             }
         }
 
+        // Plan 036: _seenBySession accumulates one id per completed job forever with no
+        // eviction path. Once SweepExpired() has removed a job from _jobs, its id is
+        // useless in every session's seen-set — drop it there too so long-lived gateways
+        // don't grow _seenBySession unbounded.
+        public void PruneSeenBySession()
+        {
+            foreach (var kvp in _seenBySession)
+            {
+                var seen = kvp.Value;
+                lock (seen)
+                {
+                    seen.RemoveWhere(id => !_jobs.ContainsKey(id));
+                }
+            }
+        }
+
+        // Plan 036: test-only visibility into the seen-set (InternalsVisibleTo covers
+        // GxMcp.Gateway.Tests) so PruneSeenBySession's effect can be asserted directly
+        // instead of indirectly through SnapshotForSession, which already filters
+        // swept jobs out via the Session/_jobs lookup regardless of seen-set state.
+        internal bool IsSeenForTest(string session, string jobId)
+        {
+            if (!_seenBySession.TryGetValue(session, out var seen)) return false;
+            lock (seen) { return seen.Contains(jobId); }
+        }
+
         public int Count => _jobs.Count;
 
         // FR#20 (v2.6.6 Stream B): persist JobEntry list across worker soft-reloads.
