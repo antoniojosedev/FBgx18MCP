@@ -17,8 +17,8 @@ Third focused `improve` pass of the day, scoped to **performance and correctness
 only**, against tip `f63f204`. Three parallel read-only audits over the surface NOT
 deeply reviewed in passes 1–5: perf in un-audited worker services; worker correctness;
 gateway helpers/routers + the Node CLI. Nine findings vetted against live code; one
-rejected, one deferred (below). Maintainer authorized auto-apply + commit to `main`,
-left **Unreleased**.
+rejected, one deferred (below). Maintainer authorized auto-apply + commit to `main`;
+**released in v2.29.3**.
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|----------|--------|------|------------|--------|
@@ -31,7 +31,7 @@ left **Unreleased**.
 | 038 | `AutoTypeInjector` name→type cache scoped per KB (cross-KB contamination) | P2 | M | MED | — | DONE |
 | 039 | `GeneratedDiffService.FindGeneratedFiles` walks each root once (not per-ext) | P3 | S | LOW | — | DONE |
 
-All eight merged to `main` (commits `944cfd0`,`24a914b`,`5232a5c`,`5a6b7d2`,`abc362b`,`72653ac`,`d63feba`,`df5e8a6`), left **Unreleased**. Full suites green: Worker 1529 passed / 4 skipped; Gateway 660 passed / 7 skipped; solution builds 0 errors. Advisor-reviewed each diff; notable review actions:
+All eight merged to `main` (commits `944cfd0`,`24a914b`,`5232a5c`,`5a6b7d2`,`abc362b`,`72653ac`,`d63feba`,`df5e8a6`); **released in v2.29.3**. Full suites green: Worker 1529 passed / 4 skipped; Gateway 660 passed / 7 skipped; solution builds 0 errors. Advisor-reviewed each diff; notable review actions:
 - **037** (MED): executor found no pre-existing "post a job onto the command STA thread"
   API, so it added a minimal additive `Program.SdkActionQueue` drained by the existing
   sdkWorker poll tick **only when the command queue is idle** (non-starving, strictly
@@ -82,7 +82,7 @@ correctness bugs only**, against tip `00573c3`. Three parallel read-only audits
 (perf hot-paths in not-yet-reviewed worker services; correctness/concurrency in the
 gateway; correctness in the v2.27–2.29 SDK-endpoint services + high-churn core).
 Ten findings vetted against live code by the advisor. Maintainer authorized
-auto-apply + commit to `main`, left **Unreleased**. Executed one executor per plan in
+auto-apply + commit to `main`; **released in v2.29.3**. Executed one executor per plan in
 isolated worktrees, advisor-reviewed, merged the passing ones to `main`.
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
@@ -98,7 +98,7 @@ isolated worktrees, advisor-reviewed, merged the passing ones to `main`.
 | 030 | `RefactorService` rename atomic (transaction around patch+rename) | P2 | M | MED | — | DONE |
 | 031 | `worker_reload mode=hard` keeps drain window closed to concurrent spawns | P2 | M | MED | — | DONE |
 
-All ten merged to `main` (commits `28e38fc`..`16646a5`), left **Unreleased**. Full
+All ten merged to `main` (commits `28e38fc`..`16646a5`); **released in v2.29.3**. Full
 suites green: Worker 1524 passed / 4 skipped; Gateway 654 passed / 7 skipped; solution
 builds 0 errors. Advisor-reviewed each diff; notable review actions:
 - **028**: first cut disposed the evicted `SemaphoreSlim` — sent back (REVISE); a
