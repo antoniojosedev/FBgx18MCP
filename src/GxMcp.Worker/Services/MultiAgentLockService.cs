@@ -133,7 +133,10 @@ namespace GxMcp.Worker.Services
                             ["target"] = target,
                             ["part"] = part ?? string.Empty
                         };
-                        File.WriteAllText(lockPath, entry.ToString(Newtonsoft.Json.Formatting.None));
+                        string tmp = lockPath + ".tmp";
+                        File.WriteAllText(tmp, entry.ToString(Newtonsoft.Json.Formatting.None));
+                        if (File.Exists(lockPath)) File.Delete(lockPath);
+                        File.Move(tmp, lockPath);
                         return McpResponse.Ok(
                             target: target,
                             code: "LockAcquired",
