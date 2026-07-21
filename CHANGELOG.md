@@ -1,8 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## v2.29.0 — 2026-07-20
 
-Reliability & authoring batch — build/deploy status honesty, long-op resilience, and schema/layout fixes.
+Reliability & authoring batch — build/deploy status honesty, long-op resilience, and schema/layout fixes. Also closes issues #40 and #41.
 
 ### Added
 
