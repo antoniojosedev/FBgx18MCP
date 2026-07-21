@@ -131,10 +131,7 @@ namespace GxMcp.Worker.Services
             if (model == null) return null;
 
             string instanceName = "WorkWithPlus" + obj.Name;
-            var namedMatch = model.Objects.GetAll()
-                .FirstOrDefault(o =>
-                    o.TypeDescriptor.Name.Equals("WorkWithPlus", StringComparison.OrdinalIgnoreCase) &&
-                    o.Name.Equals(instanceName, StringComparison.OrdinalIgnoreCase));
+            var namedMatch = _objectService?.FindObject(instanceName, "WorkWithPlus");
             if (namedMatch != null) return namedMatch;
 
             try
