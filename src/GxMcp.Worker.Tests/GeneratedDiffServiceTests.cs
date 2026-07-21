@@ -86,5 +86,34 @@ namespace GxMcp.Worker.Tests
                 try { Directory.Delete(tempKb, true); } catch { }
             }
         }
+
+        [Fact]
+        public void FindGeneratedFiles_SingleWalk_ExcludesOverMatchesAndUnrelatedFiles()
+        {
+            // Plan 039: FindGeneratedFiles walks each root once and filters extensions
+            // in memory. "Foo.*" is a broad glob, so this proves the precise-filename
+            // filter still excludes target.cs.bak and targetX.cs style over-matches.
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "CSharpModel", "Web");
+            Directory.CreateDirectory(web);
+            string objName = "Foo";
+            File.WriteAllText(Path.Combine(web, objName + ".cs"), "class Foo {}");
+            File.WriteAllText(Path.Combine(web, objName + ".aspx"), "<%@ %>");
+            File.WriteAllText(Path.Combine(web, objName + ".cs.bak"), "stale");
+            File.WriteAllText(Path.Combine(web, "FooBar.cs"), "class FooBar {}");
+            try
+            {
+                var files = GeneratedDiffService.FindGeneratedFiles(tempKb, objName);
+                Assert.Equal(2, files.Count);
+                Assert.Contains(files, f => f.EndsWith("Foo.cs", StringComparison.OrdinalIgnoreCase));
+                Assert.Contains(files, f => f.EndsWith("Foo.aspx", StringComparison.OrdinalIgnoreCase));
+                Assert.DoesNotContain(files, f => f.EndsWith("Foo.cs.bak", StringComparison.OrdinalIgnoreCase));
+                Assert.DoesNotContain(files, f => f.EndsWith("FooBar.cs", StringComparison.OrdinalIgnoreCase));
+            }
+            finally
+            {
+                try { Directory.Delete(tempKb, true); } catch { }
+            }
+        }
     }
 }

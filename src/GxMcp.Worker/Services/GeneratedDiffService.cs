@@ -209,19 +209,20 @@ namespace GxMcp.Worker.Services
             foreach (var c in candidates)
             {
                 if (!Directory.Exists(c)) continue;
-                foreach (var ext in GeneratedExtensions)
+                try
                 {
-                    string fileName = target + ext;
-                    try
+                    foreach (var match in Directory.EnumerateFiles(c, target + ".*", SearchOption.AllDirectories))
                     {
-                        foreach (var match in Directory.GetFiles(c, fileName, SearchOption.AllDirectories))
+                        string ext = Path.GetExtension(match);
+                        if (GeneratedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)
+                            && string.Equals(Path.GetFileName(match), target + ext, StringComparison.OrdinalIgnoreCase)
+                            && !found.Contains(match, StringComparer.OrdinalIgnoreCase))
                         {
-                            if (!found.Contains(match, StringComparer.OrdinalIgnoreCase))
-                                found.Add(match);
+                            found.Add(match);
                         }
                     }
-                    catch { }
                 }
+                catch { }
                 if (found.Count > 0) break; // first matching root wins
             }
             return found;
