@@ -22,8 +22,9 @@ namespace GxMcp.Worker.Services
     ///
     /// action=define_api / action=deploy are DESTRUCTIVE: they call the SDK's
     /// DefineAPI/Deploy, which can create or alter the GAM security tables in the
-    /// KB's configured datastore. There is no default action that reaches them —
-    /// the caller must pass action=define_api or action=deploy explicitly.
+    /// KB's configured datastore. The caller must pass action=define_api or
+    /// action=deploy explicitly, AND confirm=true, or the call fails fast with
+    /// ConfirmRequired before any KB/service resolution happens.
     ///
     /// define_api additionally needs a KBEnvironment (not just KBModel). Resolved off
     /// KBModel.Environment the same way DatabaseInfoService / KbStartupService already
@@ -58,6 +59,15 @@ namespace GxMcp.Worker.Services
                             "Check whether integrated security is enabled for this KB.")
                     });
             }
+
+            if ((action == "define_api" || action == "deploy")
+                && !(args?["confirm"]?.ToObject<bool?>() ?? false))
+                return McpResponse.Err(
+                    code: "ConfirmRequired",
+                    message: action == "define_api"
+                        ? "define_api calls the GAM Define API and can alter security metadata; pass confirm=true."
+                        : "deploy can create or alter GAM security tables in the datastore; pass confirm=true.",
+                    hint: "Re-issue the call with confirm=true once you intend the change.");
 
             // IIntegratedSecurityService itself doesn't implement IGxService, so it fails
             // the `where TSrv : IGxService` constraint on Services.TryGetService<TSrv>().

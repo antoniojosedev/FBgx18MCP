@@ -41,6 +41,15 @@ namespace GxMcp.Worker.Tests
                     string name = new AssemblyName(args.Name).Name + ".dll";
                     string path = Path.Combine(gxPath, name);
                     if (File.Exists(path)) return Assembly.LoadFrom(path);
+                    // Plan 024/025 (2026-07-21): some Artech.Packages.* assemblies
+                    // (GAM, TeamDevClient.BL, ...) ship under GX_PROGRAM_DIR\Packages
+                    // rather than the GX root, and are Private=False in the Worker
+                    // .csproj (relying on the SDK's own package loader / the Worker's
+                    // AssemblyResolve at runtime). Probe that subfolder too so tests
+                    // that JIT methods touching those types don't fail with
+                    // FileNotFoundException before the test body even runs.
+                    string packagesPath = Path.Combine(gxPath, "Packages", name);
+                    if (File.Exists(packagesPath)) return Assembly.LoadFrom(packagesPath);
                 }
                 catch { }
                 return null;
