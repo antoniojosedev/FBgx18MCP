@@ -19,15 +19,16 @@ read-only audits: perf hot-paths, bugs in the v2.27–2.29 SDK-endpoint services
 and bugs/concurrency in the high-churn core. Every finding was vetted against the
 live code by the advisor before planning. Prior passes had already fixed the big
 index/concurrency items, so fresh findings concentrate in code added after the
-last audit cutoff. All five plans are **TODO** — none applied in this pass.
+last audit cutoff. All five were implemented (one executor per plan in isolated
+worktrees, advisor-reviewed) and released in **v2.29.2**.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 017 | Worker reaps cancel `_cts` (idle/heap/wedged task leak) | P1 | S | — | TODO |
-| 018 | `search_source` metadata-field branch O(n²) → O(n) + honor `objectName` scope | P1 | S | — | TODO |
-| 019 | `BuildService.Cancel()` mutates task status under `status._lock` | P2 | S | — | TODO |
-| 020 | `design_system` (no name) uses TypeIndex instead of full-KB COM scan | P3 | S | — | TODO |
-| 021 | Input-validation hardening for the 4 new-service papercuts | P2 | S | — | TODO |
+| 017 | Worker reaps cancel `_cts` (idle/heap/wedged task leak) | P1 | S | — | DONE |
+| 018 | `search_source` metadata-field branch O(n²) → O(n) + honor `objectName` scope | P1 | S | — | DONE |
+| 019 | `BuildService.Cancel()` mutates task status under `status._lock` | P2 | S | — | DONE |
+| 020 | `design_system` (no name) uses TypeIndex instead of full-KB COM scan | P3 | S | — | DONE |
+| 021 | Input-validation hardening for the 4 new-service papercuts | P2 | S | — | DONE |
 
 No dependencies between 017–021; execute in priority order (017, 018, 019, 021, 020).
 

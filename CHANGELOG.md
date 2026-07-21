@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.29.2 — 2026-07-21
+
+Performance and bug-fix pass (audit 2.29.x). No new features — targeted fixes in the recently added SDK-endpoint tools and in long-running gateway internals.
+
+### Fixed
+
+- **Long-running gateways no longer accumulate stray background tasks.** Each time a worker was retired for being idle, recycled for memory, or killed for hanging, its writer and health-check loops kept running for the life of the gateway against a token that was never cancelled — a slow, unbounded task/timer leak. Every worker-teardown path now cancels cleanly.
+- **`genexus_search_source` metadata-field searches are fast again and respect `objectName`.** Searching `fields=[caption|description|parmNames|webForm]` rescanned the entire Knowledge Base and resolved each candidate the slow (untyped) way — quadratic on large KBs — and ignored any `objectName=` scope you supplied. It now stays within the requested scope and resolves each object by its type in one step.
+- **A cancelled build's reported state stays cancelled.** After `genexus_lifecycle action=cancel`, buffered build output still draining in the background could overwrite the task a moment later and flip its phase back off `"Done"`. The cancel now freezes the task's state atomically.
+- **`genexus_deploy` / `genexus_gxserver` report an unknown `action` as such.** A typo'd action combined with no open KB returned "open a KB first" instead of naming the bad action, costing a wasted round trip. The action is now validated before Knowledge Base state is consulted.
+- **`genexus_gxserver action=pipeline_output` requires `buildId`.** A missing `buildId` silently queried build `0`; it now returns a clear error asking for the id.
+- **`genexus_transfer action=export` separates a real lookup error from "not found".** An SDK error while resolving an object to export was reported identically to a genuinely missing object, sending you to re-check a name that was fine. Genuine errors now surface in their own `lookupErrors` list, distinct from the not-found list.
+- **`genexus_layout action=list_controls limit=0` returns an empty list** instead of one control.
+
+### Changed
+
+- **`genexus_layout action=design_system` (no `name`) resolves the first Design System Object via the type index** instead of walking and COM-reading every object in the KB — a cheaper lookup on large KBs. Falls back to the full scan when the index isn't ready.
+
+### Internal
+
+- Fourth `improve` audit pass (performance + bug-fixing only) against v2.29.1; five findings, each implemented by a dedicated executor in an isolated worktree with advisor review. See `plans/017`–`021` for design context.
+
 ## v2.29.1 — 2026-07-21
 
 Security and reliability hardening for the recently added SDK-endpoint tools.
