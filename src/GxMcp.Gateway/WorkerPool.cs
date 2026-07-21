@@ -50,6 +50,12 @@ namespace GxMcp.Gateway
         public event Action<string>? OnRpcResponse;
         public event Action<KbHandle, WorkerStopReason>? OnWorkerExited;
 
+        // Plan 031: test-only seam. When set, SpawnWorkerAsync uses this instead of
+        // constructing + Start()-ing a real WorkerProcess, so concurrency tests can
+        // exercise the DrainAndReplaceAsync / AcquireAsync race without spawning a
+        // real OS process. Always null in production.
+        internal Func<KbHandle, WorkerProcess>? SpawnFactoryForTest;
+
         public WorkerPool(Configuration config) { _config = config; }
 
         private sealed class Entry
@@ -152,6 +158,16 @@ namespace GxMcp.Gateway
                 return entry.Worker;
             }
 
+            return await SpawnWorkerAsync(handle, entry, ct).ConfigureAwait(false);
+        }
+
+        // Plan 031: factored out of AcquireAsync so DrainAndReplaceAsync can spawn the
+        // replacement worker directly onto the SAME entry it already holds Draining=true
+        // on, instead of round-tripping through AcquireAsync's own GetOrAdd (which would
+        // create a brand-new, non-draining entry if this one had been removed from
+        // _entries in the meantime).
+        private async Task<WorkerProcess> SpawnWorkerAsync(KbHandle handle, Entry entry, CancellationToken ct)
+        {
             // PERFORMANCE (G-A1): per-KB gate. Two concurrent acquires for the SAME KB
             // serialise here, but concurrent acquires for DIFFERENT KBs are now parallel.
             await entry.SpawnGate.WaitAsync(ct).ConfigureAwait(false);
@@ -180,7 +196,9 @@ namespace GxMcp.Gateway
                     }
                 }
 
-                var worker = new WorkerProcess(_config, handle);
+                WorkerProcess worker = SpawnFactoryForTest != null
+                    ? SpawnFactoryForTest(handle)
+                    : new WorkerProcess(_config, handle);
                 worker.OnRpcResponse += json => OnRpcResponse?.Invoke(json);
                 var capturedHandle = handle;
                 worker.OnWorkerExited += (reason) =>
@@ -188,20 +206,30 @@ namespace GxMcp.Gateway
                     OnWorkerExited?.Invoke(capturedHandle, reason);
                     // Drop the live-worker entry (a fresh AcquireAsync respawns) but keep
                     // the durable _known record — issue #26 P3: the KB must stay resolvable.
+                    // Plan 031: skip removal while a planned drain owns this entry —
+                    // DrainAndReplaceAsync manages the entry's lifecycle itself across the
+                    // whole binary-swap window and relies on Draining staying true (and the
+                    // entry staying present) to keep protecting concurrent AcquireAsync
+                    // callers from creating a second, fresh, non-draining entry.
+                    if (_entries.TryGetValue(capturedHandle.NormalizedAlias, out var currentEntry) && currentEntry.Draining)
+                        return;
                     _entries.TryRemove(capturedHandle.NormalizedAlias, out _);
                 };
-                entry.Spawning = true;   // issue #26 P1: a process really is coming up now.
-                try
+                if (SpawnFactoryForTest == null)
                 {
-                    worker.Start();
-                }
-                finally
-                {
-                    entry.Spawning = false;
-                }
-                if (worker.SpawnMs.HasValue)
-                {
-                    Program.OperationTracker.RegisterSpawnSample(handle.NormalizedAlias, worker.SpawnMs.Value);
+                    entry.Spawning = true;   // issue #26 P1: a process really is coming up now.
+                    try
+                    {
+                        worker.Start();
+                    }
+                    finally
+                    {
+                        entry.Spawning = false;
+                    }
+                    if (worker.SpawnMs.HasValue)
+                    {
+                        Program.OperationTracker.RegisterSpawnSample(handle.NormalizedAlias, worker.SpawnMs.Value);
+                    }
                 }
                 entry.Worker = worker;
                 entry.LastActivityUtc = DateTime.UtcNow;
@@ -230,6 +258,13 @@ namespace GxMcp.Gateway
             if (!_entries.TryGetValue(handle.NormalizedAlias, out var entry))
                 throw new InvalidOperationException($"No pool entry for alias '{handle.Alias}'.");
 
+            // Plan 031: the entry now survives the whole drain window (never removed
+            // from _entries), so a SECOND drain cycle on the same entry would otherwise
+            // reuse the previous cycle's already-completed DrainComplete TCS — any
+            // AcquireAsync awaiting it would fall through instantly instead of waiting.
+            // Fresh TCS per drain cycle, installed before Draining flips true.
+            entry.DrainComplete = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
             // Mark draining before touching the process so any concurrent AcquireAsync
             // that passes the Worker != null check enters the wait path.
             entry.Draining = true;
@@ -249,8 +284,14 @@ namespace GxMcp.Gateway
                 catch (OperationCanceledException) { /* timeout or caller cancel — proceed */ }
             }
 
-            // Remove the old entry so AcquireAsync below creates a fresh one.
-            _entries.TryRemove(handle.NormalizedAlias, out _);
+            // Plan 031: do NOT remove the entry here. The old worker's own OnWorkerExited
+            // handler (wired in SpawnWorkerAsync) already skips removal while Draining is
+            // true, so the entry — and its Draining flag — stays in place for the whole
+            // drain window. That's what keeps a concurrent AcquireAsync on the wait path
+            // instead of racing a GetOrAdd that would create a second, fresh, non-draining
+            // entry for the same alias. Just drop the stale dead-worker reference so the
+            // upcoming SpawnWorkerAsync call takes the spawn path instead of returning it.
+            entry.Worker = null;
 
             // mode=hard hook: with the old worker exited (its exe unlocked) and eager respawn
             // suppressed by the caller, this is the ONLY safe window to swap the worker binary.
@@ -263,12 +304,19 @@ namespace GxMcp.Gateway
 
             try
             {
-                var newWorker = await AcquireAsync(handle, ct).ConfigureAwait(false);
+                // Spawn directly onto the SAME entry (not via AcquireAsync's GetOrAdd) —
+                // the entry never left _entries, so GetOrAdd would just return it anyway,
+                // but going direct keeps the intent explicit and avoids depending on that
+                // GetOrAdd identity guarantee.
+                var newWorker = await SpawnWorkerAsync(handle, entry, ct).ConfigureAwait(false);
                 return newWorker;
             }
             finally
             {
-                // Signal any AcquireAsync waiters regardless of success/failure.
+                // Draining must clear before DrainComplete fires: a waiter unblocked by
+                // DrainComplete re-checks entry.Worker/Draining immediately, and must see
+                // the entry as no longer draining once it wakes.
+                entry.Draining = false;
                 entry.DrainComplete.TrySetResult(true);
             }
         }
