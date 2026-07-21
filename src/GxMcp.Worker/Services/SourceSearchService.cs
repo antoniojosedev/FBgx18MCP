@@ -263,6 +263,7 @@ namespace GxMcp.Worker.Services
                 if (extraFields.Count > 0 && rx != null)
                 {
                     var allEntries = index.Objects.Values
+                        .Where(e => objectNameSet == null || ObjectNameMatches(objectNameSet, e.Name))
                         .Where(e => string.IsNullOrEmpty(c.TypeFilter) || string.Equals(e.Type, c.TypeFilter, StringComparison.OrdinalIgnoreCase))
                         .ToList();
                     foreach (var e in allEntries)
@@ -283,7 +284,7 @@ namespace GxMcp.Worker.Services
                             {
                                 // Caption / parmNames / webForm require SDK access
                                 KBObject obj2 = null;
-                                try { obj2 = _objectService.FindObject(e.Name); } catch { }
+                                try { obj2 = _objectService.FindObject(e.Name, e.Type); } catch { }
                                 if (obj2 == null) continue;
                                 if (string.Equals(field, "caption", StringComparison.OrdinalIgnoreCase))
                                 {

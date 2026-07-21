@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using GxMcp.Worker.Models;
@@ -108,6 +109,39 @@ namespace GxMcp.Worker.Tests
             // cursor to resume from equals the StartIndex we passed in.
             Assert.Equal(250, obj["result"]!["nextCursor"]!.Value<int>());
             Assert.NotNull(obj["result"]!["resumeHint"]);
+        }
+
+        [Fact]
+        public void ObjectName_ScopesMetadataFieldSearch_ToSingleObject()
+        {
+            // Plan 018: the fields=[description|caption|...] metadata branch used to
+            // rebuild its candidate list from the full index, ignoring objectName.
+            // Seed 3 objects sharing a NEEDLE token in Description; only "Target" should
+            // be scanned/hit when objectName scopes the search.
+            var svc = new IndexCacheService();
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry { Name = "Target", Type = "Procedure", Description = "has NEEDLE token" },
+                new SearchIndex.IndexEntry { Name = "Other1", Type = "Procedure", Description = "also has NEEDLE token" },
+                new SearchIndex.IndexEntry { Name = "Other2", Type = "Procedure", Description = "also has NEEDLE token" }
+            };
+            svc.LoadFromEntries(entries);
+            svc.MarkIndexComplete(entries.Count);
+            var search = new SourceSearchService(svc, objectService: null);
+
+            var json = search.SearchAsJson(new SourceSearchCriteria
+            {
+                Pattern = "NEEDLE",
+                ObjectName = "Target",
+                Fields = new List<string> { "description" },
+                MaxResults = 1000,
+                TimeoutMs = 30000
+            });
+
+            var obj = JObject.Parse(json);
+            var hits = (JArray)obj["result"]!["hits"]!;
+            Assert.Single(hits);
+            Assert.Equal("Target", hits[0]!["objectName"]!.ToString());
         }
 
         [Fact]
