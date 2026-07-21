@@ -58,11 +58,15 @@ namespace GxMcp.Worker.Services
                         };
                         using (var p = Process.Start(psi))
                         {
-                            string so = p.StandardOutput.ReadToEnd();
+                            var soBuf = new StringBuilder();
+                            p.OutputDataReceived += (s, e) => { if (e.Data != null) soBuf.AppendLine(e.Data); };
+                            p.ErrorDataReceived += (s, e) => { /* drain, discard */ };
+                            p.BeginOutputReadLine();
+                            p.BeginErrorReadLine();
                             p.WaitForExit(5000);
                             if (p.ExitCode == 0)
                             {
-                                var line = so.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
+                                var line = soBuf.ToString().Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
                                 if (!string.IsNullOrEmpty(line)) { resolved = line.Trim(); break; }
                             }
                         }
