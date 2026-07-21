@@ -27,6 +27,10 @@ namespace GxMcp.Gateway
             _capacity = capacity;
         }
 
+        // Plan 028: test-only visibility into gate accumulation (InternalsVisibleTo
+        // GxMcp.Gateway.Tests is already configured in the csproj).
+        internal int GateCount => _gates.Count;
+
         public bool TryGet(string kbPath, string tool, string key,
                            string payloadHash, out JObject? cached)
         {
@@ -85,6 +89,18 @@ namespace GxMcp.Gateway
             finally
             {
                 gate.Release();
+                // Plan 028: once released and uncontended, evict the gate so _gates
+                // doesn't grow without bound for every distinct client-supplied key.
+                // CurrentCount == 1 means fully released and idle (no waiters holding
+                // it back down to 0). Value-matching TryRemove only removes the
+                // instance we actually hold, so a concurrent GetOrAdd that already
+                // returned this same instance is unaffected, and a replacement
+                // instance installed by a racing caller is never clobbered.
+                if (gate.CurrentCount == 1 &&
+                    _gates.TryRemove(new KeyValuePair<(string, string, string), SemaphoreSlim>((kbPath, tool, key), gate)))
+                {
+                    gate.Dispose();
+                }
             }
         }
 
