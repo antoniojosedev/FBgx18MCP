@@ -282,7 +282,7 @@ namespace GxMcp.Gateway
                 // injectedType local is checked after dispatch to annotate the response.
                 string? _autoInjectedType = null;
                 if (!string.IsNullOrEmpty(toolName) && args != null
-                    && AutoTypeInjector.TryInject(toolName, args, out var _ait))
+                    && AutoTypeInjector.TryInject(_currentKb.Value?.NormalizedAlias ?? "", toolName, args, out var _ait))
                 {
                     _autoInjectedType = _ait;
                     // Keep paramsObj["arguments"] in sync (same ref, but be explicit)

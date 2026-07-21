@@ -42,6 +42,9 @@ namespace GxMcp.Gateway
         }
         internal static WorkerPool? GetWorkerPool() => _workerPool;
         internal static KbResolver? GetKbResolver() => _kbResolver;
+        // Plan 038: minimal accessor so McpRouter (a separate class) can resolve the
+        // per-request KB alias for AutoTypeInjector.CompleteName, same pattern as the two above.
+        internal static KbHandle? GetCurrentKb() => _currentKb.Value;
 
         // Tools that are not KB-scoped: routed by the gateway itself or operate on global state.
         // Must mirror the exclusion list in tool_definitions.json (no `kb` param on these).

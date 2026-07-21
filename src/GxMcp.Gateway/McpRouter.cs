@@ -440,7 +440,14 @@ namespace GxMcp.Gateway
             // when the index hasn't warmed yet.
             else if (argumentName == "name" || argumentName == "target" || argumentName == "targets")
             {
-                values = AutoTypeInjector.CompleteName(currentValue, cap: 25);
+                // Plan 038: completion/complete runs outside ProcessMcpRequest's per-tool
+                // dispatch, but _currentKb is still resolved for this request by the time
+                // McpRouter.Handle runs (set earlier in ProcessMcpRequest) — reuse it so
+                // suggestions come from the right KB's name→type map.
+                string? kbAlias = Program.GetCurrentKb()?.NormalizedAlias;
+                values = string.IsNullOrEmpty(kbAlias)
+                    ? Enumerable.Empty<string>()
+                    : AutoTypeInjector.CompleteName(kbAlias!, currentValue, cap: 25);
             }
             else if (argumentName == "language" || argumentName == "targetLanguage")
             {

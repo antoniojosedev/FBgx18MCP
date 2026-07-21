@@ -132,8 +132,33 @@ namespace GxMcp.Gateway
                 };
             }
             // Keep AutoTypeInjector's name→type map warm whenever we get fresh index data.
+            // Plan 038: scope the refresh to the KB it actually came from. This feeder runs
+            // from whoami's own dispatch (a meta-tool — _currentKb is null there), so fall
+            // back to the single open KB, mirroring TryRefreshDatabaseInfoFromWorkerAsync's
+            // established pattern; skip (don't guess) when more than one KB is open.
             if (recentlyChanged != null)
-                AutoTypeInjector.RefreshFromRecentlyChanged(recentlyChanged);
+            {
+                string? alias = ResolveKbAliasForIndexRefresh();
+                if (!string.IsNullOrEmpty(alias))
+                    AutoTypeInjector.RefreshFromRecentlyChanged(alias!, recentlyChanged);
+            }
+        }
+
+        // Plan 038: same fallback pattern as TryRefreshDatabaseInfoFromWorkerAsync — try the
+        // per-request resolved KB first, else the single open KB if unambiguous, else null.
+        private static string? ResolveKbAliasForIndexRefresh()
+        {
+            KbHandle? kb = _currentKb.Value;
+            string? alias = kb?.NormalizedAlias;
+            if (!string.IsNullOrEmpty(alias)) return alias;
+            if (_workerPool == null) return null;
+            try
+            {
+                var open = _workerPool.ListOpen();
+                if (open != null && open.Count == 1) return open[0].NormalizedAlias;
+            }
+            catch { }
+            return null;
         }
 
         // True when the index has enough populated entries for SDK-bound reads/edits.

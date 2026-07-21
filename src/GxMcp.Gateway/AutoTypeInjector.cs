@@ -37,23 +37,39 @@ namespace GxMcp.Gateway
         };
 
         // ── Name → type lookup cache, populated from index snapshots ─────────
+        // Plan 038: keyed by normalized KB alias (outer) so two KBs open in the same
+        // gateway can't leak each other's name→type resolutions (e.g. "Customer" =
+        // Transaction in KB-A, Business Component in KB-B). Inner map:
         // Key: object name (lower-invariant).
         // Value: the single type string when the name is unique, OR null when
         //        multiple objects share the same name (ambiguous).
-        private static readonly ConcurrentDictionary<string, string?> _nameLookup =
-            new ConcurrentDictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string?>> _nameLookupByKb =
+            new ConcurrentDictionary<string, ConcurrentDictionary<string, string?>>(StringComparer.OrdinalIgnoreCase);
 
         // Tool → inputSchema cache: does this tool declare a "type" property?
+        // NOT KB-specific (a tool's schema is the same regardless of which KB is
+        // open) — stays global, unlike _nameLookupByKb above.
         private static readonly ConcurrentDictionary<string, bool> _toolHasTypeCache =
             new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        // Normalizes a KB alias the same way KbHandle.NormalizedAlias / _databaseInfoByKb
+        // do, so callers can pass whatever casing they have on hand.
+        private static string NormalizeAlias(string? kbAlias) =>
+            string.IsNullOrWhiteSpace(kbAlias) ? string.Empty : kbAlias.Trim().ToLowerInvariant();
+
+        private static ConcurrentDictionary<string, string?> GetOrCreateKbMap(string? kbAlias) =>
+            _nameLookupByKb.GetOrAdd(
+                NormalizeAlias(kbAlias),
+                _ => new ConcurrentDictionary<string, string?>(StringComparer.OrdinalIgnoreCase));
 
         // ── Public API ────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Attempt to auto-inject <c>arguments["type"]</c> for <paramref name="toolName"/>.
+        /// Attempt to auto-inject <c>arguments["type"]</c> for <paramref name="toolName"/>,
+        /// resolving the name against <paramref name="kbAlias"/>'s own name→type map.
         /// Returns <c>true</c> and sets <paramref name="injectedType"/> when injection occurs.
         /// </summary>
-        public static bool TryInject(string toolName, JObject? arguments, out string injectedType)
+        public static bool TryInject(string kbAlias, string toolName, JObject? arguments, out string injectedType)
         {
             injectedType = null!;
 
@@ -76,9 +92,10 @@ namespace GxMcp.Gateway
             if (string.IsNullOrWhiteSpace(name))
                 return false;
 
-            // Unique lookup?
-            if (!_nameLookup.TryGetValue(name, out string? resolvedType))
-                return false;           // name not in our index cache
+            // Unique lookup, scoped to this KB only.
+            var nameLookup = GetOrCreateKbMap(kbAlias);
+            if (!nameLookup.TryGetValue(name, out string? resolvedType))
+                return false;           // name not in this KB's index cache
 
             if (resolvedType == null)
                 return false;           // ambiguous (multiple objects with this name)
@@ -90,16 +107,17 @@ namespace GxMcp.Gateway
         }
 
         /// <summary>
-        /// Refresh the name→type lookup from a <c>RecentlyChanged</c> JArray coming
-        /// from <see cref="IndexStateSnapshot.RecentlyChanged"/>.
+        /// Refresh <paramref name="kbAlias"/>'s name→type lookup from a <c>RecentlyChanged</c>
+        /// JArray coming from <see cref="IndexStateSnapshot.RecentlyChanged"/>.
         /// Each element is expected to have at least <c>Name</c> and <c>Type</c> (or
         /// lower-case equivalents) fields.
-        /// Call this whenever a fresh index snapshot arrives.
+        /// Call this whenever a fresh index snapshot arrives for that KB.
         /// </summary>
-        public static void RefreshFromRecentlyChanged(JArray? recentlyChanged)
+        public static void RefreshFromRecentlyChanged(string kbAlias, JArray? recentlyChanged)
         {
             if (recentlyChanged == null) return;
 
+            var nameLookup = GetOrCreateKbMap(kbAlias);
             foreach (var token in recentlyChanged)
             {
                 if (token is not JObject obj) continue;
@@ -108,7 +126,7 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(type))
                     continue;
 
-                _nameLookup.AddOrUpdate(
+                nameLookup.AddOrUpdate(
                     name,
                     addValue: type,
                     updateValueFactory: (_, existing) =>
@@ -121,16 +139,16 @@ namespace GxMcp.Gateway
 
         /// <summary>
         /// v2.8.0 (S1) — used by MCP `completion/complete` to autocomplete
-        /// object names from a partial prefix. Returns up to <paramref name="cap"/>
-        /// matches that start with the prefix (case-insensitive). Empty when
-        /// the index hasn't warmed yet.
+        /// object names from a partial prefix, scoped to <paramref name="kbAlias"/>.
+        /// Returns up to <paramref name="cap"/> matches that start with the prefix
+        /// (case-insensitive). Empty when the index hasn't warmed yet.
         /// </summary>
-        public static IEnumerable<string> CompleteName(string prefix, int cap = 25)
+        public static IEnumerable<string> CompleteName(string kbAlias, string prefix, int cap = 25)
         {
             if (cap <= 0) yield break;
             prefix = prefix ?? string.Empty;
             int yielded = 0;
-            foreach (var kv in _nameLookup)
+            foreach (var kv in GetOrCreateKbMap(kbAlias))
             {
                 if (kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                 {
@@ -142,19 +160,32 @@ namespace GxMcp.Gateway
 
         // ── Test helpers ──────────────────────────────────────────────────────
 
-        /// <summary>Test-only: prime the name→type map directly.</summary>
-        internal static void PrimeIndex(IEnumerable<(string name, string? type)> entries)
+        /// <summary>Test-only: prime <paramref name="kbAlias"/>'s name→type map directly.</summary>
+        internal static void PrimeIndex(string kbAlias, IEnumerable<(string name, string? type)> entries)
         {
-            _nameLookup.Clear();
+            var nameLookup = GetOrCreateKbMap(kbAlias);
+            nameLookup.Clear();
             foreach (var (name, type) in entries)
-                _nameLookup[name] = type;
+                nameLookup[name] = type;
         }
 
-        /// <summary>Test-only: clear all internal state.</summary>
-        internal static void ClearAll()
+        /// <summary>
+        /// Test-only: clear internal state. With <paramref name="kbAlias"/> omitted,
+        /// wipes every KB's name→type map plus the (global, non-KB-specific)
+        /// tool-schema cache — the full reset tests rely on for isolation. With an
+        /// alias, clears only that KB's inner map and leaves other KBs untouched.
+        /// </summary>
+        internal static void ClearAll(string? kbAlias = null)
         {
-            _nameLookup.Clear();
-            _toolHasTypeCache.Clear();
+            if (kbAlias == null)
+            {
+                _nameLookupByKb.Clear();
+                _toolHasTypeCache.Clear();
+            }
+            else
+            {
+                _nameLookupByKb.TryRemove(NormalizeAlias(kbAlias), out _);
+            }
         }
 
         /// <summary>Test-only: tell the injector whether a tool accepts a 'type' arg.</summary>

@@ -10,6 +10,10 @@ namespace GxMcp.Gateway.Tests
     [Collection("AutoTypeInjectorState")]
     public class AutoTypeInjectorTests
     {
+        // Plan 038: _nameLookup is now keyed per KB alias; these tests exercise
+        // single-KB behavior (unchanged) under one fixed alias.
+        private const string Kb = "testkb";
+
         // Wipe all cached state before each test so tests are independent.
         public AutoTypeInjectorTests()
         {
@@ -21,7 +25,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void UniqueNameMatch_InjectsType_ReturnsTrue()
         {
-            AutoTypeInjector.PrimeIndex(new[]
+            AutoTypeInjector.PrimeIndex(Kb, new[]
             {
                 ("WPMain", "WebPanel"),
                 ("CustomerTransaction", "Transaction"),
@@ -29,7 +33,7 @@ namespace GxMcp.Gateway.Tests
             AutoTypeInjector.PrimeToolAcceptsType("genexus_read", true);
 
             var args = new JObject { ["name"] = "WPMain" };
-            bool result = AutoTypeInjector.TryInject("genexus_read", args, out string injected);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_read", args, out string injected);
 
             Assert.True(result);
             Assert.Equal("WebPanel", injected);
@@ -42,7 +46,7 @@ namespace GxMcp.Gateway.Tests
         public void AmbiguousName_NoInject_ReturnsFalse()
         {
             // Two entries with the same name but different types → ambiguous
-            AutoTypeInjector.PrimeIndex(new[]
+            AutoTypeInjector.PrimeIndex(Kb, new[]
             {
                 ("SharedName", "WebPanel"),
                 ("SharedName", null!),       // null signals ambiguous in the map
@@ -50,7 +54,7 @@ namespace GxMcp.Gateway.Tests
             AutoTypeInjector.PrimeToolAcceptsType("genexus_inspect", true);
 
             var args = new JObject { ["name"] = "SharedName" };
-            bool result = AutoTypeInjector.TryInject("genexus_inspect", args, out _);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_inspect", args, out _);
 
             Assert.False(result);
             Assert.Null(args["type"]);
@@ -61,14 +65,14 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void UnknownName_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(new[]
+            AutoTypeInjector.PrimeIndex(Kb, new[]
             {
                 ("KnownObject", "Procedure"),
             });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_edit", true);
 
             var args = new JObject { ["name"] = "NonExistent" };
-            bool result = AutoTypeInjector.TryInject("genexus_edit", args, out _);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_edit", args, out _);
 
             Assert.False(result);
             Assert.Null(args["type"]);
@@ -79,14 +83,14 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void ToolDoesNotAcceptType_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(new[]
+            AutoTypeInjector.PrimeIndex(Kb, new[]
             {
                 ("MyProc", "Procedure"),
             });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_run_object", false);
 
             var args = new JObject { ["name"] = "MyProc" };
-            bool result = AutoTypeInjector.TryInject("genexus_run_object", args, out _);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_run_object", args, out _);
 
             Assert.False(result);
             Assert.Null(args["type"]);
@@ -97,14 +101,14 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void CallerSuppliedType_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(new[]
+            AutoTypeInjector.PrimeIndex(Kb, new[]
             {
                 ("MyProc", "Procedure"),
             });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_read", true);
 
             var args = new JObject { ["name"] = "MyProc", ["type"] = "Transaction" };
-            bool result = AutoTypeInjector.TryInject("genexus_read", args, out _);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_read", args, out _);
 
             Assert.False(result);
             // Original caller value must be preserved unchanged
@@ -120,7 +124,7 @@ namespace GxMcp.Gateway.Tests
             AutoTypeInjector.PrimeToolAcceptsType("genexus_inspect", true);
 
             var args = new JObject { ["name"] = "AnyObject" };
-            bool result = AutoTypeInjector.TryInject("genexus_inspect", args, out _);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_inspect", args, out _);
 
             Assert.False(result);
             Assert.Null(args["type"]);
@@ -131,13 +135,13 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void SkipTool_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(new[]
+            AutoTypeInjector.PrimeIndex(Kb, new[]
             {
                 ("SomeObject", "WebPanel"),
             });
             // genexus_kb is in the skip list even if it somehow gets a 'name' arg
             var args = new JObject { ["name"] = "SomeObject" };
-            bool result = AutoTypeInjector.TryInject("genexus_kb", args, out _);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_kb", args, out _);
 
             Assert.False(result);
             Assert.Null(args["type"]);
@@ -153,11 +157,11 @@ namespace GxMcp.Gateway.Tests
                 new JObject { ["Name"] = "MyWebPanel", ["Type"] = "WebPanel" },
                 new JObject { ["Name"] = "MyProc", ["Type"] = "Procedure" },
             };
-            AutoTypeInjector.RefreshFromRecentlyChanged(recent);
+            AutoTypeInjector.RefreshFromRecentlyChanged(Kb, recent);
             AutoTypeInjector.PrimeToolAcceptsType("genexus_read", true);
 
             var args = new JObject { ["name"] = "MyWebPanel" };
-            bool result = AutoTypeInjector.TryInject("genexus_read", args, out string injected);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_read", args, out string injected);
 
             Assert.True(result);
             Assert.Equal("WebPanel", injected);
@@ -173,11 +177,11 @@ namespace GxMcp.Gateway.Tests
                 new JObject { ["Name"] = "Duplicate", ["Type"] = "WebPanel" },
                 new JObject { ["Name"] = "Duplicate", ["Type"] = "Procedure" },
             };
-            AutoTypeInjector.RefreshFromRecentlyChanged(recent);
+            AutoTypeInjector.RefreshFromRecentlyChanged(Kb, recent);
             AutoTypeInjector.PrimeToolAcceptsType("genexus_inspect", true);
 
             var args = new JObject { ["name"] = "Duplicate" };
-            bool result = AutoTypeInjector.TryInject("genexus_inspect", args, out _);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_inspect", args, out _);
 
             Assert.False(result);
         }
@@ -187,10 +191,10 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void NullArguments_NoInject_ReturnsFalse()
         {
-            AutoTypeInjector.PrimeIndex(new[] { ("X", "Procedure") });
+            AutoTypeInjector.PrimeIndex(Kb, new[] { ("X", "Procedure") });
             AutoTypeInjector.PrimeToolAcceptsType("genexus_read", true);
 
-            bool result = AutoTypeInjector.TryInject("genexus_read", null, out _);
+            bool result = AutoTypeInjector.TryInject(Kb, "genexus_read", null, out _);
 
             Assert.False(result);
         }
