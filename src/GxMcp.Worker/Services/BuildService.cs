@@ -1418,31 +1418,39 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                var p = status.Process;
-                if (p != null && !p.HasExited)
+                Process p;
+                lock (status._lock)
                 {
-                    // R9: write the cancelled state BEFORE we go kill children so
-                    // the next status poll sees "Cancelled" immediately, even while
-                    // the descendant kill is still in flight.
+                    p = status.Process;
+                    if (p == null || p.HasExited)
+                        return JsonConvert.SerializeObject(new { status = status.Status, message = "Task already finished" });
+
+                    // R9: write the cancelled state under the lock BEFORE we go kill
+                    // children so the next status poll sees "Cancelled" immediately,
+                    // even while the descendant kill is still in flight, and so a late
+                    // HandleLine (still draining buffered MSBuild output) can't flip
+                    // Phase back off "Done" after we've reported the task cancelled.
                     status.Status = "Cancelled";
                     status.Phase = "Done";
-                    EmitPhaseProgress(status.Phase);
                     status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                     try { status.StateChangeSignal.Set(); } catch { }
-                    // Friction 2026-05-22: p.Kill() on net48 kills only the parent.
-                    // MSBuild spawns N child nodes (/m); orphaned children pile up
-                    // as zombies in tasklist after each cancel. Walk the tree and
-                    // kill all descendants before the parent — fire-and-forget so
-                    // the cancel RPC returns quickly (best-effort cleanup; the
-                    // caller has already been told the task is Cancelled).
-                    System.Threading.Tasks.Task.Run(() =>
-                    {
-                        try { KillProcessTree(p); }
-                        catch (Exception ex) { Logger.Warn("[KILL-TREE-BG] " + ex.Message); }
-                    });
-                    return JsonConvert.SerializeObject(new { status = "Cancelled", taskId = taskId });
                 }
-                return JsonConvert.SerializeObject(new { status = status.Status, message = "Task already finished" });
+
+                EmitPhaseProgress("Done");
+
+                // Friction 2026-05-22: p.Kill() on net48 kills only the parent.
+                // MSBuild spawns N child nodes (/m); orphaned children pile up
+                // as zombies in tasklist after each cancel. Walk the tree and
+                // kill all descendants before the parent — fire-and-forget so
+                // the cancel RPC returns quickly (best-effort cleanup; the
+                // caller has already been told the task is Cancelled).
+                var pt = p;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try { KillProcessTree(pt); }
+                    catch (Exception ex) { Logger.Warn("[KILL-TREE-BG] " + ex.Message); }
+                });
+                return JsonConvert.SerializeObject(new { status = "Cancelled", taskId = taskId });
             }
             catch (Exception ex)
             {
