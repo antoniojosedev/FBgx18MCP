@@ -116,7 +116,14 @@ namespace GxMcp.Worker.Services
                             return McpResponse.Err("ConfirmRequired", "pipeline_run triggers a build; pass confirm=true.", "Set confirm=true to run the pipeline.");
                         bool rebuild = args?["rebuild"]?.ToObject<bool?>() ?? false;
                         bool runTests = args?["runTests"]?.ToObject<bool?>() ?? false;
-                        svc.RunPipeline(data, project, rebuild, runTests);
+                        try { svc.RunPipeline(data, project, rebuild, runTests); }
+                        catch (Exception ex)
+                        {
+                            return McpResponse.Err(
+                                code: "PipelineRunFailed",
+                                message: ex.Message,
+                                hint: "The build trigger call failed. Verify the project name and GXserver session, then retry.");
+                        }
                         return McpResponse.Ok(code: "PipelineRunTriggered", result: new JObject { ["project"] = project, ["rebuild"] = rebuild, ["runTests"] = runTests });
                     }
 
@@ -125,7 +132,14 @@ namespace GxMcp.Worker.Services
                         if (string.IsNullOrWhiteSpace(project)) return NeedProject();
                         if (!(args?["confirm"]?.ToObject<bool?>() ?? false))
                             return McpResponse.Err("ConfirmRequired", "pipeline_abort cancels a running build; pass confirm=true.", "Set confirm=true to abort.");
-                        svc.AbortRunPipeline(data, project);
+                        try { svc.AbortRunPipeline(data, project); }
+                        catch (Exception ex)
+                        {
+                            return McpResponse.Err(
+                                code: "PipelineAbortFailed",
+                                message: ex.Message,
+                                hint: "The build cancel call failed. Verify the project name and GXserver session, then retry.");
+                        }
                         return McpResponse.Ok(code: "PipelineAborted", result: new JObject { ["project"] = project });
                     }
 
