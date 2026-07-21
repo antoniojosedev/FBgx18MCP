@@ -11,6 +11,45 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Fifth-pass audit (2026-07-21, against `00573c3` / v2.29.2) — performance + bug-fixing only
+
+Second focused `improve` pass of the day, again scoped to **performance and
+correctness bugs only**, against tip `00573c3`. Three parallel read-only audits
+(perf hot-paths in not-yet-reviewed worker services; correctness/concurrency in the
+gateway; correctness in the v2.27–2.29 SDK-endpoint services + high-churn core).
+Ten findings vetted against live code by the advisor. Maintainer authorized
+auto-apply + commit to `main`, left **Unreleased**. Executed one executor per plan in
+isolated worktrees, advisor-reviewed, merged the passing ones to `main`.
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 022 | `CallerGraphService.GetCallers` single index pass (impact-analysis hot path) | P1 | S-M | LOW | — | TODO |
+| 023 | `ResolveWWPInstance` resolves WWP host by name, not full-KB scan (every WebForm/Layout edit) | P1 | S | LOW | — | TODO |
+| 024 | `genexus_gam` define_api/deploy require `confirm=true` | P1 | S | LOW | — | TODO |
+| 025 | `CiPipelineService` surfaces run/abort failures as errors, not "not connected" | P1 | S | LOW | — | TODO |
+| 026 | `BackgroundJobRegistry` guards status transitions with a per-job lock | P1 | S | LOW | — | TODO |
+| 027 | `MultiAgentLockService` writes the lock file atomically | P2 | S | LOW | — | TODO |
+| 028 | `IdempotencyCache` evicts per-key gates (unbounded-growth fix) | P2 | S | MED | — | TODO |
+| 029 | `CrossPlatformImpactAnalyzer` name→entry map instead of linear scan | P3 | S-M | LOW | — | TODO |
+| 030 | `RefactorService` rename atomic (transaction around patch+rename) | P2 | M | MED | — | TODO |
+| 031 | `worker_reload mode=hard` keeps drain window closed to concurrent spawns | P2 | M | MED | — | TODO |
+
+Recommended execution order: 024, 025, 026 (P1 correctness) → 022, 023 (P1 perf) →
+027, 028, 031, 030 (P2) → 029 (P3). All ten are independent (different files, no
+shared edits) and can run in parallel worktrees. Tier A (022–027) is LOW-risk and
+ships on green tests; the MED-risk set (028, 030, 031) ships only if the executor
+diff is clean and the full suite stays green — otherwise left TODO for manual review.
+
+Considered and rejected this pass (so nobody re-audits):
+- No new god-object races: `WorkerPool` (beyond 031), `McpRouter`, `Program.Http`,
+  `HttpSessionRegistry`, `CrashLedger`, `GatewayProcessLease`, and `OperationTracker`
+  locking all reviewed clean.
+- The ~14 other v2.27–2.29 SDK-endpoint services (`SecurityScanService`,
+  `KbStatsService`, `TableRelationsService`, `ReorgImpactService`,
+  `DesignSystemService`, `CurlProcService`, `UserControlsListService`, `BlameService`,
+  `TimeTravelService`, `JsonPatchService`, `ConversionService`, `ExportObjectService`,
+  `AutoTestService`, `InjectionService`) are defensively written — no verified new bug.
+
 ## Fourth-pass audit (2026-07-21, against `4885c1c` / v2.29.1) — performance + bug-fixing only
 
 Focused `improve` pass scoped to **performance and correctness bugs only** (no
