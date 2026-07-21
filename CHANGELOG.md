@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.29.3 — 2026-07-21
+
+Two more performance + bug-fix passes (no new features). Fixes span the analysis/edit hot paths, destructive-action safety, background-job and cache memory hygiene, and several latent concurrency and parsing bugs.
+
+### Fixed
+
+- **`genexus_gam action=define_api|deploy` now require `confirm=true`.** These call the GeneXus GAM Define API / security-table deploy and can create or alter tables in the KB's datastore; they previously executed on the first call with no confirmation. They now fail fast asking for `confirm=true`, matching every other destructive SDK action.
+- **`genexus_gxserver action=pipeline_run|pipeline_abort` report real failures instead of "not connected".** A network or auth error while triggering or cancelling a CI build was reported as a benign `connected:false` success, so an agent might retry and double-trigger the build. A genuine trigger/cancel failure now returns a clear error; only an actually not-linked KB reports `connected:false`.
+- **KB-wide rename is now atomic.** `genexus_refactor` rename patched every caller's source and saved them one by one, then renamed the target last — with no rollback. If that final rename failed, callers were left referencing a name that no longer existed. The whole rename now runs in a single transaction that rolls back every caller edit if any step fails.
+- **A cancelled build/edit job stays cancelled.** Buffered worker output draining a moment after `genexus_lifecycle action=cancel` could flip the job's status back to succeeded/failed. Status transitions are now guarded so a cancel can't be clobbered.
+- **`genexus_worker_reload mode=hard` can no longer return a stale pre-swap binary.** A tool call arriving on the same KB during the binary swap could spin up a worker on the *old* binary and have it reported as the reloaded one. The reload now holds the slot for the whole swap so concurrent calls wait for the new binary.
+- **Call-graph and source search handle GeneXus string literals correctly.** The source tokenizer treated backslash as a C-style escape, so a string ending in a Windows path (e.g. `"C:\Temp\"`) desynced parsing and produced wrong call-graph and search results. It now follows GeneXus grammar (doubled-quote escaping), where backslash is an ordinary character.
+- **Intermittent generic "Erro" from background KB watching eliminated.** The change-watcher polled the GeneXus SDK from its own thread while tool calls used the SDK on the main worker thread — an unsafe concurrent access the code only partly guarded. Watcher polling now runs on the same serialized worker thread as every other SDK call.
+- **With multiple Knowledge Bases open, auto-filled object types no longer come from the wrong KB.** When a tool call omitted `type`, the type could be auto-injected from a different open KB's index (e.g. `Customer` resolved as a Transaction from one KB while editing a same-named Business Component in another). The name→type cache is now scoped per KB.
+- **`genexus_multi_agent_lock` writes its lock file atomically,** so a crash mid-write can't leave a corrupt lock that silently reads as expired and breaks mutual exclusion.
+- **Browser-driver resolution can't hang.** The one-off driver-path probe read stdout without draining stderr — a latent pipe deadlock. Both streams are now drained.
+
+### Changed
+
+- **Impact analysis and validation are faster on large KBs.** `genexus_analyze` caller/callee expansion no longer re-scans the whole index (or compiles a regex per object) on each hop; `genexus_analyze mode=cross_platform_impact` resolves names through an index map instead of a linear scan; and the pattern-condition validator resolves each object by its known type in one step instead of an untyped rescan.
+- **WebForm/Layout edits are faster.** Every visual-part edit resolved its WorkWithPlus host by walking and COM-reading the entire KB; it now looks the host up by name.
+- **Long-running gateways use less memory.** Completed background jobs are now swept on the existing maintenance loop (they previously accumulated for the life of the process, holding their full result payloads), and per-key idempotency gates are evicted once idle instead of growing without bound.
+- **Generated-file diffs do less disk work** — `genexus_diff_generated` walks each output root once and filters extensions in memory, instead of a separate recursive walk per extension.
+
+### Internal
+
+- Fifth and sixth `improve` audit passes (performance + bug-fixing only) against v2.29.2; eighteen findings across the two passes, each implemented by a dedicated executor in an isolated worktree with advisor review, then merged to `main`. See `plans/022`–`039` for design context. Worker 1529 + Gateway 660 tests green; solution builds clean. Two findings were considered and rejected/deferred (a non-reachable substring check; a low-frequency CLI config read-modify-write race whose robust fix conflicts with the package's zero-runtime-dependency policy) — see `plans/README.md`.
+
 ## v2.29.2 — 2026-07-21
 
 Performance and bug-fix pass (audit 2.29.x). No new features — targeted fixes in the recently added SDK-endpoint tools and in long-running gateway internals.
