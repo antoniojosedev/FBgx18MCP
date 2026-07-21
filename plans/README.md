@@ -11,6 +11,32 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Third-pass audit (2026-07-20, against `9fe6817` / v2.29.0)
+
+A follow-up `improve` audit ran after v2.29.0, focused on the recently-added
+SDK-endpoint expansion (v2.27–2.29) and the v2.29.0 reliability batch. Five findings
+became plans 012–016. All five are LOW-risk / HIGH-confidence and were applied +
+released in v2.29.1 in the same pass.
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 012 | MSBuild reap operates on a disposed Process (v2.29.0 regression) | P1 | S | — | DONE |
+| 013 | Confine `genexus_screenshot_publish` to image files under an allowed root | P1 | S | — | DONE |
+| 014 | Redact JSON-RPC request bodies in the gateway HTTP log | P2 | S | — | DONE |
+| 015 | Guard tests for the 10 new SDK-endpoint services + fail-fast confirm gates | P1 | M | — | DONE |
+| 016 | Extract the duplicated "resolve design model or NoKbOpen" helper | P2 | S | 015 | DONE |
+
+Dependency: **016 requires 015** — 015's `NoKbOpen` guard tests are the safety net
+that proves 016's extraction preserves behavior. Land 015 first.
+
+Rejected this pass (so nobody re-audits):
+- **TECHDEBT-02 — hand-rolled `if(action==)` dispatch chains** in `DeployService` /
+  `CiPipelineService`: NOT WORTH DOING NOW. The files are small; a shared
+  `ActionDispatcher` only pays off once a third destructive-action service exists.
+  Revisit then.
+- **Performance**: no new hotspot found this pass. The prior PERF-01/02, plans
+  002/003/006, and the rejected 004 (no batched SDK accessor) still stand.
+
 ## Execution order & status
 
 | Plan | Title | Priority | Effort | Depends on | Status |

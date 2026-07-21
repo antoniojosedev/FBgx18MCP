@@ -34,15 +34,15 @@ namespace GxMcp.Worker.Services
         {
             string action = (args?["action"]?.ToString() ?? "list_targets").Trim().ToLowerInvariant();
 
-            KBModel model;
-            try { model = (_kb?.GetKB() as KnowledgeBase)?.DesignModel; }
-            catch { model = null; }
-
-            if (model == null)
+            // Fail-fast: a static precondition must not depend on KB state.
+            if (action == "deploy" && !(args?["confirm"]?.ToObject<bool?>() ?? false))
                 return McpResponse.Err(
-                    code: "NoKbOpen",
-                    message: "No open KB / design model available.",
-                    hint: "Open a KB first (genexus_kb action=open).");
+                    code: "ConfirmRequired",
+                    message: "action=deploy builds and ships the application; pass confirm=true.",
+                    hint: "Review the target with action=list_targets, then set confirm=true.");
+
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             if (action == "list_targets")
             {

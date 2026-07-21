@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -107,6 +108,33 @@ namespace GxMcp.Gateway
             return Results.Empty;
         }
 
+        // Plan 014: sensitive-key substrings (case-insensitive). Values under a
+        // matching key — and any nested object/array value, sensitive or not — are
+        // masked before the inbound request is summarized to the durable gateway log.
+        private static readonly string[] SensitiveKeys = { "password", "passwd", "pass", "token", "secret", "key", "credential", "authorization", "apikey" };
+
+        internal static string RedactBodyForLog(JObject requestObj)
+        {
+            try
+            {
+                var args = requestObj?["params"]?["arguments"] as JObject;
+                if (args == null) return "(no arguments)";
+                var parts = new List<string>();
+                foreach (var prop in args.Properties())
+                {
+                    bool sensitive = SensitiveKeys.Any(k => prop.Name.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0);
+                    string shown = sensitive || prop.Value.Type == JTokenType.Object || prop.Value.Type == JTokenType.Array
+                        ? "***"
+                        : Truncate(prop.Value.ToString(), 40);
+                    parts.Add(prop.Name + "=" + shown);
+                }
+                return "{" + string.Join(", ", parts) + "}";
+            }
+            catch { return "(unparseable)"; }
+        }
+
+        private static string Truncate(string s, int n) => s == null ? "" : (s.Length > n ? s.Substring(0, n) + "…" : s);
+
         private static async Task<IResult> HandleJsonRpcHttpRequest(HttpRequest request)
         {
             using (var reader = new StreamReader(request.Body))
@@ -130,8 +158,7 @@ namespace GxMcp.Gateway
 
                     id = requestObj["id"]?.ToString() ?? "no-id";
                     string method = requestObj["method"]?.ToString() ?? "unknown";
-                    string bodyBrief = body.Length > 100 ? body.Substring(0, 100) + "..." : body;
-                    Log($"[HTTP] Received {method} (ID: {id}) - Body: {bodyBrief}");
+                    Log($"[HTTP] Received {method} (ID: {id}) - Args: {RedactBodyForLog(requestObj)}");
 
                     string httpSessionId = session?.Id ?? request.Headers["MCP-Session-Id"].FirstOrDefault() ?? "http";
                     var response = await ProcessMcpRequest(requestObj, httpSessionId);

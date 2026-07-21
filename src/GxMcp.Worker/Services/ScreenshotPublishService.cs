@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Utils;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -43,9 +44,39 @@ namespace GxMcp.Worker.Services
             return PublishCore(sourcePath, kbPath);
         }
 
+        private static readonly string[] AllowedExt = { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp" };
+        private const long MaxBytes = 25L * 1024 * 1024;
+
         // Exposed for tests so they don't need a live KbService.
         public static string PublishCore(string sourcePath, string kbPath)
         {
+            // Plan 013: only image files, only from a root screenshots plausibly
+            // originate from (OS temp dir, the open KB, or an explicit override),
+            // and only up to a sane size — before ever touching File.Copy.
+            string ext = Path.GetExtension(sourcePath ?? "").ToLowerInvariant();
+            if (Array.IndexOf(AllowedExt, ext) < 0)
+                return Error("SourceNotAllowed",
+                    "screenshot_publish only accepts image files (" + string.Join(", ", AllowedExt) + ").");
+
+            string full;
+            try { full = Path.GetFullPath(sourcePath); }
+            catch { return Error("SourceNotAllowed", "Invalid source path."); }
+
+            string envDir = Environment.GetEnvironmentVariable("GXMCP_SCREENSHOT_DIR");
+            bool withinTemp = PathSafety.TryResolveWithinRoot(Path.GetTempPath(), full, out _);
+            bool withinKb = !string.IsNullOrEmpty(kbPath) && PathSafety.TryResolveWithinRoot(kbPath, full, out _);
+            bool withinEnvDir = !string.IsNullOrEmpty(envDir) && PathSafety.TryResolveWithinRoot(envDir, full, out _);
+            if (!(withinTemp || withinKb || withinEnvDir))
+                return Error("SourceNotAllowed",
+                    "screenshot source must be under the OS temp dir, the open KB, or GXMCP_SCREENSHOT_DIR.");
+
+            try
+            {
+                if (File.Exists(sourcePath) && new FileInfo(sourcePath).Length > MaxBytes)
+                    return Error("SourceTooLarge", "Screenshot exceeds 25 MB.");
+            }
+            catch { /* fall through; File.Copy will surface a real IO error */ }
+
             try
             {
                 string destDir = Path.Combine(kbPath, ".gx", "published-screenshots");

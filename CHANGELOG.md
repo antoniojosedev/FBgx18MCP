@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.29.1 — 2026-07-21
+
+Security and reliability hardening for the recently added SDK-endpoint tools.
+
+### Fixed
+
+- **Lingering MSBuild processes are now actually reaped on every build exit.** The v2.29.0 "guaranteed reap" cleanup inspected the build's process handle *after* it had already been released, so the safety net silently did nothing (and logged a spurious cleanup warning on affected builds). Cleanup now tracks the MSBuild process by PID — with a start-time guard against PID reuse — so a hung child process can't linger after the build finishes, fails, or throws.
+- **`genexus_screenshot_publish` now only accepts image files from an expected location.** The tool copied any readable file path it was handed into the Knowledge Base's `.gx` tree with no type, size, or location check. It now requires an image extension, confines the source to the OS temp directory, the open KB, or `GXMCP_SCREENSHOT_DIR`, and caps the file at 25 MB — rejecting anything else before it copies.
+- **The gateway's HTTP request log no longer records raw request bodies.** The debug log wrote the first 100 characters of every inbound JSON-RPC body, which could capture a credential passed as a tool argument. It now logs the method, id, and argument key names with sensitive values — and any nested object or array — masked.
+
+### Changed
+
+- **`genexus_deploy action=deploy` and `genexus_gxserver action=pipeline_run|pipeline_abort` check `confirm=true` before anything else.** The confirmation gate on these destructive actions now runs before Knowledge Base resolution, so a missing `confirm` is reported the same way whether or not a KB is open.
+
+### Internal
+
+- Added guard-test coverage for the ten SDK-endpoint services introduced across v2.27–2.29 (confirm gates, no-KB handling), and extracted their duplicated design-model resolution into a shared `KbModelGuard` helper (behavior-preserving). Worker 1507 + Gateway 643 green. See `plans/012`–`016` for design context.
+
 ## v2.29.0 — 2026-07-20
 
 Reliability & authoring batch — build/deploy status honesty, long-op resilience, and schema/layout fixes. Also closes issues #40 and #41.

@@ -33,15 +33,8 @@ namespace GxMcp.Worker.Services
 
         public string Run(JObject args)
         {
-            KBModel model;
-            try { model = (_kb?.GetKB() as KnowledgeBase)?.DesignModel; }
-            catch { model = null; }
-
-            if (model == null)
-                return McpResponse.Err(
-                    code: "NoKbOpen",
-                    message: "No open KB / design model available.",
-                    hint: "Open a KB first (genexus_kb action=open).");
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             // ISecurityScannerService is registered only by the IDE's Security Scanner
             // package (not loaded headless), so the service registry is empty here. But the

@@ -34,15 +34,17 @@ namespace GxMcp.Worker.Services
         {
             action = (action ?? "").Trim().ToLowerInvariant();
 
-            KBModel model;
-            try { model = (_kb?.GetKB() as KnowledgeBase)?.DesignModel; }
-            catch { model = null; }
+            // Fail-fast: a static precondition must not depend on KB state.
+            if ((action == "pipeline_run" || action == "pipeline_abort")
+                && !(args?["confirm"]?.ToObject<bool?>() ?? false))
+                return McpResponse.Err("ConfirmRequired",
+                    action == "pipeline_run"
+                        ? "pipeline_run triggers a build; pass confirm=true."
+                        : "pipeline_abort cancels a running build; pass confirm=true.",
+                    "Set confirm=true.");
 
-            if (model == null)
-                return McpResponse.Err(
-                    code: "NoKbOpen",
-                    message: "No open KB / design model available.",
-                    hint: "Open a KB first (genexus_kb action=open).");
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             var svc = SdkServiceResolver.Resolve<Ci.IContinuousIntegrationService>();
             if (svc == null)

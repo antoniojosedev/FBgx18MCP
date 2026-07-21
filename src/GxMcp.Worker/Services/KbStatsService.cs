@@ -33,15 +33,8 @@ namespace GxMcp.Worker.Services
 
         public string Run(JObject args)
         {
-            KBModel model;
-            try { model = (_kb?.GetKB() as KnowledgeBase)?.DesignModel; }
-            catch { model = null; }
-
-            if (model == null)
-                return McpResponse.Err(
-                    code: "NoKbOpen",
-                    message: "No open KB / design model available.",
-                    hint: "Open a KB first (genexus_kb action=open).");
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             var info = SdkServiceLocator.ConstructOrResolve<GenexusServices.IModelInformationService>(
                 () => new Artech.Packages.Genexus.BL.Services.ModelInformationService());

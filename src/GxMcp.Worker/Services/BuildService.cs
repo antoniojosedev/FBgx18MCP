@@ -91,6 +91,34 @@ namespace GxMcp.Worker.Services
             return killed;
         }
 
+        // Plan 012: reap a spawned MSBuild process by PID from a context where the
+        // original Process object has already been disposed (e.g. the RunBuild
+        // finally block, after the enclosing using-block has run Dispose()).
+        // Guards against PID reuse via a start-time match when one was captured.
+        internal void ReapByPidIfAlive(int pid, DateTime expectedStart)
+        {
+            if (pid <= 0) return;
+            System.Diagnostics.Process p = null;
+            try { p = System.Diagnostics.Process.GetProcessById(pid); }
+            catch { return; } // ArgumentException => not running; nothing to reap
+            using (p)
+            {
+                try
+                {
+                    if (p.HasExited) return;
+                    // Guard against PID reuse: only kill if the start time matches
+                    // (skip the guard when we failed to capture it).
+                    if (expectedStart != DateTime.MinValue)
+                    {
+                        try { if (p.StartTime != expectedStart) return; } catch { }
+                    }
+                    Logger.Info("[BUILD-CLEANUP] reaping lingering MSBuild tree pid=" + pid);
+                    KillProcessTree(p);
+                }
+                catch { /* best-effort */ }
+            }
+        }
+
         private static List<int> CollectDescendants(int rootPid, DateTime rootStartUtc)
         {
             var result = new List<int>();
@@ -1501,6 +1529,11 @@ namespace GxMcp.Worker.Services
         private void RunBuild(BuildTaskStatus status, string action, List<string> targets)
         {
             string tempFile = null;
+            // Plan 012: captured PID/start-time survive the using-block's Dispose() of
+            // `process`, so the finally-block reap can identify the same OS process
+            // without dereferencing the already-disposed Process instance.
+            int reapPid = 0;
+            DateTime reapStart = DateTime.MinValue;
             // FR#24: thread-tag the Logger so worker_debug.log carries [phase=...]
             // on every line emitted from this build (and only this build).
             Helpers.Logger.CurrentPhase = "Starting";
@@ -1771,6 +1804,8 @@ namespace GxMcp.Worker.Services
                     process.ErrorDataReceived  += (s, e) => HandleLine(status, e.Data, true);
 
                     process.Start();
+                    reapPid = process.Id;
+                    try { reapStart = process.StartTime; } catch { reapStart = DateTime.MinValue; }
                     status.Phase = "OpeningKB";
                     EmitPhaseProgress(status.Phase);
                     process.BeginOutputReadLine();
@@ -1848,11 +1883,7 @@ namespace GxMcp.Worker.Services
                 // worker nodes down on normal completion, but a hung/slow child (or an
                 // exception before WaitForExit returned) could otherwise linger on the
                 // user's machine. This keeps the MCP from ever leaving MSBuild behind.
-                try
-                {
-                    var p = status.Process;
-                    if (p != null && !p.HasExited) KillProcessTree(p);
-                }
+                try { ReapByPidIfAlive(reapPid, reapStart); }
                 catch (Exception ex) { Logger.Warn("[BUILD-CLEANUP] MSBuild reap: " + ex.Message); }
                 try { if (tempFile != null && File.Exists(tempFile)) File.Delete(tempFile); } catch { }
                 status.Process = null;

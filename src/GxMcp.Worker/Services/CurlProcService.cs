@@ -36,11 +36,8 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrWhiteSpace(curl))
                 return McpResponse.Err("BadArgs", "curl_procedure requires curl (the curl command).", "Pass curl=\"curl -X POST https://...\".");
 
-            KBModel model;
-            try { model = (_kb?.GetKB() as KnowledgeBase)?.DesignModel; }
-            catch { model = null; }
-            if (model == null)
-                return McpResponse.Err("NoKbOpen", "No open KB / design model available.", "Open a KB first (genexus_kb action=open).");
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             var svc = SdkServiceLocator.ConstructOrResolve<GenexusServices.ICurlGeneratorService>(
                 () => new Artech.Packages.Genexus.BL.Services.CurlGeneratorService());

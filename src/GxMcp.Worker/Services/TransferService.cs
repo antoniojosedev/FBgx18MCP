@@ -44,16 +44,8 @@ namespace GxMcp.Worker.Services
                     message: "Unknown action '" + action + "'. Expected export, inspect, or import.",
                     hint: "genexus_transfer action=export|inspect|import.");
 
-            KnowledgeBase kb;
-            KBModel model;
-            try { kb = _kb?.GetKB() as KnowledgeBase; model = kb?.DesignModel; }
-            catch { kb = null; model = null; }
-
-            if (model == null)
-                return McpResponse.Err(
-                    code: "NoKbOpen",
-                    message: "No open KB / design model available.",
-                    hint: "Open a KB first (genexus_kb action=open).");
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             var svc = SdkServiceResolver.Resolve<IKnowledgeManagerService>();
             if (svc == null)

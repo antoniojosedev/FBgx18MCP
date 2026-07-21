@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Helpers;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
 using DSObject = Artech.Genexus.Common.Objects.DesignSystem;
@@ -32,11 +33,8 @@ namespace GxMcp.Worker.Services
 
         public string Run(JObject args)
         {
-            KnowledgeBase kb;
-            try { kb = _kb?.GetKB() as KnowledgeBase; }
-            catch { kb = null; }
-            if (kb?.DesignModel == null)
-                return McpResponse.Err("NoKbOpen", "No open KB / design model available.", "Open a KB first (genexus_kb action=open).");
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             string name = args?["name"]?.ToString();
             DSObject dso = null;
@@ -52,7 +50,7 @@ namespace GxMcp.Worker.Services
                 // No name → use the first DesignSystem object in the KB.
                 try
                 {
-                    foreach (KBObject o in kb.DesignModel.Objects.GetAll())
+                    foreach (KBObject o in model.Objects.GetAll())
                     {
                         if (string.Equals(o?.TypeDescriptor?.Name, "DesignSystem", StringComparison.OrdinalIgnoreCase))
                         { dso = o as DSObject; if (dso != null) { name = o.Name; break; } }

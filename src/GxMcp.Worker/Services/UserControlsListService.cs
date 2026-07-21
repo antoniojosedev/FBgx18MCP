@@ -31,11 +31,8 @@ namespace GxMcp.Worker.Services
 
         public string Run(JObject args)
         {
-            KBModel model;
-            try { model = (_kb?.GetKB() as KnowledgeBase)?.DesignModel; }
-            catch { model = null; }
-            if (model == null)
-                return McpResponse.Err("NoKbOpen", "No open KB / design model available.", "Open a KB first (genexus_kb action=open).");
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             var svc = SdkServiceLocator.ConstructOrResolve<GenexusServices.IUserControlsManagerService>(
                 () => new Artech.Packages.Genexus.BL.Services.UserControlsManagerService());

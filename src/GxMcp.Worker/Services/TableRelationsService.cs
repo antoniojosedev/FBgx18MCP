@@ -41,11 +41,8 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrWhiteSpace(name))
                 return McpResponse.Err("BadArgs", "table_relations requires a Transaction name.", "Pass name=<Transaction>.");
 
-            KBModel model;
-            try { model = (_kb?.GetKB() as KnowledgeBase)?.DesignModel; }
-            catch { model = null; }
-            if (model == null)
-                return McpResponse.Err("NoKbOpen", "No open KB / design model available.", "Open a KB first (genexus_kb action=open).");
+            if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
+                return kbErr;
 
             Transaction trn;
             try { trn = _objects?.FindObject(name, "Transaction") as Transaction; }
