@@ -68,7 +68,7 @@ namespace GxMcp.Worker.Services
                     string xml;
                     try
                     {
-                        var obj = _objectService.FindObject(entry.Name);
+                        var obj = _objectService.FindObject(entry.Name, entry.Type);
                         if (obj == null) continue;
                         xml = _patternAnalysisService.ReadPatternPartXml(obj, "PatternInstance", out _, out _);
                     }
