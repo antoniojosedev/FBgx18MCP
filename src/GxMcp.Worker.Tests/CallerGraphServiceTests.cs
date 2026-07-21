@@ -279,5 +279,62 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("ByBoth", callers);
             Assert.Equal(4, callers.Distinct(System.StringComparer.OrdinalIgnoreCase).Count());
         }
+
+        // Plan 032: GetCallees' fallback (used when Calls isn't populated) was
+        // rewritten from a per-candidate compiled Regex to a single snippet
+        // tokenization pass. These tests lock the fast path (Calls populated)
+        // and the fallback's behavior (identifier-in-snippet must match a
+        // known object AND be followed by "(").
+
+        [Fact]
+        public void GetCallees_CallsPopulated_FastPathUnchanged()
+        {
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry { Name = "Caller", Type = "Procedure",
+                    Calls = new List<string> { "A", "B" }, CalledBy = new List<string>(), SourceSnippet = "" },
+                new SearchIndex.IndexEntry { Name = "A", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" },
+                new SearchIndex.IndexEntry { Name = "B", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" }
+            };
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries);
+            var svc = new CallerGraphService(idx);
+
+            var callees = svc.GetCallees("Caller");
+            Assert.Contains("A", callees);
+            Assert.Contains("B", callees);
+            Assert.Equal(2, callees.Distinct(System.StringComparer.OrdinalIgnoreCase).Count());
+        }
+
+        [Fact]
+        public void GetCallees_FallbackPath_FindsCalleeViaSourceSnippet_NoFalseMatch()
+        {
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                // Empty Calls -> triggers the fallback snippet scan.
+                new SearchIndex.IndexEntry { Name = "Caller", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(),
+                    SourceSnippet = "DoThing(1); // mentions Foo but not as a call" },
+                new SearchIndex.IndexEntry { Name = "DoThing", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" },
+                // "Foo" is an indexed object but never called (no trailing '(') in the snippet.
+                new SearchIndex.IndexEntry { Name = "Foo", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" },
+                // "Unrelated" isn't mentioned in the snippet at all.
+                new SearchIndex.IndexEntry { Name = "Unrelated", Type = "Procedure",
+                    Calls = new List<string>(), CalledBy = new List<string>(), SourceSnippet = "" }
+            };
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries);
+            var svc = new CallerGraphService(idx);
+
+            var callees = svc.GetCallees("Caller");
+            Assert.Contains("DoThing", callees);
+            Assert.DoesNotContain("Foo", callees);
+            Assert.DoesNotContain("Unrelated", callees);
+            Assert.Single(callees);
+        }
     }
 }

@@ -98,14 +98,19 @@ namespace GxMcp.Worker.Services
             }
 
             // Fallback for objects whose Calls hasn't been populated yet: scan
-            // the snippet for identifiers that match known objects in the index.
+            // the snippet once for call-site identifiers (single regex pass,
+            // not one compiled regex per candidate object) and intersect with
+            // the set of known object names in the index.
             if (callees.Count == 0 && !string.IsNullOrEmpty(entry.SourceSnippet))
             {
+                var calledIdentifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (Match m in Regex.Matches(entry.SourceSnippet, @"\b(\w+)\s*\(", RegexOptions.IgnoreCase))
+                    calledIdentifiers.Add(m.Groups[1].Value);
+
                 foreach (var other in idx.Objects.Values)
                 {
                     if (other == null || other == entry || string.IsNullOrEmpty(other.Name)) continue;
-                    var pat = new Regex(@"\b" + Regex.Escape(other.Name) + @"\s*\(", RegexOptions.IgnoreCase);
-                    if (pat.IsMatch(entry.SourceSnippet)) callees.Add(other.Name);
+                    if (calledIdentifiers.Contains(other.Name)) callees.Add(other.Name);
                 }
             }
 
