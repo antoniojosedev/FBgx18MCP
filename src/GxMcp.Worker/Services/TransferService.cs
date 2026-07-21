@@ -79,17 +79,24 @@ namespace GxMcp.Worker.Services
             string typeFilter = args?["type"]?.ToString();
             var objs = new List<KBObject>();
             var missing = new JArray();
+            var lookupErrors = new JArray();
             foreach (var t in targets)
             {
                 string name = t?.ToString();
                 if (string.IsNullOrWhiteSpace(name)) continue;
                 KBObject o = null;
-                try { o = _objects?.FindObject(name, typeFilter); } catch { }
+                try { o = _objects?.FindObject(name, typeFilter); }
+                catch (Exception ex) { lookupErrors.Add(new JObject { ["name"] = name, ["error"] = ex.Message }); continue; }
                 if (o == null) missing.Add(name); else objs.Add(o);
             }
 
             if (objs.Count == 0)
-                return McpResponse.Err(code: "ObjectsNotFound", message: "None of the requested objects were found.", hint: "Check the names (genexus_query).", target: string.Join(",", missing));
+                return McpResponse.Err(
+                    code: "ObjectsNotFound",
+                    message: "None of the requested objects were found.",
+                    hint: "Check the names (genexus_query).",
+                    target: string.Join(",", missing),
+                    errorExtra: lookupErrors.Count > 0 ? new JObject { ["lookupErrors"] = lookupErrors } : null);
 
             var options = SilentExportOptions();
             bool ok = svc.Export(model, objs, outputFile, options);
@@ -102,6 +109,7 @@ namespace GxMcp.Worker.Services
                     ["outputFile"] = outputFile,
                     ["exportedCount"] = objs.Count,
                     ["notFound"] = missing,
+                    ["lookupErrors"] = lookupErrors,
                     ["dependencyAware"] = true,
                     ["source"] = "sdk:IKnowledgeManagerService.Export"
                 });

@@ -34,6 +34,19 @@ namespace GxMcp.Worker.Services
         {
             action = (action ?? "").Trim().ToLowerInvariant();
 
+            switch (action)
+            {
+                case "pipeline_list":
+                case "pipeline_runs":
+                case "pipeline_output":
+                case "pipeline_run":
+                case "pipeline_abort":
+                    break;
+                default:
+                    return McpResponse.Err("BadAction", "Unknown pipeline action '" + action + "'.",
+                        "Valid: pipeline_list|pipeline_runs|pipeline_output|pipeline_run|pipeline_abort.");
+            }
+
             // Fail-fast: a static precondition must not depend on KB state.
             if ((action == "pipeline_run" || action == "pipeline_abort")
                 && !(args?["confirm"]?.ToObject<bool?>() ?? false))
@@ -84,7 +97,9 @@ namespace GxMcp.Worker.Services
                     case "pipeline_output":
                     {
                         if (string.IsNullOrWhiteSpace(project)) return NeedProject();
-                        int buildId = args?["buildId"]?.ToObject<int?>() ?? 0;
+                        if (args?["buildId"] == null)
+                            return McpResponse.Err("BadArgs", "pipeline_output requires buildId.", "Pass buildId=<int> (see pipeline_runs).");
+                        int buildId = args["buildId"].ToObject<int?>() ?? 0;
                         return McpResponse.Ok(code: "PipelineRunOutputRetrieved", result: new JObject
                         {
                             ["project"] = project,

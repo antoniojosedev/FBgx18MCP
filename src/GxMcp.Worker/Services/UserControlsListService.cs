@@ -45,20 +45,23 @@ namespace GxMcp.Worker.Services
                 try { svc.Initialize(model); } catch { /* getter may work without it */ }
 
                 var controls = new JArray();
-                try
+                if (limit > 0)
                 {
-                    foreach (var def in svc.GetControlDefinitionCollection(model))
+                    try
                     {
-                        if (def == null) continue;
-                        controls.Add(new JObject
+                        foreach (var def in svc.GetControlDefinitionCollection(model))
                         {
-                            ["name"] = Reflect(def, "Name"),
-                            ["description"] = Reflect(def, "Description")
-                        });
-                        if (controls.Count >= limit) break;
+                            if (def == null) continue;
+                            controls.Add(new JObject
+                            {
+                                ["name"] = Reflect(def, "Name"),
+                                ["description"] = Reflect(def, "Description")
+                            });
+                            if (controls.Count >= limit) break;
+                        }
                     }
+                    catch (Exception ex) { return McpResponse.Err("ListControlsFailed", ex.Message, "Check the worker log."); }
                 }
-                catch (Exception ex) { return McpResponse.Err("ListControlsFailed", ex.Message, "Check the worker log."); }
 
                 return McpResponse.Ok(
                     code: "ControlsRetrieved",

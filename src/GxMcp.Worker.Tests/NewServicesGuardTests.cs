@@ -46,11 +46,11 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void DeployService_BogusAction_ReturnsNoKbOpen()
+        public void DeployService_BogusAction_ReturnsBadAction()
         {
             var svc = new DeployService(null);
             var jo = Parse(svc.Run(JObject.Parse("{\"action\":\"bogus\"}")));
-            Assert.Equal("NoKbOpen", jo["error"]?["code"]?.ToString());
+            Assert.Equal("BadAction", jo["error"]?["code"]?.ToString());
         }
 
         // ---------------- CiPipelineService ----------------
@@ -76,6 +76,27 @@ namespace GxMcp.Worker.Tests
         {
             var svc = new CiPipelineService(null);
             var jo = Parse(svc.Run("pipeline_list", new JObject()));
+            Assert.Equal("NoKbOpen", jo["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void CiPipelineService_BogusAction_ReturnsBadAction()
+        {
+            var svc = new CiPipelineService(null);
+            var jo = Parse(svc.Run("bogus", new JObject()));
+            Assert.Equal("BadAction", jo["error"]?["code"]?.ToString());
+        }
+
+        // pipeline_output's buildId guard runs after the KB/model resolution, which a
+        // null-KB unit test can't reach (it short-circuits at NoKbOpen first). This test
+        // only locks that the Step 2a action-validation reorder didn't change that
+        // reachable-without-a-KB outcome. The buildId guard itself (plan Step 2b) is not
+        // unit-testable at this layer — covered by code review, see plan 021 Step 5 notes.
+        [Fact]
+        public void CiPipelineService_PipelineOutput_NoBuildId_ReturnsNoKbOpen()
+        {
+            var svc = new CiPipelineService(null);
+            var jo = Parse(svc.Run("pipeline_output", JObject.Parse("{\"project\":\"p\"}")));
             Assert.Equal("NoKbOpen", jo["error"]?["code"]?.ToString());
         }
 

@@ -34,6 +34,12 @@ namespace GxMcp.Worker.Services
         {
             string action = (args?["action"]?.ToString() ?? "list_targets").Trim().ToLowerInvariant();
 
+            if (action != "list_targets" && action != "deploy")
+                return McpResponse.Err(
+                    code: "BadAction",
+                    message: "Unknown action '" + action + "'. Expected list_targets or deploy.",
+                    hint: "genexus_deploy action=list_targets|deploy.");
+
             // Fail-fast: a static precondition must not depend on KB state.
             if (action == "deploy" && !(args?["confirm"]?.ToObject<bool?>() ?? false))
                 return McpResponse.Err(
