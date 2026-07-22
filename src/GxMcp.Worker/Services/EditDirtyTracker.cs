@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace GxMcp.Worker.Services
 {
@@ -62,6 +64,19 @@ namespace GxMcp.Worker.Services
             var built = _everBuilt.GetOrAdd(kbKey,
                 _ => new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase));
             built[n] = 1;
+        }
+
+        // Snapshot of objects currently marked dirty (edited via MCP but not yet
+        // successfully built this session) for a KB. Drives P5 staleGenerated
+        // surfacing and the build-evidence gate's dirty-at-start set. Never returns
+        // null. Does NOT include the "never built" default-dirty objects — only
+        // explicit edits — because those are the ones an agent can act on.
+        public static List<string> GetDirty(string kbPath)
+        {
+            var kbKey = NormalizeKb(kbPath);
+            if (_dirty.TryGetValue(kbKey, out var bag))
+                return bag.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+            return new List<string>();
         }
 
         // True if the object was edited since the last successful build OR has

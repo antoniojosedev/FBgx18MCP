@@ -543,6 +543,115 @@ namespace GxMcp.Worker.Tests
             Assert.False(BuildService.IsBuildTarget("", status));
         }
 
+        // ── issue #42: no-progress watchdog env parsing ─────────────────────
+
+        [Fact]
+        public void ResolveBuildNoProgressSeconds_Unset_ReturnsDefault180()
+        {
+            var prev = Environment.GetEnvironmentVariable("GXMCP_BUILD_NOPROGRESS_SEC");
+            Environment.SetEnvironmentVariable("GXMCP_BUILD_NOPROGRESS_SEC", null);
+            try { Assert.Equal(180, BuildService.ResolveBuildNoProgressSeconds()); }
+            finally { Environment.SetEnvironmentVariable("GXMCP_BUILD_NOPROGRESS_SEC", prev); }
+        }
+
+        [Theory]
+        [InlineData("0", 0)]      // explicit disable
+        [InlineData("-5", 0)]     // any non-positive disables
+        [InlineData("10", 30)]    // clamped up to floor
+        [InlineData("300", 300)]  // in range, verbatim
+        [InlineData("999999", 3600)] // clamped down to ceiling
+        [InlineData("garbage", 180)] // unparseable → default
+        public void ResolveBuildNoProgressSeconds_ParsesAndClamps(string envValue, int expected)
+        {
+            var prev = Environment.GetEnvironmentVariable("GXMCP_BUILD_NOPROGRESS_SEC");
+            Environment.SetEnvironmentVariable("GXMCP_BUILD_NOPROGRESS_SEC", envValue);
+            try { Assert.Equal(expected, BuildService.ResolveBuildNoProgressSeconds()); }
+            finally { Environment.SetEnvironmentVariable("GXMCP_BUILD_NOPROGRESS_SEC", prev); }
+        }
+
+        // ── issue #42 (P5): EditDirtyTracker.GetDirty snapshot ──────────────
+
+        [Fact]
+        public void EditDirtyTracker_GetDirty_ReturnsSortedExplicitEditsOnly()
+        {
+            string kb = @"C:\fake-kb-getdirty-" + Guid.NewGuid().ToString("N").Substring(0, 6);
+            EditDirtyTracker.MarkDirty(kb, "Zeta");
+            EditDirtyTracker.MarkDirty(kb, "alpha");
+            EditDirtyTracker.MarkDirty(kb, "Mid");
+
+            var dirty = EditDirtyTracker.GetDirty(kb);
+            // normalized to lowercase + ordinal-ignorecase sort
+            Assert.Equal(new[] { "alpha", "mid", "zeta" }, dirty.ToArray());
+
+            // MarkClean drops it from the dirty snapshot (does not add "never built").
+            EditDirtyTracker.MarkClean(kb, "Mid");
+            Assert.Equal(new[] { "alpha", "zeta" }, EditDirtyTracker.GetDirty(kb).ToArray());
+        }
+
+        [Fact]
+        public void EditDirtyTracker_GetDirty_UnknownKb_ReturnsEmptyNeverNull()
+        {
+            var dirty = EditDirtyTracker.GetDirty(@"C:\never-touched-" + Guid.NewGuid().ToString("N"));
+            Assert.NotNull(dirty);
+            Assert.Empty(dirty);
+        }
+
+        // ── issue #42 (P3c): reject concurrent builds on the same KB ─────────
+
+        [Fact]
+        public void Build_ConcurrentBuildRunning_ReturnsBuildAlreadyRunning()
+        {
+            // Seed a genuinely in-flight build (in _inFlightBuilds, as RunBuild does),
+            // then a second Build() on the same worker must refuse with BuildAlreadyRunning.
+            var (running, runningId) = SeedInFlightBuild("Build", "FirstProc");
+            var prev = Environment.GetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS");
+            Environment.SetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS", null);
+            try
+            {
+                var svc = new BuildService();
+                string json = svc.Build("Build", "SecondProc", "none", 200, false);
+                var jo = JObject.Parse(json);
+                Assert.Equal("BuildAlreadyRunning", jo["status"]?.ToString());
+                Assert.Equal(runningId, jo["activeTaskId"]?.ToString());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS", prev);
+                InFlightRegistry().TryRemove(runningId, out _);
+            }
+        }
+
+        [Fact]
+        public void Build_ConcurrentBuildRunning_OptOutEnvAllowsSecondBuild()
+        {
+            var (running, runningId) = SeedInFlightBuild("Build", "FirstProc");
+            var prev = Environment.GetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS");
+            Environment.SetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS", "1");
+            try
+            {
+                var svc = new BuildService();
+                string json = svc.Build("Build", "SecondProc", "none", 200, false);
+                var jo = JObject.Parse(json);
+                Assert.Equal("Accepted", jo["status"]?.ToString());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS", prev);
+                InFlightRegistry().TryRemove(runningId, out _);
+            }
+        }
+
+        [Fact]
+        public void GetActiveBuilds_IgnoresOrphanedRunningStatusNotInFlight()
+        {
+            // A "Running"-labelled task in _tasks that is NOT in _inFlightBuilds (e.g.
+            // its thread died without terminalizing) must not count as active — otherwise
+            // a crashed build would wedge every future build on the worker.
+            var (_, orphan, _) = RegisterTask("Running");
+            orphan.Action = "Build";
+            Assert.DoesNotContain(BuildService.GetActiveBuilds(), b => ReferenceEquals(b, orphan));
+        }
+
         // ── Shared helpers ───────────────────────────────────────────────────
 
         private static ConcurrentDictionary<string, BuildService.BuildTaskStatus> TasksRegistry()
@@ -556,6 +665,31 @@ namespace GxMcp.Worker.Tests
         {
             TasksRegistry().TryGetValue(taskId, out var status);
             return status;
+        }
+
+        private static ConcurrentDictionary<string, BuildService.BuildTaskStatus> InFlightRegistry()
+        {
+            var fld = typeof(BuildService).GetField("_inFlightBuilds", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(fld);
+            return (ConcurrentDictionary<string, BuildService.BuildTaskStatus>)fld!.GetValue(null)!;
+        }
+
+        // Seed a genuinely in-flight build (as RunBuild does on entry) so P3c's
+        // reject / P2b's activeBuilds see it as live.
+        private static (BuildService.BuildTaskStatus status, string taskId) SeedInFlightBuild(string action, string target)
+        {
+            var taskId = Guid.NewGuid().ToString("N").Substring(0, 8);
+            var status = new BuildService.BuildTaskStatus
+            {
+                TaskId = taskId,
+                Action = action,
+                Target = target,
+                Status = "Running",
+                Phase = "Compiling",
+                StartedAt = DateTime.UtcNow
+            };
+            InFlightRegistry()[taskId] = status;
+            return (status, taskId);
         }
 
         private static (BuildService svc, BuildService.BuildTaskStatus status, string taskId) RegisterTask(string statusValue, string output = null)

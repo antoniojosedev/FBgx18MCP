@@ -41,6 +41,13 @@ namespace GxMcp.Gateway
                 "## target format\n" +
                 "- Build/validate: object name(s), comma- or semicolon-separated.\n" +
                 "- Status/result on a background op: `op:<operationId>` or just `<job_id>`.\n\n" +
+                "## Build-evidence checklist (issue #42)\n" +
+                "A GeneXus build can report `Status: Succeeded` (0 errors/0 warnings) without the generated `.cs` actually landing on disk. Do NOT treat `Succeeded` alone as proof your edit was compiled. On every build result:\n" +
+                "1. **Check `effective_status`.** `SucceededWithGaps` means the build reported success but the evidence gate found no fresh generated `.cs` for one or more targets — the code you edited may NOT be regenerated. Treat it as a soft failure and investigate before moving on.\n" +
+                "2. **Read `generateEvidence`.** `{ ok, objectsChecked, objectsBuilt, filesWritten[], staleOrMissing[], referencedButNotBuilt[]? }`. `staleOrMissing` lists targets whose `.cs` is older than the build start (or absent). `referencedButNotBuilt` appears when `includeCallees: none` dropped objects your target calls — rebuild with `includeCallees: direct|transitive` to regenerate them.\n" +
+                "3. **Check `staleGenerated`.** Objects edited via the MCP this session that have not been successfully rebuilt since. Build them (or a full build) before you rely on the generated output.\n" +
+                "4. **A second build is refused with `status: BuildAlreadyRunning`** while one is in flight (builds serialize per worker). Poll `activeTaskId` or cancel it first; opt out with env `GXMCP_ALLOW_CONCURRENT_BUILDS=1`.\n" +
+                "5. A build that stops making progress (phase/counts frozen) is force-failed after `GXMCP_BUILD_NOPROGRESS_SEC` (default 180s; 0 disables) instead of sitting `Running` for the full timeout.\n\n" +
                 "## Examples\n" +
                 "- `{ action: 'build', target: 'InvoiceProc' }`\n" +
                 "- `{ action: 'status', target: 'op:abc123', wait_seconds: 600 }`\n" +

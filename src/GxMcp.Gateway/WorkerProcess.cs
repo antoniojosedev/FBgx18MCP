@@ -1054,6 +1054,14 @@ namespace GxMcp.Gateway
                         if (_sdkReady.TrySetResult(true))
                             Program.Log($"[Gateway] worker SDK ready (KB '{Kb?.Alias}').");
                     }
+                    else if (string.Equals(method, "notifications/worker/build_active", StringComparison.Ordinal))
+                    {
+                        // issue #42 (P3a) — a background build is running. It is not an
+                        // in-flight RPC, so bump the activity clock explicitly to keep
+                        // ShouldStopForIdle / ShouldRecycleForHeap from reaping the
+                        // worker mid-build.
+                        MarkActivity();
+                    }
                     else if (string.Equals(method, "notifications/worker/persist_jobs_request", StringComparison.Ordinal))
                     {
                         TryPersistJobsForSoftReload(payload["params"] as JObject);

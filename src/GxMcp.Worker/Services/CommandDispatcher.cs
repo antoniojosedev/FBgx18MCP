@@ -792,6 +792,21 @@ namespace GxMcp.Worker.Services
                 // this plain status call answers "did my last build pass?" without a jobId.
                 var lastBuild = BuildService.GetLatestBuildSummary();
                 if (lastBuild != null) statusJson["lastBuild"] = lastBuild;
+                // issue #42 (P2b) — surface in-flight builds so the client's isBusy
+                // view is correct while a background build runs (a background build
+                // does not hold the SDK-busy flag, so status alone looked idle).
+                var activeBuilds = BuildService.GetActiveBuildsSummary();
+                statusJson["activeBuilds"] = activeBuilds;
+                statusJson["buildBusy"] = activeBuilds.Count > 0;
+                // issue #42 (P5) — objects edited via MCP but not yet successfully
+                // built this session (their generated .cs is stale relative to the KB).
+                try
+                {
+                    var dirty = EditDirtyTracker.GetDirty(_kbService.GetKbPath());
+                    if (dirty != null && dirty.Count > 0)
+                        statusJson["staleGenerated"] = new Newtonsoft.Json.Linq.JArray(dirty);
+                }
+                catch { }
                 return statusJson.ToString();
             }
             if (action == "GetIndexState")

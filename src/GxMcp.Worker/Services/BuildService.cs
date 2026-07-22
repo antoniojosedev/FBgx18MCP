@@ -25,6 +25,14 @@ namespace GxMcp.Worker.Services
         private CallerGraphService _callerGraphService;
         private static readonly ConcurrentDictionary<string, BuildTaskStatus> _tasks = new ConcurrentDictionary<string, BuildTaskStatus>();
 
+        // issue #42 — builds whose RunBuild is genuinely executing right now, keyed by
+        // taskId. Add on entry, remove in finally. This is the source of truth for
+        // "is a build in flight" (P2b activeBuilds + P3c concurrent-build reject) rather
+        // than scanning _tasks for a non-terminal Status label — an orphaned/crashed
+        // "Running" label (thread died without terminalizing) must NOT wedge every future
+        // build, and status labels registered out-of-band (tests) must not count as live.
+        private static readonly ConcurrentDictionary<string, BuildTaskStatus> _inFlightBuilds = new ConcurrentDictionary<string, BuildTaskStatus>();
+
         private static readonly System.Collections.Generic.Dictionary<string, int> _phaseProgressMap =
             new System.Collections.Generic.Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase)
             {
@@ -625,6 +633,21 @@ namespace GxMcp.Worker.Services
             // DLLs are usually fine and the run-time picks them up.
             public bool? PartialSuccess { get; set; }
 
+            // issue #42 — build-evidence gate. A build can report Status=Succeeded
+            // while the generated .cs in the environment output dir (e.g.
+            // NETCoreMySQL\web) was never written/updated. After a successful build
+            // we probe the requested/dirty targets' generated files for freshness
+            // (LastWriteTimeUtc >= StartedAt). When a target that was expected to
+            // regenerate has no fresh .cs, it lands in GenerateEvidence.staleOrMissing
+            // and a "[generate-gap]" warning is raised so the outcome is no longer a
+            // clean success. Null (omitted) when the gate did not run.
+            public JObject GenerateEvidence { get; set; }
+            // Snapshot of objects marked dirty (edited via MCP, not yet built) at the
+            // moment the build started. Captured before the in-process pipeline runs
+            // its MarkClean calls, so the gate knows which targets were expected to
+            // (re)generate. JsonIgnore — internal scaffolding, surfaced via GenerateEvidence.
+            [JsonIgnore] internal List<string> DirtyAtStart { get; set; }
+
             [JsonIgnore] internal Process Process { get; set; }
             [JsonIgnore] internal DateTime StartedAt { get; set; }
             [JsonIgnore] internal StringBuilder FullOutput { get; set; } = new StringBuilder();
@@ -985,6 +1008,31 @@ namespace GxMcp.Worker.Services
                 if (reorgGuard != null) return reorgGuard;
             }
 
+            // issue #42 (P3c) — reject a second build while one is already running.
+            // Builds are serialized per worker/KB (the SDK is single-model, in-process);
+            // two concurrent IdeWebBuildAndDeploy passes race the generated output.
+            // Opt out with GXMCP_ALLOW_CONCURRENT_BUILDS=1.
+            if (!string.Equals(Environment.GetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS"), "1", StringComparison.OrdinalIgnoreCase))
+            {
+                var active = GetActiveBuilds().FirstOrDefault();
+                if (active != null)
+                {
+                    return JsonConvert.SerializeObject(new
+                    {
+                        status = "BuildAlreadyRunning",
+                        code = "BuildAlreadyRunning",
+                        message = "A build is already running (taskId=" + active.TaskId + ", action=" + active.Action
+                            + ", phase=" + active.Phase + "). Builds are serialized per worker. Poll it via "
+                            + "genexus_lifecycle action=status target=" + active.TaskId
+                            + ", or cancel it via action=cancel before starting another.",
+                        activeTaskId = active.TaskId,
+                        activeAction = active.Action,
+                        activePhase = active.Phase,
+                        activeTarget = active.Target
+                    });
+                }
+            }
+
             // Parse target: single name OR comma/semicolon-separated list for batch "Build With These Only"
             var targets = ParseTargets(target);
 
@@ -1222,6 +1270,38 @@ namespace GxMcp.Worker.Services
                 ["elapsedSeconds"] = latest.ElapsedSeconds,
                 ["endTime"] = latest.EndTime
             };
+        }
+
+        // issue #42 — non-terminal builds currently in flight. Drives P2b
+        // (activeBuilds surfaced in lifecycle status → the client's isBusy view is
+        // true during a background build) and P3c (reject a second concurrent build).
+        internal static List<BuildTaskStatus> GetActiveBuilds()
+        {
+            var list = new List<BuildTaskStatus>();
+            foreach (var t in _inFlightBuilds.Values)
+                if (t != null && !IsTerminalStatus(t.Status)) list.Add(t);
+            return list;
+        }
+
+        // Compact JSON view of the active builds for the lifecycle status envelope.
+        public static JArray GetActiveBuildsSummary()
+        {
+            var arr = new JArray();
+            foreach (var t in GetActiveBuilds())
+            {
+                arr.Add(new JObject
+                {
+                    ["taskId"] = t.TaskId,
+                    ["action"] = t.Action,
+                    ["target"] = t.Target,
+                    ["phase"] = t.Phase,
+                    ["status"] = t.Status,
+                    ["elapsedSeconds"] = t.StartedAt != default(DateTime)
+                        ? (JToken)Math.Round((DateTime.UtcNow - t.StartedAt).TotalSeconds, 1)
+                        : JValue.CreateNull()
+                });
+            }
+            return arr;
         }
 
         public string GetStatus(string taskId, int page = 1, int pageSize = 50, bool compact = false)
@@ -1534,6 +1614,170 @@ namespace GxMcp.Worker.Services
             return def;
         }
 
+        // issue #42 — no-progress watchdog cap (seconds). Default 180s. 0 (or negative)
+        // disables. Clamped to [30, 3600] when positive. Distinct from the wall-clock
+        // GXMCP_BUILD_TIMEOUT_SEC: this fires when phase/counts stop moving, not at the
+        // full cap.
+        internal static int ResolveBuildNoProgressSeconds()
+        {
+            int def = 180;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_NOPROGRESS_SEC");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v))
+            {
+                if (v <= 0) return 0; // explicit disable
+                def = v;
+            }
+            if (def < 30) def = 30;
+            if (def > 3600) def = 3600;
+            return def;
+        }
+
+        // issue #42 — actions that emit generated code (and therefore have a .cs the
+        // evidence gate can verify). Reorg/Validate/Check don't generate object sources.
+        private static bool IsCodeEmittingAction(string action)
+        {
+            if (string.IsNullOrEmpty(action)) return false;
+            return action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                || action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase)
+                || action.Equals("Sync", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// issue #42 build-evidence gate. After a terminal success for a code-emitting
+        /// action, verify the targets that were expected to (re)generate actually have a
+        /// FRESH generated .cs on disk (LastWriteTimeUtc >= build start). A GeneXus build
+        /// can report Status=Succeeded while the .cs in the environment output dir
+        /// (e.g. NETCoreMySQL\web) was never emitted — the reporter's core complaint.
+        ///
+        /// Populates status.GenerateEvidence and, when a gap is found, raises a
+        /// "[generate-gap]" warning + hint so the outcome is no longer a clean success.
+        /// Best-effort and non-fatal: any failure here leaves the build result untouched.
+        /// </summary>
+        private void AttachGenerateEvidence(BuildTaskStatus status, string action, List<string> targets)
+        {
+            if (status == null) return;
+            // Only meaningful for a successful (or partial-success) build of a
+            // code-emitting action. specifyOnly never compiles/generates .cs to disk.
+            if (status.SpecifyOnly) return;
+            if (!IsCodeEmittingAction(action)) return;
+            bool succeeded = string.Equals(status.Status, "Succeeded", StringComparison.OrdinalIgnoreCase)
+                             || (status.PartialSuccess == true);
+            if (!succeeded) return;
+
+            string kbPath = GetKBPath();
+            if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return;
+
+            // Which targets do we expect to have regenerated?
+            //  - explicit Build targets → those objects.
+            //  - RebuildAll / Sync / targetless Build → the dirty-at-start set (objects
+            //    edited via MCP that the build was supposed to flush). If nothing was
+            //    tracked dirty, we can't cheaply enumerate the whole KB — skip quietly.
+            var checkList = (targets != null && targets.Count > 0)
+                ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                : (status.DirtyAtStart ?? new List<string>());
+            if (checkList.Count == 0) return;
+
+            var filesWritten = new JArray();
+            var staleOrMissing = new JArray();
+            int emittedCount = 0;
+            foreach (var t in checkList)
+            {
+                // Strip a "Type:Name" qualifier down to the bare object name the
+                // generator uses for the file (<Name>.cs).
+                string bare = t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
+                if (string.IsNullOrEmpty(bare)) continue;
+                GeneratedDiffService.GeneratedFileEvidence ev;
+                try { ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, status.StartedAt); }
+                catch { continue; }
+                if (ev.Fresh)
+                {
+                    emittedCount++;
+                    filesWritten.Add(new JObject
+                    {
+                        ["object"] = bare,
+                        ["path"] = ev.FreshestPath,
+                        ["writtenUtc"] = ev.FreshestWriteUtc?.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    });
+                }
+                else
+                {
+                    staleOrMissing.Add(new JObject
+                    {
+                        ["object"] = bare,
+                        ["reason"] = ev.Found ? "stale" : "missing",
+                        ["path"] = ev.FreshestPath,
+                        ["lastWrittenUtc"] = ev.FreshestWriteUtc?.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    });
+                }
+            }
+
+            // P4 — referencedButNotBuilt: when the build did NOT expand to callees
+            // (includeCallees=none), surface callees of the built targets that lack a
+            // generated .cs, so the agent knows the callee still needs its own build.
+            var referencedButNotBuilt = new JArray();
+            bool calleesExcluded = string.Equals(status.BuildPlan?.IncludeCallees, "none", StringComparison.OrdinalIgnoreCase);
+            if (calleesExcluded && _callerGraphService != null && targets != null && targets.Count > 0)
+            {
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var t in checkList)
+                {
+                    string bare = t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
+                    List<string> callees = null;
+                    try { callees = _callerGraphService.GetCallees(bare); } catch { }
+                    if (callees == null) continue;
+                    foreach (var c in callees)
+                    {
+                        string cbare = c.Contains(":") ? c.Substring(c.LastIndexOf(':') + 1).Trim() : c;
+                        if (string.IsNullOrEmpty(cbare) || !seen.Add(cbare)) continue;
+                        if (checkList.Any(x => string.Equals(
+                                x.Contains(":") ? x.Substring(x.LastIndexOf(':') + 1).Trim() : x,
+                                cbare, StringComparison.OrdinalIgnoreCase))) continue; // already built
+                        bool hasCs;
+                        try { hasCs = GeneratedDiffService.FindGeneratedFiles(kbPath, cbare, allRoots: true).Count > 0; }
+                        catch { hasCs = true; }
+                        if (!hasCs) referencedButNotBuilt.Add(cbare);
+                    }
+                }
+            }
+
+            var evidence = new JObject
+            {
+                ["ok"] = staleOrMissing.Count == 0,
+                ["objectsChecked"] = checkList.Count,
+                ["objectsBuilt"] = emittedCount,
+                ["filesWritten"] = filesWritten,
+                ["staleOrMissing"] = staleOrMissing
+            };
+            if (referencedButNotBuilt.Count > 0)
+                evidence["referencedButNotBuilt"] = referencedButNotBuilt;
+
+            if (staleOrMissing.Count > 0)
+            {
+                evidence["note"] = "Build reported success but " + staleOrMissing.Count
+                    + " object(s) expected to regenerate have no fresh generated .cs on disk. "
+                    + "The KB object may be correct while its generated code in the environment output dir was not emitted/updated.";
+                lock (status._lock)
+                {
+                    // Raise a warning so warningCount>0 (a clean success has 0/0) and the
+                    // gateway can render effective_status=SucceededWithGaps.
+                    var names = string.Join(", ", staleOrMissing.Select(x => (string)x["object"]));
+                    if (status.Warnings.Count < 50)
+                        status.Warnings.Add("[generate-gap] No fresh generated .cs after a successful build for: " + names);
+                    status.WarningCount++;
+                    if (string.IsNullOrEmpty(status.Hint))
+                        status.Hint = "Generation gap: the build succeeded but the generated .cs for "
+                            + names + " was not (re)written. Rebuild with a full deploy (deploy=true), verify the "
+                            + "environment output directory, or run genexus_lifecycle action=rebuild. See generateEvidence.staleOrMissing.";
+                }
+            }
+            else if (referencedButNotBuilt.Count > 0)
+            {
+                evidence["note"] = referencedButNotBuilt.Count + " referenced object(s) have no generated .cs and were not part of this build (includeCallees=none).";
+            }
+
+            status.GenerateEvidence = evidence;
+        }
+
         private void RunBuild(BuildTaskStatus status, string action, List<string> targets)
         {
             string tempFile = null;
@@ -1551,8 +1795,27 @@ namespace GxMcp.Worker.Services
             // blocked inside the SDK, but the agent gets a terminal Failed/TimedOut it can act on.
             int timeoutSec = ResolveBuildTimeoutSeconds(action);
             System.Threading.Timer watchdog = null;
+            System.Threading.Timer noProgressWatchdog = null;
+            System.Threading.Timer buildHeartbeat = null;
+            // issue #42 (P2b/P3c) — mark this build in-flight for the whole RunBuild body.
+            if (status?.TaskId != null) _inFlightBuilds[status.TaskId] = status;
             try
             {
+                // issue #42 (P3a) — emit a build-active heartbeat so the gateway keeps
+                // the worker alive during a long background build. A background build
+                // is NOT an in-flight RPC, so without this the gateway's idle-reap /
+                // heap-recycle timer could kill the worker mid-build. The gateway bumps
+                // _lastActivityUtc on each notification (see HandleWorkerRpcResponse).
+                buildHeartbeat = new System.Threading.Timer(_ =>
+                {
+                    try
+                    {
+                        if (IsTerminalStatus(status.Status)) return;
+                        Program.SendNotification("notifications/worker/build_active",
+                            new { taskId = status.TaskId, phase = status.Phase, action = status.Action });
+                    }
+                    catch { }
+                }, null, 5000, 20000);
                 watchdog = new System.Threading.Timer(_ =>
                 {
                     try
@@ -1576,6 +1839,52 @@ namespace GxMcp.Worker.Services
                     }
                     catch (Exception ex) { Logger.Warn("[BUILD-TIMEOUT] watchdog threw: " + ex.Message); }
                 }, null, timeoutSec * 1000, System.Threading.Timeout.Infinite);
+
+                // issue #42 — no-progress watchdog. The wall-clock cap above only
+                // fires after the FULL timeout (900s/2400s); a build that wedges early
+                // (phase + counts frozen) would otherwise sit "Running" for the whole
+                // cap. This lighter timer force-fails once no observable progress
+                // (phase / error / warning / targetsDone) has been seen for
+                // noProgressSec. Disabled when noProgressSec <= 0.
+                int noProgressSec = ResolveBuildNoProgressSeconds();
+                if (noProgressSec > 0)
+                {
+                    string lastBaseline = status.ComputeBaseline();
+                    DateTime lastProgressUtc = DateTime.UtcNow;
+                    int tickMs = Math.Max(5000, Math.Min(30000, noProgressSec * 1000 / 4));
+                    noProgressWatchdog = new System.Threading.Timer(_ =>
+                    {
+                        try
+                        {
+                            if (IsTerminalStatus(status.Status)) return;
+                            string cur = status.ComputeBaseline();
+                            if (!string.Equals(cur, lastBaseline, StringComparison.Ordinal))
+                            {
+                                lastBaseline = cur;
+                                lastProgressUtc = DateTime.UtcNow;
+                                return;
+                            }
+                            if ((DateTime.UtcNow - lastProgressUtc).TotalSeconds < noProgressSec) return;
+                            Logger.Warn("[BUILD-NOPROGRESS] taskId=" + status.TaskId + " no progress for "
+                                        + noProgressSec + "s (phase=" + status.Phase + ") — force-failing.");
+                            try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
+                            lock (status._lock)
+                            {
+                                if (IsTerminalStatus(status.Status)) return;
+                                status.Status = "Failed";
+                                status.Phase = "Done";
+                                status.Error = "Build made no observable progress for " + noProgressSec + "s at phase '"
+                                    + (status.Phase ?? "?") + "' and was terminated (no-progress watchdog). The SDK build step "
+                                    + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables).";
+                                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                            }
+                            MaybeNotifyOnFailure(status);
+                            try { status.StateChangeSignal.Set(); } catch { }
+                        }
+                        catch (Exception ex) { Logger.Warn("[BUILD-NOPROGRESS] watchdog threw: " + ex.Message); }
+                    }, null, tickMs, tickMs);
+                }
                 if (_kbService != null)
                 {
                     int waits = 0;
@@ -1588,6 +1897,12 @@ namespace GxMcp.Worker.Services
                     SetFailure(status, "KB Path not found in Environment (GX_KB_PATH)");
                     return;
                 }
+
+                // issue #42 — snapshot the dirty set BEFORE the pipeline runs, since
+                // InProcessBuildRunner calls EditDirtyTracker.MarkClean as it builds.
+                // The evidence gate in the finally uses this to know which targets were
+                // expected to regenerate their .cs.
+                try { status.DirtyAtStart = EditDirtyTracker.GetDirty(kbPath); } catch { status.DirtyAtStart = null; }
 
                 // v2.6.6 Stream D — in-process build path. Reuse the already-open
                 // KbService._kb instance + invoke GeneXus MSBuild tasks directly
@@ -1885,6 +2200,14 @@ namespace GxMcp.Worker.Services
             finally
             {
                 try { watchdog?.Dispose(); } catch { }
+                try { noProgressWatchdog?.Dispose(); } catch { }
+                try { buildHeartbeat?.Dispose(); } catch { }
+                // issue #42 — build-evidence gate. Single choke point for BOTH the
+                // in-process and MSBuild.exe branches (both reach here via return /
+                // fall-through). On a terminal success for a code-emitting action,
+                // verify the requested/dirty targets actually got fresh generated .cs.
+                try { AttachGenerateEvidence(status, action, targets); }
+                catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
                 // Guaranteed MSBuild cleanup: on ANY exit path (success, failure, or
                 // exception — not just cancel/timeout) reap the spawned MSBuild process
                 // tree if anything is still alive. /nodeReuse:false already tears the /m
@@ -1895,6 +2218,8 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex) { Logger.Warn("[BUILD-CLEANUP] MSBuild reap: " + ex.Message); }
                 try { if (tempFile != null && File.Exists(tempFile)) File.Delete(tempFile); } catch { }
                 status.Process = null;
+                // issue #42 — build no longer in flight; unblock the next build.
+                if (status?.TaskId != null) _inFlightBuilds.TryRemove(status.TaskId, out _);
                 // Don't leak the phase tag onto unrelated work on this thread.
                 Helpers.Logger.CurrentPhase = null;
             }

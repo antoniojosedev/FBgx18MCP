@@ -115,5 +115,94 @@ namespace GxMcp.Worker.Tests
                 try { Directory.Delete(tempKb, true); } catch { }
             }
         }
+
+        // ── issue #42: environment web-dir discovery + freshness gate ─────────
+
+        [Fact]
+        public void DiscoverEnvironmentWebDirs_FindsEnvWebFolder()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(tempKb, "NETCoreMySQL", "web"));
+            Directory.CreateDirectory(Path.Combine(tempKb, ".gx", "web")); // must be skipped (dotdir)
+            Directory.CreateDirectory(Path.Combine(tempKb, "SomeOther"));   // no web subdir
+            try
+            {
+                var dirs = new List<string>(GeneratedDiffService.DiscoverEnvironmentWebDirs(tempKb));
+                Assert.Contains(dirs, d => d.EndsWith(Path.Combine("NETCoreMySQL", "web"), StringComparison.OrdinalIgnoreCase));
+                Assert.DoesNotContain(dirs, d => d.Contains(".gx"));
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
+        public void FindGeneratedFiles_AllRoots_LocatesUnderNetCoreEnvWeb()
+        {
+            // Reporter's env: generated .cs lands in <KB>\NETCoreMySQL\web, which the
+            // fixed candidate list does not cover — discovery must find it.
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            File.WriteAllText(Path.Combine(web, "MyProc.cs"), "class MyProc {}");
+            try
+            {
+                var files = GeneratedDiffService.FindGeneratedFiles(tempKb, "MyProc", allRoots: true);
+                Assert.Single(files);
+                Assert.EndsWith("MyProc.cs", files[0]);
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
+        public void ProbeGeneratedFreshness_FreshFile_IsFresh()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            string f = Path.Combine(web, "Fresh.cs");
+            File.WriteAllText(f, "class Fresh {}");
+            var sinceUtc = DateTime.UtcNow.AddMinutes(-5); // file written after this
+            try
+            {
+                var ev = GeneratedDiffService.ProbeGeneratedFreshness(tempKb, "Fresh", sinceUtc);
+                Assert.True(ev.Found);
+                Assert.True(ev.Fresh);
+                Assert.Equal(1, ev.FileCount);
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
+        public void ProbeGeneratedFreshness_StaleFile_IsNotFresh()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            string f = Path.Combine(web, "Stale.cs");
+            File.WriteAllText(f, "class Stale {}");
+            File.SetLastWriteTimeUtc(f, DateTime.UtcNow.AddHours(-2)); // written well before the build
+            var sinceUtc = DateTime.UtcNow.AddMinutes(-1);            // build started 1 min ago
+            try
+            {
+                var ev = GeneratedDiffService.ProbeGeneratedFreshness(tempKb, "Stale", sinceUtc);
+                Assert.True(ev.Found);       // file exists...
+                Assert.False(ev.Fresh);      // ...but is older than the build → gap
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
+        public void ProbeGeneratedFreshness_MissingFile_NotFoundNotFresh()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(tempKb, "NETCoreMySQL", "web"));
+            try
+            {
+                var ev = GeneratedDiffService.ProbeGeneratedFreshness(tempKb, "NeverGenerated", DateTime.UtcNow.AddMinutes(-1));
+                Assert.False(ev.Found);
+                Assert.False(ev.Fresh);
+                Assert.Equal(0, ev.FileCount);
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
     }
 }

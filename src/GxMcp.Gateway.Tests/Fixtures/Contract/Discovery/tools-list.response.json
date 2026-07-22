@@ -1814,7 +1814,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Build, validate, index, or poll the KB. action=specify runs a spec-check (Spec+Gen only, no Compile/deploy) returning spc*/gen* diagnostics for the target fast (catch spec errors without a full build). action=build with mode=compile_check spec+gen+compiles the target(s) PLUS their transitive callers and skips the KB-wide DeveloperMenu regen (the dominant build-all cost) -- a fast 'did my edit break the build?' check that requires a target. Long ops are async with operationId. dryRun=true (build/rebuild/index) returns the build plan or index plan without executing. See genexus://kb/tool-help/genexus_lifecycle for actions and target formats.",
+      "description": "Build, validate, index, or poll the KB. action=specify runs a spec-check (Spec+Gen only, no Compile/deploy) returning spc*/gen* diagnostics for the target fast (catch spec errors without a full build). action=build with mode=compile_check spec+gen+compiles the target(s) PLUS their transitive callers and skips the KB-wide DeveloperMenu regen (the dominant build-all cost) -- a fast 'did my edit break the build?' check that requires a target. Long ops are async with operationId. dryRun=true (build/rebuild/index) returns the build plan or index plan without executing. Build results carry generateEvidence + effective_status=SucceededWithGaps when a Succeeded build emitted no fresh .cs (don't trust Status=Succeeded alone); a 2nd concurrent build is refused (BuildAlreadyRunning). See genexus://kb/tool-help/genexus_lifecycle for the build-evidence checklist, actions, and target formats.",
       "inputSchema": {
         "examples": [
           {

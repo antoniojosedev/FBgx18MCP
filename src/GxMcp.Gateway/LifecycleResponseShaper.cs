@@ -122,6 +122,29 @@ namespace GxMcp.Gateway
                 compactObj["effective_status"] = "PartialSuccess";
             }
 
+            // issue #42 — build-evidence gate. The worker attaches GenerateEvidence
+            // to a Succeeded build when it verified the generated .cs. Surface it and,
+            // when the gate found a gap (ok=false), mark effective_status so a caller
+            // branching on Status doesn't treat a gapped build as a clean success.
+            var genEvidence = obj["GenerateEvidence"] as JObject;
+            if (genEvidence != null)
+            {
+                compactObj["generateEvidence"] = genEvidence;
+                bool gateOk = genEvidence["ok"]?.ToObject<bool?>() ?? true;
+                if (!gateOk && compactObj["effective_status"] == null)
+                {
+                    // Still isError=false (the build itself succeeded) but the agent
+                    // sees a distinct, actionable signal instead of a clean Succeeded.
+                    compactObj["effective_status"] = "SucceededWithGaps";
+                }
+                if (obj["Hint"] != null && compactObj["hint"] == null)
+                    compactObj["hint"] = obj["Hint"];
+            }
+
+            // issue #42 (P5) — objects edited but not yet successfully rebuilt.
+            var stale = obj["staleGenerated"] as JArray;
+            if (stale != null && stale.Count > 0) compactObj["staleGenerated"] = stale;
+
             // Surface taskId/jobId for callers that want to fetch the raw payload later via action=result&compact=false.
             if (obj["jobId"] != null) compactObj["jobId"] = obj["jobId"];
             if (obj["ElapsedSeconds"] != null) compactObj["ElapsedSeconds"] = obj["ElapsedSeconds"];

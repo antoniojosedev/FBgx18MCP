@@ -357,5 +357,69 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(2, obj["errorCount"]!.Value<int>());
             Assert.Equal(2, ((JArray)obj["errors"]!).Count);
         }
+
+        // ── issue #42 — build-evidence gate passthrough ──────────────────────
+
+        // A Succeeded build whose evidence gate found a gap (ok=false) must be
+        // surfaced with effective_status=SucceededWithGaps so an agent branching
+        // on Status="Succeeded" doesn't treat a build that emitted no fresh .cs
+        // as a clean success.
+        [Fact]
+        public void Compact_GenerateEvidenceGap_SurfacesSucceededWithGapsAndHint()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 0));
+            rawObj["Status"] = "Succeeded";
+            rawObj["GenerateEvidence"] = new JObject
+            {
+                ["ok"] = false,
+                ["objectsChecked"] = 1,
+                ["filesWritten"] = new JArray(),
+                ["staleOrMissing"] = new JArray { "MyProc" }
+            };
+            rawObj["Hint"] = "Build reported Succeeded but no fresh .cs was found for: MyProc";
+
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+
+            Assert.Equal("SucceededWithGaps", obj["effective_status"]!.ToString());
+            var ev = obj["generateEvidence"] as JObject;
+            Assert.NotNull(ev);
+            Assert.False(ev!["ok"]!.Value<bool>());
+            Assert.Contains("MyProc", obj["hint"]!.ToString());
+        }
+
+        // A Succeeded build whose gate passed (ok=true) passes evidence through
+        // but must NOT stamp effective_status — it's a clean success.
+        [Fact]
+        public void Compact_GenerateEvidenceOk_PassesThroughWithoutEffectiveStatus()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 0));
+            rawObj["Status"] = "Succeeded";
+            rawObj["GenerateEvidence"] = new JObject
+            {
+                ["ok"] = true,
+                ["objectsChecked"] = 1,
+                ["filesWritten"] = new JArray { "MyProc.cs" }
+            };
+
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+
+            Assert.NotNull(obj["generateEvidence"]);
+            Assert.Null(obj["effective_status"]);
+        }
+
+        // P5 — objects edited but not yet successfully rebuilt are surfaced so an
+        // agent can see stale generated code without a separate call.
+        [Fact]
+        public void Compact_StaleGenerated_PassedThrough()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 0));
+            rawObj["staleGenerated"] = new JArray { "objecta", "objectb" };
+
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+
+            var stale = obj["staleGenerated"] as JArray;
+            Assert.NotNull(stale);
+            Assert.Equal(2, stale!.Count);
+        }
     }
 }

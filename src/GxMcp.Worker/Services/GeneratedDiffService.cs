@@ -193,20 +193,69 @@ namespace GxMcp.Worker.Services
             return dir;
         }
 
-        internal static List<string> FindGeneratedFiles(string kbPath, string target)
+        /// <summary>
+        /// Ordered list of candidate output roots to probe for an object's generated
+        /// files. Combines the well-known GeneXus 18 folders with any environment
+        /// output directory discovered under the KB root (e.g. the NetCore generator
+        /// emits to &lt;Env&gt;\web, such as "NETCoreMySQL\web", which the fixed list
+        /// below does not cover).
+        /// </summary>
+        internal static List<string> BuildCandidateRoots(string kbPath)
         {
-            var found = new List<string>();
-            if (string.IsNullOrEmpty(kbPath) || string.IsNullOrEmpty(target)) return found;
-            // Probe well-known GeneXus 18 output locations.
             var candidates = new List<string>
             {
                 Path.Combine(kbPath, "CSharpModel", "Web"),
                 Path.Combine(kbPath, "CSharpModel"),
                 Path.Combine(kbPath, "DotNetClassWeb"),
                 Path.Combine(kbPath, "JavaModel", "Web"),
-                kbPath
             };
-            foreach (var c in candidates)
+            // Discover per-environment web output dirs one level under the KB root
+            // (<KB>\<Env>\web). Cheap: a single directory listing, no recursion.
+            foreach (var envWeb in DiscoverEnvironmentWebDirs(kbPath))
+            {
+                if (!candidates.Contains(envWeb, StringComparer.OrdinalIgnoreCase))
+                    candidates.Add(envWeb);
+            }
+            candidates.Add(kbPath); // last-resort full-tree scan
+            return candidates;
+        }
+
+        /// <summary>
+        /// Immediate &lt;KB&gt;\&lt;Env&gt;\web directories (one directory-listing deep, no
+        /// recursion). These are the generator output roots the NetCore/.NET
+        /// generators write to. Skips the .gx metadata dir.
+        /// </summary>
+        internal static IEnumerable<string> DiscoverEnvironmentWebDirs(string kbPath)
+        {
+            if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) yield break;
+            string[] subdirs;
+            try { subdirs = Directory.GetDirectories(kbPath); }
+            catch { yield break; }
+            foreach (var sub in subdirs)
+            {
+                string name = Path.GetFileName(sub);
+                if (string.IsNullOrEmpty(name) || name.StartsWith(".")) continue;
+                string web = Path.Combine(sub, "web");
+                if (Directory.Exists(web)) yield return web;
+            }
+        }
+
+        internal static List<string> FindGeneratedFiles(string kbPath, string target)
+        {
+            return FindGeneratedFiles(kbPath, target, allRoots: false);
+        }
+
+        /// <summary>
+        /// Locate an object's generated files. With <paramref name="allRoots"/> false
+        /// the first candidate root with a match wins (diff use — one file set). With
+        /// true, matches are collected across every candidate root (freshness-gate use
+        /// — the build-evidence check needs the freshest file wherever it landed).
+        /// </summary>
+        internal static List<string> FindGeneratedFiles(string kbPath, string target, bool allRoots)
+        {
+            var found = new List<string>();
+            if (string.IsNullOrEmpty(kbPath) || string.IsNullOrEmpty(target)) return found;
+            foreach (var c in BuildCandidateRoots(kbPath))
             {
                 if (!Directory.Exists(c)) continue;
                 try
@@ -223,9 +272,50 @@ namespace GxMcp.Worker.Services
                     }
                 }
                 catch { }
-                if (found.Count > 0) break; // first matching root wins
+                if (!allRoots && found.Count > 0) break; // first matching root wins
             }
             return found;
+        }
+
+        /// <summary>Result of a generated-file freshness probe for one object.</summary>
+        public class GeneratedFileEvidence
+        {
+            public string Target;
+            public bool Found;                 // any generated file exists for the target
+            public bool Fresh;                 // at least one file written at/after sinceUtc
+            public string FreshestPath;        // KB-relative path of the freshest match
+            public DateTime? FreshestWriteUtc;
+            public int FileCount;
+        }
+
+        /// <summary>
+        /// Probe whether an object's generated files exist and were (re)written at or
+        /// after <paramref name="sinceUtc"/> (the build start). Used by the build
+        /// evidence gate: a build can report Succeeded while the .cs on disk is stale
+        /// or missing. Scans every candidate root and reports the freshest match.
+        /// </summary>
+        internal static GeneratedFileEvidence ProbeGeneratedFreshness(string kbPath, string target, DateTime sinceUtc)
+        {
+            var ev = new GeneratedFileEvidence { Target = target };
+            var files = FindGeneratedFiles(kbPath, target, allRoots: true);
+            ev.FileCount = files.Count;
+            ev.Found = files.Count > 0;
+            foreach (var f in files)
+            {
+                DateTime w;
+                try { w = File.GetLastWriteTimeUtc(f); }
+                catch { continue; }
+                if (ev.FreshestWriteUtc == null || w > ev.FreshestWriteUtc.Value)
+                {
+                    ev.FreshestWriteUtc = w;
+                    ev.FreshestPath = MakeRelative(kbPath, f);
+                }
+            }
+            // Allow a small clock-skew slack so a file written in the same second as
+            // build start is not falsely flagged stale.
+            if (ev.FreshestWriteUtc != null && ev.FreshestWriteUtc.Value >= sinceUtc.AddSeconds(-2))
+                ev.Fresh = true;
+            return ev;
         }
 
         internal static string ResolveLatestBaselineDir(string kbPath, string target)

@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.30.0 — Unreleased
+
+Build-reliability pass (issue #42). A GeneXus build could report `Succeeded` with 0 errors while the generated `.cs` never reached the environment's `web\` output — so an agent moved on believing its edit was compiled when it wasn't. Builds now carry evidence of what was actually generated, refuse to run two at once, and can't sit wedged as `Running` forever.
+
+### Added
+
+- **Build results now prove the generated code was emitted.** After a successful build of a code-emitting action, the result carries a `generateEvidence` block — `{ ok, objectsChecked, objectsBuilt, filesWritten[], staleOrMissing[] }` — verifying each target actually has a *fresh* generated source file on disk (newer than the build start). When the build reports `Succeeded` but no fresh `.cs` was found, the result is stamped `effective_status: "SucceededWithGaps"` with a `hint` naming the missing targets, so `Status: "Succeeded"` alone can no longer be mistaken for "my edit compiled". The output-directory search now also finds environment layouts like `NETCoreMySQL\web\` (not just the classic `CSharpModel\Web`).
+- **`staleGenerated` in the lifecycle status.** `genexus_lifecycle action=status` lists objects you edited via the MCP this session that have not been successfully rebuilt since, so you can see stale generated code without a separate call.
+- **`referencedButNotBuilt` when callees were skipped.** A build with `includeCallees: none` whose target calls other objects now reports which referenced objects were not (re)generated, pointing you at `includeCallees: direct|transitive` to include them.
+
+### Changed
+
+- **A second build on the same KB is refused while one is running.** Builds serialize per worker; firing another now returns `status: "BuildAlreadyRunning"` naming the in-flight task (poll or cancel it) instead of silently queuing behind it. Opt out with `GXMCP_ALLOW_CONCURRENT_BUILDS=1`.
+- **A wedged build no longer sits `Running` for the full timeout.** A build that stops making observable progress (phase and error/warning counts frozen) is force-failed after `GXMCP_BUILD_NOPROGRESS_SEC` (default 180s; `0` disables), giving you a terminal result you can act on well before the wall-clock cap.
+- **Long background builds keep the worker alive.** The worker emits a periodic build-active heartbeat so the gateway's idle-reap / heap-recycle timer can't kill the worker mid-build.
+
+### Internal
+
+- Active builds are now tracked by an explicit in-flight set maintained across `RunBuild`, not by scanning task-status labels — an orphaned/crashed `Running` label can no longer wedge every future build. `GeneratedDiffService` gained `BuildCandidateRoots` / `DiscoverEnvironmentWebDirs` / `ProbeGeneratedFreshness` and a two-arg `FindGeneratedFiles(kbPath, target, allRoots)`; `EditDirtyTracker.GetDirty` snapshots the explicit dirty set. New worker tests cover env-web-dir discovery, freshness fresh/stale/missing, no-progress env parsing, dirty snapshot, and concurrent-build reject; new gateway tests cover `generateEvidence`/`effective_status`/`staleGenerated` passthrough. Discovery golden fixture regenerated for the `genexus_lifecycle` description. Worker 1552 + Gateway 663 tests green.
+
 ## v2.29.4 — 2026-07-21
 
 Bug-fix pass — five agent-friction fixes across dry-run, DB drift, targeted build, worker concurrency, and preview. No new features.
