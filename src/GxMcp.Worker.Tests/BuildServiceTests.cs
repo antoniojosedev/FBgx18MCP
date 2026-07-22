@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using GxMcp.Worker.Models;
@@ -650,6 +651,121 @@ namespace GxMcp.Worker.Tests
             var (_, orphan, _) = RegisterTask("Running");
             orphan.Action = "Build";
             Assert.DoesNotContain(BuildService.GetActiveBuilds(), b => ReferenceEquals(b, orphan));
+        }
+
+        // ── issue #42 hardening (D): concurrent-build reject scoped per KB ───
+
+        [Fact]
+        public void GetActiveBuilds_KbFilter_ExcludesBuildOnAnotherKb()
+        {
+            var (status, taskId) = SeedInFlightBuild("Build", "FirstProc");
+            status.KbPath = @"C:\kbA";
+            try
+            {
+                // Different KB → not returned (would-be reject on KB-B must not fire).
+                Assert.DoesNotContain(BuildService.GetActiveBuilds(@"C:\kbB"), b => ReferenceEquals(b, status));
+                // Same KB → returned.
+                Assert.Contains(BuildService.GetActiveBuilds(@"C:\kbA"), b => ReferenceEquals(b, status));
+                // Null filter (lifecycle-status view) → returned regardless of KB.
+                Assert.Contains(BuildService.GetActiveBuilds(null), b => ReferenceEquals(b, status));
+            }
+            finally { InFlightRegistry().TryRemove(taskId, out _); }
+        }
+
+        // ── issue #42 hardening (A): incremental no-op is not a generation gap ─
+
+        [Fact]
+        public void GenerateEvidence_StaleButNotDirty_IsUpToDateNotGap()
+        {
+            // Explicit build of an UNCHANGED object: the incremental generator skipped
+            // rewriting its .cs, so mtime stays old. Not dirty → up-to-date, not a gap.
+            RunEvidenceScenario(
+                objectName: "Unchanged",
+                writeCsMtimeUtc: DateTime.UtcNow.AddHours(-2),
+                dirty: false,
+                assert: ev =>
+                {
+                    Assert.True((bool)ev["ok"]!);
+                    Assert.Empty((JArray)ev["staleOrMissing"]!);
+                    Assert.NotNull(ev["upToDate"]);
+                    Assert.Contains((JArray)ev["upToDate"]!, t => (string)t["object"]! == "Unchanged");
+                });
+        }
+
+        [Fact]
+        public void GenerateEvidence_StaleAndDirty_IsGap()
+        {
+            // Object was edited this session (dirty) but the successful build left no
+            // fresh .cs — the reporter's exact bug. Must be a gap.
+            RunEvidenceScenario(
+                objectName: "EditedProc",
+                writeCsMtimeUtc: DateTime.UtcNow.AddHours(-2),
+                dirty: true,
+                assert: ev =>
+                {
+                    Assert.False((bool)ev["ok"]!);
+                    Assert.Contains((JArray)ev["staleOrMissing"]!, t => (string)t["object"]! == "EditedProc"
+                        && (string)t["reason"]! == "stale");
+                });
+        }
+
+        [Fact]
+        public void GenerateEvidence_MissingCs_IsGapEvenWhenNotDirty()
+        {
+            // No generated .cs at all for an explicit build target → always a gap,
+            // regardless of dirty state.
+            RunEvidenceScenario(
+                objectName: "NeverEmitted",
+                writeCsMtimeUtc: null,   // no file written
+                dirty: false,
+                assert: ev =>
+                {
+                    Assert.False((bool)ev["ok"]!);
+                    Assert.Contains((JArray)ev["staleOrMissing"]!, t => (string)t["object"]! == "NeverEmitted"
+                        && (string)t["reason"]! == "missing");
+                });
+        }
+
+        // Set up a temp KB, optionally write a generated .cs at a chosen mtime, run
+        // AttachGenerateEvidence for a successful Build of <objectName>, and assert on
+        // the resulting GenerateEvidence JObject.
+        private static void RunEvidenceScenario(string objectName, DateTime? writeCsMtimeUtc, bool dirty, Action<JObject> assert)
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            if (writeCsMtimeUtc != null)
+            {
+                string f = Path.Combine(web, objectName + ".cs");
+                File.WriteAllText(f, "class " + objectName + " {}");
+                File.SetLastWriteTimeUtc(f, writeCsMtimeUtc.Value);
+            }
+            var prevKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
+            try
+            {
+                var svc = new BuildService();
+                var status = new BuildService.BuildTaskStatus
+                {
+                    TaskId = Guid.NewGuid().ToString("N").Substring(0, 8),
+                    Action = "Build",
+                    Target = objectName,
+                    Status = "Succeeded",
+                    Phase = "Done",
+                    StartedAt = DateTime.UtcNow,   // build "started" now → old .cs is stale by absolute compare
+                    DirtyAtStart = dirty ? new List<string> { objectName.ToLowerInvariant() } : new List<string>()
+                };
+                var mi = typeof(BuildService).GetMethod("AttachGenerateEvidence", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(mi);
+                mi!.Invoke(svc, new object[] { status, "Build", new List<string> { objectName } });
+                Assert.NotNull(status.GenerateEvidence);
+                assert((JObject)status.GenerateEvidence!);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_KB_PATH", prevKb);
+                try { Directory.Delete(tempKb, true); } catch { }
+            }
         }
 
         // ── Shared helpers ───────────────────────────────────────────────────

@@ -211,13 +211,54 @@ namespace GxMcp.Worker.Services
             };
             // Discover per-environment web output dirs one level under the KB root
             // (<KB>\<Env>\web). Cheap: a single directory listing, no recursion.
+            bool anyEnvWeb = false;
             foreach (var envWeb in DiscoverEnvironmentWebDirs(kbPath))
             {
+                anyEnvWeb = true;
                 if (!candidates.Contains(envWeb, StringComparer.OrdinalIgnoreCase))
                     candidates.Add(envWeb);
             }
-            candidates.Add(kbPath); // last-resort full-tree scan
+            // Last-resort full-tree scan is expensive on large KBs and can match an
+            // unrelated same-named .cs. Only fall back to it when no environment web
+            // output dir was discovered — if one exists, the generated .cs lives there.
+            bool anyWellKnown = candidates.Take(4).Any(Directory.Exists);
+            if (!anyEnvWeb && !anyWellKnown)
+                candidates.Add(kbPath);
             return candidates;
+        }
+
+        // Directory/file names we never descend into or match when scanning for
+        // generated files: VCS metadata, the MCP's own .gx cache, and GeneXus
+        // conversion/backup trees. Skipping them keeps the (rare) full-tree fallback
+        // bounded and avoids matching stale/backed-up copies of a .cs.
+        private static readonly HashSet<string> ScanNoiseDirs = new HashSet<string>(
+            new[] { ".git", ".gx", ".svn", ".hg", "GXcvt", "node_modules", "bin", "obj", ".vs" },
+            StringComparer.OrdinalIgnoreCase);
+
+        // Manual pruned recursive file walk (Directory.EnumerateFiles offers no
+        // dir-skip hook). Yields files matching <namePattern> under <root>, never
+        // descending into ScanNoiseDirs. Swallows per-directory access errors.
+        private static IEnumerable<string> EnumerateFilesPruned(string root, string namePattern)
+        {
+            var stack = new Stack<string>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                string dir = stack.Pop();
+                string[] files = null;
+                try { files = Directory.GetFiles(dir, namePattern); } catch { }
+                if (files != null)
+                    foreach (var f in files) yield return f;
+                string[] subs = null;
+                try { subs = Directory.GetDirectories(dir); } catch { }
+                if (subs == null) continue;
+                foreach (var s in subs)
+                {
+                    string name = Path.GetFileName(s);
+                    if (!string.IsNullOrEmpty(name) && !ScanNoiseDirs.Contains(name))
+                        stack.Push(s);
+                }
+            }
         }
 
         /// <summary>
@@ -260,7 +301,7 @@ namespace GxMcp.Worker.Services
                 if (!Directory.Exists(c)) continue;
                 try
                 {
-                    foreach (var match in Directory.EnumerateFiles(c, target + ".*", SearchOption.AllDirectories))
+                    foreach (var match in EnumerateFilesPruned(c, target + ".*"))
                     {
                         string ext = Path.GetExtension(match);
                         if (GeneratedExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase)
@@ -293,8 +334,14 @@ namespace GxMcp.Worker.Services
         /// after <paramref name="sinceUtc"/> (the build start). Used by the build
         /// evidence gate: a build can report Succeeded while the .cs on disk is stale
         /// or missing. Scans every candidate root and reports the freshest match.
+        ///
+        /// When <paramref name="priorMtimeUtc"/> is supplied (a pre-build snapshot of
+        /// the freshest .cs mtime for this object), freshness is decided by "did the
+        /// file's mtime move past the snapshot?" — immune to wall-clock / filesystem
+        /// timestamp-granularity skew, unlike the absolute <paramref name="sinceUtc"/>
+        /// comparison used when no snapshot is available.
         /// </summary>
-        internal static GeneratedFileEvidence ProbeGeneratedFreshness(string kbPath, string target, DateTime sinceUtc)
+        internal static GeneratedFileEvidence ProbeGeneratedFreshness(string kbPath, string target, DateTime sinceUtc, DateTime? priorMtimeUtc = null)
         {
             var ev = new GeneratedFileEvidence { Target = target };
             var files = FindGeneratedFiles(kbPath, target, allRoots: true);
@@ -311,10 +358,22 @@ namespace GxMcp.Worker.Services
                     ev.FreshestPath = MakeRelative(kbPath, f);
                 }
             }
-            // Allow a small clock-skew slack so a file written in the same second as
-            // build start is not falsely flagged stale.
-            if (ev.FreshestWriteUtc != null && ev.FreshestWriteUtc.Value >= sinceUtc.AddSeconds(-2))
-                ev.Fresh = true;
+            if (ev.FreshestWriteUtc != null)
+            {
+                if (priorMtimeUtc != null)
+                {
+                    // File was (re)generated iff its mtime advanced past the pre-build
+                    // snapshot. Strictly-greater: an untouched file keeps its mtime.
+                    ev.Fresh = ev.FreshestWriteUtc.Value > priorMtimeUtc.Value;
+                }
+                else
+                {
+                    // No snapshot (object had no .cs before, or capture failed): fall
+                    // back to absolute compare with a small clock-skew slack so a file
+                    // written in the same second as build start is not flagged stale.
+                    ev.Fresh = ev.FreshestWriteUtc.Value >= sinceUtc.AddSeconds(-2);
+                }
+            }
             return ev;
         }
 

@@ -497,6 +497,11 @@ namespace GxMcp.Worker.Services
             public string Status { get; set; }            // Accepted | Running | Succeeded | Failed | Error | Cancelled
             public string Phase { get; set; }             // Starting | OpeningKB | Specifying | Generating | Compiling | Finishing | Done
             public string Action { get; set; }
+            // issue #42 hardening (D) — the KB this build belongs to. The concurrent-build
+            // reject and activeBuilds surfacing filter on it so a build on KB-A never
+            // rejects a build on KB-B under a future shared-worker / warm-spares mode.
+            // Single-KB per worker today, so null-safe (a null filter matches all).
+            [JsonIgnore] internal string KbPath { get; set; }
             public string Target { get; set; }
             public List<string> Targets { get; set; }   // populated when batch build (multi-target)
             public int? TargetsTotal { get; set; }
@@ -647,6 +652,14 @@ namespace GxMcp.Worker.Services
             // its MarkClean calls, so the gate knows which targets were expected to
             // (re)generate. JsonIgnore — internal scaffolding, surfaced via GenerateEvidence.
             [JsonIgnore] internal List<string> DirtyAtStart { get; set; }
+            // issue #42 hardening — pre-build LastWriteTimeUtc of each target's
+            // freshest generated .cs, keyed by bare object name (OrdinalIgnoreCase).
+            // The evidence gate treats a file as freshly (re)generated when its mtime
+            // MOVED past this snapshot, which is immune to wall-clock/FS-granularity
+            // skew (comparing "did the file change?" instead of "is mtime >= a clock
+            // reading?"). Absent entry (object had no .cs before) falls back to the
+            // absolute StartedAt comparison in ProbeGeneratedFreshness.
+            [JsonIgnore] internal Dictionary<string, DateTime> PreBuildMtimes { get; set; }
 
             [JsonIgnore] internal Process Process { get; set; }
             [JsonIgnore] internal DateTime StartedAt { get; set; }
@@ -1014,7 +1027,7 @@ namespace GxMcp.Worker.Services
             // Opt out with GXMCP_ALLOW_CONCURRENT_BUILDS=1.
             if (!string.Equals(Environment.GetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS"), "1", StringComparison.OrdinalIgnoreCase))
             {
-                var active = GetActiveBuilds().FirstOrDefault();
+                var active = GetActiveBuilds(GetKBPath()).FirstOrDefault();
                 if (active != null)
                 {
                     return JsonConvert.SerializeObject(new
@@ -1275,11 +1288,20 @@ namespace GxMcp.Worker.Services
         // issue #42 — non-terminal builds currently in flight. Drives P2b
         // (activeBuilds surfaced in lifecycle status → the client's isBusy view is
         // true during a background build) and P3c (reject a second concurrent build).
-        internal static List<BuildTaskStatus> GetActiveBuilds()
+        internal static List<BuildTaskStatus> GetActiveBuilds(string kbPath = null)
         {
             var list = new List<BuildTaskStatus>();
             foreach (var t in _inFlightBuilds.Values)
-                if (t != null && !IsTerminalStatus(t.Status)) list.Add(t);
+            {
+                if (t == null || IsTerminalStatus(t.Status)) continue;
+                // A null filter matches every in-flight build (P2b lifecycle-status view).
+                // A non-null filter scopes to one KB (P3c reject) so a build on another
+                // KB does not block this one under a shared-worker mode; a build with no
+                // recorded KbPath is treated as belonging to the current worker (matches).
+                if (kbPath != null && t.KbPath != null
+                    && !string.Equals(t.KbPath, kbPath, StringComparison.OrdinalIgnoreCase)) continue;
+                list.Add(t);
+            }
             return list;
         }
 
@@ -1642,6 +1664,15 @@ namespace GxMcp.Worker.Services
                 || action.Equals("Sync", StringComparison.OrdinalIgnoreCase);
         }
 
+        // Strip a "Type:Name" qualifier down to the bare object name the generator
+        // uses for the file (<Name>.cs). Null/empty-safe.
+        private static string BareName(string t)
+        {
+            if (string.IsNullOrWhiteSpace(t)) return null;
+            t = t.Trim();
+            return t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
+        }
+
         /// <summary>
         /// issue #42 build-evidence gate. After a terminal success for a code-emitting
         /// action, verify the targets that were expected to (re)generate actually have a
@@ -1677,17 +1708,30 @@ namespace GxMcp.Worker.Services
                 : (status.DirtyAtStart ?? new List<string>());
             if (checkList.Count == 0) return;
 
+            // issue #42 hardening (A) — set of objects that were dirty (edited via MCP
+            // but not yet successfully built) when the build started. GeneXus generation
+            // is incremental: an UNCHANGED object is not rewritten, so its .cs mtime
+            // stays old. Flagging that as a gap is a false positive that erodes trust in
+            // the signal. So a stale-but-present .cs only counts as a gap when the object
+            // was actually dirty. A MISSING .cs is always a gap (an explicit build target
+            // with no generated code at all is worth surfacing regardless of dirty state).
+            var dirtySet = new HashSet<string>(
+                (status.DirtyAtStart ?? new List<string>()).Select(BareName).Where(s => s != null),
+                StringComparer.OrdinalIgnoreCase);
+            var preMtimes = status.PreBuildMtimes;
+
             var filesWritten = new JArray();
             var staleOrMissing = new JArray();
+            var upToDate = new JArray();
             int emittedCount = 0;
             foreach (var t in checkList)
             {
-                // Strip a "Type:Name" qualifier down to the bare object name the
-                // generator uses for the file (<Name>.cs).
-                string bare = t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
+                string bare = BareName(t);
                 if (string.IsNullOrEmpty(bare)) continue;
+                DateTime? prior = null;
+                if (preMtimes != null && preMtimes.TryGetValue(bare, out var pm)) prior = pm;
                 GeneratedDiffService.GeneratedFileEvidence ev;
-                try { ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, status.StartedAt); }
+                try { ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, status.StartedAt, prior); }
                 catch { continue; }
                 if (ev.Fresh)
                 {
@@ -1697,6 +1741,17 @@ namespace GxMcp.Worker.Services
                         ["object"] = bare,
                         ["path"] = ev.FreshestPath,
                         ["writtenUtc"] = ev.FreshestWriteUtc?.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    });
+                }
+                else if (ev.Found && !dirtySet.Contains(bare))
+                {
+                    // .cs exists but wasn't rewritten, and the object wasn't edited this
+                    // session → the incremental generator correctly skipped it. Not a gap.
+                    upToDate.Add(new JObject
+                    {
+                        ["object"] = bare,
+                        ["path"] = ev.FreshestPath,
+                        ["lastWrittenUtc"] = ev.FreshestWriteUtc?.ToString("yyyy-MM-ddTHH:mm:ssZ")
                     });
                 }
                 else
@@ -1748,6 +1803,8 @@ namespace GxMcp.Worker.Services
                 ["filesWritten"] = filesWritten,
                 ["staleOrMissing"] = staleOrMissing
             };
+            if (upToDate.Count > 0)
+                evidence["upToDate"] = upToDate;
             if (referencedButNotBuilt.Count > 0)
                 evidence["referencedButNotBuilt"] = referencedButNotBuilt;
 
@@ -1798,7 +1855,11 @@ namespace GxMcp.Worker.Services
             System.Threading.Timer noProgressWatchdog = null;
             System.Threading.Timer buildHeartbeat = null;
             // issue #42 (P2b/P3c) — mark this build in-flight for the whole RunBuild body.
-            if (status?.TaskId != null) _inFlightBuilds[status.TaskId] = status;
+            if (status?.TaskId != null)
+            {
+                if (status.KbPath == null) { try { status.KbPath = GetKBPath(); } catch { } }
+                _inFlightBuilds[status.TaskId] = status;
+            }
             try
             {
                 // issue #42 (P3a) — emit a build-active heartbeat so the gateway keeps
@@ -1903,6 +1964,28 @@ namespace GxMcp.Worker.Services
                 // The evidence gate in the finally uses this to know which targets were
                 // expected to regenerate their .cs.
                 try { status.DirtyAtStart = EditDirtyTracker.GetDirty(kbPath); } catch { status.DirtyAtStart = null; }
+
+                // issue #42 hardening (C) — snapshot the current freshest .cs mtime for
+                // each target we'll later gate, BEFORE the generator can touch it. Cheap
+                // best-effort; failure just falls the gate back to wall-clock comparison.
+                try
+                {
+                    if (IsCodeEmittingAction(action) && !status.SpecifyOnly)
+                    {
+                        var gateList = (targets != null && targets.Count > 0)
+                            ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase)
+                            : (status.DirtyAtStart ?? new List<string>()).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase);
+                        var snap = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var bare in gateList)
+                        {
+                            if (string.IsNullOrEmpty(bare)) continue;
+                            var ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, DateTime.MinValue);
+                            if (ev.Found && ev.FreshestWriteUtc != null) snap[bare] = ev.FreshestWriteUtc.Value;
+                        }
+                        status.PreBuildMtimes = snap;
+                    }
+                }
+                catch { status.PreBuildMtimes = null; }
 
                 // v2.6.6 Stream D — in-process build path. Reuse the already-open
                 // KbService._kb instance + invoke GeneXus MSBuild tasks directly

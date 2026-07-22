@@ -204,5 +204,104 @@ namespace GxMcp.Worker.Tests
             }
             finally { try { Directory.Delete(tempKb, true); } catch { } }
         }
+
+        // ── issue #42 hardening (C): freshness via pre-build mtime snapshot ────
+
+        [Fact]
+        public void ProbeGeneratedFreshness_PriorMtime_MtimeAdvanced_IsFresh()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            string f = Path.Combine(web, "Moved.cs");
+            File.WriteAllText(f, "class Moved {}");
+            var prior = DateTime.UtcNow.AddHours(-1);      // snapshot BEFORE build
+            File.SetLastWriteTimeUtc(f, DateTime.UtcNow);  // generator rewrote it
+            try
+            {
+                // sinceUtc deliberately in the future so the absolute path would say
+                // "stale" — the snapshot comparison must win and report fresh.
+                var ev = GeneratedDiffService.ProbeGeneratedFreshness(tempKb, "Moved", DateTime.UtcNow.AddYears(1), prior);
+                Assert.True(ev.Fresh);
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
+        public void ProbeGeneratedFreshness_PriorMtime_MtimeUnchanged_IsNotFresh()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            string f = Path.Combine(web, "Untouched.cs");
+            File.WriteAllText(f, "class Untouched {}");
+            var mtime = DateTime.UtcNow.AddMinutes(-30);
+            File.SetLastWriteTimeUtc(f, mtime);
+            try
+            {
+                // Incremental generator skipped the file: mtime == snapshot. Even with a
+                // generous absolute slack it must not be reported fresh.
+                var ev = GeneratedDiffService.ProbeGeneratedFreshness(tempKb, "Untouched", DateTime.UtcNow.AddYears(-1), mtime);
+                Assert.True(ev.Found);
+                Assert.False(ev.Fresh);
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        // ── issue #42 hardening (B): scan pruning + no full-tree fallback ─────
+
+        [Fact]
+        public void FindGeneratedFiles_SkipsNoiseDirs()
+        {
+            // A same-named .cs sitting in a VCS/backup/build dir must never be matched.
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "CSharpModel", "Web");
+            Directory.CreateDirectory(web);
+            File.WriteAllText(Path.Combine(web, "Widget.cs"), "class Widget {}");
+            // Noise copies that must be pruned:
+            foreach (var noise in new[] { "GXcvt", ".git", "obj" })
+            {
+                string nd = Path.Combine(web, noise);
+                Directory.CreateDirectory(nd);
+                File.WriteAllText(Path.Combine(nd, "Widget.cs"), "class WidgetBackup {}");
+            }
+            try
+            {
+                var files = GeneratedDiffService.FindGeneratedFiles(tempKb, "Widget", allRoots: true);
+                Assert.Single(files);
+                Assert.DoesNotContain(files, f => f.Contains("GXcvt") || f.Contains(".git") || f.Contains("obj"));
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
+        public void BuildCandidateRoots_EnvWebPresent_OmitsFullTreeFallback()
+        {
+            // When an environment web dir exists, the expensive last-resort full-KB scan
+            // (kbPath root) must not be appended — the generated .cs lives under env web.
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.Combine(tempKb, "NETCoreMySQL", "web"));
+            try
+            {
+                var roots = GeneratedDiffService.BuildCandidateRoots(tempKb);
+                Assert.DoesNotContain(roots, r => string.Equals(r, tempKb, StringComparison.OrdinalIgnoreCase));
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
+        [Fact]
+        public void BuildCandidateRoots_NoEnvWebNoWellKnown_KeepsFullTreeFallback()
+        {
+            // With neither an env web dir nor a well-known output dir on disk, the
+            // full-tree fallback is the only way to locate anything — keep it.
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempKb);
+            try
+            {
+                var roots = GeneratedDiffService.BuildCandidateRoots(tempKb);
+                Assert.Contains(roots, r => string.Equals(r, tempKb, StringComparison.OrdinalIgnoreCase));
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
     }
 }
