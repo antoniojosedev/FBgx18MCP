@@ -726,10 +726,33 @@ namespace GxMcp.Worker.Tests
                 });
         }
 
+        [Fact]
+        public void GenerateEvidence_Spc0217Unreachable_IsUnreachableNotGap()
+        {
+            // Successful build, no .cs on disk, but the build log carries spc0217 for the
+            // target → the object is genuinely un-generatable (no callers, not main). Must
+            // land in unreachable[] with reason "unreachable", NOT staleOrMissing, and NOT
+            // flip ok:false. Dirty is irrelevant — an unreachable object never emits a .cs.
+            RunEvidenceScenario(
+                objectName: "OrphanProc",
+                writeCsMtimeUtc: null,   // no file written
+                dirty: true,
+                unreachableInLog: true,
+                assert: ev =>
+                {
+                    Assert.True((bool)ev["ok"]!);
+                    Assert.Empty((JArray)ev["staleOrMissing"]!);
+                    Assert.NotNull(ev["unreachable"]);
+                    Assert.Contains((JArray)ev["unreachable"]!, t => (string)t["object"]! == "OrphanProc"
+                        && (string)t["reason"]! == "unreachable");
+                    Assert.Contains("spc0217", (string)ev["note"]!);
+                });
+        }
+
         // Set up a temp KB, optionally write a generated .cs at a chosen mtime, run
         // AttachGenerateEvidence for a successful Build of <objectName>, and assert on
         // the resulting GenerateEvidence JObject.
-        private static void RunEvidenceScenario(string objectName, DateTime? writeCsMtimeUtc, bool dirty, Action<JObject> assert)
+        private static void RunEvidenceScenario(string objectName, DateTime? writeCsMtimeUtc, bool dirty, Action<JObject> assert, bool unreachableInLog = false)
         {
             string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
             string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
@@ -739,6 +762,15 @@ namespace GxMcp.Worker.Tests
                 string f = Path.Combine(web, objectName + ".cs");
                 File.WriteAllText(f, "class " + objectName + " {}");
                 File.SetLastWriteTimeUtc(f, writeCsMtimeUtc.Value);
+            }
+            string logPath = null;
+            if (unreachableInLog)
+            {
+                logPath = Path.Combine(tempKb, "build-test.log");
+                File.WriteAllText(logPath,
+                    ">L Specifying " + objectName + " ...\r\n" +
+                    ">O2spc0217: Object is unreachable.|Artech.Architecture.Common.Location.SourcePosition;" +
+                    "<SourcePosition><Line>0</Line><FullName>Procedure '" + objectName + "'</FullName></SourcePosition>\r\n");
             }
             var prevKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
             Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
@@ -753,6 +785,7 @@ namespace GxMcp.Worker.Tests
                     Status = "Succeeded",
                     Phase = "Done",
                     StartedAt = DateTime.UtcNow,   // build "started" now → old .cs is stale by absolute compare
+                    FullLogPath = logPath,
                     DirtyAtStart = dirty ? new List<string> { objectName.ToLowerInvariant() } : new List<string>()
                 };
                 var mi = typeof(BuildService).GetMethod("AttachGenerateEvidence", BindingFlags.Instance | BindingFlags.NonPublic);
