@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.30.0 — Unreleased
+## v2.30.0 — 2026-07-22
 
 Build-reliability pass (issue #42). A GeneXus build could report `Succeeded` with 0 errors while the generated `.cs` never reached the environment's `web\` output — so an agent moved on believing its edit was compiled when it wasn't. Builds now carry evidence of what was actually generated, refuse to run two at once, and can't sit wedged as `Running` forever.
 
