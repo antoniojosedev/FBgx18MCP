@@ -62,6 +62,7 @@ worktrees/
 install.cmd
 scripts/research/
 scratch/
+temp/
 
 # F17 — SDK surface probe artifacts. raw.json is ~17MB and changes per GeneXus version.
 # Track INDEX.md / generators.md / wwp-projection-discovery.md / README.md instead.

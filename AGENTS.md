@@ -108,6 +108,9 @@ If the next call reports a stale pipe or crashed Worker, reconnect `/mcp` once.
   scope, logic, edge cases, compatibility, security, tests, and docs.
 - Do not commit, push, merge, release, deploy, or close an issue unless the
   user explicitly asks. Issue closure requires a released fix and release link.
+- When creating issues, submit them to the upstream repository
+  (`lennix1337/Genexus18MCP`), with a preference for Brazilian Portuguese
+  (`pt-BR`).
 
 ## MCP update and harness synchronization
 
