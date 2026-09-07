@@ -13,7 +13,7 @@ namespace GxMcp.Worker.Services
     /// element classes, so this adapter deliberately edits its public PatternInstance
     /// XML contract and delegates persistence/projection to WriteService.
     /// </summary>
-    public sealed class WwpActionService
+    public sealed partial class WwpActionService
     {
         private readonly ObjectService _objects;
         private readonly PatternAnalysisService _patterns;
@@ -31,6 +31,15 @@ namespace GxMcp.Worker.Services
             try
             {
                 KBObject requestedObject = _objects.FindObject(target);
+                const string wwpPrefix = "WorkWithPlus";
+                if (requestedObject == null && !string.IsNullOrEmpty(target) &&
+                    target.StartsWith(wwpPrefix, StringComparison.OrdinalIgnoreCase) &&
+                    target.Length > wwpPrefix.Length)
+                {
+                    // Some SDK builds do not expose pattern instances through
+                    // GetByName. Resolve the owning object and follow its typed child.
+                    requestedObject = _objects.FindObject(target.Substring(wwpPrefix.Length));
+                }
                 if (requestedObject == null)
                     return McpResponse.Err(code: "ObjectNotFound", message: "Object not found.", target: target,
                         nextSteps: new JArray(McpResponse.NextStep("genexus_search",
@@ -41,8 +50,15 @@ namespace GxMcp.Worker.Services
                 if (instance == null || string.IsNullOrWhiteSpace(xml))
                     return McpResponse.Err(code: "WWPInstanceNotFound",
                         message: "No editable WorkWithPlus PatternInstance was resolved for this object.", target: target);
+                _patterns.BuildPatternPartEnvelope(requestedObject, "PatternInstance", xml,
+                    out _, out KBObjectPart instancePart);
 
-                string operation = (args?["action"]?.ToString() ?? "list_actions").Trim().ToLowerInvariant();
+                string operation = NormalizeOperation(args?["action"]?.ToString());
+                if (IsGridAttributeOperation(operation))
+                    return RunGridAttributeOperation(target, requestedObject, instance, instancePart, xml, args);
+                if (IsTabOperation(operation))
+                    return RunTabOperation(target, requestedObject, instance, instancePart, xml, operation, args);
+
                 XDocument beforeDocument = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
                 JObject before = Project(beforeDocument);
                 if (operation == "list_actions")
@@ -129,10 +145,18 @@ namespace GxMcp.Worker.Services
                 ? obj : null;
         }
 
+        internal static string NormalizeOperation(string operation)
+        {
+            string normalized = (operation ?? "list").Trim().ToLowerInvariant();
+            if (normalized == "list") return "list_actions";
+            if (normalized == "add_action") return "add_grid_action";
+            return normalized;
+        }
+
         internal static JObject Apply(XDocument document, string operation, JObject args,
             Func<string, KBObject> procedureResolver)
         {
-            string groupName = args?["group"]?.ToString();
+            string groupName = args?["group"]?.ToString() ?? args?["fromGroup"]?.ToString();
             string actionName = args?["actionName"]?.ToString();
             XElement group = FindGroup(document, groupName);
 
@@ -166,9 +190,10 @@ namespace GxMcp.Worker.Services
                 case "update_action":
                     if (action == null) return Error("ActionNotFound", "Action '" + actionName + "' was not found in group '" + groupName + "'.");
                     ApplyProperties(action, args, procedureResolver);
-                    if (args?["newGroup"] != null)
+                    if (args?["newGroup"] != null || args?["toGroup"] != null)
                     {
-                        XElement destination = FindGroup(document, args["newGroup"].ToString());
+                        string destinationName = args?["newGroup"]?.ToString() ?? args?["toGroup"]?.ToString();
+                        XElement destination = FindGroup(document, destinationName);
                         if (destination == null) return Error("DestinationActionGroupNotFound", "Destination action group was not found.");
                         action.Remove(); destination.Add(action); group = destination;
                     }
@@ -176,7 +201,9 @@ namespace GxMcp.Worker.Services
                     break;
                 case "move_action":
                     if (action == null) return Error("ActionNotFound", "Action '" + actionName + "' was not found.");
-                    XElement moveDestination = args?["newGroup"] == null ? group : FindGroup(document, args["newGroup"].ToString());
+                    string moveDestinationName = args?["newGroup"]?.ToString() ?? args?["toGroup"]?.ToString();
+                    XElement moveDestination = string.IsNullOrWhiteSpace(moveDestinationName)
+                        ? group : FindGroup(document, moveDestinationName);
                     if (moveDestination == null) return Error("DestinationActionGroupNotFound", "Destination action group was not found.");
                     action.Remove(); moveDestination.Add(action); Move(action, args?["position"]?.ToObject<int?>());
                     break;
@@ -192,7 +219,7 @@ namespace GxMcp.Worker.Services
 
         private static void ApplyProperties(XElement action, JObject args, Func<string, KBObject> procedureResolver)
         {
-            SetIfPresent(action, "caption", args?["description"]);
+            SetIfPresent(action, "caption", args?["caption"] ?? args?["description"]);
             SetIfPresent(action, "condition", args?["enabledWhen"]);
             SetIfPresent(action, "visibleCondition", args?["visibleWhen"]);
             if (args?["icon"] != null)
@@ -206,6 +233,7 @@ namespace GxMcp.Worker.Services
                 action.SetAttributeValue("imageType", fontIcon ? "Font icon" : "Image");
             }
             SetIfPresent(action, "tooltip", args?["description"]);
+            SetIfPresent(action, "buttonClass", args?["buttonClass"]);
             string selection = args?["selection"]?.ToString();
             if (!string.IsNullOrWhiteSpace(selection))
                 action.SetAttributeValue("multiRowSelection", selection.Equals("multiple", StringComparison.OrdinalIgnoreCase) ? "True" : "False");

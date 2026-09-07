@@ -179,7 +179,8 @@ namespace GxMcp.Gateway
                     mutating: new[] { "add", "remove" }),
                 ["genexus_wwp"] = Contract(
                     readOnly: new[] { "list" },
-                    mutating: new[] { "add_action", "update_action", "move_action", "remove_action" })
+                    mutating: new[] { "add_action", "update_action", "move_action", "remove_action",
+                        "add_tab", "move_tab", "remove_tab", "add_grid_attribute" })
             };
 
         // Only actions with a documented preview mode may become read-only when
@@ -238,6 +239,10 @@ namespace GxMcp.Gateway
             "genexus_wwp:update_action",
             "genexus_wwp:move_action",
             "genexus_wwp:remove_action",
+            "genexus_wwp:add_tab",
+            "genexus_wwp:move_tab",
+            "genexus_wwp:remove_tab",
+            "genexus_wwp:add_grid_attribute",
             "genexus_generator_reference:add",
             "genexus_generator_reference:remove"
         };

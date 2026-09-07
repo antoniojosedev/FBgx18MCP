@@ -135,7 +135,7 @@
           },
           "dryRun": {
             "default": true,
-            "description": "routes_clone/routes_update: preview first; false writes only with expectedVersion.",
+            "description": "routes_clone/routes_update: preview first; false writes only with expectedVersion or versionToken.",
             "type": "boolean"
           },
           "expectedVersion": {
@@ -200,6 +200,10 @@
           },
           "targetPrefix": {
             "description": "Target method/path prefix, e.g. reverse.",
+            "type": "string"
+          },
+          "versionToken": {
+            "description": "Backward-compatible alias for expectedVersion; pass the token returned by the preceding dry run or inspection.",
             "type": "string"
           }
         },
@@ -4600,68 +4604,179 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "WorkWithPlus Action Group / grid-action editing (issue #58). action=list (read-only) lists the PatternInstance's action containers and their <userAction>/<standardAction> children; add_action adds a custom userAction to an existing or new group (procedure existence verified, selection single|multiple, enabledWhen condition, icon, description, confirm, position); update_action changes those attributes; move_action relocates an action between groups or reorders it; remove_action deletes an action (confirm=true). dryRun=true returns the XML diff without persisting. Edits target the WorkWithPlus host's PatternInstance XML (survives pattern reapply). NEVER creates Security/GAM permissions. Attributes are passed verbatim to the WWP XML; the SDK's own save normalization is reported honestly via the pattern write verification.",
+      "description": "Typed WorkWithPlus action, tab, and grid edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. No lifecycle operation is implicit.",
       "inputSchema": {
+        "$defs": {
+          "wwpControl": {
+            "additionalProperties": false,
+            "properties": {
+              "basicType": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              },
+              "children": {
+                "items": {
+                  "$ref": "#/$defs/wwpControl"
+                },
+                "type": "array"
+              },
+              "columns": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "controlEmptyItem": {
+                "type": "boolean"
+              },
+              "controlEmptyItemText": {
+                "type": "string"
+              },
+              "controlType": {
+                "type": "string"
+              },
+              "controlValues": {
+                "type": "string"
+              },
+              "decimals": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "description": {
+                "type": "string"
+              },
+              "length": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "themeClass": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "variable",
+                  "userAction",
+                  "table"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
         "examples": [
           {
             "action": "list",
-            "name": "MonitorIntegracaoWW"
+            "name": "SampleOrderWW"
           },
           {
             "action": "add_action",
-            "actionName": "Reativar",
+            "actionName": "Retry",
             "dryRun": true,
-            "enabledWhen": "MonitorIntegracaoStatus = DSituacaoProcessamento.Suspenso",
-            "group": "Processamento",
-            "name": "MonitorIntegracaoWW",
-            "procedure": "MonitorIntegracaoReativar",
+            "group": "Operations",
+            "name": "SampleOrderWW",
+            "procedure": "RetrySampleOrder",
             "selection": "multiple"
           },
           {
-            "action": "remove_action",
-            "actionName": "Reativar",
-            "confirm": true,
-            "name": "MonitorIntegracaoWW"
+            "action": "add_tab",
+            "children": [
+              {
+                "basicType": "VarChar",
+                "length": 40,
+                "name": "Status",
+                "type": "variable"
+              },
+              {
+                "caption": "Refresh",
+                "name": "Refresh",
+                "type": "userAction"
+              }
+            ],
+            "controlName": "Details",
+            "dryRun": true,
+            "name": "SamplePanel",
+            "title": "Details"
+          },
+          {
+            "action": "add_grid_attribute",
+            "attribute": "SampleOrderStatus",
+            "caption": "Status",
+            "dryRun": true,
+            "name": "SampleOrderWW"
           }
         ],
         "properties": {
           "action": {
-            "description": "WorkWithPlus action-group or grid-action operation to perform.",
+            "description": "WorkWithPlus action-group, tab, or grid-attribute operation to perform.",
             "enum": [
               "list",
               "add_action",
               "update_action",
               "move_action",
-              "remove_action"
+              "remove_action",
+              "add_tab",
+              "move_tab",
+              "remove_tab",
+              "add_grid_attribute"
             ],
             "type": "string"
           },
           "actionName": {
-            "description": "Action name (e.g. 'Reativar').",
+            "description": "Action name.",
+            "type": "string"
+          },
+          "attribute": {
+            "description": "add_grid_attribute: GeneXus Attribute name.",
+            "type": "string"
+          },
+          "baseVersion": {
+            "description": "Optimistic-concurrency token returned by dryRun/read.",
             "type": "string"
           },
           "buttonClass": {
-            "description": "add/update: theme button class (e.g. 'btn ButtonCinza').",
+            "description": "add/update: theme button class.",
             "type": "string"
           },
           "caption": {
-            "description": "add/update: button caption (defaults to actionName).",
+            "description": "Action or grid-column caption.",
             "type": "string"
           },
+          "children": {
+            "description": "add_tab controls; flat children are wrapped in a responsive table.",
+            "items": {
+              "$ref": "#/$defs/wwpControl"
+            },
+            "type": "array"
+          },
           "confirm": {
-            "description": "add/update: confirmation prompt; remove_action: required to delete (unless dryRun).",
+            "description": "Confirmation prompt; required to delete unless dryRun.",
             "type": "boolean"
           },
+          "controlName": {
+            "description": "Tab ControlName.",
+            "type": "string"
+          },
           "description": {
-            "description": "add/update: tooltip/description.",
+            "description": "add/update: tooltip or description.",
             "type": "string"
           },
           "dryRun": {
-            "description": "Return the XML diff without persisting (default false).",
+            "description": "Return a typed diff and versionToken without mutation.",
             "type": "boolean"
           },
           "enabledWhen": {
-            "description": "add/update: availability condition text (e.g. 'MonitorIntegracaoStatus = DSituacaoProcessamento.Suspenso'). Stored verbatim; expression semantics are not validated.",
+            "description": "Availability condition stored verbatim; expression semantics are not validated.",
+            "type": "string"
+          },
+          "expectedVersion": {
+            "description": "Alias for baseVersion.",
             "type": "string"
           },
           "fromGroup": {
@@ -4669,7 +4784,7 @@
             "type": "string"
           },
           "group": {
-            "description": "Action group/container name (TableActions row). add_action: creates a new group when absent; update/remove: scope filter.",
+            "description": "Action group name. add_action creates it when absent; update/remove use it as a filter.",
             "type": "string"
           },
           "icon": {
@@ -4685,7 +4800,8 @@
             "type": "string"
           },
           "position": {
-            "description": "add/move/update: zero-based index among the group's actions.",
+            "description": "Zero-based action or tab index.",
+            "minimum": 0,
             "type": "integer"
           },
           "procedure": {
@@ -4700,8 +4816,16 @@
             ],
             "type": "string"
           },
+          "title": {
+            "description": "add_tab: tab title.",
+            "type": "string"
+          },
           "toGroup": {
             "description": "move_action: destination group (created when absent).",
+            "type": "string"
+          },
+          "versionToken": {
+            "description": "Backward-compatible alias for baseVersion.",
             "type": "string"
           }
         },

@@ -168,7 +168,9 @@ namespace GxMcp.Gateway.Tests
             //   state without replaying writes. Measured ~25763 tokens.
             //   2026-09-06 (lifecycle structured output): 25850 → 26000 for the
             //   additive outputSchema contract; text content remains compatible.
-            Assert.True(approxTokens < 26000, $"tool_definitions.json is ~{approxTokens} tokens; budget 26000.");
+            //   2026-09-07 (v2.43 compatibility): 26000 → 26300 for typed WWP
+            //   tab/grid operations and the API versionToken alias. Measured ~26079.
+            Assert.True(approxTokens < 26300, $"tool_definitions.json is ~{approxTokens} tokens; budget 26300.");
         }
     }
 }

@@ -1,0 +1,71 @@
+using System;
+using System.IO;
+using System.Linq;
+using Newtonsoft.Json.Linq;
+using Xunit;
+
+namespace GxMcp.Gateway.Tests
+{
+    public class OperationalCompatibilityContractTests
+    {
+        private static JObject FindTool(string name)
+        {
+            string directory = AppContext.BaseDirectory;
+            for (int i = 0; i < 10; i++)
+            {
+                string direct = Path.Combine(directory, "tool_definitions.json");
+                if (File.Exists(direct))
+                    return JArray.Parse(File.ReadAllText(direct))
+                        .OfType<JObject>().Single(tool => tool["name"]?.ToString() == name);
+
+                string source = Path.Combine(directory, "src", "GxMcp.Gateway", "tool_definitions.json");
+                if (File.Exists(source))
+                    return JArray.Parse(File.ReadAllText(source))
+                        .OfType<JObject>().Single(tool => tool["name"]?.ToString() == name);
+
+                DirectoryInfo? parent = Directory.GetParent(directory);
+                if (parent == null) break;
+                directory = parent.FullName;
+            }
+
+            throw new FileNotFoundException("Could not locate tool_definitions.json.");
+        }
+
+        [Fact]
+        public void ApiRouteWritesKeepVersionTokenAlias()
+        {
+            JObject properties = (JObject)FindTool("genexus_api")["inputSchema"]!["properties"]!;
+            Assert.NotNull(properties["expectedVersion"]);
+            Assert.NotNull(properties["versionToken"]);
+        }
+
+        [Fact]
+        public void WorkWithPlusPublishesTypedTabAndGridContracts()
+        {
+            JObject schema = (JObject)FindTool("genexus_wwp")["inputSchema"]!;
+            var actions = ((JArray)schema["properties"]!["action"]!["enum"]!)
+                .Select(value => value.ToString()).ToArray();
+
+            Assert.Contains("add_tab", actions);
+            Assert.Contains("move_tab", actions);
+            Assert.Contains("remove_tab", actions);
+            Assert.Contains("add_grid_attribute", actions);
+            Assert.NotNull(schema["properties"]!["baseVersion"]);
+            Assert.NotNull(schema["properties"]!["expectedVersion"]);
+            Assert.NotNull(schema["properties"]!["versionToken"]);
+
+            JObject control = (JObject)schema["$defs"]!["wwpControl"]!;
+            Assert.Equal("type", control["required"]![0]!.ToString());
+            Assert.Equal(new[] { "variable", "userAction", "table" },
+                ((JArray)control["properties"]!["type"]!["enum"]!).Select(value => value.ToString()));
+        }
+
+        [Fact]
+        public void RecipeDoesNotAdvertiseUnsupportedRunAction()
+        {
+            var actions = ((JArray)FindTool("genexus_recipe")["inputSchema"]!["properties"]!["action"]!["enum"]!)
+                .Select(value => value.ToString());
+            Assert.DoesNotContain("run", actions);
+        }
+    }
+}
