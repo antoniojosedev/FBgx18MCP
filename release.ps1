@@ -1,4 +1,4 @@
-﻿# GeneXus 18 MCP - one-shot release script
+# GeneXus 18 MCP - one-shot release script
 # =========================================
 #
 # Why this exists: the npm publish workflow (.github/workflows/release.yml)
@@ -648,11 +648,12 @@ if (-not $SkipBuild) {
 # -- 4. Optional test pass -------------------------------------------------
 if (-not $SkipTests) {
     Step "Running complete release preflight"
+    $preflightGxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { 'C:\Program Files (x86)\GeneXus\GeneXus18' }
     Invoke-Cmd 'pwsh' @(
         '-NoProfile',
         '-File', (Join-Path $root 'scripts\release-preflight.ps1'),
         '-Version', $Version,
-        '-GxPath', (if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { 'C:\Program Files (x86)\GeneXus\GeneXus18' }),
+        '-GxPath', $preflightGxPath,
         '-SummaryPath', (Join-Path $env:TEMP "gxmcp-release-preflight-$Version.json")
     )
     if ($DryRun) { Warn '[DRY-RUN] would run the complete release preflight.' } else { Ok 'Complete release preflight passed.' }
