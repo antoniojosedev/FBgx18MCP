@@ -81,7 +81,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_transfer` | `inspect` | `export`, `import` |
 | `genexus_deploy` | `list_targets` | `deploy` |
 | `genexus_generator_reference` | `list`, `dry_run_add`, `dry_run_remove` | `add`, `remove` |
-| `genexus_wwp` | `list` | `add_action`, `update_action`, `move_action`, `remove_action` |
+| `genexus_wwp` | `list` | `add_action`, `update_action`, `move_action`, `remove_action`, `add_tab`, `move_tab`, `remove_tab`, `add_grid_attribute` |
 
 Real-KB validation gate: `genexus_structure action=get_visual` with a homonymous
 target must be exercised against a KB that contains the relevant Transaction/Table
@@ -121,7 +121,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_layout` | active | WebForm control tree, layout properties, printblock management |
 | `genexus_edit_form` | active | Semantic WebForm element manipulation |
 | `genexus_apply_pattern` | active | Pattern application and WorkWithPlus action group configuration |
-| `genexus_wwp` | active | WorkWithPlus grid actions and action groups |
+| `genexus_wwp` | active | Typed WorkWithPlus grid actions, tabs, nested controls, and grid attributes with preview, concurrency checks, verification, and rollback |
 | `genexus_security` | active | `Security -> audit_gam | scan_secrets | scan_native` (native SDK scanner) |
 | `genexus_kb` | active | Multi-KB pool management, startup object, and environment switching |
 | `genexus_kb_version` | active | SDK `KBVersionHelper` model version tree and branch management |

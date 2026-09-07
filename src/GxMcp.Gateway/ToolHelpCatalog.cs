@@ -546,11 +546,13 @@ namespace GxMcp.Gateway
 
             ["genexus_wwp"] =
                 "# genexus_wwp\n\n" +
-                "Inspect and edit WorkWithPlus Action Groups and grid actions in PatternInstance XML.\n\n" +
+                "Inspect and edit WorkWithPlus Action Groups, tabs, and grid attributes through the typed PatternInstance contract.\n\n" +
                 "## Actions\n" +
                 "- `list` — read the current action groups and ordered actions.\n" +
-                "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n\n" +
-                "Only `list` is read-only. Read the authoritative PatternInstance first, use `dryRun` when supported, and verify the saved XML because WorkWithPlus may reconcile IDE ordering on save.\n"
+                "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n" +
+                "- `add_tab`, `move_tab`, and `remove_tab` — edit WebPanel tabs and typed nested controls.\n" +
+                "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children.\n\n" +
+                "Only `list` is read-only. Preview writes with `dryRun`, pass the returned token as `baseVersion`, `expectedVersion`, or `versionToken`, and persist only after reviewing the typed diff. Writes require exact snapshots, re-read the PatternInstance, verify the parent WebForm projection, and roll back on divergence. No lifecycle operation is implicit.\n"
         };
 
         internal static string? Get(string toolName)

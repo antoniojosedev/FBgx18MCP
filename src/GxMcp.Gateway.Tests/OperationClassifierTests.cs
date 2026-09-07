@@ -77,6 +77,25 @@ namespace GxMcp.Gateway.Tests
             Assert.True(OperationClassifier.IsMutationCandidate("genexus_browser",
                 new JObject { ["action"] = "preview", ["buildFirst"] = true }));
         }
+
+        [Theory]
+        [InlineData("add_tab")]
+        [InlineData("move_tab")]
+        [InlineData("remove_tab")]
+        [InlineData("add_grid_attribute")]
+        public void WorkWithPlusTypedWritesRespectPreviewBoundary(string action)
+        {
+            Assert.True(OperationClassifier.IsReadOnly("genexus_wwp", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = true
+            }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_wwp", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = false
+            }));
+        }
         [Theory]
         [InlineData("genexus_query")]
         [InlineData("genexus_list_objects")]

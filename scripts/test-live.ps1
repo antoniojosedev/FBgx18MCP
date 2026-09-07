@@ -76,7 +76,7 @@ function Assert-LiveFixture($Fixture, [string]$ResolvedKbPath) {
     }
     if ([string]::IsNullOrWhiteSpace($Fixture.kbPath) -or
         -not [IO.Path]::IsPathRooted($Fixture.kbPath) -or
-        [IO.Path]::GetFullPath($Fixture.kbPath).TrimEnd('\') -ine $ResolvedKbPath.TrimEnd('\')) {
+        [IO.Path]::GetFullPath($Fixture.kbPath).TrimEnd('\') -ine [IO.Path]::GetFullPath($ResolvedKbPath).TrimEnd('\')) {
         throw 'Fixture kbPath must match the explicitly selected KB.'
     }
     $isolation = $Fixture.isolation
