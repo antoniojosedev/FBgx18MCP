@@ -28,6 +28,9 @@
 - Live Build All evidence parsing now preserves terminal fields from JSON-in-JSON
   responses with duplicate-case keys, so an SDK exit code cannot mask missing
   completion evidence.
+- `AGENTS.md` no longer tells agents that OpenCode Desktop needs a separate
+  manual UI registration; on Windows it shares `opencode.jsonc` with the CLI
+  (upstream [#135](https://github.com/lennix1337/Genexus18MCP/issues/135)).
 
 ## v3.0.0 - 2026-09-06
 
