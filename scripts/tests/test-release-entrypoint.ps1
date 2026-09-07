@@ -20,7 +20,8 @@ if ($LASTEXITCODE -eq 0 -or ($output -join "`n") -notmatch 'NoBump.*no longer su
     throw '-NoBump did not fail with migration guidance.'
 }
 
-$metadata = & python (Join-Path $root 'scripts\verify-release-metadata.py') --root $root --version 3.0.0 2>&1
+$currentVersion = ((Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version).Trim()
+$metadata = & python (Join-Path $root 'scripts\verify-release-metadata.py') --root $root --version $currentVersion 2>&1
 if ($LASTEXITCODE -ne 0) { throw "Current release metadata is not synchronized: $($metadata -join "`n")" }
 
 $tokens = $null; $errors = $null
