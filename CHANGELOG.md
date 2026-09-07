@@ -28,6 +28,8 @@
   exact snapshots, post-save verification, and rollback.
 - Restored `versionToken` as a backward-compatible alias for API route writes;
   `expectedVersion` remains the canonical spelling.
+- Fixed the live-fixture path check when Windows exposes the temporary folder
+  through an 8.3 short path.
 - Warning baseline checks now classify line-only diagnostic moves separately
   while continuing to block genuinely new warning locations.
 - Live Build All evidence parsing now preserves terminal fields from JSON-in-JSON
