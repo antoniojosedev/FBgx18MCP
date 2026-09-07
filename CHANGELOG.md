@@ -23,6 +23,10 @@
 
 ### Fixed
 
+- Aligned OpenCode Desktop client detection and registration with the shared
+  `opencode.jsonc`/`opencode.json` configuration path, enabling automatic registration
+  and status reporting rather than treating it as an AppData manual setup gap
+  ([#142](https://github.com/lennix1337/Genexus18MCP/issues/142)).
 - Restored the v2.43-compatible typed WorkWithPlus tab and grid-attribute
   contracts on the v3 line, including preview tokens, optimistic concurrency,
   exact snapshots, post-save verification, and rollback.

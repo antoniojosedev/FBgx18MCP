@@ -218,25 +218,17 @@ Auto-detected and auto-configured by the installer:
 | OpenCode (CLI) | ✅ | Reads both direct and nested MCP layouts; restart required |
 | Codex CLI | ✅ | Writes `~/.codex/config.toml` |
 | VS Code / VS Code Insiders | ✅ | Native MCP (`User/mcp.json`); restart required |
-| OpenCode Desktop | Manual setup | Detected and reported with exact local-server fields; add the server from the app's MCP settings |
+| OpenCode Desktop | ✅ | Shares `opencode.jsonc` with OpenCode CLI; restart required |
 | Any MCP client | Manual | Use the JSON snippet printed by `init` |
 
 Run **`npx genexus-mcp clients`** at any time to see which agents are installed, which have `genexus` registered, and whether any point at a stale gateway exe. To (re)register specific ones: `npx genexus-mcp clients add --clients antigravity,vscode`.
 
-### OpenCode Desktop (manual setup)
+### OpenCode Desktop
 
-The CLI detects OpenCode Desktop but does not write its app-managed `mcp.json`.
-After `init` prints the path to `config.json`, open **Settings → MCP → Add server
-→ Local** in OpenCode Desktop and enter:
-
-- Name: `genexus18mcp`
-- Command: `npx.cmd` on Windows, `npx` elsewhere
-- Arguments: `-y genexus-mcp@latest`
-- Environment: `GX_CONFIG_PATH=<the config.json path printed by init>`
-
-Save the server, fully restart OpenCode Desktop, and call `genexus_whoami` to
-verify the GeneXus server and selected KB. The CLI intentionally leaves the
-Desktop-managed configuration file untouched.
+OpenCode Desktop shares its MCP configuration file (`opencode.jsonc` or `opencode.json`)
+with OpenCode CLI. Running `genexus-mcp init --write-clients` or `genexus-mcp clients add --clients opencode-desktop`
+automatically registers `genexus18mcp` in the shared config. After registration,
+fully restart OpenCode Desktop so it reloads its MCP configuration.
 
 ---
 
