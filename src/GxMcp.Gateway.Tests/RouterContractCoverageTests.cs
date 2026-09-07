@@ -51,6 +51,14 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void Sdk_probe_capabilities_route_is_read_only()
+        {
+            AssertRoute(
+                new OperationsRouter().ConvertToolCall("genexus_sdk_probe", JObject.Parse("{mode:'capabilities'}")),
+                "SdkProbe", "Capabilities");
+        }
+
+        [Fact]
         public void Delete_object_forwards_typed_atomic_safety_contract()
         {
             var converted = new OperationsRouter().ConvertToolCall("genexus_delete_object", JObject.Parse(@"{
@@ -220,6 +228,7 @@ namespace GxMcp.Gateway.Tests
         {
             var router = new SystemRouter();
             AssertRoute(router.ConvertToolCall("genexus_lifecycle", JObject.Parse("{action:'build',mode:'compile_check'}")), "Build", "CompileCheck");
+            AssertRoute(router.ConvertToolCall("genexus_lifecycle", JObject.Parse("{action:'build_all'}")), "Build", "BuildAll");
             AssertRoute(router.ConvertToolCall("genexus_lifecycle", JObject.Parse("{action:'status',target:'job',wait:999}")), "Build", "Status");
             AssertRoute(router.ConvertToolCall("genexus_lifecycle", JObject.Parse("{action:'status',wait:-1}")), "KB", "GetIndexStatus");
             AssertRoute(router.ConvertToolCall("genexus_lifecycle", JObject.Parse("{action:'result',target:'job'}")), "Build", "Result");

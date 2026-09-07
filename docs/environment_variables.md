@@ -54,6 +54,14 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_BUILD_PROFILE` | Select a build profile. | unset |
 | `GXMCP_REAP_ORPHAN_MSBUILD` | Reap orphaned MSBuild processes after a build. | off |
 
+## Live KB and release preflight
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GXMCP_TEST_KB` | Absolute path to the verified disposable synthetic KB used by `scripts/test-live.ps1` and the release preflight. | unset (live gate skipped) |
+| `GXMCP_TEST_FIXTURE` | Path to the fixture attestation JSON matching `GXMCP_TEST_KB`; it must prove synthetic data and database isolation. | unset (live gate skipped) |
+| `GXMCP_REQUIRE_LIVE_BUILD_ALL` | Set to `1` to require the native Build All evidence gate during release preflight. Missing fixtures or an unavailable GeneXus cloud `User` fail the required gate. | off |
+
 ## Timeouts / budgets
 
 | Variable | Purpose | Default |
@@ -62,6 +70,11 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_PREVIEW_BUDGET_MS` | Time budget for the headless preview render before it stops blocking. | see `PreviewService` |
 | `GXMCP_BUILD_TIMEOUT_SEC` | Wall-clock cap for a single `genexus_lifecycle` build/reorg task. On expiry the task is force-failed and any spawned MSBuild tree is killed, so a wedged deploy/reorg step can't leave the status stuck at `Running`. Clamped to `[60, 7200]`. | 900 (2400 for `rebuild`/RebuildAll) |
 | `GXMCP_READ_CACHE_TTL_SEC` | In-memory read cache TTL for `ObjectService` in seconds. Since writes perform deterministic cache invalidation, a longer TTL prevents redundant COM disk re-reads across multi-turn sessions. | 300 (5 min) |
+| `GXMCP_COMMAND_QUEUE_CAPACITY` | Maximum number of input commands admitted before the worker returns `WorkerBusy`; protects the reader from unbounded memory growth. | 256 |
+| `GXMCP_SDK_COMMAND_QUEUE_CAPACITY` | Maximum number of SDK-bound commands waiting for the STA bridge before the worker returns `WorkerBusy`. | 64 |
+| `GXMCP_SDK_QUEUE_CAPACITY` | Maximum number of low-priority SDK actions (watcher/index callbacks) admitted by `SdkExecutor`. | 64 |
+| `GXMCP_OUTPUT_QUEUE_CAPACITY` | Maximum number of stdout lines buffered while the pipe writer drains responses/logs; producers apply backpressure instead of growing memory without bound. | 256 |
+| `GXMCP_ERROR_QUEUE_CAPACITY` | Maximum number of stderr lines buffered while the error writer drains diagnostics. | 256 |
 
 ## Diagnostics / advanced
 
