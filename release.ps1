@@ -536,7 +536,7 @@ if ($resumeRelease) {
         Ok "Resuming from tagged source commit: $releaseSourceCommit"
     }
 } elseif (-not $DryRun) {
-    $pendingMetadata = @(git status --porcelain)
+    $pendingMetadata = @(git status --porcelain --untracked-files=no)
     if ($pendingMetadata) {
         Step "Committing release source state"
         $releaseManagedPaths = @(
@@ -762,7 +762,7 @@ if (-not $DryRun) {
 # Any other change means the artifact no longer corresponds to the source
 # commit captured in the manifest and must stop the release.
 if (-not $DryRun) {
-    $pendingAfterPackage = @(git status --porcelain)
+    $pendingAfterPackage = @(git status --porcelain --untracked-files=no)
     if ($pendingAfterPackage) {
         Write-Host ($pendingAfterPackage -join "`n")
         Fail "Packaging left tracked changes after source commit $releaseSourceCommit. Inspect the files before tagging."
