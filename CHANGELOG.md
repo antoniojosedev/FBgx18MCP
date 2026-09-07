@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.0.1 - 2026-09-07
+
+
 ### Added
 
 - Added a complete release preflight covering the solution, CLI, Nexus IDE,
