@@ -94,6 +94,11 @@ If the next call reports a stale pipe or crashed Worker, reconnect `/mcp` once.
 
 ## Required workflow
 
+- **Mandatory architectural discovery (`ripwire`):** Before reading code manually or running blind text greps, always orient on the task with `ripwire`:
+  - Search & orientation: `ripwire <dir> --for="<task in words>"` — ranked signatures by PageRank, AST and caller context.
+  - Blast radius & callers: `ripwire <dir> --callers=SYM` and `--impact=SYM` (transitive callers before modifying contracts).
+  - Contract check: `ripwire <dir> --edit-check=SYM`.
+  - Diff & PR review: `ripwire . --pr-context` (automatically enforced in `pr-preflight.ps1`).
 - Inspect the actual input/request/route/function/query/response path before
   fixing behavior. Add a regression test when technically viable.
 - Make the smallest scoped change; preserve unrelated working-tree changes.

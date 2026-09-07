@@ -88,6 +88,22 @@ if ($notPassing.Count -gt 0) {
     Fail-Preflight "PR #$PullRequest has non-passing checks: $names"
 }
 
+if (Get-Command ripwire -ErrorAction SilentlyContinue) {
+    Write-Host "Running ripwire architectural blast radius analysis..."
+    $baseRef = if ($pr.baseRefName) { "origin/$($pr.baseRefName)" } else { "origin/main" }
+    try {
+        & ripwire . "--pr-context=$baseRef"
+    } catch {
+        & ripwire . --pr-context
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Fail-Preflight "ripwire architectural pre-check exited with code $LASTEXITCODE."
+    }
+    Write-Host "  ripwire: blast radius and caller analysis passed." -ForegroundColor Green
+} else {
+    Write-Warning "ripwire is not found on PATH; skipping architectural blast radius analysis."
+}
+
 Write-Host "PR #$PullRequest is ready for merge." -ForegroundColor Green
 Write-Host "  base: $baseRepo/$($pr.baseRefName)"
 Write-Host "  head: $headRepo/$($pr.headRefName) @ $($pr.headRefOid)"
