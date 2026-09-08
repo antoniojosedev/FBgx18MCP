@@ -92,7 +92,8 @@ namespace GxMcp.Gateway.Tests
                 objects!
                     .OfType<JObject>()
                     .Select(item => item["name"]?.ToString())
-                    .Where(name => !string.IsNullOrWhiteSpace(name)),
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Select(name => name!),
                 StringComparer.OrdinalIgnoreCase);
         }
 
