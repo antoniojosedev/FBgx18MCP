@@ -664,7 +664,7 @@ namespace GxMcp.Gateway.Tests
         [LiveKbFact]
         public async Task TeamDevelopmentPendingList_PreservesIdeChangeAfterMcpWrite()
         {
-            string idePendingName = Environment.GetEnvironmentVariable("GXMCP_TEAMDEV_PENDING_NAME");
+            string? idePendingName = Environment.GetEnvironmentVariable("GXMCP_TEAMDEV_PENDING_NAME");
             if (string.IsNullOrWhiteSpace(idePendingName))
             {
                 throw SkipException.ForSkip(
