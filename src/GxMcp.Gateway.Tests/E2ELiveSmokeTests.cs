@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using Xunit;
+using Xunit.Sdk;
 
 namespace GxMcp.Gateway.Tests
 {
@@ -42,6 +44,32 @@ namespace GxMcp.Gateway.Tests
         }
 
         public Task DisposeAsync() => Task.CompletedTask;
+
+        private async Task<HashSet<string>> ReadTeamDevelopmentPendingNamesAsync()
+        {
+            var response = await _h.CallToolAsync("genexus_gxserver", new JObject
+            {
+                ["action"] = "pending",
+                ["limit"] = 100
+            });
+            Assert.False(
+                LiveGatewayHarness.IsToolError(response),
+                "Team Development pending read failed: " + response.ToString(Newtonsoft.Json.Formatting.None));
+
+            var payload = LiveGatewayHarness.ParseToolPayload(response);
+            Assert.NotNull(payload);
+            var result = payload!["result"] as JObject ?? payload;
+            Assert.Equal("sdk:ITeamDevClientService", result["source"]?.ToString());
+
+            var objects = result["objects"] as JArray;
+            Assert.NotNull(objects);
+            return new HashSet<string>(
+                objects!
+                    .OfType<JObject>()
+                    .Select(item => item["name"]?.ToString())
+                    .Where(name => !string.IsNullOrWhiteSpace(name)),
+                StringComparer.OrdinalIgnoreCase);
+        }
 
         [LiveKbFact]
         public async Task Whoami_BaselineUnder500ms_AndCarriesPlaybooks()
@@ -497,6 +525,94 @@ namespace GxMcp.Gateway.Tests
             {
                 if (File.Exists(tempXpz)) File.Delete(tempXpz);
                 await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = proc, ["confirm"] = true });
+            }
+        }
+
+        [LiveKbFact]
+        public async Task TeamDevelopmentPendingList_PreservesEarlierMcpWriteAfterLaterWrite()
+        {
+            var statusResponse = await _h.CallToolAsync("genexus_gxserver", new JObject
+            {
+                ["action"] = "status"
+            });
+            var statusPayload = LiveGatewayHarness.ParseToolPayload(statusResponse);
+            Assert.NotNull(statusPayload);
+            var status = statusPayload!["result"] as JObject ?? statusPayload;
+            if (status["connected"]?.ToObject<bool?>() != true)
+            {
+                throw SkipException.ForSkip(
+                    "The configured live KB is not linked to GeneXus Team Development; " +
+                    "set GXMCP_TEST_KB to a linked disposable KB to run this regression.");
+            }
+
+            string tickHex = DateTime.UtcNow.Ticks.ToString("X");
+            string stamp = tickHex.Substring(tickHex.Length - 8).ToLowerInvariant();
+            string first = "TestTeamDevA" + stamp;
+            string second = "TestTeamDevB" + stamp;
+
+            try
+            {
+                var createFirst = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = first
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(createFirst),
+                    "create failed for " + first + ": " + createFirst.ToString(Newtonsoft.Json.Formatting.None));
+
+                var firstEdit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = first,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&TeamDevFirst = 1",
+                    ["autoDeclareVariables"] = true
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(firstEdit),
+                    "first edit failed: " + firstEdit.ToString(Newtonsoft.Json.Formatting.None));
+
+                var afterFirst = await ReadTeamDevelopmentPendingNamesAsync();
+                Assert.True(
+                    afterFirst.Contains(first),
+                    "The first MCP write must appear in the Team Development pending list.");
+
+                var createSecond = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = second
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(createSecond),
+                    "create failed for " + second + ": " + createSecond.ToString(Newtonsoft.Json.Formatting.None));
+
+                var secondEdit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = second,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&TeamDevSecond = 1",
+                    ["autoDeclareVariables"] = true
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(secondEdit),
+                    "second edit failed: " + secondEdit.ToString(Newtonsoft.Json.Formatting.None));
+
+                var afterSecond = await ReadTeamDevelopmentPendingNamesAsync();
+                Assert.True(
+                    afterSecond.Contains(first),
+                    "A later MCP write must not clear the earlier pending object.");
+                Assert.True(
+                    afterSecond.Contains(second),
+                    "The later MCP write must appear in the Team Development pending list.");
+            }
+            finally
+            {
+                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = second, ["confirm"] = true });
+                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = first, ["confirm"] = true });
             }
         }
     }
