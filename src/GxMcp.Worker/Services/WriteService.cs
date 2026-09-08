@@ -51,9 +51,16 @@ namespace GxMcp.Worker.Services
                         try
                         {
                             var now = DateTime.UtcNow;
-                            model.LastCommitDate = now;
+                            // Do NOT stamp model.LastCommitDate here. Team Development derives its
+                            // pending-commit list from it: ITeamDevClientService.GetLocalChanges(model)
+                            // treats it as the "everything up to this instant is already committed"
+                            // baseline. Moving it to UtcNow after every write silently empties the
+                            // IDE's Team Dev > Commit list for EVERY object in the model, including
+                            // objects this worker never touched. LastObjectsVersionDate alone is what
+                            // makes the IDE notice the worker's writes and reload, which is what
+                            // #128 was after.
                             model.LastObjectsVersionDate = now;
-                            Logger.Info("[FLUSH-SYNC] Model revision dates updated.");
+                            Logger.Info("[FLUSH-SYNC] Model objects-version date updated (LastCommitDate left untouched to preserve Team Development local changes).");
                         }
                         catch (Exception ex)
                         {
@@ -82,7 +89,8 @@ namespace GxMcp.Worker.Services
                 try { obj.SaveVersionIndependentDate(310, 0, now); } catch { }
                 if (model != null)
                 {
-                    try { model.LastCommitDate = now; } catch { }
+                    // LastCommitDate deliberately not stamped — see FlushSync above: it is the
+                    // Team Development commit baseline, and stamping it wipes the pending list.
                     try { model.LastObjectsVersionDate = now; } catch { }
                 }
             }
