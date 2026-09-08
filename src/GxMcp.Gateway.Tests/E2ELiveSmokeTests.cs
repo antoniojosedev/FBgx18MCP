@@ -538,15 +538,15 @@ namespace GxMcp.Gateway.Tests
             var statusPayload = LiveGatewayHarness.ParseToolPayload(statusResponse);
             Assert.NotNull(statusPayload);
             var status = statusPayload!["result"] as JObject ?? statusPayload;
-            if (status["connected"]?.ToObject<bool?>() != true)
+            if (status["connected"]?.ToObject<bool?>() != true ||
+                !string.Equals(status["source"]?.ToString(), "sdk:ITeamDevClientService", StringComparison.Ordinal))
             {
                 throw SkipException.ForSkip(
-                    "The configured live KB is not linked to GeneXus Team Development; " +
+                    "The configured live KB does not expose the SDK Team Development service; " +
                     "set GXMCP_TEST_KB to a linked disposable KB to run this regression.");
             }
 
-            string tickHex = DateTime.UtcNow.Ticks.ToString("X");
-            string stamp = tickHex.Substring(tickHex.Length - 8).ToLowerInvariant();
+            string stamp = Guid.NewGuid().ToString("N").Substring(0, 8);
             string first = "TestTeamDevA" + stamp;
             string second = "TestTeamDevB" + stamp;
 
@@ -575,6 +575,9 @@ namespace GxMcp.Gateway.Tests
                     "first edit failed: " + firstEdit.ToString(Newtonsoft.Json.Formatting.None));
 
                 var afterFirst = await ReadTeamDevelopmentPendingNamesAsync();
+                // GetLocalChanges observes the model-level pending state regardless of whether
+                // the first change came from the IDE or this worker; using the MCP path keeps
+                // the regression self-contained while exercising the same SDK read.
                 Assert.True(
                     afterFirst.Contains(first),
                     "The first MCP write must appear in the Team Development pending list.");
@@ -611,8 +614,14 @@ namespace GxMcp.Gateway.Tests
             }
             finally
             {
-                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = second, ["confirm"] = true });
-                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = first, ["confirm"] = true });
+                try
+                {
+                    await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = second, ["confirm"] = true });
+                }
+                finally
+                {
+                    await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = first, ["confirm"] = true });
+                }
             }
         }
     }
