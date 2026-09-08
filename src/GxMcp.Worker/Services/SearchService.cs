@@ -834,9 +834,11 @@ namespace GxMcp.Worker.Services
         private static bool ContainsIgnoreCase(List<string> list, string term)
         {
             if (list == null || list.Count == 0) return false;
+            int termLen = term.Length;
             for (int i = 0; i < list.Count; i++)
             {
-                if (string.Equals(list[i], term, StringComparison.OrdinalIgnoreCase)) return true;
+                var s = list[i];
+                if (s != null && s.Length == termLen && string.Equals(s, term, StringComparison.OrdinalIgnoreCase)) return true;
             }
             return false;
         }
@@ -846,21 +848,29 @@ namespace GxMcp.Worker.Services
             int score = 0;
             string name = entry.Name ?? "";
             string desc = entry.Description ?? "";
+            int nameLen = name.Length;
+            int descLen = desc.Length;
+            bool isTableType = string.Equals(entry.Type, "Table", StringComparison.OrdinalIgnoreCase);
+            bool isTableFilter = string.Equals(typeFilter, "Table", StringComparison.OrdinalIgnoreCase);
 
             foreach (var term in terms) {
-                if (name.Equals(term, StringComparison.OrdinalIgnoreCase)) score += 10000;
-                else if (name.StartsWith(term, StringComparison.OrdinalIgnoreCase)) score += 1000;
-                else if (name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 500;
+                int termLen = term.Length;
+                if (nameLen >= termLen)
+                {
+                    if (nameLen == termLen && name.Equals(term, StringComparison.OrdinalIgnoreCase)) score += 10000;
+                    else if (name.StartsWith(term, StringComparison.OrdinalIgnoreCase)) score += 1000;
+                    else if (name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 500;
+                }
 
-                if (desc.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 300;
+                if (descLen >= termLen && desc.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 300;
 
                 if (ContainsIgnoreCase(entry.Keywords, term)) score += 800;
                 if (ContainsIgnoreCase(entry.Tags, term)) score += 800;
 
                 if (entry.Tables != null && ContainsIgnoreCase(entry.Tables, term))
                 {
-                    bool boostForAttributeMember = string.Equals(typeFilter, "Table", StringComparison.OrdinalIgnoreCase)
-                                                   && string.Equals(entry.Type, "Table", StringComparison.OrdinalIgnoreCase)
+                    bool boostForAttributeMember = isTableFilter
+                                                   && isTableType
                                                    && _indexCacheService.LooksLikeAttributeName(term);
                     score += boostForAttributeMember ? 5000 : 400;
                 }

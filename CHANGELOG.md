@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- Fixed a `KeyNotFoundException` in `SummarizeService` (`genexus_analyze mode=summary`) when inspecting procedures with missing parts or unresolved references by adding safe source extraction (`GetSourceSafe`) and defensive object dependency resolution with early-exit on 10 items.
+
+### Changed
+
+- Eliminated redundant full JSON string serialization and UTF-8 recount (`Encoding.UTF8.GetByteCount(transformed.ToString(...))`) on the hot response dispatch path in Gateway (`Program.WorkerLifecycle.cs`), reusing `pending.ResponseBytes` directly to reduce latency and memory allocations across all tools.
+- Optimized `SearchService.cs` candidate scoring (`CalculateSemanticScore` and `ContainsIgnoreCase`) with string length pre-checks to bypass redundant case-insensitive comparisons across the index catalogue.
+- Optimized `WriteService.cs` post-write pipeline by scoping the `wasNoOp` `JObject.Parse` check inside the snapshot block, avoiding JSON string reparsing on `dryRun` and snapshot-less operations.
+
 ## v3.0.2 - 2026-09-07
 
 

@@ -57,14 +57,35 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private static string GetSourceSafe(KBObject obj)
+        {
+            if (obj == null) return "";
+            try
+            {
+                if (obj is Procedure proc)
+                {
+                    try { return proc.ProcedurePart?.Source ?? ""; }
+                    catch { return ""; }
+                }
+                if (obj is WebPanel wbp)
+                {
+                    try { return wbp.Parts.Get<EventsPart>()?.Source ?? ""; }
+                    catch { return ""; }
+                }
+                if (obj is Transaction trn)
+                {
+                    try { return trn.Parts.Get<EventsPart>()?.Source ?? ""; }
+                    catch { return ""; }
+                }
+            }
+            catch { }
+            return "";
+        }
+
         private JArray ExtractIntents(KBObject obj)
         {
             var intents = new JArray();
-            string source = "";
-            
-            if (obj is Procedure proc) source = proc.ProcedurePart.Source;
-            else if (obj is WebPanel wbp) source = wbp.Parts.Get<EventsPart>()?.Source ?? "";
-            else if (obj is Transaction trn) source = trn.Parts.Get<EventsPart>()?.Source ?? "";
+            string source = GetSourceSafe(obj);
 
             if (string.IsNullOrEmpty(source)) return intents;
 
@@ -99,24 +120,46 @@ namespace GxMcp.Worker.Services
             var kb = _kbService.GetKB();
             if (kb == null) return deps;
 
-            // Get all references and take distinctive target names
-            var references = obj.GetReferences()
-                .Select(r => kb.DesignModel.Objects.Get(r.To)?.Name)
-                .Where(n => !string.IsNullOrEmpty(n))
-                .Distinct()
-                .Take(10);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var references = obj.GetReferences();
+                if (references != null)
+                {
+                    foreach (var r in references)
+                    {
+                        try
+                        {
+                            var targetObj = kb.DesignModel.Objects.Get(r.To);
+                            if (targetObj != null && !string.IsNullOrEmpty(targetObj.Name))
+                            {
+                                if (seen.Add(targetObj.Name))
+                                {
+                                    deps.Add(targetObj.Name);
+                                    if (deps.Count >= 10)
+                                        break;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore unresolved entities (e.g. Attribute/Domain/Key not in Objects)
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore failure getting references
+            }
 
-            foreach (var name in references) deps.Add(name);
             return deps;
         }
 
         private JObject CalculateMetrics(KBObject obj)
         {
             var metrics = new JObject();
-            string source = "";
-            if (obj is Procedure p) source = p.ProcedurePart.Source;
-            else if (obj is WebPanel w) source = w.Parts.Get<EventsPart>()?.Source ?? "";
-            else if (obj is Transaction t) source = t.Parts.Get<EventsPart>()?.Source ?? "";
+            string source = GetSourceSafe(obj);
 
             int lines = string.IsNullOrEmpty(source) ? 0 : source.Split('\n').Length;
             metrics["linesOfCode"] = lines;

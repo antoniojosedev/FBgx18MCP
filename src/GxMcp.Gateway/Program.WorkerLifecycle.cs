@@ -633,9 +633,9 @@ namespace GxMcp.Gateway
                     var transformSwNoTimeout = System.Diagnostics.Stopwatch.StartNew();
                     var transformedNoTimeout = onSuccess(workerResponse);
                     transformSwNoTimeout.Stop();
-                    long transformedBytesNoTimeout = transformedNoTimeout == null
+                    long transformedBytesNoTimeout = pending.ResponseBytes > 0
                         ? pending.ResponseBytes
-                        : Encoding.UTF8.GetByteCount(transformedNoTimeout.ToString(Newtonsoft.Json.Formatting.None));
+                        : (transformedNoTimeout == null ? 0 : Encoding.UTF8.GetByteCount(transformedNoTimeout.ToString(Newtonsoft.Json.Formatting.None)));
                     RecordToolLatency(
                         toolName,
                         pending.CreatedAtUtc,
@@ -691,9 +691,9 @@ namespace GxMcp.Gateway
                     var transformSw = System.Diagnostics.Stopwatch.StartNew();
                     var transformed = onSuccess(workerResponse);
                     transformSw.Stop();
-                    long transformedBytes = transformed == null
+                    long transformedBytes = pending.ResponseBytes > 0
                         ? pending.ResponseBytes
-                        : Encoding.UTF8.GetByteCount(transformed.ToString(Newtonsoft.Json.Formatting.None));
+                        : (transformed == null ? 0 : Encoding.UTF8.GetByteCount(transformed.ToString(Newtonsoft.Json.Formatting.None)));
                     RecordToolLatency(
                         toolName,
                         pending.CreatedAtUtc,

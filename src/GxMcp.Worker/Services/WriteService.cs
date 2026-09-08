@@ -1035,39 +1035,42 @@ namespace GxMcp.Worker.Services
             if (!dryRun && rollbackOnFailure && snapshot?.PriorContent != null)
                 wrapped = RollbackFullWriteFailure(wrapped, target, partName, typeFilter, snapshot.PriorContent);
 
-            // issue #31.2: a no-op write (WrapWithPersistedState flipped code to
-            // WriteNoChange because persisted == prior) shouldn't keep the pre-write
-            // snapshot .bak it just wrote — delete it and skip the snapshot envelope.
-            bool wasNoOp = false;
-            try { wasNoOp = string.Equals(JObject.Parse(wrapped)["code"]?.ToString(), "WriteNoChange", StringComparison.OrdinalIgnoreCase); }
-            catch { }
-
             // Attach snapshot envelope to the response so callers can restore.
-            if (snapshot != null && !wasNoOp)
+            if (snapshot != null)
             {
-                try
+                // issue #31.2: a no-op write (WrapWithPersistedState flipped code to
+                // WriteNoChange because persisted == prior) shouldn't keep the pre-write
+                // snapshot .bak it just wrote — delete it and skip the snapshot envelope.
+                bool wasNoOp = false;
+                try { wasNoOp = string.Equals(JObject.Parse(wrapped)["code"]?.ToString(), "WriteNoChange", StringComparison.OrdinalIgnoreCase); }
+                catch { }
+
+                if (!wasNoOp)
                 {
-                    var parsed = JObject.Parse(wrapped);
-                    parsed["snapshot"] = new JObject
+                    try
                     {
-                        ["path"] = snapshot.Path,
-                        ["timestamp"] = snapshot.Timestamp,
-                        ["guid"] = snapshot.Guid,
-                        ["part"] = snapshot.Part,
-                        ["compressed"] = snapshot.Compressed,
-                        ["bytes"] = snapshot.Bytes
-                    };
-                    wrapped = parsed.ToString(Newtonsoft.Json.Formatting.None);
+                        var parsed = JObject.Parse(wrapped);
+                        parsed["snapshot"] = new JObject
+                        {
+                            ["path"] = snapshot.Path,
+                            ["timestamp"] = snapshot.Timestamp,
+                            ["guid"] = snapshot.Guid,
+                            ["part"] = snapshot.Part,
+                            ["compressed"] = snapshot.Compressed,
+                            ["bytes"] = snapshot.Bytes
+                        };
+                        wrapped = parsed.ToString(Newtonsoft.Json.Formatting.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug("[SNAPSHOT] envelope attach failed: " + ex.Message);
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    Logger.Debug("[SNAPSHOT] envelope attach failed: " + ex.Message);
+                    try { if (!string.IsNullOrEmpty(snapshot.Path) && System.IO.File.Exists(snapshot.Path)) System.IO.File.Delete(snapshot.Path); }
+                    catch (Exception ex) { Logger.Debug("[SNAPSHOT] no-op cleanup failed: " + ex.Message); }
                 }
-            }
-            else if (snapshot != null && wasNoOp)
-            {
-                try { if (!string.IsNullOrEmpty(snapshot.Path) && System.IO.File.Exists(snapshot.Path)) System.IO.File.Delete(snapshot.Path); }
-                catch (Exception ex) { Logger.Debug("[SNAPSHOT] no-op cleanup failed: " + ex.Message); }
             }
             return wrapped;
             } // end lock (AcquirePerTargetLock)

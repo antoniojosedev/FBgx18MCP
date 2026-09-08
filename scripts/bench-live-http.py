@@ -39,6 +39,7 @@ mean-delta and a >+25% p50 regression warning. Typical workflow:
 import argparse
 from dataclasses import dataclass
 import json
+import os
 import statistics
 import sys
 import time
@@ -311,6 +312,8 @@ def operation_envelope_is_ok(operation, env):
         return any(key in env for key in ("source", "content", "parts", "part", "versionToken", "isEmpty"))
     if operation == "lifecycle_status":
         return any(key in env for key in ("status", "Status", "Phase", "TaskId", "summary", "compact"))
+    if operation == "analyze":
+        return any(key in env for key in ("name", "type", "summary", "metrics", "criticalDependencies", "intents", "linter"))
     return envelope_is_ok(env)
 
 
@@ -703,6 +706,9 @@ def main():
            "label": label, "kb": args.kb, "iterations": n, "ops": results,
            "opsOrder": ops, "population": population}
     if args.out:
+        out_dir = os.path.dirname(os.path.abspath(args.out))
+        if out_dir and not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2)
         print(f"\nWrote {args.out}")
