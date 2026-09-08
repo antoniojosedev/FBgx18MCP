@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.0.4 - 2026-09-08
+
+
 ### Fixed
 
 - Fixed Worker object writes from advancing the model-level Team Development commit baseline, so earlier local changes remain pending while IDE refreshes continue through `LastObjectsVersionDate` ([#145](https://github.com/lennix1337/Genexus18MCP/pull/145); contributed by @elianferreira).
