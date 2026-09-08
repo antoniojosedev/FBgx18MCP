@@ -10,6 +10,15 @@ namespace GxMcp.Worker.Services
 {
     public class ListService
     {
+        private static readonly BoundedStringCache _listCache = new BoundedStringCache(512);
+        private static DateTime _lastIndexTime;
+        private static long _lastGraphRevision;
+
+        public static void InvalidateCache()
+        {
+            _listCache.Clear();
+        }
+
         private readonly KbService _kbService;
         private readonly IndexCacheService _indexCacheService;
 
@@ -163,6 +172,22 @@ namespace GxMcp.Worker.Services
                     empty["_meta"] = meta;
                     return Finalize(empty.ToString(Newtonsoft.Json.Formatting.None));
                 }
+
+                string cacheKey = $"{filter}|{limit}|{offset}|{parentFilter}|{typeFilter}|{parentPathFilter}|{verbose}|{invokerNameFilter}|{invokerDescriptionFilter}|{invokerPathPrefix}|{sort}|{since:yyyyMMddHHmmss}|{modifiedBefore:yyyyMMddHHmmss}|{cursor}";
+
+                if (index.LastUpdated > _lastIndexTime || index.GraphRevision != _lastGraphRevision)
+                {
+                    _listCache.Clear();
+                    _lastIndexTime = index.LastUpdated;
+                    _lastGraphRevision = index.GraphRevision;
+                }
+
+                if (!indexPartial && !_indexCacheService.IsScanning && _listCache.TryGetValue(cacheKey, out var cached))
+                {
+                    source = "cache";
+                    return Finalize(cached);
+                }
+
                 if (index.Objects.Count > 0)
                 {
                     IEnumerable<SearchIndex.IndexEntry> entries;
@@ -444,7 +469,12 @@ namespace GxMcp.Worker.Services
                             : "typeFilter='" + string.Join(",", filterTypes) + "' matched nothing. See typesAvailable for canonical type names actually present in this KB.";
                         paged["_meta"] = meta;
                     }
-                    return Finalize(paged.ToString());
+                    string json = paged.ToString(Newtonsoft.Json.Formatting.None);
+                    if (!indexPartial && !_indexCacheService.IsScanning)
+                    {
+                        _listCache.TryAdd(cacheKey, json);
+                    }
+                    return Finalize(json);
                 }
 
                 // Defensive fallback for exotic states only (e.g. UltraLiteReady with 0
@@ -601,7 +631,7 @@ namespace GxMcp.Worker.Services
                     ));
                 }
 
-                return Finalize(BuildPagedResponseInternal(array, totalRuntime, startRuntime, pageSizeRuntime).ToString());
+                return Finalize(BuildPagedResponseInternal(array, totalRuntime, startRuntime, pageSizeRuntime).ToString(Newtonsoft.Json.Formatting.None));
             }
             catch (Exception ex)
             {
@@ -727,12 +757,34 @@ namespace GxMcp.Worker.Services
             // total: count of items in the current page result
             aggregates["total"] = items.Count;
 
-            // by_type: group items by type and count each type
+            // Single-pass computation of by_type, lastUpdate window, and by_author
             var typeGrouping = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in items.Cast<JObject>())
+            var byAuthor = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            DateTime? minLu = null, maxLu = null;
+            int last7 = 0;
+            DateTime cutoff = DateTime.UtcNow.AddDays(-7);
+
+            foreach (var token in items)
             {
-                var type = item["type"]?.ToString() ?? "Unknown";
+                if (!(token is JObject item)) continue;
+
+                var type = (string)item["type"] ?? "Unknown";
                 typeGrouping[type] = typeGrouping.TryGetValue(type, out int c) ? c + 1 : 1;
+
+                var luTok = (string)item["lastUpdate"];
+                if (!string.IsNullOrEmpty(luTok) &&
+                    DateTime.TryParse(luTok, null, System.Globalization.DateTimeStyles.RoundtripKind, out var lu))
+                {
+                    if (minLu == null || lu < minLu) minLu = lu;
+                    if (maxLu == null || lu > maxLu) maxLu = lu;
+                    if (lu >= cutoff) last7++;
+                }
+
+                var who = (string)item["lastModifiedBy"];
+                if (!string.IsNullOrEmpty(who))
+                {
+                    byAuthor[who] = byAuthor.TryGetValue(who, out var ac) ? ac + 1 : 1;
+                }
             }
 
             var byTypeObj = new JObject();
@@ -742,24 +794,6 @@ namespace GxMcp.Worker.Services
             }
             aggregates["by_type"] = byTypeObj;
 
-            // v2.6.8: lifecycle aggregates — page-window min/max of lastUpdate and a
-            // count of items modified in the last 7 days. Pulled from the projected
-            // ISO-8601 string on each item so this works for both index and runtime
-            // paths without needing the original IndexEntry.
-            DateTime? minLu = null, maxLu = null;
-            int last7 = 0;
-            DateTime cutoff = DateTime.UtcNow.AddDays(-7);
-            foreach (var item in items.Cast<JObject>())
-            {
-                var luTok = item["lastUpdate"]?.ToString();
-                if (string.IsNullOrEmpty(luTok)) continue;
-                if (!DateTime.TryParse(luTok, null,
-                        System.Globalization.DateTimeStyles.RoundtripKind, out var lu))
-                    continue;
-                if (minLu == null || lu < minLu) minLu = lu;
-                if (maxLu == null || lu > maxLu) maxLu = lu;
-                if (lu >= cutoff) last7++;
-            }
             if (minLu.HasValue && maxLu.HasValue)
             {
                 aggregates["lastUpdate"] = new JObject
@@ -770,15 +804,6 @@ namespace GxMcp.Worker.Services
                 aggregates["modified_last_7d"] = last7;
             }
 
-            // v2.6.8: per-page authorship counts. Answers "who's been touching this
-            // area" in one round-trip when items carry lastModifiedBy (verbose=true).
-            var byAuthor = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in items.Cast<JObject>())
-            {
-                var who = item["lastModifiedBy"]?.ToString();
-                if (string.IsNullOrEmpty(who)) continue;
-                byAuthor[who] = byAuthor.TryGetValue(who, out var c) ? c + 1 : 1;
-            }
             if (byAuthor.Count > 0)
             {
                 var byAuthorObj = new JObject();

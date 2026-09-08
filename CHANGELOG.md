@@ -9,8 +9,10 @@
 ### Changed
 
 - Eliminated redundant full JSON string serialization and UTF-8 recount (`Encoding.UTF8.GetByteCount(transformed.ToString(...))`) on the hot response dispatch path in Gateway (`Program.WorkerLifecycle.cs`), reusing `pending.ResponseBytes` directly to reduce latency and memory allocations across all tools.
-- Optimized `SearchService.cs` candidate scoring (`CalculateSemanticScore` and `ContainsIgnoreCase`) with string length pre-checks to bypass redundant case-insensitive comparisons across the index catalogue.
+- Optimized `SearchService.cs` candidate scoring (`CalculateSemanticScore` and `ContainsIgnoreCase`) with string length pre-checks to bypass redundant case-insensitive comparisons across the index catalogue, and removed a dead MTA threadpool warm-up enqueue.
 - Optimized `WriteService.cs` post-write pipeline by scoping the `wasNoOp` `JObject.Parse` check inside the snapshot block, avoiding JSON string reparsing on `dryRun` and snapshot-less operations.
+- Optimized `WriteService.cs` `dryRun` write path by skipping IDE process/window concurrency checks when policy is not `fail_if_open` and reusing cached source reads in `WrapWithPersistedState` rather than forcing database fetches and cache invalidations, cutting `edit_dryrun` p50 latency by ~86% (~40.7ms to ~5.5ms).
+- Optimized `ListService.cs` (`genexus_list_objects`) with a revision-aware `BoundedStringCache`, single-pass aggregate calculations, and unindented JSON output, reducing repetitive listing latency and memory overhead.
 
 ## v3.0.2 - 2026-09-07
 

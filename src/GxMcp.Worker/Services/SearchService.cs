@@ -611,36 +611,6 @@ namespace GxMcp.Worker.Services
                 string json = responseObj.ToString(Newtonsoft.Json.Formatting.None);
                 if (!_indexCacheService.IsScanning) _queryCache.TryAdd(cacheKey, json);
 
-                if (!isQuick && criteria.Terms.Count > 0 && returnedCount > 0)
-                {
-                    var topGuids = new List<Guid>();
-                    int warmLimit = Math.Min(endIndex, startIndex + 5);
-                    for (int i = startIndex; i < warmLimit; i++)
-                    {
-                        var g = rankedAll[i].Entry?.Guid;
-                        if (!string.IsNullOrEmpty(g) && Guid.TryParse(g, out var parsedGuid))
-                        {
-                            topGuids.Add(parsedGuid);
-                        }
-                    }
-
-                    Program.EnqueueBackground(() => {
-                        try {
-                            // STA guard: this runs on a background (MTA) thread and
-                            // kb.DesignModel.Objects.Get touches the COM-flavoured
-                            // SDK — same crash class as TryDirectLookup off-STA.
-                            // Warm-up is best-effort cache priming; skip silently.
-                            if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA) return;
-                            var kb = _indexCacheService.KbService?.GetKB();
-                            if (kb == null) return;
-                            foreach (var guid in topGuids) {
-                                var obj = kb.DesignModel.Objects.Get(guid);
-                                if (obj != null) Logger.Debug($"[Warm-up] Loaded {obj.Name} into SDK cache.");
-                            }
-                        } catch { }
-                    });
-                }
-
                 return json;
             }
             catch (Exception ex) { return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }

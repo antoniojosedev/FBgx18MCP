@@ -582,13 +582,16 @@ namespace GxMcp.Worker.Services
             catch { }
 
             IdeConcurrencyStatus concurrencyStatus = null;
-            try
+            if (!facadeArgs.DryRun || string.Equals(facadeArgs.ConcurrencyPolicy, "fail_if_open", StringComparison.OrdinalIgnoreCase))
             {
-                concurrencyStatus = IdeConcurrencyDetector.Check(kbPath, kbName, target);
-            }
-            catch (Exception ex)
-            {
-                Logger.Debug("[IDE-CONCURRENCY] Check skipped: " + ex.Message);
+                try
+                {
+                    concurrencyStatus = IdeConcurrencyDetector.Check(kbPath, kbName, target);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("[IDE-CONCURRENCY] Check skipped: " + ex.Message);
+                }
             }
 
             if (concurrencyStatus != null && concurrencyStatus.IsTargetObjectOpen &&
