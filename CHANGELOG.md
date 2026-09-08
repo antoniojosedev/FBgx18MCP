@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.0.3 - 2026-09-08
+
+
 ### Fixed
 
 - Fixed a `KeyNotFoundException` in `SummarizeService` (`genexus_analyze mode=summary`) when inspecting procedures with missing parts or unresolved references by adding safe source extraction (`GetSourceSafe`) and defensive object dependency resolution with early-exit on 10 items.
