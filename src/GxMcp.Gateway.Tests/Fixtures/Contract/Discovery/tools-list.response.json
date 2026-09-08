@@ -3201,7 +3201,18 @@
         "examples": [
           {
             "action": "get",
-            "name": "MyPanel"
+            "name": "MyPanel",
+            "propertyName": "Description"
+          },
+          {
+            "action": "get",
+            "name": "MyDomain",
+            "query": "*Type*"
+          },
+          {
+            "action": "get",
+            "name": "MyDomain",
+            "projection": "minimal"
           },
           {
             "action": "move",
@@ -3254,11 +3265,32 @@
           "name": {
             "type": "string"
           },
+          "projection": {
+            "description": "action=get: compact property subset (minimal, standard, full). Defaults to full.",
+            "enum": [
+              "minimal",
+              "standard",
+              "full"
+            ],
+            "type": "string"
+          },
           "properties": {
             "description": "Batch set: map of propertyName to value applied in 1 transaction.",
             "type": "object"
           },
           "propertyName": {
+            "description": "Filter for action=get (single property, comma-separated, or * wildcard); property to change for action=set.",
+            "type": "string"
+          },
+          "propertyNames": {
+            "description": "action=get: list of property names to return.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "query": {
+            "description": "action=get: filter property names by substring or * wildcard.",
             "type": "string"
           },
           "rollbackOnFailure": {

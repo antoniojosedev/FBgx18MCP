@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- `genexus_properties` `action=get` now honors `propertyName` (single property lookup, comma-separated list, or `*`/`?` wildcards), `propertyNames` (string array), search filter `query`, and preset `projection` modes (`"minimal"` | `"standard"` | `"full"`), returning `versionToken` on `PropertiesRead` envelopes ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+- Added Levenshtein-based "Did you mean?" suggestions and actionable `nextSteps` to `PropertyNotFound` errors when a property name or search query does not match, helping AI agents self-correct in a single turn ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+- Added a flat `values: { [propName]: propValue }` dictionary to all successful `genexus_properties` `action=get` envelopes (single, multi, projection, query, and full) for instant O(1) key-value reads without parsing complex metadata arrays ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+
+### Changed
+
+- `genexus_properties` `action=get` single property queries now return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }` instead of dumping 100+ properties, dramatically cutting context token consumption ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+
 ## v3.0.1 - 2026-09-07
 
 

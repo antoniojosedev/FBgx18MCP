@@ -5,6 +5,7 @@ using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Objects;
 using Artech.Common.Properties;
 using Artech.Genexus.Common.Parts;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 
@@ -19,10 +20,91 @@ namespace GxMcp.Worker.Services
         // hydrates property definitions via reflection. Subsequent reads of the
         // same object usually want the same envelope, so we cache by GUID for a
         // few seconds. SetProperty invalidates the entry explicitly.
-        private static readonly Dictionary<string, (DateTime expiresAt, string json)> _propertyCache
-            = new Dictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, (DateTime expiresAt, JObject propsResult)> _propertyCache
+            = new Dictionary<string, (DateTime, JObject)>(StringComparer.OrdinalIgnoreCase);
         private static readonly object _propertyCacheLock = new object();
         private const int PropertyCacheTtlSeconds = 30;
+
+        internal static readonly HashSet<string> MinimalProjectionPropertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Name",
+            "Description",
+            "DescriptionValue",
+            "Type",
+            "DataType",
+            "DataTypeString",
+            "Length",
+            "AttMaxLen",
+            "Decimals",
+            "AttDec",
+            "Signed",
+            "AttSign",
+            "Picture",
+            "ATT_PICTURE",
+            "Domain",
+            "BasedOn",
+            "DomainBasedOn",
+            "DomainDefinition"
+        };
+
+        internal static readonly HashSet<string> StandardProjectionPropertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Minimal set
+            "Name",
+            "Description",
+            "DescriptionValue",
+            "Type",
+            "DataType",
+            "DataTypeString",
+            "Length",
+            "AttMaxLen",
+            "Decimals",
+            "AttDec",
+            "Signed",
+            "AttSign",
+            "Picture",
+            "ATT_PICTURE",
+            "Domain",
+            "BasedOn",
+            "DomainBasedOn",
+            "DomainDefinition",
+
+            // Standard object / domain / control metadata
+            "IsNullable",
+            "Nullable",
+            "ALLOWNULL",
+            "Autonumber",
+            "Collection",
+            "AttCollection",
+            "Title",
+            "Caption",
+            "Module",
+            "Parent",
+            "Prefix",
+            "ControlValues",
+            "Values",
+            "EnumValues",
+            "ValidationFailedText",
+            "Help",
+            "Theme",
+            "MasterPage",
+            "Folder",
+            "ExternalName",
+            "ExternalNamespace",
+            "CommitOnExit",
+            "Protocol",
+            "ExposeAsWebService",
+            "SOAP",
+            "REST",
+            "ConnectivitySupport",
+            "WebNotification",
+            "WebUserExperience",
+            "FormClass",
+            "DefaultSelected",
+            "Visible",
+            "Enabled",
+            "Class"
+        };
 
         public PropertyService(ObjectService objectService)
         {
@@ -48,7 +130,14 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string GetProperties(string target, string controlName = null, string typeFilter = null)
+        public string GetProperties(
+            string target,
+            string controlName = null,
+            string typeFilter = null,
+            string propertyName = null,
+            IEnumerable<string> propertyNames = null,
+            string projection = null,
+            string query = null)
         {
             try
             {
@@ -56,31 +145,466 @@ namespace GxMcp.Worker.Services
                 if (obj == null) return Models.McpResponse.Err(code: "ObjectNotFound", message: "Object not found.", hint: "Check the target name and that the KB is open.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists available objects to verify the target name.")), target: target);
 
                 string ck = CacheKey(obj, controlName);
+                JObject fullPropsResult = null;
                 lock (_propertyCacheLock)
                 {
                     if (_propertyCache.TryGetValue(ck, out var hit) && hit.expiresAt > DateTime.UtcNow)
-                        return hit.json;
+                        fullPropsResult = (JObject)hit.propsResult.DeepClone();
                 }
 
-                dynamic container = obj;
-                if (!string.IsNullOrEmpty(controlName))
+                if (fullPropsResult == null)
                 {
-                    container = FindControl(obj, controlName);
-                    if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
+                    dynamic container = obj;
+                    if (!string.IsNullOrEmpty(controlName))
+                    {
+                        container = FindControl(obj, controlName);
+                        if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
+                    }
+
+                    fullPropsResult = SerializeProperties(container);
+                    lock (_propertyCacheLock)
+                    {
+                        _propertyCache[ck] = (DateTime.UtcNow.AddSeconds(PropertyCacheTtlSeconds), (JObject)fullPropsResult.DeepClone());
+                    }
                 }
 
-                var propsResult = SerializeProperties(container);
-                string json = Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: propsResult);
-                lock (_propertyCacheLock)
-                {
-                    _propertyCache[ck] = (DateTime.UtcNow.AddSeconds(PropertyCacheTtlSeconds), json);
-                }
-                return json;
+                string versionToken = null;
+                try { versionToken = WriteService.ComputeVersionToken(obj); } catch { }
+
+                return ShapeGetPropertiesResult(
+                    fullPropsResult,
+                    target,
+                    controlName,
+                    propertyName,
+                    propertyNames,
+                    projection,
+                    versionToken,
+                    query);
             }
             catch (Exception ex)
             {
                 return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
+        }
+
+        internal static int Levenshtein(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a)) return b?.Length ?? 0;
+            if (string.IsNullOrEmpty(b)) return a.Length;
+            int lenA = a.Length;
+            int lenB = b.Length;
+            var dp = new int[lenA + 1, lenB + 1];
+            for (int i = 0; i <= lenA; i++) dp[i, 0] = i;
+            for (int j = 0; j <= lenB; j++) dp[0, j] = j;
+            for (int i = 1; i <= lenA; i++)
+            {
+                char ca = char.ToLowerInvariant(a[i - 1]);
+                for (int j = 1; j <= lenB; j++)
+                {
+                    char cb = char.ToLowerInvariant(b[j - 1]);
+                    int cost = ca == cb ? 0 : 1;
+                    dp[i, j] = Math.Min(Math.Min(dp[i - 1, j] + 1, dp[i, j - 1] + 1), dp[i - 1, j - 1] + cost);
+                }
+            }
+            return dp[lenA, lenB];
+        }
+
+        internal static List<string> FindPropertySuggestions(string targetProp, IEnumerable<string> allCandidateNames, int maxSuggestions = 3)
+        {
+            if (string.IsNullOrWhiteSpace(targetProp) || allCandidateNames == null)
+                return new List<string>();
+
+            string cleaned = targetProp.Trim();
+            var scored = new List<(string name, int score)>();
+
+            foreach (var cand in allCandidateNames)
+            {
+                if (string.IsNullOrWhiteSpace(cand)) continue;
+                string candTrimmed = cand.Trim();
+
+                if (string.Equals(cleaned, candTrimmed, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Prefix match (candidate starts with input or input starts with candidate)
+                if (candTrimmed.StartsWith(cleaned, StringComparison.OrdinalIgnoreCase))
+                {
+                    scored.Add((candTrimmed, 1));
+                    continue;
+                }
+                if (cleaned.StartsWith(candTrimmed, StringComparison.OrdinalIgnoreCase))
+                {
+                    scored.Add((candTrimmed, 2));
+                    continue;
+                }
+
+                // Substring match
+                if (candTrimmed.IndexOf(cleaned, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    scored.Add((candTrimmed, 3));
+                    continue;
+                }
+
+                // Levenshtein distance
+                int dist = Levenshtein(cleaned, candTrimmed);
+                int maxAllowedDist = Math.Max(2, cleaned.Length / 2);
+                if (dist <= maxAllowedDist)
+                {
+                    scored.Add((candTrimmed, 10 + dist));
+                }
+            }
+
+            return scored
+                .OrderBy(s => s.score)
+                .ThenBy(s => s.name.Length)
+                .Select(s => s.name)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(maxSuggestions)
+                .ToList();
+        }
+
+        internal static bool MatchesWildcardOrQuery(string propName, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return true;
+            if (string.IsNullOrEmpty(propName)) return false;
+
+            if (pattern.Contains("*") || pattern.Contains("?"))
+            {
+                string regexPattern = "^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
+                return Regex.IsMatch(propName, regexPattern, RegexOptions.IgnoreCase);
+            }
+
+            return propName.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        internal static string ShapeGetPropertiesResult(
+            JObject fullPropsResult,
+            string target,
+            string controlName = null,
+            string propertyName = null,
+            IEnumerable<string> propertyNames = null,
+            string projection = null,
+            string versionToken = null,
+            string query = null)
+        {
+            var props = fullPropsResult?["properties"] as JArray ?? new JArray();
+            var allPropNames = props
+                .Select(p => p["name"]?.ToString())
+                .Where(n => !string.IsNullOrEmpty(n))
+                .ToList();
+
+            var requested = new List<string>();
+            if (!string.IsNullOrWhiteSpace(propertyName))
+            {
+                var parts = propertyName.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var part in parts)
+                {
+                    var trimmed = part.Trim();
+                    if (!string.IsNullOrEmpty(trimmed) && !requested.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+                    {
+                        requested.Add(trimmed);
+                    }
+                }
+            }
+            if (propertyNames != null)
+            {
+                foreach (var name in propertyNames)
+                {
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        var trimmed = name.Trim();
+                        if (!string.IsNullOrEmpty(trimmed) && !requested.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+                        {
+                            requested.Add(trimmed);
+                        }
+                    }
+                }
+            }
+
+            string entityDesc = string.IsNullOrEmpty(controlName) ? $"'{target}'" : $"control '{controlName}' in '{target}'";
+
+            // Query / Wildcard mode
+            bool isWildcardProperty = requested.Count == 1 && (requested[0].Contains("*") || requested[0].Contains("?"));
+            bool hasQuery = !string.IsNullOrWhiteSpace(query);
+            if (hasQuery || isWildcardProperty)
+            {
+                string searchPattern = hasQuery ? query.Trim() : requested[0].Trim();
+                var matchedProps = new JArray();
+                var valuesMap = new JObject();
+
+                foreach (JObject p in props)
+                {
+                    var n = p["name"]?.ToString();
+                    if (MatchesWildcardOrQuery(n, searchPattern))
+                    {
+                        matchedProps.Add((JObject)p.DeepClone());
+                        if (!string.IsNullOrEmpty(n) && valuesMap[n] == null)
+                        {
+                            valuesMap[n] = p["value"]?.ToString() ?? "";
+                        }
+                    }
+                }
+
+                if (matchedProps.Count == 0)
+                {
+                    string cleanSearch = searchPattern.Trim('*', '?');
+                    var suggestions = FindPropertySuggestions(cleanSearch, allPropNames, 3);
+                    var nextSteps = new JArray();
+                    foreach (var sug in suggestions.Take(2))
+                    {
+                        var stepArgs = new JObject { ["action"] = "get", ["name"] = target, ["propertyName"] = sug };
+                        if (!string.IsNullOrEmpty(controlName)) stepArgs["control"] = controlName;
+                        nextSteps.Add(Models.McpResponse.NextStep("genexus_properties", stepArgs, $"Read closest matching property '{sug}'."));
+                    }
+                    nextSteps.Add(Models.McpResponse.NextStep("genexus_properties", new JObject { ["action"] = "get", ["name"] = target, ["projection"] = "minimal" }, "View common properties using minimal projection."));
+
+                    string msg = $"No properties matching '{searchPattern}' found on {entityDesc}.";
+                    if (suggestions.Count > 0)
+                    {
+                        msg += $" Did you mean: '{string.Join("', '", suggestions)}'?";
+                    }
+                    var errorExtra = suggestions.Count > 0 ? new JObject { ["didYouMean"] = new JArray(suggestions) } : null;
+
+                    return Models.McpResponse.Err(
+                        code: "PropertyNotFound",
+                        message: msg,
+                        hint: "Use projection=minimal to view common properties or omit query/wildcard to list all properties.",
+                        nextSteps: nextSteps,
+                        target: target,
+                        errorExtra: errorExtra);
+                }
+
+                var queryResult = new JObject
+                {
+                    ["query"] = searchPattern,
+                    ["count"] = matchedProps.Count,
+                    ["values"] = valuesMap,
+                    ["properties"] = matchedProps
+                };
+                if (!string.IsNullOrEmpty(versionToken))
+                {
+                    queryResult["versionToken"] = versionToken;
+                }
+                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: queryResult);
+            }
+
+            // Single property mode
+            if (requested.Count == 1)
+            {
+                string targetPropName = requested[0];
+                JObject matched = null;
+                foreach (JObject p in props)
+                {
+                    var n = p["name"]?.ToString();
+                    if (string.Equals(n, targetPropName, StringComparison.OrdinalIgnoreCase) ||
+                        (IsDomainPropertyName(targetPropName) && IsDomainPropertyName(n)))
+                    {
+                        matched = p;
+                        break;
+                    }
+                }
+
+                if (matched == null)
+                {
+                    var suggestions = FindPropertySuggestions(targetPropName, allPropNames, 3);
+                    var nextSteps = new JArray();
+                    foreach (var sug in suggestions.Take(2))
+                    {
+                        var stepArgs = new JObject { ["action"] = "get", ["name"] = target, ["propertyName"] = sug };
+                        if (!string.IsNullOrEmpty(controlName)) stepArgs["control"] = controlName;
+                        nextSteps.Add(Models.McpResponse.NextStep("genexus_properties", stepArgs, $"Read closest matching property '{sug}'."));
+                    }
+                    nextSteps.Add(Models.McpResponse.NextStep("genexus_properties", new JObject { ["action"] = "get", ["name"] = target, ["projection"] = "minimal" }, "View common properties using minimal projection."));
+
+                    string msg = $"Property '{targetPropName}' not found on {entityDesc}.";
+                    if (suggestions.Count > 0)
+                    {
+                        msg += $" Did you mean: '{string.Join("', '", suggestions)}'?";
+                    }
+                    var errorExtra = suggestions.Count > 0 ? new JObject { ["didYouMean"] = new JArray(suggestions) } : null;
+
+                    return Models.McpResponse.Err(
+                        code: "PropertyNotFound",
+                        message: msg,
+                        hint: "Call genexus_properties with action=get and no propertyName (or projection=minimal) to see available properties.",
+                        nextSteps: nextSteps,
+                        target: target,
+                        errorExtra: errorExtra);
+                }
+
+                string matchedName = matched["name"]?.ToString() ?? targetPropName;
+                string matchedValue = matched["value"]?.ToString() ?? "";
+                var singleResult = new JObject
+                {
+                    ["propertyName"] = matchedName,
+                    ["value"] = matchedValue,
+                    ["values"] = new JObject { [matchedName] = matchedValue },
+                    ["property"] = (JObject)matched.DeepClone(),
+                    ["properties"] = new JArray { (JObject)matched.DeepClone() }
+                };
+                if (!string.IsNullOrEmpty(versionToken))
+                {
+                    singleResult["versionToken"] = versionToken;
+                }
+                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: singleResult);
+            }
+
+            // Multi-property mode
+            if (requested.Count > 1)
+            {
+                var matchedArray = new JArray();
+                var valuesMap = new JObject();
+                var foundRequested = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var req in requested)
+                {
+                    foreach (JObject p in props)
+                    {
+                        var n = p["name"]?.ToString();
+                        if (string.Equals(n, req, StringComparison.OrdinalIgnoreCase) ||
+                            (IsDomainPropertyName(req) && IsDomainPropertyName(n)))
+                        {
+                            if (!foundRequested.Contains(req))
+                            {
+                                foundRequested.Add(req);
+                                matchedArray.Add((JObject)p.DeepClone());
+                                if (!string.IsNullOrEmpty(n) && valuesMap[n] == null)
+                                {
+                                    valuesMap[n] = p["value"]?.ToString() ?? "";
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                if (matchedArray.Count == 0)
+                {
+                    var suggestions = new List<string>();
+                    foreach (var req in requested)
+                    {
+                        suggestions.AddRange(FindPropertySuggestions(req, allPropNames, 2));
+                    }
+                    suggestions = suggestions.Distinct(StringComparer.OrdinalIgnoreCase).Take(3).ToList();
+
+                    var nextSteps = new JArray();
+                    foreach (var sug in suggestions.Take(2))
+                    {
+                        var stepArgs = new JObject { ["action"] = "get", ["name"] = target, ["propertyName"] = sug };
+                        if (!string.IsNullOrEmpty(controlName)) stepArgs["control"] = controlName;
+                        nextSteps.Add(Models.McpResponse.NextStep("genexus_properties", stepArgs, $"Read closest matching property '{sug}'."));
+                    }
+                    nextSteps.Add(Models.McpResponse.NextStep("genexus_properties", new JObject { ["action"] = "get", ["name"] = target, ["projection"] = "minimal" }, "View common properties using minimal projection."));
+
+                    string msg = $"None of the requested properties ({string.Join(", ", requested)}) were found on {entityDesc}.";
+                    if (suggestions.Count > 0)
+                    {
+                        msg += $" Did you mean: '{string.Join("', '", suggestions)}'?";
+                    }
+                    var errorExtra = suggestions.Count > 0 ? new JObject { ["didYouMean"] = new JArray(suggestions) } : null;
+
+                    return Models.McpResponse.Err(
+                        code: "PropertyNotFound",
+                        message: msg,
+                        hint: "Call genexus_properties with action=get and no propertyName (or projection=minimal) to see available properties.",
+                        nextSteps: nextSteps,
+                        target: target,
+                        errorExtra: errorExtra);
+                }
+
+                var multiResult = new JObject
+                {
+                    ["values"] = valuesMap,
+                    ["properties"] = matchedArray
+                };
+                var missing = requested.Where(r => !foundRequested.Contains(r)).ToList();
+                if (missing.Count > 0)
+                {
+                    multiResult["missingProperties"] = new JArray(missing);
+                }
+                if (!string.IsNullOrEmpty(versionToken))
+                {
+                    multiResult["versionToken"] = versionToken;
+                }
+                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: multiResult);
+            }
+
+            // Projection mode: minimal
+            if (string.Equals(projection, "minimal", StringComparison.OrdinalIgnoreCase))
+            {
+                var filteredProps = new JArray();
+                var valuesMap = new JObject();
+                foreach (JObject p in props)
+                {
+                    var n = p["name"]?.ToString();
+                    if (n != null && MinimalProjectionPropertyNames.Contains(n))
+                    {
+                        filteredProps.Add((JObject)p.DeepClone());
+                        if (valuesMap[n] == null)
+                        {
+                            valuesMap[n] = p["value"]?.ToString() ?? "";
+                        }
+                    }
+                }
+                var projResult = new JObject
+                {
+                    ["projection"] = "minimal",
+                    ["values"] = valuesMap,
+                    ["properties"] = filteredProps
+                };
+                if (!string.IsNullOrEmpty(versionToken))
+                {
+                    projResult["versionToken"] = versionToken;
+                }
+                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: projResult);
+            }
+
+            // Projection mode: standard
+            if (string.Equals(projection, "standard", StringComparison.OrdinalIgnoreCase))
+            {
+                var filteredProps = new JArray();
+                var valuesMap = new JObject();
+                foreach (JObject p in props)
+                {
+                    var n = p["name"]?.ToString();
+                    if (n != null && StandardProjectionPropertyNames.Contains(n))
+                    {
+                        filteredProps.Add((JObject)p.DeepClone());
+                        if (valuesMap[n] == null)
+                        {
+                            valuesMap[n] = p["value"]?.ToString() ?? "";
+                        }
+                    }
+                }
+                var projResult = new JObject
+                {
+                    ["projection"] = "standard",
+                    ["values"] = valuesMap,
+                    ["properties"] = filteredProps
+                };
+                if (!string.IsNullOrEmpty(versionToken))
+                {
+                    projResult["versionToken"] = versionToken;
+                }
+                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: projResult);
+            }
+
+            // Full / Default mode
+            var allValuesMap = new JObject();
+            foreach (JObject p in props)
+            {
+                var n = p["name"]?.ToString();
+                if (!string.IsNullOrEmpty(n) && allValuesMap[n] == null)
+                {
+                    allValuesMap[n] = p["value"]?.ToString() ?? "";
+                }
+            }
+            var fullResult = (JObject)(fullPropsResult?.DeepClone() ?? new JObject { ["properties"] = new JArray() });
+            fullResult["values"] = allValuesMap;
+            if (!string.IsNullOrEmpty(versionToken))
+            {
+                fullResult["versionToken"] = versionToken;
+            }
+            return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: fullResult);
         }
 
         public string SetProperty(string target, string propName, string value, string controlName = null, string typeFilter = null)
@@ -1013,7 +1537,7 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
-        private JObject SerializeProperties(dynamic container)
+        internal static JObject SerializeProperties(dynamic container)
         {
             var result = new JObject();
             var props = new JArray();
@@ -1042,6 +1566,63 @@ namespace GxMcp.Worker.Services
                 }
             }
             catch (Exception ex) { Logger.Debug($"General error in SerializeProperties: {ex.Message}"); }
+
+            try
+            {
+                string basedOnName = DomainPropertyApplier.GetDomainBasedOnName((object)container);
+                if (!string.IsNullOrEmpty(basedOnName))
+                {
+                    bool alreadyPresent = false;
+                    foreach (JObject p in props)
+                    {
+                        if (string.Equals(p["name"]?.ToString(), "DomainBasedOn", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(p["name"]?.ToString(), "BasedOn", StringComparison.OrdinalIgnoreCase))
+                        {
+                            alreadyPresent = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyPresent)
+                    {
+                        props.Add(new JObject
+                        {
+                            ["name"] = "DomainBasedOn",
+                            ["value"] = basedOnName,
+                            ["type"] = "System.String",
+                            ["readOnly"] = false
+                        });
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                var enumVals = DomainPropertyApplier.ReadEnumValues((object)container);
+                if (enumVals != null && enumVals.Count > 0)
+                {
+                    bool alreadyPresent = false;
+                    foreach (JObject p in props)
+                    {
+                        if (string.Equals(p["name"]?.ToString(), "EnumValues", StringComparison.OrdinalIgnoreCase))
+                        {
+                            alreadyPresent = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyPresent)
+                    {
+                        props.Add(new JObject
+                        {
+                            ["name"] = "EnumValues",
+                            ["value"] = enumVals.ToString(Newtonsoft.Json.Formatting.None),
+                            ["type"] = "Artech.Genexus.Common.CustomTypes.EnumValues",
+                            ["readOnly"] = false
+                        });
+                    }
+                }
+            }
+            catch { }
 
             result["properties"] = props;
             return result;

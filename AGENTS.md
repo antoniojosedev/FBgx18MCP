@@ -47,8 +47,8 @@ GeneXus 18 SDK → Knowledge Base on disk
 ## Source of truth and tool changes
 
 - Tool schemas: `src/GxMcp.Gateway/tool_definitions.json`.
-- Discovery golden fixture: `src/GxMcp.Gateway.Tests/Fixtures/Contract/Discovery/tools-list.response.json`; keep it alphabetically sorted.
-- Tool dispatch path: gateway router → `src/GxMcp.Worker/Services/CommandDispatcher.cs` → service method. A new tool requires schema, router, dispatcher, service, and fixture updates.
+- Discovery golden fixture: `src/GxMcp.Gateway.Tests/Fixtures/Contract/Discovery/tools-list.response.json`; keep it alphabetically sorted. Regenerate automatically after intentional schema changes: `$env:GXMCP_UPDATE_GOLDEN='1'; dotnet test src\GxMcp.Gateway.Tests --filter McpDiscoveryContractTests; Remove-Item Env:\GXMCP_UPDATE_GOLDEN`.
+- Tool dispatch path: gateway router → `src/GxMcp.Worker/Services/CommandDispatcher.cs` → service method. A tool change requires schema (`tool_definitions.json`), router, dispatcher, service, help catalog (`src/GxMcp.Gateway/ToolHelpCatalog.cs`), and fixture updates.
 - Tool schema budget bumps require a `CHANGELOG.md` explanation.
 - `genexus_query` and `genexus_list_objects` compact output must be added to
   `Program.GetDefaultCompactFields` when a new output field is introduced.
@@ -69,6 +69,8 @@ dotnet build Genexus18MCP.sln -v:minimal
 dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
 dotnet build src\GxMcp.Gateway\GxMcp.Gateway.csproj
 dotnet test Genexus18MCP.sln
+dotnet test src\GxMcp.Worker.Tests --filter "FullyQualifiedName~PropertyService"
+dotnet test src\GxMcp.Gateway.Tests --filter "FullyQualifiedName~McpRouter"
 npm test
 npm run lint
 npm run test:one -- "test name pattern"

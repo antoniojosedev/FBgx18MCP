@@ -2159,7 +2159,39 @@ namespace GxMcp.Worker.Services
                 // the edited object and surfaces structured diagnostics (or rolls back).
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(singleResp, target, args);
             }
-            return _propertyService.GetProperties(target, args?["control"]?.ToString(), propType);
+            string propName = null;
+            List<string> propNames = null;
+            if (args?["propertyNames"] is JArray arrPropNames)
+            {
+                propNames = arrPropNames.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else if (args?["propertyName"] is JArray arrPropName)
+            {
+                propNames = arrPropName.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else if (args?["properties"] is JArray arrProps)
+            {
+                propNames = arrProps.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else
+            {
+                propName = args?["propertyName"]?.ToString();
+                if (string.IsNullOrWhiteSpace(propName) && args?["properties"]?.Type == JTokenType.String)
+                {
+                    propName = args["properties"].ToString();
+                }
+            }
+            string projection = args?["projection"]?.ToString();
+            string query = args?["query"]?.ToString();
+
+            return _propertyService.GetProperties(
+                target,
+                args?["control"]?.ToString(),
+                propType,
+                propName,
+                propNames,
+                projection,
+                query);
         }
 
         private string Handle_Asset(JObject request, string method, string action, string target, string payload, JObject args)

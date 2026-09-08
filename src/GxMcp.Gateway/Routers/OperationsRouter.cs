@@ -1266,13 +1266,26 @@ namespace GxMcp.Gateway.Routers
                 };
             }
 
+            var propNameToken = args?["propertyName"];
+            var propNamesToken = args?["propertyNames"];
+            if (propNamesToken == null && propNameToken is JArray)
+            {
+                propNamesToken = propNameToken;
+                propNameToken = null;
+            }
+
             return new
             {
                 module = "Property",
                 action = "Get",
                 target = args?["name"]?.ToString(),
                 control = args?["control"]?.ToString(),
-                type = args?["type"]?.ToString()
+                type = args?["type"]?.ToString(),
+                propertyName = propNameToken?.ToString(),
+                propertyNames = propNamesToken,
+                properties = args?["properties"],
+                projection = args?["projection"]?.ToString(),
+                query = args?["query"]?.ToString()
             };
         }
 

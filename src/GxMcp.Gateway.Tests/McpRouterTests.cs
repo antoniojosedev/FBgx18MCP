@@ -570,6 +570,80 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithFilteringAndProjection()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyName":"Description","projection":"minimal"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            Assert.Equal("Description", json["propertyName"]?.ToString());
+            Assert.Equal("minimal", json["projection"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithPropertyNamesArray()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyNames":["Description","Name"],"projection":"standard"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            var names = json["propertyNames"] as JArray;
+            Assert.NotNull(names);
+            Assert.Equal(2, names.Count);
+            Assert.Equal("Description", names[0].ToString());
+            Assert.Equal("Name", names[1].ToString());
+            Assert.Equal("standard", json["projection"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithArrayInPropertyName()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyName":["Description","Title"]}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Null(json["propertyName"]?.Value<string>());
+            var names = json["propertyNames"] as JArray;
+            Assert.NotNull(names);
+            Assert.Equal(2, names.Count);
+            Assert.Equal("Description", names[0].ToString());
+            Assert.Equal("Title", names[1].ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithQuery()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","query":"*Commit*"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            Assert.Equal("*Commit*", json["query"]?.ToString());
+        }
+
+        [Fact]
         public void ConvertToolCall_ShouldMapFormatTool()
         {
             var request = JObject.Parse(

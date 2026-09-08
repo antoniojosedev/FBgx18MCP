@@ -225,3 +225,13 @@ SDPanels are WorkWithDevices projections, not self-contained ordinary parts.
 `SDConditions` are non-source projections and may serialize as empty properties;
 an empty result does not mean the panel is empty. Layout and variables are
 authored in the GeneXus IDE.
+
+### Inspection and property conventions
+
+Metadata and property-reading tools (`genexus_properties`, `genexus_variable`, etc.) should follow these conventions:
+- **Envelope parity**: single-property reads return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }`. Multi-property reads return `{ target, values: { [name]: value }, properties: [...], missingProperties: [...] }`.
+- **Flat key-value dictionary**: always populate `values` as a flat `{ [name]: value }` dictionary for direct consumption by LLMs and client scripts without requiring traversal of nested array objects.
+- **Pattern and query filtering**: support `query` parameter matching both case-insensitive substrings and glob wildcards (`*` and `?`).
+- **Projections**: support `projection: "minimal" | "standard" | "full"` to control metadata payload weight (`minimal` emits compact key/value mappings; `full` includes all SDK descriptor flags).
+- **Suggestions on missing keys**: when a requested property is missing, compute nearest candidates using Levenshtein distance and return actionable `suggestions` and `nextSteps` in the error/response envelope instead of opaque failures.
+
