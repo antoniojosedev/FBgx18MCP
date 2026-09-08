@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.0.2 - 2026-09-07
+
+
 ### Added
 
 - `genexus_properties` `action=get` now honors `propertyName` (single property lookup, comma-separated list, or `*`/`?` wildcards), `propertyNames` (string array), search filter `query`, and preset `projection` modes (`"minimal"` | `"standard"` | `"full"`), returning `versionToken` on `PropertiesRead` envelopes ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
