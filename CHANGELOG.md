@@ -13,6 +13,10 @@
 - Optimized `WriteService.cs` post-write pipeline by scoping the `wasNoOp` `JObject.Parse` check inside the snapshot block, avoiding JSON string reparsing on `dryRun` and snapshot-less operations.
 - Optimized `WriteService.cs` `dryRun` write path by skipping IDE process/window concurrency checks when policy is not `fail_if_open` and reusing cached source reads in `WrapWithPersistedState` rather than forcing database fetches and cache invalidations, cutting `edit_dryrun` p50 latency by ~86% (~40.7ms to ~5.5ms).
 - Optimized `ListService.cs` (`genexus_list_objects`) with a revision-aware `BoundedStringCache`, single-pass aggregate calculations, and unindented JSON output, reducing repetitive listing latency and memory overhead.
+- Optimized `SummarizeService.cs` (`genexus_analyze mode=summary`) with a `BoundedStringCache`, single-pass source extraction, zero-allocation newline counting in `CalculateMetrics`, and unindented JSON serialization, bringing repeat summary p50 latency down to ~0.8ms.
+- Optimized `AnalyzeService.cs` ambiguity disclosure in `GetConversionContext` (`genexus_inspect`) by replacing linear scan over all index objects with an O(1) `ByNameIndex` multimap lookup.
+- Optimized `WriteService.cs` character validation (`CollectNonWin1252Glyphs`) with statically cached `_win1252Encoding` and an ASCII fast-path pre-check, bypassing text element enumerations and substring allocations on ASCII payloads.
+- Optimized `BuildService.cs` (`genexus_lifecycle action=status`) by setting `_meta.snapshot` directly in `GetStatus` and fast-pathing `AnnotateWithBaseline`, eliminating redundant JSON string re-parsing and re-serialization.
 
 ## v3.0.2 - 2026-09-07
 

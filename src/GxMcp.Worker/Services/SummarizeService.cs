@@ -12,6 +12,13 @@ namespace GxMcp.Worker.Services
 {
     public class SummarizeService
     {
+        private static readonly BoundedStringCache _summaryCache = new BoundedStringCache(256);
+
+        public static void InvalidateCache()
+        {
+            _summaryCache.Clear();
+        }
+
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
 
@@ -23,6 +30,16 @@ namespace GxMcp.Worker.Services
 
         public string Summarize(string target, string typeFilter = null)
         {
+            string cacheKey = (target ?? "") + "|" + (typeFilter ?? "");
+            if (_summaryCache.TryGetValue(cacheKey, out var cached))
+            {
+                if (!WriteService.WasTargetWrittenSince(target, DateTime.UtcNow.AddMinutes(-5)))
+                {
+                    return cached;
+                }
+                _summaryCache.TryRemove(cacheKey, out _);
+            }
+
             try
             {
                 var obj = _objectService.FindObject(target, typeFilter);
@@ -40,16 +57,21 @@ namespace GxMcp.Worker.Services
                 foreach (var p in parms) parmList.Add(new JObject { ["name"] = p.Name, ["accessor"] = p.Accessor, ["type"] = p.Type });
                 result["parameters"] = parmList;
 
+                // Extract source once for both intents and metrics
+                string source = GetSourceSafe(obj);
+
                 // 2. Extract Logic Intents
-                result["intents"] = ExtractIntents(obj);
+                result["intents"] = ExtractIntents(source);
 
                 // 3. Key Dependencies (Semantic)
                 result["criticalDependencies"] = ExtractCriticalDependencies(obj);
 
                 // 4. Complexity & Risk
-                result["metrics"] = CalculateMetrics(obj);
+                result["metrics"] = CalculateMetrics(source);
 
-                return result.ToString();
+                string json = result.ToString(Newtonsoft.Json.Formatting.None);
+                _summaryCache.TryAdd(cacheKey, json);
+                return json;
             }
             catch (Exception ex)
             {
@@ -82,11 +104,9 @@ namespace GxMcp.Worker.Services
             return "";
         }
 
-        private JArray ExtractIntents(KBObject obj)
+        private JArray ExtractIntents(string source)
         {
             var intents = new JArray();
-            string source = GetSourceSafe(obj);
-
             if (string.IsNullOrEmpty(source)) return intents;
 
             // Simple Pattern Matching for common GeneXus logic
@@ -156,12 +176,19 @@ namespace GxMcp.Worker.Services
             return deps;
         }
 
-        private JObject CalculateMetrics(KBObject obj)
+        private JObject CalculateMetrics(string source)
         {
             var metrics = new JObject();
-            string source = GetSourceSafe(obj);
+            int lines = 0;
+            if (!string.IsNullOrEmpty(source))
+            {
+                lines = 1;
+                for (int i = 0; i < source.Length; i++)
+                {
+                    if (source[i] == '\n') lines++;
+                }
+            }
 
-            int lines = string.IsNullOrEmpty(source) ? 0 : source.Split('\n').Length;
             metrics["linesOfCode"] = lines;
             metrics["complexity"] = lines > 500 ? "High" : (lines > 100 ? "Medium" : "Low");
             

@@ -1502,7 +1502,7 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrEmpty(taskId))
             {
-                return JsonConvert.SerializeObject(new { tasks = _tasks.Values.OrderByDescending(t => t.StartTime).Take(10) });
+                return JsonConvert.SerializeObject(new { tasks = _tasks.Values.OrderByDescending(t => t.StartTime).Take(10) }, Formatting.None);
             }
 
             if (_tasks.TryGetValue(taskId, out var status))
@@ -1536,7 +1536,9 @@ namespace GxMcp.Worker.Services
                     // Replace the flat warnings array with a paginated wrapper
                     var paginatedWarnings = BatchService.BuildStatusPayload(status.Warnings, page, pageSize);
                     jo["warnings"] = paginatedWarnings["warnings"];
-                    jo["_meta"] = paginatedWarnings["_meta"];
+                    var meta = paginatedWarnings["_meta"] as JObject ?? new JObject();
+                    meta["snapshot"] = status.ComputeBaseline();
+                    jo["_meta"] = meta;
 
                     return jo.ToString(Formatting.None);
                 }
@@ -1624,6 +1626,8 @@ namespace GxMcp.Worker.Services
         private string AnnotateWithBaseline(string statusJson, string taskId)
         {
             if (string.IsNullOrEmpty(statusJson) || string.IsNullOrEmpty(taskId)) return statusJson;
+            // Fast path: if snapshot is already present in statusJson, return as-is without re-parsing
+            if (statusJson.IndexOf("\"snapshot\":", StringComparison.Ordinal) >= 0) return statusJson;
             if (!_tasks.TryGetValue(taskId, out var status)) return statusJson;
             try
             {

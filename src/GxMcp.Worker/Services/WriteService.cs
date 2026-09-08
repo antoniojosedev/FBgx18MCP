@@ -902,21 +902,17 @@ namespace GxMcp.Worker.Services
             = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "find", "context", "anchor", "old_string", "expectedCount" };
 
+        private static readonly System.Text.Encoding _win1252Encoding = System.Text.Encoding.GetEncoding(1252,
+            new System.Text.EncoderExceptionFallback(),
+            new System.Text.DecoderExceptionFallback());
+
         internal static System.Collections.Generic.List<string> CollectNonWin1252Glyphs(JObject args)
         {
             var result = new System.Collections.Generic.List<string>();
             if (args == null) return result;
             var seen = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
-            System.Text.Encoding enc;
-            try
-            {
-                enc = System.Text.Encoding.GetEncoding(1252,
-                    new System.Text.EncoderExceptionFallback(),
-                    new System.Text.DecoderExceptionFallback());
-            }
-            catch { return result; }
 
-            ScanTokenForLossyGlyphs(args, enc, seen, result);
+            ScanTokenForLossyGlyphs(args, _win1252Encoding, seen, result);
             return result;
         }
 
@@ -944,10 +940,19 @@ namespace GxMcp.Worker.Services
                 case JTokenType.String:
                     string s = token.Value<string>();
                     if (string.IsNullOrEmpty(s)) return;
+                    // Fast path: if all characters are ASCII (<= 127), they are 100% representable in Win1252 with 0 allocations.
+                    bool hasNonAscii = false;
+                    for (int i = 0; i < s.Length; i++)
+                    {
+                        if (s[i] > 127) { hasNonAscii = true; break; }
+                    }
+                    if (!hasNonAscii) return;
+
                     var enumerator = System.Globalization.StringInfo.GetTextElementEnumerator(s);
                     while (enumerator.MoveNext())
                     {
                         string rune = (string)enumerator.Current;
+                        if (rune.Length == 1 && rune[0] <= 127) continue;
                         try { enc.GetBytes(rune); }
                         catch (System.Text.EncoderFallbackException)
                         {
