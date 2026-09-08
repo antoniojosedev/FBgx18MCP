@@ -60,6 +60,7 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 |----------|---------|---------|
 | `GXMCP_TEST_KB` | Absolute path to the verified disposable synthetic KB used by `scripts/test-live.ps1` and the release preflight. | unset (live gate skipped) |
 | `GXMCP_TEST_FIXTURE` | Path to the fixture attestation JSON matching `GXMCP_TEST_KB`; it must prove synthetic data and database isolation. | unset (live gate skipped) |
+| `GXMCP_TEAMDEV_PENDING_NAME` | Name of a pre-seeded object with an IDE-created Team Development pending change for the opt-in Gateway regression test. | unset (IDE-origin regression skipped) |
 | `GXMCP_REQUIRE_LIVE_BUILD_ALL` | Set to `1` to require the native Build All evidence gate during release preflight. Missing fixtures or an unavailable GeneXus cloud `User` fail the required gate. | off |
 
 ## Timeouts / budgets
