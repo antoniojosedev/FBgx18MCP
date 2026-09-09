@@ -41,6 +41,15 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
       <CopyToPublishDirectory>Always</CopyToPublishDirectory>
     </Content>
+    <!-- Keep the official Nexa guidance available in packaged MCP resources.
+         Only Markdown is embedded; the skill's scripts and JSON catalogs stay
+         local reference assets and are never executed by the Gateway. -->
+    <EmbeddedResource Include="..\..\.gemini\skills\nexa\SKILL.md">
+      <LogicalName>GxMcp.Gateway.Nexa.SKILL.md</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\.gemini\skills\nexa\references\*.md">
+      <LogicalName>GxMcp.Gateway.Nexa.references.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

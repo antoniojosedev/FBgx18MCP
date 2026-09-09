@@ -247,6 +247,28 @@ namespace GxMcp.Worker.Structure
                 }
             }
 
+            // Theme styles and regular Design System style sheets are not exposed
+            // consistently through TypeDescriptor names across GeneXus updates. Use
+            // the concrete part names as a stable SDK-compatible alias before the
+            // GUID/source fallbacks.
+            if (!string.IsNullOrWhiteSpace(partName)
+                && (partName.Equals("ThemeStyles", StringComparison.OrdinalIgnoreCase)
+                    || partName.Equals("StyleSheet", StringComparison.OrdinalIgnoreCase)
+                    || partName.Equals("Theme", StringComparison.OrdinalIgnoreCase)))
+            {
+                foreach (KBObjectPart p in obj.Parts)
+                {
+                    string concrete = p?.GetType()?.Name ?? string.Empty;
+                    if ((partName.Equals("ThemeStyles", StringComparison.OrdinalIgnoreCase)
+                         || partName.Equals("Theme", StringComparison.OrdinalIgnoreCase))
+                        && concrete.IndexOf("ThemeStylesPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return p;
+                    if (partName.Equals("StyleSheet", StringComparison.OrdinalIgnoreCase)
+                        && concrete.IndexOf("DesignStylesPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return p;
+                }
+            }
+
             Guid partGuid = GetPartGuid(obj.TypeDescriptor.Name, partName);
 
             if (partGuid != Guid.Empty)
@@ -378,6 +400,12 @@ namespace GxMcp.Worker.Structure
             {
                 return "Variables";
             }
+
+            string concreteName = part.GetType().Name ?? string.Empty;
+            if (concreteName.IndexOf("ThemeStylesPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "ThemeStyles";
+            if (concreteName.IndexOf("DesignStylesPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "StyleSheet";
 
             if (!string.IsNullOrWhiteSpace(part.TypeDescriptor?.Name))
             {

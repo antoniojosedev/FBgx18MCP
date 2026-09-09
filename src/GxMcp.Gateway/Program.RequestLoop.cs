@@ -1469,7 +1469,9 @@ namespace GxMcp.Gateway
                                 try { workerRecycled = _workerPool.RecycleStalledWorker(cancellingJob.WorkerAlias); }
                                 catch (Exception recycleEx) { Log($"[AsyncEdit] Cancel recycle failed for job={cancelJobId}: {recycleEx.Message}"); }
                             }
-                            if (ok && cancellingJob?.Kind?.StartsWith("edit/", StringComparison.OrdinalIgnoreCase) == true)
+                            if (ok
+                                && cancellingJob?.Kind?.StartsWith("edit/", StringComparison.OrdinalIgnoreCase) == true
+                                && RequiresAsyncMutationRecovery(cancellingJob))
                             {
                                 _mutationRecovery.RequireRead(
                                     cancellingJob.WorkerAlias,
@@ -1492,7 +1494,9 @@ namespace GxMcp.Gateway
                                 ["jobId"] = cancelJobId,
                                 ["operationId"] = cancelJobId,
                                 ["recycledWorker"] = workerRecycled,
-                                ["reReadRequired"] = ok && cancellingJob?.Kind?.StartsWith("edit/", StringComparison.OrdinalIgnoreCase) == true,
+                                ["reReadRequired"] = ok
+                                    && cancellingJob?.Kind?.StartsWith("edit/", StringComparison.OrdinalIgnoreCase) == true
+                                    && RequiresAsyncMutationRecovery(cancellingJob),
                                 ["message"] = cancelMsg
                             };
                             return BuildToolTextResponse(idToken, jp, isError: !ok, toolName: "genexus_lifecycle", toolArgs: args, payloadOwned: true);
@@ -2348,8 +2352,12 @@ namespace GxMcp.Gateway
                         string jobLabel = isAsyncGxServer ? $"gxserver/{tArgs?["action"]?.ToString()}" : $"edit/{tName}";
                         var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit);
                         editJob.WorkerAlias = _currentKb.Value?.NormalizedAlias;
-                        editJob.Target = tArgs?["name"]?.ToString();
-                        editJob.Part = tArgs?["part"]?.ToString() ?? "Source";
+                        editJob.Target = GetAsyncMutationTarget(tName, tArgs);
+                        string ioAction = tArgs?["action"]?.ToString()?.ToLowerInvariant();
+                        if (string.Equals(tName, "genexus_io", StringComparison.OrdinalIgnoreCase))
+                            editJob.Part = ioAction == "export_kb_to_text" ? "ObjectTextExport" : "ObjectText";
+                        else
+                            editJob.Part = tArgs?["part"]?.ToString() ?? "Source";
                         editJob.ObjectType = tArgs?["type"]?.ToString();
                         Log($"[AsyncEdit] Dispatching job={editJob.Id} tool={tName} estimated={estEdit}s");
                         // v2.6.2 (Item B): inject cancelToken=jobId so the worker's
@@ -2432,11 +2440,14 @@ namespace GxMcp.Gateway
                                             capturedName + " did not return within the " + boundText
                                                 + " time bound; SDK call likely blocked (IDE modal dialog or retrying validation) — see result for recovery steps.",
                                             BuildStalledAsyncMutationEnvelope(editJob.Id, capturedName, estEdit, boundSeconds, workerRecycled));
-                                        _mutationRecovery.RequireRead(
-                                            editJob.WorkerAlias,
-                                            editJob.Target,
-                                            editJob.Part,
-                                            editJob.Id);
+                                        if (RequiresAsyncMutationRecovery(editJob))
+                                        {
+                                            _mutationRecovery.RequireRead(
+                                                editJob.WorkerAlias,
+                                                editJob.Target,
+                                                editJob.Part,
+                                                editJob.Id);
+                                        }
                                         Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled (workerRecycled={workerRecycled}).");
                                     }
                                     return;
@@ -2985,6 +2996,33 @@ namespace GxMcp.Gateway
             }
 
             return null;
+        }
+
+        private static string? GetAsyncMutationTarget(string? toolName, JObject? args)
+        {
+            string? direct = args?["name"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(direct)) return direct;
+            if (!string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase)) return direct;
+
+            if (args?["targets"] is JArray targets)
+            {
+                foreach (JToken token in targets)
+                {
+                    string? value;
+                    if (token.Type == JTokenType.Object)
+                        value = token["name"]?.ToString() ?? token["target"]?.ToString();
+                    else
+                        value = token.ToString();
+                    if (!string.IsNullOrWhiteSpace(value)) return value;
+                }
+            }
+            return null;
+        }
+
+        private static bool RequiresAsyncMutationRecovery(JobEntry? job)
+        {
+            if (job == null || string.IsNullOrWhiteSpace(job.Target)) return false;
+            return !string.Equals(job.Part, "ObjectTextExport", StringComparison.OrdinalIgnoreCase);
         }
 
     }

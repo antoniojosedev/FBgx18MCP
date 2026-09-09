@@ -44,6 +44,12 @@
       "uri": "genexus://kb/skills/navigation"
     },
     {
+      "description": "Official Nexa skill for Knowledge Base management, object modeling, properties, commands, artifact generation, build workflows, and gxnext guidance.",
+      "mimeType": "text/markdown",
+      "name": "Nexa — official GeneXus modeling and KB reference",
+      "uri": "genexus://kb/skills/nexa"
+    },
+    {
       "description": "What makes a Smart Device panel the application entry point, what the **Main program property** does, what objects can be Main.",
       "mimeType": "text/markdown",
       "name": "Smart Device (SD) panel basics — Main property + navigation",

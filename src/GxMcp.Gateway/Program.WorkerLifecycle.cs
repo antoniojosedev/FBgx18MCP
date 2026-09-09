@@ -388,7 +388,9 @@ namespace GxMcp.Gateway
             {
                 double ms = (DateTime.UtcNow - createdAtUtc).TotalMilliseconds;
                 long queueWaitMs = Math.Max(0, (long)(createdAtUtc - requestStartedAtUtc).TotalMilliseconds);
-                string resultClass = resultClassOverride ?? (response?["error"] != null ? "error" : "success");
+                string resultClass = resultClassOverride;
+                if (resultClass == null)
+                    resultClass = response?["error"] != null ? "error" : "success";
                 JObject? telemetry = response?["result"]?["_meta"]?["telemetry"] as JObject
                     ?? response?["_meta"]?["telemetry"] as JObject;
                 long sdkMs = telemetry?["sdkMs"]?.ToObject<long?>() ?? 0;
@@ -892,7 +894,16 @@ namespace GxMcp.Gateway
                    || string.Equals(toolName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(toolName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(toolName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(toolName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase);
+                   || string.Equals(toolName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool IsAsyncObjectTextAction(JObject? args)
+        {
+            string? action = args?["action"]?.ToString()?.ToLowerInvariant();
+            return action == "export_kb_to_text"
+                || action == "import_text_to_kb"
+                || action == "delete_kb_objects";
         }
 
         internal static bool IsMutationPreview(JObject? args)
@@ -909,9 +920,10 @@ namespace GxMcp.Gateway
 
         internal static bool ShouldRunMutationAsync(string? toolName, JObject? args)
         {
-            return IsAsyncMutationTool(toolName)
-                   && args?["async"]?.ToObject<bool?>() == true
-                   && !IsMutationPreview(args);
+            if (args?["async"]?.ToObject<bool?>() != true || IsMutationPreview(args)) return false;
+            if (string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase))
+                return IsAsyncObjectTextAction(args);
+            return IsAsyncMutationTool(toolName);
         }
 
         private static JObject BuildAsyncAcceptedPayload(JobEntry job, string acceptedSummary)
@@ -974,6 +986,11 @@ namespace GxMcp.Gateway
             if (isVariableTool)
             {
                 return success ? "Variable update succeeded" : "Variable update failed";
+            }
+
+            if (string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase))
+            {
+                return success ? "Object Text operation succeeded" : "Object Text operation failed";
             }
 
             return success ? "Edit succeeded" : "Edit failed";
@@ -1078,6 +1095,11 @@ namespace GxMcp.Gateway
             if (resultObj == null) return true;
             if (resultObj["error"] != null) return false;
             if (resultObj["isError"]?.ToObject<bool?>() == true) return false;
+            if (resultObj["cancelled"]?.ToObject<bool?>() == true
+                || string.Equals(resultObj["code"]?.ToString(), "Cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
 
             string? innerStatus = resultObj["status"]?.ToString();
             if (string.Equals(innerStatus, "Error", StringComparison.OrdinalIgnoreCase)

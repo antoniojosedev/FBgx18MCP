@@ -591,6 +591,7 @@ namespace GxMcp.Worker.Services
             // PERF (perf-review): Name → storage keys multimap (all entries sharing a
             // bare Name across types), so usedby:/name lookups skip the O(n) scan.
             var nameIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var sourceTokenIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var kv in index.Objects)
             {
@@ -623,6 +624,7 @@ namespace GxMcp.Worker.Services
                 {
                     nameIndex.GetOrAdd(entry.Name, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(storageKey);
                 }
+                AddSourceTokens(sourceTokenIndex, entry);
             }
             index.ChildrenByParent = byParent;
             index.ChildKeysByParent = keysByParent;
@@ -630,6 +632,7 @@ namespace GxMcp.Worker.Services
             index.TypeIndex = typeIndex;
             index.DomainIndex = domainIndex;
             index.ByNameIndex = nameIndex;
+            index.SourceTokenIndex = sourceTokenIndex;
             if (index.GraphRevision <= 0)
             {
                 index.GraphRevision = 1;
@@ -642,6 +645,189 @@ namespace GxMcp.Worker.Services
             {
                 System.Threading.Interlocked.Increment(ref index.GraphRevision);
             }
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex SourceTokenRegex =
+            new System.Text.RegularExpressions.Regex(@"[A-Za-z0-9_]{3,}",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        private static void AddSourceTokens(
+            System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>> tokenIndex,
+            SearchIndex.IndexEntry entry)
+        {
+            if (tokenIndex == null || entry == null || entry.FullSource == null) return;
+            string storageKey = GetEntryStorageKeyStatic(entry);
+            foreach (System.Text.RegularExpressions.Match match in SourceTokenRegex.Matches(entry.FullSource))
+            {
+                string token = match.Value.ToLowerInvariant();
+                var set = tokenIndex.GetOrAdd(token, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                lock (set) { set.Add(storageKey); }
+            }
+        }
+
+        private static void RemoveSourceTokens(
+            System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>> tokenIndex,
+            SearchIndex.IndexEntry entry)
+        {
+            if (tokenIndex == null || entry == null || entry.FullSource == null) return;
+            string storageKey = GetEntryStorageKeyStatic(entry);
+            foreach (System.Text.RegularExpressions.Match match in SourceTokenRegex.Matches(entry.FullSource))
+            {
+                string token = match.Value.ToLowerInvariant();
+                if (!tokenIndex.TryGetValue(token, out var set)) continue;
+                lock (set)
+                {
+                    set.Remove(storageKey);
+                    if (set.Count == 0) tokenIndex.TryRemove(token, out _);
+                }
+            }
+        }
+
+        private static string GetEntryStorageKeyStatic(SearchIndex.IndexEntry entry)
+        {
+            if (entry == null) return string.Empty;
+            if (!string.IsNullOrEmpty(entry.StorageKey)) return entry.StorageKey;
+            string key = string.Equals(entry.Type, "Folder", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(entry.Type, "Module", StringComparison.OrdinalIgnoreCase)
+                ? (entry.Type ?? string.Empty) + ":" + (entry.Path ?? entry.Name ?? string.Empty)
+                : (entry.Type ?? string.Empty) + ":" + (entry.Name ?? string.Empty);
+            entry.StorageKey = key;
+            return key;
+        }
+
+        // LoadFromEntries is intentionally a small test seam and does not build all
+        // secondary indexes. Source search can request only this derived map without
+        // changing the existing fixture semantics for TypeIndex/ByNameIndex.
+        public void EnsureSourceTokenIndex()
+        {
+            var index = GetIndex();
+            if (index == null || index.SourceTokenIndex != null) return;
+            lock (_lock)
+            {
+                if (index.SourceTokenIndex != null) return;
+                var rebuilt = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                if (index.Objects != null)
+                    foreach (var entry in index.Objects.Values) AddSourceTokens(rebuilt, entry);
+                index.SourceTokenIndex = rebuilt;
+            }
+        }
+
+        /// <summary>
+        /// Restores the explicit warm-reload snapshot captured by
+        /// <c>genexus_worker_reload mode=warm</c>. The normal cache loader remains
+        /// independent: this path is deliberately gated by the snapshot container,
+        /// worker DLL hash, index schema, KB identity and object count before anything
+        /// is published to readers. A failed validation returns a diagnostic envelope
+        /// and leaves the regular cold/warm cache path untouched.
+        /// </summary>
+        public Newtonsoft.Json.Linq.JObject TryRestoreWarmSnapshot(string kbPath)
+        {
+            string snapshotPath = WarmIndexSnapshot.DefaultPath(kbPath);
+            var response = new Newtonsoft.Json.Linq.JObject
+            {
+                ["attempted"] = !string.IsNullOrWhiteSpace(snapshotPath),
+                ["path"] = snapshotPath
+            };
+            if (string.IsNullOrWhiteSpace(snapshotPath))
+            {
+                response["fallback"] = true;
+                response["fallbackReason"] = "no-kb-path";
+                return response;
+            }
+
+            try
+            {
+                var loaded = WarmIndexSnapshot.TryLoad(snapshotPath);
+                if (!loaded.Loaded)
+                {
+                    response["fallback"] = true;
+                    response["fallbackReason"] = loaded.FallbackReason ?? "snapshot-rejected";
+                    if (loaded.Metadata != null)
+                    {
+                        response["snapshotObjectCount"] = loaded.Metadata.ObjectCount;
+                        response["snapshotSchemaVersion"] = loaded.Metadata.SchemaVersion;
+                    }
+                    return response;
+                }
+
+                var metadata = loaded.Metadata;
+                if (metadata == null)
+                    return WarmRestoreFallback(response, "metadata-missing");
+                if (metadata.SchemaVersion != CurrentSchemaVersion)
+                    return WarmRestoreFallback(response, "schema-mismatch");
+
+                string expectedKb = WarmIndexSnapshot.NormalizeKbPath(kbPath);
+                string snapshotKb = WarmIndexSnapshot.NormalizeKbPath(metadata.KbPath);
+                if (string.IsNullOrWhiteSpace(expectedKb)
+                    || !string.Equals(expectedKb, snapshotKb, StringComparison.OrdinalIgnoreCase))
+                    return WarmRestoreFallback(response, "kb-path-mismatch");
+
+                if (loaded.Payload == null || loaded.Payload.Length == 0)
+                    return WarmRestoreFallback(response, "payload-empty");
+
+                string json = Encoding.UTF8.GetString(loaded.Payload);
+                SearchIndex restored = SearchIndex.FromJson(json);
+                if (restored?.Objects == null)
+                    return WarmRestoreFallback(response, "payload-invalid");
+                if (metadata.ObjectCount != restored.Objects.Count)
+                    return WarmRestoreFallback(response, "object-count-mismatch");
+                if (restored.Objects.Count == 0)
+                    return WarmRestoreFallback(response, "snapshot-empty");
+
+                lock (_lock)
+                {
+                    // A proactive regular-cache load may win the race between KB open
+                    // and this hook. Never replace a populated live index with an
+                    // equally-valid but older warm snapshot.
+                    if (_index != null && _index.Objects != null && _index.Objects.Count > 0)
+                    {
+                        response["loaded"] = false;
+                        response["alreadyLoaded"] = true;
+                        response["objectCount"] = _index.Objects.Count;
+                        return response;
+                    }
+
+                    NormalizeLegacyHierarchy(restored);
+                    BuildParentIndex(restored);
+                    _index = restored;
+                    _initialized = true;
+                    PrimeHierarchyCacheFromIndex(restored);
+                    ResetHighWaterMark();
+                    if (!string.IsNullOrWhiteSpace(metadata.HighWaterMarkUtc)
+                        && DateTime.TryParse(metadata.HighWaterMarkUtc, null,
+                            System.Globalization.DateTimeStyles.RoundtripKind, out var hwm))
+                    {
+                        ObserveLastUpdate(hwm.ToUniversalTime());
+                    }
+                }
+
+                MarkIndexComplete(restored.Objects.Count);
+                response["loaded"] = true;
+                response["fallback"] = false;
+                response["objectCount"] = restored.Objects.Count;
+                response["schemaVersion"] = metadata.SchemaVersion;
+                response["capturedAtUtc"] = metadata.CapturedAtUtc;
+                response["highWaterMarkUtc"] = metadata.HighWaterMarkUtc;
+                Logger.Info(string.Format("[WARM-RESTORE] restored {0} objects from {1}", restored.Objects.Count, snapshotPath));
+                return response;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[WARM-RESTORE] rejected snapshot: " + ex.Message);
+                response["fallback"] = true;
+                response["fallbackReason"] = "restore-failed";
+                response["error"] = ex.Message;
+                return response;
+            }
+        }
+
+        private static Newtonsoft.Json.Linq.JObject WarmRestoreFallback(
+            Newtonsoft.Json.Linq.JObject response, string reason)
+        {
+            response["loaded"] = false;
+            response["fallback"] = true;
+            response["fallbackReason"] = reason;
+            return response;
         }
 
         // Plan 002: maintain TypeIndex/DomainIndex in the same incremental hooks that
@@ -833,6 +1019,7 @@ namespace GxMcp.Worker.Services
                 keys?.Remove(entryKey);
             }
             RemoveEntryFromSecondaryIndexes(index, entry);
+            RemoveSourceTokens(index.SourceTokenIndex, entry);
         }
 
         // Fase 2: remove an object by its (stable) Guid — used by the warm-start deletion
@@ -1690,6 +1877,21 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // Keep the primary textual part in the derived source index for every
+            // object kind that exposes ISource, not only Procedure/DataProvider.
+            // WebPanel/Transaction source searches can therefore avoid an SDK round
+            // trip as well; virtual WebForm/layout scopes continue using their normal
+            // projection path.
+            if (entry.FullSource == null)
+            {
+                try
+                {
+                    var primarySource = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource) as ISource;
+                    if (primarySource != null) entry.FullSource = primarySource.Source ?? string.Empty;
+                }
+                catch { }
+            }
+
             // Calculate Complexity for Procedures/DataProviders
             if (obj is global::Artech.Genexus.Common.Objects.Procedure || obj is global::Artech.Genexus.Common.Objects.DataProvider)
             {
@@ -1697,6 +1899,7 @@ namespace GxMcp.Worker.Services
                     dynamic sourcePart = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource);
                     if (sourcePart != null) {
                         string src = sourcePart.Source ?? "";
+                        entry.FullSource = src;
                         entry.Complexity = src.Split('\n').Length;
                         // Source is already in hand here — extract code metrics for KB-wide
                         // analytics (genexus_analyze mode=code_metrics) at ~no extra cost.
@@ -1708,6 +1911,14 @@ namespace GxMcp.Worker.Services
             System.Threading.Interlocked.Add(ref _enrichTypeExtractTicks, System.Diagnostics.Stopwatch.GetTimestamp() - teStart);
 
             string key = GetEntryStorageKey(entry);
+
+            SearchIndex.IndexEntry previousEntry = null;
+            try { index.Objects.TryGetValue(key, out previousEntry); } catch { }
+            if (index.SourceTokenIndex != null)
+            {
+                RemoveSourceTokens(index.SourceTokenIndex, previousEntry);
+                AddSourceTokens(index.SourceTokenIndex, entry);
+            }
 
             // Compute Embedding
             string semanticText = $"{entry.Name} {entry.Type} {entry.Description} {entry.RootTable} {entry.ParmRule}";
@@ -1725,6 +1936,7 @@ namespace GxMcp.Worker.Services
                 if (index.Objects.TryRemove(oldKey, out var stale))
                 {
                     if (index.ChildrenByParent != null) RemoveEntryFromParentIndex(index, stale);
+                    RemoveSourceTokens(index.SourceTokenIndex, stale);
                     MarkShardDirty(oldKey); // the old key's shard lost an entry too
                 }
             }
@@ -2126,8 +2338,12 @@ namespace GxMcp.Worker.Services
             lock (_lock)
             {
                 _index = null;
+                _initialized = false;
+                ResetHighWaterMark();
+                _pendingEnrichCache = null;
                 _hierarchyCache.Clear(); // PERFORMANCE (W-M5): drop stale hierarchy on KB unload.
             }
+            MarkIndexFailed();
         }
 
         // SP6.T6 — fast-index lite pass uses this to bulk-replace the in-memory index with
@@ -2181,7 +2397,8 @@ namespace GxMcp.Worker.Services
             {
                 if (_index == null) _index = new SearchIndex();
                 idx = _index;
-                if (idx.ChildrenByParent == null || idx.GuidToKey == null || idx.ByNameIndex == null) BuildParentIndex(idx);
+                if (idx.ChildrenByParent == null || idx.GuidToKey == null || idx.ByNameIndex == null
+                    || idx.SourceTokenIndex == null) BuildParentIndex(idx);
                 _initialized = true;
             }
 
@@ -2195,9 +2412,16 @@ namespace GxMcp.Worker.Services
                 {
                     continue; // never demote an enriched entry to a stub
                 }
+                SearchIndex.IndexEntry priorEntry = null;
+                idx.Objects.TryGetValue(key, out priorEntry);
                 idx.Objects[key] = e;
                 if (idx.ChildrenByParent != null) AddOrUpdateEntryInParentIndex(idx, e);
                 if (idx.GuidToKey != null && !string.IsNullOrEmpty(e.Guid)) idx.GuidToKey[e.Guid] = key;
+                if (idx.SourceTokenIndex != null)
+                {
+                    RemoveSourceTokens(idx.SourceTokenIndex, priorEntry);
+                    AddSourceTokens(idx.SourceTokenIndex, e);
+                }
                 MarkShardDirty(key);
                 any = true;
             }

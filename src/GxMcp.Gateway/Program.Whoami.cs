@@ -1133,6 +1133,8 @@ namespace GxMcp.Gateway
                     return "BEFORE marking a Smart Device object as Main, claiming an 'IsMain' property exists, or setting Native Mobile application-level properties — confirm the real name (it's 'Main program') and which object types support it.";
                 case "webpanel-events":
                     return "BEFORE writing Web Panel event code (Start / Refresh / Load) — confirm the firing order and what attribute access each event has. Refresh runs BEFORE Load (per record), not after.";
+                case "nexa":
+                    return "BEFORE modeling objects, editing properties, generating Object Text, or using build/import/export workflows — read the relevant official Nexa reference first; use the live KB tools to verify the installed version and object state.";
                 default:
                     return "Read before invoking related properties or methods you aren't fully certain about.";
             }

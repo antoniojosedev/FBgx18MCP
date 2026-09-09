@@ -705,6 +705,8 @@ namespace GxMcp.Worker.Services
             public string FastIncrementalFallbackReason { get; set; }
             [JsonIgnore] internal bool FastIncrementalCanSkipDeploy { get; set; }
             [JsonIgnore] internal IReadOnlyList<string> FastIncrementalCanSkipSpecify { get; set; }
+            [JsonIgnore] internal bool FastIncrementalForceFullBuild { get; set; }
+            public string FastIncrementalAppliedPath { get; set; }
             // Item 72 (friction 2026-05-22) — webhook URL to POST a failure summary
             // to when terminal Status == "Failed". Empty / null disables the call.
             [JsonIgnore] internal string NotifyOnFailureUrl { get; set; }
@@ -1265,6 +1267,36 @@ namespace GxMcp.Worker.Services
             {
                 try { envName = _kbService?.GetKB()?.DesignModel?.Environment?.Name; } catch { }
             }
+            bool targetedBuild = action != null
+                && action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                && targets.Count > 0;
+            bool singleTargetNoCallees = targetedBuild
+                && targets.Count == 1
+                && string.Equals(includeCallees ?? "transitive", "none", StringComparison.OrdinalIgnoreCase);
+            bool fastDecisionAllowsSkip = fastIncremental
+                && fiDecision != null
+                && !fiDecision.ForceFullBuild
+                && fiDecision.CanSkipDeploy
+                && !fullDeploy;
+            // A conservative decision must override an explicitly requested skip when
+            // the same call asked for fastIncremental: risky/unknown targets must take
+            // the full build path. For a safe decision, wire the result into the actual
+            // runner flag instead of exposing CanSkipDeploy as metadata only.
+            bool effectiveSkipFullDeploy = singleTargetNoCallees
+                && !fullDeploy
+                && !(fastIncremental && fiDecision?.ForceFullBuild == true)
+                && (skipFullDeploy || fastDecisionAllowsSkip);
+            string fastIncrementalAppliedPath = null;
+            if (fastIncremental && fiDecision != null)
+            {
+                if (fiDecision.ForceFullBuild)
+                    fastIncrementalAppliedPath = "full";
+                else if (effectiveSkipFullDeploy)
+                    fastIncrementalAppliedPath = "targeted-no-deploy";
+                else
+                    fastIncrementalAppliedPath = "targeted";
+            }
+
             var status = new BuildTaskStatus {
                 TaskId = taskId,
                 Action = action,
@@ -1279,13 +1311,8 @@ namespace GxMcp.Worker.Services
                 StartTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
                 StartedAt = DateTime.UtcNow,
                 BuildPlan = plan,
-                SpecifyOnly = specifyOnly
-                    && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase)
-                    && targets.Count >= 1,
-                SkipFullDeploy = skipFullDeploy
-                    && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase)
-                    && targets.Count == 1
-                    && string.Equals(includeCallees ?? "transitive", "none", StringComparison.OrdinalIgnoreCase),
+                SpecifyOnly = specifyOnly && targetedBuild,
+                SkipFullDeploy = effectiveSkipFullDeploy,
                 FullDeploy = fullDeploy
                     && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase),
                 NotifyOnFailureUrl = notifyOnFailure,
@@ -1295,6 +1322,8 @@ namespace GxMcp.Worker.Services
                 FastIncrementalFallbackReason = fiDecision?.ForceFullBuild == true ? fiDecision.FallbackReason : null,
                 FastIncrementalCanSkipDeploy = fiDecision?.CanSkipDeploy == true && fiDecision.ForceFullBuild == false,
                 FastIncrementalCanSkipSpecify = fiDecision?.ForceFullBuild == false ? fiDecision.CanSkipSpecify : null,
+                FastIncrementalForceFullBuild = fastIncremental && fiDecision?.ForceFullBuild == true,
+                FastIncrementalAppliedPath = fastIncrementalAppliedPath,
                 CompileCheck = compileCheck,
                 CompileCheckCallers = (compileCheck && compileCheckCallers != null && compileCheckCallers.Count > 0) ? compileCheckCallers : null,
                 CompileCheckTruncated = compileCheck && compileCheckTruncated
@@ -1332,11 +1361,41 @@ namespace GxMcp.Worker.Services
             }
             else
             {
-                acceptedMessage = string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase)
-                    ? "Build All started for the entire selected Knowledge Base. It will stop with ReorgRequired if reorganization is needed. Poll genexus_lifecycle action=status with target=<taskId> for progress."
-                    : targets.Count > 1
-                    ? $"Batch build started for {targets.Count} objects in a single KB-open cycle. Poll action='status' target=<taskId> for progress."
-                    : "Build task started in background. Poll genexus_lifecycle action='status' with target=<taskId> for progress.";
+                if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase))
+                {
+                    acceptedMessage = "Build All started for the entire selected Knowledge Base. It will stop with ReorgRequired if reorganization is needed. Poll genexus_lifecycle action=status with target=<taskId> for progress.";
+                }
+                else if (targets.Count > 1)
+                {
+                    acceptedMessage = $"Batch build started for {targets.Count} objects in a single KB-open cycle. Poll action='status' target=<taskId> for progress.";
+                }
+                else
+                {
+                    acceptedMessage = "Build task started in background. Poll genexus_lifecycle action='status' with target=<taskId> for progress.";
+                }
+            }
+
+            JObject compileCheckPayload = null;
+            if (compileCheck)
+            {
+                string compileCheckNote = null;
+                if (compileCheckTruncated)
+                {
+                    compileCheckNote = "Caller graph hit the buildPlanCap — some callers were not included. Raise buildPlanCap or check the omitted callers separately.";
+                }
+                else if (!compileCheckGraphAvailable)
+                {
+                    compileCheckNote = "Caller graph unavailable (index not built) — only the named objects were checked, not their callers.";
+                }
+
+                compileCheckPayload = new JObject();
+                if (status.CompileCheckCallers == null)
+                    compileCheckPayload["callersAdded"] = JValue.CreateNull();
+                else
+                    compileCheckPayload["callersAdded"] = JArray.FromObject(status.CompileCheckCallers);
+                compileCheckPayload["truncated"] = status.CompileCheckTruncated;
+                compileCheckPayload["callerGraphAvailable"] = compileCheckGraphAvailable;
+                compileCheckPayload["note"] = compileCheckNote;
             }
 
             return JsonConvert.SerializeObject(new {
@@ -1344,25 +1403,19 @@ namespace GxMcp.Worker.Services
                 message = acceptedMessage,
                 taskId = taskId,
                 targets = targets.Count > 0 ? targets : null,
-                compileCheck = compileCheck ? new {
-                    callersAdded = status.CompileCheckCallers,
-                    truncated = status.CompileCheckTruncated,
-                    callerGraphAvailable = compileCheckGraphAvailable,
-                    note = compileCheckTruncated
-                        ? "Caller graph hit the buildPlanCap — some callers were not included. Raise buildPlanCap or check the omitted callers separately."
-                        : (!compileCheckGraphAvailable
-                            ? "Caller graph unavailable (index not built) — only the named objects were checked, not their callers."
-                            : null)
-                } : null,
+                compileCheck = compileCheckPayload,
                 callersToAlsoBuild = status.CallersToAlsoBuild,
                 hint = status.Hint,
                 // Item 28 — EXPERIMENTAL. Surfaces decision outcome when fastIncremental=true.
                 fastIncrementalFallback = status.FastIncrementalFallback ? (bool?)true : null,
                 fallbackReason = status.FastIncrementalFallbackReason,
-                fastIncremental = (fastIncremental && fiDecision != null && !fiDecision.ForceFullBuild)
+                fastIncrementalAppliedPath = status.FastIncrementalAppliedPath,
+                fastIncremental = fastIncremental && fiDecision != null && !fiDecision.ForceFullBuild
                     ? new {
                         canSkipDeploy = fiDecision.CanSkipDeploy,
                         canSkipSpecify = fiDecision.CanSkipSpecify,
+                        appliedSkipFullDeploy = status.SkipFullDeploy,
+                        appliedPath = status.FastIncrementalAppliedPath,
                         experimental = true
                     }
                     : null,
@@ -2681,7 +2734,9 @@ namespace GxMcp.Worker.Services
                             skipFullDeploy: status.SkipFullDeploy,
                             kbPath: _kbService.GetKbPath(),
                             specifyOnly: status.SpecifyOnly,
-                            fullDeploy: status.FullDeploy);
+                            fullDeploy: status.FullDeploy,
+                            forceFullBuild: status.FastIncrementalForceFullBuild,
+                            skipSpecifyTargets: status.FastIncrementalCanSkipSpecify);
                     }
                     catch (Exception ex)
                     {

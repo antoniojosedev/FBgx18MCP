@@ -190,6 +190,8 @@ namespace GxMcp.Worker.Services
                     catch { }
                     try { _kb.Close(); } catch { }
                     _kb = null;
+                    try { _indexCacheService.Clear(); }
+                    catch (Exception clearEx) { Logger.Warn("Index cache clear during KB switch failed: " + clearEx.Message); }
                 }
 
                 _isOpenInProgress = true;
@@ -232,6 +234,30 @@ namespace GxMcp.Worker.Services
                 // Publish the handle.
                 lock (_kbLock) { _kb = opened; }
 
+                // Warm reload is intentionally attempted after the SDK handle is
+                // published, but before the caller receives KbOpened. This makes the
+                // restored catalogue immediately available to list/search/impact while
+                // preserving the regular on-disk cache as a fallback when the explicit
+                // warm snapshot is absent or rejected.
+                JObject warmReload = null;
+                try
+                {
+                    _indexCacheService.Initialize(path, proactiveLoad: false);
+                    warmReload = _indexCacheService.TryRestoreWarmSnapshot(path);
+                }
+                catch (Exception warmEx)
+                {
+                    warmReload = new JObject
+                    {
+                        ["attempted"] = true,
+                        ["loaded"] = false,
+                        ["fallback"] = true,
+                        ["fallbackReason"] = "restore-failed",
+                        ["error"] = warmEx.Message
+                    };
+                    Logger.Warn("Warm index restore failed: " + warmEx.Message);
+                }
+
                 sw.Stop();
                 LastOpenElapsedMs = sw.ElapsedMilliseconds;
                 Logger.Info($"[KB-OPEN] elapsedMs={sw.ElapsedMilliseconds} path={path}");
@@ -251,7 +277,11 @@ namespace GxMcp.Worker.Services
                 return Models.McpResponse.Ok(
                     target: path,
                     code: "KbOpened",
-                    result: new JObject { ["elapsedMs"] = sw.ElapsedMilliseconds });
+                    result: new JObject
+                    {
+                        ["elapsedMs"] = sw.ElapsedMilliseconds,
+                        ["warmReload"] = warmReload
+                    });
             }
             catch (Exception ex)
             {
@@ -873,9 +903,8 @@ namespace GxMcp.Worker.Services
         // (same GetKeys(timestamp) primitive KbWatcherService uses) for objects changed
         // since the persisted high-water-mark, re-index ONLY those, advance the hwm, and
         // re-persist. This replaces the full 38k re-walk on every warm start.
-        // NOTE (Fase 1 scope): deletions/renames-to-a-new-key are not reconciled here — a
-        // deleted object lingers as a stale entry until a force reindex. Fase 2 wires the
-        // watcher + a Guid key-set diff to handle that.
+        // The refresh also performs a count/change-gated Guid sweep so deletions and
+        // rename-to-new-key cases do not linger indefinitely in the restored index.
         private void StartDeltaRefreshThread(DateTime highWaterMark, int loadedCount)
         {
             var deltaThread = new Thread(() =>

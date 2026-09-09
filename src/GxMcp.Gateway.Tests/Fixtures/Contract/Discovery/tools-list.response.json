@@ -1488,6 +1488,11 @@
             "description": "Alias of baseVersion. The write is refused when the current version no longer matches.",
             "type": "string"
           },
+          "forceWrite": {
+            "default": false,
+            "description": "WebForm only: persist despite SDK WebForm validation errors; response includes validationOverridden=true.",
+            "type": "boolean"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"
@@ -2246,45 +2251,72 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "IO umbrella for assets, part text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write (binary asset CRUD) | export_part|import_part (object part to/from a text file) | export_unified (full object envelope JSON) | screenshot_publish (copy PNG to .gx/published-screenshots) | ocr (Tesseract stub).",
+      "description": "IO umbrella for assets, Object Text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write | export_part|import_part (single part) | export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects (official GeneXus for Agents Object Text parity) | export_unified|screenshot_publish|ocr.",
       "inputSchema": {
         "examples": [
           {
-            "action": "asset_read",
-            "path": "C:\\KBs\\MyKb\\custom.xml"
+            "action": "export_kb_to_text",
+            "outputPath": "C:\\tmp\\customer-text",
+            "targets": [
+              {
+                "name": "Customer",
+                "type": "Transaction"
+              }
+            ]
           },
           {
-            "action": "export_part",
-            "name": "Customer",
-            "outputPath": "C:\\tmp\\Customer.gxp",
-            "part": "Source"
+            "action": "validate_kb_text_files",
+            "inputPath": "C:\\tmp\\customer-text"
+          },
+          {
+            "action": "delete_kb_objects",
+            "dryRun": true,
+            "targets": [
+              "Procedure:OldProc"
+            ]
           }
         ],
         "properties": {
           "action": {
-            "description": "Asset, part-exchange, screenshot, or OCR operation to perform.",
+            "description": "Asset, single-part, batch Object Text, screenshot, or OCR operation.",
             "enum": [
               "asset_find",
               "asset_read",
               "asset_write",
               "export_part",
               "import_part",
+              "export_kb_to_text",
+              "import_text_to_kb",
+              "validate_kb_text_files",
+              "delete_kb_objects",
               "export_unified",
               "screenshot_publish",
               "ocr"
             ],
             "type": "string"
           },
+          "async": {
+            "description": "Run a batch Object Text operation as a cancellable background job when supported.",
+            "type": "boolean"
+          },
+          "confirm": {
+            "description": "delete_kb_objects: required for a real delete; dryRun remains non-mutating.",
+            "type": "boolean"
+          },
           "contentBase64": {
             "description": "asset_write: base64-encoded file content.",
             "type": "string"
+          },
+          "dryRun": {
+            "description": "Object Text import/delete preview without persisting changes.",
+            "type": "boolean"
           },
           "includeContent": {
             "description": "asset_find: inline file content.",
             "type": "boolean"
           },
           "inputPath": {
-            "description": "import_part: source file path.",
+            "description": "import_part: source file; import_text_to_kb/validate_kb_text_files: manifest or directory.",
             "type": "string"
           },
           "kb": {
@@ -2292,31 +2324,39 @@
             "type": "string"
           },
           "limit": {
-            "description": "asset_find: max results.",
+            "description": "asset_find/Object Text: max results.",
             "type": "integer"
           },
           "maxBytes": {
             "description": "asset_read: max bytes to return.",
             "type": "integer"
           },
+          "module": {
+            "description": "Object Text module filter.",
+            "type": "string"
+          },
           "name": {
-            "description": "export/import/export_unified: object name.",
+            "description": "single object name or comma-separated selector; export_unified uses one object.",
             "type": "string"
           },
           "outputPath": {
-            "description": "export_part: destination file path.",
+            "description": "export_part: destination file; export_kb_to_text: destination directory.",
             "type": "string"
           },
           "overwrite": {
-            "description": "export_part: overwrite if exists.",
+            "description": "export_part/export_kb_to_text: overwrite existing output.",
             "type": "boolean"
           },
           "part": {
-            "description": "export/import_part: part name (e.g. Source).",
+            "description": "Object Text or part-exchange part name (e.g. Source, Rules, WebForm).",
             "type": "string"
           },
           "path": {
-            "description": "asset/screenshot_publish/ocr: file path.",
+            "description": "asset/screenshot_publish/ocr: file path; Object Text import/validate may use a manifest directory.",
+            "type": "string"
+          },
+          "pathPrefix": {
+            "description": "Object Text KB object-path prefix filter.",
             "type": "string"
           },
           "pattern": {
@@ -2327,8 +2367,13 @@
             "description": "asset_find: root for relative paths.",
             "type": "string"
           },
+          "targets": {
+            "description": "Object Text selector array. Items may be names or {name,type} objects. Omit for export_kb_to_text to export the full indexed KB.",
+            "items": {},
+            "type": "array"
+          },
           "type": {
-            "description": "export/import/export_unified disambiguator.",
+            "description": "Object type disambiguator/filter.",
             "type": "string"
           }
         },
@@ -4593,7 +4638,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Reload worker. modes: soft (drain+respawn), hard (copy sourceDir+respawn). force=true: gateway kills directly. See tool-help.",
+      "description": "Reload worker. modes: soft (drain+respawn), warm (restore validated index snapshot + soft respawn), hard (copy sourceDir+respawn). force=true: gateway kills directly. See tool-help.",
       "inputSchema": {
         "examples": [
           {
@@ -4616,6 +4661,7 @@
           "mode": {
             "enum": [
               "soft",
+              "warm",
               "hard"
             ],
             "type": "string"

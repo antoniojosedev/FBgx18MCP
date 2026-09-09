@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- Added the official Nexa GeneXus skill and its Markdown references as read-only MCP resources, including an on-demand reference template for object modeling and KB workflows.
+- Added batch Object Text workflows under `genexus_io`: deterministic export/import manifests, validation, guarded deletion, selectors, dry-run semantics, partial results, and cooperative cancellation.
+- Added index-backed source search, native Theme/StyleSheet editing, and WebForm SDK validation diagnostics with an explicit `forceWrite` override for intentional validation bypasses.
+
+### Changed
+
+- Dry-run edit plans now report indexed broken references when the active index is available and disclose when impact analysis cannot run; fast incremental builds now drive the real in-process runner with a safe full-build fallback, while warm reload restores validated snapshots and high-water-mark metadata for delta indexing.
+- Extended cancellation through background Object Text operations, including the cancel-before-worker-start race, and keep cancelled terminal results distinct from successful job completion.
+- Raised the guarded discovery schema budget from 26,300 to 26,900 tokens for the four batch Object Text actions, explicit `forceWrite`, and warm/fast-incremental response fields (measured ~26,584 tokens).
+
 ## v3.0.4 - 2026-09-08
 
 

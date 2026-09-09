@@ -170,7 +170,10 @@ namespace GxMcp.Gateway.Tests
             //   additive outputSchema contract; text content remains compatible.
             //   2026-09-07 (v2.43 compatibility): 26000 → 26300 for typed WWP
             //   tab/grid operations and the API versionToken alias. Measured ~26079.
-            Assert.True(approxTokens < 26300, $"tool_definitions.json is ~{approxTokens} tokens; budget 26300.");
+            //   2026-09-08 (Object Text/style/build contracts): 26300 → 26900 for
+            //   four batch IO actions, forceWrite, and warm/fast-incremental fields.
+            //   Measured ~26584; ~316 headroom.
+            Assert.True(approxTokens < 26900, $"tool_definitions.json is ~{approxTokens} tokens; budget 26900.");
         }
     }
 }

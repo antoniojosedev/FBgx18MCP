@@ -3729,7 +3729,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string ImportObjectFromText(string target, string inputPath, string partName = null, string typeFilter = null)
+        public string ImportObjectFromText(string target, string inputPath, string partName = null, string typeFilter = null, bool dryRun = false)
         {
             try
             {
@@ -3751,6 +3751,16 @@ namespace GxMcp.Worker.Services
                 var obj = FindObject(target, typeFilter);
                 if (obj == null)
                 {
+                    if (dryRun)
+                    {
+                        return McpResponse.Err(
+                            code: "ObjectNotFound",
+                            message: "Object not found; dry-run did not create it.",
+                            hint: "Create the object first or omit dryRun only when the import is intended to create a typed object.",
+                            nextSteps: new JArray(McpResponse.NextStep("genexus_create_object", new JObject { ["name"] = target }, "Create the object first, then retry the import.")),
+                            target: target,
+                            extra: new JObject { ["wouldCreate"] = !string.IsNullOrWhiteSpace(typeFilter), ["persisted"] = false });
+                    }
                     if (string.IsNullOrWhiteSpace(typeFilter))
                     {
                         return McpResponse.Err(
@@ -3770,7 +3780,7 @@ namespace GxMcp.Worker.Services
                 }
 
                 string importedText = File.ReadAllText(fullPath);
-                string writeResult = _writeService.WriteObject(target, normalizedPart, importedText, typeFilter, autoValidate: false);
+                string writeResult = _writeService.WriteObject(target, normalizedPart, importedText, typeFilter, autoValidate: false, dryRun: dryRun);
                 JObject writeJson = JObject.Parse(writeResult);
 
                 // WriteService.WriteObject only ever returns via McpResponse.Ok/Err (canonical
@@ -3983,6 +3993,26 @@ namespace GxMcp.Worker.Services
                         }
                     }
                     catch { }
+                    return result.ToString();
+                }
+
+                // Theme and StyleSheet parts are textual authoring surfaces, but
+                // they are not ISource parts in every GeneXus SDK build. Expose
+                // their real CSS/source instead of the opaque <Properties /> XML
+                // fallback so reads, snapshots and write verification all observe
+                // the same content that the IDE edits.
+                string styleText = ThemeStyleEditHelper.ReadText(part);
+                string concretePartName = part.GetType()?.Name ?? string.Empty;
+                if (styleText != null
+                    && (concretePartName.IndexOf("ThemeStylesPart", StringComparison.OrdinalIgnoreCase) >= 0
+                        || concretePartName.IndexOf("DesignStylesPart", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    result["contentType"] = "text/css";
+                    result["stylePartKind"] = concretePartName.IndexOf("ThemeStylesPart", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? "ThemeStylesPart"
+                        : "DesignStylesPart";
+                    ProcessSourceContent(obj, styleText, offset, limit, result, client);
+                    Logger.Info("ReadSource (Theme/StyleSheet) SUCCESS");
                     return result.ToString();
                 }
 

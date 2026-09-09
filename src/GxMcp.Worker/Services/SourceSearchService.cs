@@ -242,6 +242,15 @@ namespace GxMcp.Worker.Services
                 bool scopeTouchesWebForm = (c.Scope ?? DefaultScope)
                     .Any(s => string.Equals(s, "webForm", StringComparison.OrdinalIgnoreCase)
                            || string.Equals(s, "layout", StringComparison.OrdinalIgnoreCase));
+                bool indexedSourceScope = !scopeTouchesWebForm && IsIndexedSourceScope(c.Scope);
+                if (indexedSourceScope && literals.Count > 0)
+                {
+                    // Test fixtures may load only Objects; production disk indexes
+                    // build this derived posting map during hydration. Asking for the
+                    // map here keeps both paths correct without changing the fixture's
+                    // other secondary-index semantics.
+                    try { _index.EnsureSourceTokenIndex(); } catch { }
+                }
 
                 // Issue #27 item 4: an explicit objectName scope restricts the scan to
                 // those exact objects (bypassing both the base type whitelist and the
@@ -284,7 +293,22 @@ namespace GxMcp.Worker.Services
                 {
                     query = query
                         .Where(e => e.Type == "Procedure" || e.Type == "DataProvider" || e.Type == "WebPanel" || e.Type == "Transaction")
-                        .Where(e => scopeTouchesWebForm || MatchesAnyLiteral(e, literals));
+                        .Where(e => scopeTouchesWebForm || indexedSourceScope || MatchesAnyLiteral(e, literals));
+                    if (indexedSourceScope && literals.Count > 0 && index.SourceTokenIndex != null)
+                    {
+                        var indexedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (string literal in literals)
+                        {
+                            if (!index.SourceTokenIndex.TryGetValue(literal, out var keys) || keys == null) continue;
+                            lock (keys)
+                            {
+                                foreach (string key in keys) indexedKeys.Add(key);
+                            }
+                        }
+                        // Entries without FullSource predate this index (or could not
+                        // be read) and must stay in the conservative SDK fallback.
+                        query = query.Where(e => e.FullSource == null || indexedKeys.Contains(GetEntryStorageKey(e)));
+                    }
                 }
                 var entries = query
                     .Where(e => string.IsNullOrEmpty(c.TypeFilter) || string.Equals(e.Type, c.TypeFilter, StringComparison.OrdinalIgnoreCase))
@@ -386,7 +410,15 @@ namespace GxMcp.Worker.Services
                         if (produced >= c.MaxResults || resolutionFailed) break;
                         string src = null;
                         bool haveSrc = false;
-                        if (_objectService != null && !string.IsNullOrEmpty(e.Guid)
+                        bool useIndexedSource = indexedSourceScope
+                            && IsSourceAlias(part)
+                            && e.FullSource != null;
+                        if (useIndexedSource)
+                        {
+                            src = e.FullSource;
+                            haveSrc = true;
+                        }
+                        else if (_objectService != null && !string.IsNullOrEmpty(e.Guid)
                             && _objectService.TryGetPartSourceRaw(e.Guid, part, out src))
                         {
                             haveSrc = true;
@@ -426,7 +458,7 @@ namespace GxMcp.Worker.Services
                                     string ln = call.LineNumber - 1 < lines.Length ? lines[call.LineNumber - 1] : "";
                                     if (!rx.IsMatch(ln)) continue;
                                 }
-                                if (AddSourceHit(hits, BuildHit(e, part, lines, call.LineNumber, call),
+                                if (AddSourceHit(hits, BuildHit(e, useIndexedSource ? "Source" : part, lines, call.LineNumber, call),
                                     ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
                                 {
                                     entryReachedLimit = true;
@@ -457,7 +489,7 @@ namespace GxMcp.Worker.Services
                                 {
                                     if (rx.IsMatch(lines[li]))
                                     {
-                                        if (AddSourceHit(hits, BuildHit(e, part, lines, li + 1, null),
+                                        if (AddSourceHit(hits, BuildHit(e, useIndexedSource ? "Source" : part, lines, li + 1, null),
                                             ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
                                         {
                                             entryReachedLimit = true;
@@ -485,7 +517,7 @@ namespace GxMcp.Worker.Services
                                         pos++;
                                     }
                                     if (!ShouldEmitRegexHitLine(lineNo, ref lastHitLine)) continue;
-                                    if (AddSourceHit(hits, BuildHit(e, part, hitLines, lineNo, null),
+                                    if (AddSourceHit(hits, BuildHit(e, useIndexedSource ? "Source" : part, hitLines, lineNo, null),
                                         ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
                                     {
                                         entryReachedLimit = true;
@@ -865,10 +897,11 @@ namespace GxMcp.Worker.Services
             // "no match" silently drops entries whose full source contains the
             // token — a false empty-success. When there is no indexed text to
             // prove absence, include the entry so its full source gets read.
-            bool hasIndexedText = !string.IsNullOrEmpty(e.SourceSnippet)
+            bool hasIndexedText = e.FullSource != null
+                || !string.IsNullOrEmpty(e.SourceSnippet)
                 || (e.Keywords != null && e.Keywords.Count > 0);
             if (!hasIndexedText) return true;
-            string snip = e.SourceSnippet ?? "";
+            string snip = e.FullSource ?? e.SourceSnippet ?? "";
             string nm = e.Name ?? "";
             for (int i = 0; i < literals.Count; i++)
             {
@@ -882,6 +915,36 @@ namespace GxMcp.Worker.Services
                 }
             }
             return false;
+        }
+
+        private static bool IsIndexedSourceScope(List<string> scope)
+        {
+            if (scope == null || scope.Count == 0) return true;
+            foreach (string part in scope)
+            {
+                if (!IsSourceAlias(part)) return false;
+            }
+            return true;
+        }
+
+        private static bool IsSourceAlias(string part)
+        {
+            return string.IsNullOrWhiteSpace(part)
+                || string.Equals(part, "source", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(part, "code", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetEntryStorageKey(SearchIndex.IndexEntry entry)
+        {
+            if (entry == null) return string.Empty;
+            if (!string.IsNullOrEmpty(entry.StorageKey)) return entry.StorageKey;
+            string type = entry.Type ?? string.Empty;
+            string name = string.Equals(type, "Folder", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(type, "Module", StringComparison.OrdinalIgnoreCase)
+                ? entry.Path ?? entry.Name ?? string.Empty
+                : entry.Name ?? string.Empty;
+            entry.StorageKey = type + ":" + name;
+            return entry.StorageKey;
         }
 
         private static bool CalleeMatches(string actual, string wanted)

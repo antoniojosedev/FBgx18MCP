@@ -18,6 +18,7 @@ namespace GxMcp.Worker.Services
         private readonly PatternAnalysisService _patternAnalysisService;
         private readonly PatchService _patchService;
         private ValidationService _validationService;
+        private KbValidationService _kbValidationService;
         private StructureService _structureService;
         private static readonly object _persistenceWarmupLock = new object();
         private static bool _persistenceWarmupDone = false;
@@ -33,6 +34,7 @@ namespace GxMcp.Worker.Services
         }
 
         public void SetValidationService(ValidationService vs) { _validationService = vs; }
+        public void SetKbValidationService(KbValidationService validation) { _kbValidationService = validation; }
         public void SetStructureService(StructureService structureService) { _structureService = structureService; }
 
         private void FlushSync()
@@ -657,7 +659,8 @@ namespace GxMcp.Worker.Services
                     facadeArgs.DryRun,
                     facadeArgs.ExplicitBase64,
                     strictVerify,
-                    facadeArgs.RollbackOnFailure);
+                    facadeArgs.RollbackOnFailure,
+                    facadeArgs.ForceWrite);
             }
 
             // Friction 2026-05-22: KBs default to WIN1252 (codepage 1252) on
@@ -873,6 +876,7 @@ namespace GxMcp.Worker.Services
                 AutoInjectVariables = args["autoDeclareVariables"]?.ToObject<bool?>()
                     ?? args["autoInjectVariables"]?.ToObject<bool?>()
                     ?? false,
+                ForceWrite = args["forceWrite"]?.ToObject<bool?>() ?? false,
                 ConcurrencyPolicy = args["concurrencyPolicy"]?.ToString() ?? "warn"
             };
         }
@@ -897,6 +901,7 @@ namespace GxMcp.Worker.Services
             public bool RollbackOnFailure { get; set; }
             public string BaseVersion { get; set; }
             public bool AutoInjectVariables { get; set; }
+            public bool ForceWrite { get; set; }
             public string ConcurrencyPolicy { get; set; }
         }
 
@@ -972,7 +977,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false)
+        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool forceWrite = false)
         {
             partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
 
@@ -1025,7 +1030,7 @@ namespace GxMcp.Worker.Services
             string raw;
             try
             {
-                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify);
+                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify, forceWrite);
             }
             finally
             {
@@ -1148,7 +1153,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true)
+        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool forceWrite = false)
         {
             try
             {
@@ -1246,6 +1251,11 @@ namespace GxMcp.Worker.Services
 
                 Logger.Debug(string.Format("[DEBUG-SAVE] Object Found: {0} ({1})", obj.Name, obj.TypeDescriptor.Name));
 
+                if (ThemeStyleEditHelper.Applies(obj, partName, out object stylePart))
+                {
+                    return WriteThemeStylePart(obj, target, partName, stylePart, decodedCode, dryRun, forceWrite);
+                }
+
                 if (PatternAnalysisService.IsPatternPart(partName))
                 {
                     return WritePatternPart(obj, target, partName, decodedCode, dryRun, strictVerify);
@@ -1253,7 +1263,7 @@ namespace GxMcp.Worker.Services
 
                 if (WebFormXmlHelper.IsVisualPart(partName))
                 {
-                    return WriteVisualPart(obj, target, partName, decodedCode, dryRun, strictVerify);
+                    return WriteVisualPart(obj, target, partName, decodedCode, dryRun, strictVerify, forceWrite);
                 }
 
                 if (dryRun)
