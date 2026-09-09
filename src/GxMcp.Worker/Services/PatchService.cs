@@ -787,7 +787,7 @@ namespace GxMcp.Worker.Services
                 // obj.Save() can advance the object's version and leave the changed ISource
                 // only in the live SDK instance. The full path saves the part explicitly and
                 // commits the object transaction, matching mode=full persistence semantics.
-                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables);
+                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables, baseVersion: baseVersion);
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);
@@ -804,6 +804,9 @@ namespace GxMcp.Worker.Services
 
                 bool primaryWriteSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                 bool writeReportedVerificationMismatch = string.Equals(writePayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
+                bool writeReportedVersionConflict = string.Equals(writePayload["code"]?.ToString(), "StaleObject", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(writePayload["code"]?.ToString(), "VersionConflict", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(writePayload["code"]?.ToString(), "VersionCheckUnavailable", StringComparison.OrdinalIgnoreCase);
                 bool persistedMatches = false;
                 bool saveReported = primaryWriteSuccess || writeReportedVerificationMismatch;
                 string confirmedPersistedSource = null;
@@ -818,7 +821,7 @@ namespace GxMcp.Worker.Services
                     writePayload["persistedVerified"] = true;
                     writePayload["persisted"] = true;
                 }
-                else if (primaryWriteSuccess || writeReportedVerificationMismatch || requireObjectSave)
+                else if (!writeReportedVersionConflict && (primaryWriteSuccess || writeReportedVerificationMismatch || requireObjectSave))
                 {
                     string persistedSource;
                     string verifyError;
@@ -892,11 +895,22 @@ namespace GxMcp.Worker.Services
                 // failures where no post-save comparison could run.
                 if (writePayload["saved"] == null) writePayload["saved"] = saveReported;
                 if (writePayload["verified"] == null) writePayload["verified"] = persistedMatches;
+                if (requireObjectSave && writeReportedVersionConflict)
+                {
+                    writePayload["requireObjectSave"] = true;
+                    writePayload["persistencePath"] = "object_save";
+                    writePayload["partPersisted"] = false;
+                    writePayload["objectSaved"] = false;
+                    writePayload["metadataUpdated"] = false;
+                }
 
-                if (requireObjectSave)
+                if (requireObjectSave && !writeReportedVersionConflict)
                 {
                     ObjectMetadataSnapshot metadataAfter = ReadFreshObjectMetadata(target, typeFilter);
                     var comparison = fullObjectSnapshot.CompareParts(metadataAfter?.Object, partName);
+                    bool metadataStampPersisted = writePayload["metadataStampPersisted"]?.ToObject<bool?>()
+                        ?? (writePayload["result"] as JObject)?["metadataStampPersisted"]?.ToObject<bool?>()
+                        ?? false;
                     bool objectSaved = saveReported;
                     bool metadataUpdated = PatchPersistenceReceipt.AttachObjectSaveEvidence(
                         writePayload,
@@ -907,7 +921,8 @@ namespace GxMcp.Worker.Services
                         metadataBefore?.LastUpdate,
                         metadataAfter?.LastUpdate,
                         comparison.Equal,
-                        comparison.ChangedParts);
+                        metadataStampPersisted: metadataStampPersisted,
+                        unexpectedChangedParts: comparison.ChangedParts);
                     writePayload["requireObjectSave"] = true;
                     writePayload["persistencePath"] = "object_save";
 

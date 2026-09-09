@@ -116,18 +116,20 @@ namespace GxMcp.Worker.Services
             string lastUpdateBefore,
             string lastUpdateAfter,
             bool? otherPartsIntact,
+            bool metadataStampPersisted = false,
             JArray unexpectedChangedParts = null)
         {
             if (payload == null) throw new ArgumentNullException(nameof(payload));
 
             bool metadataUpdated = MetadataChanged(
-                revisionBefore, revisionAfter, lastUpdateBefore, lastUpdateAfter);
+                revisionBefore, revisionAfter, lastUpdateBefore, lastUpdateAfter, metadataStampPersisted);
             payload["partPersisted"] = partPersisted;
             payload["objectSaved"] = objectSaved;
             payload["revisionBefore"] = revisionBefore == null ? JValue.CreateNull() : (JToken)revisionBefore;
             payload["revisionAfter"] = revisionAfter == null ? JValue.CreateNull() : (JToken)revisionAfter;
             payload["lastUpdateBefore"] = lastUpdateBefore == null ? JValue.CreateNull() : (JToken)lastUpdateBefore;
             payload["lastUpdateAfter"] = lastUpdateAfter == null ? JValue.CreateNull() : (JToken)lastUpdateAfter;
+            payload["metadataStampPersisted"] = metadataStampPersisted;
             payload["metadataUpdated"] = metadataUpdated;
             if (otherPartsIntact.HasValue) payload["otherPartsIntact"] = otherPartsIntact.Value;
             if (unexpectedChangedParts != null && unexpectedChangedParts.Count > 0)
@@ -139,8 +141,12 @@ namespace GxMcp.Worker.Services
             string revisionBefore,
             string revisionAfter,
             string lastUpdateBefore,
-            string lastUpdateAfter)
+            string lastUpdateAfter,
+            bool metadataStampPersisted = false)
         {
+            if (!metadataStampPersisted)
+                return false;
+
             if (!string.IsNullOrWhiteSpace(revisionBefore)
                 && !string.IsNullOrWhiteSpace(revisionAfter)
                 && !string.Equals(revisionBefore, revisionAfter, StringComparison.Ordinal))

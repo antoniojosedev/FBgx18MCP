@@ -1,17 +1,30 @@
 $ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $root 'scripts\live-fixture.ps1')
+. (Join-Path $root 'scripts\live-harness.ps1')
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $PSScriptRoot '../test-live.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw $errors[0] }
-foreach ($name in @('Get-LiveFixtureHash', 'Assert-LiveFixture', 'Get-OwnedDescendants')) {
+foreach ($name in @('Get-OwnedDescendants')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing production function: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
 }
+$helperAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $root 'scripts/live-fixture.ps1'), [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw $errors[0] }
+foreach ($name in @('Get-LiveFixtureHash', 'Assert-LiveFixture')) {
+    $definition = $helperAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if (-not $definition) { throw "Missing shared fixture function: $name" }
+}
 $productionSource = Get-Content (Join-Path $PSScriptRoot '../test-live.ps1') -Raw
 if ($productionSource -notmatch [regex]::Escape("'--alias', `$liveFixtureAlias")) {
     throw 'The live benchmark must receive the same alias used by its isolated config.'
+}
+foreach ($requiredText in @('GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'Assert-LiveGatewayMaster', '-filter $TestFilter')) {
+    if ($productionSource -notmatch [regex]::Escape($requiredText)) { throw "Live entrypoint lost required harness guard: $requiredText" }
 }
 function Expect-Failure([scriptblock]$Action) {
     $failed = $false
@@ -64,6 +77,18 @@ try {
 finally {
     Remove-Item -LiteralPath $provenanceRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+$logRoot = Join-Path $env:TEMP ('gxmcp-live-log-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
+try {
+    $masterLog = Join-Path $logRoot 'master.log'
+    Set-Content -LiteralPath $masterLog -Value '[Gateway] Entering Stdio Loop...' -Encoding utf8
+    Assert-LiveGatewayMaster -LogPath $masterLog -RequireStdio
+    Set-Content -LiteralPath $masterLog -Value '[Gateway] existing_master_detected currentPid=2 masterPid=1' -Encoding utf8
+    Expect-Failure { Assert-LiveGatewayMaster -LogPath $masterLog -RequireStdio }
+}
+finally {
+    Remove-Item -LiteralPath $logRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 $started = [datetime]'2026-09-05T12:00:00Z'
 $snapshot = @(
     [pscustomobject]@{ ProcessId=11; ParentProcessId=10; CreationDate=$started.AddSeconds(1) }
@@ -86,4 +111,4 @@ finally {
 if ($childExit -eq 0 -or ($output -join "`n") -notmatch 'live=unavailable') {
     throw 'The real entry point must fail closed before build/SDK startup without a manifest.'
 }
-Write-Host 'PASS: fixture rejection, provenance hashes, benchmark alias contract and owned process selection (10 assertions).'
+Write-Host 'PASS: fixture rejection, provenance hashes, master/proxy log guard, benchmark alias contract and owned process selection.'

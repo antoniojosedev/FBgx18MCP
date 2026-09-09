@@ -27,14 +27,32 @@ namespace GxMcp.Worker.Tests
         public void MetadataChanged_RevisionAdvance_IsSufficient()
         {
             Assert.True(PatchPersistenceReceipt.MetadataChanged(
-                "41", "42", "2026-09-09T10:00:00Z", "2026-09-09T10:00:00Z"));
+                "41", "42", "2026-09-09T10:00:00Z", "2026-09-09T10:00:00Z",
+                metadataStampPersisted: true));
         }
 
         [Fact]
         public void MetadataChanged_LastUpdateAdvance_IsSufficient()
         {
             Assert.True(PatchPersistenceReceipt.MetadataChanged(
-                "42", "42", "2026-09-09T10:00:00Z", "2026-09-09T10:00:01Z"));
+                "42", "42", "2026-09-09T10:00:00Z", "2026-09-09T10:00:01Z",
+                metadataStampPersisted: true));
+        }
+
+        [Fact]
+        public void MetadataChanged_LastUpdateAdvance_WithoutDurableStamp_IsInsufficient()
+        {
+            Assert.False(PatchPersistenceReceipt.MetadataChanged(
+                "42", "42", "2026-09-09T10:00:00Z", "2026-09-09T10:00:01Z",
+                metadataStampPersisted: false));
+        }
+
+        [Fact]
+        public void MetadataChanged_RevisionAdvance_WithoutDurableStamp_IsInsufficient()
+        {
+            Assert.False(PatchPersistenceReceipt.MetadataChanged(
+                "42", "43", "2026-09-09T10:00:00Z", "2026-09-09T10:00:00Z",
+                metadataStampPersisted: false));
         }
 
         [Fact]
@@ -82,10 +100,31 @@ namespace GxMcp.Worker.Tests
                 lastUpdateBefore: null,
                 lastUpdateAfter: null,
                 otherPartsIntact: false,
+                metadataStampPersisted: true,
                 unexpectedChangedParts: changed);
 
             Assert.False(payload["otherPartsIntact"]!.Value<bool>());
             Assert.Equal(changed, payload["unexpectedChangedParts"]);
+        }
+
+        [Fact]
+        public void AttachObjectSaveEvidence_ReportsMetadataStampEvidence()
+        {
+            var payload = new JObject();
+
+            PatchPersistenceReceipt.AttachObjectSaveEvidence(
+                payload,
+                partPersisted: true,
+                objectSaved: true,
+                revisionBefore: "42",
+                revisionAfter: "42",
+                lastUpdateBefore: "2026-09-09T10:00:00Z",
+                lastUpdateAfter: "2026-09-09T10:00:01Z",
+                otherPartsIntact: true,
+                metadataStampPersisted: false);
+
+            Assert.False(payload["metadataStampPersisted"]!.Value<bool>());
+            Assert.False(payload["metadataUpdated"]!.Value<bool>());
         }
     }
 }

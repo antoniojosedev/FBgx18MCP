@@ -5,6 +5,7 @@ $tests = @(
     'install-contract.tests.ps1',
     'release-manifest.tests.ps1',
     'test-live-build-all.ps1',
+    'test-live-fixture-manifest.ps1',
     'test-live.test.ps1',
     'test-release-entrypoint.ps1',
     'test-release-orchestration.ps1',

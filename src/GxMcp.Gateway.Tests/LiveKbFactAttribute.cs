@@ -11,7 +11,10 @@ namespace GxMcp.Gateway.Tests
     // default on CI without referencing the worker test assembly.
     public sealed class LiveKbFactAttribute : FactAttribute
     {
-        public LiveKbFactAttribute(bool requiresWWP = false, bool requiresNavigation = false)
+        public LiveKbFactAttribute(
+            bool requiresWWP = false,
+            bool requiresNavigation = false,
+            bool requiresTeamDevelopmentFixture = false)
         {
             string kb = Environment.GetEnvironmentVariable("GXMCP_TEST_KB");
             if (string.IsNullOrEmpty(kb))
@@ -31,6 +34,12 @@ namespace GxMcp.Gateway.Tests
             if (requiresNavigation && !HasGeneratedNavigationReport(kb))
             {
                 Skip = "GXMCP_TEST_KB has no generated procedure navigation report — run specification/build first to exercise navigation E2E coverage.";
+                return;
+            }
+            if (requiresTeamDevelopmentFixture &&
+                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GXMCP_TEAMDEV_PENDING_NAME")))
+            {
+                Skip = "GXMCP_TEAMDEV_PENDING_NAME is not set — provide a pre-seeded IDE-changed object to run this Team Development regression.";
             }
         }
 

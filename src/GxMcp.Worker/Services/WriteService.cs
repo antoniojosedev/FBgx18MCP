@@ -79,16 +79,17 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        internal static void StampObjectRevisionDates(global::Artech.Architecture.Common.Objects.KBObject obj, global::Artech.Architecture.Common.Objects.KBModel model)
+        internal static bool StampObjectRevisionDates(global::Artech.Architecture.Common.Objects.KBObject obj, global::Artech.Architecture.Common.Objects.KBModel model)
         {
-            if (obj == null) return;
+            if (obj == null) return false;
+            bool metadataStampPersisted = false;
             try
             {
                 var now = DateTime.UtcNow;
                 try { obj.LastUpdate = now; } catch { }
-                try { obj.SaveModelEntityDate(301, 0, now); } catch { }
-                try { obj.SaveModelEntityDate(300, 0, now); } catch { }
-                try { obj.SaveVersionIndependentDate(310, 0, now); } catch { }
+                try { obj.SaveModelEntityDate(301, 0, now); metadataStampPersisted = true; } catch { }
+                try { obj.SaveModelEntityDate(300, 0, now); metadataStampPersisted = true; } catch { }
+                try { obj.SaveVersionIndependentDate(310, 0, now); metadataStampPersisted = true; } catch { }
                 if (model != null)
                 {
                     // LastCommitDate deliberately not stamped — see FlushSync above: it is the
@@ -100,6 +101,7 @@ namespace GxMcp.Worker.Services
             {
                 Logger.Debug("[IDE-CONCURRENCY] StampObjectRevisionDates failed: " + ex.Message);
             }
+            return metadataStampPersisted;
         }
 
         private void EnsurePersistenceWarmup()
@@ -569,6 +571,9 @@ namespace GxMcp.Worker.Services
         {
             var facadeArgs = NormalizeFacadeArgs(args);
 
+            string facadeValidationError = ValidateRequireObjectSaveArgs(target, facadeArgs);
+            if (facadeValidationError != null) return facadeValidationError;
+
             // Optimistic-concurrency guard (stale-edit data-loss fix): if the caller
             // passed the versionToken from the read this edit is based on, refuse the
             // write when the object changed since (e.g. the user edited it in the IDE).
@@ -661,7 +666,8 @@ namespace GxMcp.Worker.Services
                     facadeArgs.ExplicitBase64,
                     strictVerify,
                     facadeArgs.RollbackOnFailure,
-                    facadeArgs.ForceWrite);
+                    facadeArgs.ForceWrite,
+                    facadeArgs.BaseVersion);
             }
 
             // Friction 2026-05-22: KBs default to WIN1252 (codepage 1252) on
@@ -804,18 +810,40 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        // Returns a StaleObject error envelope when the object's current version token
-        // no longer matches the caller-supplied baseVersion, else null (proceed).
+        // Returns an error envelope when the object's current version token cannot be
+        // safely checked or no longer matches the caller-supplied baseVersion, else
+        // null (proceed). A supplied token is an explicit request for concurrency
+        // protection, so an unreadable token must fail closed rather than silently
+        // downgrading the write to last-writer-wins.
         private string CheckStaleVersion(string target, string partName, string typeFilter, string baseVersion)
         {
-            string current;
+            string read;
             try
             {
-                string read = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
-                current = JObject.Parse(read)["versionToken"]?.ToString();
+                read = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
             }
-            catch { return null; }
-            if (current == null) return null; // can't compute a token → don't block the write
+            catch
+            {
+                return BuildVersionCheckUnavailable(target, baseVersion);
+            }
+
+            JObject response;
+            try
+            {
+                response = JObject.Parse(read);
+            }
+            catch
+            {
+                return BuildVersionCheckUnavailable(target, baseVersion);
+            }
+
+            if (string.Equals(response["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase))
+                return response.ToString(Newtonsoft.Json.Formatting.None);
+
+            string current = response["versionToken"]?.ToString();
+            if (string.IsNullOrWhiteSpace(current))
+                return BuildVersionCheckUnavailable(target, baseVersion);
+
             if (string.Equals(current, baseVersion, StringComparison.Ordinal)) return null; // unchanged — proceed
 
             return McpResponse.Err(
@@ -825,6 +853,45 @@ namespace GxMcp.Worker.Services
                 nextSteps: new JArray(McpResponse.NextStep("genexus_read", new JObject { ["name"] = target }, "Fetch the current version before re-editing.")),
                 target: target,
                 extra: new JObject { ["expectedVersion"] = baseVersion, ["currentVersion"] = current });
+        }
+
+        private static string BuildVersionCheckUnavailable(string target, string expectedVersion)
+        {
+            return McpResponse.Err(
+                code: "VersionCheckUnavailable",
+                message: "The current versionToken could not be read, so the write was not attempted.",
+                hint: "Re-read the object and retry with the returned versionToken, or omit baseVersion only when last-writer-wins behavior is intentional.",
+                target: target,
+                extra: new JObject
+                {
+                    ["expectedVersion"] = expectedVersion,
+                    ["currentVersion"] = JValue.CreateNull()
+                });
+        }
+
+        internal static string ValidateRequireObjectSaveArgs(string target, FacadeWriteArgs facadeArgs)
+        {
+            if (facadeArgs == null || !facadeArgs.RequireObjectSave) return null;
+
+            if (!string.Equals(facadeArgs.Mode, "patch", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpResponse.Err(
+                    code: "RequireObjectSaveUnsupportedMode",
+                    message: "requireObjectSave is supported only for mode=patch with part=Events.",
+                    hint: "Use mode=patch, part=Events, and pass the current versionToken as baseVersion.",
+                    target: target);
+            }
+
+            if (!string.Equals(facadeArgs.PartName, "Events", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpResponse.Err(
+                    code: "RequireObjectSaveUnsupportedPart",
+                    message: "requireObjectSave is supported only for part=Events in patch mode.",
+                    hint: "Use part=Events or omit requireObjectSave for another source part.",
+                    target: target);
+            }
+
+            return null;
         }
 
         internal static FacadeWriteArgs NormalizeFacadeArgs(JObject args)
@@ -980,7 +1047,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool forceWrite = false)
+        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool forceWrite = false, string baseVersion = null)
         {
             partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
 
@@ -993,6 +1060,18 @@ namespace GxMcp.Worker.Services
             // write can detect the concurrent modification and report Stale.
             lock (AcquirePerTargetLock(target))
             {
+                // The facade check happens before patch preparation, but another writer can
+                // finish while that preparation is in progress. Re-check after acquiring the
+                // canonical per-target lock so in-process writers cannot pass an old token into
+                // WriteObjectInternal. External IDE writes still rely on the SDK transaction's
+                // locking semantics and the post-save evidence below.
+                if (!dryRun && !string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    string staleErr = CheckStaleVersion(target, partName, typeFilter, baseVersion);
+                    if (staleErr != null)
+                        return staleErr;
+                }
+
             // Advisory lock check — honours GXMCP_WRITE_OWNER_ID / GXMCP_WRITE_FORCE env vars.
             // Reads the .gx/locks/<target>__<part>.lock file written by genexus_multi_agent_lock.
             // Returns an error envelope immediately if a different, non-expired owner holds the lock.
@@ -1607,6 +1686,7 @@ namespace GxMcp.Worker.Services
                 } catch (Exception ex) { Logger.Debug("[DEBUG-SAVE] Force Dirty failed: " + ex.Message); }
 
                 // 3. PERSISTENCE SEQUENCE
+                bool metadataStampPersisted = false;
                 try
                 {
                     EnsurePersistenceWarmup();
@@ -1622,11 +1702,15 @@ namespace GxMcp.Worker.Services
                             {
                                 Logger.Info("[DEBUG-SAVE] Fast persistence path: obj.Save() without explicit transaction.");
                                 saveMethod.Invoke(obj, null);
-                                StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
+                                metadataStampPersisted = StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
                                 ScheduleFlush();
                                 _objectService.MarkReadCacheDirty(obj, partName);
                                 {
-                                    var fpResult = new JObject { ["fastPath"] = "save_without_transaction" };
+                                    var fpResult = new JObject
+                                    {
+                                        ["fastPath"] = "save_without_transaction",
+                                        ["metadataStampPersisted"] = metadataStampPersisted
+                                    };
                                     string fpMsgs = GetSdkMessagesSafe(part);
                                     if (!string.IsNullOrWhiteSpace(fpMsgs)) fpResult["sdkMessages"] = fpMsgs;
                                     return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: fpResult);
@@ -1635,11 +1719,15 @@ namespace GxMcp.Worker.Services
 
                             Logger.Info("[DEBUG-SAVE] Fast persistence path fallback: obj.EnsureSave(false) without explicit transaction.");
                             obj.EnsureSave(false);
-                            StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
+                            metadataStampPersisted = StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
                             ScheduleFlush();
                             _objectService.MarkReadCacheDirty(obj, partName);
                             {
-                                var fpResult = new JObject { ["fastPath"] = "ensure_save_without_transaction" };
+                                var fpResult = new JObject
+                                {
+                                    ["fastPath"] = "ensure_save_without_transaction",
+                                    ["metadataStampPersisted"] = metadataStampPersisted
+                                };
                                 string fpMsgs = GetSdkMessagesSafe(part);
                                 if (!string.IsNullOrWhiteSpace(fpMsgs)) fpResult["sdkMessages"] = fpMsgs;
                                 return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: fpResult);
@@ -1752,7 +1840,7 @@ namespace GxMcp.Worker.Services
                         transaction.Commit();
                         transactionCommitted = true;
                         transactionFinished = true;
-                        StampObjectRevisionDates(obj, kb.DesignModel);
+                        metadataStampPersisted = StampObjectRevisionDates(obj, kb.DesignModel);
                         Logger.Info("[DEBUG-SAVE] SDK Transaction Committed.");
                     }
                     catch (Exception ex)
@@ -1839,7 +1927,8 @@ namespace GxMcp.Worker.Services
                                             ["message"] = "WebPanel Events with attribute writes inside `For each` → spc0150 at build time. Move to a Procedure (recipe extract_to_procedure).",
                                             ["suggested_recipe"] = "extract_to_procedure"
                                         }
-                                    }
+                                    },
+                                    ["metadataStampPersisted"] = metadataStampPersisted
                                 };
                                 return Models.McpResponse.Ok(
                                     target: target,
@@ -1854,7 +1943,10 @@ namespace GxMcp.Worker.Services
                     }
 
                     // Build success result — include retryStrategy and warnings when validation was bypassed
-                    var writeResult = new JObject();
+                    var writeResult = new JObject
+                    {
+                        ["metadataStampPersisted"] = metadataStampPersisted
+                    };
                     var writeWarnings = new JArray();
                     if (explicitBase64 || usedBase64Sniff)
                         writeResult["decodedBase64"] = true;

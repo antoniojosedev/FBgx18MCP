@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Forwarded `requireObjectSave` through the Gateway's `genexus_edit` patch route so the Events complete-object-save contract reaches the Worker ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+- Hardened complete Events saves with an in-lock base-version recheck, explicit metadata-stamp evidence, validation for unsupported `requireObjectSave` requests, and matching help text ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+### Changed
+
+- Added a generated, hash-verified live-fixture manifest workflow and a focused `LiveEvents` smoke category for complete Events saves across SDK majors ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+### Internal
+
+- Hardened live validation with exact Gateway image/master checks, isolated per-run logs and ports, configurable RPC timeouts with diagnostics, and a generic edit route-to-Worker contract test.
+
 ## v3.2.0 - 2026-09-09
 
 

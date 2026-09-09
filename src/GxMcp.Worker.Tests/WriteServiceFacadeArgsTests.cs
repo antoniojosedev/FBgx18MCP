@@ -175,5 +175,38 @@ namespace GxMcp.Worker.Tests
 
             Assert.True(normalized.RequireObjectSave);
         }
+
+        [Fact]
+        public void ValidateRequireObjectSave_FullMode_IsRejected()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["mode"] = "full",
+                ["part"] = "Events",
+                ["content"] = "Event Enter\nEndevent",
+                ["requireObjectSave"] = true
+            });
+
+            var response = JObject.Parse(WriteService.ValidateRequireObjectSaveArgs("SamplePanel", normalized));
+
+            Assert.Equal("RequireObjectSaveUnsupportedMode", response["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void ValidateRequireObjectSave_NonEventsPatch_IsRejected()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["mode"] = "patch",
+                ["part"] = "Source",
+                ["context"] = "old",
+                ["content"] = "new",
+                ["requireObjectSave"] = true
+            });
+
+            var response = JObject.Parse(WriteService.ValidateRequireObjectSaveArgs("SamplePanel", normalized));
+
+            Assert.Equal("RequireObjectSaveUnsupportedPart", response["error"]?["code"]?.ToString());
+        }
     }
 }
