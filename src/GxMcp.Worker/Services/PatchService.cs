@@ -19,6 +19,13 @@ namespace GxMcp.Worker.Services
             public DateTime UpdatedUtc { get; set; }
         }
 
+        private sealed class ObjectMetadataSnapshot
+        {
+            public string Revision { get; set; }
+            public string LastUpdate { get; set; }
+            public KBObject Object { get; set; }
+        }
+
         private static readonly ConcurrentDictionary<string, SourceCacheEntry> _sourceCache =
             new ConcurrentDictionary<string, SourceCacheEntry>(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan SourceCacheTtl = TimeSpan.FromSeconds(20);
@@ -149,7 +156,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false, bool autoInjectVariables = false)
+        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false, bool autoInjectVariables = false, bool requireObjectSave = false)
         {
             string guardedPartName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
             partName = guardedPartName;
@@ -177,6 +184,29 @@ namespace GxMcp.Worker.Services
                 catch (ArgumentException ex)
                 {
                     return Models.McpResponse.Err(code: "InvalidVerifyMode", message: ex.Message, target: target);
+                }
+
+                if (requireObjectSave && !string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Models.McpResponse.Err(
+                        code: "RequireObjectSaveUnsupportedPart",
+                        message: "requireObjectSave is supported only for part=Events in patch mode.",
+                        target: target);
+                }
+                if (requireObjectSave && !dryRun && string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    return Models.McpResponse.Err(
+                        code: "BaseVersionRequired",
+                        message: "A complete Events object save requires baseVersion so a concurrent IDE or MCP change cannot be overwritten.",
+                        hint: "Re-read Events and retry with the returned versionToken as baseVersion.",
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["requireObjectSave"] = true,
+                            ["partPersisted"] = false,
+                            ["objectSaved"] = false,
+                            ["metadataUpdated"] = false
+                        });
                 }
 
                 // Probe pattern-shadow warning ONCE before doing any work. If the agent
@@ -724,12 +754,40 @@ namespace GxMcp.Worker.Services
 
                 // 3. Write Back (re-normalize to CRLF for GeneXus)
                 string finalCode = updatedSource.Replace("\n", Environment.NewLine);
+                ObjectMetadataSnapshot metadataBefore = null;
+                ObjectMoveSnapshot fullObjectSnapshot = null;
+                if (requireObjectSave && !dryRun)
+                {
+                    try
+                    {
+                        metadataBefore = ReadFreshObjectMetadata(target, typeFilter);
+                        if (metadataBefore?.Object == null)
+                            throw new InvalidOperationException("The target object could not be reloaded for a complete pre-write snapshot.");
+                        fullObjectSnapshot = ObjectMoveSnapshot.Capture(metadataBefore.Object);
+                    }
+                    catch (Exception snapshotEx)
+                    {
+                        return Models.McpResponse.Err(
+                            code: "ObjectSnapshotFailed",
+                            message: "A complete object save was requested, but the pre-write snapshot could not be captured. No write was attempted.",
+                            hint: "Re-read the object and retry only after the SDK can enumerate all persisted parts.",
+                            target: target,
+                            extra: new JObject
+                            {
+                                ["requireObjectSave"] = true,
+                                ["partPersisted"] = false,
+                                ["objectSaved"] = false,
+                                ["metadataUpdated"] = false,
+                                ["details"] = snapshotEx.Message
+                            });
+                    }
+                }
                 var writeStopwatch = Stopwatch.StartNew();
                 // Do not use the object-only fast path for textual patches. On GX18 U16,
                 // obj.Save() can advance the object's version and leave the changed ISource
                 // only in the live SDK instance. The full path saves the part explicitly and
                 // commits the object transaction, matching mode=full persistence semantics.
-                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables);
+                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables, baseVersion: baseVersion);
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);
@@ -746,6 +804,9 @@ namespace GxMcp.Worker.Services
 
                 bool primaryWriteSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                 bool writeReportedVerificationMismatch = string.Equals(writePayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
+                bool writeReportedVersionConflict = string.Equals(writePayload["code"]?.ToString(), "StaleObject", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(writePayload["code"]?.ToString(), "VersionConflict", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(writePayload["code"]?.ToString(), "VersionCheckUnavailable", StringComparison.OrdinalIgnoreCase);
                 bool persistedMatches = false;
                 bool saveReported = primaryWriteSuccess || writeReportedVerificationMismatch;
                 string confirmedPersistedSource = null;
@@ -760,7 +821,7 @@ namespace GxMcp.Worker.Services
                     writePayload["persistedVerified"] = true;
                     writePayload["persisted"] = true;
                 }
-                else if (primaryWriteSuccess || writeReportedVerificationMismatch)
+                else if (!writeReportedVersionConflict && (primaryWriteSuccess || writeReportedVerificationMismatch || requireObjectSave))
                 {
                     string persistedSource;
                     string verifyError;
@@ -792,13 +853,13 @@ namespace GxMcp.Worker.Services
                         };
                     }
 
-                    if (persistedMatches)
+                    if (persistedMatches && (primaryWriteSuccess || writeReportedVerificationMismatch))
                     {
                         // A WriteService false negative is superseded by the mandatory forced
                         // re-read. No second write is performed.
                         PatchPersistenceReceipt.MarkVerified(writePayload, saveReported);
                     }
-                    else
+                    else if (!persistedMatches)
                     {
                         PatchPersistenceReceipt.MarkNotPersisted(writePayload, saveReported, verifyError, commentOnlyChange);
 
@@ -834,6 +895,48 @@ namespace GxMcp.Worker.Services
                 // failures where no post-save comparison could run.
                 if (writePayload["saved"] == null) writePayload["saved"] = saveReported;
                 if (writePayload["verified"] == null) writePayload["verified"] = persistedMatches;
+                if (requireObjectSave && writeReportedVersionConflict)
+                {
+                    writePayload["requireObjectSave"] = true;
+                    writePayload["persistencePath"] = "object_save";
+                    writePayload["partPersisted"] = false;
+                    writePayload["objectSaved"] = false;
+                    writePayload["metadataUpdated"] = false;
+                }
+
+                if (requireObjectSave && !writeReportedVersionConflict)
+                {
+                    ObjectMetadataSnapshot metadataAfter = ReadFreshObjectMetadata(target, typeFilter);
+                    var comparison = fullObjectSnapshot.CompareParts(metadataAfter?.Object, partName);
+                    bool metadataStampPersisted = writePayload["metadataStampPersisted"]?.ToObject<bool?>()
+                        ?? (writePayload["result"] as JObject)?["metadataStampPersisted"]?.ToObject<bool?>()
+                        ?? false;
+                    bool objectSaved = saveReported;
+                    bool metadataUpdated = PatchPersistenceReceipt.AttachObjectSaveEvidence(
+                        writePayload,
+                        persistedMatches,
+                        objectSaved,
+                        metadataBefore?.Revision,
+                        metadataAfter?.Revision,
+                        metadataBefore?.LastUpdate,
+                        metadataAfter?.LastUpdate,
+                        comparison.Equal,
+                        metadataStampPersisted: metadataStampPersisted,
+                        unexpectedChangedParts: comparison.ChangedParts);
+                    writePayload["requireObjectSave"] = true;
+                    writePayload["persistencePath"] = "object_save";
+
+                    if (!objectSaved || !persistedMatches || !metadataUpdated || !comparison.Equal)
+                    {
+                        writePayload["_internalStatus"] = "Error";
+                        writePayload["code"] = "ObjectSaveIncomplete";
+                        writePayload["message"] = persistedMatches
+                            ? "The Events content is persisted, but the complete object-save contract was not confirmed. Do not repeat the edit blindly."
+                            : "The complete object-save contract was not confirmed and the requested Events content was not found by the fresh re-read.";
+                        writePayload["manualRecovery"] = "Compare the fresh Events content with the object open in the GeneXus IDE. If the IDE tab is older, reopen it before saving the object manually so the persisted content is not overwritten.";
+                        writePayload["retrySafe"] = false;
+                    }
+                }
                 string versionToken = null;
                 try
                 {
@@ -880,7 +983,7 @@ namespace GxMcp.Worker.Services
 
                 if (finalSuccess)
                 {
-                    string finalCode2 = "Applied";
+                    string finalCode2 = resultObj["code"]?.ToString() ?? "Applied";
                     var canonical = JObject.Parse(Models.McpResponse.Ok(target: target, code: finalCode2, result: resultObj));
                     if (patternShadowWarnings != null && patternShadowWarnings.Count > 0)
                         canonical["warnings"] = patternShadowWarnings;
@@ -891,14 +994,20 @@ namespace GxMcp.Worker.Services
                     string writeMsg = writePayload["message"]?.ToString() ?? writePayload["error"]?.ToString() ?? "Patch write failed.";
                     string writeCode = writePayload["code"]?.ToString();
                     string errCode = !string.IsNullOrWhiteSpace(writeCode) ? writeCode : "PatchWriteFailed";
+                    bool objectSaveIncomplete = string.Equals(errCode, "ObjectSaveIncomplete", StringComparison.OrdinalIgnoreCase);
+                    string recoveryHint = objectSaveIncomplete
+                        ? writePayload["manualRecovery"]?.ToString()
+                        : "Re-read the object source and verify the part is writable, then retry.";
                     var canonical = JObject.Parse(Models.McpResponse.Err(
                         code: errCode,
                         message: writeMsg,
-                        hint: "Re-read the object source and verify the part is writable, then retry.",
+                        hint: recoveryHint,
                         nextSteps: new JArray(Models.McpResponse.NextStep(
                             tool: "genexus_read",
                             args: new JObject { ["name"] = target, ["part"] = partName },
-                            why: "Confirm the part content and state before retrying the patch.")),
+                            why: objectSaveIncomplete
+                                ? "Confirm the actual persisted content before deciding whether any further action is safe."
+                                : "Confirm the part content and state before retrying the patch.")),
                         target: target,
                         extra: resultObj));
                     if (patternShadowWarnings != null && patternShadowWarnings.Count > 0)
@@ -911,6 +1020,31 @@ namespace GxMcp.Worker.Services
                 Logger.Error($"[PATCH] Error applying patch: {ex.Message}");
                 return BuildPatchResult("Error", partName, NormalizeOperation(operation), expectedCount, 0, ex.Message);
             }
+        }
+
+        private ObjectMetadataSnapshot ReadFreshObjectMetadata(string target, string typeFilter)
+        {
+            try
+            {
+                KBObject obj = _objectService.FindObjectFresh(target, typeFilter);
+                if (obj == null) return null;
+                string revision = null;
+                string lastUpdate = null;
+                try { revision = obj.VersionId.ToString(System.Globalization.CultureInfo.InvariantCulture); } catch { }
+                try
+                {
+                    if (obj.LastUpdate > DateTime.MinValue)
+                        lastUpdate = obj.LastUpdate.ToUniversalTime().ToString("o");
+                }
+                catch { }
+                return new ObjectMetadataSnapshot
+                {
+                    Object = obj,
+                    Revision = revision,
+                    LastUpdate = lastUpdate
+                };
+            }
+            catch { return null; }
         }
 
         private string TryReplace(string[] sourceLines, string[] contextLines, string newContent, int expectedCount, out string status, out string details, out int matchCount, bool replaceAll = false)

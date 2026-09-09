@@ -1575,6 +1575,11 @@
             "description": "patch mode only. Apply to ALL occurrences instead of requiring expectedCount to match exactly.",
             "type": "boolean"
           },
+          "requireObjectSave": {
+            "default": false,
+            "description": "Events patch only: require a complete parent-object save, an advanced revision/lastUpdate, fresh content re-read, and unchanged sibling parts. Requires baseVersion for non-dry-run writes; incomplete evidence is returned as ObjectSaveIncomplete without an automatic retry or rollback.",
+            "type": "boolean"
+          },
           "return_post_state": {
             "description": "Omit post_state.diff (default true).",
             "type": "boolean"

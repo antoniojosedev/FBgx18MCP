@@ -9,6 +9,7 @@ param(
     [switch]$RequireBuildAll,
     [switch]$RunBenchmark,
     [ValidateRange(1, 100)][int]$Iterations = 12,
+    [string]$TestFilter = 'Category=LiveE2E',
     [string]$SummaryPath
 )
 
@@ -120,6 +121,7 @@ function Write-MatrixSummary {
         root = $root
         kbPath = $KbPath
         fixtureManifest = $FixtureManifest
+        testFilter = $TestFilter
         catalogSource = $catalogSource
         supportedMajors = @($knownMajors)
         selectedMajors = $selectedMajorValues
@@ -196,7 +198,8 @@ try {
             '-KbPath', $KbPath,
             '-FixtureManifest', $FixtureManifest,
             '-GxPath', $candidate.path,
-            '-SkipBuild'
+            '-SkipBuild',
+            '-TestFilter', $TestFilter
         )
         if ($GatewayOnly) { $testArgs += '-GatewayOnly' }
         if ($RequireBuildAll) { $testArgs += '-RequireBuildAll' }

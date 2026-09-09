@@ -107,6 +107,60 @@ namespace GxMcp.Worker.Services
             payload["verified"] = verified;
         }
 
+        internal static bool AttachObjectSaveEvidence(
+            JObject payload,
+            bool partPersisted,
+            bool objectSaved,
+            string revisionBefore,
+            string revisionAfter,
+            string lastUpdateBefore,
+            string lastUpdateAfter,
+            bool? otherPartsIntact,
+            bool metadataStampPersisted = false,
+            JArray unexpectedChangedParts = null)
+        {
+            if (payload == null) throw new ArgumentNullException(nameof(payload));
+
+            bool metadataUpdated = MetadataChanged(
+                revisionBefore, revisionAfter, lastUpdateBefore, lastUpdateAfter, metadataStampPersisted);
+            payload["partPersisted"] = partPersisted;
+            payload["objectSaved"] = objectSaved;
+            payload["revisionBefore"] = revisionBefore == null ? JValue.CreateNull() : (JToken)revisionBefore;
+            payload["revisionAfter"] = revisionAfter == null ? JValue.CreateNull() : (JToken)revisionAfter;
+            payload["lastUpdateBefore"] = lastUpdateBefore == null ? JValue.CreateNull() : (JToken)lastUpdateBefore;
+            payload["lastUpdateAfter"] = lastUpdateAfter == null ? JValue.CreateNull() : (JToken)lastUpdateAfter;
+            payload["metadataStampPersisted"] = metadataStampPersisted;
+            payload["metadataUpdated"] = metadataUpdated;
+            if (otherPartsIntact.HasValue) payload["otherPartsIntact"] = otherPartsIntact.Value;
+            if (unexpectedChangedParts != null && unexpectedChangedParts.Count > 0)
+                payload["unexpectedChangedParts"] = unexpectedChangedParts;
+            return metadataUpdated;
+        }
+
+        internal static bool MetadataChanged(
+            string revisionBefore,
+            string revisionAfter,
+            string lastUpdateBefore,
+            string lastUpdateAfter,
+            bool metadataStampPersisted = false)
+        {
+            if (!metadataStampPersisted)
+                return false;
+
+            if (!string.IsNullOrWhiteSpace(revisionBefore)
+                && !string.IsNullOrWhiteSpace(revisionAfter)
+                && !string.Equals(revisionBefore, revisionAfter, StringComparison.Ordinal))
+                return true;
+
+            DateTime before;
+            DateTime after;
+            return DateTime.TryParse(lastUpdateBefore, null,
+                       System.Globalization.DateTimeStyles.RoundtripKind, out before)
+                   && DateTime.TryParse(lastUpdateAfter, null,
+                       System.Globalization.DateTimeStyles.RoundtripKind, out after)
+                   && after.ToUniversalTime() > before.ToUniversalTime();
+        }
+
         internal static JObject BuildRollback(
             bool saved,
             TextPersistenceVerifier.Result verification,

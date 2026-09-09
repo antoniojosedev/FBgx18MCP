@@ -435,7 +435,8 @@ namespace GxMcp.Worker.Services
                     args["verifyMode"]?.ToString(),
                     args["baseVersion"]?.ToString(),
                     args["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
-                    args["autoDeclareVariables"]?.ToObject<bool?>() ?? args["autoInjectVariables"]?.ToObject<bool?>() ?? false);
+                    args["autoDeclareVariables"]?.ToObject<bool?>() ?? args["autoInjectVariables"]?.ToObject<bool?>() ?? false,
+                    args["requireObjectSave"]?.ToObject<bool?>() ?? false);
             }
 
             if (string.Equals(mode, "semanticops", StringComparison.OrdinalIgnoreCase) ||

@@ -662,15 +662,11 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
-        [LiveKbFact]
+        [LiveKbFact(requiresTeamDevelopmentFixture: true)]
         public async Task TeamDevelopmentPendingList_PreservesIdeChangeAfterMcpWrite()
         {
             string? idePendingName = Environment.GetEnvironmentVariable("GXMCP_TEAMDEV_PENDING_NAME");
-            if (string.IsNullOrWhiteSpace(idePendingName))
-            {
-                throw SkipException.ForSkip(
-                    "Set GXMCP_TEAMDEV_PENDING_NAME to a pre-seeded IDE-changed object to run this regression.");
-            }
+            Assert.False(string.IsNullOrWhiteSpace(idePendingName));
 
             await RequireSdkTeamDevelopmentAsync();
             var before = await ReadTeamDevelopmentPendingNamesAsync();
