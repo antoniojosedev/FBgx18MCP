@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.1.0 - 2026-09-09
+
+
 ### Added
 
 - Added the official Nexa GeneXus skill and its Markdown references as read-only MCP resources, including an on-demand reference template for object modeling and KB workflows.
