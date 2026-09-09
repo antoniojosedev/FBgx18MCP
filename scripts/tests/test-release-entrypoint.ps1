@@ -42,4 +42,23 @@ try {
     }
 }
 finally { if (Test-Path -LiteralPath $fixtureLock) { Remove-Item -LiteralPath $fixtureLock -Force -ErrorAction SilentlyContinue } }
+$releaseSource = Get-Content -LiteralPath (Join-Path $root 'release.ps1') -Raw
+if ($releaseSource -notmatch 'sync-release-metadata\.py' -or
+    $releaseSource -notmatch 'config/gx-versions\.json' -or
+    $releaseSource -notmatch 'docs/generated/supported-versions\.md') {
+    throw 'Canonical release entrypoint must synchronize and commit generated release metadata.'
+}
+$syncPosition = $releaseSource.IndexOf('sync-release-metadata.py', [StringComparison]::Ordinal)
+$dirtyGatePosition = $releaseSource.IndexOf('Checking git working tree', [StringComparison]::Ordinal)
+if ($syncPosition -lt 0 -or $dirtyGatePosition -lt 0 -or $syncPosition -gt $dirtyGatePosition) {
+    throw 'Canonical release entrypoint must synchronize generated metadata before the dirty-tree gate.'
+}
+$buildSource = Get-Content -LiteralPath (Join-Path $root 'build.ps1') -Raw
+if ($buildSource -notmatch '\$artifactGxPath\s*=\s*Get-GxPrimaryInstallPath\s+-Catalog\s+\$gxCatalog' -or
+    $buildSource -notmatch '\$buildGxPath\s*=\s*\$artifactGxPath' -or
+    $buildSource -notmatch 'InstallationPath\s*=\s*\$artifactGxPath' -or
+    $buildSource -notmatch 'GX_PATH=\$buildGxPath' -or
+    $buildSource -match '\$gxPath') {
+    throw 'Build must keep the catalog artifact path separate from machine-specific SDK overrides.'
+}
 Write-Host 'release-entrypoint: wrapper and metadata checks passed' -ForegroundColor Green

@@ -49,7 +49,9 @@ namespace GxMcp.Gateway
             return null;
         }
 
-        internal const string SupportedGeneXusMajor = "18";
+        // Backward-compatible alias for callers that used the original single-major field.
+        // The authoritative compatibility set lives in GeneXusVersionCatalog.
+        internal static string SupportedGeneXusMajor => GeneXusVersionCatalog.PrimaryMajor;
 
         private static void LogGeneXusVersionCheck(Configuration config)
         {
@@ -62,13 +64,13 @@ namespace GxMcp.Gateway
             }
             if (detected == null)
             {
-                Log($"[Gateway] GeneXus version not detected at '{gxPath}' (no version.txt). Target major: {SupportedGeneXusMajor}.");
+                Log($"[Gateway] GeneXus version not detected at '{gxPath}' (no version.txt). Supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}.");
                 return;
             }
-            Log($"[Gateway] Detected GeneXus version: {detected} (target major: {SupportedGeneXusMajor}).");
-            if (!detected.StartsWith(SupportedGeneXusMajor, StringComparison.OrdinalIgnoreCase))
+            Log($"[Gateway] Detected GeneXus version: {detected} (supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}).");
+            if (!GeneXusVersionCatalog.IsSupported(detected))
             {
-                Log($"[Gateway] WARNING: detected GeneXus version '{detected}' may not match MCP target major '{SupportedGeneXusMajor}'. Some tools may behave unexpectedly.");
+                Log($"[Gateway] WARNING: detected GeneXus version '{detected}' is outside the MCP compatibility catalog. Some tools may behave unexpectedly.");
             }
         }
 
@@ -939,7 +941,10 @@ namespace GxMcp.Gateway
                     ["installationPath"] = gxPath,
                     ["version"] = gxVersion,
                     ["supportedMajor"] = SupportedGeneXusMajor,
-                    ["versionMatches"] = gxVersion != null && gxVersion.StartsWith(SupportedGeneXusMajor, StringComparison.OrdinalIgnoreCase)
+                    ["supportedMajors"] = JArray.FromObject(GeneXusVersionCatalog.SupportedMajors),
+                    ["matchedMajor"] = GeneXusVersionCatalog.GetMatchingMajor(gxVersion),
+                    ["versionMatches"] = gxVersion != null && GeneXusVersionCatalog.IsSupported(gxVersion),
+                    ["catalog"] = GeneXusVersionCatalog.ToDiagnosticObject()
                 },
                 ["config"] = new JObject
                 {

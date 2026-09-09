@@ -26,6 +26,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="..\..\config\gx-versions.json" Link="config\gx-versions.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </None>
     <Reference Include="Artech.Architecture.Common">
       <HintPath>$(GX_PATH)\Artech.Architecture.Common.dll</HintPath>
       <Private>False</Private>

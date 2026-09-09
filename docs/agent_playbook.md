@@ -38,6 +38,12 @@ validation cycle:
 6. Delete scratch objects, close the KB, stop only the scratch gateway, and
    remove temporary files. Never kill a user's running npm/stdio gateway.
 
+For SDK compatibility work, build the Worker once per installed major by
+setting `GX_PATH` explicitly, for example `GeneXus17Trial` and `GeneXus18`.
+The Gateway's `whoami.geneXus.supportedMajors` is the explicit runtime catalog;
+add a new major to `config/gx-versions.json` only after its Worker build and
+live-KB smoke path pass.
+
 ### GeneXus SDK Model hierarchy, facades, and reflection
 
 - **Canonical GxModel Facade:** Any `KBModel` instance can be cast to the canonical

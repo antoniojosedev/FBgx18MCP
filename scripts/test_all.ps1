@@ -3,6 +3,9 @@
 $hadFailures = $false
 $protocolVersion = "2025-11-25"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $repoRoot 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $repoRoot
+$primaryGxPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog
 
 Write-Host "--- [1/3] Compiling Project ---" -ForegroundColor Cyan
 .\build.ps1
@@ -12,11 +15,11 @@ Write-Host "`n--- [1.5/3] Running .NET Unit Tests ---" -ForegroundColor Cyan
 dotnet test src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj -v minimal -p:BaseOutputPath="$repoRoot\.test-bin\gateway\"
 if ($LASTEXITCODE -ne 0) { $hadFailures = $true }
 
-if (Test-Path "C:\Program Files (x86)\GeneXus\GeneXus18\Artech.Architecture.Common.dll") {
+if (Test-Path (Join-Path $primaryGxPath 'Artech.Architecture.Common.dll')) {
     dotnet test src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj -v minimal -p:BaseOutputPath="$repoRoot\.test-bin\worker\"
     if ($LASTEXITCODE -ne 0) { $hadFailures = $true }
 } else {
-    Write-Host "GeneXus 18 SDK not found; skipping Worker.Tests." -ForegroundColor Yellow
+    Write-Host "GeneXus $($gxCatalog.primaryMajor) SDK not found; skipping Worker.Tests." -ForegroundColor Yellow
 }
 
 Write-Host "`n--- [2/3] Running MCP Internal Unit Tests ---" -ForegroundColor Cyan

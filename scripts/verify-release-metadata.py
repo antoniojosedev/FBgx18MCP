@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -25,6 +26,30 @@ def read_json(path: Path) -> object:
         raise ValueError(f"missing file: {path.relative_to(path.parents[2]) if len(path.parents) > 2 else path}")
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read {path}: {exc}")
+
+
+def verify_release_sync(root: Path, version: str) -> list[str]:
+    catalog = root / "config" / "gx-versions.json"
+    if not catalog.exists():
+        return []
+
+    script = root / "scripts" / "sync-release-metadata.py"
+    spec = importlib.util.spec_from_file_location("gxmcp_release_sync", script)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"cannot load release synchronizer: {script}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        expected = module.expected_files(root, version)
+    except (OSError, ValueError) as exc:
+        raise ValueError(str(exc)) from exc
+
+    drift = []
+    for path, content in expected.items():
+        actual = path.read_text(encoding="utf-8") if path.exists() else None
+        if actual != content:
+            drift.append(str(path.relative_to(root)))
+    return drift
 
 
 def main() -> int:
@@ -74,7 +99,14 @@ def main() -> int:
     if mismatches:
         return fail("; ".join(mismatches))
 
-    print(f"release-metadata: valid version={version} fields={len(observed)}")
+    try:
+        drift = verify_release_sync(root, version)
+    except ValueError as exc:
+        return fail(str(exc))
+    if drift:
+        return fail("release-facing files are out of sync: " + ", ".join(drift))
+
+    print(f"release-metadata: valid version={version} fields={len(observed)} sync=ok")
     return 0
 
 

@@ -18,6 +18,7 @@ const {
     listSupportedClientIds,
     getLocalAppDataCacheDir,
     readGeneXusVersionFromInstall,
+    getGeneXusVersionCatalog,
     discoverGeneXusInstallation,
     discoverKnowledgeBase,
     discoverKnowledgeBases,
@@ -1188,7 +1189,9 @@ function buildInteractiveInitHelp(patchResult) {
 }
 
 async function runInteractiveInit(ctx) {
-    const defaultGx = discoverGeneXusInstallation() || 'C:\\Program Files (x86)\\GeneXus\\GeneXus18';
+    const catalog = getGeneXusVersionCatalog();
+    const primary = catalog.supportedMajors.find((entry) => String(entry.major) === String(catalog.primaryMajor));
+    const defaultGx = discoverGeneXusInstallation() || primary?.defaultInstallPath || 'C:\\Program Files (x86)\\GeneXus\\GeneXus18';
 
     if (!ctx.options.quiet) {
         ctx.stderr.write('GeneXus MCP setup wizard\n\n');

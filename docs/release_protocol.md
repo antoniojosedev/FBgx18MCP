@@ -21,14 +21,15 @@ Use the one-shot script (the only implementation entrypoint):
 .\release.ps1 -Version <X.Y.Z>
 ```
 
-It bumps versions, synchronizes both npm lockfiles and the SDK project files,
-commits that source state before building, creates the normalized `publish.zip`,
+It bumps versions, synchronizes both npm lockfiles, SDK project files, and the
+catalog-generated release metadata, commits that source state before building,
+creates the normalized `publish.zip`,
 embeds `gxmcp-manifest.json` with artifact hashes and protocol revisions, and
 creates the GitHub release with the zip, checksum, and Nexus VSIX attached. The
 manifest source commit must equal the tag commit. Do not run `gh release create` manually: the release workflow
 requires `publish.zip` on the initial published event. The Worker needs the
-local GeneXus 18 SDK, so the release artifact must be built on Windows with
-GeneXus installed.
+local primary SDK from `config/gx-versions.json`, so the release artifact must
+be built on Windows with that supported GeneXus installation.
 
 Gateway, tests, and benchmarks build with the .NET 10 SDK; the Worker remains
 .NET Framework 4.8/x86 for the GeneXus SDK. The v3 corporate installer stages
@@ -59,6 +60,10 @@ default. Read it with `scripts/release-status.ps1`; terminal states are
 `succeeded` and `failed`, while exit code 2 means the run is still in progress
 or the requested wait elapsed.
 
+The release script synchronizes `server.json`, `config.sample.json`,
+`README.md`, `AGENTS.md`, and `docs/generated/supported-versions.md` from the
+version catalog before its dirty-tree gate. It refuses a missing or ambiguous
+generated block and the CI/release metadata check fails if those files drift.
 The release script requires a substantive `## Unreleased` section when the
 target version heading is absent, promotes that section, verifies the exact
 version heading, and refuses to publish generic release notes.
@@ -110,7 +115,7 @@ base repository by accident.
 ## Live KB and performance gate
 
 The normal CI workflow does not have the proprietary GeneXus SDK or a KB. On a
-Windows machine with GeneXus 18 installed, run the live gate against the
+Windows machine with a supported GeneXus SDK installed, run the live gate against the
 verified isolated synthetic KB. Provision and attest the fixture as described in
 [the live harness guide](live-kb-test-harness.md); a folder name alone is not
 evidence of isolation:

@@ -81,6 +81,7 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
+| `GXMCP_VERSION_CATALOG` | Optional absolute path to an alternate `gx-versions.json` catalog. Use this only for controlled validation or packaging; the published Gateway and Worker load the catalog copied into their `config` directory. | bundled `config/gx-versions.json` |
 | `GXMCP_SYNC_LOG` | Set to `1` to also append every log line synchronously (crash forensics). | off |
 | `GXMCP_LEGACY_TOOL_ALIASES` | Set to `0` to opt out of legacy tool-name aliases (de-advertised tools reachable by old names). | aliases on |
 | `GXMCP_RESILIENT_SPEC` | Set to `1` to opt into the resilient specifier path (slower; opt-in). | off |

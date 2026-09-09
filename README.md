@@ -1,4 +1,4 @@
-# GeneXus MCP Server — GeneXus 18 for Claude, Cursor, and AI Agents
+# GeneXus MCP Server — Multi-version GeneXus for Claude, Cursor, and AI Agents
 
 [![npm version](https://img.shields.io/npm/v/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
@@ -12,9 +12,53 @@
 
 ---
 
-**GeneXus MCP Server** lets AI agents — Claude Desktop, Claude Code, Cursor, Antigravity, and any MCP-compatible client — read, edit, analyze, and refactor objects inside a GeneXus 18 Knowledge Base. It talks to the **native GeneXus SDK**, so the agent works with the *real* KB, not a copy or a parsed approximation.
+**GeneXus MCP Server** lets AI agents — Claude Desktop, Claude Code, Cursor, Antigravity, and any MCP-compatible client — read, edit, analyze, and refactor objects inside a Knowledge Base supported by the selected GeneXus SDK. It talks to the **native GeneXus SDK**, so the agent works with the *real* KB, not a copy or a parsed approximation.
 
 In practice: you point the MCP at your KB, then ask your AI assistant things like *"list all transactions with attribute CustomerId"*, *"add a rule to the Order transaction that validates the total"*, or *"refactor this procedure to use the new SDT"* — and it does it.
+
+---
+
+## Multi-version SDK support
+
+The same MCP distribution supports the SDK majors listed in the generated
+compatibility document. Each configured MCP process selects one installed SDK
+with `--gx`; no separate MCP installation is required. The commands below are
+examples of switching the existing configuration, not running two majors in
+the same process:
+
+```bash
+npx genexus-mcp@latest init --kb "C:\KBs\KBTeste17" --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
+# To switch this MCP configuration to GX18:
+npx genexus-mcp@latest init --kb "C:\KBs\MyGX18KB" --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+```
+
+After switching the SDK or KB, fully restart the AI client so it reloads the
+MCP process and its tool schemas. If GX17 and GX18 must run simultaneously,
+use separate MCP configurations and ports.
+
+The Gateway reports the detected SDK through `genexus_whoami`:
+
+- `geneXus.supportedMajors`: explicitly validated SDK majors from the version catalog
+- `geneXus.matchedMajor`: the major detected for the configured installation
+- `geneXus.versionMatches`: whether the detected installation is in that catalog
+- `geneXus.supportedMajor`: retained as the legacy single-major alias for the catalog primary
+
+The Worker isolates version-sensitive SDK members behind compatibility adapters.
+For example, Design System helper methods that differ between SDK majors are
+replaced field-by-field by parsing the native `Tokens` and `Styles` parts when
+needed. Existing tool names, arguments, and MCP client configuration formats do
+not change.
+
+<!-- BEGIN GENERATED: gx-compatibility -->
+Supported SDK majors: **GeneXus 17, GeneXus 18**.
+Primary SDK: **GeneXus 18**.
+Source of truth: `config/gx-versions.json`.
+<!-- END GENERATED: gx-compatibility -->
+
+To add another GeneXus major in the future, add it to the explicit version
+catalog only after compiling the Worker with that SDK and passing the focused
+tests plus a live KB smoke. This prevents the server from claiming compatibility
+based only on a version string.
 
 ---
 
@@ -44,8 +88,8 @@ It works through the **native GeneXus SDK** — the same code paths the IDE uses
 Before you start, make sure you have:
 
 - ✅ **Windows** (GeneXus is Windows-only)
-- ✅ **GeneXus 18** installed locally (default path: `C:\Program Files (x86)\GeneXus\GeneXus18`)
-- ✅ **A GeneXus 18 Knowledge Base** opened at least once in the IDE (so it's initialized)
+- ✅ **A supported GeneXus SDK** installed locally (see [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md); pass another install path explicitly when needed)
+- ✅ **A Knowledge Base created with a supported GeneXus major** and opened at least once in the IDE (so it's initialized)
 - ✅ **Node.js 18+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
 - ✅ **An MCP-compatible AI client** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 
@@ -445,7 +489,7 @@ The installer writes a `config.json` for you. To customize networking, timeouts,
     "HttpPort": 5000,
     "BindAddress": "127.0.0.1",
     "SessionIdleTimeoutMinutes": 10,
-    "WorkerIdleTimeoutMinutes": 5,
+    "WorkerIdleTimeoutMinutes": 60,
     "MaxOpenKbs": 3
   },
   "GeneXus": {
@@ -540,7 +584,7 @@ This repo ships a set of **agent skills** under `.gemini/skills/` that any MCP-c
 |---|---|
 | `genexus-mastery` | This repository's preferred MCP workflow + multi-KB usage |
 | `genexus18-guidelines` | Local engineering rules layered on top of Nexa |
-| `nexa` | Full GeneXus 18 reference set: every object type, command, type, property — imported from the official [`genexuslabs/genexus-skills`](https://github.com/genexuslabs/genexus-skills) |
+| `nexa` | Full reference set for the primary GeneXus SDK: every object type, command, type, property — imported from the official [`genexuslabs/genexus-skills`](https://github.com/genexuslabs/genexus-skills) |
 | `frontend/chameleon-controls-library` | 58 Chameleon UI component specs |
 | `frontend/mercury-design-system` | Mercury tokens, bundles, theming |
 | `frontend/design-system-builder` | Authoring custom design systems |

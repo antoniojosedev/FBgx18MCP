@@ -13,11 +13,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = (Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
 }
 if ([string]::IsNullOrWhiteSpace($GxPath)) {
-    $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { 'C:\Program Files (x86)\GeneXus\GeneXus18' }
+    $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { Get-GxPrimaryInstallPath -Catalog $gxCatalog }
 }
 if ([string]::IsNullOrWhiteSpace($LiveKbPath)) { $LiveKbPath = $env:GXMCP_TEST_KB }
 if ([string]::IsNullOrWhiteSpace($LiveFixtureManifest)) { $LiveFixtureManifest = $env:GXMCP_TEST_FIXTURE }

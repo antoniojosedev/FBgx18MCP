@@ -4,7 +4,9 @@ param(
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$defaultGxPath = "C:\Program Files (x86)\GeneXus\GeneXus18"
+. (Join-Path $repoRoot 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $repoRoot
+$defaultGxPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog
 
 function Resolve-GxSdkPath {
     $configuredPath = if (-not [string]::IsNullOrWhiteSpace($GxPath)) {
@@ -118,7 +120,7 @@ if ($resolvedGxPath) {
     }
 } else {
     New-Item -ItemType File -Path (Join-Path $OutputRoot "worker.skipped.txt") -Force | Out-Null
-    Write-Host "GeneXus 18 SDK not found. Set GX_PATH or pass -GxPath to include Worker.Tests."
+    Write-Host "GeneXus SDK for primary major $(Get-GxPrimaryMajor -Catalog $gxCatalog) not found. Set GX_PATH or pass -GxPath to include Worker.Tests."
 }
 
 Get-ChildItem -Path $OutputRoot -Recurse | ForEach-Object {

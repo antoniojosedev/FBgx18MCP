@@ -6,9 +6,12 @@ below and should be read only when the task matches it.
 
 ## Project orientation
 
-Genexus18MCP is a two-process MCP server exposing a GeneXus 18 Knowledge Base
-through the native SDK. It does not parse KB files or scrape IDE state; edits
-use the same SDK paths as the IDE.
+Genexus18MCP is a two-process MCP server exposing Knowledge Bases from the
+explicitly supported GeneXus majors through the selected native SDK. It does
+not parse KB files or scrape IDE state; edits use the same SDK paths as the IDE.
+Version-specific SDK members are isolated behind compatibility adapters so an
+older SDK can fall back to its native source parts without changing the MCP
+contract.
 
 ```text
 MCP client (Claude/Cursor/…)
@@ -18,17 +21,30 @@ GxMcp.Gateway (net10.0-windows, one per client)
    │ pipes JSON-RPC to a worker
    ▼
 GxMcp.Worker (net48 STA, one per opened KB)
-   │ Artech.* SDK
+   │ compatibility adapters + Artech.* SDK
    ▼
-GeneXus 18 SDK → Knowledge Base on disk
+Selected supported GeneXus SDK → Knowledge Base on disk
 ```
 
 - Gateway: `src/GxMcp.Gateway/` (`net10.0-windows`); owns the worker pool and routes MCP tools.
 - Worker: `src/GxMcp.Worker/`; hosts the COM-flavoured SDK on an STA thread.
 - CLI: `cli/run.js`, `cli/index.js`, and `cli/lib/config.js`; configures MCP
   clients, forwards stdio, and ships the Windows launcher diagnostics.
+- Version catalog: `config/gx-versions.json` is the explicit compatibility list;
+  `src/GxMcp.Gateway/GeneXusVersionCatalog.cs` is its runtime loader.
+  `src/GxMcp.Worker/Compatibility/` contains reusable runtime adapters for SDK
+  members that vary between GeneXus majors.
+- Design System compatibility: `DesignSystemSdkAdapter` uses the native helper
+  when available and parses the `Tokens`/`Styles` source parts independently
+  when an SDK helper member is absent.
 - Package artifact: `publish/`; `GxMcp.Gateway.exe` is at its root and
   `worker/GxMcp.Worker.exe` is one level below. The npm package includes it.
+
+<!-- BEGIN GENERATED: gx-compatibility -->
+Supported SDK majors: **GeneXus 17, GeneXus 18**.
+Primary SDK: **GeneXus 18**.
+Source of truth: `config/gx-versions.json`.
+<!-- END GENERATED: gx-compatibility -->
 
 ## KB and harness contracts
 
@@ -54,14 +70,28 @@ GeneXus 18 SDK → Knowledge Base on disk
   `Program.GetDefaultCompactFields` when a new output field is introduced.
 - For CLI launcher/config changes, update `cli/run.test.js`; use
   `docs/agent_playbook.md` for SDK authoring and tool-specific constraints.
+- Release-facing version text is generated from `config/gx-versions.json` by
+  `scripts/sync-release-metadata.py`; `release.ps1` runs it before the dirty-tree
+  gate, and CI/release verification fails on drift.
 
 ## Build and test
 
 For Worker builds, set the SDK path in the current PowerShell session:
 
 ```powershell
+$env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus17Trial'
+dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
+
 $env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus18'
+dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
 ```
+
+The Worker must be built and focused-tested once per installed major when
+changing SDK compatibility. The Gateway package build uses the SDK selected by
+`GX_PATH` (the catalog's primary major is the normal distribution default). A
+new major is not considered supported merely because its version string starts
+with a number; add it to `config/gx-versions.json` only after its Worker build
+and live-KB smoke pass.
 
 ```powershell
 .\build.ps1
@@ -93,6 +123,9 @@ genexus_worker_reload mode=hard sourceDir=<repoRoot>\src\GxMcp.Worker\bin\Debug
 ```
 
 If the next call reports a stale pipe or crashed Worker, reconnect `/mcp` once.
+For a version smoke, call `genexus_whoami` and verify
+`geneXus.versionMatches=true`, `matchedMajor`, and `supportedMajors`; the
+legacy `supportedMajor` field remains the catalog-primary compatibility alias.
 
 ## Required workflow
 

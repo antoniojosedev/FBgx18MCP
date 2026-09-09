@@ -8,7 +8,7 @@ Este guia te leva do zero até "o assistente de IA está editando minha KB do Ge
 
 ## O que é isso, em uma frase?
 
-É uma ponte entre seu **assistente de IA** (Claude, Cursor, Antigravity, etc.) e sua **Knowledge Base do GeneXus 18**. Uma vez instalado, você pode pedir pra IA coisas como *"adiciona uma regra na transação Pedido que valide o total"* e a IA usa o SDK nativo do GeneXus pra fazer isso de verdade na sua KB.
+É uma ponte entre seu **assistente de IA** (Claude, Cursor, Antigravity, etc.) e uma **Knowledge Base de um major suportado do GeneXus**. Uma vez instalado, você pode pedir pra IA coisas como *"adiciona uma regra na transação Pedido que valide o total"* e a IA usa o SDK nativo do GeneXus pra fazer isso de verdade na sua KB.
 
 ---
 
@@ -17,8 +17,8 @@ Este guia te leva do zero até "o assistente de IA está editando minha KB do Ge
 Antes de começar, garanta que você tem:
 
 - ✅ **Windows** (GeneXus é só Windows)
-- ✅ **GeneXus 18** instalado (normalmente em `C:\Program Files (x86)\GeneXus\GeneXus18`)
-- ✅ **Uma KB do GeneXus 18** que você já tenha aberto pelo menos uma vez no IDE (pra que esteja inicializada)
+- ✅ **Um SDK suportado do GeneXus** instalado (consulte os caminhos em [`docs/generated/supported-versions.md`](generated/supported-versions.md))
+- ✅ **Uma KB criada com um major suportado do GeneXus** que você já tenha aberto pelo menos uma vez no IDE (pra que esteja inicializada)
 - ✅ **Node.js 18 ou superior** — verifica com `node --version` num terminal; baixa em [nodejs.org](https://nodejs.org/) se não tiver
 - ✅ **Um cliente de IA compatível com MCP** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 

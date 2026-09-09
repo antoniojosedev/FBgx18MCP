@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using Xunit;
 using GxMcp.Gateway;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway.Tests
 {
@@ -83,6 +84,24 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(payload["mcp"]?["protocolVersion"]);
             Assert.NotNull(payload["geneXus"]?["supportedMajor"]);
             Assert.Equal("18", payload["geneXus"]?["supportedMajor"]?.ToString());
+
+            var supportedMajors = Assert.IsType<JArray>(payload["geneXus"]?["supportedMajors"]);
+            Assert.Contains("17", supportedMajors.ToObject<string[]>());
+            Assert.Contains("18", supportedMajors.ToObject<string[]>());
+            Assert.Equal("18", payload["geneXus"]?["catalog"]?["primaryMajor"]?.ToString());
+            Assert.NotNull(payload["geneXus"]?["catalog"]?["source"]);
+        }
+
+        [Theory]
+        [InlineData("17.0.11.163677", "17", true)]
+        [InlineData("18.0.6", "18", true)]
+        [InlineData("19.0.0", "19", false)]
+        [InlineData("170.0.0", "170", false)]
+        public void GeneXusVersionCatalog_MatchesOnlyExplicitlySupportedMajors(
+            string version, string expectedMajor, bool expectedSupported)
+        {
+            Assert.Equal(expectedMajor, GeneXusVersionCatalog.GetMajor(version));
+            Assert.Equal(expectedSupported, GeneXusVersionCatalog.IsSupported(version));
         }
 
         [Fact]

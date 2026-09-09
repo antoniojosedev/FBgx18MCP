@@ -14,6 +14,8 @@ $root = $PSScriptRoot
 $publishDir = Join-Path $root "publish"
 $gatewayProject = Join-Path $root "src\GxMcp.Gateway\GxMcp.Gateway.csproj"
 $workerProject = Join-Path $root "src\GxMcp.Worker\GxMcp.Worker.csproj"
+. (Join-Path $root "scripts\gx-version-catalog.ps1")
+$gxCatalog = Get-GxVersionCatalog -Root $root
 
 function Fail-Build([string]$message, [int]$exitCode = 1) {
     Write-Host "[build] $message" -ForegroundColor Red
@@ -57,18 +59,21 @@ Invoke-DotNet @("restore", $gatewayProject) "Gateway restore failed."
 Write-Host "   > Restoring Worker dependencies..."
 Invoke-DotNet @("restore", $workerProject) "Worker restore failed."
 
-# Resolve GeneXus Path
-$gxPath = "C:\Program Files (x86)\GeneXus\GeneXus18"
+# Resolve the catalog default separately from the SDK path used to compile.
+# Explicit config and GX_PATH values may point at a developer's local SDK, but
+# that machine-specific path must never be copied into the release artifact.
+$artifactGxPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog
+$buildGxPath = $artifactGxPath
 if (Test-Path (Join-Path $root "config.json")) {
     $configData = Get-Content (Join-Path $root "config.json") -Raw | ConvertFrom-Json
     if ($configData.GeneXus -and $configData.GeneXus.InstallationPath) {
-        $gxPath = $configData.GeneXus.InstallationPath
+        $buildGxPath = $configData.GeneXus.InstallationPath
     }
 }
 if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
     # An explicit environment value is the build-time source of truth. This
     # keeps clean worktrees and CI jobs independent from a local config.json.
-    $gxPath = $env:GX_PATH
+    $buildGxPath = $env:GX_PATH
 }
 
 if (-not (Test-Path $gatewayProject)) {
@@ -79,12 +84,12 @@ if (-not (Test-Path $workerProject)) {
     Fail-Build "Worker project file was not found at $workerProject."
 }
 
-if (-not (Test-Path $gxPath)) {
-    Fail-Build "GeneXus installation path was not found: $gxPath."
+if (-not (Test-Path $buildGxPath)) {
+    Fail-Build "GeneXus installation path was not found: $buildGxPath."
 }
 
-if (-not (Test-Path (Join-Path $gxPath "Definitions"))) {
-    Fail-Build "GeneXus Definitions folder was not found under $gxPath."
+if (-not (Test-Path (Join-Path $buildGxPath "Definitions"))) {
+    Fail-Build "GeneXus Definitions folder was not found under $buildGxPath."
 }
 
 # Also stop dotnet processes running this checkout's Gateway DLL.
@@ -140,10 +145,10 @@ Invoke-DotNet (@("build", $gatewayProject, "-c", "Debug", "--nologo") + $version
 
 # 3. Build Worker (.NET Framework 4.8)
 Write-Host "   > Building Worker (Release)..."
-Invoke-DotNet (@("build", $workerProject, "-c", "Release", "--nologo", "-p:GX_PATH=$gxPath") + $versionArguments) "Worker build failed."
+Invoke-DotNet (@("build", $workerProject, "-c", "Release", "--nologo", "-p:GX_PATH=$buildGxPath") + $versionArguments) "Worker build failed."
 
 Write-Host "   > Building Worker (Debug)..."
-Invoke-DotNet (@("build", $workerProject, "-c", "Debug", "--nologo", "-p:GX_PATH=$gxPath") + $versionArguments) "Worker debug build failed."
+Invoke-DotNet (@("build", $workerProject, "-c", "Debug", "--nologo", "-p:GX_PATH=$buildGxPath") + $versionArguments) "Worker debug build failed."
 
 # 4. Copy Worker Binaries to Publish
 $workerPublishDir = Join-Path $publishDir "worker"
@@ -162,14 +167,14 @@ if (Test-Path $workerBinRelease) {
 }
 
 # 4.1 GeneXus Definitions/ - NOT copied into the artifact.
-# The Worker sets Directory.SetCurrentDirectory(gxPath) before calling any SDK
-# methods, so the SDK resolves Definitions/ from the local GeneXus 18 install
+# The Worker sets Directory.SetCurrentDirectory(buildGxPath) before calling any SDK
+# methods, so the SDK resolves Definitions/ from the selected local GeneXus install
 # (the same path it was loaded from). Shipping a copy would:
 #   (a) add ~20 MB of GeneXus proprietary XML to the public npm tarball, and
 #   (b) risk stale copies diverging from the user's actual GeneXus version.
-# Every install of genexus-mcp already requires a local GeneXus 18 install, so
+# Every install of genexus-mcp already requires a local supported GeneXus install, so
 # the SDK always finds the canonical Definitions/ at runtime without a copy here.
-Write-Host "   > Skipping Definitions/ copy - resolved at runtime from GeneXus install dir ($gxPath)."
+Write-Host "   > Skipping Definitions/ copy - resolved at runtime from GeneXus install dir ($buildGxPath)."
 
 # 5. Write a SANITIZED fallback config.json into the publish artifact.
 #    This file is only a fallback for a bare manual run (every real launcher sets
@@ -179,7 +184,7 @@ Write-Host "   > Skipping Definitions/ copy - resolved at runtime from GeneXus i
 Write-Host "   > Writing sanitized fallback config.json to publish..."
 $defaultConfig = @{
     GeneXus = @{
-        InstallationPath = "C:\\Program Files (x86)\\GeneXus\\GeneXus18"
+        InstallationPath = $artifactGxPath
         WorkerExecutable = "worker\\GxMcp.Worker.exe"
     }
     Server = @{

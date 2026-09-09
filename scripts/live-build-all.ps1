@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$KbPath,
     [Parameter(Mandatory = $true)][string]$FixtureManifest,
     [Parameter(Mandatory = $true)][string]$GatewayExe,
-    [string]$GxPath = $(if ($env:GX_PATH) { $env:GX_PATH } else { 'C:\Program Files (x86)\GeneXus\GeneXus18' }),
+    [string]$GxPath = $env:GX_PATH,
     [ValidateRange(1024, 65535)][int]$HttpPort,
     [ValidateRange(30, 7200)][int]$TimeoutSeconds = 2400,
     [string]$Alias = 'live-fixture'
@@ -11,6 +11,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
+if ([string]::IsNullOrWhiteSpace($GxPath)) { $GxPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog }
 
 function Get-FreeBuildAllPort {
     foreach ($candidate in 55200..55299) {

@@ -10,13 +10,17 @@ Common issues when installing or running the GeneXus MCP server, and how to fix 
 
 ### "GeneXus installation not found"
 
-The installer couldn't locate GeneXus 18 in the default path.
+The installer couldn't locate the primary GeneXus SDK from the version catalog in
+the default path.
 
 **Fix:** pass `--gx` explicitly. The path is the folder that contains `GeneXus.exe` — usually:
 
 ```bash
 npx genexus-mcp@latest init --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
 ```
+
+The example above is the current primary SDK. The complete supported list and
+default paths live in [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md).
 
 If GeneXus is installed somewhere else (custom install, network drive), point `--gx` to that folder.
 
@@ -140,7 +144,7 @@ It reports the .NET runtimes detected.
 
 ### "Worker idle timeout" — first request slow
 
-Expected. The worker is lazy by design and shuts down after `WorkerIdleTimeoutMinutes` (default 5) of inactivity to unlock GeneXus build artifacts. First request after idle takes ~3-8s to spin it back up; subsequent calls are fast.
+Expected. The worker is lazy by design and shuts down after `WorkerIdleTimeoutMinutes` (default 60) of inactivity to unlock GeneXus build artifacts. First request after idle takes ~3-8s to spin it back up; subsequent calls are fast.
 
 To keep it warm longer, edit `config.json`:
 
@@ -237,7 +241,7 @@ If none of the above helps:
 1. Run `npx genexus-mcp doctor --mcp-smoke > diagnostic.txt 2>&1` and include `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt` when the client only reports an exit code.
 2. Reproduce the issue with `claude --debug` (or your client's equivalent) to capture MCP traffic.
 3. [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) and attach `diagnostic.txt` + the client log excerpt. Include:
-   - GeneXus 18 version (Help → About in the IDE)
+   - GeneXus version (Help → About in the IDE) and the selected install path
    - Node.js version (`node --version`)
    - Windows version
    - Your `config.json` with paths redacted if sensitive

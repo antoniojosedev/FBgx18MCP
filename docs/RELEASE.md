@@ -1,15 +1,15 @@
 # Release Process
 
-This document describes how `genexus-mcp` is published to npm. **Only the maintainer can run this** — it requires GeneXus 18 installed locally and push access to this repository.
+This document describes how `genexus-mcp` is published to npm. **Only the maintainer can run this** — it requires the primary GeneXus SDK from [`config/gx-versions.json`](../config/gx-versions.json) installed locally and push access to this repository.
 
 ## Why the build runs locally
 
-`src/GxMcp.Worker` references private GeneXus 18 SDK DLLs from `C:\Program Files (x86)\GeneXus\GeneXus18` (see the `<HintPath>` entries in `GxMcp.Worker.csproj`). GitHub-hosted runners don't have GeneXus, so the .NET artifacts must be built on a machine that does. The actual `npm publish` still happens in GitHub Actions, which preserves the **npm provenance** badge via OIDC Trusted Publishing.
+`src/GxMcp.Worker` references private GeneXus SDK DLLs from the path selected by `GX_PATH` (see the `<HintPath>` entries in `GxMcp.Worker.csproj`). GitHub-hosted runners don't have GeneXus, so the .NET artifacts must be built on a machine that does. The actual `npm publish` still happens in GitHub Actions, which preserves the **npm provenance** badge via OIDC Trusted Publishing.
 
 ## Prerequisites (one-time)
 
 - Windows with **.NET 10 SDK** (the Worker still builds against .NET Framework 4.8)
-- **GeneXus 18** installed at `C:\Program Files (x86)\GeneXus\GeneXus18` (or override via `config.json`)
+- The primary supported GeneXus SDK installed at the catalog default path (or override via `GX_PATH`/`config.json`)
 - **GitHub CLI** authenticated: `gh auth status` must succeed
 - npm account is a maintainer of `genexus-mcp` (Trusted Publishing already configured for this repo + workflow)
 - Clean working tree on `main` branch
@@ -31,7 +31,8 @@ no independent build or publication path.
 The script will:
 
 1. Verify the working tree and release notes.
-2. Synchronize package, lockfile, Gateway, Worker, and Nexus versions.
+2. Synchronize package, lockfile, Gateway, Worker, Nexus, and catalog-generated
+   release metadata.
 3. Commit the release source state before building and record that commit in
    `gxmcp-manifest.json`.
 4. Run `scripts/release-preflight.ps1` (the full solution, CLI, Nexus, contract,

@@ -2,8 +2,27 @@
 
 ## Unreleased
 
-## v3.1.0 - 2026-09-09
+### Added
 
+- Added version-aware GeneXus 17 and 18 compatibility reporting, with an explicit catalog that can be extended for future SDK majors.
+- Added a Design System SDK adapter that falls back to native Tokens/Styles source parsing when optional helper members are unavailable in an older GeneXus SDK.
+- Added release metadata synchronization from `config/gx-versions.json`, including generated supported-version documentation and an idempotent release check.
+
+### Changed
+
+- Preserved the legacy `geneXus.supportedMajor` whoami field while adding `supportedMajors` and `matchedMajor` for multi-version clients.
+- Normalized legacy Worker error payloads at the dispatcher boundary while preserving domain-specific nested errors and diagnostic fields.
+- Added explicit SDK identity, catalog support, Design System completeness, warning, and unparsed-construct diagnostics so fallback behavior is visible to clients.
+
+### Fixed
+
+- Made catalog consumers tolerate optional registry metadata for future SDK majors and kept generated Windows install paths readable in the supported-version document.
+
+### Internal
+
+- Simplified shared release-path ownership, Design System fallback invocation, and source parser declarations without changing the public MCP contract.
+
+## v3.1.0 - 2026-09-09
 
 ### Added
 

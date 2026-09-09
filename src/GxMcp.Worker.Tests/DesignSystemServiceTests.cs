@@ -123,6 +123,22 @@ styles MyDesignSystem {
         }
 
         [Fact]
+        public void ValidateDso_QuotedUrlWithBraces_PassesValidation()
+        {
+            string source = @"
+styles MyDesignSystem {
+    .BrandHeader {
+        background: ""url('https://example.com/{asset}')"";
+    }
+}";
+
+            var result = DesignSystemService.ValidateDso(source);
+
+            Assert.True(result.IsValid);
+            Assert.Empty(result.Errors);
+        }
+
+        [Fact]
         public void ValidateDso_MismatchedBrackets_ReturnsSyntaxError()
         {
             string broken = @"

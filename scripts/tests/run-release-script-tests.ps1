@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $tests = @(
+    'test-version-catalog.ps1',
     'install-contract.tests.ps1',
     'release-manifest.tests.ps1',
     'test-live-build-all.ps1',

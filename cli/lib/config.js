@@ -56,34 +56,92 @@ function getToolDefinitionsPath() {
     return candidates[0];
 }
 
+function getGeneXusVersionCatalog() {
+    const candidates = [
+        path.join(__dirname, '..', '..', 'config', 'gx-versions.json'),
+        path.join(__dirname, '..', '..', 'publish', 'config', 'gx-versions.json')
+    ];
+    for (const candidate of candidates) {
+        try {
+            const catalog = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+            if (!catalog || !catalog.primaryMajor || !Array.isArray(catalog.supportedMajors)) continue;
+            const entries = catalog.supportedMajors.filter((entry) => entry && /^\d+$/.test(String(entry.major)));
+            const primary = entries.find((entry) => String(entry.major) === String(catalog.primaryMajor));
+            if (entries.length > 0 && primary?.defaultInstallPath) {
+                return { ...catalog, supportedMajors: entries };
+            }
+        } catch {
+        }
+    }
+    return {
+        primaryMajor: '18',
+        supportedMajors: [
+            { major: '17', displayName: 'GeneXus 17', defaultInstallPath: 'C:\\Program Files (x86)\\GeneXus\\GeneXus17Trial' },
+            { major: '18', displayName: 'GeneXus 18', defaultInstallPath: 'C:\\Program Files (x86)\\GeneXus\\GeneXus18' }
+        ],
+        source: 'built-in-fallback'
+    };
+}
+
+function getGeneXusCatalogEntries() {
+    const catalog = getGeneXusVersionCatalog();
+    return [...catalog.supportedMajors].sort((left, right) => {
+        const leftPrimary = String(left.major) === String(catalog.primaryMajor);
+        const rightPrimary = String(right.major) === String(catalog.primaryMajor);
+        return Number(rightPrimary) - Number(leftPrimary);
+    });
+}
+
 function discoverGeneXusFromRegistry() {
     if (process.platform !== 'win32') return null;
     try {
         const { execFileSync } = require('child_process');
-        const versions = ['GeneXus 18', 'GeneXus 17', 'GeneXus 16'];
+        const entries = getGeneXusCatalogEntries();
         const hives = [
             'HKLM\\SOFTWARE\\WOW6432Node\\Artech',
             'HKLM\\SOFTWARE\\Artech',
             'HKCU\\SOFTWARE\\Artech'
         ];
         for (const hive of hives) {
-            for (const ver of versions) {
-                const key = `${hive}\\${ver}`;
-                try {
-                    const out = execFileSync('reg.exe', ['query', key, '/v', 'InstallationDirectory'], {
-                        encoding: 'utf8',
-                        stdio: ['ignore', 'pipe', 'ignore'],
-                        windowsHide: true,
-                        timeout: 3000
-                    });
-                    const match = out.match(/InstallationDirectory\s+REG_SZ\s+(.+?)\r?\n/i);
-                    if (match) {
-                        const candidate = match[1].trim().replace(/[\\/]+$/, '');
-                        if (candidate && fs.existsSync(path.join(candidate, 'genexus.exe'))) {
-                            return candidate;
+            for (const entry of entries) {
+                const names = Array.isArray(entry.registryNames) && entry.registryNames.length > 0
+                    ? entry.registryNames
+                    : [`GeneXus ${entry.major}`];
+                for (const ver of names) {
+                    const key = `${hive}\\${ver}`;
+                    try {
+                        const out = execFileSync('reg.exe', ['query', key, '/v', 'InstallationDirectory'], {
+                            encoding: 'utf8',
+                            stdio: ['ignore', 'pipe', 'ignore'],
+                            windowsHide: true,
+                            timeout: 3000
+                        });
+                        const match = out.match(/InstallationDirectory\s+REG_SZ\s+(.+?)\r?\n/i);
+                        if (match) {
+                            const candidate = match[1].trim().replace(/[\\/]+$/, '');
+                            if (candidate && fs.existsSync(path.join(candidate, 'genexus.exe'))) {
+                                return candidate;
+                            }
                         }
+                    } catch {
                     }
-                } catch {
+                }
+                for (const legacyVersion of (entry.legacyRegistryVersions || [])) {
+                    const key = `${hive}\\GeneXus\\${legacyVersion}`;
+                    try {
+                        const out = execFileSync('reg.exe', ['query', key, '/v', 'InstallPath'], {
+                            encoding: 'utf8',
+                            stdio: ['ignore', 'pipe', 'ignore'],
+                            windowsHide: true,
+                            timeout: 3000
+                        });
+                        const match = out.match(/InstallPath\s+REG_SZ\s+(.+?)\r?\n/i);
+                        if (match) {
+                            const candidate = match[1].trim().replace(/[\\/]+$/, '');
+                            if (candidate && fs.existsSync(path.join(candidate, 'genexus.exe'))) return candidate;
+                        }
+                    } catch {
+                    }
                 }
             }
         }
@@ -110,17 +168,24 @@ function discoverGeneXusInstallation() {
         programDirs.push(`${drive}:\\Program Files`);
     }
 
-    const versions = ['GeneXus18', 'GeneXus17', 'GeneXus16'];
+    const entries = getGeneXusCatalogEntries();
     const seen = new Set();
     for (const base of programDirs) {
         const root = path.join(base, 'GeneXus');
         const key = root.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        for (const ver of versions) {
-            const candidate = path.join(root, ver);
-            if (fs.existsSync(path.join(candidate, 'genexus.exe'))) {
-                return candidate;
+        for (const entry of entries) {
+            const candidateNames = new Set([
+                `GeneXus${entry.major}`,
+                path.basename(String(entry.defaultInstallPath || ''))
+            ]);
+            for (const ver of candidateNames) {
+                if (!ver) continue;
+                const candidate = path.join(root, ver);
+                if (fs.existsSync(path.join(candidate, 'genexus.exe'))) {
+                    return candidate;
+                }
             }
         }
         // Also scan any GeneXus* sibling (e.g. custom-named "GeneXus18 U10").
@@ -128,6 +193,8 @@ function discoverGeneXusInstallation() {
             if (fs.existsSync(root)) {
                 for (const entry of fs.readdirSync(root)) {
                     if (!/^GeneXus/i.test(entry)) continue;
+                    const majorMatch = entry.match(/^GeneXus\s*(\d+)/i);
+                    if (majorMatch && !entries.some((item) => String(item.major) === majorMatch[1])) continue;
                     const candidate = path.join(root, entry);
                     if (fs.existsSync(path.join(candidate, 'genexus.exe'))) {
                         return candidate;
@@ -1525,6 +1592,7 @@ module.exports = {
     generateConfig,
     getGatewayExePath,
     getToolDefinitionsPath,
+    getGeneXusVersionCatalog,
     discoverGeneXusInstallation,
     discoverGeneXusFromRegistry,
     discoverKnowledgeBase,

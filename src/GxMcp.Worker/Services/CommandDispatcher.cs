@@ -533,7 +533,8 @@ namespace GxMcp.Worker.Services
             string result;
             try
             {
-                result = DispatchInternal(request);
+                result = GxMcp.Worker.Helpers.McpResponseNormalizer.Normalize(
+                    DispatchInternal(request));
             }
             catch
             {

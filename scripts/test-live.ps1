@@ -30,6 +30,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
 
 function Fail-Live([string]$Message, [int]$ExitCode = 1) {
     Write-Error "live=unavailable; Live gate failed: $Message"
@@ -178,11 +180,11 @@ if ([string]::IsNullOrWhiteSpace($GxPath)) {
     $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
         $env:GX_PATH
     } else {
-        'C:\Program Files (x86)\GeneXus\GeneXus18'
+        Get-GxPrimaryInstallPath -Catalog $gxCatalog
     }
 }
 if (-not (Test-Path -LiteralPath (Join-Path $GxPath 'Artech.Architecture.Common.dll') -PathType Leaf)) {
-    Fail-Live "GeneXus 18 SDK not found under '$GxPath'. Set -GxPath or GX_PATH."
+    Fail-Live "GeneXus SDK not found under '$GxPath'. Set -GxPath or GX_PATH."
 }
 
 $savedEnvironment = @{}

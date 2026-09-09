@@ -195,9 +195,19 @@ namespace GxMcp.Worker.Structure
 
         public static bool IsDesignSystem(KBObject obj)
         {
-            var n = obj?.TypeDescriptor?.Name;
-            return !string.IsNullOrEmpty(n) &&
-                   n.IndexOf("DesignSystem", StringComparison.OrdinalIgnoreCase) >= 0;
+            try
+            {
+                var descriptorName = obj?.TypeDescriptor?.Name;
+                var runtimeName = obj?.GetType()?.Name;
+                return (!string.IsNullOrEmpty(descriptorName)
+                        && descriptorName.IndexOf("DesignSystem", StringComparison.OrdinalIgnoreCase) >= 0)
+                    || (!string.IsNullOrEmpty(runtimeName)
+                        && runtimeName.IndexOf("DesignSystem", StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>Resolve the Tokens or Styles part of a Design System object (by descriptor

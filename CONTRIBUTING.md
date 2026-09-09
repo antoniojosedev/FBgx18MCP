@@ -7,10 +7,14 @@ Thanks for looking at the code. This is a solo project that I maintain in spare 
 A two-process MCP server:
 
 - **Gateway** (`src/GxMcp.Gateway`, .NET 10) — speaks MCP over stdio, hot-reloads `config.json`, brokers calls to the worker.
-- **Worker** (`src/GxMcp.Worker`, .NET Framework 4.8, x86, STA) — hosts the native GeneXus 18 SDK (`Artech.*` DLLs). Has to be .NET 4.8 + STA because the SDK won't run otherwise.
+- **Worker** (`src/GxMcp.Worker`, .NET Framework 4.8, x86, STA) — hosts the selected native GeneXus SDK (`Artech.*` DLLs). Has to be .NET 4.8 + STA because the SDK won't run otherwise.
 - **CLI** (`cli/`, Node 22+) — the `npx genexus-mcp` entry point: `init`, `doctor`, `axi`, update check.
 
-The Worker references DLLs from `C:\Program Files (x86)\GeneXus\GeneXus18`. **You can't build it without GeneXus 18 installed locally** — see [`docs/RELEASE.md`](docs/RELEASE.md) for why CI hosted runners can't build the .NET side.
+The Worker references DLLs from the SDK selected by `GX_PATH` (the default is
+the primary entry in [`config/gx-versions.json`](config/gx-versions.json)).
+**You can't build it without a supported GeneXus SDK installed locally** — see
+[`docs/RELEASE.md`](docs/RELEASE.md) for why CI hosted runners can't build the
+.NET side.
 
 ## Before you open a PR
 
@@ -104,7 +108,7 @@ Scopes in use: `gateway`, `worker`, `cli`, `readme`, `release`, `plan`, `spec`. 
 
 ## Testing GeneXus changes
 
-There's no fixture KB in the repo — KBs are tens of GB and tied to a SQL Server instance. To test SDK-touching changes you need a local GeneXus 18 install and a KB built at least once. The `doctor --mcp-smoke` command exercises the common tool paths against whichever KB `config.json` points at.
+There's no fixture KB in the repo — KBs are tens of GB and tied to a SQL Server instance. To test SDK-touching changes you need a local supported GeneXus install and a KB built at least once. The `doctor --mcp-smoke` command exercises the common tool paths against whichever KB `config.json` points at.
 
 When you submit a PR that touches the Worker, **say what KB you tested against** (object types touched, KB size, GeneXus build). "Works on my KB" is more useful than it sounds — KBs vary wildly.
 
