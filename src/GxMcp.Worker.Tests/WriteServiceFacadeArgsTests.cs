@@ -162,5 +162,18 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal("fail_if_open", normalized.ConcurrencyPolicy);
         }
+
+        [Fact]
+        public void NormalizeFacadeArgs_ParsesRequireObjectSave()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["mode"] = "patch",
+                ["part"] = "Events",
+                ["requireObjectSave"] = true
+            });
+
+            Assert.True(normalized.RequireObjectSave);
+        }
     }
 }

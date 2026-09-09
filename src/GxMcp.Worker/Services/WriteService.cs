@@ -638,7 +638,8 @@ namespace GxMcp.Worker.Services
                     facadeArgs.VerifyMode,
                     facadeArgs.BaseVersion,
                     facadeArgs.RollbackOnFailure,
-                    facadeArgs.AutoInjectVariables);
+                    facadeArgs.AutoInjectVariables,
+                    facadeArgs.RequireObjectSave);
             }
             else
             {
@@ -877,7 +878,8 @@ namespace GxMcp.Worker.Services
                     ?? args["autoInjectVariables"]?.ToObject<bool?>()
                     ?? false,
                 ForceWrite = args["forceWrite"]?.ToObject<bool?>() ?? false,
-                ConcurrencyPolicy = args["concurrencyPolicy"]?.ToString() ?? "warn"
+                ConcurrencyPolicy = args["concurrencyPolicy"]?.ToString() ?? "warn",
+                RequireObjectSave = args["requireObjectSave"]?.ToObject<bool?>() ?? false
             };
         }
 
@@ -903,6 +905,7 @@ namespace GxMcp.Worker.Services
             public bool AutoInjectVariables { get; set; }
             public bool ForceWrite { get; set; }
             public string ConcurrencyPolicy { get; set; }
+            public bool RequireObjectSave { get; set; }
         }
 
         // Returns a deduped list of glyphs in the args payload that cannot
