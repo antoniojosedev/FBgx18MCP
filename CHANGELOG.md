@@ -7,12 +7,15 @@
 - Added version-aware GeneXus 17 and 18 compatibility reporting, with an explicit catalog that can be extended for future SDK majors.
 - Added a Design System SDK adapter that falls back to native Tokens/Styles source parsing when optional helper members are unavailable in an older GeneXus SDK.
 - Added release metadata synchronization from `config/gx-versions.json`, including generated supported-version documentation and an idempotent release check.
+- Added a catalog-driven live SDK matrix that reuses one built artifact and records independent pass, unavailable, or failure evidence for each selected major.
 
 ### Changed
 
 - Preserved the legacy `geneXus.supportedMajor` whoami field while adding `supportedMajors` and `matchedMajor` for multi-version clients.
 - Normalized legacy Worker error payloads at the dispatcher boundary while preserving domain-specific nested errors and diagnostic fields.
 - Added explicit SDK identity, catalog support, Design System completeness, warning, and unparsed-construct diagnostics so fallback behavior is visible to clients.
+- Made init and zero-config discovery prefer the KB's detected major, use Windows executable metadata when version files are absent or invalid, and refuse unverifiable or mismatched SDK/KB selections before writing configuration.
+- Added the SDK/KB compatibility result to `genexus-mcp doctor`, including fail-closed unsupported-major diagnostics, and wired the live matrix into release preflight and the self-hosted smoke workflow.
 
 ### Fixed
 

@@ -38,6 +38,11 @@ Antes de correr el instalador, anotá:
 2. **Ruta de tu KB** — la carpeta raíz de tu Knowledge Base (la que contiene el archivo `.gx` y carpetas como `Model/`, `WebSpa/`).
    Ejemplo: `C:\KBs\MiKnowledgeBase`
 
+El major del SDK debe ser el mismo major con el que se creó la KB. Para una KB
+de GeneXus 17, usá la instalación `GeneXus17Trial`; para una KB de GeneXus 18,
+usá `GeneXus18`. El instalador valida esta combinación antes de guardar la
+configuración.
+
 Si no estás seguro de la ruta de tu KB, abrila en GeneXus y mirá la barra de título o el menú File → Recent.
 
 ---
@@ -48,6 +53,12 @@ Abrí una **terminal nueva** (PowerShell o CMD) y pegá este comando, **reemplaz
 
 ```bash
 npx genexus-mcp@latest init --kb "C:\KBs\MiKnowledgeBase" --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+```
+
+Ejemplo para una KB de GeneXus 17:
+
+```bash
+npx genexus-mcp@latest init --kb "C:\KBs\KBTeste17" --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
 ```
 
 Lo que vas a ver:

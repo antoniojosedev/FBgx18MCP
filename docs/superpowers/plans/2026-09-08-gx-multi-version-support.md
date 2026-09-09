@@ -36,7 +36,8 @@
   - Files: `CHANGELOG.md` and the relevant GeneXus setup/validation section in `docs/agent_playbook.md`.
   - Document explicit `GX_PATH` builds for each installed SDK and the additive whoami fields; do not change release/deploy behavior or client configuration names.
 
-- [x] Task 6: Validate the complete matrix and clean up.
-  - Build Worker with `GX_PATH` set to GX17 and GX18, build Gateway, run focused tests, then run the repository checks required by the changed projects.
-  - Re-run the isolated HTTP MCP smoke test against `C:\KBs\KBTeste17` and GX17: initialize, `whoami`, index/doctor, query/read, and `genexus_layout action=design_system`; confirm the Worker stays alive and the port/process/temp files are cleaned up.
-  - Review `git diff`/`git status`, preserving unrelated changes such as the pre-existing untracked `pnpm-lock.yaml`.
+- [x] Task 6: Validate the complete static/build matrix and clean up.
+  - Built the Worker with `GX_PATH` set to GX17 and GX18, built the Gateway, ran focused compatibility tests, and ran the repository checks required by the changed projects.
+  - Added the catalog-driven `scripts/test-live-matrix.ps1` so the same published artifact can be exercised once per selected SDK major; its contract and fail-closed behavior are covered by `scripts/tests/test-live-matrix.test.ps1`.
+  - Reviewed `git diff`/`git status`, preserving unrelated changes such as the pre-existing untracked `pnpm-lock.yaml`.
+- [ ] Live KB parity smoke remains pending: no verified disposable KB fixture and manifest were available in this run, so `whoami`, index/doctor, query/read, Design System persistence, and process-cleanup parity are not claimed as passing evidence. Run the matrix with `-KbPath` and `-FixtureManifest` when the fixture is provisioned.

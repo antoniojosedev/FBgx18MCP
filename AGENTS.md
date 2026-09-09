@@ -93,6 +93,13 @@ new major is not considered supported merely because its version string starts
 with a number; add it to `config/gx-versions.json` only after its Worker build
 and live-KB smoke pass.
 
+For a fixture-backed compatibility check across installed majors, use
+`scripts/test-live-matrix.ps1`; it selects every catalog major by default,
+accepts `-Majors` and `-GxPathMap`, builds the artifact once, and records
+`passed`, `unavailable`, or `failed` per major. Release preflight selects this
+mode through `-LiveMajors`/`-LiveGxPathMap` or the matching environment variables;
+see `docs/live-kb-test-harness.md` for fixture and evidence rules.
+
 ```powershell
 .\build.ps1
 dotnet build Genexus18MCP.sln -v:minimal

@@ -60,6 +60,8 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 |----------|---------|---------|
 | `GXMCP_TEST_KB` | Absolute path to the verified disposable synthetic KB used by `scripts/test-live.ps1` and the release preflight. | unset (live gate skipped) |
 | `GXMCP_TEST_FIXTURE` | Path to the fixture attestation JSON matching `GXMCP_TEST_KB`; it must prove synthetic data and database isolation. | unset (live gate skipped) |
+| `GXMCP_LIVE_MAJORS` | Comma-, semicolon-, or whitespace-separated catalog majors for the live matrix used by `scripts/release-preflight.ps1` and CI. When set, the matrix validates only these majors; the standalone matrix command validates every catalog major when no `-Majors` flag is supplied. | unset (single-major preflight; all catalog majors for standalone matrix) |
+| `GXMCP_LIVE_GX_PATH_MAP` | Semicolon-separated `major=absolute-path` overrides for SDK installations used by the live matrix, for example `17=C:\Program Files (x86)\GeneXus\GeneXus17Trial;18=C:\Program Files (x86)\GeneXus\GeneXus18`. | unset (catalog default paths) |
 | `GXMCP_TEAMDEV_PENDING_NAME` | Name of a pre-seeded object with an IDE-created Team Development pending change for the opt-in Gateway regression test. | unset (IDE-origin regression skipped) |
 | `GXMCP_REQUIRE_LIVE_BUILD_ALL` | Set to `1` to require the native Build All evidence gate during release preflight. Missing fixtures or an unavailable GeneXus cloud `User` fail the required gate. | off |
 

@@ -126,8 +126,31 @@ evidence of isolation:
   -BenchmarkOut "$env:TEMP\gxmcp-live-benchmark.json" -Iterations 100
 ```
 
+To validate every SDK major from the catalog against the same built
+Gateway/Worker artifact, use the catalog-driven matrix. It builds the artifact
+once with the catalog primary SDK unless `-SkipBuild` is supplied, then runs the
+same fixture gate once per selected major:
+
+```powershell
+pwsh -NoProfile -File .\scripts\test-live-matrix.ps1 `
+  -KbPath $env:GXMCP_TEST_KB `
+  -FixtureManifest $env:GXMCP_TEST_FIXTURE `
+  -RequireBuildAll -RunBenchmark -Iterations 100 `
+  -SummaryPath "$env:TEMP\gxmcp-live-matrix.json"
+```
+
+Use `-Majors 17,18` to select a subset and `-GxPathMap
+'17=C:\Program Files (x86)\GeneXus\GeneXus17Trial;18=C:\Program Files (x86)\GeneXus\GeneXus18'`
+when an installation is not at the catalog default. The matrix writes
+`gxmcp-live-matrix/1`; exit code `0` means every selected major passed, `2`
+means the environment was unavailable, and `1` means a live check failed. An
+unavailable major is never treated as a pass. `release-preflight.ps1` selects
+this matrix automatically when `-LiveMajors`, `-LiveGxPathMap`,
+`GXMCP_LIVE_MAJORS`, or `GXMCP_LIVE_GX_PATH_MAP` is supplied.
+
 The manual `Live KB Smoke` workflow runs the same gate only on a self-hosted
-Windows runner and requires both KB path and fixture manifest inputs. Missing
+Windows runner and requires both KB path and fixture manifest inputs. Its
+default dispatch now runs the matrix for all catalog majors; missing SDKs or
 fixtures fail with `live=unavailable`; they never count as release validation.
 WorkWithPlus-licensed tests remain opt-in through
 `GXMCP_REQUIRE_WWP=1`.

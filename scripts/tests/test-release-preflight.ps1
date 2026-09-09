@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $drySummary = Join-Path $env:TEMP ('gxmcp-preflight-test-' + [guid]::NewGuid().ToString('N') + '.json')
+$matrixDrySummary = Join-Path $env:TEMP ('gxmcp-preflight-matrix-test-' + [guid]::NewGuid().ToString('N') + '.json')
 $requiredSummary = Join-Path $env:TEMP ('gxmcp-preflight-required-' + [guid]::NewGuid().ToString('N') + '.json')
 $SummaryPath = $null
 $requiredNames = @(
@@ -20,6 +21,11 @@ try {
     if (@($summary.phases | Where-Object status -eq 'dry-run').Count -ne 11) { throw 'All non-live phases must be marked dry-run.' }
     if (@($summary.phases | Where-Object status -eq 'skipped').Count -ne 1) { throw 'Live skip must be explicit in the summary.' }
 
+    & pwsh -NoProfile -File (Join-Path $root 'scripts\release-preflight.ps1') -DryRun -SkipLive -LiveMajors '17,18' -LiveGxPathMap '17=C:\SDK\GX17' -SummaryPath $matrixDrySummary *> $null
+    if ($LASTEXITCODE -ne 0) { throw "Matrix dry-run preflight failed with exit code $LASTEXITCODE." }
+    $matrixSummary = Get-Content -LiteralPath $matrixDrySummary -Raw | ConvertFrom-Json
+    if ($matrixSummary.liveMode -ne 'matrix') { throw 'Matrix options were not reflected in the release preflight summary.' }
+
     & pwsh -NoProfile -File (Join-Path $root 'scripts\release-preflight.ps1') -DryRun -RequireBuildAll -SummaryPath $requiredSummary *> $null
     if ($LASTEXITCODE -eq 0) { throw 'Required live Build All gate must fail closed when no fixture is configured.' }
     $required = Get-Content -LiteralPath $requiredSummary -Raw | ConvertFrom-Json
@@ -28,6 +34,11 @@ try {
 
     $releaseSource = Get-Content -LiteralPath (Join-Path $root 'release.ps1') -Raw
     if ($releaseSource -match "'-SkipLive'") { throw 'Canonical release entrypoint must allow configured live preflight values to participate.' }
+
+    $preflightSource = Get-Content -LiteralPath (Join-Path $root 'scripts\release-preflight.ps1') -Raw
+    foreach ($marker in @('LiveMajors', 'LiveGxPathMap', 'test-live-matrix.ps1', "liveMode =")) {
+        if ($preflightSource -notmatch [regex]::Escape($marker)) { throw "Release preflight is missing multi-version live marker: $marker" }
+    }
 
     # Load the production runner and exercise a nonzero command without
     # starting the real release matrix. AllowFailure keeps the phase object so
@@ -50,7 +61,7 @@ try {
     Write-Host 'release-preflight: order, summary shape, skip and exit propagation passed' -ForegroundColor Green
 }
 finally {
-    foreach ($path in @($drySummary, $requiredSummary, $SummaryPath)) {
+    foreach ($path in @($drySummary, $matrixDrySummary, $requiredSummary, $SummaryPath)) {
         if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
     }
 }

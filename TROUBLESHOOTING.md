@@ -24,6 +24,33 @@ default paths live in [`docs/generated/supported-versions.md`](docs/generated/su
 
 If GeneXus is installed somewhere else (custom install, network drive), point `--gx` to that folder.
 
+### "GeneXus SDK major does not match KB major"
+
+The MCP checks the KB's `.gxw` metadata against the selected `GeneXus.exe`
+version before writing `config.json`. This prevents a GX17 KB from silently
+starting with GX18 when both SDKs are installed. For example, a GX17 KB must be
+initialized with the GX17 installation:
+
+```powershell
+npx genexus-mcp@latest init `
+  --kb "C:\KBs\KBTeste17" `
+  --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
+```
+
+If init reports `sdk_kb_mismatch`, correct `--gx`; no new config is written.
+If it reports `sdk_selection_required` or `sdk_identity_unresolved`, pass the
+paths explicitly and ensure the selected folder contains the intended
+`GeneXus.exe`. Run `npx genexus-mcp doctor --format json` and inspect the
+`kb_sdk_compatibility` check plus `genexus_whoami` for `major`, `version`, and
+`detectionSource`. The CLI reads valid version files when present and otherwise
+uses the Windows executable metadata, so a normal GeneXus installation does not
+need a manually-created version file.
+
+If the KB's `.gxw` file is empty or has no version fields, open the KB once in
+the matching GeneXus IDE so it is initialized, then rerun init. Until that
+metadata exists, the CLI intentionally requires an explicit `--gx` choice and
+does not infer the major from the KB folder name.
+
 ### "Knowledge Base not found" / "KB path invalid"
 
 The folder you passed isn't a GeneXus KB.

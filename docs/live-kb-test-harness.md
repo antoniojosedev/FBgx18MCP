@@ -61,6 +61,31 @@ pwsh -NoProfile -File scripts/test-live.ps1 `
   -BenchmarkOut scratchpad\synthetic-small.warm.json
 ```
 
+### Multi-major matrix
+
+Run the catalog-driven matrix when the same fixture must be checked with more
+than one installed SDK:
+
+```powershell
+pwsh -NoProfile -File scripts/test-live-matrix.ps1 `
+  -KbPath C:\fixtures\synthetic-small `
+  -FixtureManifest scratchpad\synthetic-small.fixture.json `
+  -Majors 17,18 `
+  -GxPathMap '17=C:\Program Files (x86)\GeneXus\GeneXus17Trial;18=C:\Program Files (x86)\GeneXus\GeneXus18' `
+  -SkipBuild -RequireBuildAll -RunBenchmark -Iterations 100 `
+  -SummaryPath scratchpad\synthetic-small.matrix.json
+```
+
+Without `-Majors`, the matrix selects every major in `config/gx-versions.json`.
+Without `-GxPathMap`, it uses each catalog entry's `defaultInstallPath`.
+Omit `-SkipBuild` when the matrix should build the published artifact once with
+the catalog primary SDK; use `-SkipBuild` in release preflight after the release
+artifact has already been built. Each row invokes `test-live.ps1` with that
+major's SDK and records `passed`, `unavailable`, or `failed` in the
+`gxmcp-live-matrix/1` summary. A matrix is passing only when every selected row
+passes; unavailable SDKs, licenses, fixtures, or cloud dependencies remain
+explicit gaps and never become green evidence.
+
 For the native incremental Build All gate, use the current published Gateway
 and require terminal evidence explicitly:
 

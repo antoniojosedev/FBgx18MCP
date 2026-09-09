@@ -44,6 +44,13 @@ The Gateway's `whoami.geneXus.supportedMajors` is the explicit runtime catalog;
 add a new major to `config/gx-versions.json` only after its Worker build and
 live-KB smoke path pass.
 
+When a verified fixture is available, use
+`scripts/test-live-matrix.ps1` to exercise the same built artifact once per
+selected catalog major. It accepts `-Majors` and `-GxPathMap`, writes a
+`gxmcp-live-matrix/1` summary, and treats unavailable SDK/license/fixture
+environments as explicit non-passing evidence. The detailed invocation and
+fixture contract live in [`live-kb-test-harness.md`](live-kb-test-harness.md).
+
 ### GeneXus SDK Model hierarchy, facades, and reflection
 
 - **Canonical GxModel Facade:** Any `KBModel` instance can be cast to the canonical

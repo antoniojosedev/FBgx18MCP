@@ -11,13 +11,23 @@ on:
         description: 'Verified synthetic fixture manifest path on the runner (no credentials)'
         required: true
         type: string
+      majors:
+        description: 'Comma-separated catalog majors to validate (default: every supported major)'
+        required: false
+        default: ''
+        type: string
+      gx_path_map:
+        description: 'Optional semicolon-separated major=absolute-path overrides'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   live:
-    # GeneXus 18 and the configured test KB are proprietary/local resources;
+    # Supported GeneXus SDKs and the configured test KB are proprietary/local resources;
     # ordinary hosted CI must never attempt this job.
     runs-on: [self-hosted, windows]
     timeout-minutes: 60
@@ -30,22 +40,41 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Run live KB gate
+      - name: Run live KB matrix gate
         shell: pwsh
         env:
           GXMCP_TEST_KB: ${{ inputs.kb_path }}
           GXMCP_TEST_FIXTURE: ${{ inputs.fixture_manifest }}
-        run: >-
-          .\scripts\test-live.ps1
-          -RequireBuildAll
-          -RunBenchmark
-          -BenchmarkOut "$env:RUNNER_TEMP\gxmcp-live-benchmark.json"
-          -Iterations 100
+          GXMCP_LIVE_MAJORS: ${{ inputs.majors }}
+          GXMCP_LIVE_GX_PATH_MAP: ${{ inputs.gx_path_map }}
+        run: |
+          $matrixArgs = @(
+            '-KbPath', $env:GXMCP_TEST_KB,
+            '-FixtureManifest', $env:GXMCP_TEST_FIXTURE,
+            '-SummaryPath', "$env:RUNNER_TEMP\gxmcp-live-matrix.json",
+            '-RequireBuildAll',
+            '-RunBenchmark',
+            '-Iterations', '100'
+          )
+          $selectedMajors = @($env:GXMCP_LIVE_MAJORS -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($selectedMajors.Count -gt 0) {
+            $matrixArgs += '-Majors'
+            $matrixArgs += $selectedMajors
+          }
+          $pathOverrides = @($env:GXMCP_LIVE_GX_PATH_MAP -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($pathOverrides.Count -gt 0) {
+            $matrixArgs += '-GxPathMap'
+            $matrixArgs += $pathOverrides
+          }
+          & pwsh -NoProfile -File .\scripts\test-live-matrix.ps1 @matrixArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload benchmark
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: gxmcp-live-benchmark
-          path: ${{ runner.temp }}\gxmcp-live-benchmark.json
+          path: |
+            ${{ runner.temp }}\gxmcp-live-matrix.json
+            ${{ runner.temp }}\gxmcp-live-*.json
           if-no-files-found: ignore

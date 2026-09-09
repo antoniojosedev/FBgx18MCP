@@ -10,7 +10,8 @@ $tests = @(
     'test-release-orchestration.ps1',
     'test-release-preflight.ps1',
     'test-release-status.ps1',
-    'test-warning-baseline.ps1'
+    'test-warning-baseline.ps1',
+    'test-live-matrix.test.ps1'
 )
 foreach ($name in $tests) {
     $path = Join-Path $PSScriptRoot $name

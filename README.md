@@ -36,6 +36,13 @@ After switching the SDK or KB, fully restart the AI client so it reloads the
 MCP process and its tool schemas. If GX17 and GX18 must run simultaneously,
 use separate MCP configurations and ports.
 
+`init` also reads the KB `.gxw` major and the selected `GeneXus.exe` metadata.
+It aborts before writing `config.json` when the majors conflict or an automatic
+selection cannot be verified. `genexus-mcp doctor` exposes the same result as
+the `kb_sdk_compatibility` check. For a disposable fixture, the
+[live-KB harness](docs/live-kb-test-harness.md) includes a catalog-driven matrix
+that checks every supported major against one published artifact.
+
 The Gateway reports the detected SDK through `genexus_whoami`:
 
 - `geneXus.supportedMajors`: explicitly validated SDK majors from the version catalog

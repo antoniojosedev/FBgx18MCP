@@ -1,12 +1,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
+const { Readable, Writable } = require('node:stream');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const { renderOutput } = require('./lib/output');
 const { compareSemver, detectInstallMethod, upgradePlanFor } = require('./lib/update-check');
-const { detectClientInstalled, readJsonFileSafe, getLauncher } = require('./lib/config');
+const {
+    detectClientInstalled,
+    readJsonFileSafe,
+    getLauncher,
+    getGeneXusMajor,
+    getGeneXusCatalogEntries,
+    readGeneXusInstallationIdentity,
+    readGeneXusKbIdentity,
+    compareGeneXusKbAndInstallation
+} = require('./lib/config');
+const { handleInit } = require('./commands/axi');
 
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
@@ -15,11 +26,12 @@ const testGatewayEnv = { GENEXUS_MCP_GATEWAY_EXE: process.execPath };
 test.after(() => fs.rmSync(testGxPath, { recursive: true, force: true }));
 
 function runCli(args, opts = {}) {
-    return spawnSync(process.execPath, [cliPath, ...args], {
+    const spawnOptions = {
         encoding: 'utf8',
         cwd: opts.cwd || process.cwd(),
         env: { ...process.env, ...(opts.env || {}) }
-    });
+    };
+    return spawnSync(process.execPath, [cliPath, ...args], spawnOptions);
 }
 
 test('status returns structured json envelope with schema version', () => {
@@ -248,6 +260,155 @@ test('init auto-discovers KB from cwd when --kb is omitted', () => {
     assert.equal(parsed.ok.resolved.gx.source, 'flag');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('GeneXus installation identity falls back to executable metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-version-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'GeneXus.exe'), 'not-a-real-executable');
+        const identity = readGeneXusInstallationIdentity(tempRoot, {
+            readExecutableVersion: () => '18.0.10.184260'
+        });
+        assert.deepEqual(identity, {
+            version: '18.0.10.184260',
+            major: '18',
+            source: 'executable-metadata'
+        });
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('GeneXus installation identity ignores an invalid version file when executable metadata is valid', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-invalid-version-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'version.txt'), 'not-a-version');
+        fs.writeFileSync(path.join(tempRoot, 'GeneXus.exe'), 'not-a-real-executable');
+        const identity = readGeneXusInstallationIdentity(tempRoot, {
+            readExecutableVersion: () => '17.0.11.163677'
+        });
+        assert.deepEqual(identity, {
+            version: '17.0.11.163677',
+            major: '17',
+            source: 'executable-metadata'
+        });
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('GeneXus installation identity does not infer a major from a missing folder', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-missing-install-'));
+    try {
+        const identity = readGeneXusInstallationIdentity(path.join(tempRoot, 'GeneXus17'));
+        assert.deepEqual(identity, {
+            version: null,
+            major: null,
+            source: 'unavailable'
+        });
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('KB identity reads the GeneXus major from its gxw metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-'));
+    try {
+        fs.writeFileSync(
+            path.join(tempRoot, 'KnowledgeBase.gxw'),
+            '<KnowledgeBase><FriendlyVersion>17.0.11 U11</FriendlyVersion><VersionNumber>17.0.11.163677</VersionNumber></KnowledgeBase>'
+        );
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.version, '17.0.11.163677');
+        assert.equal(identity.major, '17');
+        assert.equal(identity.source, 'gxw-version');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('KB identity fails closed for malformed gxw metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-malformed-'));
+    try {
+        fs.writeFileSync(
+            path.join(tempRoot, 'KnowledgeBase.gxw'),
+            '<KnowledgeBase><VersionNumber>17.0.11.163677</KnowledgeBase>'
+        );
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.major, null);
+        assert.equal(identity.source, 'unavailable');
+        assert.equal(identity.reason, 'malformed-gxw');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('catalog discovery ordering can prefer the KB major', () => {
+    assert.equal(getGeneXusMajor('17.0.11.163677'), '17');
+    assert.equal(getGeneXusCatalogEntries('17')[0].major, '17');
+    assert.equal(getGeneXusCatalogEntries('18')[0].major, '18');
+});
+
+test('init rejects a known KB and SDK major mismatch before writing config', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-mismatch-'));
+    const kbDir = path.join(tempRoot, 'kb17');
+    const gxDir = path.join(tempRoot, 'GeneXus18');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(kbDir, 'KnowledgeBase.gxw'),
+        '<KnowledgeBase><VersionNumber>17.0.11.163677</VersionNumber></KnowledgeBase>'
+    );
+    fs.writeFileSync(path.join(gxDir, 'GeneXus.exe'), 'not-a-real-executable');
+
+    try {
+        const result = runCli(
+            ['init', '--kb', kbDir, '--gx', gxDir, '--no-smoke', '--no-write-clients', '--format', 'json'],
+            { env: testGatewayEnv }
+        );
+        assert.equal(result.status, 1);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.error.code, 'sdk_kb_mismatch');
+        assert.equal(fs.existsSync(path.join(kbDir, 'config.json')), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('interactive init does not silently choose the primary SDK when KB metadata is unresolved', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-interactive-unresolved-'));
+    const kbDir = path.join(tempRoot, 'kb');
+    const gxDir = path.join(tempRoot, 'GeneXus18');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(path.join(kbDir, 'KnowledgeBase.gxw'), '');
+    fs.writeFileSync(path.join(kbDir, 'knowledgebase.connection'), 'connection');
+    fs.writeFileSync(path.join(gxDir, 'GeneXus.exe'), 'not-a-real-executable');
+
+    const previousGeneXusHome = process.env.GENEXUS_HOME;
+    process.env.GENEXUS_HOME = gxDir;
+    const input = new Readable({ read() { } });
+    setTimeout(() => input.push('\n'), 0);
+    setTimeout(() => input.push('\n'), 25);
+    setTimeout(() => input.push(null), 100);
+    try {
+        const result = await handleInit(
+            { interactive: true, quiet: true },
+            {
+                cwd: kbDir,
+                input,
+                stderr: new Writable({ write(_chunk, _encoding, callback) { callback(); } }),
+                EXIT_CODES: { OK: 0, ERROR: 1, USAGE: 2 }
+            }
+        );
+        assert.equal(result.exitCode, 1);
+        assert.equal(result.envelope.error.code, 'sdk_selection_required');
+        assert.equal(fs.existsSync(path.join(kbDir, 'config.json')), false);
+    } finally {
+        if (previousGeneXusHome === undefined) delete process.env.GENEXUS_HOME;
+        else process.env.GENEXUS_HOME = previousGeneXusHome;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('init fails clearly when paths cannot be auto-discovered', () => {
@@ -620,6 +781,75 @@ test('doctor --mcp-smoke adds explicit mcp_smoke check', () => {
     const smoke = parsed.ok.checks.find((c) => c.id === 'mcp_smoke');
     assert.ok(smoke);
     assert.ok(['pass', 'warn', 'fail'].includes(smoke.status));
+});
+
+test('doctor reports a KB and SDK major mismatch', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-major-'));
+    const kbDir = path.join(tempRoot, 'kb17');
+    const gxDir = path.join(tempRoot, 'GeneXus18');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(path.join(kbDir, 'KnowledgeBase.gxw'), '<KnowledgeBase><VersionNumber>17.0.11.163677</VersionNumber></KnowledgeBase>');
+    fs.writeFileSync(path.join(gxDir, 'GeneXus.exe'), 'not-a-real-executable');
+    const configPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+        GeneXus: { InstallationPath: gxDir },
+        Environment: { KBPath: kbDir }
+    }));
+
+    try {
+        const compatibility = compareGeneXusKbAndInstallation(kbDir, gxDir);
+        assert.equal(compatibility.status, 'mismatch');
+        const result = runCli(['doctor', '--format', 'json'], {
+            env: {
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: process.execPath,
+                LOCALAPPDATA: tempRoot
+            }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        const check = parsed.ok.checks.find((row) => row.id === 'kb_sdk_compatibility');
+        assert.ok(check);
+        assert.equal(check.status, 'fail');
+        assert.match(check.detail, /KB major 17.*SDK major 18/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('doctor rejects a KB and SDK major that is outside the compatibility catalog', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-unsupported-major-'));
+    const kbDir = path.join(tempRoot, 'kb19');
+    const gxDir = path.join(tempRoot, 'GeneXus19');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(path.join(kbDir, 'KnowledgeBase.gxw'), '<KnowledgeBase><VersionNumber>19.0.0.0</VersionNumber></KnowledgeBase>');
+    fs.writeFileSync(path.join(gxDir, 'GeneXus.exe'), 'not-a-real-executable');
+    const configPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+        GeneXus: { InstallationPath: gxDir },
+        Environment: { KBPath: kbDir }
+    }));
+
+    try {
+        const result = runCli(['doctor', '--format', 'json'], {
+            env: {
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: process.execPath,
+                LOCALAPPDATA: tempRoot
+            }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        const check = parsed.ok.checks.find((row) => row.id === 'kb_sdk_compatibility');
+        assert.ok(check);
+        assert.equal(check.status, 'fail');
+        assert.match(check.detail, /KB major 19 is not supported/);
+        assert.match(check.detail, /Supported majors: 17, 18/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('invalid format returns usage exit code 2', () => {
