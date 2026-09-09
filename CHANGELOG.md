@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.2.1 - 2026-09-09
+
+
 ### Fixed
 
 - Forwarded `requireObjectSave` through the Gateway's `genexus_edit` patch route so the Events complete-object-save contract reaches the Worker ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
