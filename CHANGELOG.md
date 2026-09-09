@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.2.0 - 2026-09-09
+
+
 ### Added
 
 - Added version-aware GeneXus 17 and 18 compatibility reporting, with an explicit catalog that can be extended for future SDK majors.
