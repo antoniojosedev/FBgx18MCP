@@ -388,8 +388,10 @@ namespace GxMcp.Gateway
             {
                 double ms = (DateTime.UtcNow - createdAtUtc).TotalMilliseconds;
                 long queueWaitMs = Math.Max(0, (long)(createdAtUtc - requestStartedAtUtc).TotalMilliseconds);
-                string resultClass = resultClassOverride;
-                if (resultClass == null)
+                string resultClass;
+                if (resultClassOverride != null)
+                    resultClass = resultClassOverride;
+                else
                     resultClass = response?["error"] != null ? "error" : "success";
                 JObject? telemetry = response?["result"]?["_meta"]?["telemetry"] as JObject
                     ?? response?["_meta"]?["telemetry"] as JObject;

@@ -2353,7 +2353,7 @@ namespace GxMcp.Gateway
                         var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit);
                         editJob.WorkerAlias = _currentKb.Value?.NormalizedAlias;
                         editJob.Target = GetAsyncMutationTarget(tName, tArgs);
-                        string ioAction = tArgs?["action"]?.ToString()?.ToLowerInvariant();
+                        string ioAction = tArgs?["action"]?.ToString()?.ToLowerInvariant() ?? string.Empty;
                         if (string.Equals(tName, "genexus_io", StringComparison.OrdinalIgnoreCase))
                             editJob.Part = ioAction == "export_kb_to_text" ? "ObjectTextExport" : "ObjectText";
                         else
