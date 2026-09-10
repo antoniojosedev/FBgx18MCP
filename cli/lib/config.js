@@ -22,6 +22,25 @@ function generateConfig(gxPath, kbPath) {
     };
 }
 
+function generateNeutralConfig(gxPath) {
+    return {
+        GeneXus: { InstallationPath: gxPath },
+        Server: {
+            TransportMode: 'stdio-isolated',
+            HttpPort: 0,
+            McpStdio: true,
+            SessionIdleTimeoutMinutes: 10,
+            WorkerIdleTimeoutMinutes: 5,
+            EmitStructuredContent: false,
+            TerseResponses: true
+        },
+        Environment: {
+            ResolutionPolicy: 'strict',
+            KBs: []
+        }
+    };
+}
+
 function getGatewayExePath() {
     if (process.env.GENEXUS_MCP_GATEWAY_EXE) {
         return process.env.GENEXUS_MCP_GATEWAY_EXE;
@@ -854,7 +873,11 @@ function patchClientConfig(targetConfigPath, opts = {}) {
         }
         try {
             fs.mkdirSync(path.dirname(client.path), { recursive: true });
-            applyClientEntry(client, getLauncher(client), targetConfigPath, { serverName, force });
+            applyClientEntry(client, getLauncher(client), targetConfigPath, {
+                serverName,
+                force,
+                globalConfig: Boolean(opts.globalConfig)
+            });
             // Read-back: confirm the entry is actually present and the file still
             // parses, so a silently-corrupted write is reported as a failure.
             if (!readClientCommandEntry(client, serverName)) {
@@ -908,7 +931,7 @@ function removeClientEntry(client, opts = {}) {
     return getClientAdapter(client.format).remove(client, opts);
 }
 
-function applyMcpServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
+function applyMcpServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false } = {}) {
     const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -919,7 +942,11 @@ function applyMcpServersJson(filePath, launcher, targetConfigPath, { serverName 
         err.code = 'MCP_SERVER_COLLISION';
         throw err;
     }
-    cfgObj.mcpServers[serverName] = { ...launcher, env: { GX_CONFIG_PATH: targetConfigPath } };
+    const serverEntry = { ...launcher };
+    if (globalConfig && targetConfigPath) {
+        serverEntry.env = { ...(serverEntry.env || {}), GX_CONFIG_PATH: targetConfigPath };
+    }
+    cfgObj.mcpServers[serverName] = serverEntry;
     // If registering default genexus18mcp, clean up legacy genexus/genexus18 entries only if they are not foreign HTTP servers
     if (serverName === DEFAULT_MCP_SERVER_NAME) {
         if (cfgObj.mcpServers.genexus && !isThirdPartyMcpEntry(cfgObj.mcpServers.genexus)) {
@@ -962,7 +989,7 @@ function removeMcpServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME }
 
 // VS Code native MCP lives in User\mcp.json and uses a top-level `servers` map
 // with `type: "stdio"` (distinct from the `mcpServers` shape Claude/Cursor use).
-function applyVsCodeServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
+function applyVsCodeServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false } = {}) {
     const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -973,11 +1000,14 @@ function applyVsCodeServersJson(filePath, launcher, targetConfigPath, { serverNa
         err.code = 'MCP_SERVER_COLLISION';
         throw err;
     }
-    cfgObj.servers[serverName] = {
+    const serverEntry = {
         type: 'stdio',
-        ...launcher,
-        env: { GX_CONFIG_PATH: targetConfigPath }
+        ...launcher
     };
+    if (globalConfig && targetConfigPath) {
+        serverEntry.env = { ...(serverEntry.env || {}), GX_CONFIG_PATH: targetConfigPath };
+    }
+    cfgObj.servers[serverName] = serverEntry;
     if (serverName === DEFAULT_MCP_SERVER_NAME) {
         if (cfgObj.servers.genexus && !isThirdPartyMcpEntry(cfgObj.servers.genexus)) {
             delete cfgObj.servers.genexus;
@@ -1032,7 +1062,7 @@ function getOpenCodeMcpContainer(cfgObj) {
     };
 }
 
-function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
+function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false } = {}) {
     const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -1046,12 +1076,15 @@ function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = 
         err.code = 'MCP_SERVER_COLLISION';
         throw err;
     }
-    servers[serverName] = {
+    const serverEntry = {
         type: 'local',
         command: [launcher.command, ...(launcher.args || [])],
-        environment: { GX_CONFIG_PATH: targetConfigPath },
         ...(nested ? { disabled: false } : { enabled: true })
     };
+    if (globalConfig && targetConfigPath) {
+        serverEntry.environment = { GX_CONFIG_PATH: targetConfigPath };
+    }
+    servers[serverName] = serverEntry;
     if (serverName === DEFAULT_MCP_SERVER_NAME) {
         if (servers.genexus && !isThirdPartyMcpEntry(servers.genexus)) delete servers.genexus;
         if (servers.genexus18 && !isThirdPartyMcpEntry(servers.genexus18)) delete servers.genexus18;
@@ -1161,7 +1194,7 @@ function stripCodexServerBlocks(content, serverName) {
 // [mcp_servers.genexus*] blocks and append fresh ones. Brittle on hand-edited
 // files that put other keys after our blocks without a blank line, but
 // adequate for the typical machine-managed config.
-function applyCodexToml(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
+function applyCodexToml(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false } = {}) {
     let existing = '';
     if (fs.existsSync(filePath)) existing = fs.readFileSync(filePath, 'utf8');
     const existingEntry = extractCodexTomlEntry(existing, serverName);
@@ -1193,9 +1226,11 @@ function applyCodexToml(filePath, launcher, targetConfigPath, { serverName = DEF
     lines.push(`[mcp_servers.${serverName}]`);
     lines.push(`command = ${tomlString(launcher.command)}`);
     lines.push(`args = [${args.map(tomlString).join(', ')}]`);
-    lines.push('');
-    lines.push(`[mcp_servers.${serverName}.env]`);
-    lines.push(`GX_CONFIG_PATH = ${tomlString(targetConfigPath)}`);
+    if (globalConfig && targetConfigPath) {
+        lines.push('');
+        lines.push(`[mcp_servers.${serverName}.env]`);
+        lines.push(`GX_CONFIG_PATH = ${tomlString(targetConfigPath)}`);
+    }
     lines.push('');
     writeClientText(filePath, stripped + lines.join('\n'));
 }
@@ -1504,11 +1539,21 @@ function applyLauncherConfigOrExit({ cwd, stderr, quiet }) {
         return { ok: false };
     }
 
+    const userMcpDir = path.join(os.homedir(), '.genexus-mcp');
+    const userMcpConfigPath = path.join(userMcpDir, 'config.json');
+
     if (!directoryLooksLikeKnowledgeBase(cwd)) {
-        log('[genexus-mcp] ERROR: Zero-config failed because current directory is not a GeneXus KB.');
-        log(`[genexus-mcp] CWD: ${cwd}`);
-        log('[genexus-mcp] Fix with: npx genexus-mcp init --interactive');
-        return { ok: false };
+        if (fs.existsSync(userMcpConfigPath)) {
+            process.env.GX_CONFIG_PATH = userMcpConfigPath;
+            return { ok: true };
+        }
+        log(`[genexus-mcp] Auto-discovered GeneXus at: ${foundGxPath}`);
+        log(`[genexus-mcp] Current directory is not a GeneXus KB. Generating neutral user config at: ${userMcpConfigPath}`);
+        fs.mkdirSync(userMcpDir, { recursive: true });
+        const neutralConfig = generateNeutralConfig(foundGxPath);
+        writeFileAtomic(userMcpConfigPath, JSON.stringify(neutralConfig, null, 2));
+        process.env.GX_CONFIG_PATH = userMcpConfigPath;
+        return { ok: true };
     }
 
     log(`[genexus-mcp] Auto-discovered GeneXus at: ${foundGxPath}`);
@@ -1523,6 +1568,7 @@ function applyLauncherConfigOrExit({ cwd, stderr, quiet }) {
 
 module.exports = {
     generateConfig,
+    generateNeutralConfig,
     getGatewayExePath,
     getToolDefinitionsPath,
     discoverGeneXusInstallation,

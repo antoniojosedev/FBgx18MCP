@@ -862,38 +862,130 @@ namespace GxMcp.Gateway
             string? kbPath = null;
             IReadOnlyList<KbHandle> openKbs = Array.Empty<KbHandle>();
             IReadOnlyList<KbHandle> knownKbs = Array.Empty<KbHandle>();
-            string? configuredDefault = GetConfiguredDefaultKb();
+            string resolutionPolicy = !string.Equals(cfg?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase)
+                ? "strict"
+                : "legacy";
+            string? startupDefault = cfg?.Environment?.RawDefaultKb ?? cfg?.Environment?.DefaultKb;
             string? sessionSelected = !string.IsNullOrWhiteSpace(sessionId)
                 ? GetSessionSelectedKb(sessionId!)
                 : null;
+            string selectionSource = "none";
+            string selectionState = "absent";
+            bool contextRequired = false;
             try
             {
                 var pool = _workerPool;
                 openKbs = pool?.ListOpen() ?? Array.Empty<KbHandle>();
                 knownKbs = pool?.ListKnown() ?? Array.Empty<KbHandle>();
-                KbHandle? pick = sessionSelected != null
-                    ? openKbs.FirstOrDefault(h => string.Equals(h.Alias, sessionSelected, StringComparison.OrdinalIgnoreCase))
-                        ?? knownKbs.FirstOrDefault(h => string.Equals(h.Alias, sessionSelected, StringComparison.OrdinalIgnoreCase))
-                    : (configuredDefault != null
-                        ? openKbs.FirstOrDefault(h => string.Equals(h.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase))
-                        : null)
-                        ?? (openKbs.Count == 1 ? openKbs[0] : null)
-                        ?? (configuredDefault != null
-                            ? knownKbs.FirstOrDefault(h => string.Equals(h.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase))
-                            : null)
-                        ?? (knownKbs.Count == 1 ? knownKbs[0] : null);
-                if (pick != null) { activeAlias = pick.Alias; kbPath = pick.Path; }
-                else if (!string.IsNullOrWhiteSpace(sessionSelected))
+
+                var available = new Dictionary<string, KbHandle>(StringComparer.OrdinalIgnoreCase);
+                if (cfg?.Environment?.KBs != null)
                 {
-                    var sessionDecl = cfg?.Environment?.KBs?.FirstOrDefault(
-                        k => string.Equals(k.Alias, sessionSelected, StringComparison.OrdinalIgnoreCase));
-                    if (sessionDecl != null) { activeAlias = sessionDecl.Alias; kbPath = sessionDecl.Path; }
+                    foreach (var k in cfg.Environment.KBs)
+                    {
+                        if (!string.IsNullOrWhiteSpace(k.Alias))
+                            available[k.Alias] = new KbHandle(k.Alias, k.Path);
+                    }
                 }
-                else if (!string.IsNullOrWhiteSpace(configuredDefault))
+                foreach (var k in openKbs)
                 {
-                    var decl = cfg?.Environment?.KBs?.FirstOrDefault(
-                        k => string.Equals(k.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase));
-                    if (decl != null) { activeAlias = decl.Alias; kbPath = decl.Path; }
+                    if (!string.IsNullOrWhiteSpace(k.Alias))
+                        available[k.Alias] = k;
+                }
+                foreach (var k in knownKbs)
+                {
+                    if (!string.IsNullOrWhiteSpace(k.Alias))
+                        available[k.Alias] = k;
+                }
+
+                if (!string.IsNullOrWhiteSpace(sessionSelected))
+                {
+                    selectionSource = "session-select";
+                    if (available.TryGetValue(sessionSelected, out var matchedHandle))
+                    {
+                        selectionState = "valid";
+                        contextRequired = false;
+                        activeAlias = sessionSelected;
+                        kbPath = matchedHandle.Path;
+                    }
+                    else
+                    {
+                        selectionState = "invalid";
+                        contextRequired = true;
+                        activeAlias = sessionSelected;
+                        kbPath = null;
+                    }
+                }
+                else
+                {
+                    if (resolutionPolicy == "strict")
+                    {
+                        if (openKbs.Count == 1)
+                        {
+                            var sole = openKbs.First();
+                            if (!string.IsNullOrWhiteSpace(startupDefault) && !string.Equals(startupDefault, sole.Alias, StringComparison.OrdinalIgnoreCase))
+                            {
+                                selectionSource = "none";
+                                selectionState = "conflicting";
+                                contextRequired = true;
+                                activeAlias = null;
+                                kbPath = null;
+                            }
+                            else
+                            {
+                                selectionSource = "single-open";
+                                selectionState = "valid";
+                                contextRequired = false;
+                                activeAlias = sole.Alias;
+                                kbPath = sole.Path;
+                            }
+                        }
+                        else
+                        {
+                            selectionSource = "none";
+                            selectionState = "absent";
+                            contextRequired = true;
+                            activeAlias = null;
+                            kbPath = null;
+                        }
+                    }
+                    else // legacy mode
+                    {
+                        if (!string.IsNullOrWhiteSpace(startupDefault) && available.TryGetValue(startupDefault, out var defHandle))
+                        {
+                            selectionSource = "config-default";
+                            selectionState = "valid";
+                            contextRequired = false;
+                            activeAlias = defHandle.Alias;
+                            kbPath = defHandle.Path;
+                        }
+                        else if (openKbs.Count == 1)
+                        {
+                            var sole = openKbs.First();
+                            selectionSource = "single-open";
+                            selectionState = "valid";
+                            contextRequired = false;
+                            activeAlias = sole.Alias;
+                            kbPath = sole.Path;
+                        }
+                        else if (cfg?.Environment?.KBs?.Count > 0)
+                        {
+                            var first = cfg.Environment.KBs[0];
+                            selectionSource = "declared-first";
+                            selectionState = "valid";
+                            contextRequired = false;
+                            activeAlias = first.Alias;
+                            kbPath = first.Path;
+                        }
+                        else
+                        {
+                            selectionSource = "none";
+                            selectionState = "absent";
+                            contextRequired = true;
+                            activeAlias = null;
+                            kbPath = null;
+                        }
+                    }
                 }
             }
             catch { }
@@ -915,15 +1007,17 @@ namespace GxMcp.Gateway
                     ["path"] = kbPath,
                     ["exists"] = kbExists,
                     ["looksValid"] = kbValid,
-                    // issue #26 P4: the alias actually active this session (null if none
-                    // opened yet), and how many workers are live — so the agent can tell
-                    // an opened KB apart from the config scaffold.
                     ["active"] = activeAlias,
                     ["selected"] = sessionSelected,
-                    ["default"] = configuredDefault,
+                    ["sessionSelection"] = sessionSelected,
+                    ["selectionSource"] = selectionSource,
+                    ["selectionState"] = selectionState,
+                    ["startupDefault"] = startupDefault,
+                    ["persistedFallback"] = startupDefault,
+                    ["default"] = startupDefault,
+                    ["resolutionPolicy"] = resolutionPolicy,
+                    ["contextRequired"] = contextRequired,
                     ["openCount"] = openKbs.Count,
-                    // Keep whoami lean: aliases are enough to choose a target. Detailed
-                    // process/path telemetry remains in genexus_kb action=list.
                     ["openKbs"] = JArray.FromObject(openKbs
                         .Select(k => k.Alias)
                         .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase)),
@@ -943,7 +1037,8 @@ namespace GxMcp.Gateway
                 },
                 ["config"] = new JObject
                 {
-                    ["path"] = Configuration.CurrentConfigPath
+                    ["path"] = Configuration.CurrentConfigPath,
+                    ["resolvedFrom"] = Configuration.ResolvedFrom
                 },
                 ["mcp"] = new JObject
                 {

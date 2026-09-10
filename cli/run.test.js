@@ -854,7 +854,7 @@ test('clients add patches OpenCode Desktop into shared opencode config', () => {
         assert.ok(fs.existsSync(opencodeCfg), 'shared opencode config should be created');
         const written = JSON.parse(fs.readFileSync(opencodeCfg, 'utf8'));
         assert.ok(written.mcp.genexus18mcp, 'shared config should contain genexus18mcp entry');
-        assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, cfgPath);
+        assert.equal(written.mcp.genexus18mcp.environment?.GX_CONFIG_PATH, undefined);
 
         const listRes = runCli(['clients', '--format', 'json'], { env });
         const row = JSON.parse(listRes.stdout).ok.clients.find((client) => client.id === 'opencode-desktop');
@@ -1072,7 +1072,7 @@ test('clients add preserves OpenCode 1.x direct mcp shape', () => {
     assert.equal(written.mcp.genexus18mcp.disabled, undefined);
     assert.ok(written.mcp.other, 'unrelated direct MCP server should be preserved');
     assert.equal(written.mcp.servers, undefined);
-    assert.deepEqual(written.mcp.genexus18mcp.environment, { GX_CONFIG_PATH: cfgPath });
+    assert.equal(written.mcp.genexus18mcp.environment?.GX_CONFIG_PATH, undefined);
 
     const listed = runCli(['clients', '--format', 'json'], { env });
     assert.equal(listed.status, 0);
@@ -1103,7 +1103,7 @@ test('clients add preserves OpenCode v2 nested mcp.servers shape', () => {
     assert.equal(written.mcp.servers.genexus18mcp.enabled, undefined);
     assert.ok(written.mcp.servers.other, 'unrelated nested MCP server should be preserved');
     assert.equal(written.mcp.genexus18mcp, undefined);
-    assert.deepEqual(written.mcp.servers.genexus18mcp.environment, { GX_CONFIG_PATH: cfgPath });
+    assert.equal(written.mcp.servers.genexus18mcp.environment?.GX_CONFIG_PATH, undefined);
 
     const listed = runCli(['clients', '--format', 'json'], { env });
     assert.equal(listed.status, 0);
@@ -1140,11 +1140,57 @@ test('init auto-registers detected OpenCode in either config layout', () => {
             const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
             const entry = label === 'nested' ? written.mcp.servers.genexus18mcp : written.mcp.genexus18mcp;
             assert.ok(entry, `${label} OpenCode entry should be present after init`);
-            assert.deepEqual(entry.environment, { GX_CONFIG_PATH: path.join(kbDir, 'config.json') });
+            assert.equal(entry.environment?.GX_CONFIG_PATH, undefined);
             assert.ok(label === 'nested' ? written.mcp.servers.other : written.mcp.other);
         } finally {
             fs.rmSync(tempRoot, { recursive: true, force: true });
         }
+    }
+});
+
+test('init with --global-config persists GX_CONFIG_PATH into client entry', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-init-global-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const kbDir = path.join(tempRoot, 'kb');
+        const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+        fs.mkdirSync(kbDir, { recursive: true });
+        fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+        fs.writeFileSync(openCodeCfg, JSON.stringify({ mcp: {} }, null, 2));
+
+        const result = runCli(
+            ['init', '--kb', kbDir, '--gx', testGxPath, '--global-config', '--no-smoke', '--format', 'json'],
+            { cwd: kbDir, env: { ...env, ...testGatewayEnv } }
+        );
+        assert.equal(result.status, 0, `init should succeed: ${result.stderr}`);
+
+        const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+        assert.ok(written.mcp.genexus18mcp);
+        assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, path.join(kbDir, 'config.json'));
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('clients add with --global-config persists GX_CONFIG_PATH into client entry', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-add-global-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const cfgPath = path.join(tempRoot, 'config.json');
+        const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+        fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+        fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        fs.writeFileSync(openCodeCfg, JSON.stringify({ mcp: {} }, null, 2));
+
+        const res = runCli(['clients', 'add', '--clients', 'opencode', '--global-config', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: cfgPath }
+        });
+        assert.equal(res.status, 0);
+        const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+        assert.ok(written.mcp.genexus18mcp);
+        assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, cfgPath);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
 

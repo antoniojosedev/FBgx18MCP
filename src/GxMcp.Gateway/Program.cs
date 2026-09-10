@@ -591,6 +591,13 @@ namespace GxMcp.Gateway
 
             var config = Configuration.Load();
             _activeConfig = config;
+            bool isStdio = config.Server?.McpStdio ?? true;
+            bool isStdioIsolated = string.Equals(config.Server?.TransportMode, "stdio-isolated", StringComparison.OrdinalIgnoreCase);
+            bool sharedGatewayExplicit = (config.Server?.SharedGateway == true)
+                || string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
+                || (args != null && args.Any(a => string.Equals(a, "--shared-gateway", StringComparison.OrdinalIgnoreCase)));
+            bool useSharedLease = !isStdioIsolated && (!isStdio || sharedGatewayExplicit);
             LogGeneXusVersionCheck(config);
             try { RecipeCatalog.ConfigureUserMacroDirectory(GetUserMacroDir()); }
             catch (Exception ex) { Log("[RecipeCatalog] User-macro discovery skipped: " + ex.Message); }
@@ -611,63 +618,71 @@ namespace GxMcp.Gateway
                     _gxMirrorWatcher = null;
                 }
                 catch { }
-                if (_activeConfig != null)
+                if (useSharedLease && _activeConfig != null)
                 {
                     GatewayProcessLease.ReleaseCurrentProcess(_activeConfig);
                 }
             };
 
-            var leaseRegistration = GatewayProcessLease.TryRegisterCurrentProcess(config);
-            bool isMaster = leaseRegistration.Success;
-
-            if (!isMaster)
+            bool isMaster = true;
+            if (useSharedLease)
             {
-                if (leaseRegistration.IsDuplicate && leaseRegistration.Lease != null)
+                var leaseRegistration = GatewayProcessLease.TryRegisterCurrentProcess(config);
+                isMaster = leaseRegistration.Success;
+
+                if (!isMaster)
                 {
-                    Log($"[Gateway] existing_master_detected currentPid={Environment.ProcessId} masterPid={leaseRegistration.Lease.ProcessId}");
-                    
-                    if (leaseRegistration.Lease.HttpPort > 0)
+                    if (leaseRegistration.IsDuplicate && leaseRegistration.Lease != null)
                     {
-                        int masterPort = leaseRegistration.Lease.HttpPort;
-                        while (true)
+                        Log($"[Gateway] existing_master_detected currentPid={Environment.ProcessId} masterPid={leaseRegistration.Lease.ProcessId}");
+
+                        if (leaseRegistration.Lease.HttpPort > 0)
                         {
-                            bool shouldPromote = await RunMcpProxyAsync(leaseRegistration.Lease, config);
-                            if (!shouldPromote) return;
-
-                            // Defense-in-depth (#2): the proxy asked to promote because it saw
-                            // the master as unresponsive. Before stealing the lease — which via
-                            // port recovery would hard-kill whatever holds the port, tree and all —
-                            // re-verify the master is really down. If it's still accepting
-                            // connections this was a false alarm; stay a proxy rather than cause a
-                            // split-brain that kills a live master's worker.
-                            if (await IsPortListeningAsync(masterPort, 2000))
+                            int masterPort = leaseRegistration.Lease.HttpPort;
+                            while (true)
                             {
-                                Log($"[Gateway] Promotion aborted — master on port {masterPort} still listening. Resuming proxy mode.");
-                                await Task.Delay(1000);
-                                continue;
-                            }
+                                bool shouldPromote = await RunMcpProxyAsync(leaseRegistration.Lease, config);
+                                if (!shouldPromote) return;
 
-                            Log("[Gateway] Starting promotion to Master...");
-                            var forced = GatewayProcessLease.ForceRegisterCurrentProcess(config);
-                            if (!forced.Success) {
-                                Log("[Gateway] Promotion failed: lease acquisition blocked.");
-                                return;
+                                // Defense-in-depth (#2): the proxy asked to promote because it saw
+                                // the master as unresponsive. Before stealing the lease — which via
+                                // port recovery would hard-kill whatever holds the port, tree and all —
+                                // re-verify the master is really down. If it's still accepting
+                                // connections this was a false alarm; stay a proxy rather than cause a
+                                // split-brain that kills a live master's worker.
+                                if (await IsPortListeningAsync(masterPort, 2000))
+                                {
+                                    Log($"[Gateway] Promotion aborted — master on port {masterPort} still listening. Resuming proxy mode.");
+                                    await Task.Delay(1000);
+                                    continue;
+                                }
+
+                                Log("[Gateway] Starting promotion to Master...");
+                                var forced = GatewayProcessLease.ForceRegisterCurrentProcess(config);
+                                if (!forced.Success) {
+                                    Log("[Gateway] Promotion failed: lease acquisition blocked.");
+                                    return;
+                                }
+                                isMaster = true;
+                                break;
                             }
-                            isMaster = true;
-                            break;
+                        }
+                        else
+                        {
+                            Log($"[Gateway] Existing master (PID {leaseRegistration.Lease.ProcessId}) has no HTTP port. Reusing or exiting.");
+                            return;
                         }
                     }
                     else 
                     {
-                        Log($"[Gateway] Existing master (PID {leaseRegistration.Lease.ProcessId}) has no HTTP port. Reusing or exiting.");
+                        Log($"[Gateway] Registration failed: {leaseRegistration.FailureReason}");
                         return;
                     }
                 }
-                else 
-                {
-                    Log($"[Gateway] Registration failed: {leaseRegistration.FailureReason}");
-                    return;
-                }
+            }
+            else
+            {
+                Log($"[Gateway] Stdio isolated mode active (useSharedLease=false, isStdio={isStdio}, sharedGatewayExplicit={sharedGatewayExplicit}).");
             }
 
             AppDomain.CurrentDomain.UnhandledException += (s, e) => {
@@ -698,7 +713,8 @@ namespace GxMcp.Gateway
                     Log($"[Gateway] Core configuration changed! Restarting Worker process...");
                     config = newConfig; // Update reference
                     _activeConfig = config;
-                    GatewayProcessLease.RefreshCurrentProcess(config);
+                    if (useSharedLease)
+                        GatewayProcessLease.RefreshCurrentProcess(config);
                     RestartWorker(config);
                     BroadcastResourcesListChanged("core_configuration_changed");
                 } else {
@@ -707,7 +723,7 @@ namespace GxMcp.Gateway
             };
 
             // 1. Start HTTP Server first (it's critical for VS Code communication)
-            if (config.Server?.HttpPort > 0)
+            if (useSharedLease && config.Server?.HttpPort > 0)
             {
                 Log($"[Gateway] Starting HTTP server on port {config.Server.HttpPort}...");
                 _ = Task.Run(async () => {

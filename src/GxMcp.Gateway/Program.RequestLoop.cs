@@ -235,14 +235,16 @@ namespace GxMcp.Gateway
                             McpRouter.TryGetScopedResourceKb(request, out kbArg);
                         }
                         string? sessionDefaultAlias = null;
-                        bool sessionContextInitialized = sessionContextEnabled
-                            && TryGetSessionSelectedKb(sessionId, out sessionDefaultAlias);
+                        if (sessionContextEnabled)
+                        {
+                            TryGetSessionSelectedKb(sessionId, out sessionDefaultAlias);
+                        }
                         _currentKb.Value = _kbResolver.Resolve(
                             kbArg,
                             _workerPool.ListOpen(),
                             _workerPool.ListKnown(),
                             sessionDefaultAlias,
-                            sessionContextInitialized);
+                            out _);
                     }
                     catch (KbResolutionException ex)
                     {
@@ -785,21 +787,137 @@ namespace GxMcp.Gateway
                                     if (openArr.Count == 0) payload.Remove("openKbs");
                                 }
                                 break;
+                            case "select":
+                            case "set_session_default":
+                            {
+                                if (!sessionContextEnabled)
+                                {
+                                    throw new KbResolutionException("KB_SESSION_UNAVAILABLE",
+                                        "Session selection is not available for sessionless HTTP transport without a client identifier. Pass 'kb' explicitly or configure a client identifier header.");
+                                }
+
+                                string? alias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
+                                string? path = args?["path"]?.ToString();
+                                if (string.IsNullOrWhiteSpace(alias) && string.IsNullOrWhiteSpace(path))
+                                    throw new ArgumentException("The 'alias' or 'path' parameter is required for 'select'.");
+
+                                string resolvedAlias;
+                                string? resolvedPath = null;
+                                if (!string.IsNullOrWhiteSpace(path))
+                                {
+                                    if (!Configuration.IsPlausibleKbPath(path!))
+                                        throw new ArgumentException($"Path '{path}' does not look like a GeneXus Knowledge Base.");
+                                    resolvedAlias = string.IsNullOrWhiteSpace(alias)
+                                        ? System.IO.Path.GetFileName(path!.TrimEnd('\\', '/')).ToLowerInvariant()
+                                        : alias!;
+                                    resolvedPath = path;
+                                    _workerPool.RegisterKnown(new KbHandle(resolvedAlias, resolvedPath));
+                                }
+                                else
+                                {
+                                    var declared = _activeConfig?.Environment?.KBs?.FirstOrDefault(
+                                        k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                    if (declared != null)
+                                    {
+                                        resolvedAlias = declared.Alias;
+                                        resolvedPath = declared.Path;
+                                    }
+                                    else
+                                    {
+                                        var known = _workerPool.ListKnown().FirstOrDefault(
+                                            k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                        if (known != null)
+                                        {
+                                            resolvedAlias = known.Alias;
+                                            resolvedPath = known.Path;
+                                        }
+                                        else if (Configuration.IsPlausibleKbPath(alias!))
+                                        {
+                                            resolvedAlias = System.IO.Path.GetFileName(alias!.TrimEnd('\\', '/')).ToLowerInvariant();
+                                            resolvedPath = alias;
+                                            _workerPool.RegisterKnown(new KbHandle(resolvedAlias, resolvedPath));
+                                        }
+                                        else
+                                        {
+                                            throw new KbResolutionException("KB_NOT_FOUND",
+                                                $"Alias '{alias}' is neither declared in config.Environment.KBs[] nor currently open/known.");
+                                        }
+                                    }
+                                }
+
+                                SetSessionSelectedKb(sessionId, resolvedAlias);
+
+                                payload = new JObject
+                                {
+                                    ["selectedKb"] = resolvedAlias,
+                                    ["path"] = resolvedPath,
+                                    ["scope"] = "session",
+                                    ["persisted"] = false
+                                };
+                                break;
+                            }
+                            case "set_persistent_default":
                             case "set_default":
                             {
-                                string? alias = args?["alias"]?.ToString();
+                                string? alias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
                                 if (string.IsNullOrWhiteSpace(alias))
-                                    throw new ArgumentException("Missing 'alias' for action=set_default.");
+                                    throw new ArgumentException($"Missing 'alias' for action={action}.");
+
+                                bool isLegacySetDefault = string.Equals(action, "set_default", StringComparison.OrdinalIgnoreCase);
+                                bool persist = isLegacySetDefault ? (args?["persist"]?.ToObject<bool?>() ?? true) : true;
+                                if (!persist)
+                                {
+                                    if (!sessionContextEnabled)
+                                    {
+                                        throw new KbResolutionException("KB_SESSION_UNAVAILABLE",
+                                            "Session selection is not available for sessionless HTTP transport without a client identifier. Pass 'kb' explicitly or configure a client identifier header.");
+                                    }
+                                    string sessionAlias;
+                                    string? sessionPath = null;
+                                    var declaredSession = _activeConfig?.Environment?.KBs?.FirstOrDefault(
+                                        k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                    if (declaredSession != null)
+                                    {
+                                        sessionAlias = declaredSession.Alias;
+                                        sessionPath = declaredSession.Path;
+                                    }
+                                    else
+                                    {
+                                        var knownSession = _workerPool.ListKnown().FirstOrDefault(
+                                            k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                        if (knownSession != null)
+                                        {
+                                            sessionAlias = knownSession.Alias;
+                                            sessionPath = knownSession.Path;
+                                        }
+                                        else if (Configuration.IsPlausibleKbPath(alias!))
+                                        {
+                                            sessionAlias = System.IO.Path.GetFileName(alias!.TrimEnd('\\', '/')).ToLowerInvariant();
+                                            sessionPath = alias;
+                                            _workerPool.RegisterKnown(new KbHandle(sessionAlias, sessionPath));
+                                        }
+                                        else
+                                        {
+                                            throw new KbResolutionException("KB_NOT_FOUND",
+                                                $"Alias '{alias}' is neither declared in config.Environment.KBs[] nor currently open/known.");
+                                        }
+                                    }
+
+                                    SetSessionSelectedKb(sessionId, sessionAlias);
+
+                                    payload = new JObject
+                                    {
+                                        ["selectedKb"] = sessionAlias,
+                                        ["path"] = sessionPath,
+                                        ["scope"] = "session",
+                                        ["persisted"] = false
+                                    };
+                                    break;
+                                }
                                 if (_activeConfig == null || string.IsNullOrWhiteSpace(Configuration.CurrentConfigPath))
                                     throw new InvalidOperationException("No active config to persist.");
                                 var declared = _activeConfig.Environment?.KBs?.FirstOrDefault(
                                     k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
-                                // issue #26 P4: accept any alias that is currently open or was
-                                // opened this session (ad-hoc via `open path=...`), not just the
-                                // ones pre-declared in config.json. When the alias exists only as
-                                // an open/known handle, promote it to a declared KbEntry so the
-                                // default survives a restart — instead of dead-ending with
-                                // KB_NOT_FOUND right after `open` succeeded.
                                 string resolvedAlias;
                                 string? resolvedPath = null;
                                 if (declared != null)
@@ -830,8 +948,6 @@ namespace GxMcp.Gateway
                                 bool promoted = false;
                                 if (declared == null && !string.IsNullOrWhiteSpace(resolvedPath))
                                 {
-                                    // Persist the ad-hoc KB as a declared entry so it's resolvable
-                                    // after a restart, mirroring the in-memory _known registry.
                                     promoted = UpsertKbCatalogEntry(envObj, resolvedAlias, resolvedPath);
                                     if (promoted)
                                     {
@@ -839,13 +955,11 @@ namespace GxMcp.Gateway
                                     }
                                 }
                                 envObj["DefaultKb"] = resolvedAlias;
-                                // The Node CLI uses ActiveKb while the gateway uses
-                                // DefaultKb. Keep both markers aligned so switching from
-                                // OpenCode or MCP cannot leave the two clients disagreeing.
                                 envObj["ActiveKb"] = resolvedAlias;
                                 System.IO.File.WriteAllText(configPath, root.ToString(Formatting.Indented));
                                 _activeConfig.Environment!.DefaultKb = resolvedAlias;
                                 _activeConfig.Environment!.ActiveKb = resolvedAlias;
+                                _activeConfig.Environment!.RawDefaultKb = resolvedAlias;
                                 if (sessionContextEnabled)
                                     SetSessionSelectedKb(sessionId, resolvedAlias);
                                 payload = new JObject
@@ -1825,6 +1939,7 @@ namespace GxMcp.Gateway
                             var hitMeta = hit["_meta"] as JObject ?? new JObject();
                             hit["_meta"] = hitMeta;
                             hitMeta["cacheOutcome"] = "hit";
+                            _operationTracker.RecordCacheHit(tName);
                             return hit;
                         }
                     }
@@ -2636,15 +2751,28 @@ namespace GxMcp.Gateway
                             string message = $"GeneXus MCP Worker timed out executing tool: {tName}.";
                             var timeoutPayload = new JObject
                             {
-                                ["status"] = "Running",
-                                ["error"] = "Gateway timeout waiting for worker response.",
-                                ["message"] = message,
-                                ["correlationId"] = correlationId,
-                                ["retriable"] = true
+                                ["status"] = "error",
+                                ["error"] = new JObject
+                                {
+                                    ["code"] = "WorkerTimeout",
+                                    ["message"] = message,
+                                    ["hint"] = "The Worker may still be finishing; poll the operation before retrying.",
+                                    ["retryable"] = true,
+                                    ["reconciliationRequired"] = false
+                                },
+                                ["correlationId"] = correlationId
                             };
 
                             bool recordWrite = IsTransactionRecordOperation(tName!, tArgs) && IsMutatingTool(tName!, tArgs);
                             if (recordWrite) MarkRecordWriteOutcomeUnknown(timeoutPayload);
+                            var timeoutError = timeoutPayload["error"] as JObject;
+                            if (recordWrite && timeoutError != null)
+                            {
+                                timeoutError["code"] = "UnknownCommitState";
+                                timeoutError["hint"] = "Do not repeat the mutation. Poll the original operation and read the target back before authorizing a new attempt.";
+                                timeoutError["retryable"] = false;
+                                timeoutError["reconciliationRequired"] = true;
+                            }
                             var help = new JArray();
                             if (recordWrite)
                                 help.Add("Do not repeat the write. Poll the original operation result, then query the record keys against the datastore.");

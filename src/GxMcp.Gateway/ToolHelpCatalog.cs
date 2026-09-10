@@ -397,7 +397,8 @@ namespace GxMcp.Gateway
                 "- `get_startup` — read the persisted startup selection.\n\n" +
                 "## Mutating actions\n" +
                 "- `open` / `close` — register or release a Worker and KB lease.\n" +
-                "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection.\n\n" +
+                "- `select` / `set_session_default` — select a KB for the current session only without mutating config.json.\n" +
+                "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection (set_default with persist: false acts like select).\n\n" +
                 "Use an explicit `kb` alias when a call must target a different open KB; do not rely on shared server-side selection between independent clients.\n",
 
             ["genexus_data_view"] =

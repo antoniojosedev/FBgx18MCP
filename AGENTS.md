@@ -14,7 +14,7 @@ use the same SDK paths as the IDE.
 MCP client (Claude/Cursor/…)
    │ stdio JSON-RPC
    ▼
-GxMcp.Gateway (net10.0-windows, one per client)
+GxMcp.Gateway (net10.0-windows: isolated per client in stdio-isolated mode; shared master/proxy in legacy HTTP mode)
    │ pipes JSON-RPC to a worker
    ▼
 GxMcp.Worker (net48 STA, one per opened KB)
@@ -23,7 +23,7 @@ GxMcp.Worker (net48 STA, one per opened KB)
 GeneXus 18 SDK → Knowledge Base on disk
 ```
 
-- Gateway: `src/GxMcp.Gateway/` (`net10.0-windows`); owns the worker pool and routes MCP tools.
+- Gateway: `src/GxMcp.Gateway/` (`net10.0-windows`); owns the worker pool and routes MCP tools. In `stdio-isolated` mode (`TransportMode: "stdio-isolated"`), each client runs its own dedicated gateway process without HTTP listener or shared lease. In legacy mode, gateways share a master process on the HTTP port with proxies.
 - Worker: `src/GxMcp.Worker/`; hosts the COM-flavoured SDK on an STA thread.
 - CLI: `cli/run.js`, `cli/index.js`, and `cli/lib/config.js`; configures MCP
   clients, forwards stdio, and ships the Windows launcher diagnostics.
@@ -32,16 +32,16 @@ GeneXus 18 SDK → Knowledge Base on disk
 
 ## KB and harness contracts
 
-- KB resolution order is explicit `kb` → MCP-session selection → persisted
-  `Environment.DefaultKb`/`ActiveKb` → single-open-KB fallback.
-- `genexus_kb action=open` starts/registers a Worker; `action=set_default`
-  selects the current session and persists the startup fallback.
-- `genexus_whoami` and `genexus_kb action=list` must expose enough alias state
-  to distinguish selected, active, default, open, known, and declared KBs.
+- KB resolution order is explicit `kb` → MCP-session selection (`genexus_kb action=select` / `set_session_default`) → strict/legacy resolution policy.
+- In strict mode (`ResolutionPolicy: "strict"`, default), persisted `DefaultKb`/`ActiveKb` does NOT auto-seed sessions. When 1 KB is open, it resolves as `single-open` only if it does not conflict with a configured default (mismatches yield `KB_CONTEXT_REQUIRED` with `DefaultConflict`). When 0 KBs are open, declared catalog entries are never auto-opened (`KB_CONTEXT_REQUIRED` or `KB_AMBIGUOUS`).
+- In legacy mode (`ResolutionPolicy: "legacy"`), the legacy fallback chain (`config-default` → `single-open` → `declared-first`) remains active.
+- `genexus_kb action=open` starts/registers a Worker; `action=select` or `set_session_default` sets an in-memory session selection without mutating config files; `action=set_persistent_default` mutates the startup fallback on disk and returns `persistedTo`. `action=set_default` remains as a legacy persistent operation returning `persistedTo`.
+- `genexus_whoami` and `genexus_kb action=list` expose alias auditability state:
+  `sessionSelection`, `selectionSource` (`session-select`, `single-open`, `config-default`, `declared-first`, `explicit-arg`, `none`), `selectionState` (`valid`, `absent`, `invalid`, `conflicting`), `startupDefault`, `resolutionPolicy`, `config.resolvedFrom`, open, known, and declared KBs.
   KB-bound results carry `kbAlias` in-band and in MCP `_meta`.
-- `genexus-mcp init` configures detected clients. OpenCode must preserve both
+- `genexus-mcp init` configures detected clients with neutral configurations by default (no hardcoded KB path). OpenCode must preserve both
   `mcp.<name>` and `mcp.servers.<name>` layouts and unrelated servers.
-- Sessionless HTTP clients must use an explicit `kb` or persisted fallback; do
+- Sessionless HTTP clients must use an explicit `kb` or persisted fallback; `select` on sessionless HTTP returns `KB_SESSION_UNAVAILABLE`. Do
   not introduce shared server-side selection between independent clients.
 
 ## Source of truth and tool changes

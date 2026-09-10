@@ -22,6 +22,7 @@ namespace GxMcp.Gateway
         public EnvironmentConfig? Environment { get; set; }
 
         public static string? CurrentConfigPath { get; private set; }
+        public static string ResolvedFrom { get; internal set; } = "launcher";
         private static FileSystemWatcher? _watcher;
         // Debounce state for the config hot-reload, same pattern as tool_definitions.json
         // (McpRouter): editors fire multiple Changed events per save, so coalesce them into
@@ -42,6 +43,7 @@ namespace GxMcp.Gateway
                     if (File.Exists(fullPath))
                     {
                         CurrentConfigPath = fullPath;
+                        ResolvedFrom = "env";
                     }
                     else
                     {
@@ -57,14 +59,31 @@ namespace GxMcp.Gateway
                     while (currentDir != null)
                     {
                         string check = Path.Combine(currentDir, "config.json");
-                        if (File.Exists(check)) { CurrentConfigPath = check; break; }
+                        if (File.Exists(check)) { CurrentConfigPath = check; ResolvedFrom = "launcher"; break; }
                         currentDir = Path.GetDirectoryName(currentDir);
                     }
 
                     if (CurrentConfigPath == null)
                     {
-                        if (File.Exists("config.json")) CurrentConfigPath = Path.GetFullPath("config.json");
-                        else throw new FileNotFoundException($"Could not find config.json in any parent directory (explicit GX_CONFIG_PATH '{explicitConfigPath}' was missing).");
+                        if (File.Exists("config.json"))
+                        {
+                            CurrentConfigPath = Path.GetFullPath("config.json");
+                            ResolvedFrom = "cwd";
+                        }
+                        else
+                        {
+                            string userProfileDir = global::System.Environment.GetFolderPath(global::System.Environment.SpecialFolder.UserProfile);
+                            string userConfig = Path.Combine(userProfileDir, ".genexus-mcp", "config.json");
+                            if (File.Exists(userConfig))
+                            {
+                                CurrentConfigPath = userConfig;
+                                ResolvedFrom = "neutral";
+                            }
+                            else
+                            {
+                                throw new FileNotFoundException($"Could not find config.json in any parent directory or user profile (explicit GX_CONFIG_PATH '{explicitConfigPath}' was missing).");
+                            }
+                        }
                     }
                 }
             }
@@ -103,18 +122,21 @@ namespace GxMcp.Gateway
                         return new Configuration();
                     }
 
-                    if (config.Environment != null &&
-                        string.IsNullOrWhiteSpace(config.Environment.DefaultKb) &&
-                        !string.IsNullOrWhiteSpace(config.Environment.ActiveKb))
+                    if (config.Environment != null)
                     {
-                        config.Environment.DefaultKb = config.Environment.ActiveKb;
-                    }
-                    else if (config.Environment != null &&
-                        string.IsNullOrWhiteSpace(config.Environment.DefaultKb) &&
-                        config.Environment.KBs != null &&
-                        config.Environment.KBs.Count == 1)
-                    {
-                        config.Environment.DefaultKb = config.Environment.KBs[0].Alias;
+                        config.Environment.RawDefaultKb = config.Environment.DefaultKb;
+                        bool isLegacy = string.Equals(config.Environment.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+                        if (isLegacy && string.IsNullOrWhiteSpace(config.Environment.DefaultKb))
+                        {
+                            if (!string.IsNullOrWhiteSpace(config.Environment.ActiveKb))
+                            {
+                                config.Environment.DefaultKb = config.Environment.ActiveKb;
+                            }
+                            else if (config.Environment.KBs != null && config.Environment.KBs.Count == 1)
+                            {
+                                config.Environment.DefaultKb = config.Environment.KBs[0].Alias;
+                            }
+                        }
                     }
 
                     if (string.IsNullOrEmpty(config.Environment?.KBPath))
@@ -163,11 +185,12 @@ namespace GxMcp.Gateway
                             {
                                 new KbEntry { Alias = alias, Path = legacyPath }
                             };
-                            if (string.IsNullOrWhiteSpace(config.Environment.DefaultKb))
+                            bool isLegacy = string.Equals(config.Environment.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+                            if (isLegacy && string.IsNullOrWhiteSpace(config.Environment.DefaultKb))
                             {
                                 config.Environment.DefaultKb = alias;
                             }
-                            Program.Log($"[Gateway] Legacy KBPath migrated to KBs[{alias}], DefaultKb={alias}");
+                            Program.Log($"[Gateway] Legacy KBPath migrated to KBs[{alias}], DefaultKb={config.Environment.DefaultKb}");
                         }
                     }
 
@@ -268,8 +291,10 @@ namespace GxMcp.Gateway
 
     public class ServerConfig
     {
+        public string TransportMode { get; set; } = "legacy";
         public int HttpPort { get; set; } = 5000;
         public bool McpStdio { get; set; } = true;
+        public bool SharedGateway { get; set; } = false;
         public string BindAddress { get; set; } = "127.0.0.1";
         public List<string> AllowedOrigins { get; set; } = new List<string>();
         public int SessionIdleTimeoutMinutes { get; set; } = 10;
@@ -352,6 +377,8 @@ namespace GxMcp.Gateway
         public string? KBPath { get; set; }
         public string? GX_SHADOW_PATH { get; set; }
         public string? DefaultKb { get; set; }
+        public string? RawDefaultKb { get; set; }
+        public string ResolutionPolicy { get; set; } = "strict";
         // Alias written by the Node CLI (cli/lib/config.js writeKbCatalog) —
         // ParseConfig promotes it to DefaultKb after deserialize if DefaultKb is empty.
         public string? ActiveKb { get; set; }

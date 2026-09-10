@@ -21,7 +21,7 @@ namespace GxMcp.Gateway.Tests
             string configPath = Path.Combine(tempDir, "config.json");
             try
             {
-                var json = "{ \"Environment\": { \"KBPath\": " + System.Text.Json.JsonSerializer.Serialize(kbDir) + " } }";
+                var json = "{ \"Environment\": { \"ResolutionPolicy\": \"legacy\", \"KBPath\": " + System.Text.Json.JsonSerializer.Serialize(kbDir) + " } }";
                 File.WriteAllText(configPath, json);
 
                 var cfg = ParseConfig(configPath);
@@ -32,6 +32,34 @@ namespace GxMcp.Gateway.Tests
                 Assert.Equal("legacydemo", single.Alias);
                 Assert.Equal(kbDir, single.Path);
                 Assert.Equal("legacydemo", cfg.Environment.DefaultKb);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_KbPath_StrictMode_DoesNotAutoPromoteToDefaultKb()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string kbDir = Path.Combine(tempDir, "StrictDemo");
+            Directory.CreateDirectory(kbDir);
+            File.WriteAllText(Path.Combine(kbDir, "StrictDemo.gxw"), "");
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                var json = "{ \"Environment\": { \"ResolutionPolicy\": \"strict\", \"KBPath\": " + System.Text.Json.JsonSerializer.Serialize(kbDir) + " } }";
+                File.WriteAllText(configPath, json);
+
+                var cfg = ParseConfig(configPath);
+
+                Assert.NotNull(cfg.Environment);
+                Assert.NotNull(cfg.Environment!.KBs);
+                var single = Assert.Single(cfg.Environment.KBs);
+                Assert.Equal("strictdemo", single.Alias);
+                Assert.Null(cfg.Environment.DefaultKb);
             }
             finally
             {
@@ -75,7 +103,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void ParseConfig_AppliesEnvOverrides_AndPromotesActiveKb()
+        public void ParseConfig_AppliesEnvOverrides_AndPromotesActiveKb_UnderLegacyPolicy()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
@@ -90,6 +118,7 @@ namespace GxMcp.Gateway.Tests
     ""McpStdio"": true
   },
   ""Environment"": {
+    ""ResolutionPolicy"": ""legacy"",
     ""DefaultKb"": """",
     ""ActiveKb"": ""from_cli"",
     ""KBs"": {
@@ -122,7 +151,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void ParseConfig_SingleDeclaredKb_WithoutDefault_AutoPromotesToDefaultKb()
+        public void ParseConfig_SingleDeclaredKb_WithoutDefault_AutoPromotesToDefaultKb_UnderLegacyPolicy()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
@@ -131,6 +160,7 @@ namespace GxMcp.Gateway.Tests
             {
                 var json = @"{
   ""Environment"": {
+    ""ResolutionPolicy"": ""legacy"",
     ""KBs"": {
       ""mykb"": ""C:/KBs/MyKb""
     }
@@ -141,6 +171,36 @@ namespace GxMcp.Gateway.Tests
 
                 Assert.NotNull(cfg.Environment);
                 Assert.Equal("mykb", cfg.Environment!.DefaultKb);
+                var single = Assert.Single(cfg.Environment.KBs);
+                Assert.Equal("mykb", single.Alias);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_SingleDeclaredKb_WithoutDefault_DoesNotAutoPromoteToDefaultKb_UnderStrictMode()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                var json = @"{
+  ""Environment"": {
+    ""ResolutionPolicy"": ""strict"",
+    ""KBs"": {
+      ""mykb"": ""C:/KBs/MyKb""
+    }
+  }
+}";
+                File.WriteAllText(configPath, json);
+                var cfg = ParseConfig(configPath);
+
+                Assert.NotNull(cfg.Environment);
+                Assert.Null(cfg.Environment!.DefaultKb);
                 var single = Assert.Single(cfg.Environment.KBs);
                 Assert.Equal("mykb", single.Alias);
             }

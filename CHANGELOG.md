@@ -2,14 +2,57 @@
 
 ## Unreleased
 
+### Changed
+
+- Added `docs/envelope-coverage.md`, auditing the published tools/actions and
+  separating Worker envelopes from intentional Gateway lifecycle/protocol
+  statuses as the migration map for subsequent response-contract work.
+- Added `docs/metrics-baseline.md` with reproducible measurement rules and
+  initial latency, payload, reliability, cache, and workflow targets.
+- Added `docs/live-kb-validation-matrix.md` defining the live SDK assertions,
+  rollback rules, and mandatory edge cases for critical mutating capabilities.
+- Added named discovery profile aliases (`exploration`, `safe-edit`, `build`,
+  `versioning`, and `deploy`) with regression coverage.
+- Subscription conformance coverage now exercises reconnect, disconnect cleanup,
+  slow consumers, multiple subscriptions, and client isolation.
+- Discovery/resource contracts expose progressive profiles and navigable KB
+  resources while keeping extended operational guidance in resources and
+  playbooks instead of requiring every workflow to load it from tools/list.
+- List/read contracts standardize bounded results, pagination metadata,
+  projections, deterministic ordering, and explicit limits across large
+  collection paths.
+- Security and recovery paths retain dry-run/confirmation gates, allowlists,
+  audit metadata, Worker crash/reload/timeout coverage, and closed-KB/pipe
+  failure regressions.
+- Canonical MCP error envelopes now expose optional boolean `retryable` and
+  `reconciliationRequired` decisions, while conformance tests validate their
+  types and the shape of `nextSteps` entries.
+
 ### Added
 
+- `genexus_kb` `action=select` and `action=set_session_default` for strict per-session KB selection without mutating `config.json` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_kb` `action=set_persistent_default` as an explicit mutating operation that updates the startup fallback in `config.json` and reports `persistedTo` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_kb` `action=set_default` now supports `persist: false` to delegate directly to per-session selection without updating the shared `config.json`, and acts as a legacy persistent operation returning `persistedTo` by default ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_whoami` exposes explicit session auditability metadata: `sessionSelection`, `selectionSource` (`"session-select"` | `"single-open"` | `"config-default"` | `"declared-first"` | `"explicit-arg"` | `"none"`), `selectionState` (`"valid"` | `"absent"` | `"invalid"` | `"conflicting"`), `startupDefault`, `resolutionPolicy`, `config.resolvedFrom`, and backward-compatible aliases (`selected`, `active`, `persistedFallback`, `contextRequired`) even in terse mode ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Zero-config startup outside of a KB: when launched outside a KB workspace without `GX_CONFIG_PATH`, `genexus-mcp` automatically generates and defaults to `~/.genexus-mcp/config.json` with auto-detected GeneXus path, `TransportMode: "stdio-isolated"`, `HttpPort: 0`, `ResolutionPolicy: "strict"`, and empty `Environment.KBs = []` instead of failing ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Added `--global-config` flag to `genexus-mcp init` and `genexus-mcp clients add` for CI or workflows that explicitly require baking fixed `GX_CONFIG_PATH` into client configuration files ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
 - `genexus_properties` `action=get` now honors `propertyName` (single property lookup, comma-separated list, or `*`/`?` wildcards), `propertyNames` (string array), search filter `query`, and preset `projection` modes (`"minimal"` | `"standard"` | `"full"`), returning `versionToken` on `PropertiesRead` envelopes ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 - Added Levenshtein-based "Did you mean?" suggestions and actionable `nextSteps` to `PropertyNotFound` errors when a property name or search query does not match, helping AI agents self-correct in a single turn ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 - Added a flat `values: { [propName]: propValue }` dictionary to all successful `genexus_properties` `action=get` envelopes (single, multi, projection, query, and full) for instant O(1) key-value reads without parsing complex metadata arrays ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 
 ### Changed
 
+- Decoupled MCP client registration: `genexus-mcp init` and `clients add` now register clients (VS Code, Cursor, OpenCode, Codex TOML) without `GX_CONFIG_PATH` by default, enabling client registrations to be completely portable across multiple KBs ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Strict resolution policy matrix (`ResolutionPolicy: "strict"` by default):
+  - Sessions do not inherit `DefaultKb`/`ActiveKb` startup fallbacks.
+  - With exactly 1 KB open and no conflicting default, resolves as `single-open` (`selectionSource="single-open"`).
+  - With a single open KB conflicting with a configured default (`DefaultKb`), fails closed with `KB_CONTEXT_REQUIRED` (`DefaultConflict`).
+  - With 0 open KBs, declared catalog KBs are never auto-opened (`KB_CONTEXT_REQUIRED` or `KB_AMBIGUOUS`).
+  - Invalid session selection fails closed with `KB_SELECTION_INVALID` with zero fallback.
+  - Legacy promotion and fallbacks preserved under explicit `ResolutionPolicy: "legacy"` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `stdio-isolated` transport mode (`Server.TransportMode: "stdio-isolated"`): bypasses shared lease acquisition/refresh, proxy takeover, and HTTP listener entirely, allowing concurrent isolated instances on neutral config with `HttpPort: 0` without port or master lease collisions ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Sessionless HTTP clients: calling `select` on sessionless HTTP now returns `KB_SESSION_UNAVAILABLE` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Bumped tool schema token budget to 26,500 to accommodate `genexus_kb` session selection actions (`select`, `set_session_default`, `set_persistent_default`), `persist` flag, and parameter documentation in discovery fixtures ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
 - `genexus_properties` `action=get` single property queries now return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }` instead of dumping 100+ properties, dramatically cutting context token consumption ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 
 ## v3.0.1 - 2026-09-07

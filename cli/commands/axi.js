@@ -1434,7 +1434,8 @@ async function handleInit(options, ctx) {
                 ids,
                 onlyExisting: !options.allClients,
                 serverName: options.serverName || DEFAULT_MCP_SERVER_NAME,
-                force: options.force
+                force: options.force,
+                globalConfig: Boolean(options.globalConfig)
             });
         }
 
@@ -1844,7 +1845,8 @@ async function handleClients(subcommand, options, ctx) {
                     ids,
                     onlyExisting: false,
                     serverName,
-                    force: options.force
+                    force: options.force,
+                    globalConfig: Boolean(options.globalConfig)
                 });
             } catch (err) {
                 return {

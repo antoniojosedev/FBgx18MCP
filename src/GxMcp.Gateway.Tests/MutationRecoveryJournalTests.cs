@@ -69,7 +69,7 @@ namespace GxMcp.Gateway.Tests
 
                 Assert.False(registry.IsHealthy);
                 Assert.Equal("MutationRecoveryJournalUnavailable", MutationRecoveryRegistry
-                    .BuildJournalBlockedEnvelope(registry.JournalError)["code"]?.ToString());
+                    .BuildJournalBlockedEnvelope(registry.JournalError)["error"]?["code"]?.ToString());
             }
             finally
             {

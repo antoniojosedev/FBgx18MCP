@@ -2346,12 +2346,20 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Manage open KBs, startup config, and GeneXus environments. list/open/close/set_default operate on WorkerPool; set_default selects the implicit target for calls that omit kb (an explicit kb always wins for parallel or cross-KB work); set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
+      "description": "Manage open KBs, session selection, startup config, and GeneXus environments. list/open/close/select/set_session_default/set_persistent_default/set_default operate on WorkerPool and session context; select sets active KB for current session only without mutating config; set_persistent_default explicitly persists startup default to config.json and returns persistedTo; set_default is a legacy persistent default operation; set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
       "inputSchema": {
         "examples": [
           {
             "action": "open",
             "path": "C:\\KBs\\MyKb"
+          },
+          {
+            "action": "select",
+            "alias": "MyKb"
+          },
+          {
+            "action": "set_persistent_default",
+            "alias": "MyKb"
           },
           {
             "action": "list"
@@ -2374,6 +2382,9 @@
               "list",
               "open",
               "close",
+              "select",
+              "set_session_default",
+              "set_persistent_default",
               "set_default",
               "set_startup",
               "get_startup",
@@ -2398,6 +2409,10 @@
           "path": {
             "description": "Absolute KB path (required for open if alias not in config).",
             "type": "string"
+          },
+          "persist": {
+            "description": "Legacy set_default only: persist to config.json (default true). If false, acts like select.",
+            "type": "boolean"
           }
         },
         "required": [

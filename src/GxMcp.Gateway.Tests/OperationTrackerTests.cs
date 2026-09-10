@@ -142,6 +142,49 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Completed", (string)tracker.BuildOperationStatus(opId)["status"]!);
         }
 
+        [Fact]
+        public void Timeout_KeepsOperationLiveAndExposesAmbiguousState()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            string requestId = "timeout-request";
+            string opId = tracker.StartOperation(requestId, "genexus_edit", null, "cid");
+
+            tracker.MarkTimeout(opId);
+
+            var status = tracker.BuildOperationStatus(opId);
+            Assert.Equal("Running", status["status"]?.ToString());
+            Assert.True(status["timedOut"]?.ToObject<bool>());
+            Assert.True(status["timeoutCount"]?.ToObject<int>() > 0);
+            Assert.Contains("may still be finishing", status["hint"]?.ToString());
+
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "ok" }
+            });
+
+            Assert.Equal("Completed", tracker.BuildOperationStatus(opId)["status"]?.ToString());
+        }
+
+        [Fact]
+        public void ToolStats_ExposeCacheHitsAndErrorCodes()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            tracker.RecordCacheHit("genexus_query");
+            string requestId = "error-metric-request";
+            tracker.StartOperation(requestId, "genexus_query", null, "cid");
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["error"] = new JObject { ["code"] = "IndexCold", ["message"] = "cold" }
+            });
+
+            var tools = (JObject)tracker.BuildToolStatsBlock()["tools"]!;
+            var stats = (JObject)tools["genexus_query"]!;
+            Assert.Equal(1L, stats["cacheHits"]!.ToObject<long>());
+            Assert.Equal(1L, stats["errorsByCode"]!["IndexCold"]!.ToObject<long>());
+        }
+
         // Completed operations DO age out after the retention window (memory bound).
         [Fact]
         public void CleanupExpired_SweepsCompletedOperation_PastRetentionWindow()

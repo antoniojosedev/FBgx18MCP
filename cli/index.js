@@ -290,6 +290,12 @@ function parseArgs(argv) {
             case 'interactive':
                 result.options.interactive = true;
                 break;
+            case 'global-config':
+                result.options.globalConfig = true;
+                break;
+            case 'neutral':
+                result.options.neutral = true;
+                break;
             case 'write-clients':
                 result.options.writeClients = true;
                 break;

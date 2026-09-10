@@ -119,7 +119,7 @@ namespace GxMcp.Gateway
                     mutating: new[] { "wiki", "visualize" }),
                 ["genexus_kb"] = Contract(
                     readOnly: new[] { "list", "list_environments", "get_environment", "get_startup" },
-                    mutating: new[] { "open", "close", "set_default", "set_startup", "set_environment" }),
+                    mutating: new[] { "open", "close", "select", "set_session_default", "set_persistent_default", "set_default", "set_startup", "set_environment" }),
                 ["genexus_navigation"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "view" }),

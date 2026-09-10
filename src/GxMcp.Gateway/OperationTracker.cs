@@ -639,6 +639,13 @@ namespace GxMcp.Gateway
             CompleteFromWorker(requestId, payload);
         }
 
+        internal void RecordCacheHit(string toolName)
+        {
+            if (string.IsNullOrWhiteSpace(toolName)) return;
+            var metric = _toolMetrics.GetOrAdd(toolName, _ => new ToolMetricState(toolName));
+            metric.RegisterCacheHit();
+        }
+
         // Item 73: per-tool latency stats for whoami.stats.tools.
         // In-memory ring buffer (lost on gateway restart); count/p50/p95 per tool.
         // Item 75: also surface request/response size percentiles ("tokensIn /
@@ -662,7 +669,8 @@ namespace GxMcp.Gateway
                     ["p50Ms"] = j["p50Ms"],
                     ["p95Ms"] = j["p95Ms"],
                     ["count"] = count,
-                    ["errorCount"] = errors
+                    ["errorCount"] = errors,
+                    ["cacheHits"] = j["cacheHits"]
                 };
                 // Item 75: tokensIn / tokensOut percentiles, omitted when no
                 // payload was ever observed (cancellation-only history).
@@ -670,6 +678,8 @@ namespace GxMcp.Gateway
                 JToken? tOut = j["tokensOut"];
                 if (tIn is JObject) entry["tokensIn"] = tIn;
                 if (tOut is JObject) entry["tokensOut"] = tOut;
+                if (j["errorsByCode"] is JObject errorsByCode)
+                    entry["errorsByCode"] = errorsByCode.DeepClone();
                 toolsObj[kvp.Key] = entry;
                 if (errors > 0) failureRanking.Add((kvp.Key, errors, count));
             }
@@ -831,6 +841,7 @@ namespace GxMcp.Gateway
             // footprint stays bounded.
             private readonly List<long> _reqBytes = new List<long>();
             private readonly List<long> _respBytes = new List<long>();
+            private readonly Dictionary<string, long> _errorsByCode = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             private const int MaxLatencySamples = 256;
 
             public ToolMetricState(string toolName)
@@ -845,6 +856,7 @@ namespace GxMcp.Gateway
             public long NoChangeCount { get; private set; }
             public long PatchFailCount { get; private set; }
             public long FallbackSaveCount { get; private set; }
+            public long CacheHitCount { get; private set; }
             // Item 94: cumulative elapsed ms across all observed completions and the
             // most recent timestamp any call landed.
             private long _totalMs;
@@ -861,6 +873,11 @@ namespace GxMcp.Gateway
                 {
                     TimeoutCount++;
                 }
+            }
+
+            public void RegisterCacheHit()
+            {
+                lock (_lock) CacheHitCount++;
             }
 
             public void RegisterCompletion(long elapsedMs, bool isError, JToken? workerPayload, long reqBytes, long respBytes)
@@ -914,11 +931,14 @@ namespace GxMcp.Gateway
                         ["noChange"] = NoChangeCount,
                         ["patchFail"] = PatchFailCount,
                         ["fallbackSave"] = FallbackSaveCount,
+                        ["cacheHits"] = CacheHitCount,
                         ["p50Ms"] = p50,
                         ["p95Ms"] = p95
                     };
                     payload["tokensIn"] = BuildSizeBlock(_reqBytes);
                     payload["tokensOut"] = BuildSizeBlock(_respBytes);
+                    if (_errorsByCode.Count > 0)
+                        payload["errorsByCode"] = JObject.FromObject(_errorsByCode);
                     return payload;
                 }
             }
@@ -952,6 +972,13 @@ namespace GxMcp.Gateway
                     string? details = obj["details"]?.ToString();
                     string? patchStatus = obj["patchStatus"]?.ToString();
                     string? retryStrategy = obj["retryStrategy"]?.ToString();
+                    string? errorCode = (obj["error"] as JObject)?["code"]?.ToString()
+                        ?? obj["errorCode"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(errorCode))
+                    {
+                        _errorsByCode.TryGetValue(errorCode, out long count);
+                        _errorsByCode[errorCode] = count + 1;
+                    }
 
                     if (string.Equals(status, "NoChange", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(patchStatus, "NoChange", StringComparison.OrdinalIgnoreCase) ||

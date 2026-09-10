@@ -311,6 +311,8 @@ namespace GxMcp.Gateway
         internal static void MarkRecordWriteOutcomeUnknown(JObject payload)
         {
             payload["retriable"] = false;
+            payload["retryable"] = false;
+            payload["reconciliationRequired"] = true;
             payload["retrySafe"] = false;
             payload["persisted"] = JValue.CreateNull();
             payload["commitState"] = "Indeterminate";

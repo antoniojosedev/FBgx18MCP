@@ -28,7 +28,7 @@ namespace GxMcp.Gateway
         private static void InitializeSessionKbContext(string sessionId)
         {
             if (string.IsNullOrWhiteSpace(sessionId)) return;
-            _sessionKbContexts.Initialize(sessionId, GetConfiguredDefaultKb());
+            _sessionKbContexts.Initialize(sessionId, null);
         }
 
         internal static void SetSessionSelectedKb(string sessionId, string alias)

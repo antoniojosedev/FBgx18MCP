@@ -352,6 +352,14 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("crystallize", actions!);
         }
 
+        [Fact]
+        public void GenexusKb_SetPersistentDefault_IsMutatingTool()
+        {
+            var args = JObject.Parse("{action:'set_persistent_default',alias:'orders'}");
+            Assert.True(Program.IsMutatingTool("genexus_kb", args));
+            Assert.True(OperationClassifier.IsMutationCandidate("genexus_kb", args));
+        }
+
         private static void AssertRoute(object? result, string module, string action)
         {
             Assert.NotNull(result);

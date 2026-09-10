@@ -91,14 +91,26 @@ namespace GxMcp.Gateway
         {
             return new JObject
             {
-                ["status"] = "Blocked",
-                ["code"] = "PostTimeoutReadRequired",
+                ["status"] = "error",
                 ["target"] = requirement.Target,
-                ["part"] = requirement.Part,
                 ["operationId"] = requirement.OperationId,
-                ["persisted"] = false,
-                ["message"] = "A previous write timed out or was cancelled, so its persisted state is unknown. Re-read this part before another write.",
-                ["hint"] = "Call genexus_read for the target and part. A successful full read clears this recovery fence; then retry from the returned versionToken."
+                ["error"] = new JObject
+                {
+                    ["code"] = "PostTimeoutReadRequired",
+                    ["message"] = "A previous write timed out or was cancelled, so its persisted state is unknown.",
+                    ["hint"] = "Call genexus_read for the target and part. A successful full read clears this recovery fence; then retry from the returned versionToken.",
+                    ["retryable"] = false,
+                    ["reconciliationRequired"] = true,
+                    ["nextSteps"] = new JArray
+                    {
+                        new JObject
+                        {
+                            ["tool"] = "genexus_read",
+                            ["args"] = new JObject { ["name"] = requirement.Target, ["part"] = requirement.Part },
+                            ["why"] = "Confirm whether the timed-out mutation was persisted before retrying."
+                        }
+                    }
+                }
             };
         }
 
@@ -106,13 +118,16 @@ namespace GxMcp.Gateway
         {
             return new JObject
             {
-                ["status"] = "Blocked",
-                ["code"] = "MutationRecoveryJournalUnavailable",
-                ["persisted"] = false,
-                ["retrySafe"] = false,
-                ["message"] = "The mutation recovery journal could not be trusted after startup or persistence failure; writes are blocked until the journal is repaired.",
-                ["detail"] = string.IsNullOrWhiteSpace(journalError) ? null : journalError,
-                ["hint"] = "Inspect the journal under the Gateway state directory, restore a valid versioned file, then restart the Gateway. Read-only calls remain available."
+                ["status"] = "error",
+                ["error"] = new JObject
+                {
+                    ["code"] = "MutationRecoveryJournalUnavailable",
+                    ["message"] = "The mutation recovery journal could not be trusted; writes are blocked until it is repaired.",
+                    ["hint"] = "Inspect the journal under the Gateway state directory, restore a valid versioned file, then restart the Gateway. Read-only calls remain available.",
+                    ["retryable"] = false,
+                    ["reconciliationRequired"] = true,
+                    ["detail"] = string.IsNullOrWhiteSpace(journalError) ? null : journalError
+                }
             };
         }
 

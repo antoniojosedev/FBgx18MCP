@@ -18,24 +18,19 @@ namespace GxMcp.Gateway
         public KbResolver(Configuration config) { _config = config; }
 
         public KbHandle Resolve(string? kbArg, IReadOnlyCollection<KbHandle> openKbs)
-            => Resolve(kbArg, openKbs, null);
+            => Resolve(kbArg, openKbs, null, null, out _);
 
         // issue #26 P3: `knownKbs` (optional) is the durable set of aliases the user has
-        // opened this session — it survives worker recycles, unlike `openKbs`. An explicit
-        // alias is matched against declared → open → known → path, so a KB whose worker is
-        // momentarily down stays resolvable instead of failing with "Unknown KB". The
-        // Empty-arg resolution uses the configured default first, then the live worker
-        // set for the single-open fallback; known workers only fill an explicitly
-        // selected default whose process is currently down.
+        // opened this session — it survives worker recycles, unlike `openKbs`.
         public KbHandle Resolve(string? kbArg, IReadOnlyCollection<KbHandle> openKbs, IReadOnlyCollection<KbHandle>? knownKbs)
-            => Resolve(kbArg, openKbs, knownKbs, null);
+            => Resolve(kbArg, openKbs, knownKbs, null, out _);
 
         public KbHandle Resolve(
             string? kbArg,
             IReadOnlyCollection<KbHandle> openKbs,
             IReadOnlyCollection<KbHandle>? knownKbs,
             string? sessionDefaultAlias)
-            => Resolve(kbArg, openKbs, knownKbs, sessionDefaultAlias, sessionContextInitialized: false);
+            => Resolve(kbArg, openKbs, knownKbs, sessionDefaultAlias, out _);
 
         public KbHandle Resolve(
             string? kbArg,
@@ -43,76 +38,140 @@ namespace GxMcp.Gateway
             IReadOnlyCollection<KbHandle>? knownKbs,
             string? sessionDefaultAlias,
             bool sessionContextInitialized)
+            => Resolve(kbArg, openKbs, knownKbs, sessionDefaultAlias, out _);
+
+        public KbHandle Resolve(
+            string? kbArg,
+            IReadOnlyCollection<KbHandle> openKbs,
+            IReadOnlyCollection<KbHandle>? knownKbs,
+            string? sessionDefaultAlias,
+            out string selectionSource)
         {
             if (!string.IsNullOrWhiteSpace(kbArg))
             {
+                selectionSource = "explicit-arg";
                 return ResolveExplicit(kbArg!, openKbs, knownKbs, fromSession: false);
             }
 
             if (!string.IsNullOrWhiteSpace(sessionDefaultAlias))
-                return ResolveExplicit(sessionDefaultAlias!, openKbs, knownKbs, fromSession: true);
-
-            if (sessionContextInitialized)
-                return ResolveWithoutConfiguredDefault(openKbs);
-
-            // An explicit default/active selection is the safe implicit target
-            // when several workers are alive. Without this branch, set_default
-            // only changed metadata while every omitted kb argument still failed
-            // with KB_AMBIGUOUS.
-            string? configuredDefault = _config.Environment?.DefaultKb;
-            if (string.IsNullOrWhiteSpace(configuredDefault))
-                configuredDefault = _config.Environment?.ActiveKb;
-
-            if (!string.IsNullOrWhiteSpace(configuredDefault))
             {
-                var openDefault = openKbs.FirstOrDefault(
-                    k => string.Equals(k.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase));
-                if (openDefault != null) return openDefault;
-
-                // Preserve the original single-open-KB behavior: an ad-hoc
-                // `open` remains usable when the persisted default points at a
-                // different, not-yet-open worker.
-                if (openKbs.Count == 1) return openKbs.First();
-
-                var declaredDefault = _config.Environment?.KBs?.FirstOrDefault(
-                    k => string.Equals(k.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase));
-                if (declaredDefault != null)
-                    return new KbHandle(declaredDefault.Alias, declaredDefault.Path);
-
-                var knownDefault = knownKbs?.FirstOrDefault(
-                    k => string.Equals(k.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase));
-                if (knownDefault != null) return knownDefault;
-
-                throw new KbResolutionException("KB_NOT_FOUND",
-                    $"Configured default KB '{configuredDefault}' is not declared, open, or known in this session.");
+                var handle = ResolveExplicit(sessionDefaultAlias!, openKbs, knownKbs, fromSession: true);
+                selectionSource = "session-select";
+                return handle;
             }
 
-            if (openKbs.Count == 1) return openKbs.First();
+            bool isStrict = !string.Equals(_config.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+
+            if (isStrict)
+            {
+                // Strict mode (Issue #146):
+                // 1. DefaultKb / ActiveKb in config do NOT auto-seed sessions.
+                // 2. Exactly 1 KB open without conflicting configured default -> resolve as single-open.
+                // 3. Exactly 1 KB open (B) but configured default is A (A != B) -> KB_CONTEXT_REQUIRED (DefaultConflict).
+                // 4. >1 KBs open without selection -> KB_AMBIGUOUS.
+                // 5. 0 KBs open -> never auto-open declared KB; KB_CONTEXT_REQUIRED (<=1 declared) or KB_AMBIGUOUS (>1 declared).
+                if (openKbs.Count == 1)
+                {
+                    var sole = openKbs.First();
+                    string? configuredDefault = _config.Environment?.RawDefaultKb ?? _config.Environment?.DefaultKb;
+                    if (!string.IsNullOrWhiteSpace(configuredDefault) && !string.Equals(configuredDefault, sole.Alias, StringComparison.OrdinalIgnoreCase))
+                    {
+                        selectionSource = "none";
+                        throw new KbResolutionException("KB_CONTEXT_REQUIRED",
+                            $"DefaultConflict: single open KB '{sole.Alias}' conflicts with configured default '{configuredDefault}'. Explicit KB context is required for this session.");
+                    }
+                    selectionSource = "single-open";
+                    return sole;
+                }
+
+                if (openKbs.Count > 1)
+                {
+                    selectionSource = "none";
+                    throw new KbResolutionException("KB_AMBIGUOUS",
+                        $"Multiple KBs open ({string.Join(",", openKbs.Select(k => k.Alias))}); 'kb' parameter is required.");
+                }
+
+                // openKbs.Count == 0
+                selectionSource = "none";
+                var declared = _config.Environment?.KBs ?? new List<KbEntry>();
+                if (declared.Count <= 1)
+                {
+                    throw new KbResolutionException("KB_CONTEXT_REQUIRED",
+                        "No Knowledge Base is open. Open a KB with 'genexus_kb action=open' or pass 'kb'.");
+                }
+                else
+                {
+                    var aliases = string.Join(", ", declared.Select(k => k.Alias));
+                    throw new KbResolutionException("KB_AMBIGUOUS",
+                        $"Multiple Knowledge Bases are declared ({aliases}); no KB is currently open. Pass 'kb' or open a KB with 'genexus_kb action=open'.");
+                }
+            }
+
+            // Legacy mode (ResolutionPolicy == "legacy"):
+            string? legacyDefault = _config.Environment?.DefaultKb;
+            if (string.IsNullOrWhiteSpace(legacyDefault))
+                legacyDefault = _config.Environment?.ActiveKb;
+
+            if (!string.IsNullOrWhiteSpace(legacyDefault))
+            {
+                var openDefault = openKbs.FirstOrDefault(
+                    k => string.Equals(k.Alias, legacyDefault, StringComparison.OrdinalIgnoreCase));
+                if (openDefault != null)
+                {
+                    selectionSource = "config-default";
+                    return openDefault;
+                }
+
+                if (openKbs.Count == 1)
+                {
+                    selectionSource = "single-open";
+                    return openKbs.First();
+                }
+
+                var declaredDefault = _config.Environment?.KBs?.FirstOrDefault(
+                    k => string.Equals(k.Alias, legacyDefault, StringComparison.OrdinalIgnoreCase));
+                if (declaredDefault != null)
+                {
+                    selectionSource = "config-default";
+                    return new KbHandle(declaredDefault.Alias, declaredDefault.Path);
+                }
+
+                var knownDefault = knownKbs?.FirstOrDefault(
+                    k => string.Equals(k.Alias, legacyDefault, StringComparison.OrdinalIgnoreCase));
+                if (knownDefault != null)
+                {
+                    selectionSource = "config-default";
+                    return knownDefault;
+                }
+
+                selectionSource = "none";
+                throw new KbResolutionException("KB_NOT_FOUND",
+                    $"Configured default KB '{legacyDefault}' is not declared, open, or known in this session.");
+            }
+
+            if (openKbs.Count == 1)
+            {
+                selectionSource = "single-open";
+                return openKbs.First();
+            }
+
             if (openKbs.Count == 0)
             {
-                // No default and no open KBs: fall back to first declared KB if any.
                 var first = _config.Environment?.KBs?.FirstOrDefault();
-                if (first != null) return new KbHandle(first.Alias, first.Path);
+                if (first != null)
+                {
+                    selectionSource = "declared-first";
+                    return new KbHandle(first.Alias, first.Path);
+                }
 
+                selectionSource = "none";
                 throw new KbResolutionException("KB_AMBIGUOUS",
                     "No 'kb' parameter, no DefaultKb configured, and no KB currently open.");
             }
 
+            selectionSource = "none";
             throw new KbResolutionException("KB_AMBIGUOUS",
                 $"Multiple KBs open ({string.Join(",", openKbs.Select(k => k.Alias))}); 'kb' parameter is required.");
-        }
-
-        private KbHandle ResolveWithoutConfiguredDefault(IReadOnlyCollection<KbHandle> openKbs)
-        {
-            if (openKbs.Count == 1) return openKbs.First();
-            if (openKbs.Count == 0)
-            {
-                throw new KbResolutionException("KB_AMBIGUOUS",
-                    "No KB is selected in this MCP session and no KB is currently open. Set a session default or pass 'kb'.");
-            }
-
-            throw new KbResolutionException("KB_AMBIGUOUS",
-                $"Multiple KBs open ({string.Join(",", openKbs.Select(k => k.Alias))}); select a session default or pass 'kb'.");
         }
 
         private KbHandle ResolveExplicit(
@@ -144,9 +203,14 @@ namespace GxMcp.Gateway
                 return new KbHandle(alias, kbArg);
             }
 
-            string source = fromSession ? "Session-selected KB" : "Unknown KB";
+            if (fromSession)
+            {
+                throw new KbResolutionException("KB_SELECTION_INVALID",
+                    $"Session-selected KB '{kbArg}' is not declared, open, or known. Declare an alias in config.Environment.KBs[] or pass an absolute path to an existing directory.");
+            }
+
             throw new KbResolutionException("KB_NOT_FOUND",
-                $"{source} '{kbArg}' is not declared, open, or known. Declare an alias in config.Environment.KBs[] or pass an absolute path to an existing directory.");
+                $"Unknown KB '{kbArg}' is not declared, open, or known. Declare an alias in config.Environment.KBs[] or pass an absolute path to an existing directory.");
         }
     }
 }
