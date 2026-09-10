@@ -192,7 +192,7 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Read the Documentation part of the transaction Customer and rewrite it in markdown."*
 
 **Analysis**
-- *"Explain what the procedure ProcessShipment does, step by step."*
+- *"Explain what the procedure ProcessShipment does."* — `genexus_analyze mode=explain` is a compatibility-only envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` for supported analysis and source.
 - *"What SQL does the query in WebPanel CustomerList generate?"*
 - *"Summarize the structure of the Sales module."*
 
@@ -311,7 +311,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
 
 **Analysis, docs & API**
-- `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, explain, `kb_stats` = KB activity/freshness, `table_relations` = table↔transaction relations + redundant attrs, …)
+- `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, `kb_stats` = KB activity/freshness, `table_relations` = table↔transaction relations + redundant attrs, …). `mode=explain` is compatibility-only: it preserves the legacy response envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` instead.
 - `genexus_doc` — generate wiki / dependency graphs / health reports
 - `genexus_api` — introspect REST endpoints exposed by HTTP procedures
 - `genexus_security` — audit KB security: `audit_gam` (env/GAM props), `scan_secrets` (regex over Source), `scan_native` (the SDK's own Security Scanner, `ISecurityScannerService`)

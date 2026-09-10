@@ -31,6 +31,23 @@ namespace GxMcp.Gateway.Tests
             throw new FileNotFoundException("Could not locate tool_definitions.json.");
         }
 
+        private static string FindRepositoryFile(string relativePath)
+        {
+            string directory = AppContext.BaseDirectory;
+            for (int i = 0; i < 10; i++)
+            {
+                string candidate = Path.Combine(directory, relativePath);
+                if (File.Exists(candidate))
+                    return candidate;
+
+                DirectoryInfo? parent = Directory.GetParent(directory);
+                if (parent == null) break;
+                directory = parent.FullName;
+            }
+
+            throw new FileNotFoundException($"Could not locate repository file '{relativePath}'.");
+        }
+
         [Fact]
         public void ApiRouteWritesKeepVersionTokenAlias()
         {
@@ -66,6 +83,35 @@ namespace GxMcp.Gateway.Tests
             var actions = ((JArray)FindTool("genexus_recipe")["inputSchema"]!["properties"]!["action"]!["enum"]!)
                 .Select(value => value.ToString());
             Assert.DoesNotContain("run", actions);
+        }
+
+        [Fact]
+        public void ExplainDocumentationAdvertisesCompatibilityOnlyContract()
+        {
+            JObject analyze = FindTool("genexus_analyze");
+            string description = analyze["description"]?.ToString() ?? "";
+            string codeDescription = analyze["inputSchema"]?["properties"]?["code"]?["description"]?.ToString() ?? "";
+
+            Assert.Contains("compatibility-only", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("NotImplemented", description);
+            Assert.Contains("legacy response envelope", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("summary", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("context", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("genexus_read", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("compatibility-only", codeDescription, StringComparison.OrdinalIgnoreCase);
+
+            foreach (string relativePath in new[]
+            {
+                "README.md",
+                "GEMINI.md",
+                ".gemini/skills/genexus-mastery/SKILL.md"
+            })
+            {
+                string documentation = File.ReadAllText(FindRepositoryFile(relativePath));
+                Assert.Contains("compatibility-only", documentation, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("NotImplemented", documentation);
+                Assert.Contains("genexus_read", documentation, StringComparison.OrdinalIgnoreCase);
+            }
         }
     }
 }
