@@ -18,6 +18,26 @@ Status values:
 | local bind default | active | Defaults to `127.0.0.1` through config |
 | origin validation | partial | Loopback safe by default, configurable allowlist supported |
 | session expiration | active | Idle sessions are removed automatically |
+| HTTP shared-secret boundary | active | `GXMCP_HTTP_TOKEN` is required on every `/mcp` request when set; non-loopback binds refuse requests without it |
+
+## KB context and ownership
+
+The default neutral runtime is local-friendly `stdio-isolated` with
+`ResolutionPolicy: "strict"`. An explicit valid local path may be opened without
+pre-registering a trust root; hardened deployments add OS ACL/root/network
+controls outside the MCP client registration. Strict resolution is explicit
+`kb` → session `select`/`set_session_default` → strict rules. Persisted defaults
+do not seed a session and declared KBs are not auto-opened. Explicit
+`ResolutionPolicy: "legacy"` preserves `config-default` → `single-open` →
+`declared-first` and the legacy persistent `set_default` operation.
+
+`open` owns a worker reference through an owner-scoped lease; `select` changes
+only the current session; `close` releases only the caller's reference. A
+stateful KB-bound operation without its own active lease fails with
+`KB_NOT_OWNED`; invalid/mismatched and expired leases use
+`KB_LEASE_INVALID`/`KB_LEASE_EXPIRED`. Worker duplicate-lock startup is
+`KB_LOCKED` (internal marker `WORKER_HANDSHAKE_REJECT_BUSY`). Neutral gateway
+operations and explicitly lease-free reads must not be used to infer a KB.
 
 ## Tools
 

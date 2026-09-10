@@ -4,6 +4,7 @@
 
 ### Added
 - Added `config create --config-scope neutral` for explicit KB-free runtime config generation; it requires the new runtime flags and never registers clients or creates a KB catalog.
+- Added owner-scoped operational-state path/key derivation for journals, recovery receipts, snapshots, jobs, logs, and crash ledgers; Worker KB binding now rejects `GX_KB_PATH` rebinds.
 - Aligned installer fallback and client registration on the neutral runtime; `clients add --all-clients` now covers every supported adapter without implicit KB fields or structural overrides.
 - Added session-scoped KB ownership snapshots with owner, KB identity, context generation, and lease validation for stateful gateway acquisition.
 
@@ -20,6 +21,8 @@
   accidental cross-context access.
 
 ### Changed
+
+- Issue #146 compatibility contract: documented local-friendly versus hardened deployments, strict versus explicit legacy `ResolutionPolicy`, owner-scoped open/close/select and lease-free boundaries, `KB_NOT_OWNED`/lease/`KB_LOCKED` errors, and the `GXMCP_HTTP_TOKEN` HTTP boundary; aligned ToolHelpCatalog guidance for `edit_and_build`, `sdk_probe`, and `connection_recover`.
 
 - Preview screenshots and baselines now validate logical object names, resolve canonical artifact roots, and reject paths that escape the configured preview directory.
 
