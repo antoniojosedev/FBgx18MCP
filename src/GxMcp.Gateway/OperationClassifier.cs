@@ -387,6 +387,37 @@ namespace GxMcp.Gateway
                 && HasKnownSideEffects(effectiveTool, effectiveArgs["action"]?.ToString(), effectiveArgs);
         }
 
+        /// <summary>
+        /// Returns true for operations whose result or side effects are tied to a
+        /// session-owned KB context. Stateless catalog/help reads deliberately stay
+        /// outside this set; they must not acquire a worker through a global fallback.
+        /// </summary>
+        internal static bool RequiresSessionLease(string? toolName, JObject? args)
+        {
+            if (string.IsNullOrWhiteSpace(toolName)) return false;
+            var effectiveArgs = NormalizeArguments(toolName, args, out var canonical);
+            if (string.Equals(canonical, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(canonical, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(canonical, "genexus_edit_and_build", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(canonical, "genexus_sdk_probe", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(canonical, "genexus_doc", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (string.Equals(canonical, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
+                return string.Equals(effectiveArgs["action"]?.ToString(), "crystallize", StringComparison.OrdinalIgnoreCase);
+
+            if (string.Equals(canonical, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
+            {
+                string? action = effectiveArgs["action"]?.ToString();
+                if (string.Equals(action, "result", StringComparison.OrdinalIgnoreCase)) return true;
+                if (string.Equals(action, "status", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(effectiveArgs["target"]?.ToString())) return true;
+                return IsMutationCandidate(canonical, effectiveArgs);
+            }
+
+            return false;
+        }
+
         internal sealed class OperationContract
         {
             public string CanonicalName { get; init; } = string.Empty;

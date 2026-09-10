@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Stateful routing for worker reload, connection recovery, lifecycle handles, edit-and-build, SDK probes, KB documentation, and recipe crystallization now requires the session-owned KB lease and stable `KB_CONTEXT_REQUIRED`/`KB_NOT_OWNED` envelopes; stateless recipe reads remain free of worker fallback.
 - Scoped mutation recovery fences, snapshots, jobs, crash ledgers, worker logs, and worker-owned paths by `StateScopeId`, KB identity, and generation; worker-supplied persistence paths are ignored and `GX_KB_PATH` rebinds are rejected.
 
 ### Internal

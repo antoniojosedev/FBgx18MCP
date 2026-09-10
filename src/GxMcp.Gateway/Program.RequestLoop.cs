@@ -126,6 +126,44 @@ namespace GxMcp.Gateway
                 .ConfigureAwait(false);
         }
 
+        private static JObject BuildStableKbContextError(string code, string message)
+        {
+            return new JObject
+            {
+                ["status"] = "error",
+                ["error"] = new JObject
+                {
+                    ["code"] = code,
+                    ["message"] = message,
+                    ["hint"] = "Select and open a KB in this session before retrying the stateful operation."
+                }
+            };
+        }
+
+        private static JObject? ValidateCurrentSessionLease(string sessionId)
+        {
+            if (!_sessionKbContexts.TryGetSnapshot(sessionId, out var snapshot) || snapshot == null)
+                return BuildStableKbContextError("KB_CONTEXT_REQUIRED",
+                    "This stateful operation requires an opened and selected KB context for the current session.");
+            if (snapshot.Lease == null)
+                return BuildStableKbContextError("KB_NOT_OWNED",
+                    "This stateful operation requires an active KB lease owned by the current session.");
+
+            try
+            {
+                _kbLeases.Validate(snapshot.Lease.Token, snapshot.OwnerScopeId, snapshot.KbId,
+                    snapshot.ContextGeneration, snapshot.Lease.Identity);
+                return null;
+            }
+            catch (KbLeaseValidationException ex)
+            {
+                return BuildStableKbContextError(
+                    string.Equals(ex.Code, "KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase)
+                        ? "KB_CONTEXT_REQUIRED" : "KB_NOT_OWNED",
+                    ex.Message);
+            }
+        }
+
         private static async Task<JObject?> ProcessMcpRequestCore(
             JObject request,
             string sessionId = "stdio",
@@ -224,8 +262,12 @@ namespace GxMcp.Gateway
                     isMetaTool = !string.IsNullOrEmpty(toolNameForResolver) && IsMetaTool(toolNameForResolver);
                 }
 
+                bool statefulMetaTool = string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase)
+                    && OperationClassifier.RequiresSessionLease(
+                        toolNameForResolver,
+                        (request["params"] as JObject)?["arguments"] as JObject);
                 bool needsKbResolution =
-                    (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase) && !isMetaTool)
+                    (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase) && (!isMetaTool || statefulMetaTool))
                     || (string.Equals(method, "resources/read", StringComparison.OrdinalIgnoreCase)
                         && McpRouter.ConvertResourceCall(request) != null);
 
@@ -267,10 +309,25 @@ namespace GxMcp.Gateway
                         _currentSessionContext.Value = sessionSnapshot;
                         var resolvedArgs = (request["params"] as JObject)?["arguments"] as JObject;
                         _currentOperationRequiresOwner.Value = !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase)
-                            && IsMutatingTool(toolNameForResolver ?? string.Empty, resolvedArgs);
+                            && OperationClassifier.RequiresSessionLease(toolNameForResolver ?? string.Empty, resolvedArgs);
                     }
                     catch (KbResolutionException ex)
                     {
+                        if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase)
+                            && OperationClassifier.RequiresSessionLease(
+                                toolNameForResolver,
+                                (request["params"] as JObject)?["arguments"] as JObject)
+                            && (string.Equals(ex.Code, "KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(ex.Code, "KB_NOT_OWNED", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            return BuildToolTextResponse(
+                                idToken,
+                                BuildStableKbContextError(ex.Code, ex.Message),
+                                isError: true,
+                                toolName: toolNameForResolver,
+                                toolArgs: (request["params"] as JObject)?["arguments"] as JObject,
+                                payloadOwned: true);
+                        }
                         // Friction 2026-05-22 #63: surface suggested_next_step on KB_AMBIGUOUS
                         // (and KB_NOT_FOUND) so the agent knows to retry with kb=<alias>.
                         var dataObj = new JObject
@@ -499,6 +556,17 @@ namespace GxMcp.Gateway
 
                         return BuildToolTextResponse(idToken, invalidArgsPayload, isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
                     }
+                }
+
+                // Reject stateful calls before any gateway handler can select a
+                // process-wide worker. Stateless recipe/catalog reads remain global.
+                if (OperationClassifier.RequiresSessionLease(toolName, args)
+                    && !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase))
+                {
+                    var ownershipError = ValidateCurrentSessionLease(sessionId);
+                    if (ownershipError != null)
+                        return BuildToolTextResponse(idToken, ownershipError, isError: true,
+                            toolName: toolName, toolArgs: args, payloadOwned: true);
                 }
 
                 // Auto-inject 'type' when the LLM omits it but 'name' resolves to a
