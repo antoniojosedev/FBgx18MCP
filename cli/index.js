@@ -16,6 +16,7 @@ const {
     handleToolsList,
     handleConfigShow,
     handleConfigCreate,
+    handleConfigMigrate,
     handleInit,
     handleWhoami,
     handleUninstall,
@@ -98,7 +99,7 @@ function parseArgs(argv) {
         tokens.shift();
     }
 
-    if (result.command === 'config' && ['show', 'create'].includes(tokens[0])) {
+    if (result.command === 'config' && ['show', 'create', 'migrate'].includes(tokens[0])) {
         result.subcommand = tokens[0];
         tokens.shift();
     }
@@ -176,6 +177,15 @@ function parseArgs(argv) {
                 else result.unknownFlags.push('--gx requires a value');
                 break;
             }
+            case 'from': {
+                const val = takeValue();
+                if (val) result.options.fromPath = val;
+                else result.unknownFlags.push('--from requires a value');
+                break;
+            }
+            case 'reject-non-migratable':
+                result.options.rejectNonMigratable = true;
+                break;
             case 'output': {
                 const val = takeValue();
                 if (val) result.options.output = val;
@@ -593,16 +603,18 @@ async function main(argv) {
             result = await handleToolsList(parsed.options, ctx);
             break;
         case 'config':
-            if (parsed.subcommand !== 'show' && parsed.subcommand !== 'create') {
+            if (!['show', 'create', 'migrate'].includes(parsed.subcommand)) {
                 writeStructured(
                     process.stdout,
-                    withCommandMeta(usageEnvelope('config requires subcommand `show` or `create`.', EXIT_CODES.USAGE), resolveMetaCommand(parsed)),
+                    withCommandMeta(usageEnvelope('config requires subcommand `show`, `create`, or `migrate`.', EXIT_CODES.USAGE), resolveMetaCommand(parsed)),
                     parsed.options.format
                 );
                 return EXIT_CODES.USAGE;
             }
             result = parsed.subcommand === 'create'
                 ? await handleConfigCreate(parsed.options, ctx)
+                : parsed.subcommand === 'migrate'
+                    ? await handleConfigMigrate(parsed.options, ctx)
                 : await handleConfigShow(parsed.options, ctx);
             break;
         case 'llm':

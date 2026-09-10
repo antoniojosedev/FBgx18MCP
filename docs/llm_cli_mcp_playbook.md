@@ -34,11 +34,11 @@ Entry points:
 Neutral installer/runtime setup:
 - `genexus-mcp config create --config-scope neutral --output <path> --gx <path> --worker <path> --gateway-mode stdio-isolated --resolution-policy strict`
 - `genexus-mcp clients add --all-clients` (or `--clients opencode,codex-cli,vscode,antigravity,gemini-cli`)
+- `genexus-mcp config migrate --from <legacy.json> --output <neutral.json>` is the only configuration migration path. It copies runtime fields into the neutral schema (`ConfigSchemaVersion: 2`, `GatewayMode`, `GeneXus`, `Server`, and `Environment.ResolutionPolicy`), writes an atomic source backup, verifies the destination by read-back, and rolls back an existing destination if verification fails. The JSON receipt reports `backupPath`, `readBack`, `rolledBack`, `migrated`, and `notMigrated`.
+- Legacy KB fields (`Environment.KBPath`, `KBs`, `DefaultKb`, `ActiveKb`) are deliberately not migrated because neutral configs are KB-free. Use `--reject-non-migratable` to fail before writing when any are present.
+- `init` and `clients add` never migrate or rewrite an existing config automatically. `kb add`, `kb remove`, and `kb switch` remain the legacy catalog flow: they mutate the `Environment` catalog in the config selected by `GX_CONFIG_PATH` or the current directory. Neutral runtimes use explicit per-session MCP KB selection instead.
 
-The neutral runtime contains no `KBPath`, `KBs`, `DefaultKb`, or `ActiveKb`; KB
-selection remains an explicit MCP session action. Adapters preserve unrelated
-servers and the existing OpenCode `mcp.<name>` versus `mcp.servers.<name>` layout.
-They add `GX_CONFIG_PATH` only when `--global-config` is explicitly requested.
+The neutral runtime contains no `KBPath`, `KBs`, `DefaultKb`, or `ActiveKb`; KB selection remains an explicit MCP session action. Adapters preserve unrelated servers and the existing OpenCode `mcp.<name>` versus `mcp.servers.<name>` layout. They add `GX_CONFIG_PATH` only when `--global-config` is explicitly requested.
 
 Rules:
 - Parse `stdout` only.

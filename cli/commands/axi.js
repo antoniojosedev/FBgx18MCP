@@ -10,6 +10,7 @@ const {
     readJsonFileSafe,
     directoryLooksLikeKnowledgeBase,
     createConfigFile,
+    migrateLegacyConfig,
     patchClientConfig,
     unpatchClientConfig,
     getClientConfigTargets,
@@ -958,6 +959,51 @@ async function handleConfigCreate(options, ctx) {
         return {
             exitCode: ctx.EXIT_CODES.ERROR,
             envelope: operationalErrorEnvelope(`Could not write neutral config: ${err.message}`, ctx.EXIT_CODES.ERROR)
+        };
+    }
+}
+
+async function handleConfigMigrate(options, ctx) {
+    const sourcePath = options.fromPath || resolveConfigPathNoMutate(ctx.cwd);
+    if (!sourcePath) {
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('config migrate requires --from <legacy-config> (or a config.json in the current directory).', ctx.EXIT_CODES.USAGE) };
+    }
+    const targetPath = options.output || `${sourcePath}.neutral.json`;
+    if (path.resolve(sourcePath) === path.resolve(targetPath)) {
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('config migrate requires --output to differ from --from; the legacy source is never overwritten.', ctx.EXIT_CODES.USAGE) };
+    }
+    try {
+        const receipt = migrateLegacyConfig(sourcePath, targetPath, { rejectNonMigratable: Boolean(options.rejectNonMigratable) });
+        return {
+            exitCode: ctx.EXIT_CODES.OK,
+            envelope: {
+                ok: { action: 'config.migrate', ...receipt },
+                help: receipt.notMigrated.length > 0
+                    ? ['KB fields were not migrated. Keep using `kb add`, `kb remove`, and `kb switch` against the legacy config, or select a KB explicitly through MCP.']
+                    : []
+            }
+        };
+    } catch (err) {
+        if (err.code === 'NON_MIGRATABLE_FIELDS') {
+            return {
+                exitCode: ctx.EXIT_CODES.USAGE,
+                envelope: {
+                    ...usageEnvelope(err.message, ctx.EXIT_CODES.USAGE),
+                    meta: { exitCode: ctx.EXIT_CODES.USAGE, notMigrated: err.notMigrated || [] }
+                }
+            };
+        }
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: {
+                error: {
+                    code: 'operation_error',
+                    message: sanitizeOperationalMessage(`Configuration migration failed: ${err.message}`),
+                    rollback: err.rollback || { rolledBack: false }
+                },
+                help: err.backupPath ? [`The source backup was written to ${err.backupPath}.`] : [],
+                meta: { exitCode: ctx.EXIT_CODES.ERROR, notMigrated: err.notMigrated || [] }
+            }
         };
     }
 }
@@ -2114,8 +2160,8 @@ function commandHelpMap() {
             examples: ['genexus-mcp tools list', 'genexus-mcp tools list --query read --fields name,category --format json']
         },
         config: {
-            usage: 'genexus-mcp config show [--full] [--fields f1,f2] [--format ...] OR genexus-mcp config create --config-scope neutral --output <path> --gx <path> --worker <path> --gateway-mode <mode> --resolution-policy <policy>',
-            examples: ['genexus-mcp config show', 'genexus-mcp config create --config-scope neutral --output ./config.json --gx <path> --worker <path> --gateway-mode stdio-isolated --resolution-policy strict']
+            usage: 'genexus-mcp config show [--full] [--fields f1,f2] [--format ...] OR genexus-mcp config create --config-scope neutral --output <path> --gx <path> --worker <path> --gateway-mode <mode> --resolution-policy <policy> OR genexus-mcp config migrate --from <legacy.json> --output <neutral.json> [--reject-non-migratable]',
+            examples: ['genexus-mcp config show', 'genexus-mcp config create --config-scope neutral --output ./config.json --gx <path> --worker <path> --gateway-mode stdio-isolated --resolution-policy strict', 'genexus-mcp config migrate --from ./config.json --output ./.genexus-mcp/config.json']
         },
         init: {
             usage: 'genexus-mcp init [--kb <path>] [--gx <path>] [--server-name <name>] [--force] [--no-write-clients] [--clients <csv>] [--all-clients] [--no-smoke] [--warm] [--format ...] OR genexus-mcp init --interactive',
@@ -2338,6 +2384,7 @@ module.exports = {
     handleToolsList,
     handleConfigShow,
     handleConfigCreate,
+    handleConfigMigrate,
     handleInit,
     handleWhoami,
     handleUninstall,

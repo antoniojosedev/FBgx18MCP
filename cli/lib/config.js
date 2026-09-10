@@ -422,6 +422,89 @@ function writeClientText(filePath, content, fileSystem = fs) {
     writeFileAtomic(filePath, content, fileSystem);
 }
 
+function copyFileAtomic(sourcePath, targetPath, fileSystem = fs) {
+    const tmp = `${targetPath}.tmp-${process.pid}`;
+    fileSystem.copyFileSync(sourcePath, tmp);
+    try {
+        fileSystem.renameSync(tmp, targetPath);
+    } catch (err) {
+        try { fileSystem.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+        throw err;
+    }
+}
+
+function migrateLegacyConfig(sourcePath, targetPath, { rejectNonMigratable = false, fileSystem = fs } = {}) {
+    const source = path.resolve(sourcePath);
+    const target = path.resolve(targetPath);
+    const legacy = readJsonFileSafe(source, fileSystem);
+    if (!legacy || typeof legacy !== 'object') {
+        const err = new Error(`Legacy config is missing or invalid: ${source}`);
+        err.code = 'INVALID_CONFIG';
+        throw err;
+    }
+
+    const env = legacy.Environment && typeof legacy.Environment === 'object' ? legacy.Environment : {};
+    const notMigrated = ['KBPath', 'KBs', 'DefaultKb', 'ActiveKb']
+        .filter((key) => Object.prototype.hasOwnProperty.call(env, key))
+        .map((key) => `Environment.${key}`);
+    if (rejectNonMigratable && notMigrated.length > 0) {
+        const err = new Error(`Migration rejected non-migratable fields: ${notMigrated.join(', ')}.`);
+        err.code = 'NON_MIGRATABLE_FIELDS';
+        err.notMigrated = notMigrated;
+        throw err;
+    }
+
+    const migrated = {
+        ConfigSchemaVersion: 2,
+        GatewayMode: legacy.GatewayMode || 'stdio-isolated',
+        GeneXus: { ...(legacy.GeneXus && typeof legacy.GeneXus === 'object' ? legacy.GeneXus : {}) },
+        Server: { ...(legacy.Server && typeof legacy.Server === 'object' ? legacy.Server : {}) },
+        Environment: {
+            ResolutionPolicy: env.ResolutionPolicy || 'strict'
+        }
+    };
+    const backupPath = (() => {
+        let candidate = `${source}.pre-migrate.bak`;
+        let suffix = 1;
+        while (fileSystem.existsSync(candidate)) candidate = `${source}.pre-migrate-${suffix++}.bak`;
+        return candidate;
+    })();
+    const targetExisted = fileSystem.existsSync(target);
+    const targetBackup = targetExisted ? `${target}.rollback-${process.pid}-${Date.now()}.bak` : null;
+    let wroteTarget = false;
+    try {
+        copyFileAtomic(source, backupPath, fileSystem);
+        if (targetExisted) copyFileAtomic(target, targetBackup, fileSystem);
+        fileSystem.mkdirSync(path.dirname(target), { recursive: true });
+        writeFileAtomic(target, JSON.stringify(migrated, null, 2), fileSystem);
+        wroteTarget = true;
+        const readBack = process.env.GENEXUS_MCP_MIGRATE_FAIL_READBACK
+            ? null
+            : readJsonFileSafe(target, fileSystem);
+        if (!readBack || readBack.ConfigSchemaVersion !== 2 || JSON.stringify(readBack) !== JSON.stringify(migrated)) {
+            throw new Error('Migration read-back verification failed.');
+        }
+        if (targetBackup) {
+            try { fileSystem.rmSync(targetBackup, { force: true }); } catch { /* best effort */ }
+        }
+        return { sourcePath: source, targetPath: target, backupPath, readBack: true, migrated: Object.keys(migrated), notMigrated, rolledBack: false };
+    } catch (err) {
+        let rolledBack = false;
+        try {
+            if (targetExisted && targetBackup) copyFileAtomic(targetBackup, target, fileSystem);
+            else if (wroteTarget) fileSystem.rmSync(target, { force: true });
+            rolledBack = true;
+        } catch { /* report rollback failure */ }
+        if (targetBackup) {
+            try { fileSystem.rmSync(targetBackup, { force: true }); } catch { /* best effort */ }
+        }
+        err.rollback = { rolledBack };
+        err.backupPath = backupPath;
+        err.notMigrated = notMigrated;
+        throw err;
+    }
+}
+
 function resolveConfigPathNoMutate(cwd) {
     const cwdConfigPath = path.join(cwd, 'config.json');
     if (process.env.GX_CONFIG_PATH && fs.existsSync(process.env.GX_CONFIG_PATH)) {
@@ -1548,15 +1631,6 @@ function applyLauncherConfigOrExit({ cwd, stderr, quiet }) {
 
     if (!directoryLooksLikeKnowledgeBase(cwd)) {
         if (fs.existsSync(userMcpConfigPath)) {
-            const existing = readJsonFileSafe(userMcpConfigPath);
-            if (existing && existing.Environment && typeof existing.Environment === 'object') {
-                delete existing.Environment.KBPath;
-                delete existing.Environment.KBs;
-                delete existing.Environment.DefaultKb;
-                delete existing.Environment.ActiveKb;
-                if (!existing.Environment.ResolutionPolicy) existing.Environment.ResolutionPolicy = 'strict';
-                writeFileAtomic(userMcpConfigPath, JSON.stringify(existing, null, 2));
-            }
             process.env.GX_CONFIG_PATH = userMcpConfigPath;
             return { ok: true };
         }
@@ -1591,6 +1665,7 @@ module.exports = {
     directoryLooksLikeKnowledgeBase,
     readJsonFileSafe,
     resolveConfigPathNoMutate,
+    migrateLegacyConfig,
     createConfigFile,
     patchClientConfig,
     unpatchClientConfig,

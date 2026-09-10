@@ -225,6 +225,69 @@ test('config create does not modify client registration', () => {
     assert.deepEqual(JSON.parse(result.stdout).ok.config, JSON.parse(fs.readFileSync(output, 'utf8')));
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
+test('config migrate creates a neutral config with an atomic backup and read-back receipt', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-migrate-'));
+    try {
+        const source = path.join(tempRoot, 'legacy.json');
+        const target = path.join(tempRoot, 'neutral.json');
+        const legacy = {
+            GeneXus: { InstallationPath: 'C:\\GeneXus18', WorkerExecutable: 'C:\\worker.exe' },
+            Server: { HttpPort: 5000, McpStdio: true },
+            Environment: { KBPath: 'C:\\KBs\\main', DefaultKb: 'main', KBs: [{ Alias: 'main', Path: 'C:\\KBs\\main' }] }
+        };
+        fs.writeFileSync(source, JSON.stringify(legacy, null, 2));
+        const result = runCli(['config', 'migrate', '--from', source, '--output', target, '--format', 'json']);
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.meta.command, 'config.migrate');
+        assert.equal(parsed.ok.readBack, true);
+        assert.ok(fs.existsSync(parsed.ok.backupPath));
+        assert.deepEqual(JSON.parse(fs.readFileSync(parsed.ok.backupPath, 'utf8')), legacy);
+        assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).ConfigSchemaVersion, 2);
+        assert.deepEqual(parsed.ok.notMigrated, ['Environment.KBPath', 'Environment.KBs', 'Environment.DefaultKb']);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('config migrate rolls back an existing destination when read-back fails', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-migrate-rollback-'));
+    try {
+        const source = path.join(tempRoot, 'legacy.json');
+        const target = path.join(tempRoot, 'neutral.json');
+        fs.writeFileSync(source, JSON.stringify({ GeneXus: { InstallationPath: 'C:\\GeneXus18' } }));
+        const original = JSON.stringify({ keep: 'old' }, null, 2);
+        fs.writeFileSync(target, original);
+        const result = runCli(['config', 'migrate', '--from', source, '--output', target, '--format', 'json'], {
+            env: { GENEXUS_MCP_MIGRATE_FAIL_READBACK: '1' }
+        });
+        assert.equal(result.status, 1);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.error.code, 'operation_error');
+        assert.equal(parsed.ok, undefined);
+        assert.equal(fs.readFileSync(target, 'utf8'), original);
+        assert.equal(parsed.error.rollback.rolledBack, true);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('config migrate rejects non-migratable fields when explicitly requested', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-migrate-reject-'));
+    try {
+        const source = path.join(tempRoot, 'legacy.json');
+        const target = path.join(tempRoot, 'neutral.json');
+        fs.writeFileSync(source, JSON.stringify({ Environment: { KBPath: 'C:\\KBs\\main' } }));
+        const result = runCli(['config', 'migrate', '--from', source, '--output', target, '--reject-non-migratable', '--format', 'json']);
+        assert.equal(result.status, 2);
+        const parsed = JSON.parse(result.stdout);
+        assert.match(parsed.error.message, /non-migratable/i);
+        assert.equal(fs.existsSync(target), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('whoami without config returns disconnected state', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-test-'));
     const res = runCli(['whoami', '--format', 'json'], { cwd: tempRoot });
