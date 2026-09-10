@@ -49,6 +49,9 @@
 
 ### Added
 
+- Added the capability release-state design, machine-readable report schema,
+  provenance/expiry rules, CI and release integration proposal, and
+  user-facing examples without changing existing MCP capability payloads.
 - `genexus_kb` `action=select` and `action=set_session_default` for strict per-session KB selection without mutating `config.json` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
 - `genexus_kb` `action=set_persistent_default` as an explicit mutating operation that updates the startup fallback in `config.json` and reports `persistedTo` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
 - `genexus_kb` `action=set_default` now supports `persist: false` to delegate directly to per-session selection without updating the shared `config.json`, and acts as a legacy persistent operation returning `persistedTo` by default ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
