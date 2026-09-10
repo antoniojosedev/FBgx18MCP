@@ -66,7 +66,8 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(firstKey);
             Assert.Equal(firstKey, secondKey);
             Assert.NotEqual(firstKey, nextRevisionKey);
-            Assert.Contains("|rev=4|model=model-v2|env=development", firstKey);
+            Assert.Contains("|kb1|gen=4|", firstKey);
+            Assert.Contains("|model=model-v2|env=development", firstKey);
         }
 
         [Fact]
@@ -93,7 +94,8 @@ namespace GxMcp.Gateway.Tests
                 0, null, null);
 
             Assert.Equal(first, reordered);
-            Assert.Contains("|rev=0|model=|env=", first);
+            Assert.Contains("|kb1|gen=0|", first);
+            Assert.Contains("|model=|env=", first);
         }
 
         [Fact]

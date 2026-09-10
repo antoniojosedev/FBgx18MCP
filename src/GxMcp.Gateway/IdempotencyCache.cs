@@ -78,12 +78,20 @@ namespace GxMcp.Gateway
             return bucket.TryGet(tool, key, payloadHash, out cached);
         }
 
+        internal bool TryGet(StateScopeId stateScopeId, string kbId, long generation,
+                             string tool, string key, string payloadHash, out JObject? cached)
+            => TryGet(ScopedIdentity(stateScopeId, kbId, generation), tool, key, payloadHash, out cached);
+
         public void Put(string kbPath, string tool, string key,
                         string payloadHash, JObject result)
         {
             var bucket = _buckets.GetOrAdd(kbPath, _ => new KbBucket(_capacity, _ttl));
             bucket.Put(tool, key, payloadHash, result);
         }
+
+        internal void Put(StateScopeId stateScopeId, string kbId, long generation,
+                          string tool, string key, string payloadHash, JObject result)
+            => Put(ScopedIdentity(stateScopeId, kbId, generation), tool, key, payloadHash, result);
 
         public async Task<JObject> GetOrCompute(
             string kbPath, string tool, string key, string payloadHash,
@@ -161,6 +169,16 @@ namespace GxMcp.Gateway
                 }
             }
         }
+
+        internal Task<JObject> GetOrCompute(
+            StateScopeId stateScopeId, string kbId, long generation,
+            string tool, string key, string payloadHash,
+            Func<Task<JObject>> factory,
+            MutationOperationEvidence? evidence = null)
+            => GetOrCompute(ScopedIdentity(stateScopeId, kbId, generation), tool, key, payloadHash, factory, evidence);
+
+        private static string ScopedIdentity(StateScopeId stateScopeId, string kbId, long generation)
+            => StateScopedCacheKey.Create(stateScopeId, kbId, generation, "idempotency").ToString();
 
         private sealed class GateEntry
         {

@@ -80,6 +80,9 @@ namespace GxMcp.Gateway
             return true;
         }
 
+        internal bool TryGet(StateScopedCacheKey key, out JObject value)
+            => TryGet(key.ToString(), out value);
+
         public void Set(string key, JObject value)
         {
             // Opportunistic maintenance: expire stale entries first so they don't
@@ -93,6 +96,9 @@ namespace GxMcp.Gateway
 
             EvictBeyondCap();
         }
+
+        internal void Set(StateScopedCacheKey key, JObject value)
+            => Set(key.ToString(), value);
 
         public void Clear()
         {
@@ -149,7 +155,10 @@ namespace GxMcp.Gateway
             int removed = 0;
             foreach (var key in _entries.Keys.ToArray())
             {
-                if (key.StartsWith(scope + "|", StringComparison.Ordinal) && RemoveEntry(key)) removed++;
+                if ((key.StartsWith(scope + "|", StringComparison.Ordinal)
+                    || (StateScopedCacheKey.TryParse(key, out var scopedKey)
+                        && string.Equals(scopedKey.KbId, scope, StringComparison.Ordinal)))
+                    && RemoveEntry(key)) removed++;
             }
             return removed;
         }
@@ -172,15 +181,20 @@ namespace GxMcp.Gateway
             int removed = 0;
             foreach (var key in _entries.Keys.ToArray())
             {
-                if (!key.StartsWith(scope + "|", StringComparison.Ordinal)) continue;
-                int argsStart = key.IndexOf(':', scope.Length + 2);
+                StateScopedCacheKey.TryParse(key, out var scopedKey);
+                if (!key.StartsWith(scope + "|", StringComparison.Ordinal)
+                    && !string.Equals(scopedKey.KbId, scope, StringComparison.Ordinal)) continue;
+                string itemKey = key.StartsWith(scope + "|", StringComparison.Ordinal)
+                    ? key.Substring(scope.Length + 1)
+                    : scopedKey.ItemKey;
+                int argsStart = itemKey.IndexOf(':');
                 if (argsStart < 0)
                 {
                     if (RemoveEntry(key)) removed++;
                     continue;
                 }
-                string tool = key.Substring(scope.Length + 1, argsStart - scope.Length - 1);
-                string argsJson = key.Substring(argsStart + 1);
+                string tool = itemKey.Substring(0, argsStart);
+                string argsJson = itemKey.Substring(argsStart + 1);
                 if ((!string.Equals(tool, "genexus_read", StringComparison.OrdinalIgnoreCase)
                      || argsJson.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
                     && RemoveEntry(key))

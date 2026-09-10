@@ -413,8 +413,12 @@ namespace GxMcp.Gateway
             string model = CanonicalizeScopePart(modelScope);
             string environment = CanonicalizeScopePart(environmentScope);
 
-            return $"{normalizedKb}|{normalizedTool}:{canonicalArgs.ToString(Newtonsoft.Json.Formatting.None)}"
-                + $"|rev={cacheRevision}|model={model}|env={environment}";
+            return StateScopedCacheKey.Create(
+                StateScope.ProcessScopeId,
+                normalizedKb,
+                cacheRevision,
+                normalizedTool + ":" + canonicalArgs.ToString(Newtonsoft.Json.Formatting.None)
+                    + $"|model={model}|env={environment}").ToString();
         }
 
         /// <summary>Sorts object properties recursively while preserving array order.</summary>
