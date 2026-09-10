@@ -19,6 +19,8 @@
 
 - Hardened live validation with exact Gateway image/master checks, isolated per-run logs and ports, configurable RPC timeouts with diagnostics, and a generic edit route-to-Worker contract test.
 
+- Fixed the live-fixture manifest guard to fail closed without prompting for interactive confirmation.
+
 ## v3.2.0 - 2026-09-09
 
 

@@ -55,7 +55,7 @@ try {
     $missingConfirmation = @(& pwsh -NoProfile -File $generator `
         -KbPath $fixtureRoot -FixtureId 'missing-confirmation' -FixtureRevision 'revision-1' `
         -Generator 'GeneXus18-net' -KbDatabaseId 'isolated-kb' -ApplicationDatabaseId 'isolated-app' `
-        -Evidence 'script-test' -ProvisionedBy GeneXus 2>&1)
+        -Evidence 'script-test' -ProvisionedBy GeneXus -ConfirmIsolated:$false 2>&1)
     if ($LASTEXITCODE -eq 0 -or ($missingConfirmation -join "`n") -notmatch 'ConfirmIsolated') {
         throw 'Manifest generator must fail closed without the explicit isolation confirmation.'
     }
