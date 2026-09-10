@@ -67,7 +67,7 @@ namespace GxMcp.Gateway.Tests
                 }
             };
 
-            var routed = JObject.FromObject(McpRouter.ConvertToolCall(request));
+            var routed = JObject.FromObject(McpRouter.ConvertToolCall(request)!);
             Assert.True(routed["requireObjectSave"]?.Value<bool>());
 
             var workerRpc = Program.BuildWorkerRpcRequest(routed, "request-id");
@@ -102,7 +102,7 @@ namespace GxMcp.Gateway.Tests
                 ["autoDeclareVariables"] = true
             };
 
-            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args)!);
             Assert.True(routed["autoDeclareVariables"]?.Value<bool>());
         }
 
@@ -118,7 +118,7 @@ namespace GxMcp.Gateway.Tests
                 ["autoDeclareVariables"] = true
             };
 
-            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args)!);
             Assert.True(routed["autoDeclareVariables"]?.Value<bool>());
         }
     }
