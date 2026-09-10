@@ -222,6 +222,16 @@ namespace GxMcp.Worker
                 if (string.IsNullOrEmpty(gxPath))
                     throw new Exception("GX_PROGRAM_DIR not specified in environment or local config.json.");
 
+                string sdkManifest = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "", "sdk-compatibility.json");
+                var sdkCompatibility = SdkCompatibilityValidator.Validate(gxPath, sdkManifest);
+                if (!sdkCompatibility.IsCompatible)
+                {
+                    Logger.Error(sdkCompatibility.Diagnostic);
+                    Environment.Exit(1);
+                    return;
+                }
+                Logger.Info(sdkCompatibility.Diagnostic);
+
                 // FR#19 (v2.6.6 Stream B): refuse to start when another worker already
                 // serves this (kbPath, workerExe) pair. We resolve the cli-arg kbPath
                 // first so the lock key matches whatever the gateway intended.
