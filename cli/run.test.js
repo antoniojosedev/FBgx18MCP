@@ -6,7 +6,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const { renderOutput } = require('./lib/output');
 const { compareSemver, detectInstallMethod, upgradePlanFor } = require('./lib/update-check');
-const { detectClientInstalled, readJsonFileSafe, getLauncher } = require('./lib/config');
+const { detectClientInstalled, readJsonFileSafe, getLauncher, patchClientConfig } = require('./lib/config');
 
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
@@ -1650,4 +1650,94 @@ test('clients add rejects invalid --server-name characters with usage error', ()
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.error.code, 'usage_error');
     assert.match(parsed.error.message, /alphanumeric/);
+});
+
+function fsFailureProxy(realFs, failure) {
+    let calls = 0;
+    return new Proxy(realFs, {
+        get(target, property) {
+            if (property === failure.method) {
+                return (...args) => {
+                    calls += 1;
+                    if (!failure.match || failure.match(args, calls)) throw new Error(failure.message);
+                    return target[property](...args);
+                };
+            }
+            const value = target[property];
+            return typeof value === 'function' ? value.bind(target) : value;
+        }
+    });
+}
+
+function patchFailureFixture(prefix) {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    const env = sandboxHomeEnv(tempRoot);
+    process.env.XDG_CONFIG_HOME = env.XDG_CONFIG_HOME;
+    process.env.APPDATA = env.APPDATA;
+    const cfgPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+    const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+    const vscodeCfg = path.join(env.APPDATA, 'Code', 'User', 'mcp.json');
+    fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+    fs.mkdirSync(path.dirname(vscodeCfg), { recursive: true });
+    fs.writeFileSync(openCodeCfg, JSON.stringify({ mcp: { other: { type: 'local' } } }));
+    fs.writeFileSync(vscodeCfg, JSON.stringify({ servers: { other: { type: 'stdio' } } }));
+    return { tempRoot, env, cfgPath, openCodeCfg, vscodeCfg };
+}
+
+test('patchClientConfig reports backup failure without claiming that client patched', () => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-backup-');
+    try {
+        const result = patchClientConfig(fixture.cfgPath, {
+            ids: ['opencode', 'vscode'], onlyExisting: false,
+            fs: fsFailureProxy(fs, { method: 'copyFileSync', message: 'backup denied', match: ([source]) => source === fixture.openCodeCfg })
+        });
+        assert.deepEqual(result.patched, ['VS Code']);
+        assert.deepEqual(result.failed, [{ client: 'OpenCode (CLI)', reason: 'backup denied' }]);
+        assert.equal(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp, undefined);
+        assert.ok(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp);
+    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
+
+test('patchClientConfig preserves earlier success when a later client write fails', () => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-write-');
+    try {
+        const result = patchClientConfig(fixture.cfgPath, {
+            ids: ['opencode', 'vscode'], onlyExisting: false,
+            fs: fsFailureProxy(fs, { method: 'writeFileSync', message: 'write denied', match: ([filePath]) => filePath === `${fixture.vscodeCfg}.tmp-${process.pid}` })
+        });
+        assert.deepEqual(result.patched, ['OpenCode (CLI)']);
+        assert.deepEqual(result.failed, [{ client: 'VS Code', reason: 'write denied' }]);
+        assert.ok(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp);
+        assert.equal(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp, undefined);
+    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
+
+test('patchClientConfig reports post-write read-back failure as partial state', () => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-readback-');
+    try {
+        const result = patchClientConfig(fixture.cfgPath, {
+            ids: ['opencode', 'vscode'], onlyExisting: false,
+            fs: fsFailureProxy(fs, { method: 'readFileSync', message: 'read-back denied', match: ([filePath], calls) => filePath === fixture.openCodeCfg && calls === 2 })
+        });
+        assert.deepEqual(result.patched, ['VS Code']);
+        assert.deepEqual(result.failed, [{ client: 'OpenCode (CLI)', reason: 'post-write verification failed (genexus18mcp entry not found after write)' }]);
+        assert.ok(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp);
+        assert.ok(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp);
+    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
+
+test('patchClientConfig keeps a stale same-second backup and writes a distinct backup', () => {
+    const fixture = patchFailureFixture('genexus-mcp-stale-backup-');
+    try {
+        const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        const stale = `${fixture.openCodeCfg}.${stamp}.bak`;
+        fs.writeFileSync(stale, 'stale backup');
+        const result = patchClientConfig(fixture.cfgPath, { ids: ['opencode'], onlyExisting: false });
+        assert.deepEqual(result.failed, []);
+        assert.equal(fs.readFileSync(stale, 'utf8'), 'stale backup');
+        const backups = fs.readdirSync(path.dirname(fixture.openCodeCfg)).filter((name) => name.startsWith(path.basename(fixture.openCodeCfg)) && name.endsWith('.bak'));
+        assert.equal(backups.length, 2);
+        assert.ok(backups.some((name) => name !== path.basename(stale)));
+    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });

@@ -330,9 +330,9 @@ function stripJsonComments(text) {
     return out;
 }
 
-function readJsonFileSafe(filePath) {
+function readJsonFileSafe(filePath, fileSystem = fs) {
     try {
-        const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+        const raw = fileSystem.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
         if (!raw.trim()) return {};
         try {
             return JSON.parse(raw);
@@ -355,69 +355,68 @@ function readJsonFileSafe(filePath) {
 
 // Atomic write: stage to a temp file then rename over the target, so a crash
 // mid-write can never leave a client's config truncated.
-function writeFileAtomic(filePath, content) {
+function writeFileAtomic(filePath, content, fileSystem = fs) {
     const tmp = `${filePath}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, content);
+    fileSystem.writeFileSync(tmp, content);
     try {
-        fs.renameSync(tmp, filePath);
+        fileSystem.renameSync(tmp, filePath);
     } catch (err) {
-        try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+        try { fileSystem.rmSync(tmp, { force: true }); } catch { /* ignore */ }
         throw err;
     }
 }
 
 // Back up a client config once per process run before the first mutation, so the
 // user has a restore point (the old build-from-source install.ps1 did this; the
-// CLI now owns it). Best-effort \u2014 a failed backup never blocks the write.
+// CLI now owns it). A failed backup blocks the mutation so the result remains
+// recoverable.
 // After writing a new backup, prune old .bak files for the same config so at
 // most BAK_KEEP_COUNT backups exist (oldest removed first).
 const BAK_KEEP_COUNT = 5;
 const _backedUpThisRun = new Set();
-function backupClientConfigOnce(filePath) {
-    if (!fs.existsSync(filePath)) return null;
+function backupClientConfigOnce(filePath, fileSystem = fs) {
+    if (!fileSystem.existsSync(filePath)) return null;
     // Case-fold the dedupe key only on Windows; lowercasing on a case-sensitive
     // filesystem could merge two genuinely distinct paths.
     const resolved = path.resolve(filePath);
     const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
     if (_backedUpThisRun.has(key)) return null;
-    try {
-        const d = new Date();
+    const d = new Date();
         const stamp = d.toISOString().replace(/[-:T]/g, '').slice(0, 14);
-        const bak = `${filePath}.${stamp}.bak`;
-        fs.copyFileSync(filePath, bak);
+        let bak = `${filePath}.${stamp}.bak`;
+        let suffix = 1;
+        while (fileSystem.existsSync(bak)) bak = `${filePath}.${stamp}-${suffix++}.bak`;
+        fileSystem.copyFileSync(filePath, bak);
         _backedUpThisRun.add(key);
         // Prune: keep only the BAK_KEEP_COUNT most-recent .bak files for this config.
         try {
             const dir = path.dirname(resolved);
             const base = path.basename(resolved);
             const bakPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\\d{14}\\.bak$`);
-            const existing = fs.readdirSync(dir)
+            const existing = fileSystem.readdirSync(dir)
                 .filter(f => bakPattern.test(f))
                 .map(f => path.join(dir, f))
                 .sort(); // ISO timestamp stamps sort lexicographically = chronologically
             if (existing.length > BAK_KEEP_COUNT) {
                 const toRemove = existing.slice(0, existing.length - BAK_KEEP_COUNT);
                 for (const old of toRemove) {
-                    try { fs.rmSync(old, { force: true }); } catch { /* best-effort */ }
+                    try { fileSystem.rmSync(old, { force: true }); } catch { /* best-effort */ }
                 }
             }
         } catch { /* pruning is best-effort; never block the backup */ }
-        return bak;
-    } catch {
-        return null;
-    }
+    return bak;
 }
 
 // Write JSON to a client config: back up, serialize, write atomically.
-function writeClientJson(filePath, obj) {
-    backupClientConfigOnce(filePath);
-    writeFileAtomic(filePath, JSON.stringify(obj, null, 2));
+function writeClientJson(filePath, obj, fileSystem = fs) {
+    backupClientConfigOnce(filePath, fileSystem);
+    writeFileAtomic(filePath, JSON.stringify(obj, null, 2), fileSystem);
 }
 
 // Write raw text to a client config (e.g. Codex TOML): back up + write atomically.
-function writeClientText(filePath, content) {
-    backupClientConfigOnce(filePath);
-    writeFileAtomic(filePath, content);
+function writeClientText(filePath, content, fileSystem = fs) {
+    backupClientConfigOnce(filePath, fileSystem);
+    writeFileAtomic(filePath, content, fileSystem);
 }
 
 function resolveConfigPathNoMutate(cwd) {
@@ -818,6 +817,7 @@ function patchClientConfig(targetConfigPath, opts = {}) {
     // user only finds out when each one fails with "Failed to connect".
     const serverName = opts.serverName || DEFAULT_MCP_SERVER_NAME;
     const force = Boolean(opts.force);
+    const fileSystem = opts.fs || fs;
     const onlyExisting = opts.onlyExisting !== false;
     const candidates = filterClientTargets(getClientConfigTargets(), {
         ids: opts.ids,
@@ -872,15 +872,16 @@ function patchClientConfig(targetConfigPath, opts = {}) {
             continue;
         }
         try {
-            fs.mkdirSync(path.dirname(client.path), { recursive: true });
+            fileSystem.mkdirSync(path.dirname(client.path), { recursive: true });
             applyClientEntry(client, getLauncher(client), targetConfigPath, {
                 serverName,
                 force,
-                globalConfig: Boolean(opts.globalConfig)
+                globalConfig: Boolean(opts.globalConfig),
+                fs: fileSystem
             });
             // Read-back: confirm the entry is actually present and the file still
             // parses, so a silently-corrupted write is reported as a failure.
-            if (!readClientCommandEntry(client, serverName)) {
+            if (!readClientCommandEntry(client, serverName, { fs: fileSystem })) {
                 throw new Error(`post-write verification failed (${serverName} entry not found after write)`);
             }
             patched.push(client.name);
@@ -931,8 +932,8 @@ function removeClientEntry(client, opts = {}) {
     return getClientAdapter(client.format).remove(client, opts);
 }
 
-function applyMcpServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false } = {}) {
-    const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
+function applyMcpServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false, fs: fileSystem = fs } = {}) {
+    const parsed = fileSystem.existsSync(filePath) ? readJsonFileSafe(filePath, fileSystem) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     cfgObj.mcpServers = cfgObj.mcpServers || {};
@@ -960,10 +961,10 @@ function applyMcpServersJson(filePath, launcher, targetConfigPath, { serverName 
             delete cfgObj.mcpServers.genexus18;
         }
     }
-    writeClientJson(filePath, cfgObj);
+    writeClientJson(filePath, cfgObj, fileSystem);
 }
 
-function removeMcpServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } = {}) {
+function removeMcpServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, fs: fileSystem = fs } = {}) {
     const parsed = readJsonFileSafe(filePath);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -983,14 +984,14 @@ function removeMcpServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME }
         }
     }
     if (!removedAny) return false;
-    writeClientJson(filePath, cfgObj);
+    writeClientJson(filePath, cfgObj, fileSystem);
     return true;
 }
 
 // VS Code native MCP lives in User\mcp.json and uses a top-level `servers` map
 // with `type: "stdio"` (distinct from the `mcpServers` shape Claude/Cursor use).
-function applyVsCodeServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false } = {}) {
-    const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
+function applyVsCodeServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false, fs: fileSystem = fs } = {}) {
+    const parsed = fileSystem.existsSync(filePath) ? readJsonFileSafe(filePath, fileSystem) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     cfgObj.servers = cfgObj.servers || {};
@@ -1018,10 +1019,10 @@ function applyVsCodeServersJson(filePath, launcher, targetConfigPath, { serverNa
     } else if (serverName === 'genexus' && cfgObj.servers.genexus18 && !isThirdPartyMcpEntry(cfgObj.servers.genexus18)) {
         delete cfgObj.servers.genexus18;
     }
-    writeClientJson(filePath, cfgObj);
+    writeClientJson(filePath, cfgObj, fileSystem);
 }
 
-function removeVsCodeServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } = {}) {
+function removeVsCodeServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, fs: fileSystem = fs } = {}) {
     const parsed = readJsonFileSafe(filePath);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -1041,7 +1042,7 @@ function removeVsCodeServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAM
         }
     }
     if (!removedAny) return false;
-    writeClientJson(filePath, cfgObj);
+    writeClientJson(filePath, cfgObj, fileSystem);
     return true;
 }
 
@@ -1062,8 +1063,8 @@ function getOpenCodeMcpContainer(cfgObj) {
     };
 }
 
-function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false } = {}) {
-    const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
+function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false, fs: fileSystem = fs } = {}) {
+    const parsed = fileSystem.existsSync(filePath) ? readJsonFileSafe(filePath, fileSystem) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     // OpenCode configs carry a top-level $schema for editor validation; set it when
@@ -1105,10 +1106,10 @@ function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = 
             if (mcp[serverName] && !isThirdPartyMcpEntry(mcp[serverName])) delete mcp[serverName];
         }
     }
-    writeClientJson(filePath, cfgObj);
+    writeClientJson(filePath, cfgObj, fileSystem);
 }
 
-function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } = {}) {
+function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, fs: fileSystem = fs } = {}) {
     const parsed = readJsonFileSafe(filePath);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -1140,7 +1141,7 @@ function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } =
         }
     }
     if (!removedAny) return false;
-    writeClientJson(filePath, cfgObj);
+    writeClientJson(filePath, cfgObj, fileSystem);
     return true;
 }
 
@@ -1286,12 +1287,12 @@ function normalizeExePath(p) {
     return s;
 }
 
-function readClientCommandEntry(client, serverName = DEFAULT_MCP_SERVER_NAME) {
+function readClientCommandEntry(client, serverName = DEFAULT_MCP_SERVER_NAME, { fs: fileSystem = fs } = {}) {
     if (client.writeSupported === false) return null;
-    if (!fs.existsSync(client.path)) return null;
+    if (!fileSystem.existsSync(client.path)) return null;
     try {
         if (client.format === 'mcpServers') {
-            const parsed = readJsonFileSafe(client.path);
+            const parsed = readJsonFileSafe(client.path, fileSystem);
             if (!parsed || typeof parsed !== 'object') return null;
             let entry = parsed.mcpServers && parsed.mcpServers[serverName];
             if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
@@ -1310,7 +1311,7 @@ function readClientCommandEntry(client, serverName = DEFAULT_MCP_SERVER_NAME) {
             };
         }
         if (client.format === 'opencode') {
-            const parsed = readJsonFileSafe(client.path);
+            const parsed = readJsonFileSafe(client.path, fileSystem);
             if (!parsed || typeof parsed !== 'object') return null;
             let entry = parsed.mcp?.servers?.[serverName] || parsed.mcp?.[serverName];
             if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
@@ -1339,7 +1340,7 @@ function readClientCommandEntry(client, serverName = DEFAULT_MCP_SERVER_NAME) {
             };
         }
         if (client.format === 'vscode-servers') {
-            const parsed = readJsonFileSafe(client.path);
+            const parsed = readJsonFileSafe(client.path, fileSystem);
             if (!parsed || typeof parsed !== 'object') return null;
             let entry = parsed.servers && parsed.servers[serverName];
             if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
