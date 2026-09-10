@@ -59,6 +59,23 @@ namespace GxMcp.Gateway.Tests
             finally { TryDelete(root); }
         }
 
+        [Fact]
+        public void CorruptedRegistryFailsClosedWithoutCreatingReplacementIdentity()
+        {
+            string root = CreateTempDirectory();
+            string kb = Path.Combine(root, "shared");
+            Directory.CreateDirectory(kb);
+            File.WriteAllText(Path.Combine(root, "kb-identities.json"), "{not-json}");
+            try
+            {
+                var error = Assert.Throws<KbIdentityConflictException>(() =>
+                    new KbIdentityRegistry(root).GetOrCreate("shared", kb));
+
+                Assert.Equal("KB_IDENTITY_REGISTRY_UNAVAILABLE", error.Code);
+            }
+            finally { TryDelete(root); }
+        }
+
         private static string CreateTempDirectory()
         {
             string root = Path.Combine(Path.GetTempPath(), "gxmcp-identity-" + Guid.NewGuid().ToString("N"));
