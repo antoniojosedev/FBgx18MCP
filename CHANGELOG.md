@@ -4,6 +4,14 @@
 
 ### Changed
 
+- Began the issue #146 contract migration with an explicit `ConfigSchemaVersion`/
+  `GatewayMode` pair, a KB-free neutral configuration fixture, and documented
+  local-friendly versus hardened authorization. Explicit local KB opens remain
+  usable without a separate trust-root step; isolation protects against
+  accidental cross-context access.
+
+### Changed
+
 - Preview screenshots and baselines now validate logical object names, resolve canonical artifact roots, and reject paths that escape the configured preview directory.
 
 - Browser-driver launches now resolve absolute `.exe`/`.com` binaries directly and use an escaped, narrow `.cmd`/`.bat` compatibility path; preview shims no longer receive raw request data through `cmd.exe /c`.

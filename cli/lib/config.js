@@ -24,6 +24,8 @@ function generateConfig(gxPath, kbPath) {
 
 function generateNeutralConfig(gxPath) {
     return {
+        ConfigSchemaVersion: 2,
+        GatewayMode: 'stdio-isolated',
         GeneXus: { InstallationPath: gxPath },
         Server: {
             TransportMode: 'stdio-isolated',

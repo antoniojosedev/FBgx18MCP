@@ -9,6 +9,14 @@ namespace GxMcp.Gateway
 {
     public class Configuration
     {
+        // Configuration schema version is intentionally distinct from the MCP
+        // response _meta.schemaVersion (mcp-axi/2).
+        [JsonProperty("ConfigSchemaVersion")]
+        public int? ConfigSchemaVersion { get; set; }
+
+        [JsonProperty("GatewayMode")]
+        public string? GatewayMode { get; set; }
+
         [JsonProperty("GeneXus")]
         public GeneXusConfig? GeneXus { get; set; }
 
