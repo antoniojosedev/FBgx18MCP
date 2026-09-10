@@ -77,7 +77,9 @@ namespace GxMcp.Gateway
             // "a process really IS coming up" apart from "no worker and nothing spawning"
             // instead of reporting a perpetual, misleading "respawning".
             public volatile bool Spawning;
+            public int Reloading;
             public TaskCompletionSource<bool> DrainComplete = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            public readonly SemaphoreSlim ReloadGate = new SemaphoreSlim(1, 1);
         }
 
         public IReadOnlyList<KbHandle> ListOpen() =>
@@ -279,6 +281,11 @@ namespace GxMcp.Gateway
                     }
                 }
                 entry.Worker = worker;
+                if (!worker.IsProcessAliveForPool)
+                {
+                    _entries.TryRemove(handle.NormalizedAlias, out _);
+                    throw new InvalidOperationException($"Worker for KB '{handle.Alias}' exited before registration.");
+                }
                 entry.LastActivityUtc = DateTime.UtcNow;
                 return worker;
             }
@@ -305,6 +312,11 @@ namespace GxMcp.Gateway
             if (!_entries.TryGetValue(handle.NormalizedAlias, out var entry))
                 throw new InvalidOperationException($"No pool entry for alias '{handle.Alias}'.");
 
+            if (Interlocked.CompareExchange(ref entry.Reloading, 1, 0) != 0)
+                throw new InvalidOperationException($"A worker reload is already in progress for alias '{handle.Alias}'.");
+
+            try
+            {
             // Plan 031: the entry now survives the whole drain window (never removed
             // from _entries), so a SECOND drain cycle on the same entry would otherwise
             // reuse the previous cycle's already-completed DrainComplete TCS — any
@@ -322,13 +334,18 @@ namespace GxMcp.Gateway
                 oldWorker.StopWithReason(WorkerStopReason.PlannedReload);
                 // Wait for the OS process to exit.  We don't rethrow on timeout —
                 // the OS process will linger but we still spawn a fresh one.
-                try
-                {
-                    using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    timeoutCts.CancelAfter(drainTimeoutMs);
-                    await oldWorker.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) { /* timeout or caller cancel — proceed */ }
+                    try
+                    {
+                        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(1, drainTimeoutMs)));
+                        await oldWorker.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Worker reload for KB '{handle.Alias}' did not stop within {drainTimeoutMs}ms.");
+                    }
+                    if (!oldWorker.ExitConfirmed)
+                        throw new TimeoutException($"Worker reload for KB '{handle.Alias}' did not confirm process exit.");
             }
 
             // Plan 031: do NOT remove the entry here. The old worker's own OnWorkerExited
@@ -365,6 +382,13 @@ namespace GxMcp.Gateway
                 // the entry as no longer draining once it wakes.
                 entry.Draining = false;
                 entry.DrainComplete.TrySetResult(true);
+            }
+            }
+            finally
+            {
+                entry.Draining = false;
+                entry.DrainComplete.TrySetResult(true);
+                Interlocked.Exchange(ref entry.Reloading, 0);
             }
         }
 
@@ -584,5 +608,8 @@ namespace GxMcp.Gateway
         /// <summary>Returns true when the entry for <paramref name="alias"/> exists and Draining==true.</summary>
         internal bool IsDrainingForTest(string alias) =>
             _entries.TryGetValue(alias.ToLowerInvariant(), out var e) && e.Draining;
+
+        internal bool IsReloadingForTest(string alias) =>
+            _entries.TryGetValue(alias.ToLowerInvariant(), out var e) && Volatile.Read(ref e.Reloading) != 0;
     }
 }
