@@ -8,6 +8,10 @@
 
 - Worker non-SDK command dispatch now uses a bounded dedicated MTA pool with priority for health, cancellation, and status probes, preventing burst-driven task growth while preserving clean shutdown.
 
+- Made onboarding documentation authoritative for the package's Node.js 22
+  requirement, updated translated getting-started guides, replaced the obsolete
+  `setup.bat` command with `build.ps1`, and added a documentation drift test.
+
 - Added `docs/envelope-coverage.md`, auditing the published tools/actions and
   separating Worker envelopes from intentional Gateway lifecycle/protocol
   statuses as the migration map for subsequent response-contract work.

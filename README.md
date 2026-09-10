@@ -46,7 +46,7 @@ Before you start, make sure you have:
 - ✅ **Windows** (GeneXus is Windows-only)
 - ✅ **GeneXus 18** installed locally (default path: `C:\Program Files (x86)\GeneXus\GeneXus18`)
 - ✅ **A GeneXus 18 Knowledge Base** opened at least once in the IDE (so it's initialized)
-- ✅ **Node.js 18+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
+- ✅ **Node.js 22+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
 - ✅ **An MCP-compatible AI client** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 
 You do **not** need to clone this repo or install anything globally — `npx` handles it.
@@ -157,7 +157,7 @@ Paths to give to IT for the ASR / Defender exclusion list:
 <InstallDir>\worker\GxMcp.Worker.exe
 ```
 
-Re-run the same one-liner later to **upgrade** — it detects the installed version (`version.txt` in the install dir) and downloads only if a newer release is available. Use `-Force` to reinstall the same version, `-Version v2.3.0` to pin a specific tag, `-NoClient` to skip AI client registration. Node.js 18+ must be installed for client registration; without it the script still extracts the binaries but you'll need to edit the client config (`claude_desktop_config.json` etc.) manually.
+Re-run the same one-liner later to **upgrade** — it detects the installed version (`version.txt` in the install dir) and downloads only if a newer release is available. Use `-Force` to reinstall the same version, `-Version v2.3.0` to pin a specific tag, `-NoClient` to skip AI client registration. Node.js 22+ must be installed for client registration; without it the script still extracts the binaries but you'll need to edit the client config (`claude_desktop_config.json` etc.) manually.
 
 ---
 
@@ -529,8 +529,8 @@ graph LR
 Want to contribute or run a local dev build?
 
 1. Clone this repo on Windows.
-2. Run `.\setup.bat` — checks prerequisites, builds the C# components, and auto-registers the local build with detected AI clients.
-3. If GeneXus or your KB aren't auto-detected, follow the prompts.
+2. Run `.\build.ps1` to restore and build the C# components and package the local artifacts. The script checks for the required .NET SDK and GeneXus 18 installation.
+3. If GeneXus is installed outside the default path, set `$env:GX_PATH` to its installation folder before running the build. A Knowledge Base is only needed for runtime testing.
 
 ### Bundled AI skills (`.gemini/skills/`)
 
