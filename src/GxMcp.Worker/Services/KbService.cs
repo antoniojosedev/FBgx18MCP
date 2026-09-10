@@ -557,7 +557,7 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         _indexCacheService.Clear();
-                        _indexCacheService.DeleteOnDiskSnapshot();
+                        // Preserve the last certified snapshot as a crash fallback; new shard writes are atomic.
                         _indexCacheService.MarkReindexStarted(0);
                     }
                     catch (Exception ex) { Logger.Warn("BulkIndex(fast) force-clear failed: " + ex.Message); }
@@ -1054,7 +1054,7 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         _indexCacheService.Clear();
-                        _indexCacheService.DeleteOnDiskSnapshot();
+                        // Preserve the last certified snapshot as a crash fallback; new shard writes are atomic.
                         _indexCacheService.MarkReindexStarted(0);
                     }
                     catch (Exception ex) { Logger.Warn("BulkIndex force-clear failed (continuing with rebuild anyway): " + ex.Message); }

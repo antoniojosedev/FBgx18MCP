@@ -23,7 +23,11 @@ if (-not (Test-Path -LiteralPath $anchor -PathType Leaf)) {
     Fail "GXMCP_SDK_ANCHOR_MISSING path=$($spec.anchor)"
 }
 $actualVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($anchor).ProductVersion
-if ($actualVersion -ne $spec.supportedVersion) {
+$expectedParts = $spec.supportedVersion.Split('.')
+$actualParts = $actualVersion.Split('.')
+$sameMajorMinor = $expectedParts.Count -ge 2 -and $actualParts.Count -ge 2 -and $expectedParts[0] -eq $actualParts[0] -and $expectedParts[1] -eq $actualParts[1]
+$exactVersion = $actualVersion -eq $spec.supportedVersion
+if (-not $exactVersion -and -not ($spec.allowPatchVersionDrift -and $sameMajorMinor)) {
     Fail "GXMCP_SDK_VERSION_MISMATCH expectedVersion=$($spec.supportedVersion) actualVersion=$actualVersion"
 }
 foreach ($assembly in $spec.assemblies) {
@@ -37,9 +41,10 @@ foreach ($assembly in $spec.assemblies) {
         $actualHash = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
     }
     finally { $sha.Dispose() }
-    if ($actualHash -ne $assembly.sha256.ToLowerInvariant()) {
+    if ($exactVersion -and $actualHash -ne $assembly.sha256.ToLowerInvariant()) {
         Fail "GXMCP_SDK_FINGERPRINT_MISMATCH path=$($assembly.path) expectedSha256=$($assembly.sha256) actualSha256=$actualHash"
     }
 }
-Write-Output "GXMCP_SDK_COMPATIBLE version=$($spec.supportedVersion) assemblies=$($spec.assemblies.Count)"
+if ($exactVersion) { $versionDiagnostic = $spec.supportedVersion } else { $versionDiagnostic = "$($spec.supportedVersion) actualVersion=$actualVersion (compatible patch drift)" }
+Write-Output "GXMCP_SDK_COMPATIBLE version=$versionDiagnostic assemblies=$($spec.assemblies.Count)"
 exit 0

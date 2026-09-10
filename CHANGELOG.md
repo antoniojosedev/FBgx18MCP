@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Preserve the last certified search-index snapshot during forced rebuilds so a Worker crash can warm-start from the previous index instead of leaving the KB cold; allow only manifest-declared SDK patch drift within the same major/minor line while retaining exact-build fingerprints otherwise.
+
 ## v3.2.4 - 2026-09-10
 
 

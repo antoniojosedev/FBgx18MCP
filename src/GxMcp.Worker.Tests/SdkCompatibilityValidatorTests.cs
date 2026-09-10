@@ -63,6 +63,31 @@ namespace GxMcp.Worker.Tests
             }
         }
 
+        [Fact]
+        public void Validate_AllowsDeclaredPatchDriftWithinSameMajorMinor()
+        {
+            using (var fixture = new SdkFixture("18.0.10.184260", "supported"))
+            {
+                var json = JObject.Parse(File.ReadAllText(fixture.Manifest));
+                json["allowPatchVersionDrift"] = true;
+                File.WriteAllText(fixture.Manifest, json.ToString());
+                var result = GxMcp.Worker.SdkCompatibilityValidator.Validate(fixture.Root, fixture.Manifest, _ => "18.0.14.187794");
+                Assert.True(result.IsCompatible);
+                Assert.Contains("compatible patch drift", result.Diagnostic);
+            }
+        }
+
+        [Fact]
+        public void Validate_RejectsPatchDriftWhenManifestDoesNotOptIn()
+        {
+            using (var fixture = new SdkFixture("18.0.10.184260", "supported"))
+            {
+                var result = GxMcp.Worker.SdkCompatibilityValidator.Validate(fixture.Root, fixture.Manifest, _ => "18.0.14.187794");
+                Assert.False(result.IsCompatible);
+                Assert.Equal("GXMCP_SDK_VERSION_MISMATCH", result.Code);
+            }
+        }
+
         private sealed class SdkFixture : IDisposable
         {
             public readonly string Root = Path.Combine(Path.GetTempPath(), "gxmcp-sdk-" + Guid.NewGuid().ToString("N"));

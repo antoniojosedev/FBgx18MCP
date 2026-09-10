@@ -38,13 +38,16 @@ namespace GxMcp.Worker
             catch (Exception ex) { return Fail("GXMCP_SDK_MANIFEST_INVALID", "GXMCP_SDK_MANIFEST_INVALID manifest=" + manifestPath + " error=" + ex.GetType().Name); }
 
             string expectedVersion = (string)manifest["supportedVersion"];
+            bool allowPatchVersionDrift = manifest["allowPatchVersionDrift"]?.Value<bool>() ?? false;
             string anchor = (string)manifest["anchor"];
             string anchorPath = Path.Combine(sdkPath, anchor ?? string.Empty);
             if (string.IsNullOrWhiteSpace(anchor) || !File.Exists(anchorPath))
                 return Fail("GXMCP_SDK_ANCHOR_MISSING", "GXMCP_SDK_ANCHOR_MISSING path=" + (anchor ?? "<missing>"));
 
             string actualVersion = versionReader(anchorPath);
-            if (!string.Equals(expectedVersion, actualVersion, StringComparison.OrdinalIgnoreCase))
+            bool exactVersion = string.Equals(expectedVersion, actualVersion, StringComparison.OrdinalIgnoreCase);
+            bool compatiblePatch = allowPatchVersionDrift && SameMajorMinor(expectedVersion, actualVersion);
+            if (!exactVersion && !compatiblePatch)
                 return Fail("GXMCP_SDK_VERSION_MISMATCH", "GXMCP_SDK_VERSION_MISMATCH expectedVersion=" + expectedVersion + " actualVersion=" + actualVersion);
 
             var assemblies = manifest["assemblies"] as JArray;
@@ -57,11 +60,22 @@ namespace GxMcp.Worker
                 string filePath = Path.Combine(sdkPath, relativePath ?? string.Empty);
                 if (string.IsNullOrWhiteSpace(relativePath) || !File.Exists(filePath))
                     return Fail("GXMCP_SDK_ASSEMBLY_MISSING", "GXMCP_SDK_ASSEMBLY_MISSING path=" + (relativePath ?? "<missing>"));
-                string actualHash = Sha256(filePath);
-                if (!string.Equals(expectedHash, actualHash, StringComparison.OrdinalIgnoreCase))
+                string actualHash = exactVersion ? Sha256(filePath) : null;
+                if (exactVersion && !string.Equals(expectedHash, actualHash, StringComparison.OrdinalIgnoreCase))
                     return Fail("GXMCP_SDK_FINGERPRINT_MISMATCH", "GXMCP_SDK_FINGERPRINT_MISMATCH path=" + relativePath + " expectedSha256=" + expectedHash + " actualSha256=" + actualHash);
             }
-            return new SdkCompatibilityResult(true, "GXMCP_SDK_COMPATIBLE", "GXMCP_SDK_COMPATIBLE version=" + expectedVersion + " assemblies=" + assemblies.Count);
+            string versionDiagnostic = exactVersion ? expectedVersion : expectedVersion + " actualVersion=" + actualVersion + " (compatible patch drift)";
+            return new SdkCompatibilityResult(true, "GXMCP_SDK_COMPATIBLE", "GXMCP_SDK_COMPATIBLE version=" + versionDiagnostic + " assemblies=" + assemblies.Count);
+        }
+
+        private static bool SameMajorMinor(string expected, string actual)
+        {
+            if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(actual)) return false;
+            var e = expected.Split('.');
+            var a = actual.Split('.');
+            return e.Length >= 2 && a.Length >= 2
+                && string.Equals(e[0], a[0], StringComparison.Ordinal)
+                && string.Equals(e[1], a[1], StringComparison.Ordinal);
         }
 
         private static SdkCompatibilityResult Fail(string code, string diagnostic)
