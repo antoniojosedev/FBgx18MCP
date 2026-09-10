@@ -6,6 +6,8 @@
 
 - Browser-driver launches now resolve absolute `.exe`/`.com` binaries directly and use an escaped, narrow `.cmd`/`.bat` compatibility path; preview shims no longer receive raw request data through `cmd.exe /c`.
 
+- Worker non-SDK command dispatch now uses a bounded dedicated MTA pool with priority for health, cancellation, and status probes, preventing burst-driven task growth while preserving clean shutdown.
+
 - Added `docs/envelope-coverage.md`, auditing the published tools/actions and
   separating Worker envelopes from intentional Gateway lifecycle/protocol
   statuses as the migration map for subsequent response-contract work.

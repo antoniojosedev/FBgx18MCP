@@ -143,6 +143,7 @@ namespace GxMcp.Worker
         private static readonly BlockingCollection<string> _outputQueue = new BlockingCollection<string>(ResolveQueueCapacity("GXMCP_OUTPUT_QUEUE_CAPACITY", 256));
         private static readonly BlockingCollection<string> _errorQueue = new BlockingCollection<string>(ResolveQueueCapacity("GXMCP_ERROR_QUEUE_CAPACITY", 256));
         private static CommandDispatcher _dispatcher;
+        private static MtaCommandExecutor _mtaExecutor;
         private static TextWriter _originalOut;
         private static TextWriter _originalError;
         private static StreamWriter _pipeWriter;
@@ -304,6 +305,9 @@ namespace GxMcp.Worker
 
                 InitializeSdk(gxPath);
                 _dispatcher = CommandDispatcher.Instance;
+                _mtaExecutor = new MtaCommandExecutor(
+                    ResolveQueueCapacity("GXMCP_MTA_CONCURRENCY", 8),
+                    ResolveQueueCapacity("GXMCP_MTA_QUEUE_CAPACITY", 256));
                 
                 // Check command line arguments for --kb
                 for (int i = 0; i < args.Length; i++)
@@ -462,7 +466,11 @@ namespace GxMcp.Worker
                         // Dispatch/DispatchInternal. A fila STA segue recebendo a string crua.
                         var cmdObj = TryParseCommand(line);
                         if (_dispatcher.IsThreadSafe(cmdObj))
-                            System.Threading.Tasks.Task.Run(() => ProcessCommand(cmdObj, line));
+                        {
+                            bool highPriority = IsHighPriorityMtaCommand(cmdObj);
+                            if (!_mtaExecutor.TrySubmit(() => ProcessCommand(cmdObj, line), highPriority))
+                                SendQueueBusy(line, "MTA command queue");
+                        }
                         else if (TryRejectBusy(line))
                         { /* answered with a WorkerBusy envelope — do not queue behind the long op */ }
                         else
@@ -477,11 +485,29 @@ namespace GxMcp.Worker
                     Thread.Sleep(50);
                 }
                 Logger.Info("Worker shutting down safely.");
+                _mtaExecutor?.Dispose();
                 SdkActionQueue.CompleteAdding();
                 SdkExecutor.Dispose();
             } catch (Exception ex) {
                 Logger.Error($"Main FATAL: {ex.Message}");
             }
+        }
+
+        private static bool IsHighPriorityMtaCommand(JObject command)
+        {
+            if (command == null) return false;
+            string method = command["method"]?.ToString();
+            string action = command["action"]?.ToString();
+            if (string.Equals(method, "health", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(method, "ping", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(method, "doctor", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (string.Equals(method, "control", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(action, "Cancel", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return string.Equals(method, "build", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(action, "Status", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "Result", StringComparison.OrdinalIgnoreCase));
         }
 
         private static bool EnqueueSdkCommand(string line)
