@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Preserve a replacement Worker when an eager respawn finishes during the previous Worker's exit callback; remove only the exited entry before notifying subscribers.
+
+## Unreleased
+
 ## v3.2.3 - 2026-09-10
 
 
