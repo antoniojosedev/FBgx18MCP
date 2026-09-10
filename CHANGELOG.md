@@ -4,6 +4,7 @@
 
 ### Added
 - Added `config create --config-scope neutral` for explicit KB-free runtime config generation; it requires the new runtime flags and never registers clients or creates a KB catalog.
+- Aligned installer fallback and client registration on the neutral runtime; `clients add --all-clients` now covers every supported adapter without implicit KB fields or structural overrides.
 - Added session-scoped KB ownership snapshots with owner, KB identity, context generation, and lease validation for stateful gateway acquisition.
 
 ### Internal

@@ -8,12 +8,12 @@
 #   - Admin           -> C:\Tools\GenexusMCP
 #   - Non-admin       -> %LOCALAPPDATA%\Programs\GenexusMCP
 #
-# One-liner (latest release, runs init too):
+# One-liner (latest release, creates a neutral runtime and registers clients):
 #   iex (irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1)
 #
 # With params:
 #   $script = irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1
-#   & ([scriptblock]::Create($script)) -Kb "C:\KBs\MyKB" -Gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+#   & ([scriptblock]::Create($script)) -Gx "C:\Program Files (x86)\GeneXus\GeneXus18"
 #
 # Re-run with the same args to upgrade. Use -Force to reinstall the same version.
 # Use -Repair to wipe + reinstall the same currently-installed version.
@@ -25,8 +25,6 @@ param(
 
     [string]$Version,
 
-    [ValidateScript({ -not $_ -or (Test-Path -LiteralPath $_) })]
-    [string]$Kb,
 
     [ValidateScript({ -not $_ -or (Test-Path -LiteralPath $_) })]
     [string]$Gx,
@@ -677,10 +675,9 @@ if ((Test-Path $versionFile) -and -not $Force) {
     $current = (Get-Content $versionFile -Raw).Trim()
     if ($current -eq $Version) {
         Write-Ok "Already at $Version. Pass -Force (or -Repair) to reinstall."
-        # Even if we don't re-extract, still run init if -Kb/-Gx were given,
-        # so the user can fix a broken config without nuking the install dir.
-        if (-not $Kb -and -not $Gx) { exit 0 }
-        Write-Step 'Skipping extract; re-running init with provided KB/GX.'
+        # Even if we don't re-extract, still register the neutral runtime if -Gx was given.
+        if (-not $Gx) { exit 0 }
+        Write-Step 'Skipping extract; re-running neutral registration with provided GX.'
         $skipExtract = $true
     }
     if (-not $skipExtract) { Write-Step "Upgrading $current -> $Version" }
@@ -846,75 +843,41 @@ if (-not $NoClient) {
         # checks, error envelopes) matches the gateway exe. Otherwise `@latest`
         # may pull a newer or older CLI that doesn't agree with this gateway.
         $npxPkg = "genexus-mcp@$VersionNoV"
-        $initArgs = @('-y', $npxPkg, 'init', '--write-clients', '--no-smoke', '--format', 'json')
-        if ($Kb) { $initArgs += @('--kb', $Kb) }
-        if ($Gx) { $initArgs += @('--gx', $Gx) }
+        $configPath = Join-Path $InstallDir 'config.json'
+        $workerPath = Join-Path $InstallDir 'worker\GxMcp.Worker.exe'
+        $configArgs = @('-y', $npxPkg, 'config', 'create', '--config-scope', 'neutral', '--output', $configPath, '--gx', $Gx, '--worker', $workerPath, '--gateway-mode', 'stdio-isolated', '--resolution-policy', 'strict', '--format', 'json')
+        $clientArgs = if ($Clients) {
+            @('-y', $npxPkg, 'clients', 'add', '--clients', $Clients, '--format', 'json')
+        } else {
+            @('-y', $npxPkg, 'clients', 'add', '--all-clients', '--format', 'json')
+        }
+        if ([string]::IsNullOrWhiteSpace($Gx)) {
+            Write-Warn 'Gx was not supplied; neutral config creation requires -Gx. Skipping AI client registration.'
+            $script:initFailed = $true
+        }
         if ($InteractiveClients) {
-            # Interactive flow can't run with --format json (it expects a TTY for prompts).
-            $initArgs = @('-y', $npxPkg, 'init', '--interactive')
-            if ($Kb) { $initArgs += @('--kb', $Kb) }
-            if ($Gx) { $initArgs += @('--gx', $Gx) }
-        } elseif ($Clients) {
-            $initArgs += @('--clients', $Clients)
+            Write-Warn 'Interactive client selection is not supported for neutral registration; use -Clients with the CLI after installation.'
         }
 
-        Write-Step "Registering with AI clients via $npxPkg (gateway = $gatewayExe)"
+        Write-Step "Registering neutral runtime with AI clients via $npxPkg (gateway = $gatewayExe)"
         $prev = $env:GENEXUS_MCP_GATEWAY_EXE
         $env:GENEXUS_MCP_GATEWAY_EXE = $gatewayExe
         try {
-            if ($InteractiveClients) {
-                & $npx.Source @initArgs
-                if ($LASTEXITCODE -ne 0) { $script:initFailed = $true }
-            } else {
-                # Capture stdout/stderr, parse the JSON envelope, surface only the
-                # human-readable bits. Wall-of-YAML output was the #2 friction point
-                # in the v2.6.7 field install: operators couldn't tell pass from fail.
-                $output = & $npx.Source @initArgs 2>&1
-                $exitCode = $LASTEXITCODE
-                $jsonText = ($output | Out-String).Trim()
-                $envelope = $null
-                try { $envelope = $jsonText | ConvertFrom-Json -ErrorAction Stop } catch { }
-
-                if ($envelope) {
-                    if ($exitCode -ne 0) {
-                        $script:initFailed = $true
-                        Write-Host ''
-                        Write-Err 'Init reported a failure:'
-                        $errMsg = if ($envelope.PSObject.Properties.Name -contains 'error') { $envelope.error.message } else { 'unknown error (envelope missing error.message)' }
-                        Write-Host "    $errMsg" -ForegroundColor Red
-                        if ($envelope.PSObject.Properties.Name -contains 'help' -and $envelope.help.Count -gt 0) {
-                            Write-Host ''
-                            Write-Host 'Suggested fix:' -ForegroundColor Yellow
-                            foreach ($h in $envelope.help) { Write-Host "    $h" -ForegroundColor Yellow }
-                        }
-                        # If verification has failed checks, list them - this is the
-                        # gx_installation / kb_path_exists / worker_startup_smoke output.
-                        if ($envelope.PSObject.Properties.Name -contains 'ok' -and
-                            $envelope.ok.PSObject.Properties.Name -contains 'verification' -and
-                            $envelope.ok.verification.PSObject.Properties.Name -contains 'checks') {
-                            $failed = $envelope.ok.verification.checks | Where-Object { $_.status -eq 'fail' }
-                            if ($failed) {
-                                Write-Host ''
-                                Write-Host 'Failed verification checks:' -ForegroundColor Yellow
-                                foreach ($f in $failed) {
-                                    Write-Host ("    [X] {0,-30} {1}" -f $f.id, $f.detail) -ForegroundColor Red
-                                }
-                            }
-                        }
-                    } else {
-                        # Success - print a one-line confirmation, surface any warnings.
-                        $cfgPath = if ($envelope.ok.PSObject.Properties.Name -contains 'configPath') { $envelope.ok.configPath } else { '<unknown>' }
-                        $patched = if ($envelope.meta.PSObject.Properties.Name -contains 'patchedClients') { ($envelope.meta.patchedClients -join ', ') } else { '' }
-                        Write-Ok "Config written: $cfgPath"
-                        if ($patched) { Write-Ok "Patched AI clients: $patched" }
-                        if ($envelope.PSObject.Properties.Name -contains 'help' -and $envelope.help.Count -gt 0) {
-                            foreach ($h in $envelope.help) { Write-Host "    [i] $h" -ForegroundColor Cyan }
-                        }
-                    }
+            if (-not [string]::IsNullOrWhiteSpace($Gx)) {
+                $configOutput = & $npx.Source @configArgs 2>&1
+                $configExit = $LASTEXITCODE
+                if ($configExit -ne 0) {
+                    $script:initFailed = $true
+                    Write-Host (($configOutput | Out-String).Trim())
                 } else {
-                    # Couldn't parse - fall back to raw output so the operator still sees something.
-                    if ($exitCode -ne 0) { $script:initFailed = $true }
-                    Write-Host $jsonText
+                    $clientOutput = & $npx.Source @clientArgs 2>&1
+                    $clientExit = $LASTEXITCODE
+                    if ($clientExit -ne 0) {
+                        $script:initFailed = $true
+                        Write-Host (($clientOutput | Out-String).Trim())
+                    } else {
+                        Write-Ok "Neutral config written and selected AI clients registered."
+                    }
                 }
             }
         } finally {
@@ -932,8 +895,8 @@ if ($script:initFailed) {
     Write-Warn "genexus-mcp $Version files installed to:"
     Write-Host "     $InstallDir"
     Write-Host ''
-    Write-Warn 'Client registration (init) FAILED - see error output above.'
-    Write-Warn 'Files are extracted, but no AI client config was written and no config.json was created.'
+    Write-Warn 'Client registration (neutral config create / clients add) FAILED - see error output above.'
+    Write-Warn 'Files are extracted, but no neutral config or AI client registration was completed.'
     Write-Host ''
     Write-Host 'Common causes:' -ForegroundColor Yellow
     Write-Host '  - GeneXus installed in a non-standard path (e.g. GeneXus18u7 vs GeneXus18)'
@@ -941,7 +904,7 @@ if ($script:initFailed) {
     Write-Host ''
     Write-Host 'Fix by re-running with explicit paths:' -ForegroundColor Cyan
     Write-Host '  $s = irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1'
-    Write-Host '  & ([scriptblock]::Create($s)) -Kb "C:\KBs\YourKB" -Gx "C:\Path\To\GeneXus18" -Force'
+    Write-Host '  & ([scriptblock]::Create($s)) -Gx "C:\Path\To\GeneXus18" -Force'
     Write-Host ''
     exit 1
 }

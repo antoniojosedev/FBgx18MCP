@@ -158,6 +158,40 @@ test('generateNeutralConfig produces valid shape without KB fields', () => {
     assert.equal(cfg.Environment.KBPath, undefined);
 });
 
+test('all client adapters preserve unrelated servers and emit no structural KB overrides', () => {
+    const cases = [
+        { format: 'mcpServers', file: 'claude.json', root: { mcpServers: { unrelated: { command: 'other' } } } },
+        { format: 'mcpServers', file: 'gemini.json', root: { mcpServers: { unrelated: { command: 'other' } } } },
+        { format: 'mcpServers', file: 'antigravity.json', root: { mcpServers: { unrelated: { command: 'other' } } } },
+        { format: 'vscode-servers', file: 'vscode.json', root: { servers: { unrelated: { type: 'stdio', command: 'other' } } } },
+        { format: 'opencode', file: 'opencode.json', root: { $schema: 'custom', mcp: { unrelated: { type: 'local', command: ['other'] } } } },
+        { format: 'codex-toml', file: 'config.toml', root: '[mcp_servers.unrelated]\ncommand = "other"\n' }
+    ];
+    const launcher = { command: 'gateway.exe', args: [] };
+    for (const entry of cases) {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-adapter-matrix-'));
+        try {
+            const configPath = path.join(tmpDir, entry.file);
+            fs.writeFileSync(configPath, typeof entry.root === 'string' ? entry.root : JSON.stringify(entry.root, null, 2));
+            new ClientConfigManager().apply({ format: entry.format, path: configPath }, launcher, path.join(tmpDir, 'neutral.json'), { serverName: 'genexus18mcp' });
+            const raw = fs.readFileSync(configPath, 'utf8');
+            assert.equal(/DefaultKb|ActiveKb|KBs/.test(raw), false, entry.format);
+            if (entry.format === 'codex-toml') {
+                assert.match(raw, /\[mcp_servers\.unrelated\]/);
+                assert.match(raw, /\[mcp_servers\.genexus18mcp\]/);
+            } else {
+                const parsed = JSON.parse(raw);
+                const servers = entry.format === 'vscode-servers' ? parsed.servers : entry.format === 'opencode' ? parsed.mcp : parsed.mcpServers;
+                const original = entry.format === 'vscode-servers' ? entry.root.servers : entry.format === 'opencode' ? entry.root.mcp : entry.root.mcpServers;
+                assert.deepEqual(servers.unrelated, original.unrelated);
+                assert.ok(servers.genexus18mcp);
+            }
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    }
+});
+
 test('applyLauncherConfigOrExit creates neutral config outside a KB', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gx-outside-kb-'));
     const origEnv = process.env.GX_CONFIG_PATH;
@@ -171,7 +205,10 @@ test('applyLauncherConfigOrExit creates neutral config outside a KB', () => {
         assert.ok(process.env.GX_CONFIG_PATH);
         assert.ok(fs.existsSync(process.env.GX_CONFIG_PATH));
         const content = JSON.parse(fs.readFileSync(process.env.GX_CONFIG_PATH, 'utf8'));
-        assert.ok(Array.isArray(content.Environment?.KBs));
+        assert.equal(content.Environment?.KBs, undefined);
+        assert.equal(content.Environment?.DefaultKb, undefined);
+        assert.equal(content.Environment?.ActiveKb, undefined);
+        assert.equal(content.Environment?.KBPath, undefined);
     } finally {
         if (origEnv !== undefined) {
             process.env.GX_CONFIG_PATH = origEnv;

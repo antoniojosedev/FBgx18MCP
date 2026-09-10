@@ -1548,6 +1548,15 @@ function applyLauncherConfigOrExit({ cwd, stderr, quiet }) {
 
     if (!directoryLooksLikeKnowledgeBase(cwd)) {
         if (fs.existsSync(userMcpConfigPath)) {
+            const existing = readJsonFileSafe(userMcpConfigPath);
+            if (existing && existing.Environment && typeof existing.Environment === 'object') {
+                delete existing.Environment.KBPath;
+                delete existing.Environment.KBs;
+                delete existing.Environment.DefaultKb;
+                delete existing.Environment.ActiveKb;
+                if (!existing.Environment.ResolutionPolicy) existing.Environment.ResolutionPolicy = 'strict';
+                writeFileAtomic(userMcpConfigPath, JSON.stringify(existing, null, 2));
+            }
             process.env.GX_CONFIG_PATH = userMcpConfigPath;
             return { ok: true };
         }

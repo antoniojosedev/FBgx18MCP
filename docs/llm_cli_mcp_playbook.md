@@ -31,6 +31,15 @@ Entry points:
 - `genexus-mcp tools list`
 - `genexus-mcp config show`
 
+Neutral installer/runtime setup:
+- `genexus-mcp config create --config-scope neutral --output <path> --gx <path> --worker <path> --gateway-mode stdio-isolated --resolution-policy strict`
+- `genexus-mcp clients add --all-clients` (or `--clients opencode,codex-cli,vscode,antigravity,gemini-cli`)
+
+The neutral runtime contains no `KBPath`, `KBs`, `DefaultKb`, or `ActiveKb`; KB
+selection remains an explicit MCP session action. Adapters preserve unrelated
+servers and the existing OpenCode `mcp.<name>` versus `mcp.servers.<name>` layout.
+They add `GX_CONFIG_PATH` only when `--global-config` is explicitly requested.
+
 Rules:
 - Parse `stdout` only.
 - Expect envelope fields: `ok`, `error`, `help`, `meta`.

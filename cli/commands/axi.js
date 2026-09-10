@@ -1874,11 +1874,11 @@ async function handleClients(subcommand, options, ctx) {
     }
 
     if (sub === 'add' || sub === 'remove') {
-        const ids = resolveClientIds(options);
+        const ids = options.allClients ? listSupportedClientIds() : resolveClientIds(options);
         if (sub === 'add' && (!ids || ids.length === 0)) {
             return {
                 exitCode: ctx.EXIT_CODES.USAGE,
-                envelope: usageEnvelope('`clients add` requires --clients <csv> (e.g. --clients antigravity,vscode).', ctx.EXIT_CODES.USAGE)
+                envelope: usageEnvelope('`clients add` requires --clients <csv> or --all-clients.', ctx.EXIT_CODES.USAGE)
             };
         }
         const validation = validateClientIds(ids);
