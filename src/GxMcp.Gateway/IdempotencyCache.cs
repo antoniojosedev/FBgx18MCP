@@ -14,6 +14,7 @@ namespace GxMcp.Gateway
         private readonly TimeSpan _ttl;
         private readonly int _capacity;
         private readonly MutationOperationJournal? _journal;
+        private readonly OperationalStateKey? _owner;
         private readonly ConcurrentDictionary<string, KbBucket> _buckets = new ConcurrentDictionary<string, KbBucket>();
         private readonly object _gateLock = new object();
         private readonly Dictionary<(string, string, string), GateEntry> _gates =
@@ -26,11 +27,24 @@ namespace GxMcp.Gateway
             : this(ttlMinutes, capacity, gateAcquisitionTimeout, null) { }
 
         internal IdempotencyCache(int ttlMinutes, int capacity, TimeSpan gateAcquisitionTimeout, string? journalPath)
+            : this(ttlMinutes, capacity, gateAcquisitionTimeout, journalPath, null) { }
+
+        internal IdempotencyCache(int ttlMinutes, int capacity, TimeSpan gateAcquisitionTimeout,
+            StateScope scope, string kbId, long generation)
+            : this(ttlMinutes, capacity, gateAcquisitionTimeout,
+                scope.JournalPath(kbId, generation, "mutation-operations.json"),
+                scope.ForKb(kbId, generation)) { }
+
+        private IdempotencyCache(int ttlMinutes, int capacity, TimeSpan gateAcquisitionTimeout,
+            string? journalPath, OperationalStateKey? owner)
         {
             _gateAcquisitionTimeout = gateAcquisitionTimeout;
             _ttl = TimeSpan.FromMinutes(ttlMinutes);
             _capacity = capacity;
-            _journal = string.IsNullOrWhiteSpace(journalPath) ? null : new MutationOperationJournal(journalPath);
+            _owner = owner;
+            _journal = string.IsNullOrWhiteSpace(journalPath)
+                ? null
+                : owner.HasValue ? new MutationOperationJournal(journalPath, owner.Value) : new MutationOperationJournal(journalPath);
         }
 
         // Plan 028: test-only visibility into gate accumulation (InternalsVisibleTo
@@ -123,7 +137,7 @@ namespace GxMcp.Gateway
                     return cached!;
                 if (_journal != null)
                 {
-                    switch (_journal.Begin(kbPath, tool, key, payloadHash, evidence))
+                    switch (BeginJournal(kbPath, tool, key, payloadHash, evidence))
                     {
                         case MutationOperationJournal.BeginResult.Conflict:
                             throw new IdempotencyConflictException(
@@ -145,12 +159,12 @@ namespace GxMcp.Gateway
                 {
                     var result = await factory().ConfigureAwait(false);
                     Put(kbPath, tool, key, payloadHash, result);
-                    _journal?.Complete(kbPath, tool, key, payloadHash);
+                    CompleteJournal(kbPath, tool, key, payloadHash);
                     return result;
                 }
                 catch (ErrorNotCacheable ex)
                 {
-                    _journal?.Fail(kbPath, tool, key, payloadHash);
+                    FailJournal(kbPath, tool, key, payloadHash);
                     return ex.Result;
                 }
             }
@@ -176,6 +190,26 @@ namespace GxMcp.Gateway
             Func<Task<JObject>> factory,
             MutationOperationEvidence? evidence = null)
             => GetOrCompute(ScopedIdentity(stateScopeId, kbId, generation), tool, key, payloadHash, factory, evidence);
+
+        private MutationOperationJournal.BeginResult BeginJournal(string kbPath, string tool, string key,
+            string payloadHash, MutationOperationEvidence? evidence)
+            => _owner.HasValue
+                ? _journal!.Begin(_owner.Value, tool, key, payloadHash, evidence)
+                : _journal!.Begin(kbPath, tool, key, payloadHash, evidence);
+
+        private void CompleteJournal(string kbPath, string tool, string key, string payloadHash)
+        {
+            if (_journal == null) return;
+            if (_owner.HasValue) _journal.Complete(_owner.Value, tool, key, payloadHash);
+            else _journal.Complete(kbPath, tool, key, payloadHash);
+        }
+
+        private void FailJournal(string kbPath, string tool, string key, string payloadHash)
+        {
+            if (_journal == null) return;
+            if (_owner.HasValue) _journal.Fail(_owner.Value, tool, key, payloadHash);
+            else _journal.Fail(kbPath, tool, key, payloadHash);
+        }
 
         private static string ScopedIdentity(StateScopeId stateScopeId, string kbId, long generation)
             => StateScopedCacheKey.Create(stateScopeId, kbId, generation, "idempotency").ToString();

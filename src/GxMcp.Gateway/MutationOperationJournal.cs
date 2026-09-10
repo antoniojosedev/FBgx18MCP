@@ -22,14 +22,22 @@ namespace GxMcp.Gateway
         private const long MaxBytes = 2 * 1024 * 1024;
         private static readonly TimeSpan Retention = TimeSpan.FromDays(7);
         private readonly string _path;
+        private readonly OperationalStateKey? _owner;
         private readonly object _gate = new object();
         private readonly Dictionary<string, Entry> _entries = new Dictionary<string, Entry>(StringComparer.Ordinal);
         private bool _healthy = true;
         private string _error = string.Empty;
 
         public MutationOperationJournal(string path)
+            : this(path, null) { }
+
+        internal MutationOperationJournal(string path, OperationalStateKey owner)
+            : this(path, (OperationalStateKey?)owner) { }
+
+        private MutationOperationJournal(string path, OperationalStateKey? owner)
         {
             _path = path ?? throw new ArgumentNullException(nameof(path));
+            _owner = owner;
             Load();
         }
 
@@ -47,6 +55,10 @@ namespace GxMcp.Gateway
 
         internal BeginResult Begin(string kbPath, string tool, string key, string payloadHash)
             => Begin(kbPath, tool, key, payloadHash, null);
+
+        internal BeginResult Begin(OperationalStateKey owner, string tool, string key, string payloadHash,
+            MutationOperationEvidence? evidence = null)
+            => Begin(owner.Token, tool, key, payloadHash, evidence);
 
         internal BeginResult Begin(
             string kbPath,
@@ -112,10 +124,16 @@ namespace GxMcp.Gateway
             }
         }
 
+        internal void Complete(OperationalStateKey owner, string tool, string key, string payloadHash)
+            => Complete(owner.Token, tool, key, payloadHash);
+
         internal void Complete(string kbPath, string tool, string key, string payloadHash)
         {
             Update(kbPath, tool, key, payloadHash, "completed");
         }
+
+        internal void Fail(OperationalStateKey owner, string tool, string key, string payloadHash)
+            => Fail(owner.Token, tool, key, payloadHash);
 
         internal void Fail(string kbPath, string tool, string key, string payloadHash)
         {
@@ -347,6 +365,9 @@ namespace GxMcp.Gateway
                         var entry = json.ToObject<Entry>();
                         if (!IsValid(entry))
                             throw new InvalidDataException("journal contains an invalid operation entry");
+                        if (_owner.HasValue
+                            && !string.Equals(entry!.ScopeHash, ScopeHash(_owner.Value.Token), StringComparison.Ordinal))
+                            throw new InvalidDataException("journal entry belongs to another operational state scope");
                         if (DateTime.UtcNow - entry!.UpdatedAtUtc.ToUniversalTime() <= Retention)
                         {
                             entry.UpdatedAtUtc = entry.UpdatedAtUtc.ToUniversalTime();

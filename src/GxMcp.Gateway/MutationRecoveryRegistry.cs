@@ -22,6 +22,7 @@ namespace GxMcp.Gateway
 
         private readonly ConcurrentDictionary<string, RecoveryRequirement> _pending = new();
         private readonly string? _journalPath;
+        private readonly OperationalStateKey? _defaultOwner;
         private readonly object _journalLock = new object();
         private volatile bool _journalHealthy = true;
         private string _journalError = string.Empty;
@@ -29,6 +30,20 @@ namespace GxMcp.Gateway
         public MutationRecoveryRegistry(string? journalPath = null)
         {
             _journalPath = journalPath;
+            LoadJournal();
+        }
+
+        internal MutationRecoveryRegistry(string journalPath, OperationalStateKey owner)
+        {
+            _defaultOwner = owner;
+            _journalPath = journalPath;
+            LoadJournal();
+        }
+
+        internal MutationRecoveryRegistry(StateScope scope, string kbId, long generation)
+        {
+            _defaultOwner = scope.ForKb(kbId, generation);
+            _journalPath = scope.RecoveryPath(kbId, generation);
             LoadJournal();
         }
 
@@ -44,7 +59,7 @@ namespace GxMcp.Gateway
 
         public void RequireRead(string? kbAlias, string? target, string? part, string? operationId)
         {
-            RequireReadCore(null, kbAlias, target, part, operationId);
+            RequireReadCore(_defaultOwner, kbAlias, target, part, operationId);
         }
 
         internal void RequireRead(OperationalStateKey owner, string target, string? part, string? operationId)
@@ -72,7 +87,8 @@ namespace GxMcp.Gateway
         {
             requirement = null!;
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
-            string prefix = Key(string.Empty, kbAlias, target, string.Empty).TrimEnd('|') + "|";
+            string prefix = (_defaultOwner.HasValue ? _defaultOwner.Value.Token.ToLowerInvariant() : string.Empty)
+                + "|" + Prefix(kbAlias, target) + "|";
             var found = _pending
                 .Where(pair => pair.Key.StartsWith(prefix, StringComparison.Ordinal))
                 .Select(pair => pair.Value)
@@ -87,7 +103,7 @@ namespace GxMcp.Gateway
         {
             requirement = null!;
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
-            return _pending.TryGetValue(Key(kbAlias, target, part), out requirement!);
+            return _pending.TryGetValue(Key(_defaultOwner.HasValue ? _defaultOwner.Value.Token : string.Empty, kbAlias, target, part), out requirement!);
         }
 
         internal bool TryGet(OperationalStateKey owner, string target, string? part, out RecoveryRequirement requirement)
@@ -106,7 +122,7 @@ namespace GxMcp.Gateway
         public bool ConfirmRead(string? kbAlias, string? target, string? part)
         {
             if (!TryGet(kbAlias, target, part, out var requirement)) return false;
-            bool removed = _pending.TryRemove(Key(requirement.KbAlias, requirement.Target, requirement.Part), out _);
+            bool removed = _pending.TryRemove(Key(_defaultOwner.HasValue ? _defaultOwner.Value.Token : string.Empty, requirement.KbAlias, requirement.Target, requirement.Part), out _);
             if (removed) PersistJournal();
             return removed;
         }
@@ -197,6 +213,9 @@ namespace GxMcp.Gateway
                     var requirement = json.ToObject<RecoveryRequirement>();
                     if (!IsValid(requirement))
                         throw new InvalidDataException("journal contains an invalid recovery fence");
+                    if (_defaultOwner.HasValue
+                        && !string.Equals(requirement!.OwnerKey, _defaultOwner.Value.Token, StringComparison.Ordinal))
+                        throw new InvalidDataException("recovery fence belongs to another operational state scope");
                     if (DateTime.UtcNow - requirement!.RequiredAtUtc.ToUniversalTime() <= JournalRetention)
                     {
                         requirement.RequiredAtUtc = requirement.RequiredAtUtc.ToUniversalTime();
