@@ -29,6 +29,8 @@
 - Canonical MCP error envelopes now expose optional boolean `retryable` and
   `reconciliationRequired` decisions, while conformance tests validate their
   types and the shape of `nextSteps` entries.
+- Infrastructure failures at the HTTP gateway, KB import, macro crystallization, and preview adapters now return stable sanitized messages/codes with operation identifiers; full exception diagnostics remain server-side in structured logs.
+- Added regression coverage proving adapter error envelopes do not expose raw exception text or filesystem paths.
 
 ### Added
 

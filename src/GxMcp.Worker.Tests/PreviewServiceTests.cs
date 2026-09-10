@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using GxMcp.Worker.Services;
@@ -14,6 +15,7 @@ namespace GxMcp.Worker.Tests
             public List<(string fileName, string arguments)> Calls = new List<(string, string)>();
             public Dictionary<string, PreviewService.CliResult> ByVerb = new Dictionary<string, PreviewService.CliResult>();
             public string WhichResult = "C:/fake/chrome-devtools-axi.cmd";
+            public bool ThrowOnWhich;
             public PreviewService.CliResult Default = new PreviewService.CliResult { ExitCode = 0, StdOut = "", StdErr = "" };
 
             public PreviewService.CliResult Run(string fileName, string arguments, int timeoutMs)
@@ -24,7 +26,11 @@ namespace GxMcp.Worker.Tests
                 return Default;
             }
 
-            public string Which(string command) => WhichResult;
+            public string Which(string command)
+            {
+                if (ThrowOnWhich) throw new InvalidOperationException("C:\\secrets\\preview-token");
+                return WhichResult;
+            }
         }
 
         private static string TempDir()
@@ -112,6 +118,19 @@ namespace GxMcp.Worker.Tests
 
             var r = svc.PreviewSync("AnyPanel", null, "auto", false, 0, new[] { "html" }, false, false);
             Assert.Equal("launcher_missing", r["status"]?.ToString());
+        }
+
+        [Fact]
+        public void PreviewSync_UnexpectedFailure_HidesExceptionTextAndReturnsOperationId()
+        {
+            string dir = TempDir();
+            var runner = new FakeRunner { ThrowOnWhich = true };
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+            var result = svc.PreviewSync("PanelX", null, "auto", false, 0, new[] { "html" }, false, false);
+            Assert.Equal("error", result["status"]?.ToString());
+            Assert.Equal("Preview failed. See server logs for details.", result["message"]?.ToString());
+            Assert.DoesNotContain("preview-token", result.ToString());
+            Assert.NotNull(result["operationId"]);
         }
 
         [Fact]

@@ -566,10 +566,17 @@ namespace GxMcp.Gateway
                 }
                 catch (Exception ex)
                 {
-                    Log($"[HTTP] Error processing {id}: {ex.Message}");
-                    return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32603, message = $"Gateway Error: {ex.Message}" } });
+                    string operationId = request.Headers["X-GXMCP-Operation-Id"].FirstOrDefault();
+                    if (string.IsNullOrWhiteSpace(operationId)) operationId = Guid.NewGuid().ToString("N");
+                    Log($"{{\"event\":\"http_request_failed\",\"correlationId\":\"{LogValue(operationId)}\",\"operationId\":\"{LogValue(id)}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
+                    return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32603, message = "Gateway request failed. See server logs for details.", data = new { operationId = operationId } } });
                 }
             }
+        }
+
+        private static string LogValue(string value)
+        {
+            return (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
         }
 
         // SECURITY: the Origin header only defends against browser-issued cross-site

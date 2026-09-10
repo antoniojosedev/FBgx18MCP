@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
@@ -580,7 +581,10 @@ namespace GxMcp.Worker.Services
                     catch (Exception bex)
                     {
                         result["status"] = "build_failed";
-                        result["buildError"] = bex.Message;
+                        string operationId = Guid.NewGuid().ToString("N");
+                        Logger.Error($"{{\"event\":\"preview_build_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{bex.GetType().FullName}\",\"exception\":\"{LogValue(bex.ToString())}\"}}");
+                        result["buildError"] = "Preview build failed. See server logs for details.";
+                        result["operationId"] = operationId;
                         return result;
                     }
                 }
@@ -823,7 +827,10 @@ namespace GxMcp.Worker.Services
                         catch (Exception dex)
                         {
                             result["diff"] = null;
-                            result["diffError"] = dex.Message;
+                            string operationId = Guid.NewGuid().ToString("N");
+                            Logger.Error($"{{\"event\":\"preview_diff_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{dex.GetType().FullName}\",\"exception\":\"{LogValue(dex.ToString())}\"}}");
+                            result["diffError"] = "Preview baseline diff failed. See server logs for details.";
+                            result["operationId"] = operationId;
                         }
                     }
                     else
@@ -841,7 +848,10 @@ namespace GxMcp.Worker.Services
                     }
                     catch (Exception wex)
                     {
-                        result["baselineUpdateError"] = wex.Message;
+                        string operationId = Guid.NewGuid().ToString("N");
+                        Logger.Error($"{{\"event\":\"preview_baseline_update_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{wex.GetType().FullName}\",\"exception\":\"{LogValue(wex.ToString())}\"}}");
+                        result["baselineUpdateError"] = "Preview baseline update failed. See server logs for details.";
+                        result["operationId"] = operationId;
                     }
                 }
 
@@ -851,9 +861,18 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 result["status"] = "error";
-                result["message"] = ex.Message;
+                string operationId = Guid.NewGuid().ToString("N");
+                Logger.Error($"{{\"event\":\"preview_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
+                result["message"] = "Preview failed. See server logs for details.";
+                result["operationId"] = operationId;
                 return result;
             }
+        }
+
+        private static string LogValue(string value)
+        {
+            string escaped = (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+            return Regex.Replace(escaped, "(?i)(password|passwd|token|secret|apikey|authorization)(\\s*[:=]\\s*)[^,\\s;}&]+", "$1$2<redacted>");
         }
 
         private string ResolveBaselineDir(JObject cfg)

@@ -145,19 +145,29 @@ namespace GxMcp.Gateway
             }
             catch (Exception ex)
             {
-                return ErrorEnvelope("Failed to crystallize macro: " + ex.Message);
+                string operationId = Guid.NewGuid().ToString("N");
+                Program.Log($"{{\"event\":\"macro_crystallize_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
+                return ErrorEnvelope("Macro crystallization failed. See server logs for details.", operationId);
             }
         }
 
         // --- helpers ---
 
-        private static JObject ErrorEnvelope(string message)
+        private static JObject ErrorEnvelope(string message, string operationId = null)
         {
-            return new JObject
+            var result = new JObject
             {
                 ["status"] = "Error",
                 ["error"] = message
             };
+            if (!string.IsNullOrEmpty(operationId)) result["operationId"] = operationId;
+            return result;
+        }
+
+        private static string LogValue(string value)
+        {
+            string escaped = (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+            return Regex.Replace(escaped, "(?i)(password|passwd|token|secret|apikey|authorization)(\\s*[:=]\\s*)[^,\\s;}&]+", "$1$2<redacted>");
         }
 
         // Shape = pipe-joined "tool|sortedKey,sortedKey" tuples. Values not included

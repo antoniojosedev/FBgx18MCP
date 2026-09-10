@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
@@ -111,13 +112,22 @@ namespace GxMcp.Gateway
             }
             catch (Exception ex)
             {
+                string operationId = Guid.NewGuid().ToString("N");
+                Program.Log($"{{\"event\":\"kb_import_failed\",\"operationId\":\"{operationId}\",\"source\":\"{LogValue(sourceKbPath)}\",\"target\":\"{LogValue(targetKbPath)}\",\"objectType\":\"{LogValue(type)}\",\"objectName\":\"{LogValue(name)}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
                 return new JObject
                 {
                     ["status"] = "Error",
                     ["code"] = "IoError",
-                    ["message"] = ex.Message
+                    ["message"] = "Import failed while accessing the Knowledge Base. See server logs for details.",
+                    ["operationId"] = operationId
                 };
             }
+        }
+
+        private static string LogValue(string value)
+        {
+            string escaped = (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+            return Regex.Replace(escaped, "(?i)(password|passwd|token|secret|apikey|authorization)(\\s*[:=]\\s*)[^,\\s;}&]+", "$1$2<redacted>");
         }
     }
 }
