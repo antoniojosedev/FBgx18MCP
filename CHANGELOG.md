@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.2.4 - 2026-09-10
+
+
 ### Fixed
 
 - Complete write-result classification before advancing cache/concurrency timestamps, and prevent typed variable no-ops from marking objects dirty.
