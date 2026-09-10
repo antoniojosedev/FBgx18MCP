@@ -513,7 +513,12 @@ namespace GxMcp.Worker.Services
                     return result;
                 }
 
-                if (!IsSafeObjectName(name)) return InvalidPreviewRequest(result, "name contains unsupported characters");
+                if (!IsSafeObjectName(name) || !IsValidPreviewName(name))
+                {
+                    result["status"] = "invalid_request";
+                    result["message"] = "name must be a valid logical preview name";
+                    return result;
+                }
 
                 // 1) Object type check (best-effort; skipped if ObjectService unavailable in tests)
                 if (_objectService != null)
@@ -538,6 +543,15 @@ namespace GxMcp.Worker.Services
                 }
 
                 var cfg = LoadConfig();
+                string baselineDir;
+                string screenshotPath;
+                string baselinePath;
+                if (!TryResolveArtifactPaths(cfg, name, out baselineDir, out screenshotPath, out baselinePath))
+                {
+                    result["status"] = "invalid_request";
+                    result["message"] = "name must be a valid logical preview name";
+                    return result;
+                }
                 var mergedParms = MergeParms(cfg, name, parms);
                 if (!AreSafePreviewValues(mergedParms)) return InvalidPreviewRequest(result, "preview parameters contain control characters");
                 result["parms"] = mergedParms;
@@ -788,19 +802,15 @@ namespace GxMcp.Worker.Services
                 }
                 if (captureSet.Contains("screenshot"))
                 {
-                    string dir = ResolveBaselineDir(cfg);
-                    try { Directory.CreateDirectory(dir); } catch { }
-                    string shotPath = Path.Combine(dir, name + ".png");
-                    var shotRes = _runner.Run(cli, "screenshot " + Quote(shotPath), DefaultCliTimeoutMs);
-                    captures["screenshot"] = shotPath;
+                    try { Directory.CreateDirectory(baselineDir); } catch { }
+                    var shotRes = _runner.Run(cli, "screenshot " + Quote(screenshotPath), DefaultCliTimeoutMs);
+                    captures["screenshot"] = screenshotPath;
                     if (shotRes.ExitCode != 0) captures["screenshotError"] = shotRes.StdErr;
                 }
 
                 result["captures"] = captures;
 
                 // 11) Baseline diff / update
-                string baselineDir = ResolveBaselineDir(cfg);
-                string baselinePath = Path.Combine(baselineDir, name + ".a11y.json");
                 if (diffBaseline)
                 {
                     if (File.Exists(baselinePath) && a11yObj != null)
@@ -848,19 +858,54 @@ namespace GxMcp.Worker.Services
 
         private string ResolveBaselineDir(JObject cfg)
         {
-            if (!string.IsNullOrEmpty(_baselineRootOverride)) return _baselineRootOverride;
+            if (!string.IsNullOrEmpty(_baselineRootOverride)) return Path.GetFullPath(_baselineRootOverride);
             string fromCfg = cfg?["baselineDir"]?.ToString();
             if (string.IsNullOrEmpty(fromCfg)) fromCfg = "publish/worker/preview-baselines";
-            if (Path.IsPathRooted(fromCfg)) return fromCfg;
+            if (Path.IsPathRooted(fromCfg)) return Path.GetFullPath(fromCfg);
             try
             {
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? Environment.CurrentDirectory;
-                return Path.Combine(baseDir, "preview-baselines");
+                return Path.GetFullPath(Path.Combine(baseDir, "preview-baselines"));
             }
             catch
             {
-                return fromCfg;
+                return Path.GetFullPath(fromCfg);
             }
+        }
+
+        internal static bool IsValidPreviewName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name) || name.IndexOf("..", StringComparison.Ordinal) >= 0 ||
+                name.IndexOfAny(new[] { '<', '>', ':', '"', '/', '\\', '|', '?', '*' }) >= 0 ||
+                !name.All(c => c >= ' '))
+                return false;
+
+            return !Path.IsPathRooted(name) && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
+        }
+
+        private bool TryResolveArtifactPaths(JObject cfg, string name, out string root, out string screenshotPath, out string baselinePath)
+        {
+            root = screenshotPath = baselinePath = null;
+            try
+            {
+                root = ResolveBaselineDir(cfg);
+                screenshotPath = Path.GetFullPath(Path.Combine(root, name + ".png"));
+                baselinePath = Path.GetFullPath(Path.Combine(root, name + ".a11y.json"));
+                return IsUnderRoot(root, screenshotPath) && IsUnderRoot(root, baselinePath);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsUnderRoot(string root, string path)
+        {
+            string canonicalRoot = Path.GetFullPath(root);
+            if (!canonicalRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) &&
+                !canonicalRoot.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+                canonicalRoot += Path.DirectorySeparatorChar;
+            return path.StartsWith(canonicalRoot, StringComparison.OrdinalIgnoreCase);
         }
 
         internal static bool LooksLikeAuthScreen(string snapshot)

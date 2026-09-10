@@ -139,6 +139,59 @@ namespace GxMcp.Worker.Tests
             Assert.Contains(runner.Calls, c => c.arguments.StartsWith("eval "));
         }
 
+        [Theory]
+        [InlineData("MyPanel_1")]
+        [InlineData("Panel123")]
+        public void PreviewSync_AcceptsValidGeneXusNamesForArtifactWrites(string name)
+        {
+            var dir = TempDir();
+            var runner = new FakeRunner();
+            runner.ByVerb["snapshot"] = new PreviewService.CliResult
+            {
+                ExitCode = 0,
+                StdOut = "{\"root\":{\"role\":\"WebArea\",\"PesCod\":\"x\"}}"
+            };
+            runner.ByVerb["eval"] = new PreviewService.CliResult { ExitCode = 0, StdOut = "" };
+
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+            var r = svc.PreviewSync(name, null, "auto", false, 0, new[] { "screenshot", "a11y" }, false, true);
+
+            Assert.Equal("ok", r["status"]?.ToString());
+            Assert.True(File.Exists(Path.Combine(dir, name + ".a11y.json")));
+            Assert.Equal(Path.GetFullPath(Path.Combine(dir, name + ".png")),
+                Path.GetFullPath(r["captures"]?["screenshot"]?.ToString()));
+            Assert.DoesNotContain(runner.Calls, c => c.arguments.Contains(".."));
+        }
+
+        [Theory]
+        [InlineData("../escape")]
+        [InlineData("..\\escape")]
+        [InlineData("C:\\escape")]
+        [InlineData("/escape")]
+        [InlineData("Panel/name")]
+        [InlineData("Panel\\name")]
+        [InlineData("Panel:name")]
+        [InlineData("Panel*name")]
+        [InlineData("Panel?name")]
+        [InlineData("Panel\"name")]
+        [InlineData("Panel<name")]
+        [InlineData("Panel>name")]
+        [InlineData("Panel|name")]
+        public void PreviewSync_RejectsUnsafeArtifactNamesWithoutRunningCli(string name)
+        {
+            var dir = TempDir();
+            var runner = new FakeRunner();
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+
+            var r = svc.PreviewSync(name, null, "auto", false, 0,
+                new[] { "screenshot", "a11y" }, false, true);
+
+            Assert.Equal("invalid_request", r["status"]?.ToString());
+            Assert.Equal("name must be a valid logical preview name", r["message"]?.ToString());
+            Assert.Empty(runner.Calls);
+            Assert.Empty(Directory.GetFiles(dir));
+        }
+
         [Fact]
         public void PreviewSync_UpdateBaselineWritesA11yFile()
         {
