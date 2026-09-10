@@ -1,5 +1,44 @@
 # Implementation Plans
 
+## Current audit — 2026-09-09, commit `d77c20f`
+
+The improve audit produced plans 087–109 below. Execute in order where dependencies apply; plans 087–101 are correctness/security/test/DX foundations, 102–105 are performance/architecture/migration, and 106–109 are design spikes. These plans are handoffs only and do not authorize source edits, commits, pushes, releases, or deployments by themselves.
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 087 | Restrict preview artifact paths | P1 | S | — | DONE |
+| 088 | Remove unsafe cmd.exe browser-driver boundary | P1 | M | 087 | DONE (lint blocked outside scope: cli/lib/config.js:384) |
+| 089 | Sanitize client-visible infrastructure errors | P1 | M | — | DONE |
+| 090 | Atomically persist KB defaults | P1 | S | — | DONE |
+| 091 | Fence multi-target async mutation retries | P1 | M | 090 | DONE |
+| 092 | Single-flight cold index loading | P1 | S | — | DONE |
+| 093 | Bound Worker MTA concurrency | P1 | M | — | DONE |
+| 094 | Add GeneXus SDK CI validation lane | P1 | L | 105 | DONE |
+| 095 | Worker crash/respawn/pending RPC tests | P1 | M | — | DONE |
+| 096 | End-to-end KB selection route tests | P1 | M | 090 | DONE |
+| 097 | CLI multi-client failure-path tests | P1 | M | — | DONE |
+| 098 | Authoritative onboarding docs | P1 | S | — | DONE |
+| 099 | Reconcile limitations tracking | P1 | M | — | DONE |
+| 100 | Document explain compatibility mode | P1 | S | — | DONE |
+| 101 | Reuse metadata resolution during search | P2 | M | 092 | DONE |
+| 102 | Replace per-start WMI scans | P2 | M | 095 | DONE |
+| 103 | Split OperationsRouter into typed modules | P2 | L | 096 | DONE |
+| 104 | Decompose Gateway request loop | P2 | L | 103 | DONE |
+| 105 | Make SDK compatibility reproducible | P2 | L | — | DONE |
+| 106 | Resource navigation and object-aware completion spike | P2 | M | 099 | DONE |
+| 107 | Deterministic conversion pipeline spike | P2 | L | 105 | DONE |
+| 108 | Safe typed visual authoring spike | P2 | L | 087, 103 | DONE |
+| 109 | Capability states and release gates spike | P2 | M | 094, 105 | DONE |
+
+Recommended execution order: 087, 089, 090, 092, 093, 095, 096, 097, 098, 099, 100; then 088, 091, 101, 102; then 103, 104, 105; finally 106–109. Plans 103 and 104 must remain sequential because both alter high-fan-in Gateway routing. Do not mark an SDK/live-KB plan complete when its required environment is unavailable.
+
+## Findings considered and rejected in this audit
+
+- Dependency audit: no high/critical reachable runtime advisory was reported by `npm audit --omit=dev` or the .NET vulnerable-package check; no dependency plan was created.
+- Localhost-only unauthenticated development HTTP behavior: documented by-design in `docs/technical_architecture.md`; only implementation-specific risks were planned.
+- Existing dual-process .NET 10 Gateway/.NET Framework 4.8 Worker split: required by the GeneXus SDK; the plan targets reproducibility, not architectural replacement.
+
+
 ## Programa 3.0 — 2026-09-05
 
 Nova análise sobre **b3d20f7 / v2.57.0**, preservando o histórico abaixo.

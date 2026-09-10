@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Browser-driver launches now resolve absolute `.exe`/`.com` binaries directly and use an escaped, narrow `.cmd`/`.bat` compatibility path; preview shims no longer receive raw request data through `cmd.exe /c`.
+
 - Added `docs/envelope-coverage.md`, auditing the published tools/actions and
   separating Worker envelopes from intentional Gateway lifecycle/protocol
   statuses as the migration map for subsequent response-contract work.
