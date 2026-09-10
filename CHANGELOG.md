@@ -6,7 +6,12 @@
 
 - Preserve a replacement Worker when an eager respawn finishes during the previous Worker's exit callback; remove only the exited entry before notifying subscribers.
 
-## Unreleased
+## v3.2.4 - 2026-09-10
+
+
+### Fixed
+
+- Complete write-result classification before advancing cache/concurrency timestamps, and prevent typed variable no-ops from marking objects dirty.
 
 ## v3.2.3 - 2026-09-10
 
