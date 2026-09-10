@@ -17,7 +17,10 @@ const {
     filterClientTargets,
     listSupportedClientIds,
     getLocalAppDataCacheDir,
-    readGeneXusVersionFromInstall,
+    readGeneXusInstallationIdentity,
+    readGeneXusKbIdentity,
+    compareGeneXusKbAndInstallation,
+    getGeneXusVersionCatalog,
     discoverGeneXusInstallation,
     discoverKnowledgeBase,
     discoverKnowledgeBases,
@@ -49,6 +52,11 @@ function validateClientIds(ids) {
         ok: false,
         message: `Unknown client id(s): ${invalid.join(', ')}. Supported: ${[...supported].join(', ')}.`
     };
+}
+
+function isSupportedCatalogMajor(catalog, major) {
+    if (!major) return true;
+    return catalog.supportedMajors.some((entry) => String(entry.major) === String(major));
 }
 
 function parseFieldSelection(raw) {
@@ -127,9 +135,9 @@ function usageEnvelope(message, exitCode) {
     };
 }
 
-function operationalErrorEnvelope(message, exitCode, help = []) {
+function operationalErrorEnvelope(message, exitCode, help = [], code = 'operation_error') {
     return {
-        error: { code: 'operation_error', message: sanitizeOperationalMessage(message) },
+        error: { code, message: sanitizeOperationalMessage(message) },
         help,
         meta: { exitCode }
     };
@@ -572,8 +580,8 @@ async function buildSupportDump({ checks, summary, data, gatewayExePath, ctx }) 
         writeEntry('config.redacted.json', redactConfig(cfg));
     }
 
-    let gxVersion = null;
-    try { gxVersion = readGeneXusVersionFromInstall(data.gxPath); } catch { }
+    let gxIdentity = { version: null, major: null, source: 'unavailable' };
+    try { gxIdentity = readGeneXusInstallationIdentity(data.gxPath); } catch { }
 
     writeEntry('environment.json', {
         platform: process.platform,
@@ -586,7 +594,9 @@ async function buildSupportDump({ checks, summary, data, gatewayExePath, ctx }) 
         configSource: data.configSource,
         kbConfigured: !!data.kbPath,
         gxConfigured: !!data.gxPath,
-        gxVersion,
+        gxVersion: gxIdentity.version,
+        gxMajor: gxIdentity.major,
+        gxDetectionSource: gxIdentity.source,
         envFlags: {
             GX_CONFIG_PATH: !!process.env.GX_CONFIG_PATH,
             GENEXUS_MCP_GATEWAY_EXE: !!process.env.GENEXUS_MCP_GATEWAY_EXE,
@@ -674,6 +684,34 @@ async function handleDoctor(options, ctx) {
     const gxPath = data.gxPath;
     const kbExists = !!(kbPath && fs.existsSync(kbPath));
     const gxExeExists = !!(gxPath && fs.existsSync(path.join(gxPath, 'genexus.exe')));
+    const kbSdkCompatibility = kbExists && gxExeExists
+        ? compareGeneXusKbAndInstallation(kbPath, gxPath)
+        : null;
+    const catalog = getGeneXusVersionCatalog();
+
+    let unsupportedCompatibilityMajor = null;
+    let compatibilityStatus = 'warn';
+    let compatibilityDetail = 'KB/SDK major compatibility check was skipped until both configured paths exist.';
+    if (kbSdkCompatibility) {
+        if (!isSupportedCatalogMajor(catalog, kbSdkCompatibility.kb.major)) {
+            unsupportedCompatibilityMajor = `KB major ${kbSdkCompatibility.kb.major}`;
+        } else if (!isSupportedCatalogMajor(catalog, kbSdkCompatibility.gx.major)) {
+            unsupportedCompatibilityMajor = `GeneXus SDK major ${kbSdkCompatibility.gx.major}`;
+        }
+
+        if (unsupportedCompatibilityMajor) {
+            compatibilityStatus = 'fail';
+            compatibilityDetail = `${unsupportedCompatibilityMajor} is not supported by this MCP distribution. Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}.`;
+        } else if (kbSdkCompatibility.status === 'mismatch') {
+            compatibilityStatus = 'fail';
+            compatibilityDetail = `KB major ${kbSdkCompatibility.kb.major} does not match GeneXus SDK major ${kbSdkCompatibility.gx.major}. Re-run init with the matching --gx path.`;
+        } else if (kbSdkCompatibility.status === 'match') {
+            compatibilityStatus = 'pass';
+            compatibilityDetail = `KB major ${kbSdkCompatibility.kb.major} matches GeneXus SDK major ${kbSdkCompatibility.gx.major}.`;
+        } else {
+            compatibilityDetail = `KB/SDK major compatibility could not be verified (KB: ${kbSdkCompatibility.kb.source}; SDK: ${kbSdkCompatibility.gx.source}).`;
+        }
+    }
 
     const riskyZone = isPathLikelyAppLockerBlocked(gatewayExePath);
     const clientCrossCheck = buildClientExeCrossCheck(gatewayExePath);
@@ -703,6 +741,11 @@ async function handleDoctor(options, ctx) {
         // guarantees a worker crash on first MCP call. Promote from warn to fail so init
         // exits non-zero and the caller (install.ps1, AI client) actually sees the problem.
         { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? 'GeneXus installation has genexus.exe.' : (gxPath ? `Configured GeneXus installation is missing genexus.exe at: ${gxPath}` : 'No GeneXus installation path is configured.') },
+        {
+            id: 'kb_sdk_compatibility',
+            status: compatibilityStatus,
+            detail: compatibilityDetail
+        },
         { id: 'tool_definitions', status: toolDefsExists ? 'pass' : 'warn', detail: toolDefsExists ? `Tool definition file found (${toolCount} tools) at ${toolDefPath}.` : (process.env.GENEXUS_MCP_TOOL_DEFINITIONS ? `tool_definitions.json missing at GENEXUS_MCP_TOOL_DEFINITIONS=${toolDefPath}. Unset the env var or point it at a valid file.` : `tool_definitions.json missing. Expected at ${toolDefPath} (next to the gateway exe). The csproj should copy it on publish — reinstall via scripts/install.ps1, or set GENEXUS_MCP_TOOL_DEFINITIONS to override.`) },
         { id: 'gx_env', status: process.env.GX_CONFIG_PATH ? 'pass' : 'warn', detail: process.env.GX_CONFIG_PATH ? 'GX_CONFIG_PATH env var is set.' : 'GX_CONFIG_PATH env var is not set for this process.' },
         { id: 'client_config_sync', status: clientCrossCheck.status, detail: clientCrossCheck.detail }
@@ -1188,27 +1231,60 @@ function buildInteractiveInitHelp(patchResult) {
 }
 
 async function runInteractiveInit(ctx) {
-    const defaultGx = discoverGeneXusInstallation() || 'C:\\Program Files (x86)\\GeneXus\\GeneXus18';
+    const catalog = getGeneXusVersionCatalog();
+    const primary = catalog.supportedMajors.find((entry) => String(entry.major) === String(catalog.primaryMajor));
 
     if (!ctx.options.quiet) {
         ctx.stderr.write('GeneXus MCP setup wizard\n\n');
     }
 
-    const rl = readline.createInterface({ input: process.stdin, output: ctx.stderr });
+    const rl = readline.createInterface({ input: ctx.input || process.stdin, output: ctx.stderr });
     const question = (text) => new Promise((resolve) => rl.question(text, (answer) => resolve(answer)));
 
     try {
         const kbAnswer = await question(`1) Knowledge Base folder path (default: ${ctx.cwd}):\n> `);
         const finalKb = String(kbAnswer || '').trim() || ctx.cwd;
 
+        if (!fs.existsSync(finalKb)) {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `KB path does not exist on disk. Aborted before writing config.`,
+                    ctx.EXIT_CODES.ERROR,
+                    [`Path checked: ${finalKb}`, 'Create the KB in GeneXus first, then re-run init.']
+                )
+            };
+        }
+
+        const kbIdentity = readGeneXusKbIdentity(finalKb);
+        const defaultGx = discoverGeneXusInstallation(kbIdentity.major)
+            || primary?.defaultInstallPath
+            || catalog.supportedMajors[0]?.defaultInstallPath
+            || '';
         const gxAnswer = await question(`\n2) GeneXus installation path (default: ${defaultGx}):\n> `);
-        const finalGx = String(gxAnswer || '').trim() || defaultGx;
+        const explicitGx = String(gxAnswer || '').trim();
+        const finalGx = explicitGx || defaultGx;
+
+        if (!kbIdentity.major && !explicitGx) {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    'Cannot safely use the default GeneXus SDK because the KB major could not be determined.',
+                    ctx.EXIT_CODES.ERROR,
+                    [
+                        `KB detection reason: ${kbIdentity.reason || 'unknown'}`,
+                        'Enter the installation path explicitly, or open the KB once in GeneXus so its .gxw metadata is initialized.'
+                    ],
+                    'sdk_selection_required'
+                )
+            };
+        }
 
         if (!fs.existsSync(path.join(finalGx, 'genexus.exe'))) {
-            const suggested = discoverGeneXusInstallation();
+            const suggested = discoverGeneXusInstallation(kbIdentity.major);
             const help = [`Path checked: ${finalGx}`];
             if (suggested && suggested.toLowerCase() !== finalGx.toLowerCase()) {
-                help.push(`Detected a working GeneXus install at: ${suggested}`);
+                help.push(`Detected a matching GeneXus${kbIdentity.major ? ` ${kbIdentity.major}` : ''} install at: ${suggested}`);
                 help.push('Re-run `genexus-mcp init --interactive` and accept the detected path, or pass --gx explicitly.');
             }
             return {
@@ -1221,13 +1297,57 @@ async function runInteractiveInit(ctx) {
             };
         }
 
-        if (!fs.existsSync(finalKb)) {
+        const compatibility = compareGeneXusKbAndInstallation(finalKb, finalGx);
+        const supportedGxMajor = isSupportedCatalogMajor(catalog, compatibility.gx.major);
+        if (!supportedGxMajor) {
             return {
                 exitCode: ctx.EXIT_CODES.ERROR,
                 envelope: operationalErrorEnvelope(
-                    `KB path does not exist on disk. Aborted before writing config.`,
+                    `GeneXus SDK major ${compatibility.gx.major} is not supported by this MCP distribution.`,
                     ctx.EXIT_CODES.ERROR,
-                    [`Path checked: ${finalKb}`, 'Create the KB in GeneXus first, then re-run init.']
+                    [`Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}`],
+                    'sdk_unsupported'
+                )
+            };
+        }
+        const supportedKbMajor = isSupportedCatalogMajor(catalog, compatibility.kb.major);
+        if (!supportedKbMajor) {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `KB major ${compatibility.kb.major} is not supported by this MCP distribution.`,
+                    ctx.EXIT_CODES.ERROR,
+                    [`Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}`],
+                    'sdk_kb_unsupported'
+                )
+            };
+        }
+        if (compatibility.status === 'mismatch') {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `GeneXus SDK major ${compatibility.gx.major} does not match KB major ${compatibility.kb.major}. Aborted before writing config.`,
+                    ctx.EXIT_CODES.ERROR,
+                    [
+                        `KB version: ${compatibility.kb.version || 'unknown'}`,
+                        `SDK version: ${compatibility.gx.version || 'unknown'}`,
+                        'Choose the GeneXus installation that matches the KB major, or pass --gx explicitly.',
+                    ],
+                    'sdk_kb_mismatch'
+                )
+            };
+        }
+        if (compatibility.kb.major && !compatibility.gx.major) {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `The selected GeneXus installation version could not be verified against KB major ${compatibility.kb.major}.`,
+                    ctx.EXIT_CODES.ERROR,
+                    [
+                        `Path checked: ${finalGx}`,
+                        'Use a standard GeneXus installation containing GeneXus.exe metadata, or provide a verified matching SDK path.'
+                    ],
+                    'sdk_identity_unresolved'
                 )
             };
         }
@@ -1333,8 +1453,12 @@ async function handleInit(options, ctx) {
         }
     }
 
+    const discoveredKbIdentity = resolution.kb.value
+        ? readGeneXusKbIdentity(resolution.kb.value)
+        : { version: null, major: null, source: 'unavailable', reason: 'missing-kb-path' };
+
     if (!resolution.gx.value) {
-        const fromDisco = discoverGeneXusInstallation();
+        const fromDisco = discoverGeneXusInstallation(discoveredKbIdentity.major);
         if (fromDisco) {
             resolution.gx.value = fromDisco;
             resolution.gx.source = 'auto-discovery';
@@ -1379,12 +1503,14 @@ async function handleInit(options, ctx) {
             `Path checked: ${resolution.gx.value}`,
             `Source: --${resolution.gx.source === 'flag' ? 'gx flag' : resolution.gx.source}`
         ];
-        const suggested = resolution.gx.source === 'flag' ? discoverGeneXusInstallation() : null;
+        const suggested = resolution.gx.source === 'flag'
+            ? discoverGeneXusInstallation(discoveredKbIdentity.major)
+            : null;
         if (suggested && suggested.toLowerCase() !== resolution.gx.value.toLowerCase()) {
             help.push(`Detected a working GeneXus install at: ${suggested}`);
             help.push(`Re-run: genexus-mcp init --kb "${resolution.kb.value}" --gx "${suggested}"`);
         } else {
-            help.push('Omit --gx to let init auto-discover via registry / Program Files (matches GeneXus18, GeneXus18u7, etc.).');
+            help.push('Omit --gx to let init auto-discover a catalog-listed installation via registry / Program Files.');
         }
         return {
             exitCode: ctx.EXIT_CODES.ERROR,
@@ -1406,6 +1532,77 @@ async function handleInit(options, ctx) {
                     `Path checked: ${resolution.kb.value}`,
                     'Create the KB in GeneXus first, then re-run init pointing at its folder.'
                 ]
+            )
+        };
+    }
+
+    const compatibility = compareGeneXusKbAndInstallation(resolution.kb.value, resolution.gx.value);
+    const catalog = getGeneXusVersionCatalog();
+    const supportedGxMajor = isSupportedCatalogMajor(catalog, compatibility.gx.major);
+    const supportedKbMajor = isSupportedCatalogMajor(catalog, compatibility.kb.major);
+    if (!supportedGxMajor) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                `GeneXus SDK major ${compatibility.gx.major} is not supported by this MCP distribution.`,
+                ctx.EXIT_CODES.ERROR,
+                [`Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}`],
+                'sdk_unsupported'
+            )
+        };
+    }
+    if (!supportedKbMajor) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                `KB major ${compatibility.kb.major} is not supported by this MCP distribution.`,
+                ctx.EXIT_CODES.ERROR,
+                [`Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}`],
+                'sdk_kb_unsupported'
+            )
+        };
+    }
+    if (compatibility.status === 'mismatch') {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                `GeneXus SDK major ${compatibility.gx.major} does not match KB major ${compatibility.kb.major}. Init aborted before writing config.`,
+                ctx.EXIT_CODES.ERROR,
+                [
+                    `KB version: ${compatibility.kb.version || 'unknown'}`,
+                    `SDK version: ${compatibility.gx.version || 'unknown'}`,
+                    `Path checked: ${resolution.gx.value}`,
+                    'Choose the GeneXus installation that matches the KB major, or pass --gx explicitly.'
+                ],
+                'sdk_kb_mismatch'
+            )
+        };
+    }
+    if (resolution.gx.source === 'auto-discovery' && !compatibility.kb.major) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                'Cannot safely auto-select a GeneXus SDK because the KB major could not be determined.',
+                ctx.EXIT_CODES.ERROR,
+                [
+                    `KB detection reason: ${compatibility.kb.reason || 'unknown'}`,
+                    'Pass --gx explicitly with the installation that created this KB.'
+                ],
+                'sdk_selection_required'
+            )
+        };
+    }
+    if (compatibility.kb.major && !compatibility.gx.major) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                `The selected GeneXus installation version could not be verified against KB major ${compatibility.kb.major}.`,
+                ctx.EXIT_CODES.ERROR,
+                [
+                    `Path checked: ${resolution.gx.value}`,
+                    'Use a standard GeneXus installation containing GeneXus.exe metadata, or provide a verified matching SDK path.'
+                ],
+                'sdk_identity_unresolved'
             )
         };
     }
@@ -1492,8 +1689,19 @@ async function handleInit(options, ctx) {
                     noOp: !created.changed,
                     clientsPatchedCount: patchResult.patched.length,
                     resolved: {
-                        kb: { path: resolution.kb.value, source: resolution.kb.source },
-                        gx: { path: resolution.gx.value, source: resolution.gx.source }
+                        kb: {
+                            path: resolution.kb.value,
+                            source: resolution.kb.source,
+                            major: compatibility.kb.major,
+                            version: compatibility.kb.version
+                        },
+                        gx: {
+                            path: resolution.gx.value,
+                            source: resolution.gx.source,
+                            major: compatibility.gx.major,
+                            version: compatibility.gx.version,
+                            detectionSource: compatibility.gx.source
+                        }
                     },
                     verification: {
                         summary: verification.summary,
@@ -1661,7 +1869,7 @@ async function handleWhoami(options, ctx) {
     const kbName = kbPath ? path.basename(kbPath) : null;
     const kbExists = !!(kbPath && fs.existsSync(kbPath));
     const kbValid = data.kbLooksValid;
-    const gxVersion = readGeneXusVersionFromInstall(gxPath);
+    const gxIdentity = readGeneXusInstallationIdentity(gxPath);
 
     const ok = {
         connected: true,
@@ -1673,7 +1881,9 @@ async function handleWhoami(options, ctx) {
         },
         geneXus: {
             installationPath: gxPath,
-            version: gxVersion
+            version: gxIdentity.version,
+            major: gxIdentity.major,
+            detectionSource: gxIdentity.source
         },
         config: {
             path: data.configPath,
@@ -1684,7 +1894,9 @@ async function handleWhoami(options, ctx) {
     const help = [];
     if (!kbExists) help.push('Configured KB path does not exist on disk.');
     if (kbExists && !kbValid) help.push('KB path exists but does not look like a GeneXus KB (no `.gxw` or `KnowledgeBase.Connection`).');
-    if (!gxVersion) help.push('Could not read GeneXus version from installation folder (no version.txt detected).');
+    if (!gxIdentity.version && !gxIdentity.major) {
+        help.push('Could not determine the GeneXus major from version metadata or the installation path.');
+    }
 
     return { exitCode: ctx.EXIT_CODES.OK, envelope: { ok, help } };
 }

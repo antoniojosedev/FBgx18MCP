@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$KbPath,
     [Parameter(Mandatory = $true)][string]$FixtureManifest,
     [Parameter(Mandatory = $true)][string]$GatewayExe,
-    [string]$GxPath = $(if ($env:GX_PATH) { $env:GX_PATH } else { 'C:\Program Files (x86)\GeneXus\GeneXus18' }),
+    [string]$GxPath = $env:GX_PATH,
     [ValidateRange(1024, 65535)][int]$HttpPort,
     [ValidateRange(30, 7200)][int]$TimeoutSeconds = 2400,
     [string]$Alias = 'live-fixture'
@@ -11,6 +11,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+. (Join-Path $root 'scripts\live-fixture.ps1')
+. (Join-Path $root 'scripts\live-harness.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
+if ([string]::IsNullOrWhiteSpace($GxPath)) { $GxPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog }
 
 function Get-FreeBuildAllPort {
     foreach ($candidate in 55200..55299) {
@@ -216,17 +221,6 @@ function Get-BuildAllTimeoutResult {
     }
 }
 
-function Assert-BuildAllFixture {
-    param([object]$Fixture, [string]$ResolvedKbPath)
-    if ($Fixture.schemaVersion -ne 1 -or -not $Fixture.synthetic -or -not $Fixture.disposable) {
-        throw 'Fixture must identify a synthetic, disposable KB using schemaVersion 1.'
-    }
-    if ([string]::IsNullOrWhiteSpace($Fixture.kbPath) -or [IO.Path]::GetFullPath($Fixture.kbPath).TrimEnd('\') -ine $ResolvedKbPath.TrimEnd('\')) {
-        throw 'Fixture kbPath must match the explicitly selected KB.'
-    }
-    if ($Fixture.isolation.verified -ne $true) { throw 'Fixture database isolation must be verified.' }
-}
-
 function Invoke-BuildAllRpc {
     param(
         [string]$BaseUrl,
@@ -254,13 +248,18 @@ if (-not (Test-Path -LiteralPath $KbPath -PathType Container)) { throw "KB direc
 $KbPath = (Resolve-Path -LiteralPath $KbPath).Path
 if (-not (Test-Path -LiteralPath $FixtureManifest -PathType Leaf)) { throw "Fixture manifest not found: $FixtureManifest" }
 $fixture = Get-Content -LiteralPath $FixtureManifest -Raw | ConvertFrom-Json
-Assert-BuildAllFixture $fixture $KbPath
+Assert-LiveFixture $fixture $KbPath
 if (-not (Test-Path -LiteralPath $GatewayExe -PathType Leaf)) { throw "Gateway executable not found: $GatewayExe" }
+$GatewayExe = (Resolve-Path -LiteralPath $GatewayExe).Path
 if (-not (Test-Path -LiteralPath (Join-Path $GxPath 'Artech.Architecture.Common.dll') -PathType Leaf)) { throw "GeneXus SDK not found under '$GxPath'." }
 if ($HttpPort -le 0) { $HttpPort = Get-FreeBuildAllPort }
 $runDirectory = Join-Path $root ('scratchpad\live-build-all-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
+$gatewayLogDirectory = Join-Path $runDirectory 'gateway-log'
+New-Item -ItemType Directory -Path $gatewayLogDirectory -Force | Out-Null
+$gatewayLogPath = Join-Path $gatewayLogDirectory 'gateway_debug.log'
 $configPath = Join-Path $runDirectory 'config.json'
+$keepRunDirectory = $false
 @{
     GeneXus = @{ InstallationPath = $GxPath; WorkerExecutable = (Join-Path $root 'publish\worker\GxMcp.Worker.exe') }
     Server = @{ HttpPort = $HttpPort; McpStdio = $false; BindAddress = '127.0.0.1' }
@@ -275,10 +274,16 @@ try {
     $psi.CreateNoWindow = $true
     $psi.EnvironmentVariables['GX_MCP_PORT'] = $HttpPort.ToString()
     $psi.EnvironmentVariables['GX_MCP_STDIO'] = 'false'
-    $psi.EnvironmentVariables['GXMCP_TEST_KB'] = $KbPath
+    # The explicit config below already contains the fixture KB. Keep the
+    # discovery-only variable out of the Gateway child to avoid duplicate
+    # startup warmups racing for the same Worker lock.
+    $psi.EnvironmentVariables.Remove('GXMCP_TEST_KB')
     $psi.EnvironmentVariables['GX_PATH'] = $GxPath
+    $psi.EnvironmentVariables['GX_PROGRAM_DIR'] = $GxPath
     $psi.EnvironmentVariables['GX_CONFIG_PATH'] = $configPath
+    $psi.EnvironmentVariables['GXMCP_LOG_DIR'] = $gatewayLogDirectory
     $gateway = [Diagnostics.Process]::Start($psi)
+    Assert-LiveGatewayProcessImage -Process $gateway -ExpectedPath $GatewayExe
     $ready = $false
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         if ($gateway.HasExited) { throw "Gateway exited before binding port $HttpPort (exit $($gateway.ExitCode))." }
@@ -286,6 +291,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
     if (-not $ready) { throw "Gateway did not bind port $HttpPort within 30 seconds." }
+    Assert-LiveGatewayMaster -LogPath $gatewayLogPath
     $baseUrl = "http://127.0.0.1:$HttpPort/mcp"
     $init = Invoke-BuildAllRpc -BaseUrl $baseUrl -SessionId '' -Method 'initialize' -Params @{
         protocolVersion = '2025-11-25'; capabilities = @{}; clientInfo = @{ name = 'gxmcp-build-all-gate'; version = '3.0.0' }
@@ -318,13 +324,22 @@ try {
     }
     Write-Output ($evidence | ConvertTo-Json -Depth 12 -Compress)
     if ($evidence.live -eq 'pass') { exit 0 }
+    $keepRunDirectory = $true
     if ($evidence.live -eq 'unavailable') { exit 2 }
     exit 1
+}
+catch {
+    $keepRunDirectory = $true
+    throw
 }
 finally {
     if ($gateway) {
         try { if (-not $gateway.HasExited) { $gateway.Kill(); [void]$gateway.WaitForExit(5000) } } catch { }
         $gateway.Dispose()
     }
-    if (Test-Path -LiteralPath $runDirectory) { Remove-Item -LiteralPath $runDirectory -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($keepRunDirectory) {
+        Write-Warning "Build All diagnostics retained at $runDirectory"
+    } elseif (Test-Path -LiteralPath $runDirectory) {
+        Remove-Item -LiteralPath $runDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

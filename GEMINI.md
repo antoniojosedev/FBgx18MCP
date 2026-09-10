@@ -66,6 +66,14 @@ Prefer resources when the data is naturally browsable or cacheable:
 - `genexus://kb/index-status`
 - `genexus://kb/health`
 
+## Codebase discovery with ripwire (on PATH as `ripwire`)
+
+Reach for it BEFORE blind grep and whole-file reads:
+- Orient on a task: `ripwire <dir> --for="<task in words>"` — ranked, quality-annotated signatures.
+- Callers & blast radius: `ripwire <dir> --callers=SYM` and `--impact=SYM` (transitive callers before modifying contracts).
+- Pre-edit contract check: `ripwire <dir> --edit-check=SYM`.
+- Diff review: `ripwire . --pr-context` (enforced by `scripts/pr-preflight.ps1`).
+
 ## Operating rules
 
 - Do not design new features around non-MCP transport contracts.

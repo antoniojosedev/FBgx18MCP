@@ -318,7 +318,10 @@ namespace GxMcp.Gateway.Routers
                             rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
                             verifyMode = args?["verifyMode"]?.ToString(),
                             baseVersion = args?["baseVersion"]?.ToString(),
-                            autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false
+                            autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false,
+                            // Events complete-save contract: keep the flag on the Patch
+                            // command so the worker can capture/compare the full object.
+                            requireObjectSave = args?["requireObjectSave"]?.ToObject<bool?>() ?? false
                         };
                     }
                     else

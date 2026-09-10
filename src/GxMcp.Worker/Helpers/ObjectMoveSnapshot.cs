@@ -98,6 +98,40 @@ namespace GxMcp.Worker.Helpers
                 : Comparison.Failed(changed, current.Hash, changedKeys);
         }
 
+        public Comparison CompareParts(KBObject obj, params string[] ignoredPartNames)
+        {
+            if (obj == null)
+                return Comparison.Failed(new[] { "ObjectMissing" }, null);
+
+            ObjectMoveSnapshot current;
+            try { current = Capture(obj); }
+            catch (Exception ex) { return Comparison.Failed(new[] { "SnapshotReadFailed: " + ex.Message }, null); }
+
+            var ignored = new HashSet<string>(ignoredPartNames ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            Func<KeyValuePair<string, PartSnapshot>, bool> include = p => !ignored.Contains(p.Value.Name);
+            var expectedFingerprints = _parts.Where(include)
+                .ToDictionary(p => p.Key, p => p.Value.VerificationData, StringComparer.OrdinalIgnoreCase);
+            var currentFingerprints = current._parts.Where(include)
+                .ToDictionary(p => p.Key, p => p.Value.VerificationData, StringComparer.OrdinalIgnoreCase);
+            string[] changedKeys = FindChangedPartKeys(expectedFingerprints, currentFingerprints);
+            var changed = new List<string>();
+            foreach (string key in changedKeys)
+            {
+                PartSnapshot expectedPart;
+                PartSnapshot currentPart;
+                if (_parts.TryGetValue(key, out expectedPart) && !current._parts.ContainsKey(key))
+                    changed.Add(expectedPart.Name + " (missing)");
+                else if (current._parts.TryGetValue(key, out currentPart) && !_parts.ContainsKey(key))
+                    changed.Add(currentPart.Name + " (unexpected)");
+                else
+                    changed.Add(expectedPart?.Name ?? currentPart?.Name ?? key);
+            }
+
+            return changed.Count == 0
+                ? Comparison.Verified(current.Hash)
+                : Comparison.Failed(changed, current.Hash, changedKeys);
+        }
+
         /// <summary>
         /// Compensating restoration used only when the enclosing SDK transaction did not
         /// fully undo a failed move. The normal rollback path is the transaction rollback.

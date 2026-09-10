@@ -1,4 +1,4 @@
-# GeneXus MCP Server — GeneXus 18 for Claude, Cursor, and AI Agents
+# GeneXus MCP Server — Multi-version GeneXus for Claude, Cursor, and AI Agents
 
 [![npm version](https://img.shields.io/npm/v/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
@@ -12,9 +12,60 @@
 
 ---
 
-**GeneXus MCP Server** lets AI agents — Claude Desktop, Claude Code, Cursor, Antigravity, and any MCP-compatible client — read, edit, analyze, and refactor objects inside a GeneXus 18 Knowledge Base. It talks to the **native GeneXus SDK**, so the agent works with the *real* KB, not a copy or a parsed approximation.
+**GeneXus MCP Server** lets AI agents — Claude Desktop, Claude Code, Cursor, Antigravity, and any MCP-compatible client — read, edit, analyze, and refactor objects inside a Knowledge Base supported by the selected GeneXus SDK. It talks to the **native GeneXus SDK**, so the agent works with the *real* KB, not a copy or a parsed approximation.
 
 In practice: you point the MCP at your KB, then ask your AI assistant things like *"list all transactions with attribute CustomerId"*, *"add a rule to the Order transaction that validates the total"*, or *"refactor this procedure to use the new SDT"* — and it does it.
+
+---
+
+## Multi-version SDK support
+
+The same MCP distribution supports the SDK majors listed in the generated
+compatibility document. Each configured MCP process selects one installed SDK
+with `--gx`; no separate MCP installation is required. The commands below are
+examples of switching the existing configuration, not running two majors in
+the same process:
+
+```bash
+npx genexus-mcp@latest init --kb "C:\KBs\KBTeste17" --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
+# To switch this MCP configuration to GX18:
+npx genexus-mcp@latest init --kb "C:\KBs\MyGX18KB" --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+```
+
+After switching the SDK or KB, fully restart the AI client so it reloads the
+MCP process and its tool schemas. If GX17 and GX18 must run simultaneously,
+use separate MCP configurations and ports.
+
+`init` also reads the KB `.gxw` major and the selected `GeneXus.exe` metadata.
+It aborts before writing `config.json` when the majors conflict or an automatic
+selection cannot be verified. `genexus-mcp doctor` exposes the same result as
+the `kb_sdk_compatibility` check. For a disposable fixture, the
+[live-KB harness](docs/live-kb-test-harness.md) includes a catalog-driven matrix
+that checks every supported major against one published artifact.
+
+The Gateway reports the detected SDK through `genexus_whoami`:
+
+- `geneXus.supportedMajors`: explicitly validated SDK majors from the version catalog
+- `geneXus.matchedMajor`: the major detected for the configured installation
+- `geneXus.versionMatches`: whether the detected installation is in that catalog
+- `geneXus.supportedMajor`: retained as the legacy single-major alias for the catalog primary
+
+The Worker isolates version-sensitive SDK members behind compatibility adapters.
+For example, Design System helper methods that differ between SDK majors are
+replaced field-by-field by parsing the native `Tokens` and `Styles` parts when
+needed. Existing tool names, arguments, and MCP client configuration formats do
+not change.
+
+<!-- BEGIN GENERATED: gx-compatibility -->
+Supported SDK majors: **GeneXus 17, GeneXus 18**.
+Primary SDK: **GeneXus 18**.
+Source of truth: `config/gx-versions.json`.
+<!-- END GENERATED: gx-compatibility -->
+
+To add another GeneXus major in the future, add it to the explicit version
+catalog only after compiling the Worker with that SDK and passing the focused
+tests plus a live KB smoke. This prevents the server from claiming compatibility
+based only on a version string.
 
 ---
 
@@ -44,8 +95,8 @@ It works through the **native GeneXus SDK** — the same code paths the IDE uses
 Before you start, make sure you have:
 
 - ✅ **Windows** (GeneXus is Windows-only)
-- ✅ **GeneXus 18** installed locally (default path: `C:\Program Files (x86)\GeneXus\GeneXus18`)
-- ✅ **A GeneXus 18 Knowledge Base** opened at least once in the IDE (so it's initialized)
+- ✅ **A supported GeneXus SDK** installed locally (see [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md); pass another install path explicitly when needed)
+- ✅ **A Knowledge Base created with a supported GeneXus major** and opened at least once in the IDE (so it's initialized)
 - ✅ **Node.js 18+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
 - ✅ **An MCP-compatible AI client** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 
@@ -183,6 +234,7 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Add a menu option 'Customers' to MainMenu that opens CustomerWW."*
 
 **WorkWithPlus pattern editing** (full structural + theming control)
+- *"Add a typed tab with variables, an action, and nested responsive tables to a WorkWithPlus WebPanel."*
 - *"In WorkWithPlusOrder, add a 'Duplicate' button to the transaction view alongside Save/Cancel/Delete."*
 - *"Group the Customer transaction attributes into a 'Contact Info' section with theme class GroupTelaResp."*
 - *"On the WorkWithPlusInvoice list, add a new ordering by InvoiceDate descending."*
@@ -217,25 +269,17 @@ Auto-detected and auto-configured by the installer:
 | OpenCode (CLI) | ✅ | Reads both direct and nested MCP layouts; restart required |
 | Codex CLI | ✅ | Writes `~/.codex/config.toml` |
 | VS Code / VS Code Insiders | ✅ | Native MCP (`User/mcp.json`); restart required |
-| OpenCode Desktop | Manual setup | Detected and reported with exact local-server fields; add the server from the app's MCP settings |
+| OpenCode Desktop | ✅ | Shares `opencode.jsonc` with OpenCode CLI; restart required |
 | Any MCP client | Manual | Use the JSON snippet printed by `init` |
 
 Run **`npx genexus-mcp clients`** at any time to see which agents are installed, which have `genexus` registered, and whether any point at a stale gateway exe. To (re)register specific ones: `npx genexus-mcp clients add --clients antigravity,vscode`.
 
-### OpenCode Desktop (manual setup)
+### OpenCode Desktop
 
-The CLI detects OpenCode Desktop but does not write its app-managed `mcp.json`.
-After `init` prints the path to `config.json`, open **Settings → MCP → Add server
-→ Local** in OpenCode Desktop and enter:
-
-- Name: `genexus18mcp`
-- Command: `npx.cmd` on Windows, `npx` elsewhere
-- Arguments: `-y genexus-mcp@latest`
-- Environment: `GX_CONFIG_PATH=<the config.json path printed by init>`
-
-Save the server, fully restart OpenCode Desktop, and call `genexus_whoami` to
-verify the GeneXus server and selected KB. The CLI intentionally leaves the
-Desktop-managed configuration file untouched.
+OpenCode Desktop shares its MCP configuration file (`opencode.jsonc` or `opencode.json`)
+with OpenCode CLI. Running `genexus-mcp init --write-clients` or `genexus-mcp clients add --clients opencode-desktop`
+automatically registers `genexus18mcp` in the shared config. After registration,
+fully restart OpenCode Desktop so it reloads its MCP configuration.
 
 ---
 
@@ -313,7 +357,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 **Refactor, patterns & compare**
 - `genexus_refactor` — rename, extract procedure, WWP condition set
 - `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …); `mode=actions` manages typed WorkWithPlus grid actions and Action Groups
-- `genexus_wwp` — WorkWithPlus Action Group / grid-action editing: `list`, `add_action`, `update_action`, `move_action`, `remove_action`
+- `genexus_wwp` — typed WorkWithPlus editing: Action Groups, atomic native `add_grid_attribute`, plus `add_tab`, `move_tab`, and `remove_tab` for WebPanel tabs and typed children
 - `genexus_compare` — IDE "Compare Objects" parity (`IComparerService`)
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
 
@@ -378,6 +422,8 @@ WorkWithPlus patterns are XML documents that drive Transaction-and-Selection scr
 | Reorganize Transaction view (form layout, action row) | edit under `/instance/transaction/...` | ✅ verified live |
 | Reorganize Selection view (list/grid, filters, orders) | edit under `/instance/level/selection/...` | ✅ verified live |
 | Auto-rebuild `childrenOrderedList` from XML order | done implicitly on every write; report under `childrenOrderedListReconciliation` | ✅ verified live |
+| Add / move / remove WebPanel tabs and typed controls | `genexus_wwp` `add_tab` / `move_tab` / `remove_tab` | ✅ native Pattern SDK commands; snapshot + re-read + WebForm projection verification |
+| Add or reconcile one grid Attribute caption | `genexus_wwp` `add_grid_attribute` | ✅ isolated dry-run, full PatternInstance/WebForm snapshots, exact rollback and no implicit lifecycle |
 
 **Recommended workflow for a screen redesign:**
 
@@ -388,6 +434,25 @@ WorkWithPlus patterns are XML documents that drive Transaction-and-Selection scr
 5. Read back to confirm; refresh the GeneXus IDE to see the result.
 
 **Custom buttons use `<userAction>`, not `<standardAction>`.** `Trn_Enter` / `Trn_Cancel` / `Trn_Delete` are the only registered standard actions on a WorkWithPlus transaction; any custom button (Duplicate, Audit, Export, etc.) must be a `<userAction caption="…" name="…" buttonClass="btn ButtonGreen" confirm="False" />`. The MCP's reconciler treats `<userAction>` as a peer of `<standardAction>` (same typeCode 17/18 by context), so they coexist in the same `TableActions` row and the IDE renders them side-by-side.
+
+For WebPanel tabs, prefer the native typed operation instead of whole-XML replacement:
+
+```json
+{
+  "action": "add_tab",
+  "name": "SamplePanel",
+  "controlName": "IntegrationV3",
+  "title": "Integration API V3",
+  "position": 5,
+  "children": [
+    { "type": "variable", "name": "Operation", "basicType": "VarChar", "length": 40 },
+    { "type": "userAction", "name": "SendIntegration", "caption": "Send" }
+  ],
+  "dryRun": true
+}
+```
+
+The dry-run returns a typed diff and `versionToken`. Pass it as `baseVersion` on the persisted call. The write uses Pattern SDK element commands, requires exact PatternInstance/WebForm snapshots, preserves Apply-on-save, re-reads the PatternInstance, projects and re-reads the parent WebForm, and rolls both parts back on any failed confirmation. It never invokes lifecycle operations.
 
 **Things to know (orientation, not gotchas):**
 
@@ -431,7 +496,7 @@ The installer writes a `config.json` for you. To customize networking, timeouts,
     "HttpPort": 5000,
     "BindAddress": "127.0.0.1",
     "SessionIdleTimeoutMinutes": 10,
-    "WorkerIdleTimeoutMinutes": 5,
+    "WorkerIdleTimeoutMinutes": 60,
     "MaxOpenKbs": 3
   },
   "GeneXus": {
@@ -526,7 +591,7 @@ This repo ships a set of **agent skills** under `.gemini/skills/` that any MCP-c
 |---|---|
 | `genexus-mastery` | This repository's preferred MCP workflow + multi-KB usage |
 | `genexus18-guidelines` | Local engineering rules layered on top of Nexa |
-| `nexa` | Full GeneXus 18 reference set: every object type, command, type, property — imported from the official [`genexuslabs/genexus-skills`](https://github.com/genexuslabs/genexus-skills) |
+| `nexa` | Full reference set for the primary GeneXus SDK: every object type, command, type, property — imported from the official [`genexuslabs/genexus-skills`](https://github.com/genexuslabs/genexus-skills) |
 | `frontend/chameleon-controls-library` | 58 Chameleon UI component specs |
 | `frontend/mercury-design-system` | Mercury tokens, bundles, theming |
 | `frontend/design-system-builder` | Authoring custom design systems |

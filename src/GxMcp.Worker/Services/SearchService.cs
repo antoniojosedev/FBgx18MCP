@@ -611,36 +611,6 @@ namespace GxMcp.Worker.Services
                 string json = responseObj.ToString(Newtonsoft.Json.Formatting.None);
                 if (!_indexCacheService.IsScanning) _queryCache.TryAdd(cacheKey, json);
 
-                if (!isQuick && criteria.Terms.Count > 0 && returnedCount > 0)
-                {
-                    var topGuids = new List<Guid>();
-                    int warmLimit = Math.Min(endIndex, startIndex + 5);
-                    for (int i = startIndex; i < warmLimit; i++)
-                    {
-                        var g = rankedAll[i].Entry?.Guid;
-                        if (!string.IsNullOrEmpty(g) && Guid.TryParse(g, out var parsedGuid))
-                        {
-                            topGuids.Add(parsedGuid);
-                        }
-                    }
-
-                    Program.EnqueueBackground(() => {
-                        try {
-                            // STA guard: this runs on a background (MTA) thread and
-                            // kb.DesignModel.Objects.Get touches the COM-flavoured
-                            // SDK — same crash class as TryDirectLookup off-STA.
-                            // Warm-up is best-effort cache priming; skip silently.
-                            if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA) return;
-                            var kb = _indexCacheService.KbService?.GetKB();
-                            if (kb == null) return;
-                            foreach (var guid in topGuids) {
-                                var obj = kb.DesignModel.Objects.Get(guid);
-                                if (obj != null) Logger.Debug($"[Warm-up] Loaded {obj.Name} into SDK cache.");
-                            }
-                        } catch { }
-                    });
-                }
-
                 return json;
             }
             catch (Exception ex) { return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
@@ -834,9 +804,11 @@ namespace GxMcp.Worker.Services
         private static bool ContainsIgnoreCase(List<string> list, string term)
         {
             if (list == null || list.Count == 0) return false;
+            int termLen = term.Length;
             for (int i = 0; i < list.Count; i++)
             {
-                if (string.Equals(list[i], term, StringComparison.OrdinalIgnoreCase)) return true;
+                var s = list[i];
+                if (s != null && s.Length == termLen && string.Equals(s, term, StringComparison.OrdinalIgnoreCase)) return true;
             }
             return false;
         }
@@ -846,21 +818,29 @@ namespace GxMcp.Worker.Services
             int score = 0;
             string name = entry.Name ?? "";
             string desc = entry.Description ?? "";
+            int nameLen = name.Length;
+            int descLen = desc.Length;
+            bool isTableType = string.Equals(entry.Type, "Table", StringComparison.OrdinalIgnoreCase);
+            bool isTableFilter = string.Equals(typeFilter, "Table", StringComparison.OrdinalIgnoreCase);
 
             foreach (var term in terms) {
-                if (name.Equals(term, StringComparison.OrdinalIgnoreCase)) score += 10000;
-                else if (name.StartsWith(term, StringComparison.OrdinalIgnoreCase)) score += 1000;
-                else if (name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 500;
+                int termLen = term.Length;
+                if (nameLen >= termLen)
+                {
+                    if (nameLen == termLen && name.Equals(term, StringComparison.OrdinalIgnoreCase)) score += 10000;
+                    else if (name.StartsWith(term, StringComparison.OrdinalIgnoreCase)) score += 1000;
+                    else if (name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 500;
+                }
 
-                if (desc.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 300;
+                if (descLen >= termLen && desc.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 300;
 
                 if (ContainsIgnoreCase(entry.Keywords, term)) score += 800;
                 if (ContainsIgnoreCase(entry.Tags, term)) score += 800;
 
                 if (entry.Tables != null && ContainsIgnoreCase(entry.Tables, term))
                 {
-                    bool boostForAttributeMember = string.Equals(typeFilter, "Table", StringComparison.OrdinalIgnoreCase)
-                                                   && string.Equals(entry.Type, "Table", StringComparison.OrdinalIgnoreCase)
+                    bool boostForAttributeMember = isTableFilter
+                                                   && isTableType
                                                    && _indexCacheService.LooksLikeAttributeName(term);
                     score += boostForAttributeMember ? 5000 : 400;
                 }

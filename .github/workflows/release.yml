@@ -227,7 +227,7 @@ jobs:
           fi
 
           echo "Verifying that ${TARGET_SPEC} is live on npm registry..."
-          MAX_ATTEMPTS=30
+          MAX_ATTEMPTS=60
           SLEEP_SECONDS=10
           AVAILABLE=false
 

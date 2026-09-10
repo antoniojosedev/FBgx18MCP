@@ -22,6 +22,17 @@ namespace GxMcp.Worker.Services
             "endif", "for", "endfor", "do", "exists", "noexists", "any", "count"
         };
 
+        // These are the call-like forms that carry a KB object identity in GeneXus
+        // source. Keeping the extractor deliberately narrow is important: a generic
+        // `Name(...)` regex would report every built-in function as a broken object.
+        private static readonly Regex _explicitObjectReference = new Regex(
+            @"\b(?:call|udp|submit)\s*(?:\(\s*)?['""]?(?<name>[A-Za-z_][A-Za-z0-9_.]*)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _objectReferenceAttribute = new Regex(
+            @"\b(?:procedure|dataprovider|dataProvider|targetObject|objectName|callee)\s*=\s*['""](?<name>[A-Za-z_][A-Za-z0-9_.]*)['""]",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         public KbValidationService(IndexCacheService indexCacheService, ObjectService objectService, PatternAnalysisService patternAnalysisService)
         {
             _indexCacheService = indexCacheService;
@@ -218,8 +229,107 @@ namespace GxMcp.Worker.Services
 
         public List<BrokenRef> AnalyzeImpact(string targetName, string afterXml)
         {
-            Logger.Warn("Impact analysis is not implemented; dryRun brokenRefs is advisory only.");
-            return new List<BrokenRef>();
+            var broken = new List<BrokenRef>();
+            if (string.IsNullOrWhiteSpace(targetName) || string.IsNullOrWhiteSpace(afterXml)) return broken;
+
+            var index = _indexCacheService?.TryGetLoadedIndex();
+            if (index == null || index.Objects == null || index.Objects.Count == 0)
+            {
+                Logger.Debug("[IMPACT] skipped: active object index is not loaded.");
+                return broken;
+            }
+
+            SearchIndex.IndexEntry sourceEntry = null;
+            foreach (var entry in index.Objects.Values)
+            {
+                if (entry == null) continue;
+                if (string.Equals(entry.Name, targetName, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(entry.Type + ":" + entry.Name, targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    sourceEntry = entry;
+                    break;
+                }
+            }
+
+            string fromName = sourceEntry?.Name ?? targetName;
+            string fromType = sourceEntry?.Type ?? DetectTypeFromXml(afterXml);
+            var references = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Match match in _explicitObjectReference.Matches(afterXml))
+                AddReference(references, match.Groups["name"]?.Value);
+            foreach (Match match in _objectReferenceAttribute.Matches(afterXml))
+                AddReference(references, match.Groups["name"]?.Value);
+
+            foreach (string reference in references)
+            {
+                if (IsKnownObject(index, reference)) continue;
+                broken.Add(new BrokenRef
+                {
+                    From = fromName,
+                    FromType = fromType ?? string.Empty,
+                    To = reference,
+                    Reason = "Referenced object was not found in the active KB index."
+                });
+            }
+
+            broken.Sort((a, b) =>
+            {
+                int byFrom = string.Compare(a.From, b.From, StringComparison.OrdinalIgnoreCase);
+                if (byFrom != 0) return byFrom;
+                return string.Compare(a.To, b.To, StringComparison.OrdinalIgnoreCase);
+            });
+            return broken;
+        }
+
+        public bool IsImpactAnalysisAvailable()
+        {
+            var index = _indexCacheService?.TryGetLoadedIndex();
+            return index?.Objects != null && index.Objects.Count > 0;
+        }
+
+        private void AddReference(HashSet<string> references, string value)
+        {
+            if (references == null || string.IsNullOrWhiteSpace(value)) return;
+            string normalized = value.Trim().Trim('"', '\'');
+            if (normalized.Length <= 1 || _keywords.Contains(normalized)) return;
+            references.Add(normalized);
+        }
+
+        private static bool IsKnownObject(SearchIndex index, string reference)
+        {
+            if (index?.Objects == null || string.IsNullOrWhiteSpace(reference)) return false;
+            string normalized = reference.Trim();
+            foreach (var entry in index.Objects.Values)
+            {
+                if (entry == null) continue;
+                if (string.Equals(entry.Name, normalized, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(entry.Type + ":" + entry.Name, normalized, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                // The source language commonly uses a module-qualified call while
+                // the SDK index stores the bare object name. Accept that spelling
+                // only when the suffix maps to an actual indexed object.
+                int dot = normalized.LastIndexOf('.');
+                if (dot >= 0 && string.Equals(entry.Name, normalized.Substring(dot + 1), StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        private static string DetectTypeFromXml(string xml)
+        {
+            if (string.IsNullOrWhiteSpace(xml)) return string.Empty;
+            try
+            {
+                var doc = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
+                return doc.Root?.Name?.LocalName ?? string.Empty;
+            }
+            catch
+            {
+                int start = xml.IndexOf('<');
+                if (start < 0) return string.Empty;
+                int end = xml.IndexOfAny(new[] { '>', ' ', '\r', '\n', '\t' }, start + 1);
+                return end > start + 1 ? xml.Substring(start + 1, end - start - 1) : string.Empty;
+            }
         }
 
         private List<string> ExtractMissingAttributes(string expression, HashSet<string> known)

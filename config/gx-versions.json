@@ -1,0 +1,20 @@
+{
+  "$schema": "genexus-mcp/version-catalog/1",
+  "primaryMajor": "18",
+  "supportedMajors": [
+    {
+      "major": "17",
+      "displayName": "GeneXus 17",
+      "defaultInstallPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus17Trial",
+      "registryNames": ["GeneXus 17", "GeneXus 17 Trial"],
+      "legacyRegistryVersions": ["17.0"]
+    },
+    {
+      "major": "18",
+      "displayName": "GeneXus 18",
+      "defaultInstallPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus18",
+      "registryNames": ["GeneXus 18"],
+      "legacyRegistryVersions": ["18.0"]
+    }
+  ]
+}

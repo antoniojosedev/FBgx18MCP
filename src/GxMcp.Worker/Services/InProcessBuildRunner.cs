@@ -77,7 +77,9 @@ namespace GxMcp.Worker.Services
             bool skipFullDeploy = false,
             string kbPath = null,
             bool specifyOnly = false,
-            bool fullDeploy = false)
+            bool fullDeploy = false,
+            bool forceFullBuild = false,
+            IReadOnlyList<string> skipSpecifyTargets = null)
         {
             if (status == null) return InProcessBuildOutcome.CouldNotRun;
             if (kbHandle == null)
@@ -190,6 +192,7 @@ namespace GxMcp.Worker.Services
                     bool useBuildOne =
                         isBuildWithTargets
                         && !forceRebuild
+                        && !forceFullBuild
                         && !fullDeploy
                         && _typeBuildOne != null
                         && !string.Equals(Environment.GetEnvironmentVariable("GXMCP_INPROCESS_BUILD_FASTPATH"), "0", StringComparison.OrdinalIgnoreCase);
@@ -369,7 +372,12 @@ namespace GxMcp.Worker.Services
                             // last MCP edit), skip Specify+Generate and call Run.Compile
                             // directly. On any compile-only failure, fall back to BuildOne
                             // for this target (which regenerates the .cs).
-                            if (_miRunCompile != null && !EditDirtyTracker.IsDirty(kbPath, t))
+                            bool targetMaySkipSpecify;
+                            if (skipSpecifyTargets != null)
+                                targetMaySkipSpecify = skipSpecifyTargets.Contains(t, StringComparer.OrdinalIgnoreCase);
+                            else
+                                targetMaySkipSpecify = !EditDirtyTracker.IsDirty(kbPath, t);
+                            if (_miRunCompile != null && targetMaySkipSpecify)
                             {
                                 lineSink("[BUILD-INPROCESS] '" + t + "' is clean — compile-only fast-fast path.", false);
                                 if (ExecuteCompileOnly(kbHandle, t, lineSink))
@@ -1162,8 +1170,14 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
+                    string compileOnlyPath = "missing";
+                    if (_miRunCompile != null)
+                        compileOnlyPath = "available (Run.Compile)";
+                    else if (_miBuildBuild != null)
+                        compileOnlyPath = "available (Build.Build — slow, forces spec)";
+
                     Logger.Info("[BUILD-INPROCESS] Compile-only path: "
-                                + (_miRunCompile != null ? "available (Run.Compile)" : (_miBuildBuild != null ? "available (Build.Build — slow, forces spec)" : "missing"))
+                                + compileOnlyPath
                                 + " (BL=" + (_typeGenexusBLServices != null)
                                 + ", BuildOptions=" + (_typeBuildOptions != null)
                                 + ", DevSet=" + (_typeDevelopmentWorkingSet != null)

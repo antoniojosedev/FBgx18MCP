@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using GxMcp.Worker.Services;
+using GxMcp.Worker.Models;
 using Xunit;
 
 namespace GxMcp.Worker.Tests
@@ -134,6 +135,81 @@ namespace GxMcp.Worker.Tests
             Assert.NotNull(p);
             Assert.EndsWith(System.IO.Path.Combine(".gx", "index-snapshot.bin"), p);
             Assert.StartsWith(@"C:\KBs\MyKb", p);
+        }
+
+        [Fact]
+        public void IndexCache_restores_valid_warm_snapshot_and_rebuilds_derived_indexes()
+        {
+            var store = new InMemoryStore();
+            WarmIndexSnapshot.SetStoreForTests(store);
+            try
+            {
+                string kbPath = @"C:\KBs\WarmRestore";
+                string snapshotPath = WarmIndexSnapshot.DefaultPath(kbPath);
+                var source = new SearchIndex
+                {
+                    LastUpdated = System.DateTime.UtcNow
+                };
+                source.Objects["Procedure:WarmProc"] = new SearchIndex.IndexEntry
+                {
+                    Name = "WarmProc",
+                    Type = "Procedure",
+                    FullSource = "call MissingProc()"
+                };
+                byte[] payload = Encoding.UTF8.GetBytes(source.ToJson());
+                WarmIndexSnapshot.Save(
+                    snapshotPath,
+                    payload,
+                    kbPath,
+                    objectCount: 1,
+                    schemaVersion: IndexCacheService.CurrentSchemaVersion,
+                    highWaterMarkUtc: System.DateTime.UtcNow.ToString("o"));
+
+                var cache = new IndexCacheService();
+                var result = cache.TryRestoreWarmSnapshot(kbPath);
+
+                Assert.True(result["loaded"]?.ToObject<bool>());
+                Assert.False(result["fallback"]?.ToObject<bool>());
+                Assert.Equal(1, result["objectCount"]?.ToObject<int>());
+                var restored = cache.TryGetLoadedIndex();
+                Assert.NotNull(restored);
+                Assert.True(restored.Objects.ContainsKey("Procedure:WarmProc"));
+                Assert.NotNull(restored.ChildrenByParent);
+                Assert.NotNull(restored.SourceTokenIndex);
+                Assert.True(restored.SourceTokenIndex.ContainsKey("missingproc"));
+            }
+            finally
+            {
+                WarmIndexSnapshot.SetStoreForTests(null);
+            }
+        }
+
+        [Fact]
+        public void IndexCache_rejects_warm_snapshot_with_wrong_schema()
+        {
+            var store = new InMemoryStore();
+            WarmIndexSnapshot.SetStoreForTests(store);
+            try
+            {
+                string kbPath = @"C:\KBs\WarmSchemaMismatch";
+                string path = WarmIndexSnapshot.DefaultPath(kbPath);
+                WarmIndexSnapshot.Save(
+                    path,
+                    Encoding.UTF8.GetBytes("{}"),
+                    kbPath,
+                    objectCount: 0,
+                    schemaVersion: IndexCacheService.CurrentSchemaVersion + 1);
+
+                var result = new IndexCacheService().TryRestoreWarmSnapshot(kbPath);
+
+                Assert.False(result["loaded"]?.ToObject<bool>() ?? false);
+                Assert.True(result["fallback"]?.ToObject<bool>());
+                Assert.Equal("schema-mismatch", result["fallbackReason"]?.ToString());
+            }
+            finally
+            {
+                WarmIndexSnapshot.SetStoreForTests(null);
+            }
         }
     }
 }

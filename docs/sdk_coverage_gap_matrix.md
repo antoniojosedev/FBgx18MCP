@@ -6,9 +6,13 @@
 > [`sdk_uncovered_endpoints_2026-07-20.md`](sdk_uncovered_endpoints_2026-07-20.md).
 
 Goal: make the MCP cover every **GeneXus IDE user action** via the native SDK, so an
-agent can use the MCP *instead of* opening the GeneXus 18 IDE. This document maps each
+agent can use the MCP *instead of* opening the GeneXus IDE for a supported major. This document maps each
 IDE-capability domain to its concrete SDK entry point(s) and marks current MCP coverage,
 then ranks the gaps by how much they block "replace the IDE".
+
+Compatibility note (2026-09-09): the runtime catalog supports GeneXus 17 and 18.
+The SDK-probe and live rows below are historical GX18 evidence unless a row says
+otherwise; catalog support does not imply live persistence parity for every major.
 
 ## Scope decision (why this isn't "all 56k methods")
 

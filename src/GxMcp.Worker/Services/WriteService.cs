@@ -18,6 +18,7 @@ namespace GxMcp.Worker.Services
         private readonly PatternAnalysisService _patternAnalysisService;
         private readonly PatchService _patchService;
         private ValidationService _validationService;
+        private KbValidationService _kbValidationService;
         private StructureService _structureService;
         private static readonly object _persistenceWarmupLock = new object();
         private static bool _persistenceWarmupDone = false;
@@ -33,6 +34,7 @@ namespace GxMcp.Worker.Services
         }
 
         public void SetValidationService(ValidationService vs) { _validationService = vs; }
+        public void SetKbValidationService(KbValidationService validation) { _kbValidationService = validation; }
         public void SetStructureService(StructureService structureService) { _structureService = structureService; }
 
         private void FlushSync()
@@ -51,9 +53,16 @@ namespace GxMcp.Worker.Services
                         try
                         {
                             var now = DateTime.UtcNow;
-                            model.LastCommitDate = now;
+                            // Do NOT stamp model.LastCommitDate here. Team Development derives its
+                            // pending-commit list from it: ITeamDevClientService.GetLocalChanges(model)
+                            // treats it as the "everything up to this instant is already committed"
+                            // baseline. Moving it to UtcNow after every write silently empties the
+                            // IDE's Team Dev > Commit list for EVERY object in the model, including
+                            // objects this worker never touched. LastObjectsVersionDate alone is what
+                            // makes the IDE notice the worker's writes and reload, which is what
+                            // #128 was after.
                             model.LastObjectsVersionDate = now;
-                            Logger.Info("[FLUSH-SYNC] Model revision dates updated.");
+                            Logger.Info("[FLUSH-SYNC] Model objects-version date updated (LastCommitDate left untouched to preserve Team Development local changes).");
                         }
                         catch (Exception ex)
                         {
@@ -70,19 +79,21 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        internal static void StampObjectRevisionDates(global::Artech.Architecture.Common.Objects.KBObject obj, global::Artech.Architecture.Common.Objects.KBModel model)
+        internal static bool StampObjectRevisionDates(global::Artech.Architecture.Common.Objects.KBObject obj, global::Artech.Architecture.Common.Objects.KBModel model)
         {
-            if (obj == null) return;
+            if (obj == null) return false;
+            bool metadataStampPersisted = false;
             try
             {
                 var now = DateTime.UtcNow;
                 try { obj.LastUpdate = now; } catch { }
-                try { obj.SaveModelEntityDate(301, 0, now); } catch { }
-                try { obj.SaveModelEntityDate(300, 0, now); } catch { }
-                try { obj.SaveVersionIndependentDate(310, 0, now); } catch { }
+                try { obj.SaveModelEntityDate(301, 0, now); metadataStampPersisted = true; } catch { }
+                try { obj.SaveModelEntityDate(300, 0, now); metadataStampPersisted = true; } catch { }
+                try { obj.SaveVersionIndependentDate(310, 0, now); metadataStampPersisted = true; } catch { }
                 if (model != null)
                 {
-                    try { model.LastCommitDate = now; } catch { }
+                    // LastCommitDate deliberately not stamped — see FlushSync above: it is the
+                    // Team Development commit baseline, and stamping it wipes the pending list.
                     try { model.LastObjectsVersionDate = now; } catch { }
                 }
             }
@@ -90,6 +101,7 @@ namespace GxMcp.Worker.Services
             {
                 Logger.Debug("[IDE-CONCURRENCY] StampObjectRevisionDates failed: " + ex.Message);
             }
+            return metadataStampPersisted;
         }
 
         private void EnsurePersistenceWarmup()
@@ -559,6 +571,9 @@ namespace GxMcp.Worker.Services
         {
             var facadeArgs = NormalizeFacadeArgs(args);
 
+            string facadeValidationError = ValidateRequireObjectSaveArgs(target, facadeArgs);
+            if (facadeValidationError != null) return facadeValidationError;
+
             // Optimistic-concurrency guard (stale-edit data-loss fix): if the caller
             // passed the versionToken from the read this edit is based on, refuse the
             // write when the object changed since (e.g. the user edited it in the IDE).
@@ -582,13 +597,16 @@ namespace GxMcp.Worker.Services
             catch { }
 
             IdeConcurrencyStatus concurrencyStatus = null;
-            try
+            if (!facadeArgs.DryRun || string.Equals(facadeArgs.ConcurrencyPolicy, "fail_if_open", StringComparison.OrdinalIgnoreCase))
             {
-                concurrencyStatus = IdeConcurrencyDetector.Check(kbPath, kbName, target);
-            }
-            catch (Exception ex)
-            {
-                Logger.Debug("[IDE-CONCURRENCY] Check skipped: " + ex.Message);
+                try
+                {
+                    concurrencyStatus = IdeConcurrencyDetector.Check(kbPath, kbName, target);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("[IDE-CONCURRENCY] Check skipped: " + ex.Message);
+                }
             }
 
             if (concurrencyStatus != null && concurrencyStatus.IsTargetObjectOpen &&
@@ -625,7 +643,8 @@ namespace GxMcp.Worker.Services
                     facadeArgs.VerifyMode,
                     facadeArgs.BaseVersion,
                     facadeArgs.RollbackOnFailure,
-                    facadeArgs.AutoInjectVariables);
+                    facadeArgs.AutoInjectVariables,
+                    facadeArgs.RequireObjectSave);
             }
             else
             {
@@ -646,7 +665,9 @@ namespace GxMcp.Worker.Services
                     facadeArgs.DryRun,
                     facadeArgs.ExplicitBase64,
                     strictVerify,
-                    facadeArgs.RollbackOnFailure);
+                    facadeArgs.RollbackOnFailure,
+                    facadeArgs.ForceWrite,
+                    facadeArgs.BaseVersion);
             }
 
             // Friction 2026-05-22: KBs default to WIN1252 (codepage 1252) on
@@ -789,18 +810,40 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        // Returns a StaleObject error envelope when the object's current version token
-        // no longer matches the caller-supplied baseVersion, else null (proceed).
+        // Returns an error envelope when the object's current version token cannot be
+        // safely checked or no longer matches the caller-supplied baseVersion, else
+        // null (proceed). A supplied token is an explicit request for concurrency
+        // protection, so an unreadable token must fail closed rather than silently
+        // downgrading the write to last-writer-wins.
         private string CheckStaleVersion(string target, string partName, string typeFilter, string baseVersion)
         {
-            string current;
+            string read;
             try
             {
-                string read = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
-                current = JObject.Parse(read)["versionToken"]?.ToString();
+                read = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
             }
-            catch { return null; }
-            if (current == null) return null; // can't compute a token → don't block the write
+            catch
+            {
+                return BuildVersionCheckUnavailable(target, baseVersion);
+            }
+
+            JObject response;
+            try
+            {
+                response = JObject.Parse(read);
+            }
+            catch
+            {
+                return BuildVersionCheckUnavailable(target, baseVersion);
+            }
+
+            if (string.Equals(response["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase))
+                return response.ToString(Newtonsoft.Json.Formatting.None);
+
+            string current = response["versionToken"]?.ToString();
+            if (string.IsNullOrWhiteSpace(current))
+                return BuildVersionCheckUnavailable(target, baseVersion);
+
             if (string.Equals(current, baseVersion, StringComparison.Ordinal)) return null; // unchanged — proceed
 
             return McpResponse.Err(
@@ -810,6 +853,45 @@ namespace GxMcp.Worker.Services
                 nextSteps: new JArray(McpResponse.NextStep("genexus_read", new JObject { ["name"] = target }, "Fetch the current version before re-editing.")),
                 target: target,
                 extra: new JObject { ["expectedVersion"] = baseVersion, ["currentVersion"] = current });
+        }
+
+        private static string BuildVersionCheckUnavailable(string target, string expectedVersion)
+        {
+            return McpResponse.Err(
+                code: "VersionCheckUnavailable",
+                message: "The current versionToken could not be read, so the write was not attempted.",
+                hint: "Re-read the object and retry with the returned versionToken, or omit baseVersion only when last-writer-wins behavior is intentional.",
+                target: target,
+                extra: new JObject
+                {
+                    ["expectedVersion"] = expectedVersion,
+                    ["currentVersion"] = JValue.CreateNull()
+                });
+        }
+
+        internal static string ValidateRequireObjectSaveArgs(string target, FacadeWriteArgs facadeArgs)
+        {
+            if (facadeArgs == null || !facadeArgs.RequireObjectSave) return null;
+
+            if (!string.Equals(facadeArgs.Mode, "patch", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpResponse.Err(
+                    code: "RequireObjectSaveUnsupportedMode",
+                    message: "requireObjectSave is supported only for mode=patch with part=Events.",
+                    hint: "Use mode=patch, part=Events, and pass the current versionToken as baseVersion.",
+                    target: target);
+            }
+
+            if (!string.Equals(facadeArgs.PartName, "Events", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpResponse.Err(
+                    code: "RequireObjectSaveUnsupportedPart",
+                    message: "requireObjectSave is supported only for part=Events in patch mode.",
+                    hint: "Use part=Events or omit requireObjectSave for another source part.",
+                    target: target);
+            }
+
+            return null;
         }
 
         internal static FacadeWriteArgs NormalizeFacadeArgs(JObject args)
@@ -862,7 +944,9 @@ namespace GxMcp.Worker.Services
                 AutoInjectVariables = args["autoDeclareVariables"]?.ToObject<bool?>()
                     ?? args["autoInjectVariables"]?.ToObject<bool?>()
                     ?? false,
-                ConcurrencyPolicy = args["concurrencyPolicy"]?.ToString() ?? "warn"
+                ForceWrite = args["forceWrite"]?.ToObject<bool?>() ?? false,
+                ConcurrencyPolicy = args["concurrencyPolicy"]?.ToString() ?? "warn",
+                RequireObjectSave = args["requireObjectSave"]?.ToObject<bool?>() ?? false
             };
         }
 
@@ -886,7 +970,9 @@ namespace GxMcp.Worker.Services
             public bool RollbackOnFailure { get; set; }
             public string BaseVersion { get; set; }
             public bool AutoInjectVariables { get; set; }
+            public bool ForceWrite { get; set; }
             public string ConcurrencyPolicy { get; set; }
+            public bool RequireObjectSave { get; set; }
         }
 
         // Returns a deduped list of glyphs in the args payload that cannot
@@ -899,21 +985,17 @@ namespace GxMcp.Worker.Services
             = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "find", "context", "anchor", "old_string", "expectedCount" };
 
+        private static readonly System.Text.Encoding _win1252Encoding = System.Text.Encoding.GetEncoding(1252,
+            new System.Text.EncoderExceptionFallback(),
+            new System.Text.DecoderExceptionFallback());
+
         internal static System.Collections.Generic.List<string> CollectNonWin1252Glyphs(JObject args)
         {
             var result = new System.Collections.Generic.List<string>();
             if (args == null) return result;
             var seen = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
-            System.Text.Encoding enc;
-            try
-            {
-                enc = System.Text.Encoding.GetEncoding(1252,
-                    new System.Text.EncoderExceptionFallback(),
-                    new System.Text.DecoderExceptionFallback());
-            }
-            catch { return result; }
 
-            ScanTokenForLossyGlyphs(args, enc, seen, result);
+            ScanTokenForLossyGlyphs(args, _win1252Encoding, seen, result);
             return result;
         }
 
@@ -941,10 +1023,19 @@ namespace GxMcp.Worker.Services
                 case JTokenType.String:
                     string s = token.Value<string>();
                     if (string.IsNullOrEmpty(s)) return;
+                    // Fast path: if all characters are ASCII (<= 127), they are 100% representable in Win1252 with 0 allocations.
+                    bool hasNonAscii = false;
+                    for (int i = 0; i < s.Length; i++)
+                    {
+                        if (s[i] > 127) { hasNonAscii = true; break; }
+                    }
+                    if (!hasNonAscii) return;
+
                     var enumerator = System.Globalization.StringInfo.GetTextElementEnumerator(s);
                     while (enumerator.MoveNext())
                     {
                         string rune = (string)enumerator.Current;
+                        if (rune.Length == 1 && rune[0] <= 127) continue;
                         try { enc.GetBytes(rune); }
                         catch (System.Text.EncoderFallbackException)
                         {
@@ -956,7 +1047,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false)
+        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool forceWrite = false, string baseVersion = null)
         {
             partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
 
@@ -969,6 +1060,18 @@ namespace GxMcp.Worker.Services
             // write can detect the concurrent modification and report Stale.
             lock (AcquirePerTargetLock(target))
             {
+                // The facade check happens before patch preparation, but another writer can
+                // finish while that preparation is in progress. Re-check after acquiring the
+                // canonical per-target lock so in-process writers cannot pass an old token into
+                // WriteObjectInternal. External IDE writes still rely on the SDK transaction's
+                // locking semantics and the post-save evidence below.
+                if (!dryRun && !string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    string staleErr = CheckStaleVersion(target, partName, typeFilter, baseVersion);
+                    if (staleErr != null)
+                        return staleErr;
+                }
+
             // Advisory lock check — honours GXMCP_WRITE_OWNER_ID / GXMCP_WRITE_FORCE env vars.
             // Reads the .gx/locks/<target>__<part>.lock file written by genexus_multi_agent_lock.
             // Returns an error envelope immediately if a different, non-expired owner holds the lock.
@@ -1009,7 +1112,7 @@ namespace GxMcp.Worker.Services
             string raw;
             try
             {
-                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify);
+                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify, forceWrite);
             }
             finally
             {
@@ -1035,39 +1138,42 @@ namespace GxMcp.Worker.Services
             if (!dryRun && rollbackOnFailure && snapshot?.PriorContent != null)
                 wrapped = RollbackFullWriteFailure(wrapped, target, partName, typeFilter, snapshot.PriorContent);
 
-            // issue #31.2: a no-op write (WrapWithPersistedState flipped code to
-            // WriteNoChange because persisted == prior) shouldn't keep the pre-write
-            // snapshot .bak it just wrote — delete it and skip the snapshot envelope.
-            bool wasNoOp = false;
-            try { wasNoOp = string.Equals(JObject.Parse(wrapped)["code"]?.ToString(), "WriteNoChange", StringComparison.OrdinalIgnoreCase); }
-            catch { }
-
             // Attach snapshot envelope to the response so callers can restore.
-            if (snapshot != null && !wasNoOp)
+            if (snapshot != null)
             {
-                try
+                // issue #31.2: a no-op write (WrapWithPersistedState flipped code to
+                // WriteNoChange because persisted == prior) shouldn't keep the pre-write
+                // snapshot .bak it just wrote — delete it and skip the snapshot envelope.
+                bool wasNoOp = false;
+                try { wasNoOp = string.Equals(JObject.Parse(wrapped)["code"]?.ToString(), "WriteNoChange", StringComparison.OrdinalIgnoreCase); }
+                catch { }
+
+                if (!wasNoOp)
                 {
-                    var parsed = JObject.Parse(wrapped);
-                    parsed["snapshot"] = new JObject
+                    try
                     {
-                        ["path"] = snapshot.Path,
-                        ["timestamp"] = snapshot.Timestamp,
-                        ["guid"] = snapshot.Guid,
-                        ["part"] = snapshot.Part,
-                        ["compressed"] = snapshot.Compressed,
-                        ["bytes"] = snapshot.Bytes
-                    };
-                    wrapped = parsed.ToString(Newtonsoft.Json.Formatting.None);
+                        var parsed = JObject.Parse(wrapped);
+                        parsed["snapshot"] = new JObject
+                        {
+                            ["path"] = snapshot.Path,
+                            ["timestamp"] = snapshot.Timestamp,
+                            ["guid"] = snapshot.Guid,
+                            ["part"] = snapshot.Part,
+                            ["compressed"] = snapshot.Compressed,
+                            ["bytes"] = snapshot.Bytes
+                        };
+                        wrapped = parsed.ToString(Newtonsoft.Json.Formatting.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug("[SNAPSHOT] envelope attach failed: " + ex.Message);
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    Logger.Debug("[SNAPSHOT] envelope attach failed: " + ex.Message);
+                    try { if (!string.IsNullOrEmpty(snapshot.Path) && System.IO.File.Exists(snapshot.Path)) System.IO.File.Delete(snapshot.Path); }
+                    catch (Exception ex) { Logger.Debug("[SNAPSHOT] no-op cleanup failed: " + ex.Message); }
                 }
-            }
-            else if (snapshot != null && wasNoOp)
-            {
-                try { if (!string.IsNullOrEmpty(snapshot.Path) && System.IO.File.Exists(snapshot.Path)) System.IO.File.Delete(snapshot.Path); }
-                catch (Exception ex) { Logger.Debug("[SNAPSHOT] no-op cleanup failed: " + ex.Message); }
             }
             return wrapped;
             } // end lock (AcquirePerTargetLock)
@@ -1129,7 +1235,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true)
+        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool forceWrite = false)
         {
             try
             {
@@ -1227,6 +1333,11 @@ namespace GxMcp.Worker.Services
 
                 Logger.Debug(string.Format("[DEBUG-SAVE] Object Found: {0} ({1})", obj.Name, obj.TypeDescriptor.Name));
 
+                if (ThemeStyleEditHelper.Applies(obj, partName, out object stylePart))
+                {
+                    return WriteThemeStylePart(obj, target, partName, stylePart, decodedCode, dryRun, forceWrite);
+                }
+
                 if (PatternAnalysisService.IsPatternPart(partName))
                 {
                     return WritePatternPart(obj, target, partName, decodedCode, dryRun, strictVerify);
@@ -1234,7 +1345,7 @@ namespace GxMcp.Worker.Services
 
                 if (WebFormXmlHelper.IsVisualPart(partName))
                 {
-                    return WriteVisualPart(obj, target, partName, decodedCode, dryRun, strictVerify);
+                    return WriteVisualPart(obj, target, partName, decodedCode, dryRun, strictVerify, forceWrite);
                 }
 
                 if (dryRun)
@@ -1575,6 +1686,7 @@ namespace GxMcp.Worker.Services
                 } catch (Exception ex) { Logger.Debug("[DEBUG-SAVE] Force Dirty failed: " + ex.Message); }
 
                 // 3. PERSISTENCE SEQUENCE
+                bool metadataStampPersisted = false;
                 try
                 {
                     EnsurePersistenceWarmup();
@@ -1590,11 +1702,15 @@ namespace GxMcp.Worker.Services
                             {
                                 Logger.Info("[DEBUG-SAVE] Fast persistence path: obj.Save() without explicit transaction.");
                                 saveMethod.Invoke(obj, null);
-                                StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
+                                metadataStampPersisted = StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
                                 ScheduleFlush();
                                 _objectService.MarkReadCacheDirty(obj, partName);
                                 {
-                                    var fpResult = new JObject { ["fastPath"] = "save_without_transaction" };
+                                    var fpResult = new JObject
+                                    {
+                                        ["fastPath"] = "save_without_transaction",
+                                        ["metadataStampPersisted"] = metadataStampPersisted
+                                    };
                                     string fpMsgs = GetSdkMessagesSafe(part);
                                     if (!string.IsNullOrWhiteSpace(fpMsgs)) fpResult["sdkMessages"] = fpMsgs;
                                     return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: fpResult);
@@ -1603,11 +1719,15 @@ namespace GxMcp.Worker.Services
 
                             Logger.Info("[DEBUG-SAVE] Fast persistence path fallback: obj.EnsureSave(false) without explicit transaction.");
                             obj.EnsureSave(false);
-                            StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
+                            metadataStampPersisted = StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
                             ScheduleFlush();
                             _objectService.MarkReadCacheDirty(obj, partName);
                             {
-                                var fpResult = new JObject { ["fastPath"] = "ensure_save_without_transaction" };
+                                var fpResult = new JObject
+                                {
+                                    ["fastPath"] = "ensure_save_without_transaction",
+                                    ["metadataStampPersisted"] = metadataStampPersisted
+                                };
                                 string fpMsgs = GetSdkMessagesSafe(part);
                                 if (!string.IsNullOrWhiteSpace(fpMsgs)) fpResult["sdkMessages"] = fpMsgs;
                                 return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: fpResult);
@@ -1720,7 +1840,7 @@ namespace GxMcp.Worker.Services
                         transaction.Commit();
                         transactionCommitted = true;
                         transactionFinished = true;
-                        StampObjectRevisionDates(obj, kb.DesignModel);
+                        metadataStampPersisted = StampObjectRevisionDates(obj, kb.DesignModel);
                         Logger.Info("[DEBUG-SAVE] SDK Transaction Committed.");
                     }
                     catch (Exception ex)
@@ -1807,7 +1927,8 @@ namespace GxMcp.Worker.Services
                                             ["message"] = "WebPanel Events with attribute writes inside `For each` → spc0150 at build time. Move to a Procedure (recipe extract_to_procedure).",
                                             ["suggested_recipe"] = "extract_to_procedure"
                                         }
-                                    }
+                                    },
+                                    ["metadataStampPersisted"] = metadataStampPersisted
                                 };
                                 return Models.McpResponse.Ok(
                                     target: target,
@@ -1822,7 +1943,10 @@ namespace GxMcp.Worker.Services
                     }
 
                     // Build success result — include retryStrategy and warnings when validation was bypassed
-                    var writeResult = new JObject();
+                    var writeResult = new JObject
+                    {
+                        ["metadataStampPersisted"] = metadataStampPersisted
+                    };
                     var writeWarnings = new JArray();
                     if (explicitBase64 || usedBase64Sniff)
                         writeResult["decodedBase64"] = true;

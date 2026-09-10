@@ -186,7 +186,7 @@ namespace GxMcp.Worker.Services
             // validate=only → never persist; return diagnostics only.
             if (mode == "only" || dryRun)
             {
-                var envelope = DryRunPlanBuilder.BuildEnvelope(target, currentXml, newXml, "ops");
+                var envelope = DryRunPlanBuilder.BuildEnvelope(target, currentXml, newXml, "ops", _kbValidationService);
                 JObject env;
                 try { env = JObject.Parse(envelope.ToString()); }
                 catch { env = new JObject { ["raw"] = envelope.ToString() }; }
@@ -259,7 +259,7 @@ namespace GxMcp.Worker.Services
 
             if (mode == "only" || dryRun)
             {
-                var envelope = DryRunPlanBuilder.BuildEnvelope(target, currentDsl, newDsl, "ops");
+                var envelope = DryRunPlanBuilder.BuildEnvelope(target, currentDsl, newDsl, "ops", _kbValidationService);
                 JObject env;
                 try { env = JObject.Parse(envelope.ToString()); }
                 catch { env = new JObject { ["raw"] = envelope.ToString() }; }
@@ -467,7 +467,7 @@ namespace GxMcp.Worker.Services
             string newXml = new JsonPatchService().Apply(currentXml, kind, patchArr);
 
             if (dryRun)
-                return DryRunPlanBuilder.BuildEnvelope(target, currentXml, newXml, "patch").ToString(Newtonsoft.Json.Formatting.None);
+                return DryRunPlanBuilder.BuildEnvelope(target, currentXml, newXml, "patch", _kbValidationService).ToString(Newtonsoft.Json.Formatting.None);
 
             string writeResult = WriteObject(target, partName, newXml, typeFilter, false, false, false, false);
             JObject writeJson;

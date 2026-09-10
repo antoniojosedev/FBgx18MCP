@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Xml;
+using GxMcp.Worker.Compatibility;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -180,14 +181,21 @@ namespace GxMcp.Worker.Services
         public string Capabilities()
         {
             var capabilities = new JArray();
+            SdkIdentity sdk = SdkIdentity.Detect();
             foreach (var definition in CapabilityDefinitions)
             {
                 var matches = definition.Deferred
                     ? new List<Type>()
                     : ResolveTypes(definition.TypeAliases).ToList();
-                string status = definition.Deferred
-                    ? "deferred"
-                    : matches.Count == 0 ? "unavailable" : "available_unverified";
+                string status;
+                if (definition.Deferred)
+                    status = "deferred";
+                else if (sdk.CatalogSupported == false)
+                    status = "unsupported_catalog";
+                else if (matches.Count == 0)
+                    status = "unavailable";
+                else
+                    status = "available_unverified";
 
                 var evidence = new JObject
                 {
@@ -232,9 +240,62 @@ namespace GxMcp.Worker.Services
             {
                 ["schemaVersion"] = "genexus-sdk-capabilities/1",
                 ["installedSdkVersion"] = sdkVersion ?? "unknown",
+                ["sdk"] = sdk.ToJson(),
+                ["contract"] = new JObject
+                {
+                    ["catalogVersion"] = "genexus-mcp/version-catalog/1",
+                    ["evidenceLevel"] = "signature_probe",
+                    ["persistenceVerified"] = false,
+                    ["parityVerified"] = false
+                },
+                ["compatibility"] = new JObject
+                {
+                    ["designSystem"] = BuildDesignSystemCapability(sdk)
+                },
                 ["capabilities"] = capabilities,
                 ["note"] = "Signature availability is not proof of a successful save. Run the certified fixture before enabling an authoring path."
             }.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        private static JObject BuildDesignSystemCapability(SdkIdentity sdk)
+        {
+            Type helper = ResolveTypes(new[] { "DesignSystemHelper" }).FirstOrDefault();
+            string[] requiredMethods =
+            {
+                "GetTokensNames", "GetClassesNames", "GetAllImagesNames", "GetAllDSOsNames"
+            };
+            var availableMethods = new JArray();
+            if (helper != null)
+            {
+                foreach (string methodName in requiredMethods)
+                {
+                    try
+                    {
+                        if (helper.GetMethod(methodName, PublicFlags) != null)
+                            availableMethods.Add(methodName);
+                    }
+                    catch { }
+                }
+            }
+
+            bool nativeComplete = availableMethods.Count == requiredMethods.Length;
+            string status;
+            if (sdk.CatalogSupported == false)
+                status = "unsupported_catalog";
+            else if (nativeComplete)
+                status = "native";
+            else
+                status = "source_parts_fallback";
+            return new JObject
+            {
+                ["status"] = status,
+                ["helperTypeAvailable"] = helper != null,
+                ["nativeMethods"] = availableMethods,
+                ["sourcePartsFallback"] = true,
+                ["fallbackParts"] = new JArray("Tokens", "Styles"),
+                ["evidenceLevel"] = "signature_probe",
+                ["persistenceVerified"] = false
+            };
         }
 
         private const BindingFlags PublicFlags =

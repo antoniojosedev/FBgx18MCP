@@ -5,6 +5,8 @@ param(
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $repoRoot 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $repoRoot
 if ([string]::IsNullOrWhiteSpace($CoverageRoot)) {
     if ($env:RUNNER_TEMP) {
         $CoverageRoot = Join-Path $env:RUNNER_TEMP "gx-coverage-artifacts"
@@ -44,7 +46,7 @@ if ($gatewayRate -lt $MinLineRatePercent) { $failed += "gateway=$gatewayRate%" }
 if (Test-Path -LiteralPath $workerFailedMarker) {
     throw "Worker coverage collection failed (worker.failed.txt present). See the 'Gateway and Worker coverage' step log above for the dotnet test error."
 } elseif (Test-Path -LiteralPath $workerSkippedMarker) {
-    Write-Host "Worker line-rate: skipped (no local GeneXus 18 SDK; gateway threshold enforced only)." -ForegroundColor Yellow
+    Write-Host "Worker line-rate: skipped (no local GeneXus $(Get-GxPrimaryMajor -Catalog $gxCatalog) SDK; gateway threshold enforced only)." -ForegroundColor Yellow
 } elseif (Test-Path -LiteralPath $workerPath) {
     $workerRate = Get-LineRatePercent -Path $workerPath
     Write-Host "Worker line-rate: $workerRate% (required: $MinWorkerLineRatePercent%)"

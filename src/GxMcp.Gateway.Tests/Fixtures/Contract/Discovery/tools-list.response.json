@@ -135,7 +135,7 @@
           },
           "dryRun": {
             "default": true,
-            "description": "routes_clone/routes_update: preview first; false writes only with expectedVersion.",
+            "description": "routes_clone/routes_update: preview first; false writes only with expectedVersion or versionToken.",
             "type": "boolean"
           },
           "expectedVersion": {
@@ -200,6 +200,10 @@
           },
           "targetPrefix": {
             "description": "Target method/path prefix, e.g. reverse.",
+            "type": "string"
+          },
+          "versionToken": {
+            "description": "Backward-compatible alias for expectedVersion; pass the token returned by the preceding dry run or inspection.",
             "type": "string"
           }
         },
@@ -1484,6 +1488,11 @@
             "description": "Alias of baseVersion. The write is refused when the current version no longer matches.",
             "type": "string"
           },
+          "forceWrite": {
+            "default": false,
+            "description": "WebForm only: persist despite SDK WebForm validation errors; response includes validationOverridden=true.",
+            "type": "boolean"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"
@@ -1564,6 +1573,11 @@
           },
           "replaceAll": {
             "description": "patch mode only. Apply to ALL occurrences instead of requiring expectedCount to match exactly.",
+            "type": "boolean"
+          },
+          "requireObjectSave": {
+            "default": false,
+            "description": "Events patch only: require a complete parent-object save, an advanced revision/lastUpdate, fresh content re-read, and unchanged sibling parts. Requires baseVersion for non-dry-run writes; incomplete evidence is returned as ObjectSaveIncomplete without an automatic retry or rollback.",
             "type": "boolean"
           },
           "return_post_state": {
@@ -2242,45 +2256,72 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "IO umbrella for assets, part text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write (binary asset CRUD) | export_part|import_part (object part to/from a text file) | export_unified (full object envelope JSON) | screenshot_publish (copy PNG to .gx/published-screenshots) | ocr (Tesseract stub).",
+      "description": "IO umbrella for assets, Object Text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write | export_part|import_part (single part) | export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects (official GeneXus for Agents Object Text parity) | export_unified|screenshot_publish|ocr.",
       "inputSchema": {
         "examples": [
           {
-            "action": "asset_read",
-            "path": "C:\\KBs\\MyKb\\custom.xml"
+            "action": "export_kb_to_text",
+            "outputPath": "C:\\tmp\\customer-text",
+            "targets": [
+              {
+                "name": "Customer",
+                "type": "Transaction"
+              }
+            ]
           },
           {
-            "action": "export_part",
-            "name": "Customer",
-            "outputPath": "C:\\tmp\\Customer.gxp",
-            "part": "Source"
+            "action": "validate_kb_text_files",
+            "inputPath": "C:\\tmp\\customer-text"
+          },
+          {
+            "action": "delete_kb_objects",
+            "dryRun": true,
+            "targets": [
+              "Procedure:OldProc"
+            ]
           }
         ],
         "properties": {
           "action": {
-            "description": "Asset, part-exchange, screenshot, or OCR operation to perform.",
+            "description": "Asset, single-part, batch Object Text, screenshot, or OCR operation.",
             "enum": [
               "asset_find",
               "asset_read",
               "asset_write",
               "export_part",
               "import_part",
+              "export_kb_to_text",
+              "import_text_to_kb",
+              "validate_kb_text_files",
+              "delete_kb_objects",
               "export_unified",
               "screenshot_publish",
               "ocr"
             ],
             "type": "string"
           },
+          "async": {
+            "description": "Run a batch Object Text operation as a cancellable background job when supported.",
+            "type": "boolean"
+          },
+          "confirm": {
+            "description": "delete_kb_objects: required for a real delete; dryRun remains non-mutating.",
+            "type": "boolean"
+          },
           "contentBase64": {
             "description": "asset_write: base64-encoded file content.",
             "type": "string"
+          },
+          "dryRun": {
+            "description": "Object Text import/delete preview without persisting changes.",
+            "type": "boolean"
           },
           "includeContent": {
             "description": "asset_find: inline file content.",
             "type": "boolean"
           },
           "inputPath": {
-            "description": "import_part: source file path.",
+            "description": "import_part: source file; import_text_to_kb/validate_kb_text_files: manifest or directory.",
             "type": "string"
           },
           "kb": {
@@ -2288,31 +2329,39 @@
             "type": "string"
           },
           "limit": {
-            "description": "asset_find: max results.",
+            "description": "asset_find/Object Text: max results.",
             "type": "integer"
           },
           "maxBytes": {
             "description": "asset_read: max bytes to return.",
             "type": "integer"
           },
+          "module": {
+            "description": "Object Text module filter.",
+            "type": "string"
+          },
           "name": {
-            "description": "export/import/export_unified: object name.",
+            "description": "single object name or comma-separated selector; export_unified uses one object.",
             "type": "string"
           },
           "outputPath": {
-            "description": "export_part: destination file path.",
+            "description": "export_part: destination file; export_kb_to_text: destination directory.",
             "type": "string"
           },
           "overwrite": {
-            "description": "export_part: overwrite if exists.",
+            "description": "export_part/export_kb_to_text: overwrite existing output.",
             "type": "boolean"
           },
           "part": {
-            "description": "export/import_part: part name (e.g. Source).",
+            "description": "Object Text or part-exchange part name (e.g. Source, Rules, WebForm).",
             "type": "string"
           },
           "path": {
-            "description": "asset/screenshot_publish/ocr: file path.",
+            "description": "asset/screenshot_publish/ocr: file path; Object Text import/validate may use a manifest directory.",
+            "type": "string"
+          },
+          "pathPrefix": {
+            "description": "Object Text KB object-path prefix filter.",
             "type": "string"
           },
           "pattern": {
@@ -2323,8 +2372,13 @@
             "description": "asset_find: root for relative paths.",
             "type": "string"
           },
+          "targets": {
+            "description": "Object Text selector array. Items may be names or {name,type} objects. Omit for export_kb_to_text to export the full indexed KB.",
+            "items": {},
+            "type": "array"
+          },
           "type": {
-            "description": "export/import/export_unified disambiguator.",
+            "description": "Object type disambiguator/filter.",
             "type": "string"
           }
         },
@@ -3197,7 +3251,18 @@
         "examples": [
           {
             "action": "get",
-            "name": "MyPanel"
+            "name": "MyPanel",
+            "propertyName": "Description"
+          },
+          {
+            "action": "get",
+            "name": "MyDomain",
+            "query": "*Type*"
+          },
+          {
+            "action": "get",
+            "name": "MyDomain",
+            "projection": "minimal"
           },
           {
             "action": "move",
@@ -3250,11 +3315,32 @@
           "name": {
             "type": "string"
           },
+          "projection": {
+            "description": "action=get: compact property subset (minimal, standard, full). Defaults to full.",
+            "enum": [
+              "minimal",
+              "standard",
+              "full"
+            ],
+            "type": "string"
+          },
           "properties": {
             "description": "Batch set: map of propertyName to value applied in 1 transaction.",
             "type": "object"
           },
           "propertyName": {
+            "description": "Filter for action=get (single property, comma-separated, or * wildcard); property to change for action=set.",
+            "type": "string"
+          },
+          "propertyNames": {
+            "description": "action=get: list of property names to return.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "query": {
+            "description": "action=get: filter property names by substring or * wildcard.",
             "type": "string"
           },
           "rollbackOnFailure": {
@@ -4557,7 +4643,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Reload worker. modes: soft (drain+respawn), hard (copy sourceDir+respawn). force=true: gateway kills directly. See tool-help.",
+      "description": "Reload worker. modes: soft (drain+respawn), warm (restore validated index snapshot + soft respawn), hard (copy sourceDir+respawn). force=true: gateway kills directly. See tool-help.",
       "inputSchema": {
         "examples": [
           {
@@ -4580,6 +4666,7 @@
           "mode": {
             "enum": [
               "soft",
+              "warm",
               "hard"
             ],
             "type": "string"
@@ -4600,68 +4687,179 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "WorkWithPlus Action Group / grid-action editing (issue #58). action=list (read-only) lists the PatternInstance's action containers and their <userAction>/<standardAction> children; add_action adds a custom userAction to an existing or new group (procedure existence verified, selection single|multiple, enabledWhen condition, icon, description, confirm, position); update_action changes those attributes; move_action relocates an action between groups or reorders it; remove_action deletes an action (confirm=true). dryRun=true returns the XML diff without persisting. Edits target the WorkWithPlus host's PatternInstance XML (survives pattern reapply). NEVER creates Security/GAM permissions. Attributes are passed verbatim to the WWP XML; the SDK's own save normalization is reported honestly via the pattern write verification.",
+      "description": "Typed WorkWithPlus action, tab, and grid edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. No lifecycle operation is implicit.",
       "inputSchema": {
+        "$defs": {
+          "wwpControl": {
+            "additionalProperties": false,
+            "properties": {
+              "basicType": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              },
+              "children": {
+                "items": {
+                  "$ref": "#/$defs/wwpControl"
+                },
+                "type": "array"
+              },
+              "columns": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "controlEmptyItem": {
+                "type": "boolean"
+              },
+              "controlEmptyItemText": {
+                "type": "string"
+              },
+              "controlType": {
+                "type": "string"
+              },
+              "controlValues": {
+                "type": "string"
+              },
+              "decimals": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "description": {
+                "type": "string"
+              },
+              "length": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "themeClass": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "variable",
+                  "userAction",
+                  "table"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
         "examples": [
           {
             "action": "list",
-            "name": "MonitorIntegracaoWW"
+            "name": "SampleOrderWW"
           },
           {
             "action": "add_action",
-            "actionName": "Reativar",
+            "actionName": "Retry",
             "dryRun": true,
-            "enabledWhen": "MonitorIntegracaoStatus = DSituacaoProcessamento.Suspenso",
-            "group": "Processamento",
-            "name": "MonitorIntegracaoWW",
-            "procedure": "MonitorIntegracaoReativar",
+            "group": "Operations",
+            "name": "SampleOrderWW",
+            "procedure": "RetrySampleOrder",
             "selection": "multiple"
           },
           {
-            "action": "remove_action",
-            "actionName": "Reativar",
-            "confirm": true,
-            "name": "MonitorIntegracaoWW"
+            "action": "add_tab",
+            "children": [
+              {
+                "basicType": "VarChar",
+                "length": 40,
+                "name": "Status",
+                "type": "variable"
+              },
+              {
+                "caption": "Refresh",
+                "name": "Refresh",
+                "type": "userAction"
+              }
+            ],
+            "controlName": "Details",
+            "dryRun": true,
+            "name": "SamplePanel",
+            "title": "Details"
+          },
+          {
+            "action": "add_grid_attribute",
+            "attribute": "SampleOrderStatus",
+            "caption": "Status",
+            "dryRun": true,
+            "name": "SampleOrderWW"
           }
         ],
         "properties": {
           "action": {
-            "description": "WorkWithPlus action-group or grid-action operation to perform.",
+            "description": "WorkWithPlus action-group, tab, or grid-attribute operation to perform.",
             "enum": [
               "list",
               "add_action",
               "update_action",
               "move_action",
-              "remove_action"
+              "remove_action",
+              "add_tab",
+              "move_tab",
+              "remove_tab",
+              "add_grid_attribute"
             ],
             "type": "string"
           },
           "actionName": {
-            "description": "Action name (e.g. 'Reativar').",
+            "description": "Action name.",
+            "type": "string"
+          },
+          "attribute": {
+            "description": "add_grid_attribute: GeneXus Attribute name.",
+            "type": "string"
+          },
+          "baseVersion": {
+            "description": "Optimistic-concurrency token returned by dryRun/read.",
             "type": "string"
           },
           "buttonClass": {
-            "description": "add/update: theme button class (e.g. 'btn ButtonCinza').",
+            "description": "add/update: theme button class.",
             "type": "string"
           },
           "caption": {
-            "description": "add/update: button caption (defaults to actionName).",
+            "description": "Action or grid-column caption.",
             "type": "string"
           },
+          "children": {
+            "description": "add_tab controls; flat children are wrapped in a responsive table.",
+            "items": {
+              "$ref": "#/$defs/wwpControl"
+            },
+            "type": "array"
+          },
           "confirm": {
-            "description": "add/update: confirmation prompt; remove_action: required to delete (unless dryRun).",
+            "description": "Confirmation prompt; required to delete unless dryRun.",
             "type": "boolean"
           },
+          "controlName": {
+            "description": "Tab ControlName.",
+            "type": "string"
+          },
           "description": {
-            "description": "add/update: tooltip/description.",
+            "description": "add/update: tooltip or description.",
             "type": "string"
           },
           "dryRun": {
-            "description": "Return the XML diff without persisting (default false).",
+            "description": "Return a typed diff and versionToken without mutation.",
             "type": "boolean"
           },
           "enabledWhen": {
-            "description": "add/update: availability condition text (e.g. 'MonitorIntegracaoStatus = DSituacaoProcessamento.Suspenso'). Stored verbatim; expression semantics are not validated.",
+            "description": "Availability condition stored verbatim; expression semantics are not validated.",
+            "type": "string"
+          },
+          "expectedVersion": {
+            "description": "Alias for baseVersion.",
             "type": "string"
           },
           "fromGroup": {
@@ -4669,7 +4867,7 @@
             "type": "string"
           },
           "group": {
-            "description": "Action group/container name (TableActions row). add_action: creates a new group when absent; update/remove: scope filter.",
+            "description": "Action group name. add_action creates it when absent; update/remove use it as a filter.",
             "type": "string"
           },
           "icon": {
@@ -4685,7 +4883,8 @@
             "type": "string"
           },
           "position": {
-            "description": "add/move/update: zero-based index among the group's actions.",
+            "description": "Zero-based action or tab index.",
+            "minimum": 0,
             "type": "integer"
           },
           "procedure": {
@@ -4700,8 +4899,16 @@
             ],
             "type": "string"
           },
+          "title": {
+            "description": "add_tab: tab title.",
+            "type": "string"
+          },
           "toGroup": {
             "description": "move_action: destination group (created when absent).",
+            "type": "string"
+          },
+          "versionToken": {
+            "description": "Backward-compatible alias for baseVersion.",
             "type": "string"
           }
         },

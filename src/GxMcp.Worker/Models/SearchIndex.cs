@@ -56,6 +56,13 @@ namespace GxMcp.Worker.Models
         [JsonIgnore]
         public ConcurrentDictionary<string, HashSet<string>> ByNameIndex { get; set; }
 
+        // Source token -> storage keys. Unlike the metadata indexes above this is
+        // deliberately derived from FullSource and is never persisted. It lets source
+        // search jump directly to likely objects while entries whose FullSource is
+        // unavailable still use the conservative SDK fallback.
+        [JsonIgnore]
+        public ConcurrentDictionary<string, HashSet<string>> SourceTokenIndex { get; set; }
+
         public class IndexEntry
         {
             public string Guid { get; set; }

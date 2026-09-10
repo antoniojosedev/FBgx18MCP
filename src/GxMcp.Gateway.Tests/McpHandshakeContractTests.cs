@@ -129,6 +129,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("genexus://kb/index-status", uris);
             Assert.Contains("genexus://kb/health", uris);
             Assert.Contains("genexus://kb/capabilities", uris);
+            Assert.Contains("genexus://kb/skills/nexa", uris);
         }
 
         [Fact]
@@ -150,6 +151,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains(templateUris, uri => uri.StartsWith("genexus://objects/{name}/part/"));
             Assert.Contains(templateUris, uri => uri.Contains("/variables"));
             Assert.Contains(templateUris, uri => uri.Contains("/navigation"));
+            Assert.Contains("genexus://kb/skills/nexa/references/{name}", templateUris);
         }
 
         [Fact]

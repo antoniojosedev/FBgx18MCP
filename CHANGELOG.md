@@ -2,6 +2,107 @@
 
 ## Unreleased
 
+## v3.2.1 - 2026-09-09
+
+
+### Fixed
+
+- Forwarded `requireObjectSave` through the Gateway's `genexus_edit` patch route so the Events complete-object-save contract reaches the Worker ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+- Hardened complete Events saves with an in-lock base-version recheck, explicit metadata-stamp evidence, validation for unsupported `requireObjectSave` requests, and matching help text ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+### Changed
+
+- Added a generated, hash-verified live-fixture manifest workflow and a focused `LiveEvents` smoke category for complete Events saves across SDK majors ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+### Internal
+
+- Hardened live validation with exact Gateway image/master checks, isolated per-run logs and ports, configurable RPC timeouts with diagnostics, and a generic edit route-to-Worker contract test.
+
+- Fixed the live-fixture manifest guard to fail closed without prompting for interactive confirmation.
+
+## v3.2.0 - 2026-09-09
+
+
+### Added
+
+- Added version-aware GeneXus 17 and 18 compatibility reporting, with an explicit catalog that can be extended for future SDK majors.
+- Added a Design System SDK adapter that falls back to native Tokens/Styles source parsing when optional helper members are unavailable in an older GeneXus SDK.
+- Added release metadata synchronization from `config/gx-versions.json`, including generated supported-version documentation and an idempotent release check.
+- Added a catalog-driven live SDK matrix that reuses one built artifact and records independent pass, unavailable, or failure evidence for each selected major.
+
+### Changed
+
+- Preserved the legacy `geneXus.supportedMajor` whoami field while adding `supportedMajors` and `matchedMajor` for multi-version clients.
+- Normalized legacy Worker error payloads at the dispatcher boundary while preserving domain-specific nested errors and diagnostic fields.
+- Added explicit SDK identity, catalog support, Design System completeness, warning, and unparsed-construct diagnostics so fallback behavior is visible to clients.
+- Made init and zero-config discovery prefer the KB's detected major, use Windows executable metadata when version files are absent or invalid, and refuse unverifiable or mismatched SDK/KB selections before writing configuration.
+- Added the SDK/KB compatibility result to `genexus-mcp doctor`, including fail-closed unsupported-major diagnostics, and wired the live matrix into release preflight and the self-hosted smoke workflow.
+
+### Fixed
+
+- Made catalog consumers tolerate optional registry metadata for future SDK majors and kept generated Windows install paths readable in the supported-version document.
+
+### Internal
+
+- Simplified shared release-path ownership, Design System fallback invocation, and source parser declarations without changing the public MCP contract.
+
+## v3.1.0 - 2026-09-09
+
+### Added
+
+- Added the official Nexa GeneXus skill and its Markdown references as read-only MCP resources, including an on-demand reference template for object modeling and KB workflows.
+- Added batch Object Text workflows under `genexus_io`: deterministic export/import manifests, validation, guarded deletion, selectors, dry-run semantics, partial results, and cooperative cancellation.
+- Added index-backed source search, native Theme/StyleSheet editing, and WebForm SDK validation diagnostics with an explicit `forceWrite` override for intentional validation bypasses.
+
+### Changed
+
+- Dry-run edit plans now report indexed broken references when the active index is available and disclose when impact analysis cannot run; fast incremental builds now drive the real in-process runner with a safe full-build fallback, while warm reload restores validated snapshots and high-water-mark metadata for delta indexing.
+- Extended cancellation through background Object Text operations, including the cancel-before-worker-start race, and keep cancelled terminal results distinct from successful job completion.
+- Raised the guarded discovery schema budget from 26,300 to 26,900 tokens for the four batch Object Text actions, explicit `forceWrite`, and warm/fast-incremental response fields (measured ~26,584 tokens).
+
+## v3.0.4 - 2026-09-08
+
+
+### Fixed
+
+- Fixed Worker object writes from advancing the model-level Team Development commit baseline, so earlier local changes remain pending while IDE refreshes continue through `LastObjectsVersionDate` ([#145](https://github.com/lennix1337/Genexus18MCP/pull/145); contributed by @elianferreira).
+
+## v3.0.3 - 2026-09-08
+
+
+### Fixed
+
+- Fixed a `KeyNotFoundException` in `SummarizeService` (`genexus_analyze mode=summary`) when inspecting procedures with missing parts or unresolved references by adding safe source extraction (`GetSourceSafe`) and defensive object dependency resolution with early-exit on 10 items.
+
+### Changed
+
+- Eliminated redundant full JSON string serialization and UTF-8 recount (`Encoding.UTF8.GetByteCount(transformed.ToString(...))`) on the hot response dispatch path in Gateway (`Program.WorkerLifecycle.cs`), reusing `pending.ResponseBytes` directly to reduce latency and memory allocations across all tools.
+- Optimized `SearchService.cs` candidate scoring (`CalculateSemanticScore` and `ContainsIgnoreCase`) with string length pre-checks to bypass redundant case-insensitive comparisons across the index catalogue, and removed a dead MTA threadpool warm-up enqueue.
+- Optimized `WriteService.cs` post-write pipeline by scoping the `wasNoOp` `JObject.Parse` check inside the snapshot block, avoiding JSON string reparsing on `dryRun` and snapshot-less operations.
+- Optimized `WriteService.cs` `dryRun` write path by skipping IDE process/window concurrency checks when policy is not `fail_if_open` and reusing cached source reads in `WrapWithPersistedState` rather than forcing database fetches and cache invalidations, cutting `edit_dryrun` p50 latency by ~86% (~40.7ms to ~5.5ms).
+- Optimized `ListService.cs` (`genexus_list_objects`) with a revision-aware `BoundedStringCache`, single-pass aggregate calculations, and unindented JSON output, reducing repetitive listing latency and memory overhead.
+- Optimized `SummarizeService.cs` (`genexus_analyze mode=summary`) with a `BoundedStringCache`, single-pass source extraction, zero-allocation newline counting in `CalculateMetrics`, and unindented JSON serialization, bringing repeat summary p50 latency down to ~0.8ms.
+- Optimized `AnalyzeService.cs` ambiguity disclosure in `GetConversionContext` (`genexus_inspect`) by replacing linear scan over all index objects with an O(1) `ByNameIndex` multimap lookup.
+- Optimized `WriteService.cs` character validation (`CollectNonWin1252Glyphs`) with statically cached `_win1252Encoding` and an ASCII fast-path pre-check, bypassing text element enumerations and substring allocations on ASCII payloads.
+- Optimized `BuildService.cs` (`genexus_lifecycle action=status`) by setting `_meta.snapshot` directly in `GetStatus` and fast-pathing `AnnotateWithBaseline`, eliminating redundant JSON string re-parsing and re-serialization.
+
+## v3.0.2 - 2026-09-07
+
+
+### Added
+
+- `genexus_properties` `action=get` now honors `propertyName` (single property lookup, comma-separated list, or `*`/`?` wildcards), `propertyNames` (string array), search filter `query`, and preset `projection` modes (`"minimal"` | `"standard"` | `"full"`), returning `versionToken` on `PropertiesRead` envelopes ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+- Added Levenshtein-based "Did you mean?" suggestions and actionable `nextSteps` to `PropertyNotFound` errors when a property name or search query does not match, helping AI agents self-correct in a single turn ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+- Added a flat `values: { [propName]: propValue }` dictionary to all successful `genexus_properties` `action=get` envelopes (single, multi, projection, query, and full) for instant O(1) key-value reads without parsing complex metadata arrays ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+
+### Changed
+
+- `genexus_properties` `action=get` single property queries now return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }` instead of dumping 100+ properties, dramatically cutting context token consumption ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+
+## v3.0.1 - 2026-09-07
+
+
 ### Added
 
 - Added a complete release preflight covering the solution, CLI, Nexus IDE,
@@ -23,6 +124,17 @@
 
 ### Fixed
 
+- Aligned OpenCode Desktop client detection and registration with the shared
+  `opencode.jsonc`/`opencode.json` configuration path, enabling automatic registration
+  and status reporting rather than treating it as an AppData manual setup gap
+  ([#142](https://github.com/lennix1337/Genexus18MCP/issues/142)).
+- Restored the v2.43-compatible typed WorkWithPlus tab and grid-attribute
+  contracts on the v3 line, including preview tokens, optimistic concurrency,
+  exact snapshots, post-save verification, and rollback.
+- Restored `versionToken` as a backward-compatible alias for API route writes;
+  `expectedVersion` remains the canonical spelling.
+- Fixed the live-fixture path check when Windows exposes the temporary folder
+  through an 8.3 short path.
 - Warning baseline checks now classify line-only diagnostic moves separately
   while continuing to block genuinely new warning locations.
 - Live Build All evidence parsing now preserves terminal fields from JSON-in-JSON

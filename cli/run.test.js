@@ -1,12 +1,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
+const { Readable, Writable } = require('node:stream');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const { renderOutput } = require('./lib/output');
 const { compareSemver, detectInstallMethod, upgradePlanFor } = require('./lib/update-check');
-const { detectClientInstalled, readJsonFileSafe, getLauncher } = require('./lib/config');
+const {
+    detectClientInstalled,
+    readJsonFileSafe,
+    getLauncher,
+    getGeneXusMajor,
+    getGeneXusCatalogEntries,
+    readGeneXusInstallationIdentity,
+    readGeneXusKbIdentity,
+    compareGeneXusKbAndInstallation
+} = require('./lib/config');
+const { handleInit } = require('./commands/axi');
 
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
@@ -15,11 +26,12 @@ const testGatewayEnv = { GENEXUS_MCP_GATEWAY_EXE: process.execPath };
 test.after(() => fs.rmSync(testGxPath, { recursive: true, force: true }));
 
 function runCli(args, opts = {}) {
-    return spawnSync(process.execPath, [cliPath, ...args], {
+    const spawnOptions = {
         encoding: 'utf8',
         cwd: opts.cwd || process.cwd(),
         env: { ...process.env, ...(opts.env || {}) }
-    });
+    };
+    return spawnSync(process.execPath, [cliPath, ...args], spawnOptions);
 }
 
 test('status returns structured json envelope with schema version', () => {
@@ -248,6 +260,155 @@ test('init auto-discovers KB from cwd when --kb is omitted', () => {
     assert.equal(parsed.ok.resolved.gx.source, 'flag');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('GeneXus installation identity falls back to executable metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-version-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'GeneXus.exe'), 'not-a-real-executable');
+        const identity = readGeneXusInstallationIdentity(tempRoot, {
+            readExecutableVersion: () => '18.0.10.184260'
+        });
+        assert.deepEqual(identity, {
+            version: '18.0.10.184260',
+            major: '18',
+            source: 'executable-metadata'
+        });
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('GeneXus installation identity ignores an invalid version file when executable metadata is valid', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-invalid-version-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'version.txt'), 'not-a-version');
+        fs.writeFileSync(path.join(tempRoot, 'GeneXus.exe'), 'not-a-real-executable');
+        const identity = readGeneXusInstallationIdentity(tempRoot, {
+            readExecutableVersion: () => '17.0.11.163677'
+        });
+        assert.deepEqual(identity, {
+            version: '17.0.11.163677',
+            major: '17',
+            source: 'executable-metadata'
+        });
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('GeneXus installation identity does not infer a major from a missing folder', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-missing-install-'));
+    try {
+        const identity = readGeneXusInstallationIdentity(path.join(tempRoot, 'GeneXus17'));
+        assert.deepEqual(identity, {
+            version: null,
+            major: null,
+            source: 'unavailable'
+        });
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('KB identity reads the GeneXus major from its gxw metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-'));
+    try {
+        fs.writeFileSync(
+            path.join(tempRoot, 'KnowledgeBase.gxw'),
+            '<KnowledgeBase><FriendlyVersion>17.0.11 U11</FriendlyVersion><VersionNumber>17.0.11.163677</VersionNumber></KnowledgeBase>'
+        );
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.version, '17.0.11.163677');
+        assert.equal(identity.major, '17');
+        assert.equal(identity.source, 'gxw-version');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('KB identity fails closed for malformed gxw metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-malformed-'));
+    try {
+        fs.writeFileSync(
+            path.join(tempRoot, 'KnowledgeBase.gxw'),
+            '<KnowledgeBase><VersionNumber>17.0.11.163677</KnowledgeBase>'
+        );
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.major, null);
+        assert.equal(identity.source, 'unavailable');
+        assert.equal(identity.reason, 'malformed-gxw');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('catalog discovery ordering can prefer the KB major', () => {
+    assert.equal(getGeneXusMajor('17.0.11.163677'), '17');
+    assert.equal(getGeneXusCatalogEntries('17')[0].major, '17');
+    assert.equal(getGeneXusCatalogEntries('18')[0].major, '18');
+});
+
+test('init rejects a known KB and SDK major mismatch before writing config', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-mismatch-'));
+    const kbDir = path.join(tempRoot, 'kb17');
+    const gxDir = path.join(tempRoot, 'GeneXus18');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(kbDir, 'KnowledgeBase.gxw'),
+        '<KnowledgeBase><VersionNumber>17.0.11.163677</VersionNumber></KnowledgeBase>'
+    );
+    fs.writeFileSync(path.join(gxDir, 'GeneXus.exe'), 'not-a-real-executable');
+
+    try {
+        const result = runCli(
+            ['init', '--kb', kbDir, '--gx', gxDir, '--no-smoke', '--no-write-clients', '--format', 'json'],
+            { env: testGatewayEnv }
+        );
+        assert.equal(result.status, 1);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.error.code, 'sdk_kb_mismatch');
+        assert.equal(fs.existsSync(path.join(kbDir, 'config.json')), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('interactive init does not silently choose the primary SDK when KB metadata is unresolved', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-interactive-unresolved-'));
+    const kbDir = path.join(tempRoot, 'kb');
+    const gxDir = path.join(tempRoot, 'GeneXus18');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(path.join(kbDir, 'KnowledgeBase.gxw'), '');
+    fs.writeFileSync(path.join(kbDir, 'knowledgebase.connection'), 'connection');
+    fs.writeFileSync(path.join(gxDir, 'GeneXus.exe'), 'not-a-real-executable');
+
+    const previousGeneXusHome = process.env.GENEXUS_HOME;
+    process.env.GENEXUS_HOME = gxDir;
+    const input = new Readable({ read() { } });
+    setTimeout(() => input.push('\n'), 0);
+    setTimeout(() => input.push('\n'), 25);
+    setTimeout(() => input.push(null), 100);
+    try {
+        const result = await handleInit(
+            { interactive: true, quiet: true },
+            {
+                cwd: kbDir,
+                input,
+                stderr: new Writable({ write(_chunk, _encoding, callback) { callback(); } }),
+                EXIT_CODES: { OK: 0, ERROR: 1, USAGE: 2 }
+            }
+        );
+        assert.equal(result.exitCode, 1);
+        assert.equal(result.envelope.error.code, 'sdk_selection_required');
+        assert.equal(fs.existsSync(path.join(kbDir, 'config.json')), false);
+    } finally {
+        if (previousGeneXusHome === undefined) delete process.env.GENEXUS_HOME;
+        else process.env.GENEXUS_HOME = previousGeneXusHome;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('init fails clearly when paths cannot be auto-discovered', () => {
@@ -622,6 +783,75 @@ test('doctor --mcp-smoke adds explicit mcp_smoke check', () => {
     assert.ok(['pass', 'warn', 'fail'].includes(smoke.status));
 });
 
+test('doctor reports a KB and SDK major mismatch', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-major-'));
+    const kbDir = path.join(tempRoot, 'kb17');
+    const gxDir = path.join(tempRoot, 'GeneXus18');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(path.join(kbDir, 'KnowledgeBase.gxw'), '<KnowledgeBase><VersionNumber>17.0.11.163677</VersionNumber></KnowledgeBase>');
+    fs.writeFileSync(path.join(gxDir, 'GeneXus.exe'), 'not-a-real-executable');
+    const configPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+        GeneXus: { InstallationPath: gxDir },
+        Environment: { KBPath: kbDir }
+    }));
+
+    try {
+        const compatibility = compareGeneXusKbAndInstallation(kbDir, gxDir);
+        assert.equal(compatibility.status, 'mismatch');
+        const result = runCli(['doctor', '--format', 'json'], {
+            env: {
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: process.execPath,
+                LOCALAPPDATA: tempRoot
+            }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        const check = parsed.ok.checks.find((row) => row.id === 'kb_sdk_compatibility');
+        assert.ok(check);
+        assert.equal(check.status, 'fail');
+        assert.match(check.detail, /KB major 17.*SDK major 18/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('doctor rejects a KB and SDK major that is outside the compatibility catalog', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-unsupported-major-'));
+    const kbDir = path.join(tempRoot, 'kb19');
+    const gxDir = path.join(tempRoot, 'GeneXus19');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(path.join(kbDir, 'KnowledgeBase.gxw'), '<KnowledgeBase><VersionNumber>19.0.0.0</VersionNumber></KnowledgeBase>');
+    fs.writeFileSync(path.join(gxDir, 'GeneXus.exe'), 'not-a-real-executable');
+    const configPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+        GeneXus: { InstallationPath: gxDir },
+        Environment: { KBPath: kbDir }
+    }));
+
+    try {
+        const result = runCli(['doctor', '--format', 'json'], {
+            env: {
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: process.execPath,
+                LOCALAPPDATA: tempRoot
+            }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        const check = parsed.ok.checks.find((row) => row.id === 'kb_sdk_compatibility');
+        assert.ok(check);
+        assert.equal(check.status, 'fail');
+        assert.match(check.detail, /KB major 19 is not supported/);
+        assert.match(check.detail, /Supported majors: 17, 18/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('invalid format returns usage exit code 2', () => {
     const result = runCli(['status', '--format', 'yaml']);
     assert.equal(result.status, 2);
@@ -791,7 +1021,7 @@ test('clients list returns structured status with summary', () => {
     assert.equal(typeof row.registered, 'boolean');
 });
 
-test('clients list reports OpenCode Desktop as manual with exact setup fields', () => {
+test('clients list reports OpenCode Desktop with shared opencode config', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-status-'));
     try {
         const env = sandboxHomeEnv(tempRoot);
@@ -803,70 +1033,85 @@ test('clients list reports OpenCode Desktop as manual with exact setup fields', 
         assert.ok(row, 'OpenCode Desktop should be listed');
         assert.equal(row.installed, true);
         assert.equal(row.registered, false);
-        assert.equal(row.writeSupported, false);
-        assert.equal(row.registrationMode, 'manual');
-        assert.equal(row.manualSetup.transport, 'local');
-        assert.deepEqual(row.manualSetup.args, ['-y', 'genexus-mcp@latest']);
-        assert.equal(row.manualSetup.environment.GX_CONFIG_PATH, '<config.json path printed by genexus-mcp init>');
-        assert.ok(row.manualSetup.steps.some((step) => step.includes('genexus_whoami')));
-        assert.match(row.note, /does not write/i);
+        assert.equal(row.writeSupported, true);
+        assert.equal(row.registrationMode, 'automatic');
+        assert.equal(row.manualSetup, null);
+        assert.equal(row.note, null);
+        assert.equal(row.configPath, path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json'));
+
+        // When the shared opencode.jsonc has the server registered, Desktop is recognized as registered
+        const opencodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.jsonc');
+        fs.mkdirSync(path.dirname(opencodeCfg), { recursive: true });
+        fs.writeFileSync(opencodeCfg, JSON.stringify({
+            mcp: {
+                genexus18mcp: {
+                    type: 'local',
+                    command: ['npx.cmd', '-y', 'genexus-mcp@latest'],
+                    environment: { GX_CONFIG_PATH: 'C:\\test\\config.json' }
+                }
+            }
+        }, null, 2));
+
+        const resultRegistered = runCli(['clients', '--format', 'json'], { env });
+        assert.equal(resultRegistered.status, 0);
+        const rowRegistered = JSON.parse(resultRegistered.stdout).ok.clients.find((client) => client.id === 'opencode-desktop');
+        assert.equal(rowRegistered.installed, true);
+        assert.equal(rowRegistered.registered, true);
+        assert.equal(rowRegistered.command, 'npx.cmd');
+        assert.equal(rowRegistered.configPath, opencodeCfg);
+        assert.equal(rowRegistered.registrationMode, 'automatic');
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
 
-test('clients add reports OpenCode Desktop manual skip without mutating its app-managed file', () => {
+test('clients add patches OpenCode Desktop into shared opencode config', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-add-'));
     try {
         const env = sandboxHomeEnv(tempRoot);
         const cfgPath = path.join(tempRoot, 'config.json');
         const desktopDir = path.join(env.APPDATA, 'ai.opencode.desktop');
-        const desktopConfig = path.join(desktopDir, 'mcp.json');
-        const original = { unrelated: { keep: true } };
         fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
         fs.mkdirSync(desktopDir, { recursive: true });
-        fs.writeFileSync(desktopConfig, JSON.stringify(original, null, 2));
 
         const result = runCli(['clients', 'add', '--clients', 'opencode-desktop', '--format', 'json'], {
             env: { ...env, GX_CONFIG_PATH: cfgPath }
         });
         assert.equal(result.status, 0);
         const parsed = JSON.parse(result.stdout);
-        assert.deepEqual(parsed.ok.patchedClients, []);
-        const skipped = parsed.meta.skippedClients.find((entry) => entry.client === 'OpenCode Desktop');
-        assert.ok(skipped && /Settings > MCP|manual setup/i.test(skipped.reason));
-        assert.equal(skipped.registrationMode, 'manual');
-        assert.equal(skipped.installed, true);
-        assert.equal(skipped.manualSetup.environment.GX_CONFIG_PATH, cfgPath);
-        assert.ok(parsed.help.some((entry) => /manual setup/i.test(entry)));
-        assert.deepEqual(JSON.parse(fs.readFileSync(desktopConfig, 'utf8')), original);
+        assert.ok(parsed.ok.patchedClients.includes('OpenCode Desktop'));
+        const opencodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+        assert.ok(fs.existsSync(opencodeCfg), 'shared opencode config should be created');
+        const written = JSON.parse(fs.readFileSync(opencodeCfg, 'utf8'));
+        assert.ok(written.mcp.genexus18mcp, 'shared config should contain genexus18mcp entry');
+        assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, cfgPath);
+
+        const listRes = runCli(['clients', '--format', 'json'], { env });
+        const row = JSON.parse(listRes.stdout).ok.clients.find((client) => client.id === 'opencode-desktop');
+        assert.ok(row && row.registered, 'OpenCode Desktop should now report registered');
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
 
-test('clients add always reports undetected OpenCode Desktop manual setup', () => {
+test('OpenCode Desktop is not falsely reported as installed when only CLI config exists', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-undetected-'));
     try {
         const env = sandboxHomeEnv(tempRoot);
-        const cfgPath = path.join(tempRoot, 'config.json');
-        fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        const opencodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.jsonc');
+        fs.mkdirSync(path.dirname(opencodeCfg), { recursive: true });
+        fs.writeFileSync(opencodeCfg, JSON.stringify({ mcp: {} }));
 
-        const result = runCli(['clients', 'add', '--clients', 'opencode-desktop', '--format', 'json'], {
-            env: {
-                ...env,
-                GX_CONFIG_PATH: cfgPath,
-                GENEXUS_MCP_GATEWAY_EXE: path.join(tempRoot, 'missing', 'GxMcp.Gateway.exe')
-            }
-        });
+        const result = runCli(['clients', '--format', 'json'], { env });
         assert.equal(result.status, 0);
         const parsed = JSON.parse(result.stdout);
-        assert.deepEqual(parsed.ok.patchedClients, []);
-        const skipped = parsed.meta.skippedClients.find((entry) => entry.client === 'OpenCode Desktop');
-        assert.ok(skipped, 'undetected detect-only client should still be actionable');
-        assert.equal(skipped.installed, false);
-        assert.equal(skipped.manualSetup.environment.GX_CONFIG_PATH, cfgPath);
-        assert.equal(skipped.manualSetup.command, process.platform === 'win32' ? 'npx.cmd' : 'npx');
+        const desktopRow = parsed.ok.clients.find((client) => client.id === 'opencode-desktop');
+        assert.ok(desktopRow, 'OpenCode Desktop should be present in targets');
+        assert.equal(desktopRow.installed, false, 'Desktop must not be detected installed without its install markers');
+
+        const cliRow = parsed.ok.clients.find((client) => client.id === 'opencode');
+        assert.ok(cliRow, 'OpenCode CLI should be present in targets');
+        assert.equal(cliRow.installed, true, 'OpenCode CLI is detected installed via config file');
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -1130,6 +1375,31 @@ test('init auto-registers detected OpenCode in either config layout', () => {
         } finally {
             fs.rmSync(tempRoot, { recursive: true, force: true });
         }
+    }
+});
+
+test('init auto-registers detected OpenCode Desktop when its marker is present', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-init-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const kbDir = path.join(tempRoot, 'kb');
+        fs.mkdirSync(kbDir, { recursive: true });
+        fs.mkdirSync(path.join(env.APPDATA, 'ai.opencode.desktop'), { recursive: true });
+
+        const result = runCli(
+            ['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json'],
+            { cwd: kbDir, env: { ...env, ...testGatewayEnv } }
+        );
+        assert.equal(result.status, 0, `init should succeed: ${result.stderr}`);
+
+        const parsed = JSON.parse(result.stdout);
+        assert.ok(parsed.meta.patchedClients.includes('OpenCode Desktop'));
+        const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+        assert.ok(fs.existsSync(openCodeCfg));
+        const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+        assert.ok(written.mcp.genexus18mcp);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
 

@@ -983,14 +983,30 @@ namespace GxMcp.Worker.Services
                     {
                         var others = new JArray();
                         var seenTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { obj.TypeDescriptor.Name ?? string.Empty };
-                        foreach (var kv in ambIndex.Objects)
+                        if (ambIndex.ByNameIndex != null && ambIndex.ByNameIndex.TryGetValue(obj.Name, out var keys))
                         {
-                            var e = kv.Value;
-                            if (e == null || string.IsNullOrEmpty(e.Type)) continue;
-                            if (string.Equals(e.Name, obj.Name, StringComparison.OrdinalIgnoreCase)
-                                && seenTypes.Add(e.Type))
+                            foreach (var key in keys)
                             {
-                                others.Add(new JObject { ["name"] = e.Name, ["type"] = e.Type });
+                                if (ambIndex.Objects.TryGetValue(key, out var e) && e != null && !string.IsNullOrEmpty(e.Type))
+                                {
+                                    if (seenTypes.Add(e.Type))
+                                    {
+                                        others.Add(new JObject { ["name"] = e.Name, ["type"] = e.Type });
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            foreach (var kv in ambIndex.Objects)
+                            {
+                                var e = kv.Value;
+                                if (e == null || string.IsNullOrEmpty(e.Type)) continue;
+                                if (string.Equals(e.Name, obj.Name, StringComparison.OrdinalIgnoreCase)
+                                    && seenTypes.Add(e.Type))
+                                {
+                                    others.Add(new JObject { ["name"] = e.Name, ["type"] = e.Type });
+                                }
                             }
                         }
                         if (others.Count > 0)

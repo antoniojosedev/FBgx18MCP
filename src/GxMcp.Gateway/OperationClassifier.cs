@@ -154,8 +154,8 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "history_list", "history_get", "time_travel", "blame", "diff", "diff_generated" },
                     mutating: new[] { "history_save", "history_restore", "undo" }),
                 ["genexus_io"] = Contract(
-                    readOnly: new[] { "asset_find", "asset_read", "ocr" },
-                    mutating: new[] { "asset_write", "export_part", "import_part", "export_unified", "screenshot_publish" }),
+                    readOnly: new[] { "asset_find", "asset_read", "ocr", "validate_kb_text_files" },
+                    mutating: new[] { "asset_write", "export_part", "import_part", "export_kb_to_text", "import_text_to_kb", "delete_kb_objects", "export_unified", "screenshot_publish" }),
                 ["genexus_variable"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "add", "delete", "modify" }),
@@ -179,7 +179,8 @@ namespace GxMcp.Gateway
                     mutating: new[] { "add", "remove" }),
                 ["genexus_wwp"] = Contract(
                     readOnly: new[] { "list" },
-                    mutating: new[] { "add_action", "update_action", "move_action", "remove_action" })
+                    mutating: new[] { "add_action", "update_action", "move_action", "remove_action",
+                        "add_tab", "move_tab", "remove_tab", "add_grid_attribute" })
             };
 
         // Only actions with a documented preview mode may become read-only when
@@ -238,6 +239,10 @@ namespace GxMcp.Gateway
             "genexus_wwp:update_action",
             "genexus_wwp:move_action",
             "genexus_wwp:remove_action",
+            "genexus_wwp:add_tab",
+            "genexus_wwp:move_tab",
+            "genexus_wwp:remove_tab",
+            "genexus_wwp:add_grid_attribute",
             "genexus_generator_reference:add",
             "genexus_generator_reference:remove"
         };

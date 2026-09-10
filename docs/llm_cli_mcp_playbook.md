@@ -20,6 +20,13 @@ Use MCP when:
 - You need long-running operation tracking (`genexus_lifecycle` + `op:<operationId>`).
 - You are inside an MCP-native client loop.
 
+## Official Nexa grounding
+
+Before modeling objects, changing properties, or using Object Text workflows,
+read `genexus://kb/skills/nexa` and then the narrow reference selected from
+`genexus://kb/skills/nexa/references/{name}`. Treat Nexa as design guidance and
+confirm the final object state and supported behavior with the live KB tools.
+
 ## AXI CLI Contract (LLM-facing)
 
 Entry points:

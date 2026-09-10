@@ -192,6 +192,8 @@ namespace GxMcp.Worker.Services
             if (parsed["persistedHash"] != null && parsed["persistedSnippet"] != null)
                 return parsed.ToString();
 
+            bool isDryRun = string.Equals(parsed["code"]?.ToString(), "WriteDryRun", StringComparison.OrdinalIgnoreCase);
+
             string finalSource = "";
             string finalVersionToken = null;
             bool verificationReadTruncated = false;
@@ -200,25 +202,34 @@ namespace GxMcp.Worker.Services
             {
                 if (!string.IsNullOrWhiteSpace(target) && _objectService != null)
                 {
-                    // This is an integrity check, not a client-facing read. The former call
-                    // used client=mcp + minimize=true with no explicit page, so a large Source
-                    // was reduced and then capped before being compared with the full request.
-                    // That produced a false WriteNotPersisted after a successful SDK commit.
-                    string readJson = _objectService.ReadObjectSourceForVerification(target, partName);
-                    if (!string.IsNullOrWhiteSpace(readJson))
+                    // P4 perf: In dryRun mode, disk state was not mutated.
+                    // If priorSource is already known, reuse it directly to avoid any I/O.
+                    // Otherwise perform a cached read (ReadObjectSource) instead of
+                    // invalidating the read cache and forcing a full database reload via ReadObjectSourceForVerification.
+                    if (isDryRun && priorSource != null)
                     {
-                        var readObj = JObject.Parse(readJson);
-                        verificationReadTruncated = readObj["truncated"]?.ToObject<bool?>() == true
-                            || readObj["isTruncatedByWorker"]?.ToObject<bool?>() == true;
-                        finalSource = readObj["source"]?.ToString()
-                            ?? readObj["content"]?.ToString()
-                            ?? readObj["parts"]?[partName ?? "Source"]?.ToString()
-                            ?? "";
-                        finalVersionToken = readObj["versionToken"]?.ToString();
+                        finalSource = priorSource;
                     }
                     else
                     {
-                        verificationReadFailure = "emptyReadResponse";
+                        string readJson = isDryRun
+                            ? _objectService.ReadObjectSource(target, partName, offset: 0, limit: 0, client: "mcp", minimize: false)
+                            : _objectService.ReadObjectSourceForVerification(target, partName);
+                        if (!string.IsNullOrWhiteSpace(readJson))
+                        {
+                            var readObj = JObject.Parse(readJson);
+                            verificationReadTruncated = readObj["truncated"]?.ToObject<bool?>() == true
+                                || readObj["isTruncatedByWorker"]?.ToObject<bool?>() == true;
+                            finalSource = readObj["source"]?.ToString()
+                                ?? readObj["content"]?.ToString()
+                                ?? readObj["parts"]?[partName ?? "Source"]?.ToString()
+                                ?? "";
+                            finalVersionToken = readObj["versionToken"]?.ToString();
+                        }
+                        else
+                        {
+                            verificationReadFailure = "emptyReadResponse";
+                        }
                     }
                 }
             }
@@ -232,7 +243,6 @@ namespace GxMcp.Worker.Services
             // prior source, so the edited region is shown even past the first ~10 lines.
             int? editLine = priorSource != null ? (int?)FirstDiffLine(priorSource, finalSource) : null;
             bool verificationReadReliable = !verificationReadTruncated && verificationReadFailure == null;
-            bool isDryRun = string.Equals(parsed["code"]?.ToString(), "WriteDryRun", StringComparison.OrdinalIgnoreCase);
             if (verificationReadReliable)
             {
                 AppendPersistedState(parsed, finalSource, editLine);

@@ -1,9 +1,9 @@
-﻿# GeneXus 18 MCP - one-shot release script
+# GeneXus MCP - one-shot release script
 # =========================================
 #
 # Why this exists: the npm publish workflow (.github/workflows/release.yml)
 # expects a `publish.zip` asset attached to the GitHub Release. The Worker
-# references Artech.* DLLs from the local GeneXus 18 install, so building on
+# references Artech.* DLLs from the local primary SDK install, so building on
 # ubuntu-latest in CI isn't viable - the zip has to be produced locally.
 #
 # Previous flow (manual, 5 commands):
@@ -56,6 +56,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 $root = $PSScriptRoot
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
 $statusToken = if ([string]::IsNullOrWhiteSpace($Version)) { 'pending' } else { $Version -replace '[^0-9A-Za-z.-]', '-' }
 if ([string]::IsNullOrWhiteSpace($StatusFile)) {
     $StatusFile = Join-Path $env:TEMP ("gxmcp-release-status-$statusToken-$PID.json")
@@ -286,15 +288,49 @@ if ($branch -ne 'main') {
     else { Fail "Releases must be cut from the main branch (current: '$branch')." }
 }
 
+# Keep release-facing version, SDK-major, and documentation metadata in sync
+# before the dirty-tree gate. A clean release can therefore repair generated
+# metadata and include it in the release commit automatically.
+Step "Synchronizing release-facing metadata"
+$syncArguments = @(
+    (Join-Path $root 'scripts\sync-release-metadata.py'),
+    '--root', $root,
+    '--version', $Version
+)
+if ($DryRun) {
+    $syncArguments += '--check'
+    $syncDisplay = "python $($syncArguments -join ' ')"
+    Write-Host "    `$ $syncDisplay" -ForegroundColor DarkGray
+    & python @syncArguments
+    $syncExitCode = $LASTEXITCODE
+    if ($syncExitCode -eq 1) {
+        Warn '[DRY-RUN] release-facing metadata is out of sync and would be regenerated.'
+    } elseif ($syncExitCode -ne 0) {
+        Fail "Release metadata check failed (exit $syncExitCode): $syncDisplay"
+    } else {
+        Ok '[DRY-RUN] release-facing metadata is already synchronized.'
+    }
+} else {
+    $syncArguments += '--write'
+    Invoke-Cmd 'python' $syncArguments
+    Ok 'Release-facing metadata synchronized.'
+}
+
 Step "Checking git working tree"
 $status = git status --porcelain
 # Files release.ps1 itself bumps/regenerates. A dirty tree consisting SOLELY of
 # these is the signature of a previous release run that died mid-way (e.g. a
 # failed test pass after the version bump) - that's resumable, not an error.
-$bumpFiles = @(
+$releaseManagedPaths = @(
     'package.json',
     'package-lock.json',
     'CHANGELOG.md',
+    'config/gx-versions.json',
+    'server.json',
+    'config.sample.json',
+    'README.md',
+    'AGENTS.md',
+    'docs/generated/supported-versions.md',
     'src/GxMcp.Gateway/GxMcp.Gateway.csproj',
     'src/GxMcp.Worker/GxMcp.Worker.csproj',
     'src/nexus-ide/package.json',
@@ -302,7 +338,7 @@ $bumpFiles = @(
 )
 if ($status -and -not $AllowDirty) {
     $dirtyPaths = @($status | ForEach-Object { $_.Substring(3).Trim().Trim('"') -replace '\\', '/' })
-    $nonBump = @($dirtyPaths | Where-Object { $bumpFiles -notcontains $_ })
+    $nonBump = @($dirtyPaths | Where-Object { $releaseManagedPaths -notcontains $_ })
     if ($nonBump.Count -eq 0) {
         Warn "Working tree is dirty, but only with version-bump files ($($dirtyPaths -join ', ')) - resuming: they'll be bundled into the release commit."
     } else {
@@ -536,18 +572,9 @@ if ($resumeRelease) {
         Ok "Resuming from tagged source commit: $releaseSourceCommit"
     }
 } elseif (-not $DryRun) {
-    $pendingMetadata = @(git status --porcelain)
+    $pendingMetadata = @(git status --porcelain --untracked-files=no)
     if ($pendingMetadata) {
         Step "Committing release source state"
-        $releaseManagedPaths = @(
-            'package.json',
-            'package-lock.json',
-            'CHANGELOG.md',
-            'src/GxMcp.Gateway/GxMcp.Gateway.csproj',
-            'src/GxMcp.Worker/GxMcp.Worker.csproj',
-            'src/nexus-ide/package.json',
-            'src/nexus-ide/package-lock.json'
-        )
         if ($AllowDirty) {
             Invoke-Cmd 'git' @('add', '-A')
         } else {
@@ -648,11 +675,12 @@ if (-not $SkipBuild) {
 # -- 4. Optional test pass -------------------------------------------------
 if (-not $SkipTests) {
     Step "Running complete release preflight"
+    $preflightGxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { Get-GxPrimaryInstallPath -Catalog $gxCatalog }
     Invoke-Cmd 'pwsh' @(
         '-NoProfile',
         '-File', (Join-Path $root 'scripts\release-preflight.ps1'),
         '-Version', $Version,
-        '-GxPath', (if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { 'C:\Program Files (x86)\GeneXus\GeneXus18' }),
+        '-GxPath', $preflightGxPath,
         '-SummaryPath', (Join-Path $env:TEMP "gxmcp-release-preflight-$Version.json")
     )
     if ($DryRun) { Warn '[DRY-RUN] would run the complete release preflight.' } else { Ok 'Complete release preflight passed.' }
@@ -761,7 +789,7 @@ if (-not $DryRun) {
 # Any other change means the artifact no longer corresponds to the source
 # commit captured in the manifest and must stop the release.
 if (-not $DryRun) {
-    $pendingAfterPackage = @(git status --porcelain)
+    $pendingAfterPackage = @(git status --porcelain --untracked-files=no)
     if ($pendingAfterPackage) {
         Write-Host ($pendingAfterPackage -join "`n")
         Fail "Packaging left tracked changes after source commit $releaseSourceCommit. Inspect the files before tagging."

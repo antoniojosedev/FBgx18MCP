@@ -5,6 +5,10 @@ Execution plan for wiring the uncovered SDK capabilities from
 endpoints. Each item lists the SDK entry point, the input-construction gate result, the
 tool surface, and the wiring touch-points.
 
+The probe baseline in this document is GX18. The runtime compatibility catalog also
+supports GX17, but a probe or live result below is not automatically evidence of
+GX17 parity; use the catalog-driven live matrix for per-major evidence.
+
 ## Live verification (2026-07-20) — all 6 P0/P1 tools working
 
 Smoke-tested over HTTP against a running worker on KB `AcademicoHomolog1`. All six resolve

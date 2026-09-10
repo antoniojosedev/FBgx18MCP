@@ -135,6 +135,7 @@ namespace GxMcp.Gateway.Tests
             var resources = (JArray)json["resources"]!;
             Assert.Contains(resources, resource => resource?["uri"]?.ToString() == "genexus://kb/agent-playbook");
             Assert.Contains(resources, resource => resource?["uri"]?.ToString() == "genexus://kb/llm-playbook");
+            Assert.Contains(resources, resource => resource?["uri"]?.ToString() == "genexus://kb/skills/nexa");
         }
 
         [Fact]
@@ -173,6 +174,31 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("text/markdown", first["mimeType"]?.ToString());
             Assert.Contains("LLM CLI+MCP Playbook", first["text"]?.ToString());
             Assert.Contains("mcp-axi/2", first["text"]?.ToString());
+            Assert.Contains("genexus://kb/skills/nexa", first["text"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_ResourcesRead_ShouldReturnOfficialNexaReferenceContents()
+        {
+            const string resourceUri = "genexus://kb/skills/nexa/references/object-transaction.md";
+            var request = JObject.Parse($"{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"resources/read\",\"params\":{{\"uri\":\"{resourceUri}\"}}}}");
+
+            var result = McpRouter.Handle(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("complete", json["resultType"]?.ToString());
+            var first = (JObject)((JArray)json["contents"]!)[0]!;
+            Assert.Equal(resourceUri, first["uri"]?.ToString());
+            Assert.Equal("text/markdown", first["mimeType"]?.ToString());
+            Assert.Contains("Transaction", first["text"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_ResourcesRead_ShouldRejectUnsafeNexaReferencePath()
+        {
+            var request = JObject.Parse("""{"jsonrpc":"2.0","id":"1","method":"resources/read","params":{"uri":"genexus://kb/skills/nexa/references/../SKILL.md"}}""");
+
+            Assert.Null(McpRouter.Handle(request));
         }
 
         [Fact]
@@ -245,6 +271,7 @@ namespace GxMcp.Gateway.Tests
             var templates = (JArray)json["resourceTemplates"]!;
             Assert.Contains(templates, template => template?["uriTemplate"]?.ToString() == "genexus://objects/{name}/indexes");
             Assert.Contains(templates, template => template?["uriTemplate"]?.ToString() == "genexus://objects/{name}/logic-structure");
+            Assert.Contains(templates, template => template?["uriTemplate"]?.ToString() == "genexus://kb/skills/nexa/references/{name}");
         }
 
         [Fact]
@@ -567,6 +594,80 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Customer", json["target"]?.ToString());
             Assert.Equal("Description", json["propertyName"]?.ToString());
             Assert.Equal("Updated", json["value"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithFilteringAndProjection()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyName":"Description","projection":"minimal"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            Assert.Equal("Description", json["propertyName"]?.ToString());
+            Assert.Equal("minimal", json["projection"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithPropertyNamesArray()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyNames":["Description","Name"],"projection":"standard"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            var names = json["propertyNames"] as JArray;
+            Assert.NotNull(names);
+            Assert.Equal(2, names.Count);
+            Assert.Equal("Description", names[0].ToString());
+            Assert.Equal("Name", names[1].ToString());
+            Assert.Equal("standard", json["projection"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithArrayInPropertyName()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyName":["Description","Title"]}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Null(json["propertyName"]?.Value<string>());
+            var names = json["propertyNames"] as JArray;
+            Assert.NotNull(names);
+            Assert.Equal(2, names.Count);
+            Assert.Equal("Description", names[0].ToString());
+            Assert.Equal("Title", names[1].ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithQuery()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","query":"*Commit*"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            Assert.Equal("*Commit*", json["query"]?.ToString());
         }
 
         [Fact]

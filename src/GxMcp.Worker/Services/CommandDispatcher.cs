@@ -73,6 +73,7 @@ namespace GxMcp.Worker.Services
         private readonly KbValidationService _kbValidationService;
         private readonly ValidatePayloadService _validatePayloadService;
         private readonly ExportObjectService _exportObjectService;
+        private readonly ObjectTextService _objectTextService;
         private readonly DiffService _diffService;
         private readonly ApplyTemplateService _applyTemplateService;
         private readonly EditAndBuildOrchestrator _editAndBuildOrchestrator;
@@ -233,6 +234,7 @@ namespace GxMcp.Worker.Services
             _kbValidationService = new KbValidationService(_indexCacheService, _objectService, _patternAnalysisService);
             _validatePayloadService = new ValidatePayloadService(_objectService);
             _exportObjectService = new ExportObjectService(_objectService);
+            _objectTextService = new ObjectTextService(_objectService, _indexCacheService);
             _diffService = new DiffService(_objectService);
             _applyTemplateService = new ApplyTemplateService(_writeService);
             _editAndBuildOrchestrator = new EditAndBuildOrchestrator(_writeService, _analyzeService, _buildService);
@@ -310,6 +312,7 @@ namespace GxMcp.Worker.Services
             _indexCacheService.SetBuildService(_buildService);
             _validationService.SetObjectService(_objectService);
             _writeService.SetValidationService(_validationService);
+            _writeService.SetKbValidationService(_kbValidationService);
             _objectService.SetWriteService(_writeService);
             _objectService.SetDataInsightService(_dataInsightService);
             _objectService.SetUIService(_uiService);
@@ -383,10 +386,19 @@ namespace GxMcp.Worker.Services
                 }
                 int objectCount = index.Objects?.Count ?? 0;
                 byte[] payload = System.Text.Encoding.UTF8.GetBytes(index.ToJson());
-                WarmIndexSnapshot.Save(path, payload, kbPath, objectCount);
+                DateTime hwm = _indexCacheService.CurrentHighWaterMark;
+                WarmIndexSnapshot.Save(
+                    path,
+                    payload,
+                    kbPath,
+                    objectCount,
+                    schemaVersion: IndexCacheService.CurrentSchemaVersion,
+                    highWaterMarkUtc: hwm == DateTime.MinValue ? null : hwm.ToString("o"));
                 result["saved"] = true;
                 result["path"] = path;
                 result["objectCount"] = objectCount;
+                result["schemaVersion"] = IndexCacheService.CurrentSchemaVersion;
+                if (hwm != DateTime.MinValue) result["highWaterMarkUtc"] = hwm.ToString("o");
                 result["experimental"] = true;
                 return result;
             }
@@ -521,7 +533,8 @@ namespace GxMcp.Worker.Services
             string result;
             try
             {
-                result = DispatchInternal(request);
+                result = GxMcp.Worker.Helpers.McpResponseNormalizer.Normalize(
+                    DispatchInternal(request));
             }
             catch
             {
@@ -1462,6 +1475,15 @@ namespace GxMcp.Worker.Services
                     args?["overwrite"]?.ToObject<bool?>() ?? false);
             }
             if (action == "ImportText") return _objectService.ImportObjectFromText(target, args?["inputPath"]?.ToString() ?? args?["path"]?.ToString(), args?["part"]?.ToString(), args?["type"]?.ToString());
+            if (action == "ExportTextBatch" || action == "ImportTextBatch"
+                || action == "ValidateTextBatch" || action == "DeleteTextBatch")
+            {
+                string cancelToken = args?["cancelToken"]?.ToString();
+                using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(cancelToken, out var objectTextCt))
+                {
+                    return _objectTextService.Execute(action, target, args, objectTextCt);
+                }
+            }
             return null;
         }
 
@@ -1665,7 +1687,8 @@ namespace GxMcp.Worker.Services
                     args?["verifyMode"]?.ToString(),
                     args?["baseVersion"]?.ToString(),
                     args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
-                    args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false);
+                    args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false,
+                    args?["requireObjectSave"]?.ToObject<bool?>() ?? false);
                 // issue #60 — validationMode="specify" runs the inline Specify pass after the
                 // write and surfaces structured diagnostics (or rolls back).
                 patchResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(patchResp, target, args, args?["part"]?.ToString());
@@ -2159,7 +2182,39 @@ namespace GxMcp.Worker.Services
                 // the edited object and surfaces structured diagnostics (or rolls back).
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(singleResp, target, args);
             }
-            return _propertyService.GetProperties(target, args?["control"]?.ToString(), propType);
+            string propName = null;
+            List<string> propNames = null;
+            if (args?["propertyNames"] is JArray arrPropNames)
+            {
+                propNames = arrPropNames.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else if (args?["propertyName"] is JArray arrPropName)
+            {
+                propNames = arrPropName.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else if (args?["properties"] is JArray arrProps)
+            {
+                propNames = arrProps.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else
+            {
+                propName = args?["propertyName"]?.ToString();
+                if (string.IsNullOrWhiteSpace(propName) && args?["properties"]?.Type == JTokenType.String)
+                {
+                    propName = args["properties"].ToString();
+                }
+            }
+            string projection = args?["projection"]?.ToString();
+            string query = args?["query"]?.ToString();
+
+            return _propertyService.GetProperties(
+                target,
+                args?["control"]?.ToString(),
+                propType,
+                propName,
+                propNames,
+                projection,
+                query);
         }
 
         private string Handle_Asset(JObject request, string method, string action, string target, string payload, JObject args)

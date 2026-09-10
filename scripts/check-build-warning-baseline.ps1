@@ -11,6 +11,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
 
 function Fail-Baseline([string]$Message) {
     Write-Error "Warning baseline failed: $Message"
@@ -66,12 +68,12 @@ if ([string]::IsNullOrWhiteSpace($GxPath)) {
     $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
         $env:GX_PATH
     } else {
-        'C:\Program Files (x86)\GeneXus\GeneXus18'
+        Get-GxPrimaryInstallPath -Catalog $gxCatalog
     }
 }
 $sdkMarker = Join-Path $GxPath 'Artech.Architecture.Common.dll'
 if (-not (Test-Path -LiteralPath $sdkMarker -PathType Leaf)) {
-    Fail-Baseline "GeneXus 18 SDK not found under '$GxPath'. Set -GxPath or GX_PATH."
+    Fail-Baseline "GeneXus SDK for primary major $(Get-GxPrimaryMajor -Catalog $gxCatalog) not found under '$GxPath'. Set -GxPath or GX_PATH."
 }
 $env:GX_PATH = $GxPath
 

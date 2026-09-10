@@ -10,7 +10,8 @@ Common issues when installing or running the GeneXus MCP server, and how to fix 
 
 ### "GeneXus installation not found"
 
-The installer couldn't locate GeneXus 18 in the default path.
+The installer couldn't locate the primary GeneXus SDK from the version catalog in
+the default path.
 
 **Fix:** pass `--gx` explicitly. The path is the folder that contains `GeneXus.exe` — usually:
 
@@ -18,7 +19,37 @@ The installer couldn't locate GeneXus 18 in the default path.
 npx genexus-mcp@latest init --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
 ```
 
+The example above is the current primary SDK. The complete supported list and
+default paths live in [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md).
+
 If GeneXus is installed somewhere else (custom install, network drive), point `--gx` to that folder.
+
+### "GeneXus SDK major does not match KB major"
+
+The MCP checks the KB's `.gxw` metadata against the selected `GeneXus.exe`
+version before writing `config.json`. This prevents a GX17 KB from silently
+starting with GX18 when both SDKs are installed. For example, a GX17 KB must be
+initialized with the GX17 installation:
+
+```powershell
+npx genexus-mcp@latest init `
+  --kb "C:\KBs\KBTeste17" `
+  --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
+```
+
+If init reports `sdk_kb_mismatch`, correct `--gx`; no new config is written.
+If it reports `sdk_selection_required` or `sdk_identity_unresolved`, pass the
+paths explicitly and ensure the selected folder contains the intended
+`GeneXus.exe`. Run `npx genexus-mcp doctor --format json` and inspect the
+`kb_sdk_compatibility` check plus `genexus_whoami` for `major`, `version`, and
+`detectionSource`. The CLI reads valid version files when present and otherwise
+uses the Windows executable metadata, so a normal GeneXus installation does not
+need a manually-created version file.
+
+If the KB's `.gxw` file is empty or has no version fields, open the KB once in
+the matching GeneXus IDE so it is initialized, then rerun init. Until that
+metadata exists, the CLI intentionally requires an explicit `--gx` choice and
+does not infer the major from the KB folder name.
 
 ### "Knowledge Base not found" / "KB path invalid"
 
@@ -140,7 +171,7 @@ It reports the .NET runtimes detected.
 
 ### "Worker idle timeout" — first request slow
 
-Expected. The worker is lazy by design and shuts down after `WorkerIdleTimeoutMinutes` (default 5) of inactivity to unlock GeneXus build artifacts. First request after idle takes ~3-8s to spin it back up; subsequent calls are fast.
+Expected. The worker is lazy by design and shuts down after `WorkerIdleTimeoutMinutes` (default 60) of inactivity to unlock GeneXus build artifacts. First request after idle takes ~3-8s to spin it back up; subsequent calls are fast.
 
 To keep it warm longer, edit `config.json`:
 
@@ -237,7 +268,7 @@ If none of the above helps:
 1. Run `npx genexus-mcp doctor --mcp-smoke > diagnostic.txt 2>&1` and include `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt` when the client only reports an exit code.
 2. Reproduce the issue with `claude --debug` (or your client's equivalent) to capture MCP traffic.
 3. [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) and attach `diagnostic.txt` + the client log excerpt. Include:
-   - GeneXus 18 version (Help → About in the IDE)
+   - GeneXus version (Help → About in the IDE) and the selected install path
    - Node.js version (`node --version`)
    - Windows version
    - Your `config.json` with paths redacted if sensitive

@@ -8,7 +8,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if ([string]::IsNullOrWhiteSpace($GxPath)) { $GxPath = 'C:\Program Files (x86)\GeneXus\GeneXus18' }
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
+if ([string]::IsNullOrWhiteSpace($GxPath)) { $GxPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog }
 $env:GX_PATH = $GxPath
 
 & pwsh -NoProfile -File (Join-Path $root 'build.ps1') -Version $Version

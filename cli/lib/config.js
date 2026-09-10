@@ -56,34 +56,95 @@ function getToolDefinitionsPath() {
     return candidates[0];
 }
 
-function discoverGeneXusFromRegistry() {
+function getGeneXusVersionCatalog() {
+    const candidates = [
+        path.join(__dirname, '..', '..', 'config', 'gx-versions.json'),
+        path.join(__dirname, '..', '..', 'publish', 'config', 'gx-versions.json')
+    ];
+    for (const candidate of candidates) {
+        try {
+            const catalog = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+            if (!catalog || !catalog.primaryMajor || !Array.isArray(catalog.supportedMajors)) continue;
+            const entries = catalog.supportedMajors.filter((entry) => entry && /^\d+$/.test(String(entry.major)));
+            const primary = entries.find((entry) => String(entry.major) === String(catalog.primaryMajor));
+            if (entries.length > 0 && primary?.defaultInstallPath) {
+                return { ...catalog, supportedMajors: entries };
+            }
+        } catch {
+        }
+    }
+    return {
+        primaryMajor: '18',
+        supportedMajors: [
+            { major: '17', displayName: 'GeneXus 17', defaultInstallPath: 'C:\\Program Files (x86)\\GeneXus\\GeneXus17Trial' },
+            { major: '18', displayName: 'GeneXus 18', defaultInstallPath: 'C:\\Program Files (x86)\\GeneXus\\GeneXus18' }
+        ],
+        source: 'built-in-fallback'
+    };
+}
+
+function getGeneXusCatalogEntries(preferredMajor = null) {
+    const catalog = getGeneXusVersionCatalog();
+    return [...catalog.supportedMajors].sort((left, right) => {
+        const leftPreferred = preferredMajor !== null && String(left.major) === String(preferredMajor);
+        const rightPreferred = preferredMajor !== null && String(right.major) === String(preferredMajor);
+        if (leftPreferred !== rightPreferred) return Number(rightPreferred) - Number(leftPreferred);
+        const leftPrimary = String(left.major) === String(catalog.primaryMajor);
+        const rightPrimary = String(right.major) === String(catalog.primaryMajor);
+        return Number(rightPrimary) - Number(leftPrimary);
+    });
+}
+
+function discoverGeneXusFromRegistry(preferredMajor = null) {
     if (process.platform !== 'win32') return null;
     try {
         const { execFileSync } = require('child_process');
-        const versions = ['GeneXus 18', 'GeneXus 17', 'GeneXus 16'];
+        const entries = getGeneXusCatalogEntries(preferredMajor);
         const hives = [
             'HKLM\\SOFTWARE\\WOW6432Node\\Artech',
             'HKLM\\SOFTWARE\\Artech',
             'HKCU\\SOFTWARE\\Artech'
         ];
         for (const hive of hives) {
-            for (const ver of versions) {
-                const key = `${hive}\\${ver}`;
-                try {
-                    const out = execFileSync('reg.exe', ['query', key, '/v', 'InstallationDirectory'], {
-                        encoding: 'utf8',
-                        stdio: ['ignore', 'pipe', 'ignore'],
-                        windowsHide: true,
-                        timeout: 3000
-                    });
-                    const match = out.match(/InstallationDirectory\s+REG_SZ\s+(.+?)\r?\n/i);
-                    if (match) {
-                        const candidate = match[1].trim().replace(/[\\/]+$/, '');
-                        if (candidate && fs.existsSync(path.join(candidate, 'genexus.exe'))) {
-                            return candidate;
+            for (const entry of entries) {
+                const names = Array.isArray(entry.registryNames) && entry.registryNames.length > 0
+                    ? entry.registryNames
+                    : [`GeneXus ${entry.major}`];
+                for (const ver of names) {
+                    const key = `${hive}\\${ver}`;
+                    try {
+                        const out = execFileSync('reg.exe', ['query', key, '/v', 'InstallationDirectory'], {
+                            encoding: 'utf8',
+                            stdio: ['ignore', 'pipe', 'ignore'],
+                            windowsHide: true,
+                            timeout: 3000
+                        });
+                        const match = out.match(/InstallationDirectory\s+REG_SZ\s+(.+?)\r?\n/i);
+                        if (match) {
+                            const candidate = match[1].trim().replace(/[\\/]+$/, '');
+                            if (candidate && fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
+                                return candidate;
+                            }
                         }
+                    } catch {
                     }
-                } catch {
+                }
+                for (const legacyVersion of (entry.legacyRegistryVersions || [])) {
+                    const key = `${hive}\\GeneXus\\${legacyVersion}`;
+                    try {
+                        const out = execFileSync('reg.exe', ['query', key, '/v', 'InstallPath'], {
+                            encoding: 'utf8',
+                            stdio: ['ignore', 'pipe', 'ignore'],
+                            windowsHide: true,
+                            timeout: 3000
+                        });
+                        const match = out.match(/InstallPath\s+REG_SZ\s+(.+?)\r?\n/i);
+                        if (match) {
+                            const candidate = match[1].trim().replace(/[\\/]+$/, '');
+                            if (candidate && fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) return candidate;
+                        }
+                    } catch {
+                    }
                 }
             }
         }
@@ -92,13 +153,13 @@ function discoverGeneXusFromRegistry() {
     return null;
 }
 
-function discoverGeneXusInstallation() {
+function discoverGeneXusInstallation(preferredMajor = null) {
     if (process.env.GENEXUS_HOME) {
         const candidate = process.env.GENEXUS_HOME.replace(/[\\/]+$/, '');
-        if (fs.existsSync(path.join(candidate, 'genexus.exe'))) return candidate;
+        if (fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) return candidate;
     }
 
-    const fromRegistry = discoverGeneXusFromRegistry();
+    const fromRegistry = discoverGeneXusFromRegistry(preferredMajor);
     if (fromRegistry) return fromRegistry;
 
     const programDirs = [];
@@ -110,17 +171,24 @@ function discoverGeneXusInstallation() {
         programDirs.push(`${drive}:\\Program Files`);
     }
 
-    const versions = ['GeneXus18', 'GeneXus17', 'GeneXus16'];
+    const entries = getGeneXusCatalogEntries(preferredMajor);
     const seen = new Set();
     for (const base of programDirs) {
         const root = path.join(base, 'GeneXus');
         const key = root.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        for (const ver of versions) {
-            const candidate = path.join(root, ver);
-            if (fs.existsSync(path.join(candidate, 'genexus.exe'))) {
-                return candidate;
+        for (const entry of entries) {
+            const candidateNames = new Set([
+                `GeneXus${entry.major}`,
+                path.basename(String(entry.defaultInstallPath || ''))
+            ]);
+            for (const ver of candidateNames) {
+                if (!ver) continue;
+                const candidate = path.join(root, ver);
+                if (fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
+                    return candidate;
+                }
             }
         }
         // Also scan any GeneXus* sibling (e.g. custom-named "GeneXus18 U10").
@@ -128,8 +196,10 @@ function discoverGeneXusInstallation() {
             if (fs.existsSync(root)) {
                 for (const entry of fs.readdirSync(root)) {
                     if (!/^GeneXus/i.test(entry)) continue;
+                    const majorMatch = entry.match(/^GeneXus\s*(\d+)/i);
+                    if (majorMatch && !entries.some((item) => String(item.major) === majorMatch[1])) continue;
                     const candidate = path.join(root, entry);
-                    if (fs.existsSync(path.join(candidate, 'genexus.exe'))) {
+                    if (fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
                         return candidate;
                     }
                 }
@@ -138,13 +208,13 @@ function discoverGeneXusInstallation() {
         }
     }
 
-    const fromPath = discoverGeneXusFromPath();
+    const fromPath = discoverGeneXusFromPath(preferredMajor);
     if (fromPath) return fromPath;
 
     return null;
 }
 
-function discoverGeneXusFromPath() {
+function discoverGeneXusFromPath(preferredMajor = null) {
     if (process.platform !== 'win32') return null;
     try {
         const { execFileSync } = require('child_process');
@@ -155,7 +225,7 @@ function discoverGeneXusFromPath() {
             timeout: 3000
         });
         const first = out.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-        if (first && fs.existsSync(first)) {
+        if (first && fs.existsSync(first) && matchesPreferredGeneXusMajor(path.dirname(first), preferredMajor)) {
             return path.dirname(first);
         }
     } catch {
@@ -650,13 +720,9 @@ function getClientConfigTargets() {
         {
             id: 'opencode-desktop',
             name: 'OpenCode Desktop',
-            // Detect-only: the Desktop app's MCP config schema differs from the CLI
-            // and isn't auto-written yet. We report it so the user knows it's there
-            // and how to wire it up, but never mutate its config blindly.
-            format: 'manual',
-            writeSupported: false,
-            manualNote: 'OpenCode Desktop manual setup: Settings > MCP > Add server > Local; name genexus18mcp; command npx.cmd on Windows (npx elsewhere); args -y genexus-mcp@latest; environment GX_CONFIG_PATH=<config.json path printed by init>; save, fully restart the app, then call genexus_whoami. The CLI does not write the app-managed Desktop mcp.json.',
-            path: path.join(appData, 'ai.opencode.desktop', 'mcp.json'),
+            format: 'opencode',
+            path: resolveOpenCodeConfigPath(xdgConfig),
+            detectByMarkerOnly: true,
             installMarkers: [
                 path.join(localAppData, 'Programs', '@opencode-aidesktop'),
                 path.join(appData, 'ai.opencode.desktop'),
@@ -693,8 +759,9 @@ function detectClientInstalled(client) {
             break;
         }
     }
+    const installed = client.detectByMarkerOnly ? (markerHit !== null) : (hasConfig || markerHit !== null);
     return {
-        installed: hasConfig || markerHit !== null,
+        installed,
         hasConfig,
         markerHit,
         markersChecked: markers
@@ -808,9 +875,8 @@ function patchClientConfig(targetConfigPath, opts = {}) {
         platform: process.platform
     });
 
-    // A direct gateway path only matters to clients that can be written. A
-    // detect-only client such as OpenCode Desktop must still receive manual
-    // setup guidance when its app-managed config is not detectable.
+    // A direct gateway path only matters to clients that can be written. Any
+    // detect-only client must still receive manual setup guidance when not writable.
     const writableCandidates = candidates.filter((client) =>
         client.writeSupported !== false
         && (!onlyExisting || detectClientInstalled(client).installed)
@@ -831,7 +897,7 @@ function patchClientConfig(targetConfigPath, opts = {}) {
     const skipped = [];
 
     for (const client of candidates) {
-        // Detect-only agents (e.g. OpenCode Desktop) can't be auto-written; surface
+        // Detect-only agents can't be auto-written; surface
         // the manual step instead of pretending we registered them.
         if (client.writeSupported === false) {
             const detection = detectClientInstalled(client);
@@ -1356,8 +1422,43 @@ function getLocalAppDataCacheDir() {
     return path.join(base, 'GenexusMCP');
 }
 
-function readGeneXusVersionFromInstall(gxPath) {
-    if (!gxPath) return null;
+function getGeneXusMajor(version) {
+    const match = String(version || '').match(/^\s*(\d+)/);
+    return match ? match[1] : null;
+}
+
+function matchesPreferredGeneXusMajor(gxPath, preferredMajor) {
+    if (preferredMajor === null || preferredMajor === undefined || String(preferredMajor).trim() === '') return true;
+    const identity = readGeneXusInstallationIdentity(gxPath);
+    return String(identity.major || '') === String(preferredMajor);
+}
+
+function readExecutableProductVersion(exePath) {
+    if (process.platform !== 'win32' || !exePath || !fs.existsSync(exePath)) return null;
+    try {
+        const { execFileSync } = require('child_process');
+        const output = execFileSync('powershell.exe', [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            '$versionInfo = (Get-Item -LiteralPath $env:GXMCP_VERSION_EXE -ErrorAction Stop).VersionInfo; if ($versionInfo.ProductVersion) { $versionInfo.ProductVersion } else { $versionInfo.FileVersion }'
+        ], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+            windowsHide: true,
+            timeout: 3000,
+            env: { ...process.env, GXMCP_VERSION_EXE: exePath }
+        });
+        return output.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || null;
+    } catch {
+        return null;
+    }
+}
+
+function readGeneXusInstallationIdentity(gxPath, options = {}) {
+    if (!gxPath) return { version: null, major: null, source: 'unavailable' };
+
+    let unresolvedVersionFile = null;
     const candidates = [
         path.join(gxPath, 'version.txt'),
         path.join(gxPath, 'Version.txt'),
@@ -1366,11 +1467,138 @@ function readGeneXusVersionFromInstall(gxPath) {
     for (const candidate of candidates) {
         try {
             const raw = fs.readFileSync(candidate, 'utf8').trim();
-            if (raw) return raw.split(/\r?\n/)[0].trim();
+            const version = raw.split(/\r?\n/)[0].trim();
+            if (version) {
+                const major = getGeneXusMajor(version);
+                if (major) return { version, major, source: 'version-file' };
+                unresolvedVersionFile = unresolvedVersionFile || version;
+            }
         } catch {
         }
     }
-    return null;
+
+    const readExecutableVersion = typeof options.readExecutableVersion === 'function'
+        ? options.readExecutableVersion
+        : readExecutableProductVersion;
+    const executableVersion = readExecutableVersion(path.join(gxPath, 'GeneXus.exe'));
+    if (executableVersion) {
+        return {
+            version: executableVersion,
+            major: getGeneXusMajor(executableVersion),
+            source: 'executable-metadata'
+        };
+    }
+
+    const pathMatch = path.basename(String(gxPath)).match(/^GeneXus\s*(\d+)/i);
+    if (pathMatch && fs.existsSync(gxPath)) return { version: null, major: pathMatch[1], source: 'path-name' };
+    if (unresolvedVersionFile) return { version: unresolvedVersionFile, major: null, source: 'version-file' };
+    return { version: null, major: null, source: 'unavailable' };
+}
+
+function readGeneXusVersionFromInstall(gxPath, options) {
+    return readGeneXusInstallationIdentity(gxPath, options).version;
+}
+
+function isWellFormedXml(source) {
+    const xml = String(source || '').replace(/^\uFEFF/, '');
+    const stack = [];
+    let rootCount = 0;
+    let index = 0;
+    while (true) {
+        const open = xml.indexOf('<', index);
+        if (open < 0) break;
+        if (xml.startsWith('<!--', open)) {
+            const endComment = xml.indexOf('-->', open + 4);
+            if (endComment < 0) return false;
+            index = endComment + 3;
+            continue;
+        }
+        if (xml.startsWith('<![CDATA[', open)) {
+            const endCdata = xml.indexOf(']]>', open + 9);
+            if (endCdata < 0) return false;
+            index = endCdata + 3;
+            continue;
+        }
+        if (xml.startsWith('<?', open)) {
+            const endInstruction = xml.indexOf('?>', open + 2);
+            if (endInstruction < 0) return false;
+            index = endInstruction + 2;
+            continue;
+        }
+
+        let end = open + 1;
+        let quote = null;
+        for (; end < xml.length; end++) {
+            const character = xml[end];
+            if (quote) {
+                if (character === quote) quote = null;
+            } else if (character === '"' || character === "'") {
+                quote = character;
+            } else if (character === '>') {
+                break;
+            }
+        }
+        if (end >= xml.length || quote) return false;
+
+        const body = xml.slice(open + 1, end).trim();
+        if (!body || body.startsWith('!')) {
+            index = end + 1;
+            continue;
+        }
+        if (body.startsWith('/')) {
+            const closing = body.slice(1).trim();
+            const closingMatch = closing.match(/^([A-Za-z_][A-Za-z0-9_.:-]*)\s*$/);
+            if (!closingMatch || stack.length === 0 || stack[stack.length - 1] !== closingMatch[1]) return false;
+            stack.pop();
+        } else {
+            const opening = body.replace(/\/\s*$/, '').trim();
+            const openingMatch = opening.match(/^([A-Za-z_][A-Za-z0-9_.:-]*)\b/);
+            if (!openingMatch) return false;
+            if (stack.length === 0) rootCount++;
+            if (!body.endsWith('/')) stack.push(openingMatch[1]);
+        }
+        index = end + 1;
+    }
+    return rootCount === 1 && stack.length === 0;
+}
+
+function readGeneXusKbIdentity(kbPath) {
+    if (!kbPath) return { version: null, major: null, source: 'unavailable', reason: 'missing-kb-path' };
+
+    let gxwFiles;
+    try {
+        gxwFiles = fs.readdirSync(kbPath)
+            .filter((fileName) => fileName.toLowerCase().endsWith('.gxw'))
+            .map((fileName) => path.join(kbPath, fileName));
+    } catch {
+        return { version: null, major: null, source: 'unavailable', reason: 'unreadable-kb-path' };
+    }
+    if (gxwFiles.length === 0) return { version: null, major: null, source: 'unavailable', reason: 'no-gxw' };
+    if (gxwFiles.length > 1) return { version: null, major: null, source: 'unavailable', reason: 'multiple-gxw' };
+
+    try {
+        const source = fs.readFileSync(gxwFiles[0], 'utf8');
+        if (!source.trim()) return { version: null, major: null, source: 'unavailable', reason: 'empty-gxw' };
+        if (!isWellFormedXml(source)) return { version: null, major: null, source: 'unavailable', reason: 'malformed-gxw' };
+        const raw = source.replace(/<!--[\s\S]*?-->/g, '');
+        for (const field of ['VersionNumber', 'FriendlyVersion']) {
+            const pattern = new RegExp(`<(?:(?:[\\w.-]+):)?${field}\\b[^>]*>([\\s\\S]*?)<\\/(?:(?:[\\w.-]+):)?${field}\\s*>`, 'i');
+            const match = raw.match(pattern);
+            const version = match && match[1] ? match[1].replace(/<[^>]+>/g, '').trim() : '';
+            if (version) return { version, major: getGeneXusMajor(version), source: 'gxw-version' };
+        }
+        return { version: null, major: null, source: 'unavailable', reason: 'missing-gxw-version' };
+    } catch {
+        return { version: null, major: null, source: 'unavailable', reason: 'unreadable-gxw' };
+    }
+}
+
+function compareGeneXusKbAndInstallation(kbPath, gxPath) {
+    const kb = readGeneXusKbIdentity(kbPath);
+    const gx = readGeneXusInstallationIdentity(gxPath);
+    let status = 'unresolved';
+    if (kb.major && gx.major) status = kb.major === gx.major ? 'match' : 'mismatch';
+    return { status, kb, gx };
 }
 
 function normalizeKbCatalog(raw) {
@@ -1501,13 +1729,6 @@ function applyLauncherConfigOrExit({ cwd, stderr, quiet }) {
         return { ok: true };
     }
 
-    const foundGxPath = discoverGeneXusInstallation();
-    if (!foundGxPath) {
-        log('[genexus-mcp] ERROR: No config.json found and GeneXus installation auto-discovery failed.');
-        log('[genexus-mcp] Fix with: npx genexus-mcp init --interactive');
-        return { ok: false };
-    }
-
     if (!directoryLooksLikeKnowledgeBase(cwd)) {
         log('[genexus-mcp] ERROR: Zero-config failed because current directory is not a GeneXus KB.');
         log(`[genexus-mcp] CWD: ${cwd}`);
@@ -1515,7 +1736,35 @@ function applyLauncherConfigOrExit({ cwd, stderr, quiet }) {
         return { ok: false };
     }
 
-    log(`[genexus-mcp] Auto-discovered GeneXus at: ${foundGxPath}`);
+    const kbIdentity = readGeneXusKbIdentity(cwd);
+    if (!kbIdentity.major) {
+        log('[genexus-mcp] ERROR: Zero-config could not determine the KB GeneXus major safely.');
+        log('[genexus-mcp] Fix with: npx genexus-mcp init --kb "<kbPath>" --gx "<geneXusPath>"');
+        return { ok: false };
+    }
+
+    const foundGxPath = discoverGeneXusInstallation(kbIdentity.major);
+    if (!foundGxPath) {
+        log('[genexus-mcp] ERROR: No GeneXus installation matching the KB major was auto-discovered.');
+        log(`[genexus-mcp] KB major: ${kbIdentity.major}`);
+        log('[genexus-mcp] Fix with: npx genexus-mcp init --interactive');
+        return { ok: false };
+    }
+
+    const compatibility = compareGeneXusKbAndInstallation(cwd, foundGxPath);
+    if (compatibility.status === 'mismatch') {
+        log(`[genexus-mcp] ERROR: Auto-discovered SDK major ${compatibility.gx.major} does not match KB major ${compatibility.kb.major}.`);
+        log('[genexus-mcp] Fix with: npx genexus-mcp init --kb "<kbPath>" --gx "<matching GeneXus path>"');
+        return { ok: false };
+    }
+    if (compatibility.status !== 'match') {
+        log('[genexus-mcp] ERROR: Zero-config could not verify that the discovered GeneXus SDK matches the KB major.');
+        log(`[genexus-mcp] KB major: ${compatibility.kb.major}; SDK detection: ${compatibility.gx.source}`);
+        log('[genexus-mcp] Fix with: npx genexus-mcp init --kb "<kbPath>" --gx "<matching GeneXus path>"');
+        return { ok: false };
+    }
+
+    log(`[genexus-mcp] Auto-discovered GeneXus ${kbIdentity.major} at: ${foundGxPath}`);
     log(`[genexus-mcp] Generating default config.json for KB at: ${cwd}`);
 
     const defaultConfig = generateConfig(foundGxPath, cwd);
@@ -1529,6 +1778,8 @@ module.exports = {
     generateConfig,
     getGatewayExePath,
     getToolDefinitionsPath,
+    getGeneXusVersionCatalog,
+    getGeneXusCatalogEntries,
     discoverGeneXusInstallation,
     discoverGeneXusFromRegistry,
     discoverKnowledgeBase,
@@ -1545,7 +1796,11 @@ module.exports = {
     listSupportedClientIds,
     filterClientTargets,
     getLocalAppDataCacheDir,
+    getGeneXusMajor,
+    readGeneXusInstallationIdentity,
     readGeneXusVersionFromInstall,
+    readGeneXusKbIdentity,
+    compareGeneXusKbAndInstallation,
     readKbCatalog,
     addKbToConfig,
     removeKbFromConfig,

@@ -38,6 +38,19 @@ validation cycle:
 6. Delete scratch objects, close the KB, stop only the scratch gateway, and
    remove temporary files. Never kill a user's running npm/stdio gateway.
 
+For SDK compatibility work, build the Worker once per installed major by
+setting `GX_PATH` explicitly, for example `GeneXus17Trial` and `GeneXus18`.
+The Gateway's `whoami.geneXus.supportedMajors` is the explicit runtime catalog;
+add a new major to `config/gx-versions.json` only after its Worker build and
+live-KB smoke path pass.
+
+When a verified fixture is available, use
+`scripts/test-live-matrix.ps1` to exercise the same built artifact once per
+selected catalog major. It accepts `-Majors` and `-GxPathMap`, writes a
+`gxmcp-live-matrix/1` summary, and treats unavailable SDK/license/fixture
+environments as explicit non-passing evidence. The detailed invocation and
+fixture contract live in [`live-kb-test-harness.md`](live-kb-test-harness.md).
+
 ### GeneXus SDK Model hierarchy, facades, and reflection
 
 - **Canonical GxModel Facade:** Any `KBModel` instance can be cast to the canonical
@@ -225,3 +238,12 @@ SDPanels are WorkWithDevices projections, not self-contained ordinary parts.
 `SDConditions` are non-source projections and may serialize as empty properties;
 an empty result does not mean the panel is empty. Layout and variables are
 authored in the GeneXus IDE.
+
+### Inspection and property conventions
+
+Metadata and property-reading tools (`genexus_properties`, `genexus_variable`, etc.) should follow these conventions:
+- **Envelope parity**: single-property reads return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }`. Multi-property reads return `{ target, values: { [name]: value }, properties: [...], missingProperties: [...] }`.
+- **Flat key-value dictionary**: always populate `values` as a flat `{ [name]: value }` dictionary for direct consumption by LLMs and client scripts without requiring traversal of nested array objects.
+- **Pattern and query filtering**: support `query` parameter matching both case-insensitive substrings and glob wildcards (`*` and `?`).
+- **Projections**: support `projection: "minimal" | "standard" | "full"` to control metadata payload weight (`minimal` emits compact key/value mappings; `full` includes all SDK descriptor flags).
+- **Suggestions on missing keys**: when a requested property is missing, compute nearest candidates using Levenshtein distance and return actionable `suggestions` and `nextSteps` in the error/response envelope instead of opaque failures.

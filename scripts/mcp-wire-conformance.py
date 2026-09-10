@@ -29,6 +29,18 @@ PUBLISH = ROOT / "publish"
 KB = Path(os.environ.get("GXMCP_TEST_KB", r"C:\kbs\KBTeste"))
 
 
+def primary_sdk_path() -> str:
+    catalog = json.loads((ROOT / "config" / "gx-versions.json").read_text(encoding="utf-8"))
+    primary = str(catalog["primaryMajor"])
+    for entry in catalog["supportedMajors"]:
+        if str(entry["major"]) == primary:
+            return str(entry["defaultInstallPath"])
+    raise RuntimeError(f"primary SDK major {primary!r} is missing from the version catalog")
+
+
+GX_PATH = primary_sdk_path()
+
+
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -50,7 +62,7 @@ def wait_port(port: int, process: subprocess.Popen, timeout: float = 30.0) -> No
 def start_gateway(directory: Path, port: int, stdio: bool) -> tuple[subprocess.Popen, object, object]:
     config = {
         "GeneXus": {
-            "InstallationPath": r"C:\Program Files (x86)\GeneXus\GeneXus18",
+            "InstallationPath": GX_PATH,
             "WorkerExecutable": str(PUBLISH / "worker" / "GxMcp.Worker.exe"),
         },
         "Environment": {
@@ -75,7 +87,7 @@ def start_gateway(directory: Path, port: int, stdio: bool) -> tuple[subprocess.P
             "GX_CONFIG_PATH": str(config_path),
             "GX_MCP_PORT": str(port),
             "GX_MCP_STDIO": "true" if stdio else "false",
-            "GX_PATH": r"C:\Program Files (x86)\GeneXus\GeneXus18",
+            "GX_PATH": GX_PATH,
         }
     )
     process = subprocess.Popen(

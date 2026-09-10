@@ -1,4 +1,4 @@
-# GeneXus 18 MCP Server installer
+# GeneXus MCP Server installer
 
 [CmdletBinding()]
 param(
@@ -23,6 +23,8 @@ $cliRunPath = Join-Path $root "cli\run.js"
 # Cursor, OpenCode, Codex, VS Code) is delegated to the genexus-mcp CLI, which is
 # the single source of truth for agent paths/detection (see cli/lib/config.js).
 # This installer no longer writes client configs itself.
+. (Join-Path $root "scripts\gx-version-catalog.ps1")
+$gxCatalog = Get-GxVersionCatalog -Root $root
 
 function Write-Step([string]$message) {
     Write-Host ""
@@ -108,17 +110,43 @@ function Get-ExistingPathOrPrompt([string]$label, [string]$currentValue) {
         return $currentValue
     }
 
-    # Auto-detect GeneXus 18 from registry if label is "GeneXus installation path".
-    # Probes BOTH known key/value shapes (kept in sync with cli/lib/config.js
-    # discoverGeneXusFromRegistry): the modern `Artech\GeneXus 18` +
-    # `InstallationDirectory`, and the legacy `Artech\GeneXus\18.0` + `InstallPath`.
+    # Auto-detect any supported GeneXus major from registry if label is
+    # "GeneXus installation path". Probe both known registry shapes.
     # Only accepts a hit whose folder actually contains genexus.exe.
     if ($label -eq "GeneXus installation path") {
         $hives = @("HKLM:\SOFTWARE\WOW6432Node\Artech", "HKLM:\SOFTWARE\Artech", "HKCU:\SOFTWARE\Artech")
-        $probes = @(
-            @{ Sub = "GeneXus 18";   Value = "InstallationDirectory" },
-            @{ Sub = "GeneXus\18.0"; Value = "InstallPath" }
-        )
+        $probes = @()
+        foreach ($entry in @($gxCatalog.supportedMajors)) {
+            $displayProperty = $entry.PSObject.Properties['displayName']
+            $displayName = if ($null -ne $displayProperty -and
+                -not [string]::IsNullOrWhiteSpace([string]$displayProperty.Value)) {
+                [string]$displayProperty.Value
+            } else {
+                "GeneXus $($entry.major)"
+            }
+            $registryProperty = $entry.PSObject.Properties['registryNames']
+            $registryNames = if ($null -ne $registryProperty) {
+                @($registryProperty.Value)
+            } else {
+                @("GeneXus $($entry.major)")
+            }
+            foreach ($name in $registryNames) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$name)) {
+                    $probes += @{ Sub = [string]$name; Value = "InstallationDirectory"; Display = $displayName }
+                }
+            }
+            $legacyProperty = $entry.PSObject.Properties['legacyRegistryVersions']
+            $legacyVersions = if ($null -ne $legacyProperty) {
+                @($legacyProperty.Value)
+            } else {
+                @()
+            }
+            foreach ($legacyVersion in $legacyVersions) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$legacyVersion)) {
+                    $probes += @{ Sub = "GeneXus\$legacyVersion"; Value = "InstallPath"; Display = $displayName }
+                }
+            }
+        }
         foreach ($hive in $hives) {
             foreach ($probe in $probes) {
                 $keyPath = Join-Path $hive $probe.Sub
@@ -127,7 +155,7 @@ function Get-ExistingPathOrPrompt([string]$label, [string]$currentValue) {
                 if (-not $detected) { continue }
                 $dir = $detected.$($probe.Value)
                 if ($dir -and (Test-Path (Join-Path $dir "genexus.exe"))) {
-                    Write-Ok "Auto-detected GeneXus 18 at: $dir"
+                    Write-Ok "Auto-detected $($probe.Display) at: $dir"
                     return $dir
                 }
             }
@@ -187,7 +215,7 @@ if (-not (Test-Path $configPath)) {
     Write-Warn "config.json not found at $configPath. Creating from template..."
     $defaultConfig = @{
         GeneXus = @{
-            InstallationPath = "C:\\Program Files (x86)\\GeneXus\\GeneXus18"
+            InstallationPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog
             WorkerExecutable = "$publishDir\\worker\\GxMcp.Worker.exe"
         }
         Server = @{

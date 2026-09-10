@@ -49,7 +49,9 @@ namespace GxMcp.Gateway
             return null;
         }
 
-        internal const string SupportedGeneXusMajor = "18";
+        // Backward-compatible alias for callers that used the original single-major field.
+        // The authoritative compatibility set lives in GeneXusVersionCatalog.
+        internal static string SupportedGeneXusMajor => GeneXusVersionCatalog.PrimaryMajor;
 
         private static void LogGeneXusVersionCheck(Configuration config)
         {
@@ -62,13 +64,13 @@ namespace GxMcp.Gateway
             }
             if (detected == null)
             {
-                Log($"[Gateway] GeneXus version not detected at '{gxPath}' (no version.txt). Target major: {SupportedGeneXusMajor}.");
+                Log($"[Gateway] GeneXus version not detected at '{gxPath}' (no version.txt). Supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}.");
                 return;
             }
-            Log($"[Gateway] Detected GeneXus version: {detected} (target major: {SupportedGeneXusMajor}).");
-            if (!detected.StartsWith(SupportedGeneXusMajor, StringComparison.OrdinalIgnoreCase))
+            Log($"[Gateway] Detected GeneXus version: {detected} (supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}).");
+            if (!GeneXusVersionCatalog.IsSupported(detected))
             {
-                Log($"[Gateway] WARNING: detected GeneXus version '{detected}' may not match MCP target major '{SupportedGeneXusMajor}'. Some tools may behave unexpectedly.");
+                Log($"[Gateway] WARNING: detected GeneXus version '{detected}' is outside the MCP compatibility catalog. Some tools may behave unexpectedly.");
             }
         }
 
@@ -939,7 +941,10 @@ namespace GxMcp.Gateway
                     ["installationPath"] = gxPath,
                     ["version"] = gxVersion,
                     ["supportedMajor"] = SupportedGeneXusMajor,
-                    ["versionMatches"] = gxVersion != null && gxVersion.StartsWith(SupportedGeneXusMajor, StringComparison.OrdinalIgnoreCase)
+                    ["supportedMajors"] = JArray.FromObject(GeneXusVersionCatalog.SupportedMajors),
+                    ["matchedMajor"] = GeneXusVersionCatalog.GetMatchingMajor(gxVersion),
+                    ["versionMatches"] = gxVersion != null && GeneXusVersionCatalog.IsSupported(gxVersion),
+                    ["catalog"] = GeneXusVersionCatalog.ToDiagnosticObject()
                 },
                 ["config"] = new JObject
                 {
@@ -1133,6 +1138,8 @@ namespace GxMcp.Gateway
                     return "BEFORE marking a Smart Device object as Main, claiming an 'IsMain' property exists, or setting Native Mobile application-level properties — confirm the real name (it's 'Main program') and which object types support it.";
                 case "webpanel-events":
                     return "BEFORE writing Web Panel event code (Start / Refresh / Load) — confirm the firing order and what attribute access each event has. Refresh runs BEFORE Load (per record), not after.";
+                case "nexa":
+                    return "BEFORE modeling objects, editing properties, generating Object Text, or using build/import/export workflows — read the relevant official Nexa reference first; use the live KB tools to verify the installed version and object state.";
                 default:
                     return "Read before invoking related properties or methods you aren't fully certain about.";
             }

@@ -822,6 +822,42 @@ namespace GxMcp.Gateway.Routers
                         type = args?["type"]?.ToString()
                     };
 
+                case "export_kb_to_text":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ExportTextBatch",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
+                case "import_text_to_kb":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ImportTextBatch",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
+                case "validate_kb_text_files":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ValidateTextBatch",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
+                case "delete_kb_objects":
+                    return new
+                    {
+                        module = "Object",
+                        action = "DeleteTextBatch",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
                 case "export_unified":
                     return new
                     {
@@ -842,7 +878,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|export_part|import_part|export_unified|screenshot_publish|ocr."
+                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|export_part|import_part|export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects|export_unified|screenshot_publish|ocr."
                     };
             }
         }
@@ -1266,13 +1302,26 @@ namespace GxMcp.Gateway.Routers
                 };
             }
 
+            var propNameToken = args?["propertyName"];
+            var propNamesToken = args?["propertyNames"];
+            if (propNamesToken == null && propNameToken is JArray)
+            {
+                propNamesToken = propNameToken;
+                propNameToken = null;
+            }
+
             return new
             {
                 module = "Property",
                 action = "Get",
                 target = args?["name"]?.ToString(),
                 control = args?["control"]?.ToString(),
-                type = args?["type"]?.ToString()
+                type = args?["type"]?.ToString(),
+                propertyName = propNameToken?.ToString(),
+                propertyNames = propNamesToken,
+                properties = args?["properties"],
+                projection = args?["projection"]?.ToString(),
+                query = args?["query"]?.ToString()
             };
         }
 

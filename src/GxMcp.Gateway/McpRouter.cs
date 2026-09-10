@@ -662,6 +662,12 @@ namespace GxMcp.Gateway
                         uriTemplate = "genexus://kb/tool-help/{name}",
                         name = "GeneXus Tool Help",
                         description = "Long-form help for a single MCP tool: prefixes, modes, examples, defaults."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://kb/skills/nexa/references/{name}",
+                        name = "Nexa Skill Reference",
+                        description = "Read one official Nexa Markdown reference for GeneXus object modeling, properties, commands, or workflows."
                     }
                 },
                 ttlMs = 3600000,
@@ -1009,17 +1015,39 @@ namespace GxMcp.Gateway
                 };
             }
 
-            // v2.8.0 — curated, source-verified GeneXus development skills.
-            // Each entry is hand-authored and fact-checked against
-            // docs.genexus.com so an LLM that consults it before invoking a
-            // property/method has authoritative reference material instead
-            // of hallucinated method names.
+            // Curated and official GeneXus development skills. The Nexa entry
+            // also exposes its individual Markdown references below.
             const string skillPrefix = "genexus://kb/skills/";
             if (uri.StartsWith(skillPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 string skillKey = uri.Substring(skillPrefix.Length);
                 var skill = SkillCatalog.FindByKey(skillKey);
-                if (skill == null) return null;
+                if (skill != null)
+                {
+                    return new
+                    {
+                        resultType = "complete",
+                        ttlMs = 3600000,
+                        cacheScope = "public",
+                        contents = new[]
+                        {
+                            new
+                            {
+                                uri,
+                                mimeType = "text/markdown",
+                                text = skill.Body
+                            }
+                        }
+                    };
+                }
+
+                const string nexaPrefix = "nexa/";
+                if (!skillKey.StartsWith(nexaPrefix, StringComparison.OrdinalIgnoreCase)
+                    || !NexaSkillPack.TryRead(skillKey.Substring(nexaPrefix.Length), out var nexaBody))
+                {
+                    return null;
+                }
+
                 return new
                 {
                     resultType = "complete",
@@ -1031,7 +1059,7 @@ namespace GxMcp.Gateway
                         {
                             uri,
                             mimeType = "text/markdown",
-                            text = skill.Body
+                            text = nexaBody
                         }
                     }
                 };
@@ -1157,11 +1185,13 @@ namespace GxMcp.Gateway
                 "6. `schemaVersion=mcp-axi/2` is emitted once at `initialize` (`_meta.schemaVersion`), not per response. Expect additive metadata on responses: collection helpers (`returned`, `total`, `empty`, `hasMore`, `nextOffset`) when inferable, and `meta.{truncated,fields,totalByType}` when relevant.\n" +
                 "7. If `result.isError=true` and `operationId` is present, treat as running operation and poll `genexus_lifecycle(action='status'|'result', target='op:<operationId>')`.\n" +
                 "8. For safe mutation flows, use patch `dryRun` first, then apply and re-read for persistence confirmation.\n\n" +
+                "9. Before GeneXus modeling, property, or Object Text workflow changes, read `genexus://kb/skills/nexa` and then the specific reference from `genexus://kb/skills/nexa/references/{name}`.\n\n" +
                 "Recommended bootstrap sequence:\n" +
                 "- `tools/list`\n" +
                 "- `resources/list`\n" +
                 "- `prompts/list`\n" +
-                "- `resources/read` for `genexus://kb/llm-playbook`";
+                "- `resources/read` for `genexus://kb/llm-playbook`\n" +
+                "- For modeling tasks, `resources/read` for `genexus://kb/skills/nexa` and the relevant reference URI";
         }
 
         public static object? ConvertResourceCall(JObject request)

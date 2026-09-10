@@ -86,5 +86,22 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("IndexNotReady", obj["code"]?.ToString());
             Assert.Equal("Indexing", obj["status"]?.ToString());
         }
+
+        [Fact]
+        public void List_UsesCache_WhenIndexUnchanged()
+        {
+            ListService.InvalidateCache();
+            var fixture = TestFixtures.IndexWithFolders();
+            var svc = new ListService(fixture.Index);
+
+            var first = svc.List(new ListCriteria { Limit = 5 });
+            var second = svc.List(new ListCriteria { Limit = 5 });
+
+            Assert.Same(first, second); // identical string reference from cache
+
+            ListService.InvalidateCache();
+            var third = svc.List(new ListCriteria { Limit = 5 });
+            Assert.Equal(first, third);
+        }
     }
 }

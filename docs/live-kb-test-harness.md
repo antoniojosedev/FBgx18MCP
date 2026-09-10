@@ -50,6 +50,27 @@ opening the KB. The connection file is compared byte-for-byte. A mismatch fails
 closed and requires a new fixture revision; it is never silently folded into an
 existing baseline.
 
+Use the repository generator after the isolation evidence is available. It
+requires an explicit `-ConfirmIsolated`, writes UTF-8 JSON without credentials,
+calculates both provenance hashes, and refuses to overwrite an existing record
+unless `-Force` is supplied for that exact local path:
+
+```powershell
+pwsh -NoProfile -File scripts/new-live-fixture-manifest.ps1 `
+  -KbPath C:\fixtures\synthetic-small `
+  -FixtureId synthetic-small-r1 `
+  -FixtureRevision seed-2026-09-05 `
+  -Generator GeneXus18-net `
+  -KbDatabaseId dedicated-kb-01 `
+  -ApplicationDatabaseId dedicated-app-01 `
+  -Evidence provisioning-record-01 `
+  -ProvisionedBy GeneXus -ConfirmIsolated
+```
+
+The generator requires exactly one `.gxw` and one `knowledgebase.connection`.
+The database IDs and evidence are still supplied by the operator; the script
+does not pretend to prove SQL isolation.
+
 ## Execution
 
 ```powershell
@@ -60,6 +81,50 @@ pwsh -NoProfile -File scripts/test-live.ps1 `
   -SkipBuild -RunBenchmark -Iterations 100 `
   -BenchmarkOut scratchpad\synthetic-small.warm.json
 ```
+
+For a release-critical smoke without the slower optional scenarios, select its
+dedicated category and a smaller per-RPC budget explicitly:
+
+```powershell
+pwsh -NoProfile -File scripts/test-live.ps1 `
+  -KbPath C:\fixtures\synthetic-small `
+  -FixtureManifest scratchpad\synthetic-small.fixture.json `
+  -GxPath 'C:\Program Files (x86)\GeneXus\GeneXus18' `
+  -SkipBuild -TestFilter 'Category=LiveEvents' -RpcTimeoutSeconds 180
+```
+
+The script creates a unique config and log directory, passes the exact
+published Gateway path to the test harness, selects a free isolated port, and
+requires the log to prove that this process entered master stdio mode. A proxy,
+duplicate instance, wrong process image, occupied explicit port, or timeout is
+reported as a failed/unavailable gate with the run log path. Use the same
+`-TestFilter` with `test-live-matrix.ps1` to run the focused smoke for every
+selected SDK major.
+
+### Multi-major matrix
+
+Run the catalog-driven matrix when the same fixture must be checked with more
+than one installed SDK:
+
+```powershell
+pwsh -NoProfile -File scripts/test-live-matrix.ps1 `
+  -KbPath C:\fixtures\synthetic-small `
+  -FixtureManifest scratchpad\synthetic-small.fixture.json `
+  -Majors 17,18 `
+  -GxPathMap '17=C:\Program Files (x86)\GeneXus\GeneXus17Trial;18=C:\Program Files (x86)\GeneXus\GeneXus18' `
+  -SkipBuild -RequireBuildAll -RunBenchmark -Iterations 100 `
+  -SummaryPath scratchpad\synthetic-small.matrix.json
+```
+
+Without `-Majors`, the matrix selects every major in `config/gx-versions.json`.
+Without `-GxPathMap`, it uses each catalog entry's `defaultInstallPath`.
+Omit `-SkipBuild` when the matrix should build the published artifact once with
+the catalog primary SDK; use `-SkipBuild` in release preflight after the release
+artifact has already been built. Each row invokes `test-live.ps1` with that
+major's SDK and records `passed`, `unavailable`, or `failed` in the
+`gxmcp-live-matrix/1` summary. A matrix is passing only when every selected row
+passes; unavailable SDKs, licenses, fixtures, or cloud dependencies remain
+explicit gaps and never become green evidence.
 
 For the native incremental Build All gate, use the current published Gateway
 and require terminal evidence explicitly:
@@ -106,6 +171,9 @@ on exit. Benchmark cleanup selects descendants by parent PID and creation time,
 checks identity again before stopping, and never selects workers by directory.
 An already exited parent or failed process enumeration can leave an orphan;
 cleanup reports a warning and does not broaden termination to other instances.
+The C# harness also emits the selected RPC timeout, process-exit state, stderr
+tail, and gateway log path in timeout diagnostics; sensitive key/value values in
+the stderr tail are redacted.
 
 ## Evidence and remaining gates
 

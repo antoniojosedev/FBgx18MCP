@@ -82,3 +82,8 @@ skills-lock.json
 .freebuff/
 
 /.commandcode/
+
+# --- Python cache ---
+__pycache__/
+*.py[cod]
+*$py.class

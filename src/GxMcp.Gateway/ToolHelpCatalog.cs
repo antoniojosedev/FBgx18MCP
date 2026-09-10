@@ -73,7 +73,7 @@ namespace GxMcp.Gateway
                 "- `async: true` returns immediately with one `operationId` / `job_id`; the same ID is used by Worker busy telemetry and lifecycle status/result/cancel. Cancellation terminalizes the operation and recycles a blocked non-preemptible Worker.\n" +
                 "- Full Source writes return the independently re-read `source`, `postSaveVerification.versionToken`, `persisted`, and `implicitLifecycleActions`. After a timeout or cancellation, another write to that object is blocked until `genexus_read` confirms its actual state.\n\n" +
                 "## Patch persistence verification\n" +
-                "Source and Rules are always re-read after the single SDK save. `verifyMode: 'normalized'` is the default and tolerates EOL, encoding marker, trailing-whitespace, and repeated-blank-line rendering by the SDK; `exact` preserves comments, whitespace, and blank lines but treats CRLF/LF as the same logical Source representation; `semantic` also tolerates harmless SDK casing/spacing changes. Comment-only Replace writes require `baseVersion`, are verified against the requested comment, report active old-statement presence, and return `CommentOnlyWriteNotPersisted` if the SDK re-read diverges. The response separates `saved` from `verified` and includes raw/normalized hashes, `normalizationApplied`, `diffNormalized`, `matchCount`, `persistedMatchCount`, `oldContentPresent`, `replacementPresent`, `reReadConfirmed`, and `implicitOperations` (always empty for this path). A mismatch is never reported as Applied. Rollback occurs only with `rollbackOnFailure: true` and a valid snapshot, and reports its own save/verification hashes. Pass the prior read's `versionToken` as `baseVersion` to reject concurrent edits. No Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests are invoked by a patch write.\n\n" +
+                "Source and Rules are always re-read after the single SDK save. For `part=Events`, set `requireObjectSave: true` to require the complete parent-object save, an advanced revision/lastUpdate, and verification that every other persisted part remained unchanged. This mode requires `baseVersion` for a non-dry-run write. If only part of that contract is confirmed, the response is `ObjectSaveIncomplete`, includes `partPersisted`, `objectSaved`, `metadataStampPersisted`, `metadataUpdated`, `revisionBefore`, `revisionAfter`, and sibling-part evidence, and warns against a blind retry; rollback is never implicit. `verifyMode: 'normalized'` is the default and tolerates EOL, encoding marker, trailing-whitespace, and repeated-blank-line rendering by the SDK; `exact` preserves comments, whitespace, and blank lines but treats CRLF/LF as the same logical Source representation; `semantic` also tolerates harmless SDK casing/spacing changes. Comment-only Replace writes require `baseVersion`, are verified against the requested comment, report active old-statement presence, and return `CommentOnlyWriteNotPersisted` if the SDK re-read diverges. A mismatch is never reported as Applied. Rollback occurs only with `rollbackOnFailure: true` and a valid snapshot. Pass the prior read's `versionToken` as `baseVersion` to reject concurrent edits. No Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests are invoked by a patch write.\n\n" +
                 "## Disambiguation\n" +
                 "If `name` matches multiple objects, the error includes `suggestion` and `availableTypes`. Pass `type=<ObjectType>` or use `parentPath` to disambiguate.\n\n" +
                 "## Examples (source code)\n" +
@@ -343,6 +343,10 @@ namespace GxMcp.Gateway
                 "- `asset_write` — write or update asset files using `contentBase64`.\n" +
                 "- `export_part` — export a single object part (e.g. Source, Rules) to an external file.\n" +
                 "- `import_part` — import object part content from a file.\n" +
+                "- `export_kb_to_text` — export selected objects, or the full indexed KB, into deterministic `.gxtext` files plus a manifest.\n" +
+                "- `import_text_to_kb` — import that manifest; use `dryRun: true` to validate without creating or saving objects.\n" +
+                "- `validate_kb_text_files` — validate manifest files and, when the target exists, exercise the SDK import preflight.\n" +
+                "- `delete_kb_objects` — delete selected objects in a batch; requires `confirm: true`, and supports `dryRun: true`.\n" +
                 "- `export_unified` — export complete object envelope as a portable JSON file.\n" +
                 "- `screenshot_publish` — publish screenshot PNG into `.gx/published-screenshots`.\n" +
                 "- `ocr` — optical character recognition on image assets.\n",
@@ -423,7 +427,7 @@ namespace GxMcp.Gateway
                 "# genexus_properties\n\n" +
                 "Read or change object-level GeneXus properties without editing the object source.\n\n" +
                 "## Actions\n" +
-                "- `get` — read the current property values and version information.\n" +
+                "- `get` — read current property values and version information. Filter with `propertyName` (name, comma-separated list, or * wildcard), `propertyNames[]`, `query` (search filter), or `projection` (minimal, standard, full; default full). Responses carry a flat `values` key-value map and `didYouMean` suggestions on miss.\n" +
                 "- `set` — assign one or more named properties and verify the saved values.\n" +
                 "- `move` — move an object to another module or folder.\n\n" +
                 "`get` is read-only. `set` and `move` mutate the KB; use the version token when a concurrent IDE edit must not be overwritten.\n",
@@ -546,11 +550,13 @@ namespace GxMcp.Gateway
 
             ["genexus_wwp"] =
                 "# genexus_wwp\n\n" +
-                "Inspect and edit WorkWithPlus Action Groups and grid actions in PatternInstance XML.\n\n" +
+                "Inspect and edit WorkWithPlus Action Groups, tabs, and grid attributes through the typed PatternInstance contract.\n\n" +
                 "## Actions\n" +
                 "- `list` — read the current action groups and ordered actions.\n" +
-                "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n\n" +
-                "Only `list` is read-only. Read the authoritative PatternInstance first, use `dryRun` when supported, and verify the saved XML because WorkWithPlus may reconcile IDE ordering on save.\n"
+                "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n" +
+                "- `add_tab`, `move_tab`, and `remove_tab` — edit WebPanel tabs and typed nested controls.\n" +
+                "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children.\n\n" +
+                "Only `list` is read-only. Preview writes with `dryRun`, pass the returned token as `baseVersion`, `expectedVersion`, or `versionToken`, and persist only after reviewing the typed diff. Writes require exact snapshots, re-read the PatternInstance, verify the parent WebForm projection, and roll back on divergence. No lifecycle operation is implicit.\n"
         };
 
         internal static string? Get(string toolName)

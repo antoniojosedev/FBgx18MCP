@@ -6,9 +6,12 @@ below and should be read only when the task matches it.
 
 ## Project orientation
 
-Genexus18MCP is a two-process MCP server exposing a GeneXus 18 Knowledge Base
-through the native SDK. It does not parse KB files or scrape IDE state; edits
-use the same SDK paths as the IDE.
+Genexus18MCP is a two-process MCP server exposing Knowledge Bases from the
+explicitly supported GeneXus majors through the selected native SDK. It does
+not parse KB files or scrape IDE state; edits use the same SDK paths as the IDE.
+Version-specific SDK members are isolated behind compatibility adapters so an
+older SDK can fall back to its native source parts without changing the MCP
+contract.
 
 ```text
 MCP client (Claude/Cursor/…)
@@ -18,17 +21,30 @@ GxMcp.Gateway (net10.0-windows, one per client)
    │ pipes JSON-RPC to a worker
    ▼
 GxMcp.Worker (net48 STA, one per opened KB)
-   │ Artech.* SDK
+   │ compatibility adapters + Artech.* SDK
    ▼
-GeneXus 18 SDK → Knowledge Base on disk
+Selected supported GeneXus SDK → Knowledge Base on disk
 ```
 
 - Gateway: `src/GxMcp.Gateway/` (`net10.0-windows`); owns the worker pool and routes MCP tools.
 - Worker: `src/GxMcp.Worker/`; hosts the COM-flavoured SDK on an STA thread.
 - CLI: `cli/run.js`, `cli/index.js`, and `cli/lib/config.js`; configures MCP
   clients, forwards stdio, and ships the Windows launcher diagnostics.
+- Version catalog: `config/gx-versions.json` is the explicit compatibility list;
+  `src/GxMcp.Gateway/GeneXusVersionCatalog.cs` is its runtime loader.
+  `src/GxMcp.Worker/Compatibility/` contains reusable runtime adapters for SDK
+  members that vary between GeneXus majors.
+- Design System compatibility: `DesignSystemSdkAdapter` uses the native helper
+  when available and parses the `Tokens`/`Styles` source parts independently
+  when an SDK helper member is absent.
 - Package artifact: `publish/`; `GxMcp.Gateway.exe` is at its root and
   `worker/GxMcp.Worker.exe` is one level below. The npm package includes it.
+
+<!-- BEGIN GENERATED: gx-compatibility -->
+Supported SDK majors: **GeneXus 17, GeneXus 18**.
+Primary SDK: **GeneXus 18**.
+Source of truth: `config/gx-versions.json`.
+<!-- END GENERATED: gx-compatibility -->
 
 ## KB and harness contracts
 
@@ -47,21 +63,42 @@ GeneXus 18 SDK → Knowledge Base on disk
 ## Source of truth and tool changes
 
 - Tool schemas: `src/GxMcp.Gateway/tool_definitions.json`.
-- Discovery golden fixture: `src/GxMcp.Gateway.Tests/Fixtures/Contract/Discovery/tools-list.response.json`; keep it alphabetically sorted.
-- Tool dispatch path: gateway router → `src/GxMcp.Worker/Services/CommandDispatcher.cs` → service method. A new tool requires schema, router, dispatcher, service, and fixture updates.
+- Discovery golden fixture: `src/GxMcp.Gateway.Tests/Fixtures/Contract/Discovery/tools-list.response.json`; keep it alphabetically sorted. Regenerate automatically after intentional schema changes: `$env:GXMCP_UPDATE_GOLDEN='1'; dotnet test src\GxMcp.Gateway.Tests --filter McpDiscoveryContractTests; Remove-Item Env:\GXMCP_UPDATE_GOLDEN`.
+- Tool dispatch path: gateway router → `src/GxMcp.Worker/Services/CommandDispatcher.cs` → service method. A tool change requires schema (`tool_definitions.json`), router, dispatcher, service, help catalog (`src/GxMcp.Gateway/ToolHelpCatalog.cs`), and fixture updates.
 - Tool schema budget bumps require a `CHANGELOG.md` explanation.
 - `genexus_query` and `genexus_list_objects` compact output must be added to
   `Program.GetDefaultCompactFields` when a new output field is introduced.
 - For CLI launcher/config changes, update `cli/run.test.js`; use
   `docs/agent_playbook.md` for SDK authoring and tool-specific constraints.
+- Release-facing version text is generated from `config/gx-versions.json` by
+  `scripts/sync-release-metadata.py`; `release.ps1` runs it before the dirty-tree
+  gate, and CI/release verification fails on drift.
 
 ## Build and test
 
 For Worker builds, set the SDK path in the current PowerShell session:
 
 ```powershell
+$env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus17Trial'
+dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
+
 $env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus18'
+dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
 ```
+
+The Worker must be built and focused-tested once per installed major when
+changing SDK compatibility. The Gateway package build uses the SDK selected by
+`GX_PATH` (the catalog's primary major is the normal distribution default). A
+new major is not considered supported merely because its version string starts
+with a number; add it to `config/gx-versions.json` only after its Worker build
+and live-KB smoke pass.
+
+For a fixture-backed compatibility check across installed majors, use
+`scripts/test-live-matrix.ps1`; it selects every catalog major by default,
+accepts `-Majors` and `-GxPathMap`, builds the artifact once, and records
+`passed`, `unavailable`, or `failed` per major. Release preflight selects this
+mode through `-LiveMajors`/`-LiveGxPathMap` or the matching environment variables;
+see `docs/live-kb-test-harness.md` for fixture and evidence rules.
 
 ```powershell
 .\build.ps1
@@ -69,6 +106,8 @@ dotnet build Genexus18MCP.sln -v:minimal
 dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
 dotnet build src\GxMcp.Gateway\GxMcp.Gateway.csproj
 dotnet test Genexus18MCP.sln
+dotnet test src\GxMcp.Worker.Tests --filter "FullyQualifiedName~PropertyService"
+dotnet test src\GxMcp.Gateway.Tests --filter "FullyQualifiedName~McpRouter"
 npm test
 npm run lint
 npm run test:one -- "test name pattern"
@@ -91,9 +130,17 @@ genexus_worker_reload mode=hard sourceDir=<repoRoot>\src\GxMcp.Worker\bin\Debug
 ```
 
 If the next call reports a stale pipe or crashed Worker, reconnect `/mcp` once.
+For a version smoke, call `genexus_whoami` and verify
+`geneXus.versionMatches=true`, `matchedMajor`, and `supportedMajors`; the
+legacy `supportedMajor` field remains the catalog-primary compatibility alias.
 
 ## Required workflow
 
+- **Mandatory architectural discovery (`ripwire`):** Before reading code manually or running blind text greps, always orient on the task with `ripwire`:
+  - Search & orientation: `ripwire <dir> --for="<task in words>"` — ranked signatures by PageRank, AST and caller context.
+  - Blast radius & callers: `ripwire <dir> --callers=SYM` and `--impact=SYM` (transitive callers before modifying contracts).
+  - Contract check: `ripwire <dir> --edit-check=SYM`.
+  - Diff & PR review: `ripwire . --pr-context` (automatically enforced in `pr-preflight.ps1`).
 - Inspect the actual input/request/route/function/query/response path before
   fixing behavior. Add a regression test when technically viable.
 - Make the smallest scoped change; preserve unrelated working-tree changes.
@@ -137,7 +184,7 @@ Before creating or proposing any new script for build, installation, upgrade, or
 ### Operational safety and side effects
 
 - **Installer vs. build**: `install.ps1` mutates `config.json` and client configs; treat it as an installer, not a neutral build. `build.ps1` is the neutral compiler.
-- **Client registration**: `clients add` / `init --write-clients` makes atomic backups and preserves unrelated servers and both OpenCode config formats (`mcp.<name>` and `mcp.servers.<name>`). On Windows, OpenCode Desktop and OpenCode CLI share `%USERPROFILE%\.config\opencode\opencode.jsonc`; registering the `opencode` client covers Desktop. Do not treat `clients` reporting `opencode-desktop` as manual/`%APPDATA%\ai.opencode.desktop\mcp.json` as a real gap — that path is residual CLI UX (upstream [#135](https://github.com/lennix1337/Genexus18MCP/issues/135)). Prefer that evidence over stale detect-only wording in `cli/lib/config.js` until upstream aligns detection.
+- **Client registration**: `clients add` / `init --write-clients` makes atomic backups and preserves unrelated servers and both OpenCode config formats (`mcp.<name>` and `mcp.servers.<name>`). On Windows, OpenCode Desktop and OpenCode CLI share `%USERPROFILE%\.config\opencode\opencode.jsonc`; registering the `opencode` client covers Desktop and is automatic. Do not treat `clients` reporting `opencode-desktop` as manual/`%APPDATA%\ai.opencode.desktop\mcp.json` as a real gap — that path is residual CLI UX (upstream [#135](https://github.com/lennix1337/Genexus18MCP/issues/135)).
 - **Session reloading is a separate gate**: A healthy CLI, green build, or rewritten client config does NOT mean the current agent session has reloaded MCP. AI clients cache tool schemas at connection start; a full client restart is mandatory before new tools/schemas take effect.
 - **Process management**: Prefer the scoped process termination in `build.ps1` (terminating only processes mapped to the current checkout path). Do not use broad `Stop-Process -Name GxMcp.Gateway,GxMcp.Worker` across the machine when other checkouts or instances may be active, unless hitting locked output errors covered by the Scoped Permission.
 

@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$GxPath,
+    [string[]]$LiveMajors,
+    [string[]]$LiveGxPathMap,
     [string]$Version,
     [switch]$SkipLive,
     [switch]$RequireLive,
@@ -13,14 +15,22 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = (Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
 }
 if ([string]::IsNullOrWhiteSpace($GxPath)) {
-    $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { 'C:\Program Files (x86)\GeneXus\GeneXus18' }
+    $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { Get-GxPrimaryInstallPath -Catalog $gxCatalog }
 }
 if ([string]::IsNullOrWhiteSpace($LiveKbPath)) { $LiveKbPath = $env:GXMCP_TEST_KB }
 if ([string]::IsNullOrWhiteSpace($LiveFixtureManifest)) { $LiveFixtureManifest = $env:GXMCP_TEST_FIXTURE }
+if (@($LiveMajors).Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($env:GXMCP_LIVE_MAJORS)) {
+    $LiveMajors = @($env:GXMCP_LIVE_MAJORS -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+if (@($LiveGxPathMap).Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($env:GXMCP_LIVE_GX_PATH_MAP)) {
+    $LiveGxPathMap = @($env:GXMCP_LIVE_GX_PATH_MAP -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
 if (-not $RequireBuildAll -and $env:GXMCP_REQUIRE_LIVE_BUILD_ALL -eq '1') { $RequireBuildAll = $true }
 if ([string]::IsNullOrWhiteSpace($SummaryPath)) {
     $SummaryPath = Join-Path $env:TEMP ('gxmcp-release-preflight-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
@@ -33,6 +43,7 @@ $summary = [ordered]@{
     endedAtUtc = $null
     root = $root
     gxPath = $GxPath
+    liveMode = if (@($LiveMajors).Count -gt 0 -or @($LiveGxPathMap).Count -gt 0) { 'matrix' } else { 'single' }
     version = $Version
     dryRun = [bool]$DryRun
     phases = New-Object System.Collections.Generic.List[object]
@@ -158,13 +169,39 @@ if (-not $liveRequested) {
     }
     Invoke-PreflightPhase -Name 'live KB gate' -Executable 'pwsh' -Arguments @() -SkipReason $reason | Out-Null
 } else {
-    $liveArgs = @(
-        '-NoProfile', '-File', (Join-Path $root 'scripts\test-live.ps1'),
-        '-KbPath', $LiveKbPath,
-        '-FixtureManifest', $LiveFixtureManifest,
-        '-GxPath', $GxPath,
-        '-SkipBuild'
-    )
+    $matrixMode = @($LiveMajors).Count -gt 0 -or @($LiveGxPathMap).Count -gt 0
+    $liveArgs = if ($matrixMode) {
+        @(
+            '-NoProfile', '-File', (Join-Path $root 'scripts\test-live-matrix.ps1'),
+            '-KbPath', $LiveKbPath,
+            '-FixtureManifest', $LiveFixtureManifest,
+            '-SkipBuild',
+            '-SummaryPath', "$SummaryPath.matrix.json"
+        )
+    } else {
+        @(
+            '-NoProfile', '-File', (Join-Path $root 'scripts\test-live.ps1'),
+            '-KbPath', $LiveKbPath,
+            '-FixtureManifest', $LiveFixtureManifest,
+            '-GxPath', $GxPath,
+            '-SkipBuild'
+        )
+    }
+    if ($matrixMode -and @($LiveMajors).Count -gt 0) {
+        $liveArgs += '-Majors'
+        $liveArgs += @($LiveMajors)
+    }
+    if ($matrixMode) {
+        $primaryMajor = [string]$gxCatalog.primaryMajor
+        $hasPrimaryOverride = @($LiveGxPathMap | Where-Object { $_ -match "^\s*$([regex]::Escape($primaryMajor))\s*=" }).Count -gt 0
+        if (-not $hasPrimaryOverride) {
+            $LiveGxPathMap = @($LiveGxPathMap) + ("{0}={1}" -f $primaryMajor, $GxPath)
+        }
+    }
+    if ($matrixMode -and @($LiveGxPathMap).Count -gt 0) {
+        $liveArgs += '-GxPathMap'
+        $liveArgs += @($LiveGxPathMap)
+    }
     if ($RequireBuildAll) { $liveArgs += '-RequireBuildAll' }
     $allowUnavailable = -not ($RequireLive -or $RequireBuildAll)
     Invoke-PreflightPhase -Name 'live KB gate' -Executable 'pwsh' -Arguments $liveArgs -AllowUnavailable:$allowUnavailable | Out-Null
