@@ -26,9 +26,11 @@ function generateNeutralConfig(gxPath) {
     return {
         ConfigSchemaVersion: 2,
         GatewayMode: 'stdio-isolated',
-        GeneXus: { InstallationPath: gxPath },
+        GeneXus: {
+            InstallationPath: gxPath,
+            WorkerExecutable: path.join(path.dirname(getGatewayExePath()), 'worker', 'GxMcp.Worker.exe')
+        },
         Server: {
-            TransportMode: 'stdio-isolated',
             HttpPort: 0,
             McpStdio: true,
             SessionIdleTimeoutMinutes: 10,
@@ -37,8 +39,7 @@ function generateNeutralConfig(gxPath) {
             TerseResponses: true
         },
         Environment: {
-            ResolutionPolicy: 'strict',
-            KBs: []
+            ResolutionPolicy: 'strict'
         }
     };
 }

@@ -210,6 +210,60 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
+        [Fact]
+        public void ParseConfig_StrictV2_AcceptsNeutralStdioFixture()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true, ""BindAddress"": ""127.0.0.1"" },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}");
+
+                var cfg = ParseConfig(configPath);
+
+                Assert.Equal(2, cfg.ConfigSchemaVersion);
+                Assert.Equal("stdio-isolated", cfg.GatewayMode);
+                Assert.Equal("strict", cfg.Environment!.ResolutionPolicy);
+                Assert.Empty(cfg.Environment.KBs);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_StrictV2_RejectsKbFields()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"", ""KBPath"": ""C:\\KBs\\Demo"" }
+}");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+                Assert.Contains("Environment.KBPath", error.Message);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
         private static Configuration ParseConfig(string path)
         {
             var method = typeof(Configuration).GetMethod("ParseConfig", BindingFlags.NonPublic | BindingFlags.Static);

@@ -144,14 +144,17 @@ test('ClientConfigManager applies codex-toml format cleanly without GX_CONFIG_PA
     }
 });
 
-test('generateNeutralConfig produces valid shape with empty KBs array', () => {
+test('generateNeutralConfig produces valid shape without KB fields', () => {
     const cfg = generateNeutralConfig('C:\\GeneXus18');
+    assert.equal(cfg.ConfigSchemaVersion, 2);
+    assert.equal(cfg.GatewayMode, 'stdio-isolated');
     assert.equal(cfg.GeneXus.InstallationPath, 'C:\\GeneXus18');
+    assert.ok(cfg.GeneXus.WorkerExecutable.endsWith(path.join('worker', 'GxMcp.Worker.exe')));
     assert.equal(cfg.Server.McpStdio, true);
-    assert.equal(cfg.Server.TransportMode, 'stdio-isolated');
+    assert.equal(cfg.Server.TransportMode, undefined);
     assert.equal(cfg.Server.HttpPort, 0);
     assert.equal(cfg.Environment.ResolutionPolicy, 'strict');
-    assert.deepEqual(cfg.Environment.KBs, []);
+    assert.equal(cfg.Environment.KBs, undefined);
     assert.equal(cfg.Environment.KBPath, undefined);
 });
 

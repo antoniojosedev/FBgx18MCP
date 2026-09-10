@@ -623,7 +623,7 @@ namespace GxMcp.Gateway
             var config = Configuration.Load();
             _activeConfig = config;
             bool isStdio = config.Server?.McpStdio ?? true;
-            bool isStdioIsolated = string.Equals(config.Server?.TransportMode, "stdio-isolated", StringComparison.OrdinalIgnoreCase);
+            bool isStdioIsolated = string.Equals(config.GatewayMode ?? config.Server?.TransportMode, "stdio-isolated", StringComparison.OrdinalIgnoreCase);
             bool sharedGatewayExplicit = (config.Server?.SharedGateway == true)
                 || string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)

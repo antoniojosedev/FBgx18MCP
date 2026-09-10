@@ -2,8 +2,10 @@ using System;
 using System.IO;
 using System.Reflection;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System.Threading;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace GxMcp.Gateway
 {
@@ -60,7 +62,7 @@ namespace GxMcp.Gateway
                     }
                     else
                     {
-                        Program.Log($"[Gateway] WARNING: GX_CONFIG_PATH points to non-existent file '{fullPath}'. Falling back to default config discovery.");
+                        throw new FileNotFoundException($"GX_CONFIG_PATH points to non-existent config file: {fullPath}", fullPath);
                     }
                 }
 
@@ -117,6 +119,11 @@ namespace GxMcp.Gateway
                 try
                 {
                     string json = File.ReadAllText(path);
+                    var document = JObject.Parse(json);
+                    bool strictDocument = document.Property("ConfigSchemaVersion") != null
+                        || document.Property("GatewayMode") != null;
+                    if (strictDocument)
+                        ValidateStrictDocument(document, path);
                     // Tolerant parse (E6): a single invalid scalar (e.g. "HttpPort": "abc")
                     // must not take the whole gateway down. Log the offending member and
                     // keep every member that did deserialize.
@@ -128,6 +135,8 @@ namespace GxMcp.Gateway
                             args.ErrorContext.Handled = true;
                         }
                     };
+                    if (strictDocument)
+                        settings.MissingMemberHandling = MissingMemberHandling.Error;
                     var config = JsonConvert.DeserializeObject<Configuration>(json, settings);
                     if (config == null)
                     {
@@ -217,7 +226,72 @@ namespace GxMcp.Gateway
             throw new Exception("Could not read config.json after multiple attempts.");
         }
 
-        // issue #28 item 6: a path is a real KB only if it exists and carries a .gxw
+        private static void ValidateStrictDocument(JObject document, string path)
+        {
+            const int currentVersion = 2;
+            var allowedRoot = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "ConfigSchemaVersion", "GatewayMode", "GeneXus", "Server", "Logging", "Environment"
+            };
+            RejectUnknown(document, allowedRoot, "root", path);
+
+            if (document["ConfigSchemaVersion"]?.Type != JTokenType.Integer
+                || document.Value<int?>("ConfigSchemaVersion") != currentVersion)
+                throw new InvalidDataException($"Unsupported or missing ConfigSchemaVersion in strict config '{path}'. Expected {currentVersion}.");
+
+            string? mode = document.Value<string>("GatewayMode")?.Trim().ToLowerInvariant();
+            if (mode != "stdio-isolated" && mode != "http-shared")
+                throw new InvalidDataException("Strict config GatewayMode must be 'stdio-isolated' or 'http-shared'.");
+
+            var geneXus = document["GeneXus"] as JObject
+                ?? throw new InvalidDataException("Strict config requires a GeneXus object.");
+            RejectUnknown(geneXus, new HashSet<string>(new[] { "InstallationPath", "WorkerExecutable" }, StringComparer.Ordinal), "GeneXus", path);
+            RequireString(geneXus, "InstallationPath", "GeneXus");
+            RequireString(geneXus, "WorkerExecutable", "GeneXus");
+
+            var server = document["Server"] as JObject
+                ?? throw new InvalidDataException("Strict config requires a Server object.");
+            RejectUnknown(server, new HashSet<string>(new[]
+            {
+                "HttpPort", "McpStdio", "BindAddress", "AllowedOrigins", "SessionIdleTimeoutMinutes",
+                "WorkerIdleTimeoutMinutes", "WedgedCommandTimeoutMinutes", "WorkerHeapRecycleMB",
+                "IdempotencyTtlMinutes", "IdempotencyCacheSize", "BuildSyncThresholdSeconds", "MaxOpenKbs",
+                "ToolProfile", "EmitStructuredContent", "TerseResponses"
+            }, StringComparer.Ordinal), "Server", path);
+            if (server["HttpPort"]?.Type != JTokenType.Integer || server["McpStdio"]?.Type != JTokenType.Boolean)
+                throw new InvalidDataException("Strict config requires typed Server.HttpPort and Server.McpStdio.");
+            int port = server.Value<int>("HttpPort");
+            bool stdio = server.Value<bool>("McpStdio");
+            if (mode == "stdio-isolated" && (port != 0 || !stdio))
+                throw new InvalidDataException("stdio-isolated requires HttpPort=0 and McpStdio=true.");
+            if (mode == "http-shared" && (port <= 0 || stdio))
+                throw new InvalidDataException("http-shared requires HttpPort>0 and McpStdio=false.");
+
+            if (document["Logging"] is JObject logging)
+                RejectUnknown(logging, new HashSet<string>(new[] { "Level", "Path" }, StringComparer.Ordinal), "Logging", path);
+
+            var environment = document["Environment"] as JObject
+                ?? throw new InvalidDataException("Strict config requires an Environment object.");
+            RejectUnknown(environment, new HashSet<string>(new[] { "ResolutionPolicy" }, StringComparer.Ordinal), "Environment", path);
+            string? policy = environment.Value<string>("ResolutionPolicy")?.Trim().ToLowerInvariant();
+            if (policy != "strict" && policy != "legacy")
+                throw new InvalidDataException("Strict config ResolutionPolicy must be 'strict' or 'legacy'.");
+        }
+
+        private static void RejectUnknown(JObject value, HashSet<string> allowed, string scope, string path)
+        {
+            var unknown = value.Properties().FirstOrDefault(p => !allowed.Contains(p.Name));
+            if (unknown != null)
+                throw new InvalidDataException($"Unknown member '{scope}.{unknown.Name}' in strict config '{path}'.");
+        }
+
+        private static void RequireString(JObject value, string name, string scope)
+        {
+            if (value[name]?.Type != JTokenType.String || string.IsNullOrWhiteSpace(value.Value<string>(name)))
+                throw new InvalidDataException($"Strict config requires non-empty {scope}.{name}.");
+        }
+
+        // issue #28 item 6: a path is real KB only if it exists and carries a .gxw
         // (or the legacy KnowledgeBase.Connection). Used to skip auto-migrating the
         // shipped placeholder KBPath into a phantom DefaultKb.
         internal static bool LooksLikeKb(string path)
