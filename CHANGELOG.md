@@ -84,8 +84,19 @@
 
 - Added deterministic Gateway worker crash/respawn coverage for multiple pending RPCs, retry backoff, eventual replacement recovery, and replacement-only index bootstrap without starting real worker processes.
 
-## v3.0.1 - 2026-09-07
+- Split the legacy `OperationsRouter` into typed domain route modules behind a compatibility facade and registered each module without changing MCP tool names, normalization, or response envelopes.
 
+## v3.0.1 - 2026-09-07
+=======
+### Internal
+>>>>>>> 204c25a (refactor: split operations router into domain modules)
+
+- Split the legacy `OperationsRouter` into typed domain route modules behind a compatibility facade and registered each module without changing MCP tool names, normalization, or response envelopes.
+
+
+
+
+## v3.0.1 - 2026-09-07
 
 ### Added
 

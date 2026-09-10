@@ -1,0 +1,117 @@
+using Newtonsoft.Json.Linq;
+
+namespace GxMcp.Gateway.Routers
+{
+    /// <summary>Typed domain routes extracted from the legacy operations router.</summary>
+    public sealed class IoRouter : IMcpModuleRouter
+    {
+        public string ModuleName => "Operations";
+
+        public object? ConvertToolCall(string toolName, JObject? args)
+        {
+            switch (toolName)
+            {
+                case "genexus_io": return ConvertIoUmbrella(args);
+                default: return null;
+            }
+        }
+
+        private object? ConvertIoUmbrella(JObject? args)
+        {
+            string? action = args?["action"]?.ToString();
+            switch (action)
+            {
+                case "asset_find":
+                case "asset_read":
+                case "asset_write":
+                {
+                    var inner = action switch
+                    {
+                        "asset_find" => "Find",
+                        "asset_read" => "Read",
+                        _ => "Write"
+                    };
+                    return new
+                    {
+                        module = "Asset",
+                        action = inner,
+                        target = args?["path"]?.ToString(),
+                        pattern = args?["pattern"]?.ToString(),
+                        relativeRoot = args?["relativeRoot"]?.ToString(),
+                        limit = args?["limit"]?.ToObject<int?>(),
+                        includeContent = args?["includeContent"]?.ToObject<bool?>(),
+                        maxBytes = args?["maxBytes"]?.ToObject<int?>(),
+                        contentBase64 = args?["contentBase64"]?.ToString()
+                    };
+                }
+
+                case "export_part":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ExportText",
+                        target = args?["name"]?.ToString(),
+                        outputPath = args?["outputPath"]?.ToString(),
+                        part = args?["part"]?.ToString(),
+                        type = args?["type"]?.ToString(),
+                        overwrite = args?["overwrite"]?.ToObject<bool?>() ?? false
+                    };
+
+                case "import_part":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ImportText",
+                        target = args?["name"]?.ToString(),
+                        inputPath = args?["inputPath"]?.ToString(),
+                        part = args?["part"]?.ToString(),
+                        type = args?["type"]?.ToString()
+                    };
+
+                case "export_unified":
+                    return new
+                    {
+                        module = "Export",
+                        action = "Unified",
+                        target = args?["name"]?.ToString(),
+                        @params = new JObject { ["type"] = args?["type"]?.ToString() }
+                    };
+
+                case "screenshot_publish":
+                    return new { module = "ScreenshotPublish", action = "Publish", path = args?["path"]?.ToString() };
+
+                case "ocr":
+                    return new { module = "Ocr", action = "Run", path = args?["path"]?.ToString() };
+
+                default:
+                    return new
+                    {
+                        module = "Error",
+                        action = "InvalidAction",
+                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|export_part|import_part|export_unified|screenshot_publish|ocr."
+                    };
+            }
+        }
+
+        // Versioning umbrella dispatcher. Replaces _history/_undo/_time_travel/_blame/_diff/_diff_generated.
+
+        private object? ConvertAssetToolCall(JObject? args)
+        {
+            string? action = args?["action"]?.ToString();
+            if (string.IsNullOrWhiteSpace(action)) return null;
+
+            return new
+            {
+                module = "Asset",
+                action = char.ToUpperInvariant(action[0]) + action.Substring(1).ToLowerInvariant(),
+                target = args?["path"]?.ToString(),
+                pattern = args?["pattern"]?.ToString(),
+                relativeRoot = args?["relativeRoot"]?.ToString(),
+                limit = args?["limit"]?.ToObject<int?>(),
+                includeContent = args?["includeContent"]?.ToObject<bool?>(),
+                maxBytes = args?["maxBytes"]?.ToObject<int?>(),
+                contentBase64 = args?["contentBase64"]?.ToString()
+            };
+        }
+    }
+}
