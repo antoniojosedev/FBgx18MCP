@@ -142,7 +142,7 @@ namespace GxMcp.Gateway
             // Resource subscriptions are stateful protocol operations. Route them
             // before McpRouter's static discovery handler so an ACK is only issued
             // after the URI is validated and attached to the creating HTTP session.
-            var subscriptionResponse = McpSubscriptionProtocol.Handle(request, sessionId, _httpSessions);
+            var subscriptionResponse = McpSubscriptionProtocol.Handle(request, sessionId, _httpSessions, GetCurrentOwnership(sessionId));
             if (subscriptionResponse != null) return subscriptionResponse;
 
             // Protocol-level methods and gateway-owned resources must not depend on
@@ -181,7 +181,7 @@ namespace GxMcp.Gateway
             // MCP tasks extension: route task handles before KB resolution. This keeps
             // status/cancel responsive while the worker is saturated and enforces the
             // creating session as the task's ownership boundary.
-            var taskResponse = McpTasksProtocol.Handle(request, sessionId, JobRegistry, taskScopeEnabled);
+            var taskResponse = McpTasksProtocol.Handle(request, sessionId, JobRegistry, taskScopeEnabled, GetCurrentOwnership(sessionId));
             if (taskResponse != null) return taskResponse;
 
             // Reject removed tools early with JSON-RPC -32601 + structured `data`.
@@ -2185,7 +2185,7 @@ namespace GxMcp.Gateway
                             // Register the job first, then fire-and-forget the actual build.
                             // The worker call is synchronous over the JSON-RPC pipe, so we wrap
                             // it in Task.Run so the gateway thread returns to the caller immediately.
-                            var job = JobRegistry.Start(sessionId, $"lifecycle/{lcAction}", estimatedSeconds);
+                            var job = JobRegistry.Start(sessionId, $"lifecycle/{lcAction}", estimatedSeconds, GetCurrentOwnership(sessionId));
                             Log($"[AsyncBuild] Dispatching job={job.Id} action={lcAction} target={tArgs?["target"]?.ToString() ?? "(all)"} estimated={estimatedSeconds}s");
 
                             _ = Task.Run(async () =>
@@ -2495,7 +2495,7 @@ namespace GxMcp.Gateway
                         // default estimate so the poll cadence is sensible.
                         int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? (isAsyncGxServer ? 120 : 30);
                         string jobLabel = isAsyncGxServer ? $"gxserver/{tArgs?["action"]?.ToString()}" : $"edit/{tName}";
-                        var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit);
+                        var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit, GetCurrentOwnership(sessionId));
                         editJob.WorkerAlias = _currentKb.Value?.NormalizedAlias;
                         editJob.Target = tArgs?["name"]?.ToString();
                         editJob.Part = tArgs?["part"]?.ToString() ?? "Source";

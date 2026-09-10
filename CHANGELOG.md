@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Added explicit `config migrate` for legacy-to-neutral runtime configuration with atomic source backup, read-back receipt, rollback on destination verification failure, and an explicit rejection mode for non-migratable KB fields. `init` and `clients add` no longer rewrite existing configs as an implicit migration; legacy `kb add/remove/switch` destinations remain the `Environment` catalog flow.
+- Added ownership fences to gateway tasks and resource subscriptions, carrying ownerScopeId, kbId, generation, and epoch; delayed or cross-owner events are discarded and stateless streams remain explicitly neutral.
 - Added `config create --config-scope neutral` for explicit KB-free runtime config generation; it requires the new runtime flags and never registers clients or creates a KB catalog.
 - Added owner-scoped operational-state path/key derivation for journals, recovery receipts, snapshots, jobs, logs, and crash ledgers; Worker KB binding now rejects `GX_KB_PATH` rebinds.
 - Aligned installer fallback and client registration on the neutral runtime; `clients add --all-clients` now covers every supported adapter without implicit KB fields or structural overrides.

@@ -236,7 +236,10 @@ namespace GxMcp.Gateway
             HttpContext context,
             JObject requestObj)
         {
-            if (!_modernSubscriptions.TryOpen(requestObj, out var subscription, out var error))
+            string modernOwner = context.Request.Headers["Mcp-Client-Id"].FirstOrDefault()
+                ?? "modern-unscoped";
+            if (!_modernSubscriptions.TryOpen(requestObj, out var subscription, out var error,
+                new OwnershipFence(modernOwner, "", 0)))
             {
                 return Results.Content(
                     (error ?? new JObject
@@ -274,7 +277,11 @@ namespace GxMcp.Gateway
                         ["notifications"] = subscription!.GrantedNotifications,
                         ["_meta"] = new JObject
                         {
-                            ["io.modelcontextprotocol/subscriptionId"] = subscription.Id
+                            ["io.modelcontextprotocol/subscriptionId"] = subscription.Id,
+                            ["ownerScopeId"] = subscription.Ownership.OwnerScopeId,
+                            ["kbId"] = subscription.Ownership.KbId,
+                            ["generation"] = subscription.Ownership.Generation,
+                            ["epoch"] = subscription.Ownership.Epoch
                         }
                     }
                 };

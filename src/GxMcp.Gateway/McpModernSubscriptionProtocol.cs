@@ -52,7 +52,8 @@ namespace GxMcp.Gateway
         internal bool TryOpen(
             JObject request,
             out McpModernSubscription? subscription,
-            out JObject? error)
+            out JObject? error,
+            OwnershipFence? ownership = null)
         {
             subscription = null;
             error = null;
@@ -93,7 +94,8 @@ namespace GxMcp.Gateway
                 var candidate = new McpModernSubscription(
                     Guid.NewGuid().ToString("N"),
                     filter!,
-                    _queueCapacity);
+                    _queueCapacity,
+                    ownership ?? new OwnershipFence("modern-unscoped", "", 0));
                 if (!_active.TryAdd(candidate.Id, candidate))
                 {
                     error = Error(id, -32025,
@@ -271,14 +273,17 @@ namespace GxMcp.Gateway
     {
         private readonly Channel<string> _events;
         private readonly McpModernSubscriptionFilter _filter;
+        internal OwnershipFence Ownership { get; }
 
         internal McpModernSubscription(
             string id,
             McpModernSubscriptionFilter filter,
-            int queueCapacity)
+            int queueCapacity,
+            OwnershipFence ownership)
         {
             Id = id;
             _filter = filter;
+            Ownership = ownership;
             _events = Channel.CreateBounded<string>(new BoundedChannelOptions(queueCapacity)
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
@@ -295,6 +300,10 @@ namespace GxMcp.Gateway
         internal bool TryQueue(string method, object? payload)
         {
             if (!Matches(method, payload)) return false;
+
+            var source = payload as JObject ?? (payload is JToken sourceToken ? sourceToken as JObject : null);
+            if (source != null && source["ownerScopeId"] != null && !Ownership.Matches(source))
+                return false;
 
             var parameters = payload is JObject obj
                 ? obj.DeepClone()

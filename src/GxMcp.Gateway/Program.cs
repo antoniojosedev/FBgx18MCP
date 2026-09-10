@@ -77,6 +77,23 @@ namespace GxMcp.Gateway
         // per-request KB alias for AutoTypeInjector.CompleteName, same pattern as the two above.
         internal static KbHandle? GetCurrentKb() => _currentKb.Value;
 
+        internal static OwnershipFence GetCurrentOwnership(string sessionId)
+        {
+            var snapshot = _currentSessionContext.Value;
+            if (snapshot == null)
+                _sessionKbContexts.TryGetSnapshot(sessionId, out snapshot);
+            if (snapshot != null)
+                return new OwnershipFence(snapshot.OwnerScopeId, snapshot.KbId, snapshot.ContextGeneration);
+
+            // Explicit KB arguments have no session selection snapshot. They are
+            // still owner-bound; generation zero denotes the request's immutable
+            // explicit context, never a process-wide fallback.
+            return new OwnershipFence(
+                sessionId ?? string.Empty,
+                _currentKb.Value?.NormalizedAlias ?? string.Empty,
+                0);
+        }
+
         internal static string? ResolveConfiguredKbAlias(Configuration config, string? kbPath)
         {
             if (config?.Environment?.KBs == null || string.IsNullOrWhiteSpace(kbPath)) return null;
@@ -258,7 +275,20 @@ namespace GxMcp.Gateway
         // repopulate the cache with its pre-mutation envelope. Per-KB invalidations use
         // SemanticCacheStore generations so unrelated KBs keep their warm entries.
         internal static int SemanticCacheEpoch;
-        private static HttpSessionRegistry _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(10));
+        private static HttpSessionRegistry _httpSessions = CreateHttpSessionRegistry(TimeSpan.FromMinutes(10));
+
+        private static HttpSessionRegistry CreateHttpSessionRegistry(TimeSpan timeout)
+        {
+            var registry = new HttpSessionRegistry(timeout);
+            registry.SessionRemoved += OnHttpSessionRemoved;
+            return registry;
+        }
+
+        private static void OnHttpSessionRemoved(string sessionId)
+        {
+            _sessionKbContexts.Clear(sessionId);
+            if (_sseChannels.TryRemove(sessionId, out var channel)) channel.Writer.TryComplete();
+        }
         private static IdempotencyCache _idempotencyCache = new IdempotencyCache(
             15,
             1000,
@@ -731,7 +761,7 @@ namespace GxMcp.Gateway
 
             Log("=== Gateway starting (Stdio Mode) ===");
             
-            _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(config.Server?.SessionIdleTimeoutMinutes ?? 10));
+            _httpSessions = CreateHttpSessionRegistry(TimeSpan.FromMinutes(config.Server?.SessionIdleTimeoutMinutes ?? 10));
             _idempotencyCache = new IdempotencyCache(
                 config.Server?.IdempotencyTtlMinutes ?? 15,
                 config.Server?.IdempotencyCacheSize ?? 1000,
