@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway.Routers
@@ -7,15 +8,25 @@ namespace GxMcp.Gateway.Routers
     {
         public string ModuleName => "Operations";
 
+        private static readonly IReadOnlyList<IMcpModuleRouter> DomainRouters = new IMcpModuleRouter[]
+        {
+            new CreateRouter(), new TelemetryRouter(), new IoRouter(), new VersioningRouter(),
+            new DatabaseRouter(), new BrowserRouter(), new RefactorRouter(), new PropertiesRouter(),
+            new StructureRouter(), new AuthoringRouter(), new LayoutRouter()
+        };
+
         public object? ConvertToolCall(string toolName, JObject? args)
         {
+            foreach (var router in DomainRouters)
+            {
+                var result = router.ConvertToolCall(toolName, args);
+                if (result != null) return result;
+            }
+
             switch (toolName)
             {
                 // Creation umbrella: object|popup|sd_panel_*|save_as|scaffold|translate|sample|template.
                 // Replaces genexus_create_object, _create_popup, _sd_panel, _save_as, _forge, _apply_template.
-                case "genexus_create":
-                    return ConvertCreateUmbrella(args);
-
                 case "genexus_data_view":
                     return new
                     {
@@ -61,45 +72,6 @@ namespace GxMcp.Gateway.Routers
                 // Telemetry umbrella: friction_*|learning_report|logs|profile_*.
                 // (executions / watch_event are gateway-only — handled in Program.cs before routing.)
                 // Replaces genexus_logs, _friction_log, _learning, _profile.
-                case "genexus_telemetry":
-                    return ConvertTelemetryUmbrella(args);
-
-                case "genexus_refactor":
-                    return ConvertRefactorToolCall(args);
-
-                // Item 91: genexus_rename_across_kb — thin wrapper that routes to the
-                // existing RefactorService.Refactor(action=RenameObject|RenameAttribute)
-                // path. The service already iterates the index's CalledBy edges and
-                // patches every source-text call-site, so KB-wide rename is just the
-                // RenameAttribute/RenameObject flow under a more discoverable name.
-                case "genexus_rename_across_kb":
-                {
-                    string? from = args?["from"]?.ToString() ?? args?["oldName"]?.ToString();
-                    string? to = args?["to"]?.ToString() ?? args?["newName"]?.ToString();
-                    string? type = args?["type"]?.ToString();
-                    bool renameAcrossDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
-                    // RenameAttribute path is the index-driven one (writes attribute then
-                    // updates every CalledBy edge). For non-Attribute types, RenameObject
-                    // currently falls into the same code path (line 64 of RefactorService).
-                    string refactorAction = string.Equals(type, "Attribute", System.StringComparison.OrdinalIgnoreCase)
-                        ? "RenameAttribute"
-                        : "RenameObject";
-                    return new
-                    {
-                        module = "Refactor",
-                        action = refactorAction,
-                        target = from,
-                        dryRun = renameAcrossDryRun,
-                        payload = new JObject
-                        {
-                            ["oldName"] = from,
-                            ["newName"] = to,
-                            ["type"] = type
-                        }.ToString()
-                    };
-                }
-
-                // Variable umbrella: add|delete|modify. Replaces _add_variable, _delete_variable, _modify_variable.
                 case "genexus_variable":
                 {
                     string? vAction = args?["action"]?.ToString()?.ToLowerInvariant();
@@ -187,11 +159,6 @@ namespace GxMcp.Gateway.Routers
 
                 // Versioning umbrella: history_*|undo|time_travel|blame|diff|diff_generated.
                 // Replaces genexus_history, _undo, _time_travel, _blame, _diff, _diff_generated.
-                case "genexus_versioning":
-                    return ConvertVersioningUmbrella(args);
-
-                // export_unified merged into genexus_io umbrella.
-
                 case "genexus_format":
                     return new
                     {
@@ -200,17 +167,6 @@ namespace GxMcp.Gateway.Routers
                         payload = args?["code"]?.ToString()
                     };
 
-                case "genexus_properties":
-                    return ConvertPropertiesToolCall(args);
-
-                // IO umbrella: asset_*|export_part|import_part|export_unified|screenshot_publish|ocr.
-                // Replaces genexus_asset, _export_object, _import_object, _export_unified, _screenshot_publish, _ocr_screenshot.
-                case "genexus_io":
-                    return ConvertIoUmbrella(args);
-
-                // history / undo merged into genexus_versioning umbrella.
-
-                // Item 50 — genexus_security action=audit_gam
                 case "genexus_security":
                     return new
                     {
@@ -220,10 +176,6 @@ namespace GxMcp.Gateway.Routers
 
                 // Database umbrella: drift_check|drift_report|optimize_*|sql_*|sample_data|types_*.
                 // Replaces genexus_db_drift, _db_optimize, _sql, _generate_sample_data, _types, _translations.
-                case "genexus_db":
-                    return ConvertDbUmbrella(args);
-
-                // Item 19 (mcp-improvements-2026-05-22) — semantic WebForm edits.
                 case "genexus_edit_form":
                 {
                     string editAction = args?["action"]?.ToString();
@@ -483,13 +435,6 @@ namespace GxMcp.Gateway.Routers
                 // Browser umbrella: action=smoke|a11y|wcag|capture|cross|preview.
                 // Replaces genexus_smoke_test/_a11y_audit/_wcag_check/_browser_capture/_cross_browser/_preview.
                 // Legacy names still dispatch silently via LegacyToolAliases (McpRouter) until removed.
-                case "genexus_browser":
-                    return ConvertBrowserUmbrella(args);
-
-                // IDE Save-As parity.
-                // save_as merged into genexus_create umbrella.
-
-                // Item 65 — genexus_orient welcome card
                 case "genexus_orient":
                     return new
                     {
@@ -497,18 +442,6 @@ namespace GxMcp.Gateway.Routers
                         action = "Welcome"
                     };
 
-                case "genexus_structure":
-                    return ConvertStructureToolCall(args);
-                case "genexus_authoring":
-                    return ConvertAuthoringToolCall(args);
-                case "genexus_layout":
-                    return ConvertLayoutToolCall(args);
-
-                // create_popup merged into genexus_create umbrella.
-
-                // genexus_api — REST endpoint introspection + breaking-change diff.
-                // Single dispatcher arm; the worker's ApiIntrospectService.Run switches
-                // on args.action (list|describe|diff_baseline|snapshot).
                 case "genexus_api":
                     return new
                     {

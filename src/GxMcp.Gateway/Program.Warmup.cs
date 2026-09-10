@@ -20,6 +20,12 @@ namespace GxMcp.Gateway
         {
             if (Interlocked.CompareExchange(ref _indexBootstrapStarted, 1, 0) != 0) return;
 
+            if (IndexBootstrapTriggerForTest != null)
+            {
+                IndexBootstrapTriggerForTest();
+                return;
+            }
+
             Log("[IndexBootstrap] firing on initialize");
 
             _ = Task.Run(async () =>

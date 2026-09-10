@@ -176,27 +176,27 @@ if (Test-Path $workerBinRelease) {
 # the SDK always finds the canonical Definitions/ at runtime without a copy here.
 Write-Host "   > Skipping Definitions/ copy - resolved at runtime from GeneXus install dir ($buildGxPath)."
 
-# 5. Write a SANITIZED fallback config.json into the publish artifact.
-#    This file is only a fallback for a bare manual run (every real launcher sets
-#    GX_CONFIG_PATH to the KB's own config). We deliberately do NOT sync the dev's
-#    root config.json here - that would ship the developer's real KB path in the
-#    release zip (a privacy/hygiene leak). The placeholder KBPath signals "set me".
-Write-Host "   > Writing sanitized fallback config.json to publish..."
+# 5. Write a SANITIZED neutral fallback config.json into the publish artifact.
+#    This file is only a fallback for a bare manual run. It deliberately contains
+#    no KB catalog or startup default; KB selection is an explicit session action.
+Write-Host "   > Writing sanitized neutral fallback config.json to publish..."
 $defaultConfig = @{
+    ConfigSchemaVersion = 2
+    GatewayMode = "stdio-isolated"
     GeneXus = @{
         InstallationPath = $artifactGxPath
         WorkerExecutable = "worker\\GxMcp.Worker.exe"
     }
     Server = @{
-        HttpPort = 5000
+        HttpPort = 0
         McpStdio = $true
-    }
-    Logging = @{
-        Level = "Debug"
-        Path = "logs"
+        SessionIdleTimeoutMinutes = 10
+        WorkerIdleTimeoutMinutes = 5
+        EmitStructuredContent = $false
+        TerseResponses = $true
     }
     Environment = @{
-        KBPath = "C:\\KBs\\YourKB"
+        ResolutionPolicy = "strict"
     }
 } | ConvertTo-Json -Depth 4
 Set-Content "$publishDir\config.json" $defaultConfig

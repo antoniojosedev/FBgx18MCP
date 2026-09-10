@@ -119,14 +119,68 @@ namespace GxMcp.Gateway
             CancellationToken transportCancellation = default,
             bool taskScopeEnabled = true)
         {
+            var context = new GxMcp.Gateway.Pipelines.McpPipelineContext(request, sessionId);
+            var pipeline = GxMcp.Gateway.Pipelines.RequestLoopStages.Create();
+            return await pipeline.ExecuteAsync(context, _ => ProcessMcpRequestCore(
+                request, sessionId, sessionContextEnabled, transportCancellation, taskScopeEnabled))
+                .ConfigureAwait(false);
+        }
+
+        private static JObject BuildStableKbContextError(string code, string message)
+        {
+            return new JObject
+            {
+                ["status"] = "error",
+                ["error"] = new JObject
+                {
+                    ["code"] = code,
+                    ["message"] = message,
+                    ["hint"] = "Select and open a KB in this session before retrying the stateful operation."
+                }
+            };
+        }
+
+        private static JObject? ValidateCurrentSessionLease(string sessionId)
+        {
+            if (!_sessionKbContexts.TryGetSnapshot(sessionId, out var snapshot) || snapshot == null)
+                return BuildStableKbContextError("KB_CONTEXT_REQUIRED",
+                    "This stateful operation requires an opened and selected KB context for the current session.");
+            if (snapshot.Lease == null)
+                return BuildStableKbContextError("KB_NOT_OWNED",
+                    "This stateful operation requires an active KB lease owned by the current session.");
+
+            try
+            {
+                _kbLeases.Validate(snapshot.Lease.Token, snapshot.OwnerScopeId, snapshot.KbId,
+                    snapshot.ContextGeneration, snapshot.Lease.Identity);
+                return null;
+            }
+            catch (KbLeaseValidationException ex)
+            {
+                return BuildStableKbContextError(
+                    string.Equals(ex.Code, "KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase)
+                        ? "KB_CONTEXT_REQUIRED" : "KB_NOT_OWNED",
+                    ex.Message);
+            }
+        }
+
+        private static async Task<JObject?> ProcessMcpRequestCore(
+            JObject request,
+            string sessionId = "stdio",
+            bool sessionContextEnabled = true,
+            CancellationToken transportCancellation = default,
+            bool taskScopeEnabled = true)
+        {
             string? method = request["method"]?.ToString();
             var idToken = request["id"];
             _currentKb.Value = null;
+            _currentSessionContext.Value = null;
+            _currentOperationRequiresOwner.Value = false;
 
             // Resource subscriptions are stateful protocol operations. Route them
             // before McpRouter's static discovery handler so an ACK is only issued
             // after the URI is validated and attached to the creating HTTP session.
-            var subscriptionResponse = McpSubscriptionProtocol.Handle(request, sessionId, _httpSessions);
+            var subscriptionResponse = McpSubscriptionProtocol.Handle(request, sessionId, _httpSessions, GetCurrentOwnership(sessionId));
             if (subscriptionResponse != null) return subscriptionResponse;
 
             // Protocol-level methods and gateway-owned resources must not depend on
@@ -165,7 +219,7 @@ namespace GxMcp.Gateway
             // MCP tasks extension: route task handles before KB resolution. This keeps
             // status/cancel responsive while the worker is saturated and enforces the
             // creating session as the task's ownership boundary.
-            var taskResponse = McpTasksProtocol.Handle(request, sessionId, JobRegistry, taskScopeEnabled);
+            var taskResponse = McpTasksProtocol.Handle(request, sessionId, JobRegistry, taskScopeEnabled, GetCurrentOwnership(sessionId));
             if (taskResponse != null) return taskResponse;
 
             // Reject removed tools early with JSON-RPC -32601 + structured `data`.
@@ -208,8 +262,12 @@ namespace GxMcp.Gateway
                     isMetaTool = !string.IsNullOrEmpty(toolNameForResolver) && IsMetaTool(toolNameForResolver);
                 }
 
+                bool statefulMetaTool = string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase)
+                    && OperationClassifier.RequiresSessionLease(
+                        toolNameForResolver,
+                        (request["params"] as JObject)?["arguments"] as JObject);
                 bool needsKbResolution =
-                    (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase) && !isMetaTool)
+                    (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase) && (!isMetaTool || statefulMetaTool))
                     || (string.Equals(method, "resources/read", StringComparison.OrdinalIgnoreCase)
                         && McpRouter.ConvertResourceCall(request) != null);
 
@@ -235,17 +293,41 @@ namespace GxMcp.Gateway
                             McpRouter.TryGetScopedResourceKb(request, out kbArg);
                         }
                         string? sessionDefaultAlias = null;
-                        bool sessionContextInitialized = sessionContextEnabled
-                            && TryGetSessionSelectedKb(sessionId, out sessionDefaultAlias);
+                        if (sessionContextEnabled)
+                        {
+                            TryGetSessionSelectedKb(sessionId, out sessionDefaultAlias);
+                        }
                         _currentKb.Value = _kbResolver.Resolve(
                             kbArg,
                             _workerPool.ListOpen(),
                             _workerPool.ListKnown(),
                             sessionDefaultAlias,
-                            sessionContextInitialized);
+                            out _);
+                        SessionKbContextStore.Snapshot? sessionSnapshot = null;
+                        if (sessionContextEnabled)
+                            _sessionKbContexts.TryGetSnapshot(sessionId, out sessionSnapshot);
+                        _currentSessionContext.Value = sessionSnapshot;
+                        var resolvedArgs = (request["params"] as JObject)?["arguments"] as JObject;
+                        _currentOperationRequiresOwner.Value = !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase)
+                            && OperationClassifier.RequiresSessionLease(toolNameForResolver ?? string.Empty, resolvedArgs);
                     }
                     catch (KbResolutionException ex)
                     {
+                        if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase)
+                            && OperationClassifier.RequiresSessionLease(
+                                toolNameForResolver,
+                                (request["params"] as JObject)?["arguments"] as JObject)
+                            && (string.Equals(ex.Code, "KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(ex.Code, "KB_NOT_OWNED", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            return BuildToolTextResponse(
+                                idToken,
+                                BuildStableKbContextError(ex.Code, ex.Message),
+                                isError: true,
+                                toolName: toolNameForResolver,
+                                toolArgs: (request["params"] as JObject)?["arguments"] as JObject,
+                                payloadOwned: true);
+                        }
                         // Friction 2026-05-22 #63: surface suggested_next_step on KB_AMBIGUOUS
                         // (and KB_NOT_FOUND) so the agent knows to retry with kb=<alias>.
                         var dataObj = new JObject
@@ -474,6 +556,17 @@ namespace GxMcp.Gateway
 
                         return BuildToolTextResponse(idToken, invalidArgsPayload, isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
                     }
+                }
+
+                // Reject stateful calls before any gateway handler can select a
+                // process-wide worker. Stateless recipe/catalog reads remain global.
+                if (OperationClassifier.RequiresSessionLease(toolName, args)
+                    && !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase))
+                {
+                    var ownershipError = ValidateCurrentSessionLease(sessionId);
+                    if (ownershipError != null)
+                        return BuildToolTextResponse(idToken, ownershipError, isError: true,
+                            toolName: toolName, toolArgs: args, payloadOwned: true);
                 }
 
                 // Auto-inject 'type' when the LLM omits it but 'name' resolves to a
@@ -785,21 +878,137 @@ namespace GxMcp.Gateway
                                     if (openArr.Count == 0) payload.Remove("openKbs");
                                 }
                                 break;
+                            case "select":
+                            case "set_session_default":
+                            {
+                                if (!sessionContextEnabled)
+                                {
+                                    throw new KbResolutionException("KB_SESSION_UNAVAILABLE",
+                                        "Session selection is not available for sessionless HTTP transport without a client identifier. Pass 'kb' explicitly or configure a client identifier header.");
+                                }
+
+                                string? alias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
+                                string? path = args?["path"]?.ToString();
+                                if (string.IsNullOrWhiteSpace(alias) && string.IsNullOrWhiteSpace(path))
+                                    throw new ArgumentException("The 'alias' or 'path' parameter is required for 'select'.");
+
+                                string resolvedAlias;
+                                string? resolvedPath = null;
+                                if (!string.IsNullOrWhiteSpace(path))
+                                {
+                                    if (!Configuration.IsPlausibleKbPath(path!))
+                                        throw new ArgumentException($"Path '{path}' does not look like a GeneXus Knowledge Base.");
+                                    resolvedAlias = string.IsNullOrWhiteSpace(alias)
+                                        ? System.IO.Path.GetFileName(path!.TrimEnd('\\', '/')).ToLowerInvariant()
+                                        : alias!;
+                                    resolvedPath = path;
+                                    _workerPool.RegisterKnown(new KbHandle(resolvedAlias, resolvedPath));
+                                }
+                                else
+                                {
+                                    var declared = _activeConfig?.Environment?.KBs?.FirstOrDefault(
+                                        k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                    if (declared != null)
+                                    {
+                                        resolvedAlias = declared.Alias;
+                                        resolvedPath = declared.Path;
+                                    }
+                                    else
+                                    {
+                                        var known = _workerPool.ListKnown().FirstOrDefault(
+                                            k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                        if (known != null)
+                                        {
+                                            resolvedAlias = known.Alias;
+                                            resolvedPath = known.Path;
+                                        }
+                                        else if (Configuration.IsPlausibleKbPath(alias!))
+                                        {
+                                            resolvedAlias = System.IO.Path.GetFileName(alias!.TrimEnd('\\', '/')).ToLowerInvariant();
+                                            resolvedPath = alias;
+                                            _workerPool.RegisterKnown(new KbHandle(resolvedAlias, resolvedPath));
+                                        }
+                                        else
+                                        {
+                                            throw new KbResolutionException("KB_NOT_FOUND",
+                                                $"Alias '{alias}' is neither declared in config.Environment.KBs[] nor currently open/known.");
+                                        }
+                                    }
+                                }
+
+                                SetSessionSelectedKb(sessionId, resolvedAlias, resolvedPath ?? resolvedAlias);
+
+                                payload = new JObject
+                                {
+                                    ["selectedKb"] = resolvedAlias,
+                                    ["path"] = resolvedPath,
+                                    ["scope"] = "session",
+                                    ["persisted"] = false
+                                };
+                                break;
+                            }
+                            case "set_persistent_default":
                             case "set_default":
                             {
-                                string? alias = args?["alias"]?.ToString();
+                                string? alias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
                                 if (string.IsNullOrWhiteSpace(alias))
-                                    throw new ArgumentException("Missing 'alias' for action=set_default.");
+                                    throw new ArgumentException($"Missing 'alias' for action={action}.");
+
+                                bool isLegacySetDefault = string.Equals(action, "set_default", StringComparison.OrdinalIgnoreCase);
+                                bool persist = isLegacySetDefault ? (args?["persist"]?.ToObject<bool?>() ?? true) : true;
+                                if (!persist)
+                                {
+                                    if (!sessionContextEnabled)
+                                    {
+                                        throw new KbResolutionException("KB_SESSION_UNAVAILABLE",
+                                            "Session selection is not available for sessionless HTTP transport without a client identifier. Pass 'kb' explicitly or configure a client identifier header.");
+                                    }
+                                    string sessionAlias;
+                                    string? sessionPath = null;
+                                    var declaredSession = _activeConfig?.Environment?.KBs?.FirstOrDefault(
+                                        k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                    if (declaredSession != null)
+                                    {
+                                        sessionAlias = declaredSession.Alias;
+                                        sessionPath = declaredSession.Path;
+                                    }
+                                    else
+                                    {
+                                        var knownSession = _workerPool.ListKnown().FirstOrDefault(
+                                            k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
+                                        if (knownSession != null)
+                                        {
+                                            sessionAlias = knownSession.Alias;
+                                            sessionPath = knownSession.Path;
+                                        }
+                                        else if (Configuration.IsPlausibleKbPath(alias!))
+                                        {
+                                            sessionAlias = System.IO.Path.GetFileName(alias!.TrimEnd('\\', '/')).ToLowerInvariant();
+                                            sessionPath = alias;
+                                            _workerPool.RegisterKnown(new KbHandle(sessionAlias, sessionPath));
+                                        }
+                                        else
+                                        {
+                                            throw new KbResolutionException("KB_NOT_FOUND",
+                                                $"Alias '{alias}' is neither declared in config.Environment.KBs[] nor currently open/known.");
+                                        }
+                                    }
+
+                                    SetSessionSelectedKb(sessionId, sessionAlias, sessionPath ?? sessionAlias);
+
+                                    payload = new JObject
+                                    {
+                                        ["selectedKb"] = sessionAlias,
+                                        ["path"] = sessionPath,
+                                        ["scope"] = "session",
+                                        ["persisted"] = false
+                                    };
+                                    break;
+                                }
                                 if (_activeConfig == null || string.IsNullOrWhiteSpace(Configuration.CurrentConfigPath))
                                     throw new InvalidOperationException("No active config to persist.");
                                 var declared = _activeConfig.Environment?.KBs?.FirstOrDefault(
                                     k => string.Equals(k.Alias, alias, StringComparison.OrdinalIgnoreCase));
-                                // issue #26 P4: accept any alias that is currently open or was
-                                // opened this session (ad-hoc via `open path=...`), not just the
-                                // ones pre-declared in config.json. When the alias exists only as
-                                // an open/known handle, promote it to a declared KbEntry so the
-                                // default survives a restart — instead of dead-ending with
-                                // KB_NOT_FOUND right after `open` succeeded.
                                 string resolvedAlias;
                                 string? resolvedPath = null;
                                 if (declared != null)
@@ -830,22 +1039,31 @@ namespace GxMcp.Gateway
                                 bool promoted = false;
                                 if (declared == null && !string.IsNullOrWhiteSpace(resolvedPath))
                                 {
-                                    // Persist the ad-hoc KB as a declared entry so it's resolvable
-                                    // after a restart, mirroring the in-memory _known registry.
                                     promoted = UpsertKbCatalogEntry(envObj, resolvedAlias, resolvedPath);
-                                    if (promoted)
-                                    {
-                                        _activeConfig.Environment!.KBs.Add(new KbEntry { Alias = resolvedAlias, Path = resolvedPath });
-                                    }
                                 }
                                 envObj["DefaultKb"] = resolvedAlias;
-                                // The Node CLI uses ActiveKb while the gateway uses
-                                // DefaultKb. Keep both markers aligned so switching from
-                                // OpenCode or MCP cannot leave the two clients disagreeing.
                                 envObj["ActiveKb"] = resolvedAlias;
-                                System.IO.File.WriteAllText(configPath, root.ToString(Formatting.Indented));
+                                AtomicJsonFileWriter.Write(configPath, root.ToString(Formatting.Indented));
+
+                                // Do not publish the in-memory selection until the exact aliases
+                                // written above have been read back from disk. This keeps a failed
+                                // or externally replaced config from making the response lie.
+                                JObject persistedRoot;
+                                try { persistedRoot = JObject.Parse(System.IO.File.ReadAllText(configPath)); }
+                                catch (Exception ex) { throw new InvalidOperationException($"Failed to verify persisted config.json: {ex.Message}"); }
+                                var persistedEnvironment = persistedRoot["Environment"] as JObject;
+                                if (!string.Equals(persistedEnvironment?["DefaultKb"]?.ToString(), resolvedAlias, StringComparison.Ordinal) ||
+                                    !string.Equals(persistedEnvironment?["ActiveKb"]?.ToString(), resolvedAlias, StringComparison.Ordinal))
+                                {
+                                    throw new InvalidOperationException($"Persisted config.json did not retain DefaultKb and ActiveKb='{resolvedAlias}'.");
+                                }
+                                if (promoted)
+                                {
+                                    _activeConfig.Environment!.KBs.Add(new KbEntry { Alias = resolvedAlias, Path = resolvedPath });
+                                }
                                 _activeConfig.Environment!.DefaultKb = resolvedAlias;
                                 _activeConfig.Environment!.ActiveKb = resolvedAlias;
+                                _activeConfig.Environment!.RawDefaultKb = resolvedAlias;
                                 if (sessionContextEnabled)
                                     SetSessionSelectedKb(sessionId, resolvedAlias);
                                 payload = new JObject
@@ -1559,14 +1777,12 @@ namespace GxMcp.Gateway
                                 ? "Cancelled by client; the non-preemptible worker was recycled. Re-read the object before another write."
                                 : "Cancelled by client; no live worker remained to recycle. Re-read the object before another write.");
                         if (existed
-                            && IsAsyncMutationTool(cancelledToolName)
+                            && (IsAsyncMutationTool(cancelledToolName)
+                                || IsAsyncGxServerAction(cancelledToolName, cancelledToolArgs))
                             && !string.IsNullOrWhiteSpace(workerAlias))
                         {
-                            _mutationRecovery.RequireRead(
-                                workerAlias,
-                                cancelledToolArgs?["name"]?.ToString(),
-                                cancelledToolArgs?["part"]?.ToString() ?? "Source",
-                                operationId);
+                            foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(cancelledToolName!, cancelledToolArgs))
+                                _mutationRecovery.RequireRead(workerAlias, recoveryTarget.Target, recoveryTarget.Part, operationId);
                         }
 
                         var cancelPayload = new JObject
@@ -1741,9 +1957,9 @@ namespace GxMcp.Gateway
                     if (isMutating && !IsMutationPreview(tArgs))
                     {
                         RecoveryRequirement? recoveryRequirement = null;
-                        foreach (string recoveryTarget in EnumerateMutationTargets(tName, tArgs))
+                        foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName, tArgs))
                         {
-                            if (_mutationRecovery.TryGet(kbScope, recoveryTarget, out var found))
+                            if (_mutationRecovery.TryGet(kbScope, recoveryTarget.Target, recoveryTarget.Part, out var found))
                             {
                                 recoveryRequirement = found;
                                 break;
@@ -1829,6 +2045,7 @@ namespace GxMcp.Gateway
                             var hitMeta = hit["_meta"] as JObject ?? new JObject();
                             hit["_meta"] = hitMeta;
                             hitMeta["cacheOutcome"] = "hit";
+                            _operationTracker.RecordCacheHit(tName);
                             return hit;
                         }
                     }
@@ -2040,7 +2257,7 @@ namespace GxMcp.Gateway
                             // Register the job first, then fire-and-forget the actual build.
                             // The worker call is synchronous over the JSON-RPC pipe, so we wrap
                             // it in Task.Run so the gateway thread returns to the caller immediately.
-                            var job = JobRegistry.Start(sessionId, $"lifecycle/{lcAction}", estimatedSeconds);
+                            var job = JobRegistry.Start(sessionId, $"lifecycle/{lcAction}", estimatedSeconds, GetCurrentOwnership(sessionId));
                             Log($"[AsyncBuild] Dispatching job={job.Id} action={lcAction} target={tArgs?["target"]?.ToString() ?? "(all)"} estimated={estimatedSeconds}s");
 
                             _ = Task.Run(async () =>
@@ -2350,7 +2567,7 @@ namespace GxMcp.Gateway
                         // default estimate so the poll cadence is sensible.
                         int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? (isAsyncGxServer ? 120 : 30);
                         string jobLabel = isAsyncGxServer ? $"gxserver/{tArgs?["action"]?.ToString()}" : $"edit/{tName}";
-                        var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit);
+                        var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit, GetCurrentOwnership(sessionId));
                         editJob.WorkerAlias = _currentKb.Value?.NormalizedAlias;
                         editJob.Target = GetAsyncMutationTarget(tName, tArgs);
                         string ioAction = tArgs?["action"]?.ToString()?.ToLowerInvariant() ?? string.Empty;
@@ -2448,6 +2665,8 @@ namespace GxMcp.Gateway
                                                 editJob.Part,
                                                 editJob.Id);
                                         }
+                                        foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(capturedName, tArgs))
+                                            _mutationRecovery.RequireRead(editJob.WorkerAlias, recoveryTarget.Target, recoveryTarget.Part, editJob.Id);
                                         Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled (workerRecycled={workerRecycled}).");
                                     }
                                     return;
@@ -2534,10 +2753,8 @@ namespace GxMcp.Gateway
 
                             if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
                             {
-                                _mutationRecovery.ConfirmRead(
-                                    kbScope,
-                                    tArgs?["name"]?.ToString(),
-                                    tArgs?["part"]?.ToString() ?? "Source");
+                                foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName, tArgs))
+                                    _mutationRecovery.ConfirmRead(kbScope, recoveryTarget.Target, recoveryTarget.Part);
                             }
 
                             // Friction 2026-05-22 #63: attach suggested_next_step on every error
@@ -2647,15 +2864,28 @@ namespace GxMcp.Gateway
                             string message = $"GeneXus MCP Worker timed out executing tool: {tName}.";
                             var timeoutPayload = new JObject
                             {
-                                ["status"] = "Running",
-                                ["error"] = "Gateway timeout waiting for worker response.",
-                                ["message"] = message,
-                                ["correlationId"] = correlationId,
-                                ["retriable"] = true
+                                ["status"] = "error",
+                                ["error"] = new JObject
+                                {
+                                    ["code"] = "WorkerTimeout",
+                                    ["message"] = message,
+                                    ["hint"] = "The Worker may still be finishing; poll the operation before retrying.",
+                                    ["retryable"] = true,
+                                    ["reconciliationRequired"] = false
+                                },
+                                ["correlationId"] = correlationId
                             };
 
                             bool recordWrite = IsTransactionRecordOperation(tName!, tArgs) && IsMutatingTool(tName!, tArgs);
                             if (recordWrite) MarkRecordWriteOutcomeUnknown(timeoutPayload);
+                            var timeoutError = timeoutPayload["error"] as JObject;
+                            if (recordWrite && timeoutError != null)
+                            {
+                                timeoutError["code"] = "UnknownCommitState";
+                                timeoutError["hint"] = "Do not repeat the mutation. Poll the original operation and read the target back before authorizing a new attempt.";
+                                timeoutError["retryable"] = false;
+                                timeoutError["reconciliationRequired"] = true;
+                            }
                             var help = new JArray();
                             if (recordWrite)
                                 help.Add("Do not repeat the write. Poll the original operation result, then query the record keys against the datastore.");
@@ -2665,15 +2895,13 @@ namespace GxMcp.Gateway
                                 help.Add($"Operation is still running. Query genexus_lifecycle(action='status', target='op:{operationId}') or action='result'.");
                                 if (tName != null && (tName.IndexOf("edit", StringComparison.OrdinalIgnoreCase) >= 0
                                                      || tName.IndexOf("write", StringComparison.OrdinalIgnoreCase) >= 0
-                                                     || tName.IndexOf("variable", StringComparison.OrdinalIgnoreCase) >= 0))
+                                                     || tName.IndexOf("variable", StringComparison.OrdinalIgnoreCase) >= 0
+                                                     || isAsyncGxServer))
                                 {
                                     // Writes have usually persisted by the time the gateway times out; poll result, then read — don't retry the edit.
                                     help.Add("For long writes the change is usually already persisted; check action='result' once, then read back instead of retrying.");
-                                    _mutationRecovery.RequireRead(
-                                        kbScope,
-                                        tArgs?["name"]?.ToString(),
-                                        tArgs?["part"]?.ToString() ?? "Source",
-                                        operationId);
+                                    foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName!, tArgs))
+                                        _mutationRecovery.RequireRead(kbScope, recoveryTarget.Target, recoveryTarget.Part, operationId);
                                     timeoutPayload["reReadRequired"] = true;
                                 }
                             }

@@ -15,6 +15,8 @@ const {
     handleDoctor,
     handleToolsList,
     handleConfigShow,
+    handleConfigCreate,
+    handleConfigMigrate,
     handleInit,
     handleWhoami,
     handleUninstall,
@@ -97,8 +99,8 @@ function parseArgs(argv) {
         tokens.shift();
     }
 
-    if (result.command === 'config' && tokens[0] === 'show') {
-        result.subcommand = 'show';
+    if (result.command === 'config' && ['show', 'create', 'migrate'].includes(tokens[0])) {
+        result.subcommand = tokens[0];
         tokens.shift();
     }
 
@@ -173,6 +175,45 @@ function parseArgs(argv) {
                 const val = takeValue();
                 if (val) result.options.gx = val;
                 else result.unknownFlags.push('--gx requires a value');
+                break;
+            }
+            case 'from': {
+                const val = takeValue();
+                if (val) result.options.fromPath = val;
+                else result.unknownFlags.push('--from requires a value');
+                break;
+            }
+            case 'reject-non-migratable':
+                result.options.rejectNonMigratable = true;
+                break;
+            case 'output': {
+                const val = takeValue();
+                if (val) result.options.output = val;
+                else result.unknownFlags.push('--output requires a value');
+                break;
+            }
+            case 'worker': {
+                const val = takeValue();
+                if (val) result.options.worker = val;
+                else result.unknownFlags.push('--worker requires a value');
+                break;
+            }
+            case 'config-scope': {
+                const val = takeValue();
+                if (val) result.options.configScope = val;
+                else result.unknownFlags.push('--config-scope requires a value');
+                break;
+            }
+            case 'gateway-mode': {
+                const val = takeValue();
+                if (val) result.options.gatewayMode = val;
+                else result.unknownFlags.push('--gateway-mode requires a value');
+                break;
+            }
+            case 'resolution-policy': {
+                const val = takeValue();
+                if (val) result.options.resolutionPolicy = val;
+                else result.unknownFlags.push('--resolution-policy requires a value');
                 break;
             }
             case 'name': {
@@ -289,6 +330,12 @@ function parseArgs(argv) {
                 break;
             case 'interactive':
                 result.options.interactive = true;
+                break;
+            case 'global-config':
+                result.options.globalConfig = true;
+                break;
+            case 'neutral':
+                result.options.neutral = true;
                 break;
             case 'write-clients':
                 result.options.writeClients = true;
@@ -466,7 +513,7 @@ function withCommandMeta(envelope, commandName) {
 function resolveMetaCommand(parsed, targetHelp) {
     if (targetHelp || parsed.command === 'help') return 'help';
     if (parsed.command === 'tools') return 'tools.list';
-    if (parsed.command === 'config') return 'config.show';
+    if (parsed.command === 'config') return parsed.subcommand ? `config.${parsed.subcommand}` : 'config';
     if (parsed.command === 'axi' || parsed.command === 'home') return 'home';
     if (parsed.command === 'llm') return 'llm.help';
     if (parsed.command === 'layout') {
@@ -556,15 +603,19 @@ async function main(argv) {
             result = await handleToolsList(parsed.options, ctx);
             break;
         case 'config':
-            if (parsed.subcommand !== 'show') {
+            if (!['show', 'create', 'migrate'].includes(parsed.subcommand)) {
                 writeStructured(
                     process.stdout,
-                    withCommandMeta(usageEnvelope('config requires subcommand `show`.', EXIT_CODES.USAGE), resolveMetaCommand(parsed)),
+                    withCommandMeta(usageEnvelope('config requires subcommand `show`, `create`, or `migrate`.', EXIT_CODES.USAGE), resolveMetaCommand(parsed)),
                     parsed.options.format
                 );
                 return EXIT_CODES.USAGE;
             }
-            result = await handleConfigShow(parsed.options, ctx);
+            result = parsed.subcommand === 'create'
+                ? await handleConfigCreate(parsed.options, ctx)
+                : parsed.subcommand === 'migrate'
+                    ? await handleConfigMigrate(parsed.options, ctx)
+                : await handleConfigShow(parsed.options, ctx);
             break;
         case 'llm':
             if (parsed.subcommand && parsed.subcommand !== 'help') {

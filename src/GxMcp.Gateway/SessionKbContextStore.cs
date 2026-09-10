@@ -8,11 +8,25 @@ namespace GxMcp.Gateway
         private sealed class Entry
         {
             public string? Alias { get; set; }
+            public string OwnerScopeId { get; set; } = string.Empty;
+            public string? KbId { get; set; }
+            public long ContextGeneration { get; set; }
+            public KbUseLease? Lease { get; set; }
             public DateTime LastSeenUtc { get; set; }
         }
 
         private readonly ConcurrentDictionary<string, Entry> _entries =
             new ConcurrentDictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
+        internal sealed class Snapshot
+        {
+            public Snapshot(string ownerScopeId, string kbId, long contextGeneration, KbUseLease? lease)
+            { OwnerScopeId = ownerScopeId; KbId = kbId; ContextGeneration = contextGeneration; Lease = lease; }
+            public string OwnerScopeId { get; }
+            public string KbId { get; }
+            public long ContextGeneration { get; }
+            public KbUseLease? Lease { get; }
+        }
+
         private readonly TimeSpan _idleTimeout;
 
         public SessionKbContextStore(TimeSpan idleTimeout)
@@ -45,6 +59,7 @@ namespace GxMcp.Gateway
             CleanupExpired();
             return _entries.TryAdd(sessionId, new Entry
             {
+                OwnerScopeId = sessionId,
                 Alias = string.IsNullOrWhiteSpace(alias) ? null : alias.Trim(),
                 LastSeenUtc = DateTime.UtcNow
             });
@@ -53,17 +68,52 @@ namespace GxMcp.Gateway
         public void Set(string sessionId, string alias)
         {
             Validate(sessionId, alias);
+            _entries.TryGetValue(sessionId, out var prior);
             _entries[sessionId] = new Entry
             {
+                OwnerScopeId = sessionId,
                 Alias = alias.Trim(),
+                ContextGeneration = (prior?.ContextGeneration ?? 0) + 1,
                 LastSeenUtc = DateTime.UtcNow
             };
+        }
+
+        public void Set(string sessionId, string alias, string kbId, KbUseLease lease)
+        {
+            Validate(sessionId, alias);
+            if (string.IsNullOrWhiteSpace(kbId)) throw new ArgumentException("KB id is required.", nameof(kbId));
+            if (lease == null) throw new ArgumentNullException(nameof(lease));
+            CleanupExpired();
+            _entries.TryGetValue(sessionId, out var prior);
+            _entries[sessionId] = new Entry
+            {
+                OwnerScopeId = sessionId, Alias = alias.Trim(), KbId = kbId,
+                ContextGeneration = (prior?.ContextGeneration ?? 0) + 1, Lease = lease, LastSeenUtc = DateTime.UtcNow
+            };
+        }
+
+        public bool TryGetSnapshot(string sessionId, out Snapshot? snapshot)
+        {
+            snapshot = null;
+            if (!TryGetEntry(sessionId, out var entry) || string.IsNullOrWhiteSpace(entry.KbId)) return false;
+            snapshot = new Snapshot(entry.OwnerScopeId, entry.KbId!, entry.ContextGeneration, entry.Lease);
+            return true;
         }
 
         public void Clear(string sessionId)
         {
             if (string.IsNullOrWhiteSpace(sessionId)) return;
             _entries.TryRemove(sessionId, out _);
+        }
+
+        private bool TryGetEntry(string sessionId, out Entry entry)
+        {
+            entry = null!;
+            if (string.IsNullOrWhiteSpace(sessionId)) return false;
+            CleanupExpired();
+            if (!_entries.TryGetValue(sessionId, out entry!)) return false;
+            entry.LastSeenUtc = DateTime.UtcNow;
+            return true;
         }
 
         private void CleanupExpired()

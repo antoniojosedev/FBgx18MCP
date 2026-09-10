@@ -131,6 +131,12 @@ namespace GxMcp.Gateway.Tests
                 var kb = Assert.IsType<Newtonsoft.Json.Linq.JObject>(payload["kb"]);
 
                 Assert.Equal("orders", kb["selected"]?.ToString());
+                Assert.Equal("orders", kb["active"]?.ToString());
+                Assert.Equal("session-select", kb["selectionSource"]?.ToString());
+                Assert.Equal("orders", kb["sessionSelection"]?.ToString());
+                Assert.Equal("invalid", kb["selectionState"]?.ToString());
+                Assert.True(kb["contextRequired"]?.ToObject<bool>());
+                Assert.True(kb.ContainsKey("persistedFallback"));
             }
             finally
             {

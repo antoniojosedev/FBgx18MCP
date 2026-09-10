@@ -31,6 +31,23 @@ namespace GxMcp.Gateway.Tests
             throw new FileNotFoundException("Could not locate tool_definitions.json.");
         }
 
+        private static string FindRepositoryFile(string relativePath)
+        {
+            string directory = AppContext.BaseDirectory;
+            for (int i = 0; i < 10; i++)
+            {
+                string candidate = Path.Combine(directory, relativePath);
+                if (File.Exists(candidate))
+                    return candidate;
+
+                DirectoryInfo? parent = Directory.GetParent(directory);
+                if (parent == null) break;
+                directory = parent.FullName;
+            }
+
+            throw new FileNotFoundException($"Could not locate repository file '{relativePath}'.");
+        }
+
         [Fact]
         public void ApiRouteWritesKeepVersionTokenAlias()
         {
@@ -66,6 +83,95 @@ namespace GxMcp.Gateway.Tests
             var actions = ((JArray)FindTool("genexus_recipe")["inputSchema"]!["properties"]!["action"]!["enum"]!)
                 .Select(value => value.ToString());
             Assert.DoesNotContain("run", actions);
+        }
+
+        [Fact]
+        public void ExplainDocumentationAdvertisesCompatibilityOnlyContract()
+        {
+            JObject analyze = FindTool("genexus_analyze");
+            string description = analyze["description"]?.ToString() ?? "";
+            string codeDescription = analyze["inputSchema"]?["properties"]?["code"]?["description"]?.ToString() ?? "";
+
+            Assert.Contains("compatibility-only", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("NotImplemented", description);
+            Assert.Contains("legacy response envelope", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("summary", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("context", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("genexus_read", description, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("compatibility-only", codeDescription, StringComparison.OrdinalIgnoreCase);
+
+            foreach (string relativePath in new[]
+            {
+                "README.md",
+                "GEMINI.md",
+                ".gemini/skills/genexus-mastery/SKILL.md"
+            })
+            {
+                string documentation = File.ReadAllText(FindRepositoryFile(relativePath));
+                Assert.Contains("compatibility-only", documentation, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("NotImplemented", documentation);
+                Assert.Contains("genexus_read", documentation, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        [Fact]
+        public void Issue146Documentation_PublishesContextLeaseAndHttpTokenContract()
+        {
+            string isolation = File.ReadAllText(FindRepositoryFile("docs/kb-isolation-contract.md"));
+            string playbook = File.ReadAllText(FindRepositoryFile("docs/llm_cli_mcp_playbook.md"));
+            string inventory = File.ReadAllText(FindRepositoryFile("docs/mcp_capabilities_inventory.md"));
+
+            foreach (string documentation in new[] { isolation, playbook, inventory })
+            {
+                Assert.Contains("local-friendly", documentation, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("hardened", documentation, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("ResolutionPolicy", documentation);
+                Assert.Contains("KB_NOT_OWNED", documentation);
+                Assert.Contains("KB_LOCKED", documentation);
+                Assert.Contains("KB_LEASE_INVALID", documentation);
+                Assert.Contains("KB_LEASE_EXPIRED", documentation);
+                Assert.Contains("GXMCP_HTTP_TOKEN", documentation);
+                Assert.Contains("select", documentation, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("close", documentation, StringComparison.OrdinalIgnoreCase);
+            }
+
+            string kbHelp = ToolHelpCatalog.Get("genexus_kb")!;
+            Assert.Contains("select", kbHelp, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("close", kbHelp, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("KB_NOT_OWNED", kbHelp);
+            Assert.Contains("KB_SESSION_UNAVAILABLE", kbHelp);
+            Assert.Contains("GXMCP_HTTP_TOKEN", kbHelp);
+        }
+
+        [Fact]
+        public void Issue146ReviewedToolContracts_MatchTheirActualExecutionBoundaries()
+        {
+            JObject editAndBuild = FindTool("genexus_edit_and_build");
+            JObject editSchema = (JObject)editAndBuild["inputSchema"]!;
+            Assert.Contains("name", editSchema["required"]!.Values<string>());
+            Assert.Contains("part", editSchema["required"]!.Values<string>());
+            Assert.Contains("pollTarget", editAndBuild["description"]!.ToString());
+            Assert.Contains("rollbackOnFailure", editAndBuild["description"]!.ToString());
+
+            JObject probe = FindTool("genexus_sdk_probe");
+            var probeModes = ((JArray)probe["inputSchema"]!["properties"]!["mode"]!["enum"]!)
+                .Values<string>().ToArray();
+            Assert.Equal(new[] { "surface", "capabilities" }, probeModes);
+            Assert.Contains("read-only", probe["inputSchema"]!["properties"]!["mode"]!["description"]!.ToString(), StringComparison.OrdinalIgnoreCase);
+
+            JObject recovery = FindTool("genexus_connection_recover");
+            JObject recoveryProps = (JObject)recovery["inputSchema"]!["properties"]!;
+            Assert.Equal("boolean", recoveryProps["force"]!["type"]!.ToString());
+            Assert.Contains("every open worker", recovery["description"]!.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("force=true", recovery["description"]!.ToString(), StringComparison.OrdinalIgnoreCase);
+
+            foreach (string tool in new[] { "genexus_edit_and_build", "genexus_sdk_probe", "genexus_connection_recover" })
+            {
+                string help = ToolHelpCatalog.Get(tool)!;
+                Assert.Contains("KB_NOT_OWNED", help);
+                Assert.Contains("KB_LEASE_INVALID", help);
+                Assert.Contains("KB_LEASE_EXPIRED", help);
+            }
         }
     }
 }

@@ -195,6 +195,7 @@ namespace GxMcp.Gateway
 
         private static bool ShouldDeliverNotificationToSession(string method, object? payload, HttpSessionState session)
         {
+            OwnershipFence? ownership = TryGetNotificationOwnership(payload);
             if (!string.Equals(method, "notifications/resources/updated", StringComparison.Ordinal))
                 return true;
 
@@ -208,7 +209,7 @@ namespace GxMcp.Gateway
                 })
                 {
                     if (!string.IsNullOrWhiteSpace(candidate)
-                        && McpSubscriptionProtocol.IsSubscribed(session, candidate))
+                        && McpSubscriptionProtocol.IsSubscribed(session, candidate, ownership))
                         return true;
                 }
 
@@ -219,6 +220,20 @@ namespace GxMcp.Gateway
                 // A malformed resource event must never become a broadcast.
                 return false;
             }
+        }
+
+        private static OwnershipFence? TryGetNotificationOwnership(object? payload)
+        {
+            try
+            {
+                var obj = payload as JObject ?? (payload == null ? null : JObject.FromObject(payload));
+                if (obj?["ownerScopeId"] == null || obj["kbId"] == null) return null;
+                return new OwnershipFence(
+                    obj["ownerScopeId"]!.ToString(),
+                    obj["kbId"]!.ToString(),
+                    obj["generation"]?.ToObject<long?>() ?? 0);
+            }
+            catch { return null; }
         }
 
         private static void BroadcastToolsListChanged(
@@ -275,6 +290,17 @@ namespace GxMcp.Gateway
                 ["reason"] = reason ?? string.Empty,
                 ["timestamp"] = DateTime.UtcNow
             };
+
+            // Capture the request's fence before notification delivery becomes
+            // fire-and-forget; AsyncLocal state is not a safe delayed-event carrier.
+            var snapshot = _currentSessionContext.Value;
+            if (snapshot != null)
+            {
+                payload["ownerScopeId"] = snapshot.OwnerScopeId;
+                payload["kbId"] = snapshot.KbId;
+                payload["generation"] = snapshot.ContextGeneration;
+                payload["epoch"] = snapshot.ContextGeneration;
+            }
 
             string? normalizedAlias = string.IsNullOrWhiteSpace(kbAlias)
                 ? null

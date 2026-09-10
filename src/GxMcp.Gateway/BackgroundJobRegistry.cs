@@ -63,6 +63,9 @@ namespace GxMcp.Gateway
         }
 
         public JobEntry Start(string session, string kind, int estimatedSeconds)
+            => Start(session, kind, estimatedSeconds, new OwnershipFence(session, string.Empty, 0));
+
+        internal JobEntry Start(string session, string kind, int estimatedSeconds, OwnershipFence ownership)
         {
             var job = new JobEntry
             {
@@ -71,7 +74,11 @@ namespace GxMcp.Gateway
                 Kind = kind,
                 Status = "running",
                 StartedAt = DateTime.UtcNow,
-                EstimatedSeconds = estimatedSeconds
+                EstimatedSeconds = estimatedSeconds,
+                OwnerScopeId = ownership.OwnerScopeId,
+                KbId = ownership.KbId,
+                Generation = ownership.Generation,
+                Epoch = ownership.Epoch
             };
             job.LastUpdatedAt = job.StartedAt;
             _jobs[job.Id] = job;
@@ -175,6 +182,13 @@ namespace GxMcp.Gateway
         }
 
         public JobEntry? Get(string jobId) => _jobs.TryGetValue(jobId, out var j) ? j : null;
+
+        internal bool BelongsTo(JobEntry job, OwnershipFence ownership)
+            => job != null && ownership != null
+                && string.Equals(job.OwnerScopeId, ownership.OwnerScopeId, StringComparison.Ordinal)
+                && string.Equals(job.KbId, ownership.KbId, StringComparison.Ordinal)
+                && job.Generation == ownership.Generation
+                && job.Epoch == ownership.Epoch;
 
         public IReadOnlyList<JobEntry> SnapshotForSession(string session)
         {
@@ -332,6 +346,11 @@ namespace GxMcp.Gateway
         // poll actively re-query the worker and reconcile the job to its real terminal
         // state instead of trusting only the background poller. See ReconcileJobWithWorkerAsync.
         public string? WorkerTaskId { get; set; }
+
+        public string OwnerScopeId { get; set; } = string.Empty;
+        public string KbId { get; set; } = string.Empty;
+        public long Generation { get; set; }
+        public long Epoch { get; set; }
 
         // Plan 026: guards read-modify-write of Status/CompletedAt/Summary/Result so
         // Complete() and Cancel() can't race and clobber a terminal "cancelled" status.

@@ -28,7 +28,8 @@ namespace GxMcp.Gateway
             JObject request,
             string sessionId,
             BackgroundJobRegistry registry,
-            bool taskScopeEnabled = true)
+            bool taskScopeEnabled = true,
+            OwnershipFence? ownership = null)
         {
             string? method = request["method"]?.ToString();
             if (method != "tasks/get" && method != "tasks/update" && method != "tasks/cancel")
@@ -57,7 +58,9 @@ namespace GxMcp.Gateway
             var job = registry.Get(taskId);
             if (job == null)
                 return Error(id, modern ? -32602 : -32001, "Task not found", new JObject { ["taskId"] = taskId });
-            if (!string.Equals(job.Session, sessionId, StringComparison.Ordinal))
+            ownership ??= new OwnershipFence(sessionId, string.Empty, 0);
+            if (!string.Equals(job.Session, sessionId, StringComparison.Ordinal)
+                || !registry.BelongsTo(job, ownership))
             {
                 // Do not turn a task handle into a cross-session existence oracle for
                 // modern clients. Legacy callers retain the historical error code.
@@ -122,6 +125,10 @@ namespace GxMcp.Gateway
             if (job.CompletedAt.HasValue) task["completedAt"] = job.CompletedAt.Value.ToUniversalTime().ToString("O");
             if (!string.IsNullOrWhiteSpace(job.Summary)) task["statusMessage"] = job.Summary;
             if (job.Result != null) task["result"] = job.Result.DeepClone();
+            task["ownerScopeId"] = job.OwnerScopeId;
+            task["kbId"] = job.KbId;
+            task["generation"] = job.Generation;
+            task["epoch"] = job.Epoch;
             return task;
         }
 

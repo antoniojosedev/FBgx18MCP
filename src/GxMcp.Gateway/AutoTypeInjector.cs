@@ -253,6 +253,27 @@ namespace GxMcp.Gateway
             }
         }
 
+        /// <summary>
+        /// Completes indexed names whose resolved object type matches the requested type.
+        /// Ambiguous names are excluded because they require an explicit discriminator.
+        /// </summary>
+        public static IEnumerable<string> CompleteNameByType(string kbAlias, string prefix, string type, int cap = 25)
+        {
+            if (cap <= 0 || string.IsNullOrWhiteSpace(type)) yield break;
+            prefix = prefix ?? string.Empty;
+            int yielded = 0;
+            foreach (var kv in GetOrCreateKbMap(kbAlias))
+            {
+                if (kv.Value != null
+                    && string.Equals(kv.Value, type, StringComparison.OrdinalIgnoreCase)
+                    && kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    yield return kv.Key;
+                    if (++yielded >= cap) yield break;
+                }
+            }
+        }
+
         // ── Test helpers ──────────────────────────────────────────────────────
 
         /// <summary>Test-only: prime <paramref name="kbAlias"/>'s name→type map directly.</summary>

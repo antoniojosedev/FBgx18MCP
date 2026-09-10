@@ -27,6 +27,9 @@ namespace GxMcp.Gateway
         // Set per-call at the top of ProcessMcpRequest; SendWorkerCommandAsync reads it
         // to route the command to the correct WorkerProcess in the pool.
         private static readonly AsyncLocal<KbHandle?> _currentKb = new AsyncLocal<KbHandle?>();
+        private static readonly AsyncLocal<SessionKbContextStore.Snapshot?> _currentSessionContext = new AsyncLocal<SessionKbContextStore.Snapshot?>();
+        private static readonly AsyncLocal<bool> _currentOperationRequiresOwner = new AsyncLocal<bool>();
+        private static readonly KbUseLeaseRegistry _kbLeases = new KbUseLeaseRegistry(new StopwatchMonotonicClock());
         // Legacy single-worker accessor: returns the worker for the AsyncLocal KB if set,
         // otherwise the worker for the DefaultKb (acquiring it lazily).
         private static async Task<WorkerProcess> GetActiveWorkerAsync()
@@ -38,13 +41,61 @@ namespace GxMcp.Gateway
                 // Fall back to default for callers outside a tool-call context (warmup, etc.).
                 kb = _kbResolver!.Resolve(null, _workerPool.ListOpen(), _workerPool.ListKnown());
             }
-            return await _workerPool.AcquireAsync(kb, CancellationToken.None);
+            bool legacy = string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+            return await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, _currentOperationRequiresOwner.Value, legacy);
         }
         internal static WorkerPool? GetWorkerPool() => _workerPool;
         internal static KbResolver? GetKbResolver() => _kbResolver;
+        internal static void StartWorkerForTest(Configuration config) => StartWorker(config);
+
+        internal static Task<string> AddPendingRequestForTest(string id, string workerAlias)
+        {
+            var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingRequests[id] = new PendingWorkerRequest
+            {
+                WorkerAlias = workerAlias,
+                ToolName = "test",
+                CorrelationId = id,
+                CompletionSource = completion
+            };
+            return completion.Task;
+        }
+
+        internal static int PendingRequestCountForTest => _pendingRequests.Count;
+
+        internal static void ResetWorkerLifecycleForTest()
+        {
+            _respawnTestCancellation.Cancel();
+            _respawnTestCancellation.Dispose();
+            _respawnTestCancellation = new CancellationTokenSource();
+            try { _workerPool?.StopAll(); } catch { }
+            _workerPool = null;
+            _kbResolver = null;
+            _pendingRequests.Clear();
+            IndexBootstrapTriggerForTest = null;
+            RespawnDelayForTest = null;
+            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
+        }
         // Plan 038: minimal accessor so McpRouter (a separate class) can resolve the
         // per-request KB alias for AutoTypeInjector.CompleteName, same pattern as the two above.
         internal static KbHandle? GetCurrentKb() => _currentKb.Value;
+
+        internal static OwnershipFence GetCurrentOwnership(string sessionId)
+        {
+            var snapshot = _currentSessionContext.Value;
+            if (snapshot == null)
+                _sessionKbContexts.TryGetSnapshot(sessionId, out snapshot);
+            if (snapshot != null)
+                return new OwnershipFence(snapshot.OwnerScopeId, snapshot.KbId, snapshot.ContextGeneration);
+
+            // Explicit KB arguments have no session selection snapshot. They are
+            // still owner-bound; generation zero denotes the request's immutable
+            // explicit context, never a process-wide fallback.
+            return new OwnershipFence(
+                sessionId ?? string.Empty,
+                _currentKb.Value?.NormalizedAlias ?? string.Empty,
+                0);
+        }
 
         internal static string? ResolveConfiguredKbAlias(Configuration config, string? kbPath)
         {
@@ -227,7 +278,20 @@ namespace GxMcp.Gateway
         // repopulate the cache with its pre-mutation envelope. Per-KB invalidations use
         // SemanticCacheStore generations so unrelated KBs keep their warm entries.
         internal static int SemanticCacheEpoch;
-        private static HttpSessionRegistry _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(10));
+        private static HttpSessionRegistry _httpSessions = CreateHttpSessionRegistry(TimeSpan.FromMinutes(10));
+
+        private static HttpSessionRegistry CreateHttpSessionRegistry(TimeSpan timeout)
+        {
+            var registry = new HttpSessionRegistry(timeout);
+            registry.SessionRemoved += OnHttpSessionRemoved;
+            return registry;
+        }
+
+        private static void OnHttpSessionRemoved(string sessionId)
+        {
+            _sessionKbContexts.Clear(sessionId);
+            if (_sseChannels.TryRemove(sessionId, out var channel)) channel.Writer.TryComplete();
+        }
         private static IdempotencyCache _idempotencyCache = new IdempotencyCache(
             15,
             1000,
@@ -251,6 +315,10 @@ namespace GxMcp.Gateway
         internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
         private static int _indexBootstrapStarted;
+        // Test seams for deterministic worker-lifecycle coverage. Production leaves
+        // these null, preserving the real asynchronous bootstrap and backoff.
+        internal static Action? IndexBootstrapTriggerForTest;
+        internal static Func<TimeSpan, Task>? RespawnDelayForTest;
         // v2.6.8 (review C6): incremented before any planned worker exit
         // (worker_reload, KB switch, shutdown) so OnWorkerExited can skip the
         // eager respawn — RestartWorker is already orchestrating a fresh spawn.
@@ -273,7 +341,8 @@ namespace GxMcp.Gateway
         // an honest "respawn_failed" with the real cause + a recovery hint, instead of a
         // perpetual, misleading "respawning" while no process is actually coming up.
         private static readonly ConcurrentDictionary<string, (DateTime AtUtc, string Error)> _respawnFailures =
-            new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
+                    new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
+        private static CancellationTokenSource _respawnTestCancellation = new CancellationTokenSource();
         private static bool _stdioActive;
         // #3: the client request that triggered a proxy→master promotion, buffered so the new
         // master can replay it once instead of dropping it across the takeover.
@@ -591,6 +660,13 @@ namespace GxMcp.Gateway
 
             var config = Configuration.Load();
             _activeConfig = config;
+            bool isStdio = config.Server?.McpStdio ?? true;
+            bool isStdioIsolated = string.Equals(config.GatewayMode ?? config.Server?.TransportMode, "stdio-isolated", StringComparison.OrdinalIgnoreCase);
+            bool sharedGatewayExplicit = (config.Server?.SharedGateway == true)
+                || string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
+                || (args != null && args.Any(a => string.Equals(a, "--shared-gateway", StringComparison.OrdinalIgnoreCase)));
+            bool useSharedLease = !isStdioIsolated && (!isStdio || sharedGatewayExplicit);
             LogGeneXusVersionCheck(config);
             try { RecipeCatalog.ConfigureUserMacroDirectory(GetUserMacroDir()); }
             catch (Exception ex) { Log("[RecipeCatalog] User-macro discovery skipped: " + ex.Message); }
@@ -611,63 +687,71 @@ namespace GxMcp.Gateway
                     _gxMirrorWatcher = null;
                 }
                 catch { }
-                if (_activeConfig != null)
+                if (useSharedLease && _activeConfig != null)
                 {
                     GatewayProcessLease.ReleaseCurrentProcess(_activeConfig);
                 }
             };
 
-            var leaseRegistration = GatewayProcessLease.TryRegisterCurrentProcess(config);
-            bool isMaster = leaseRegistration.Success;
-
-            if (!isMaster)
+            bool isMaster = true;
+            if (useSharedLease)
             {
-                if (leaseRegistration.IsDuplicate && leaseRegistration.Lease != null)
+                var leaseRegistration = GatewayProcessLease.TryRegisterCurrentProcess(config);
+                isMaster = leaseRegistration.Success;
+
+                if (!isMaster)
                 {
-                    Log($"[Gateway] existing_master_detected currentPid={Environment.ProcessId} masterPid={leaseRegistration.Lease.ProcessId}");
-                    
-                    if (leaseRegistration.Lease.HttpPort > 0)
+                    if (leaseRegistration.IsDuplicate && leaseRegistration.Lease != null)
                     {
-                        int masterPort = leaseRegistration.Lease.HttpPort;
-                        while (true)
+                        Log($"[Gateway] existing_master_detected currentPid={Environment.ProcessId} masterPid={leaseRegistration.Lease.ProcessId}");
+
+                        if (leaseRegistration.Lease.HttpPort > 0)
                         {
-                            bool shouldPromote = await RunMcpProxyAsync(leaseRegistration.Lease, config);
-                            if (!shouldPromote) return;
-
-                            // Defense-in-depth (#2): the proxy asked to promote because it saw
-                            // the master as unresponsive. Before stealing the lease — which via
-                            // port recovery would hard-kill whatever holds the port, tree and all —
-                            // re-verify the master is really down. If it's still accepting
-                            // connections this was a false alarm; stay a proxy rather than cause a
-                            // split-brain that kills a live master's worker.
-                            if (await IsPortListeningAsync(masterPort, 2000))
+                            int masterPort = leaseRegistration.Lease.HttpPort;
+                            while (true)
                             {
-                                Log($"[Gateway] Promotion aborted — master on port {masterPort} still listening. Resuming proxy mode.");
-                                await Task.Delay(1000);
-                                continue;
-                            }
+                                bool shouldPromote = await RunMcpProxyAsync(leaseRegistration.Lease, config);
+                                if (!shouldPromote) return;
 
-                            Log("[Gateway] Starting promotion to Master...");
-                            var forced = GatewayProcessLease.ForceRegisterCurrentProcess(config);
-                            if (!forced.Success) {
-                                Log("[Gateway] Promotion failed: lease acquisition blocked.");
-                                return;
+                                // Defense-in-depth (#2): the proxy asked to promote because it saw
+                                // the master as unresponsive. Before stealing the lease — which via
+                                // port recovery would hard-kill whatever holds the port, tree and all —
+                                // re-verify the master is really down. If it's still accepting
+                                // connections this was a false alarm; stay a proxy rather than cause a
+                                // split-brain that kills a live master's worker.
+                                if (await IsPortListeningAsync(masterPort, 2000))
+                                {
+                                    Log($"[Gateway] Promotion aborted — master on port {masterPort} still listening. Resuming proxy mode.");
+                                    await Task.Delay(1000);
+                                    continue;
+                                }
+
+                                Log("[Gateway] Starting promotion to Master...");
+                                var forced = GatewayProcessLease.ForceRegisterCurrentProcess(config);
+                                if (!forced.Success) {
+                                    Log("[Gateway] Promotion failed: lease acquisition blocked.");
+                                    return;
+                                }
+                                isMaster = true;
+                                break;
                             }
-                            isMaster = true;
-                            break;
+                        }
+                        else
+                        {
+                            Log($"[Gateway] Existing master (PID {leaseRegistration.Lease.ProcessId}) has no HTTP port. Reusing or exiting.");
+                            return;
                         }
                     }
                     else 
                     {
-                        Log($"[Gateway] Existing master (PID {leaseRegistration.Lease.ProcessId}) has no HTTP port. Reusing or exiting.");
+                        Log($"[Gateway] Registration failed: {leaseRegistration.FailureReason}");
                         return;
                     }
                 }
-                else 
-                {
-                    Log($"[Gateway] Registration failed: {leaseRegistration.FailureReason}");
-                    return;
-                }
+            }
+            else
+            {
+                Log($"[Gateway] Stdio isolated mode active (useSharedLease=false, isStdio={isStdio}, sharedGatewayExplicit={sharedGatewayExplicit}).");
             }
 
             AppDomain.CurrentDomain.UnhandledException += (s, e) => {
@@ -681,7 +765,7 @@ namespace GxMcp.Gateway
 
             Log("=== Gateway starting (Stdio Mode) ===");
             
-            _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(config.Server?.SessionIdleTimeoutMinutes ?? 10));
+            _httpSessions = CreateHttpSessionRegistry(TimeSpan.FromMinutes(config.Server?.SessionIdleTimeoutMinutes ?? 10));
             _idempotencyCache = new IdempotencyCache(
                 config.Server?.IdempotencyTtlMinutes ?? 15,
                 config.Server?.IdempotencyCacheSize ?? 1000,
@@ -698,7 +782,8 @@ namespace GxMcp.Gateway
                     Log($"[Gateway] Core configuration changed! Restarting Worker process...");
                     config = newConfig; // Update reference
                     _activeConfig = config;
-                    GatewayProcessLease.RefreshCurrentProcess(config);
+                    if (useSharedLease)
+                        GatewayProcessLease.RefreshCurrentProcess(config);
                     RestartWorker(config);
                     BroadcastResourcesListChanged("core_configuration_changed");
                 } else {
@@ -707,7 +792,7 @@ namespace GxMcp.Gateway
             };
 
             // 1. Start HTTP Server first (it's critical for VS Code communication)
-            if (config.Server?.HttpPort > 0)
+            if (useSharedLease && config.Server?.HttpPort > 0)
             {
                 Log($"[Gateway] Starting HTTP server on port {config.Server.HttpPort}...");
                 _ = Task.Run(async () => {

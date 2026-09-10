@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using GxMcp.Worker.Services;
@@ -14,6 +15,7 @@ namespace GxMcp.Worker.Tests
             public List<(string fileName, string arguments)> Calls = new List<(string, string)>();
             public Dictionary<string, PreviewService.CliResult> ByVerb = new Dictionary<string, PreviewService.CliResult>();
             public string WhichResult = "C:/fake/chrome-devtools-axi.cmd";
+            public bool ThrowOnWhich;
             public PreviewService.CliResult Default = new PreviewService.CliResult { ExitCode = 0, StdOut = "", StdErr = "" };
 
             public PreviewService.CliResult Run(string fileName, string arguments, int timeoutMs)
@@ -24,7 +26,11 @@ namespace GxMcp.Worker.Tests
                 return Default;
             }
 
-            public string Which(string command) => WhichResult;
+            public string Which(string command)
+            {
+                if (ThrowOnWhich) throw new InvalidOperationException("C:\\secrets\\preview-token");
+                return WhichResult;
+            }
         }
 
         private static string TempDir()
@@ -115,6 +121,32 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void PreviewSync_UnexpectedFailure_HidesExceptionTextAndReturnsOperationId()
+        {
+            string dir = TempDir();
+            var runner = new FakeRunner { ThrowOnWhich = true };
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+            var result = svc.PreviewSync("PanelX", null, "auto", false, 0, new[] { "html" }, false, false);
+            Assert.Equal("error", result["status"]?.ToString());
+            Assert.Equal("Preview failed. See server logs for details.", result["message"]?.ToString());
+            Assert.DoesNotContain("preview-token", result.ToString());
+            Assert.NotNull(result["operationId"]);
+        }
+
+        [Fact]
+        public void LogValue_RedactsQuotedPasswordTokenAndAuthorizationValues()
+        {
+            const string input = "PreviewException: {\"password\":\"password-value\", \"token\": \"token-value\", \"authorization\": \"Bearer auth-value\"}";
+
+            string result = PreviewService.LogValue(input);
+
+            Assert.DoesNotContain("password-value", result);
+            Assert.DoesNotContain("token-value", result);
+            Assert.DoesNotContain("auth-value", result);
+            Assert.Contains("<redacted>", result);
+        }
+
+        [Fact]
         public void PreviewSync_OkPathInvokesExpectedCliVerbs()
         {
             var dir = TempDir();
@@ -137,6 +169,59 @@ namespace GxMcp.Worker.Tests
             Assert.Contains(runner.Calls, c => c.arguments.StartsWith("open "));
             Assert.Contains(runner.Calls, c => c.arguments.StartsWith("snapshot"));
             Assert.Contains(runner.Calls, c => c.arguments.StartsWith("eval "));
+        }
+
+        [Theory]
+        [InlineData("MyPanel_1")]
+        [InlineData("Panel123")]
+        public void PreviewSync_AcceptsValidGeneXusNamesForArtifactWrites(string name)
+        {
+            var dir = TempDir();
+            var runner = new FakeRunner();
+            runner.ByVerb["snapshot"] = new PreviewService.CliResult
+            {
+                ExitCode = 0,
+                StdOut = "{\"root\":{\"role\":\"WebArea\",\"PesCod\":\"x\"}}"
+            };
+            runner.ByVerb["eval"] = new PreviewService.CliResult { ExitCode = 0, StdOut = "" };
+
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+            var r = svc.PreviewSync(name, null, "auto", false, 0, new[] { "screenshot", "a11y" }, false, true);
+
+            Assert.Equal("ok", r["status"]?.ToString());
+            Assert.True(File.Exists(Path.Combine(dir, name + ".a11y.json")));
+            Assert.Equal(Path.GetFullPath(Path.Combine(dir, name + ".png")),
+                Path.GetFullPath(r["captures"]?["screenshot"]?.ToString()));
+            Assert.DoesNotContain(runner.Calls, c => c.arguments.Contains(".."));
+        }
+
+        [Theory]
+        [InlineData("../escape")]
+        [InlineData("..\\escape")]
+        [InlineData("C:\\escape")]
+        [InlineData("/escape")]
+        [InlineData("Panel/name")]
+        [InlineData("Panel\\name")]
+        [InlineData("Panel:name")]
+        [InlineData("Panel*name")]
+        [InlineData("Panel?name")]
+        [InlineData("Panel\"name")]
+        [InlineData("Panel<name")]
+        [InlineData("Panel>name")]
+        [InlineData("Panel|name")]
+        public void PreviewSync_RejectsUnsafeArtifactNamesWithoutRunningCli(string name)
+        {
+            var dir = TempDir();
+            var runner = new FakeRunner();
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+
+            var r = svc.PreviewSync(name, null, "auto", false, 0,
+                new[] { "screenshot", "a11y" }, false, true);
+
+            Assert.Equal("invalid_request", r["status"]?.ToString());
+            Assert.Equal("name must be a valid logical preview name", r["message"]?.ToString());
+            Assert.Empty(runner.Calls);
+            Assert.Empty(Directory.GetFiles(dir));
         }
 
         [Fact]
@@ -242,6 +327,31 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("--throttle slow3g", openCall.arguments);
             Assert.Equal("iPhone12", r["emulation"]?["emulate"]?.ToString());
             Assert.Equal("slow3g", r["emulation"]?["network"]?.ToString());
+        }
+        [Fact]
+        public void PreviewSync_RejectsUnsafeObjectNameBeforeDriverCall()
+        {
+            var dir = TempDir();
+            var runner = new FakeRunner();
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+
+            var result = svc.PreviewSync("Panel;alert(1)", null, "auto", false, 0, new[] { "html" }, false, false);
+
+            Assert.Equal("invalid_request", result["status"]?.ToString());
+            Assert.Empty(runner.Calls);
+        }
+
+        [Fact]
+        public void PreviewSync_RejectsControlCharactersInDerivedValues()
+        {
+            var dir = TempDir();
+            var runner = new FakeRunner();
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+
+            var result = svc.PreviewSync("Panel", new JObject { ["PesCod"] = new string(new [] { (char)49, (char)13, (char)10, (char)50 }) }, "auto", false, 0, new [] { "html" }, false, false);
+
+            Assert.Equal("invalid_request", result["status"]?.ToString());
+            Assert.Empty(runner.Calls);
         }
     }
 }

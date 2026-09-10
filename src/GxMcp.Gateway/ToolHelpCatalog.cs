@@ -4,6 +4,15 @@ namespace GxMcp.Gateway
 {
     internal static class ToolHelpCatalog
     {
+        private const string ContextLeaseContract =
+            "\n\n## KB context, ownership, and compatibility\n" +
+            "- Default local workflow: `GatewayMode=stdio-isolated`, `ResolutionPolicy=strict`. An explicit valid local KB path is sufficient for `genexus_kb action=open`; hardened deployments add OS/root/network controls outside client registration.\n" +
+            "- Strict resolution is explicit `kb` → session `select`/`set_session_default` → strict rules. Persisted defaults do not seed a strict session and declared KBs are not auto-opened. `ResolutionPolicy=legacy` preserves `config-default` → `single-open` → `declared-first` and legacy persistent `set_default`.\n" +
+            "- `open` creates an owner-scoped lease; `select` changes only in-memory session state; `close` releases only the caller's lease. A `kb` selector identifies a target but does not transfer ownership.\n" +
+            "- Stateful KB-bound calls without the caller's active lease fail with `KB_NOT_OWNED`; invalid/mismatched and expired leases use `KB_LEASE_INVALID`/`KB_LEASE_EXPIRED`. Duplicate worker startup is `KB_LOCKED` (internal marker `WORKER_HANDSHAKE_REJECT_BUSY`).\n" +
+            "- Neutral gateway operations and explicitly lease-free reads must not be used to infer a KB. Sessionless HTTP cannot use `select` and returns `KB_SESSION_UNAVAILABLE`.\n" +
+            "- `GXMCP_HTTP_TOKEN` is an environment secret: when set, send it on every `/mcp` request in an Authorization header using Bearer TOKEN or in X-GXMCP-Token; never put it in config, registration, MCP output, leases, journals, or logs. Loopback without a token remains local-friendly; non-loopback without one is refused.\\n";
+
         private static readonly Dictionary<string, string> _helpTexts = new(System.StringComparer.OrdinalIgnoreCase)
         {
             ["genexus_query"] =
@@ -252,14 +261,14 @@ namespace GxMcp.Gateway
                 "- `mode` — `patch` (default) or `full`\n" +
                 "- `type` — disambiguates when name matches multiple objects\n" +
                 "- `dryRun` — preview without persisting (default `false`)\n" +
-                "- `buildIncludeCallees` — `none` | `direct` (default) | `transitive`\n" +
+                "- `buildIncludeCallees` — `none` | `direct` (default) | `transitive`; the edit and rebuild use the same selected worker/context.\n" +
                 "- `buildPlanCap` — max build-plan size (default 200)\n\n" +
                 "## Response\n" +
-                "Returns a composite envelope with three blocks:\n" +
+                "Returns a composite envelope with three blocks. The edit is committed before caller rebuild is queued, so a queue failure is partial/uncertain and must not cause the edit to be replayed:\n" +
                 "- `edit` — the diff from genexus_edit\n" +
                 "- `impact` — output of genexus_analyze mode=impact (callers, risk, etc.)\n" +
                 "- `build` — `{ taskId|TaskId, status: 'Accepted'|'Running', pollTarget }` for async caller rebuild, or `{ status: 'Skipped' }` when no callers\n\n" +
-                "Poll the build via `genexus_lifecycle action=status target=<pollTarget>`.\n\n" +
+                "Poll the worker build via its returned `taskId`/`pollTarget`; do not assume it is a gateway `op:<id>` job.\n\n" +
                 "## Errors\n" +
                 "If `name` matches multiple objects, the edit phase aborts and the envelope returns `status=Error` with an `alternatives` array — retry with one of the (`name`, `type`) pairs.\n\n" +
                 "## Example\n" +
@@ -392,6 +401,28 @@ namespace GxMcp.Gateway
                 "- `WWPSetCondition` — set conditions on WorkWithPlus grid or form controls.\n\n" +
                 "Always run with `dryRun: true` first to review affected call sites and projected diffs.\n",
 
+            ["genexus_sdk_probe"] =
+                "# genexus_sdk_probe\n\n" +
+                "Inspect the installed GeneXus SDK without pretending reflection is authoring support.\n\n" +
+                "## Modes\n" +
+                "- `surface` (default) writes the diagnostic type/method/property dump to `outputDir` (or the default `docs/sdk-probe/`); this is a file-writing, installation/worker-scoped operation.\n" +
+                "- `capabilities` is read-only and returns an in-memory capability matrix with signature-probe status and evidence. A reflected type is not proof that an authoring or persistence path is supported.\n" +
+                "This tool does not open/select a KB and does not grant a KB lease. Do not use it to infer KB context or to authorize another KB-bound operation.\n\n" +
+                "## Example\n" +
+                "- `{ mode: 'capabilities' }`\n",
+
+            ["genexus_connection_recover"] =
+                "# genexus_connection_recover\n\n" +
+                "Recover unhealthy gateway workers after calls hang, the connection closes, or repeated `WorkerBusy` responses occur.\n\n" +
+                "## Contract\n" +
+                "- Default (`force: false`) probes every open worker and replaces only unhealthy workers.\n" +
+                "- `force: true` deliberately recovers all open workers, including responsive ones; use it only as an explicit administrative action.\n" +
+                "- This is a gateway/process operation, not an ordinary KB edit. It has no KB selector or per-KB lease input in the published schema, and it clears semantic cache after recovery.\n" +
+                "- A worker duplicate-lock condition is `KB_LOCKED`; do not retry blindly or expect proxy fallback.\n\n" +
+                "## Example\n" +
+                "- `{ force: false }`\n" +
+                "- `{ force: true }` — recover all workers\n",
+
             ["genexus_kb"] =
                 "# genexus_kb\n\n" +
                 "Manage the gateway's multi-KB pool and the startup fallback selected for future sessions.\n\n" +
@@ -401,8 +432,9 @@ namespace GxMcp.Gateway
                 "- `get_startup` — read the persisted startup selection.\n\n" +
                 "## Mutating actions\n" +
                 "- `open` / `close` — register or release a Worker and KB lease.\n" +
-                "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection.\n\n" +
-                "Use an explicit `kb` alias when a call must target a different open KB; do not rely on shared server-side selection between independent clients.\n",
+                "- `select` / `set_session_default` — select a KB for the current session only without mutating config.json.\n" +
+                "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection (set_default with persist: false acts like select).\n\n" +
+                "Use an explicit `kb` alias when a call must target a different open KB; do not rely on shared server-side selection between independent clients. In strict mode, `open`/`close` without the caller's lease fail with `KB_NOT_OWNED`; `select` is session-only and sessionless HTTP returns `KB_SESSION_UNAVAILABLE`.\n",
 
             ["genexus_data_view"] =
                 "# genexus_data_view\n\n" +
@@ -548,6 +580,21 @@ namespace GxMcp.Gateway
                 "- `add` / `remove` — persist a reference after managed-assembly validation.\n\n" +
                 "The list and dry-run actions are read-only. Add/remove writes object metadata, uses optimistic concurrency when supplied, and verifies the complete post-save snapshot.\n",
 
+            ["genexus_sandbox"] =
+                "# genexus_sandbox\n\n" +
+                "Manage an explicit filesystem sandbox without SDK dispatch.\n\n" +
+                "## Actions\n" +
+                "- `create` — clone a validated source KB into a sandbox.\n" +
+                "- `remove` — remove the named sandbox after path validation.\n\n" +
+                "Both actions mutate filesystem state and require an explicit target; no active KB fallback is used.\n",
+
+            ["genexus_worker_pool"] =
+                "# genexus_worker_pool\n\n" +
+                "Manage gateway-side warm spare Workers.\n\n" +
+                "## Actions\n" +
+                "- `warm_spares` — configure the requested spare count without selecting or mutating a KB.\n\n" +
+                "This changes gateway process state and is not a read-only operation.\n",
+
             ["genexus_wwp"] =
                 "# genexus_wwp\n\n" +
                 "Inspect and edit WorkWithPlus Action Groups, tabs, and grid attributes through the typed PatternInstance contract.\n\n" +
@@ -563,11 +610,11 @@ namespace GxMcp.Gateway
         {
             if (string.IsNullOrWhiteSpace(toolName)) return null;
             if (_helpTexts.TryGetValue(toolName, out var text))
-                return text + OperationClassifier.BuildHelpContract(toolName);
+                return text + ContextLeaseContract + OperationClassifier.BuildHelpContract(toolName);
             // Legacy alias → canonical: resolve and retry so old tool names still find help.
             if (McpRouter.TryRewriteLegacyTool(toolName, null, out var canonical, out _)
                 && _helpTexts.TryGetValue(canonical, out var canonText))
-                return canonText + OperationClassifier.BuildHelpContract(canonical);
+                return canonText + ContextLeaseContract + OperationClassifier.BuildHelpContract(canonical);
             return null;
         }
 

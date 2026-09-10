@@ -53,6 +53,51 @@ namespace GxMcp.Worker.Services
 
     public class SourceSearchService
     {
+        // Metadata fields are evaluated together for one candidate. Keep the SDK
+        // object and part values local to this request so a multi-field search does
+        // not resolve or read the same candidate repeatedly, while avoiding any
+        // cross-request SDK-object lifetime or invalidation concerns.
+        internal sealed class MetadataCandidateCache<TObject> where TObject : class
+        {
+            private readonly Func<TObject> _resolve;
+            private readonly Func<TObject, string, string> _readPart;
+            private readonly Dictionary<string, string> _parts =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            private TObject _object;
+            private bool _resolutionAttempted;
+
+            internal MetadataCandidateCache(Func<TObject> resolve, Func<TObject, string, string> readPart)
+            {
+                _resolve = resolve;
+                _readPart = readPart;
+            }
+
+            internal TObject Object
+            {
+                get
+                {
+                    if (!_resolutionAttempted)
+                    {
+                        _resolutionAttempted = true;
+                        _object = _resolve();
+                    }
+                    return _object;
+                }
+            }
+
+            internal string ReadPart(string part)
+            {
+                string normalizedPart = string.IsNullOrWhiteSpace(part) ? "source" : part.Trim();
+                if (_parts.TryGetValue(normalizedPart, out string cached)) return cached;
+                string value = Object == null ? string.Empty : (_readPart(Object, normalizedPart) ?? string.Empty);
+                _parts[normalizedPart] = value;
+                return value;
+            }
+
+            internal int ResolutionCount => _resolutionAttempted ? 1 : 0;
+            internal int PartReadCount => _parts.Count;
+        }
+
         private readonly IndexCacheService _index;
         private readonly ObjectService _objectService;
 
@@ -561,6 +606,16 @@ namespace GxMcp.Worker.Services
                         int metadataConsumed = metadataSkipped;
                         bool entryReachedLimit = false;
 
+                        var metadataCache = new MetadataCandidateCache<KBObject>(
+                            () =>
+                            {
+                                try { return _objectService?.FindObject(e); }
+                                catch { return null; }
+                            },
+                            (obj, part) => _objectService != null
+                                ? _objectService.ReadPartSourceRaw(obj, part)
+                                : TryGetPartSource(obj, part));
+
                         foreach (var field in extraFields)
                         {
                             if (produced >= c.MaxResults) break;
@@ -572,8 +627,7 @@ namespace GxMcp.Worker.Services
                                      string.Equals(field, "webForm", StringComparison.OrdinalIgnoreCase))
                             {
                                 // Caption / parmNames / webForm require SDK access
-                                KBObject obj2 = null;
-                                try { obj2 = _objectService.FindObject(e); } catch { }
+                                KBObject obj2 = metadataCache.Object;
                                 if (obj2 == null) continue;
                                 if (string.Equals(field, "caption", StringComparison.OrdinalIgnoreCase))
                                 {
@@ -591,7 +645,7 @@ namespace GxMcp.Worker.Services
                                     // never load it on the default code-search path. Reuses the
                                     // same read path as WriteService / PatchService via
                                     // WebFormXmlHelper.ReadEditableXml.
-                                    try { fieldValue = GxMcp.Worker.Helpers.WebFormXmlHelper.ReadEditableXml(obj2) ?? ""; }
+                                    try { fieldValue = metadataCache.ReadPart("webForm"); }
                                     catch { fieldValue = ""; }
                                 }
                                 else // parmNames — scan Rules part for 'parm(' signature
@@ -600,9 +654,7 @@ namespace GxMcp.Worker.Services
                                     {
                                         // PERFORMANCE (perf round 1): same cached accessor as the
                                         // main scan so the parmNames path doesn't re-read the SDK.
-                                        string rulesSrc = _objectService != null
-                                            ? _objectService.ReadPartSourceRaw(obj2, "rules")
-                                            : TryGetPartSource(obj2, "rules");
+                                        string rulesSrc = metadataCache.ReadPart("rules");
                                         if (!string.IsNullOrEmpty(rulesSrc))
                                         {
                                             var parmMatch = System.Text.RegularExpressions.Regex.Match(

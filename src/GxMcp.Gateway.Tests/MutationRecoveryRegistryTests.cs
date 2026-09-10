@@ -13,7 +13,11 @@ namespace GxMcp.Gateway.Tests
 
             Assert.True(registry.TryGet("KB-ONE", "syntheticprocedure", out var requirement));
             JObject blocked = MutationRecoveryRegistry.BuildBlockedEnvelope(requirement);
-            Assert.Equal("PostTimeoutReadRequired", blocked["code"]?.ToString());
+            Assert.Equal("error", blocked["status"]?.ToString());
+            Assert.Equal("PostTimeoutReadRequired", blocked["error"]?["code"]?.ToString());
+            Assert.False(blocked["error"]?["retryable"]?.ToObject<bool>());
+            Assert.True(blocked["error"]?["reconciliationRequired"]?.ToObject<bool>());
+            Assert.Equal("genexus_read", blocked["error"]?["nextSteps"]?[0]?["tool"]?.ToString());
             Assert.False(registry.ConfirmRead("kb-one", "SyntheticProcedure", "Rules"));
             Assert.True(registry.TryGet("kb-one", "SyntheticProcedure", out _));
 

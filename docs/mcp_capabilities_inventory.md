@@ -18,6 +18,26 @@ Status values:
 | local bind default | active | Defaults to `127.0.0.1` through config |
 | origin validation | partial | Loopback safe by default, configurable allowlist supported |
 | session expiration | active | Idle sessions are removed automatically |
+| HTTP shared-secret boundary | active | `GXMCP_HTTP_TOKEN` is required on every `/mcp` request when set; non-loopback binds refuse requests without it |
+
+## KB context and ownership
+
+The default neutral runtime is local-friendly `stdio-isolated` with
+`ResolutionPolicy: "strict"`. An explicit valid local path may be opened without
+pre-registering a trust root; hardened deployments add OS ACL/root/network
+controls outside the MCP client registration. Strict resolution is explicit
+`kb` → session `select`/`set_session_default` → strict rules. Persisted defaults
+do not seed a session and declared KBs are not auto-opened. Explicit
+`ResolutionPolicy: "legacy"` preserves `config-default` → `single-open` →
+`declared-first` and the legacy persistent `set_default` operation.
+
+`open` owns a worker reference through an owner-scoped lease; `select` changes
+only the current session; `close` releases only the caller's reference. A
+stateful KB-bound operation without its own active lease fails with
+`KB_NOT_OWNED`; invalid/mismatched and expired leases use
+`KB_LEASE_INVALID`/`KB_LEASE_EXPIRED`. Worker duplicate-lock startup is
+`KB_LOCKED` (internal marker `WORKER_HANDSHAKE_REJECT_BUSY`). Neutral gateway
+operations and explicitly lease-free reads must not be used to infer a KB.
 
 ## Tools
 
@@ -61,11 +81,13 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_authoring` | — | `add_external_method`, `add_external_property`, `add_menu_option`, `add_condition` |
 | `genexus_layout` | `get_tree`, `find_controls`, `inspect_surface`, `get_preview`, `scan_mutators`, `list_controls`, `design_system` | `set_property`, `set_properties`, `rename_printblock`, `add_printblock`, `delete_printblock` |
 | `genexus_doc` | `health` | `wiki`, `visualize` |
-| `genexus_kb` | `list`, `list_environments`, `get_environment`, `get_startup` | `open`, `close`, `set_default`, `set_startup`, `set_environment` |
+| `genexus_kb` | `list`, `list_environments`, `get_environment`, `get_startup` | `open`, `close`, `select`, `set_session_default`, `set_default`, `set_persistent_default`, `set_startup`, `set_environment` |
 | `genexus_navigation` | — | `view` |
 | `genexus_api` | `list`, `describe`, `routes_inspect`, `diff_baseline` | `routes_clone`, `routes_update`, `snapshot` |
 | `genexus_apply_pattern` | `list_actions` | `add_grid_action`, `update_action`, `move_action`, `remove_action` |
 | `genexus_security` | `audit_gam`, `scan_secrets`, `scan_native` | — |
+| `genexus_sandbox` | — | `create`, `remove` |
+| `genexus_worker_pool` | — | `warm_spares` |
 | `genexus_edit_form` | — | `add_textblock`, `add_button`, `set_visibility`, `remove_control`, `wrap_in_fieldset` |
 | `genexus_module` | `list` | `install`, `install_builtin`, `update` |
 | `genexus_gxserver` | `status`, `pending`, `ignored`, `conflicts`, `history`, `pipeline_list`, `pipeline_runs`, `pipeline_output` | `commit`, `update`, `lock`, `resolve`, `pipeline_run`, `pipeline_abort` |
@@ -133,6 +155,10 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_generator_reference` | active | Native typed .NET generator references |
 | `genexus_data_view` | active | Native typed Transaction + Data View authoring |
 | `genexus_whoami` | active | KB context, version, health, and playbook/skills discovery |
+| `genexus_kb_diff` | active (gateway-only) | Filesystem comparison of two explicit KB aliases/paths; not KB-bound and does not dispatch to a Worker |
+| `genexus_kb_import` | active (gateway-only) | Filesystem object copy between explicit source/target KBs; target may fall back to the active KB and must be indexed afterwards |
+| `genexus_sandbox` | active (gateway-only) | Filesystem sandbox create/remove; no SDK dispatch |
+| `genexus_worker_pool` | active (gateway-only) | Worker-pool warm-spare configuration; no KB selection or Worker tool dispatch |
 
 ## Resources
 

@@ -7,6 +7,7 @@ namespace GxMcp.Gateway
 {
     internal sealed class HttpSessionRegistry
     {
+        public event Action<string>? SessionRemoved;
         private readonly ConcurrentDictionary<string, HttpSessionState> _sessions = new ConcurrentDictionary<string, HttpSessionState>(StringComparer.OrdinalIgnoreCase);
         private readonly TimeSpan _sessionIdleTimeout;
         private readonly int _maxQueuedMessagesPerSession;
@@ -40,7 +41,7 @@ namespace GxMcp.Gateway
             if (!_sessions.TryGetValue(sessionId, out var found)) return false;
             if (IsExpired(found))
             {
-                _sessions.TryRemove(sessionId, out _);
+                if (_sessions.TryRemove(sessionId, out _)) SessionRemoved?.Invoke(sessionId);
                 return false;
             }
 
@@ -52,7 +53,9 @@ namespace GxMcp.Gateway
         public bool Remove(string sessionId)
         {
             if (string.IsNullOrWhiteSpace(sessionId)) return false;
-            return _sessions.TryRemove(sessionId, out _);
+            bool removed = _sessions.TryRemove(sessionId, out _);
+            if (removed) SessionRemoved?.Invoke(sessionId);
+            return removed;
         }
 
         public IReadOnlyCollection<HttpSessionState> ActiveSessions
@@ -83,6 +86,7 @@ namespace GxMcp.Gateway
             {
                 if (IsExpired(pair.Value) && _sessions.TryRemove(pair.Key, out _))
                 {
+                    SessionRemoved?.Invoke(pair.Key);
                     removed++;
                 }
             }
@@ -112,13 +116,16 @@ namespace GxMcp.Gateway
         /// never keeps a process-wide subscription set because that would allow
         /// one client to observe another client's KB/resource stream.
         /// </summary>
-        private readonly HashSet<string> _subscribedResources =
-            new HashSet<string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, OwnershipFence> _subscribedResources =
+            new Dictionary<string, OwnershipFence>(StringComparer.Ordinal);
 
         public bool SubscribeResource(string uri)
+            => SubscribeResource(uri, new OwnershipFence(Id, string.Empty, 0));
+
+        public bool SubscribeResource(string uri, OwnershipFence ownership)
         {
             if (string.IsNullOrWhiteSpace(uri)) return false;
-            lock (_subscriptionLock) return _subscribedResources.Add(uri.Trim());
+            lock (_subscriptionLock) return _subscribedResources.TryAdd(uri.Trim(), ownership);
         }
 
         public bool UnsubscribeResource(string uri)
@@ -128,9 +135,14 @@ namespace GxMcp.Gateway
         }
 
         public bool IsSubscribedToResource(string uri)
+            => IsSubscribedToResource(uri, null);
+
+        public bool IsSubscribedToResource(string uri, OwnershipFence? ownership)
         {
             if (string.IsNullOrWhiteSpace(uri)) return false;
-            lock (_subscriptionLock) return _subscribedResources.Contains(uri.Trim());
+            lock (_subscriptionLock)
+                return _subscribedResources.TryGetValue(uri.Trim(), out var fence)
+                    && (ownership == null || fence.Matches(ownership));
         }
 
         public IReadOnlyCollection<string> SubscribedResources
@@ -139,7 +151,7 @@ namespace GxMcp.Gateway
             {
                 lock (_subscriptionLock)
                 {
-                    return _subscribedResources.ToArray();
+                    return _subscribedResources.Keys.ToArray();
                 }
             }
         }

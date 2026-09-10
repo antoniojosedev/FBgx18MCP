@@ -19,7 +19,7 @@ Antes de empezar, asegurate de tener:
 - ✅ **Windows** (GeneXus es solo Windows)
 - ✅ **Un SDK soportado de GeneXus** instalado (consultá los caminos en [`docs/generated/supported-versions.md`](generated/supported-versions.md))
 - ✅ **Una KB creada con un major soportado de GeneXus** que ya hayas abierto al menos una vez en el IDE (para que esté inicializada)
-- ✅ **Node.js 18 o superior** — verificalo con `node --version` en una terminal; instalalo desde [nodejs.org](https://nodejs.org/) si te falta
+- ✅ **Node.js 22 o superior** — verificalo con `node --version` en una terminal; instalalo desde [nodejs.org](https://nodejs.org/) si te falta
 - ✅ **Un cliente de IA compatible con MCP** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 
 **No** necesitás clonar el repositorio. **No** necesitás instalar nada globalmente con `npm`. Todo se maneja con `npx`.

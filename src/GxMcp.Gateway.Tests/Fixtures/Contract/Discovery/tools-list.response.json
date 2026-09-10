@@ -9,7 +9,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Use this for cross-object semantic analysis. mode=context returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs + callers). Other modes: impact, callers, hierarchy, navigation, linter, summary, explain. mode=explain preserves the legacy compatibility envelope and returns NotImplemented until a typed code explanation is available. Requires Ready index for impact/callers.",
+      "description": "Use this for cross-object semantic analysis. mode=context returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs + callers). Other modes: impact, callers, hierarchy, navigation, linter, summary, explain. mode=explain is compatibility-only: it preserves the legacy response envelope and returns NotImplemented; use mode=summary for a concise overview, mode=context for 360° task context, or genexus_read for source. Requires Ready index for impact/callers.",
       "inputSchema": {
         "examples": [
           {
@@ -23,7 +23,7 @@
         ],
         "properties": {
           "code": {
-            "description": "mode=explain: legacy code snippet to carry through the compatibility envelope.",
+            "description": "mode=explain: legacy code snippet carried through the compatibility-only envelope; the result is NotImplemented. Use mode=summary, mode=context, or genexus_read for supported analysis.",
             "type": "string"
           },
           "cursor": {
@@ -2396,12 +2396,20 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Manage open KBs, startup config, and GeneXus environments. list/open/close/set_default operate on WorkerPool; set_default selects the implicit target for calls that omit kb (an explicit kb always wins for parallel or cross-KB work); set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
+      "description": "Manage open KBs, session selection, startup config, and GeneXus environments. list/open/close/select/set_session_default/set_persistent_default/set_default operate on WorkerPool and session context; select sets active KB for current session only without mutating config; set_persistent_default explicitly persists startup default to config.json and returns persistedTo; set_default is a legacy persistent default operation; set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
       "inputSchema": {
         "examples": [
           {
             "action": "open",
             "path": "C:\\KBs\\MyKb"
+          },
+          {
+            "action": "select",
+            "alias": "MyKb"
+          },
+          {
+            "action": "set_persistent_default",
+            "alias": "MyKb"
           },
           {
             "action": "list"
@@ -2424,6 +2432,9 @@
               "list",
               "open",
               "close",
+              "select",
+              "set_session_default",
+              "set_persistent_default",
               "set_default",
               "set_startup",
               "get_startup",
@@ -2448,6 +2459,10 @@
           "path": {
             "description": "Absolute KB path (required for open if alias not in config).",
             "type": "string"
+          },
+          "persist": {
+            "description": "Legacy set_default only: persist to config.json (default true). If false, acts like select.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2456,6 +2471,63 @@
         "type": "object"
       },
       "name": "genexus_kb"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Gateway-only filesystem comparison of two KB directories. Requires kbA and kbB aliases or paths; no active KB selection is used.",
+      "inputSchema": {
+        "properties": {
+          "kbA": {
+            "type": "string"
+          },
+          "kbB": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kbA",
+          "kbB"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_diff"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only filesystem copy of one object between two KB directories. Requires source and object identity; run lifecycle index afterwards.",
+      "inputSchema": {
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "name",
+          "type"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_import"
     },
     {
       "annotations": {
@@ -3735,6 +3807,41 @@
     },
     {
       "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only filesystem sandbox management; clone or remove a KB directory without SDK dispatch.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_sandbox"
+    },
+    {
+      "annotations": {
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,
@@ -4635,6 +4742,33 @@
         "type": "object"
       },
       "name": "genexus_whoami"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only worker-pool warm-spare configuration. Does not require a KB selection or dispatch to the Worker.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "warm_spares"
+            ],
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "spareCount": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_worker_pool"
     },
     {
       "annotations": {

@@ -96,8 +96,9 @@ Before you start, make sure you have:
 
 - ✅ **Windows** (GeneXus is Windows-only)
 - ✅ **A supported GeneXus SDK** installed locally (see [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md); pass another install path explicitly when needed)
+- ✅ **GeneXus 18** installed locally (the primary supported SDK; other catalogued majors are also supported)
 - ✅ **A Knowledge Base created with a supported GeneXus major** and opened at least once in the IDE (so it's initialized)
-- ✅ **Node.js 18+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
+- ✅ **Node.js 22+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
 - ✅ **An MCP-compatible AI client** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 
 You do **not** need to clone this repo or install anything globally — `npx` handles it.
@@ -208,7 +209,7 @@ Paths to give to IT for the ASR / Defender exclusion list:
 <InstallDir>\worker\GxMcp.Worker.exe
 ```
 
-Re-run the same one-liner later to **upgrade** — it detects the installed version (`version.txt` in the install dir) and downloads only if a newer release is available. Use `-Force` to reinstall the same version, `-Version v2.3.0` to pin a specific tag, `-NoClient` to skip AI client registration. Node.js 18+ must be installed for client registration; without it the script still extracts the binaries but you'll need to edit the client config (`claude_desktop_config.json` etc.) manually.
+Re-run the same one-liner later to **upgrade** — it detects the installed version (`version.txt` in the install dir) and downloads only if a newer release is available. Use `-Force` to reinstall the same version, `-Version v2.3.0` to pin a specific tag, `-NoClient` to skip AI client registration. Node.js 22+ must be installed for client registration; without it the script still extracts the binaries but you'll need to edit the client config (`claude_desktop_config.json` etc.) manually.
 
 ---
 
@@ -243,7 +244,7 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Read the Documentation part of the transaction Customer and rewrite it in markdown."*
 
 **Analysis**
-- *"Explain what the procedure ProcessShipment does, step by step."*
+- *"Explain what the procedure ProcessShipment does."* — `genexus_analyze mode=explain` is a compatibility-only envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` for supported analysis and source.
 - *"What SQL does the query in WebPanel CustomerList generate?"*
 - *"Summarize the structure of the Sales module."*
 
@@ -362,7 +363,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
 
 **Analysis, docs & API**
-- `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, explain, `kb_stats` = KB activity/freshness, `table_relations` = table↔transaction relations + redundant attrs, …)
+- `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, `kb_stats` = KB activity/freshness, `table_relations` = table↔transaction relations + redundant attrs, …). `mode=explain` is compatibility-only: it preserves the legacy response envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` instead.
 - `genexus_doc` — generate wiki / dependency graphs / health reports
 - `genexus_api` — introspect REST endpoints exposed by HTTP procedures
 - `genexus_security` — audit KB security: `audit_gam` (env/GAM props), `scan_secrets` (regex over Source), `scan_native` (the SDK's own Security Scanner, `ISecurityScannerService`)
@@ -580,8 +581,8 @@ graph LR
 Want to contribute or run a local dev build?
 
 1. Clone this repo on Windows.
-2. Run `.\setup.bat` — checks prerequisites, builds the C# components, and auto-registers the local build with detected AI clients.
-3. If GeneXus or your KB aren't auto-detected, follow the prompts.
+2. Run `.\build.ps1` to restore and build the C# components and package the local artifacts. The script checks for the required .NET SDK and GeneXus 18 installation.
+3. If GeneXus is installed outside the default path, set `$env:GX_PATH` to its installation folder before running the build. A Knowledge Base is only needed for runtime testing.
 
 ### Bundled AI skills (`.gemini/skills/`)
 

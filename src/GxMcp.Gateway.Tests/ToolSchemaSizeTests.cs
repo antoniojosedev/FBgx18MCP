@@ -174,6 +174,11 @@ namespace GxMcp.Gateway.Tests
             //   four batch IO actions, forceWrite, and warm/fast-incremental fields.
             //   Measured ~26584; ~316 headroom.
             Assert.True(approxTokens < 26900, $"tool_definitions.json is ~{approxTokens} tokens; budget 26900.");
+            //   2026-09-09 (issue #146 decouple registration): 26300 → 26500 for
+            //   genexus_kb select/set_session_default actions and persist flag. Measured ~26327.
+            //   2026-09-10 (issue #146 inventory parity): 26500 → 27000 for the four
+            //   gateway-only RequestLoop tools: kb_diff, kb_import, sandbox, worker_pool.
+            Assert.True(approxTokens < 27000, $"tool_definitions.json is ~{approxTokens} tokens; budget 27000.");
         }
     }
 }

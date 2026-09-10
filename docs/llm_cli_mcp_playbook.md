@@ -38,6 +38,15 @@ Entry points:
 - `genexus-mcp tools list`
 - `genexus-mcp config show`
 
+Neutral installer/runtime setup:
+- `genexus-mcp config create --config-scope neutral --output <path> --gx <path> --worker <path> --gateway-mode stdio-isolated --resolution-policy strict`
+- `genexus-mcp clients add --all-clients` (or `--clients opencode,codex-cli,vscode,antigravity,gemini-cli`)
+- `genexus-mcp config migrate --from <legacy.json> --output <neutral.json>` is the only configuration migration path. It copies runtime fields into the neutral schema (`ConfigSchemaVersion: 2`, `GatewayMode`, `GeneXus`, `Server`, and `Environment.ResolutionPolicy`), writes an atomic source backup, verifies the destination by read-back, and rolls back an existing destination if verification fails. The JSON receipt reports `backupPath`, `readBack`, `rolledBack`, `migrated`, and `notMigrated`.
+- Legacy KB fields (`Environment.KBPath`, `KBs`, `DefaultKb`, `ActiveKb`) are deliberately not migrated because neutral configs are KB-free. Use `--reject-non-migratable` to fail before writing when any are present.
+- `init` and `clients add` never migrate or rewrite an existing config automatically. `kb add`, `kb remove`, and `kb switch` remain the legacy catalog flow: they mutate the `Environment` catalog in the config selected by `GX_CONFIG_PATH` or the current directory. Neutral runtimes use explicit per-session MCP KB selection instead.
+
+The neutral runtime contains no `KBPath`, `KBs`, `DefaultKb`, or `ActiveKb`; KB selection remains an explicit MCP session action. Adapters preserve unrelated servers and the existing OpenCode `mcp.<name>` versus `mcp.servers.<name>` layout. They add `GX_CONFIG_PATH` only when `--global-config` is explicitly requested.
+
 Rules:
 - Parse `stdout` only.
 - Expect envelope fields: `ok`, `error`, `help`, `meta`.
@@ -70,6 +79,36 @@ this file.
 ## MCP Contract (LLM-facing)
 
 For `tools/call`, parse `result.content[0].text` as JSON.
+
+### KB context, leases, and compatibility
+
+Use the neutral `stdio-isolated` + `ResolutionPolicy: "strict"` configuration
+for local work. Strict resolution is explicit `kb` → session `select` → strict
+rules: persisted defaults do not silently select a session, and declared KBs
+are never auto-opened. Set `ResolutionPolicy: "legacy"` only when preserving a
+legacy client contract is intentional; it retains `config-default` →
+`single-open` → `declared-first` fallback and legacy persistent `set_default`.
+
+`genexus_kb action=open` opens/registers a worker and returns an owner-scoped
+lease. `select`/`set_session_default` select only the current session and do
+not persist config or grant a lease. `close` releases only the caller's lease.
+In strict mode, a stateful KB-bound call without that lease returns
+`KB_NOT_OWNED`, even if `kb` names the target; `kb` identifies a target but does
+not transfer ownership. `KB_LEASE_INVALID` means an invalid or mismatched
+token/context, and `KB_LEASE_EXPIRED` means the lease TTL elapsed. A duplicate
+worker lock is reported as `KB_LOCKED`; do not blindly retry or expect proxy
+fallback. Sessionless HTTP cannot use `select` and returns
+`KB_SESSION_UNAVAILABLE`.
+
+The default local-friendly posture accepts an explicit valid local KB path.
+Hardened deployments add OS/root/network controls and must expose that posture
+in diagnostics; `HttpPort=0` is not proof of isolation.
+
+For HTTP, `GXMCP_HTTP_TOKEN` is an environment secret. Once set, send it on
+every `/mcp` request as `Authorization: Bearer <token>` or `X-GXMCP-Token`.
+Without a token, loopback remains available; non-loopback requests are refused.
+Never place the token in client registration, config examples, MCP payloads, or
+logs. Restart after rotating it.
 
 Gateway AXI-like enrichments are additive (under `_meta` — underscore-prefixed per MCP convention):
 - `_meta.schemaVersion = mcp-axi/2` (v2.0.0+)

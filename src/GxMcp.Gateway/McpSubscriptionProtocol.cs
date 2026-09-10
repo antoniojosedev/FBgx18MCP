@@ -15,7 +15,7 @@ namespace GxMcp.Gateway
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> ProcessSubscriptions =
             new ConcurrentDictionary<string, ConcurrentDictionary<string, byte>>(StringComparer.Ordinal);
 
-        internal static JObject? Handle(JObject request, string sessionId, HttpSessionRegistry registry)
+        internal static JObject? Handle(JObject request, string sessionId, HttpSessionRegistry registry, OwnershipFence? ownership = null)
         {
             string method = request["method"]?.ToString() ?? string.Empty;
             if (!string.Equals(method, "resources/subscribe", StringComparison.Ordinal)
@@ -61,7 +61,7 @@ namespace GxMcp.Gateway
             }
 
             bool changed = string.Equals(method, "resources/subscribe", StringComparison.Ordinal)
-                ? session.SubscribeResource(uri)
+                ? session.SubscribeResource(uri, ownership ?? new OwnershipFence(sessionId, string.Empty, 0))
                 : session.UnsubscribeResource(uri);
 
             return BuildSuccess(id, method, uri, changed);
@@ -85,8 +85,8 @@ namespace GxMcp.Gateway
             };
         }
 
-        internal static bool IsSubscribed(HttpSessionState session, string uri)
-            => session != null && session.IsSubscribedToResource(uri);
+        internal static bool IsSubscribed(HttpSessionState session, string uri, OwnershipFence? ownership = null)
+            => session != null && session.IsSubscribedToResource(uri, ownership);
 
         private static JObject Error(JToken? id, int code, string message, JObject data)
             => new JObject

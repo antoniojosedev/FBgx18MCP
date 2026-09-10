@@ -122,9 +122,9 @@ namespace GxMcp.Gateway
             {
                 var set = token switch
                 {
-                    "core" => CoreTools,
-                    "authoring" => AuthoringTools,
-                    "devops" or "cicd" => DevOpsTools,
+                    "core" or "exploration" => CoreTools,
+                    "authoring" or "safe-edit" or "safe_edit" => AuthoringTools,
+                    "devops" or "cicd" or "build" or "versioning" or "deploy" => DevOpsTools,
                     "ui" or "frontend" => UITools,
                     "db" or "data" => DbTools,
                     _ => null

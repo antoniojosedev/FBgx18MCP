@@ -300,6 +300,55 @@ namespace GxMcp.Gateway
             foreach (string target in seen) yield return target;
         }
 
+        internal static IEnumerable<(string Target, string Part)> EnumerateMutationRecoveryTargets(string toolName, JObject? args)
+        {
+            if (args == null) yield break;
+
+            var found = new Dictionary<string, (string Target, string Part)>(StringComparer.OrdinalIgnoreCase);
+            void Add(string? target, string? part)
+            {
+                if (string.IsNullOrWhiteSpace(target)) return;
+                string normalizedTarget = target.Trim();
+                string normalizedPart = string.IsNullOrWhiteSpace(part) ? "Source" : part.Trim();
+                found[normalizedTarget + "|" + normalizedPart] = (normalizedTarget, normalizedPart);
+            }
+
+            string? defaultPart = args["part"]?.ToString();
+            Add(args["name"]?.ToString(), defaultPart);
+            Add(args["target"]?.ToString(), defaultPart);
+
+            if (args["targets"] is JArray targets)
+            {
+                foreach (var token in targets)
+                {
+                    if (token is JObject item)
+                        Add(item["name"]?.ToString() ?? item["target"]?.ToString(), item["part"]?.ToString() ?? defaultPart);
+                    else
+                        Add(token?.ToString(), defaultPart);
+                }
+            }
+
+            if (args["changeSet"] is JObject changeSet)
+            {
+                var changes = changeSet["changes"] as JArray ?? changeSet["targets"] as JArray;
+                if (changes != null)
+                {
+                    foreach (var token in changes)
+                    {
+                        if (token is JObject item)
+                            Add(item["name"]?.ToString() ?? item["target"]?.ToString(), item["part"]?.ToString() ?? defaultPart);
+                        else
+                            Add(token?.ToString(), defaultPart);
+                    }
+                }
+            }
+
+            foreach (var item in found.Values
+                .OrderBy(value => value.Target, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(value => value.Part, StringComparer.OrdinalIgnoreCase))
+                yield return item;
+        }
+
         // Semantic-cache invalidation gate: returns true when a tool call may
         // change KB object state, so DispatchCore can clear _semanticCache before
         // (and only before) a mutation. A MISS here means the next identical read
@@ -311,6 +360,8 @@ namespace GxMcp.Gateway
         internal static void MarkRecordWriteOutcomeUnknown(JObject payload)
         {
             payload["retriable"] = false;
+            payload["retryable"] = false;
+            payload["reconciliationRequired"] = true;
             payload["retrySafe"] = false;
             payload["persisted"] = JValue.CreateNull();
             payload["commitState"] = "Indeterminate";
@@ -358,12 +409,18 @@ namespace GxMcp.Gateway
 
             var canonicalArgs = CanonicalizeJson(args ?? new JObject());
             string normalizedKb = (kbScope ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedKb.Length == 0)
+                return null;
             string normalizedTool = (toolName ?? string.Empty).Trim().ToLowerInvariant();
             string model = CanonicalizeScopePart(modelScope);
             string environment = CanonicalizeScopePart(environmentScope);
 
-            return $"{normalizedKb}|{normalizedTool}:{canonicalArgs.ToString(Newtonsoft.Json.Formatting.None)}"
-                + $"|rev={cacheRevision}|model={model}|env={environment}";
+            return StateScopedCacheKey.Create(
+                StateScope.ProcessScopeId,
+                normalizedKb,
+                cacheRevision,
+                normalizedTool + ":" + canonicalArgs.ToString(Newtonsoft.Json.Formatting.None)
+                    + $"|model={model}|env={environment}").ToString();
         }
 
         /// <summary>Sorts object properties recursively while preserving array order.</summary>

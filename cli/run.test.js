@@ -15,7 +15,8 @@ const {
     getGeneXusCatalogEntries,
     readGeneXusInstallationIdentity,
     readGeneXusKbIdentity,
-    compareGeneXusKbAndInstallation
+    compareGeneXusKbAndInstallation,
+    patchClientConfig
 } = require('./lib/config');
 const { handleInit } = require('./commands/axi');
 
@@ -175,6 +176,129 @@ test('non-interactive init supports idempotent no-op', () => {
     assert.equal(fs.existsSync(cfgPath), true);
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('config create creates explicit neutral runtime without KB or client registration', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-neutral-'));
+    const output = path.join(tempRoot, 'nested', 'runtime.json');
+    const result = runCli([
+        'config', 'create', '--config-scope', 'neutral', '--output', output,
+        '--gx', 'C:\\GeneXus18', '--worker', 'C:\\worker.exe',
+        '--gateway-mode', 'stdio-isolated', '--resolution-policy', 'strict', '--format', 'json'
+    ]);
+    assert.equal(result.status, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.meta.command, 'config.create');
+    assert.equal(parsed.ok.configPath, path.resolve(output));
+    assert.equal(parsed.ok.clientsPatchedCount, 0);
+    assert.equal(parsed.ok.config.Environment.KBPath, undefined);
+    assert.equal(parsed.ok.config.Environment.KBs, undefined);
+    assert.equal(parsed.meta.clientRegistration, 'not_attempted');
+    assert.equal(parsed.meta.kbCatalog, 'not_created');
+    assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), parsed.ok.config);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('config create rejects missing new-format flags', () => {
+    const result = runCli(['config', 'create', '--config-scope', 'neutral', '--format', 'json']);
+    assert.equal(result.status, 2);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.error.code, 'usage_error');
+    assert.match(parsed.error.message, /--output/);
+    assert.match(parsed.error.message, /--worker/);
+    assert.match(parsed.error.message, /--gateway-mode/);
+    assert.match(parsed.error.message, /--resolution-policy/);
+});
+
+test('config create rejects KB in neutral runtime', () => {
+    const result = runCli([
+        'config', 'create', '--config-scope', 'neutral', '--output', path.join(os.tmpdir(), 'should-not-write.json'),
+        '--gx', 'C:\\GeneXus18', '--worker', 'C:\\worker.exe', '--gateway-mode', 'stdio-isolated',
+        '--resolution-policy', 'strict', '--kb', 'C:\\KBs\\forbidden', '--format', 'json'
+    ]);
+    assert.equal(result.status, 2);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.error.code, 'usage_error');
+    assert.match(parsed.error.message, /--kb is not allowed/);
+});
+
+test('config create does not modify client registration', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-neutral-reg-'));
+    const output = path.join(tempRoot, 'runtime.json');
+    const marker = path.join(tempRoot, 'client-config.json');
+    fs.writeFileSync(marker, JSON.stringify({ mcpServers: { existing: { command: 'keep' } } }, null, 2));
+    const before = fs.readFileSync(marker, 'utf8');
+    const result = runCli([
+        'config', 'create', '--config-scope', 'neutral', '--output', output,
+        '--gx', 'C:\\GeneXus18', '--worker', 'C:\\worker.exe', '--gateway-mode', 'stdio-isolated',
+        '--resolution-policy', 'strict', '--format', 'json'
+    ]);
+    assert.equal(result.status, 0);
+    assert.equal(fs.readFileSync(marker, 'utf8'), before);
+    assert.deepEqual(JSON.parse(result.stdout).ok.config, JSON.parse(fs.readFileSync(output, 'utf8')));
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+test('config migrate creates a neutral config with an atomic backup and read-back receipt', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-migrate-'));
+    try {
+        const source = path.join(tempRoot, 'legacy.json');
+        const target = path.join(tempRoot, 'neutral.json');
+        const legacy = {
+            GeneXus: { InstallationPath: 'C:\\GeneXus18', WorkerExecutable: 'C:\\worker.exe' },
+            Server: { HttpPort: 5000, McpStdio: true },
+            Environment: { KBPath: 'C:\\KBs\\main', DefaultKb: 'main', KBs: [{ Alias: 'main', Path: 'C:\\KBs\\main' }] }
+        };
+        fs.writeFileSync(source, JSON.stringify(legacy, null, 2));
+        const result = runCli(['config', 'migrate', '--from', source, '--output', target, '--format', 'json']);
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.meta.command, 'config.migrate');
+        assert.equal(parsed.ok.readBack, true);
+        assert.ok(fs.existsSync(parsed.ok.backupPath));
+        assert.deepEqual(JSON.parse(fs.readFileSync(parsed.ok.backupPath, 'utf8')), legacy);
+        assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).ConfigSchemaVersion, 2);
+        assert.deepEqual(parsed.ok.notMigrated, ['Environment.KBPath', 'Environment.KBs', 'Environment.DefaultKb']);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('config migrate rolls back an existing destination when read-back fails', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-migrate-rollback-'));
+    try {
+        const source = path.join(tempRoot, 'legacy.json');
+        const target = path.join(tempRoot, 'neutral.json');
+        fs.writeFileSync(source, JSON.stringify({ GeneXus: { InstallationPath: 'C:\\GeneXus18' } }));
+        const original = JSON.stringify({ keep: 'old' }, null, 2);
+        fs.writeFileSync(target, original);
+        const result = runCli(['config', 'migrate', '--from', source, '--output', target, '--format', 'json'], {
+            env: { GENEXUS_MCP_MIGRATE_FAIL_READBACK: '1' }
+        });
+        assert.equal(result.status, 1);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.error.code, 'operation_error');
+        assert.equal(parsed.ok, undefined);
+        assert.equal(fs.readFileSync(target, 'utf8'), original);
+        assert.equal(parsed.error.rollback.rolledBack, true);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('config migrate rejects non-migratable fields when explicitly requested', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-migrate-reject-'));
+    try {
+        const source = path.join(tempRoot, 'legacy.json');
+        const target = path.join(tempRoot, 'neutral.json');
+        fs.writeFileSync(source, JSON.stringify({ Environment: { KBPath: 'C:\\KBs\\main' } }));
+        const result = runCli(['config', 'migrate', '--from', source, '--output', target, '--reject-non-migratable', '--format', 'json']);
+        assert.equal(result.status, 2);
+        const parsed = JSON.parse(result.stdout);
+        assert.match(parsed.error.message, /non-migratable/i);
+        assert.equal(fs.existsSync(target), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('whoami without config returns disconnected state', () => {
@@ -1084,7 +1208,7 @@ test('clients add patches OpenCode Desktop into shared opencode config', () => {
         assert.ok(fs.existsSync(opencodeCfg), 'shared opencode config should be created');
         const written = JSON.parse(fs.readFileSync(opencodeCfg, 'utf8'));
         assert.ok(written.mcp.genexus18mcp, 'shared config should contain genexus18mcp entry');
-        assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, cfgPath);
+        assert.equal(written.mcp.genexus18mcp.environment?.GX_CONFIG_PATH, undefined);
 
         const listRes = runCli(['clients', '--format', 'json'], { env });
         const row = JSON.parse(listRes.stdout).ok.clients.find((client) => client.id === 'opencode-desktop');
@@ -1302,7 +1426,7 @@ test('clients add preserves OpenCode 1.x direct mcp shape', () => {
     assert.equal(written.mcp.genexus18mcp.disabled, undefined);
     assert.ok(written.mcp.other, 'unrelated direct MCP server should be preserved');
     assert.equal(written.mcp.servers, undefined);
-    assert.deepEqual(written.mcp.genexus18mcp.environment, { GX_CONFIG_PATH: cfgPath });
+    assert.equal(written.mcp.genexus18mcp.environment?.GX_CONFIG_PATH, undefined);
 
     const listed = runCli(['clients', '--format', 'json'], { env });
     assert.equal(listed.status, 0);
@@ -1333,7 +1457,7 @@ test('clients add preserves OpenCode v2 nested mcp.servers shape', () => {
     assert.equal(written.mcp.servers.genexus18mcp.enabled, undefined);
     assert.ok(written.mcp.servers.other, 'unrelated nested MCP server should be preserved');
     assert.equal(written.mcp.genexus18mcp, undefined);
-    assert.deepEqual(written.mcp.servers.genexus18mcp.environment, { GX_CONFIG_PATH: cfgPath });
+    assert.equal(written.mcp.servers.genexus18mcp.environment?.GX_CONFIG_PATH, undefined);
 
     const listed = runCli(['clients', '--format', 'json'], { env });
     assert.equal(listed.status, 0);
@@ -1370,11 +1494,57 @@ test('init auto-registers detected OpenCode in either config layout', () => {
             const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
             const entry = label === 'nested' ? written.mcp.servers.genexus18mcp : written.mcp.genexus18mcp;
             assert.ok(entry, `${label} OpenCode entry should be present after init`);
-            assert.deepEqual(entry.environment, { GX_CONFIG_PATH: path.join(kbDir, 'config.json') });
+            assert.equal(entry.environment?.GX_CONFIG_PATH, undefined);
             assert.ok(label === 'nested' ? written.mcp.servers.other : written.mcp.other);
         } finally {
             fs.rmSync(tempRoot, { recursive: true, force: true });
         }
+    }
+});
+
+test('init with --global-config persists GX_CONFIG_PATH into client entry', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-init-global-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const kbDir = path.join(tempRoot, 'kb');
+        const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+        fs.mkdirSync(kbDir, { recursive: true });
+        fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+        fs.writeFileSync(openCodeCfg, JSON.stringify({ mcp: {} }, null, 2));
+
+        const result = runCli(
+            ['init', '--kb', kbDir, '--gx', testGxPath, '--global-config', '--no-smoke', '--format', 'json'],
+            { cwd: kbDir, env: { ...env, ...testGatewayEnv } }
+        );
+        assert.equal(result.status, 0, `init should succeed: ${result.stderr}`);
+
+        const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+        assert.ok(written.mcp.genexus18mcp);
+        assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, path.join(kbDir, 'config.json'));
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('clients add with --global-config persists GX_CONFIG_PATH into client entry', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-add-global-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const cfgPath = path.join(tempRoot, 'config.json');
+        const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+        fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+        fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        fs.writeFileSync(openCodeCfg, JSON.stringify({ mcp: {} }, null, 2));
+
+        const res = runCli(['clients', 'add', '--clients', 'opencode', '--global-config', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: cfgPath }
+        });
+        assert.equal(res.status, 0);
+        const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+        assert.ok(written.mcp.genexus18mcp);
+        assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, cfgPath);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1834,4 +2004,94 @@ test('clients add rejects invalid --server-name characters with usage error', ()
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.error.code, 'usage_error');
     assert.match(parsed.error.message, /alphanumeric/);
+});
+
+function fsFailureProxy(realFs, failure) {
+    let calls = 0;
+    return new Proxy(realFs, {
+        get(target, property) {
+            if (property === failure.method) {
+                return (...args) => {
+                    calls += 1;
+                    if (!failure.match || failure.match(args, calls)) throw new Error(failure.message);
+                    return target[property](...args);
+                };
+            }
+            const value = target[property];
+            return typeof value === 'function' ? value.bind(target) : value;
+        }
+    });
+}
+
+function patchFailureFixture(prefix) {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    const env = sandboxHomeEnv(tempRoot);
+    process.env.XDG_CONFIG_HOME = env.XDG_CONFIG_HOME;
+    process.env.APPDATA = env.APPDATA;
+    const cfgPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+    const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+    const vscodeCfg = path.join(env.APPDATA, 'Code', 'User', 'mcp.json');
+    fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+    fs.mkdirSync(path.dirname(vscodeCfg), { recursive: true });
+    fs.writeFileSync(openCodeCfg, JSON.stringify({ mcp: { other: { type: 'local' } } }));
+    fs.writeFileSync(vscodeCfg, JSON.stringify({ servers: { other: { type: 'stdio' } } }));
+    return { tempRoot, env, cfgPath, openCodeCfg, vscodeCfg };
+}
+
+test('patchClientConfig reports backup failure without claiming that client patched', () => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-backup-');
+    try {
+        const result = patchClientConfig(fixture.cfgPath, {
+            ids: ['opencode', 'vscode'], onlyExisting: false,
+            fs: fsFailureProxy(fs, { method: 'copyFileSync', message: 'backup denied', match: ([source]) => source === fixture.openCodeCfg })
+        });
+        assert.deepEqual(result.patched, ['VS Code']);
+        assert.deepEqual(result.failed, [{ client: 'OpenCode (CLI)', reason: 'backup denied' }]);
+        assert.equal(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp, undefined);
+        assert.ok(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp);
+    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
+
+test('patchClientConfig preserves earlier success when a later client write fails', () => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-write-');
+    try {
+        const result = patchClientConfig(fixture.cfgPath, {
+            ids: ['opencode', 'vscode'], onlyExisting: false,
+            fs: fsFailureProxy(fs, { method: 'writeFileSync', message: 'write denied', match: ([filePath]) => filePath === `${fixture.vscodeCfg}.tmp-${process.pid}` })
+        });
+        assert.deepEqual(result.patched, ['OpenCode (CLI)']);
+        assert.deepEqual(result.failed, [{ client: 'VS Code', reason: 'write denied' }]);
+        assert.ok(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp);
+        assert.equal(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp, undefined);
+    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
+
+test('patchClientConfig reports post-write read-back failure as partial state', () => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-readback-');
+    try {
+        const result = patchClientConfig(fixture.cfgPath, {
+            ids: ['opencode', 'vscode'], onlyExisting: false,
+            fs: fsFailureProxy(fs, { method: 'readFileSync', message: 'read-back denied', match: ([filePath], calls) => filePath === fixture.openCodeCfg && calls === 2 })
+        });
+        assert.deepEqual(result.patched, ['VS Code']);
+        assert.deepEqual(result.failed, [{ client: 'OpenCode (CLI)', reason: 'post-write verification failed (genexus18mcp entry not found after write)' }]);
+        assert.ok(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp);
+        assert.ok(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp);
+    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+});
+
+test('patchClientConfig keeps a stale same-second backup and writes a distinct backup', () => {
+    const fixture = patchFailureFixture('genexus-mcp-stale-backup-');
+    try {
+        const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        const stale = `${fixture.openCodeCfg}.${stamp}.bak`;
+        fs.writeFileSync(stale, 'stale backup');
+        const result = patchClientConfig(fixture.cfgPath, { ids: ['opencode'], onlyExisting: false });
+        assert.deepEqual(result.failed, []);
+        assert.equal(fs.readFileSync(stale, 'utf8'), 'stale backup');
+        const backups = fs.readdirSync(path.dirname(fixture.openCodeCfg)).filter((name) => name.startsWith(path.basename(fixture.openCodeCfg)) && name.endsWith('.bak'));
+        assert.equal(backups.length, 2);
+        assert.ok(backups.some((name) => name !== path.basename(stale)));
+    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });

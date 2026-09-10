@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -109,6 +110,13 @@ namespace GxMcp.Gateway
             }
 
             return _httpSessions.Create();
+        }
+
+        internal static string CreateHttpSessionForTest()
+        {
+            var session = CreateHttpSession();
+            session.ProtocolVersion = McpRouter.SupportedProtocolVersion;
+            return session.Id;
         }
 
         private static void QueueSessionMessage(HttpSessionState session, string payload)
@@ -228,7 +236,10 @@ namespace GxMcp.Gateway
             HttpContext context,
             JObject requestObj)
         {
-            if (!_modernSubscriptions.TryOpen(requestObj, out var subscription, out var error))
+            string modernOwner = context.Request.Headers["Mcp-Client-Id"].FirstOrDefault()
+                ?? "modern-unscoped";
+            if (!_modernSubscriptions.TryOpen(requestObj, out var subscription, out var error,
+                new OwnershipFence(modernOwner, "", 0)))
             {
                 return Results.Content(
                     (error ?? new JObject
@@ -266,7 +277,11 @@ namespace GxMcp.Gateway
                         ["notifications"] = subscription!.GrantedNotifications,
                         ["_meta"] = new JObject
                         {
-                            ["io.modelcontextprotocol/subscriptionId"] = subscription.Id
+                            ["io.modelcontextprotocol/subscriptionId"] = subscription.Id,
+                            ["ownerScopeId"] = subscription.Ownership.OwnerScopeId,
+                            ["kbId"] = subscription.Ownership.KbId,
+                            ["generation"] = subscription.Ownership.Generation,
+                            ["epoch"] = subscription.Ownership.Epoch
                         }
                     }
                 };
@@ -559,10 +574,21 @@ namespace GxMcp.Gateway
                 }
                 catch (Exception ex)
                 {
-                    Log($"[HTTP] Error processing {id}: {ex.Message}");
-                    return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32603, message = $"Gateway Error: {ex.Message}" } });
+                    string operationId = request.Headers["X-GXMCP-Operation-Id"].FirstOrDefault();
+                    if (string.IsNullOrWhiteSpace(operationId)) operationId = Guid.NewGuid().ToString("N");
+                    Log($"{{\"event\":\"http_request_failed\",\"correlationId\":\"{LogValue(operationId)}\",\"operationId\":\"{LogValue(id)}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
+                    return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32603, message = "Gateway request failed. See server logs for details.", data = new { operationId = operationId } } });
                 }
             }
+        }
+
+        internal static string LogValue(string value)
+        {
+            string redacted = Regex.Replace(
+                value ?? string.Empty,
+                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
+                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
 
         // SECURITY: the Origin header only defends against browser-issued cross-site

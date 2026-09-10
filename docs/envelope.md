@@ -16,6 +16,8 @@ Every tool response from the worker emits this shape. The gateway is pass-throug
     "code":      "StableErrorCode",
     "message":   "Short human sentence.",
     "hint":      "One-line plain-English fix.",
+    "retryable": true,
+    "reconciliationRequired": false,
     "nextSteps": [{ "tool": "...", "args": {}, "why": "..." }]
   },
 
@@ -27,7 +29,7 @@ Every tool response from the worker emits this shape. The gateway is pass-throug
 | status | When | Required fields |
 |---|---|---|
 | `ok` | Tool completed successfully | `status`; `result` recommended |
-| `error` | Tool failed | `status`, `error.code`, `error.message`. `hint` and `nextSteps[]` strongly recommended. |
+| `error` | Tool failed | `status`, `error.code`, `error.message`. `retryable` and `reconciliationRequired` are explicit booleans when relevant; `hint` and `nextSteps[]` strongly recommended. |
 | `partial` | Tool succeeded but with caveats (warnings, partial data) | `status`, `result`, `warnings[]` |
 | `accepted` | Long-running tool returns immediately with a handle | `status`, `operationId`. Add `pollTarget` so the LLM knows which lifecycle target to poll. |
 
@@ -84,7 +86,8 @@ Tools that emit progress today: KB index, pattern apply (projection), build/rebu
 3. **No `details: string` for errors.** That information goes into `hint` (one-line fix) or, when long, into structured fields inside `error` (e.g., `error.verifyDiff`, `error.sdkSaveError`). Free-form prose is dead.
 4. **`nextSteps[]` on every error path.** At least one concrete `{tool, args, why}` entry. If you genuinely can't suggest one, write a comment explaining why.
 5. **Use a stable `code` enum.** Codes are `PascalCase`, machine-readable, never change wording across releases. Catalogue in `docs/error_codes.md` (to be created as codes accumulate).
-6. **No legacy field aliases.** No `noChange:true`, no top-level `details`, no `action`, no `status:"Success"` etc. Clients targeting v2.8.0+ read only the canonical shape.
+6. **Make retry decisions explicit.** Transient failures should set `error.retryable:true` and usually `retryAfterMs`; ambiguous commit state must set `error.reconciliationRequired:true` and `retryable:false` until reconciliation completes.
+7. **No legacy field aliases.** No `noChange:true`, no top-level `details`, no `action`, no `status:"Success"` etc. Clients targeting v2.8.0+ read only the canonical shape.
 
 ## Status code mapping (legacy → canon)
 

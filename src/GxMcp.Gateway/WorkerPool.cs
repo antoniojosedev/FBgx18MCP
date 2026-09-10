@@ -147,6 +147,20 @@ namespace GxMcp.Gateway
                 .ToArray();
         }
 
+        internal Task<WorkerProcess> AcquireAsync(KbHandle handle, CancellationToken ct,
+            KbUseLeaseRegistry? leaseRegistry, SessionKbContextStore.Snapshot? snapshot,
+            bool requireOwner, bool legacyResolutionPolicy)
+        {
+            if (!legacyResolutionPolicy && requireOwner)
+            {
+                if (snapshot?.Lease == null)
+                    throw new KbLeaseValidationException("KB_NOT_OWNED", "This stateful operation requires an opened and selected KB owned by the current session.");
+                string identity = (handle.Path ?? string.Empty).Trim().TrimEnd('\\', '/').ToLowerInvariant();
+                leaseRegistry!.Validate(snapshot.Lease.Token, snapshot.OwnerScopeId, handle.NormalizedAlias, snapshot.ContextGeneration, identity);
+            }
+            return AcquireAsync(handle, ct);
+        }
+
         public async Task<WorkerProcess> AcquireAsync(KbHandle handle, CancellationToken ct)
         {
             var entry = _entries.GetOrAdd(handle.NormalizedAlias, _ => new Entry { Handle = handle });

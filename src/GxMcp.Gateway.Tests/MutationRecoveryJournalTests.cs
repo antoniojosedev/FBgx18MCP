@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -69,12 +70,48 @@ namespace GxMcp.Gateway.Tests
 
                 Assert.False(registry.IsHealthy);
                 Assert.Equal("MutationRecoveryJournalUnavailable", MutationRecoveryRegistry
-                    .BuildJournalBlockedEnvelope(registry.JournalError)["code"]?.ToString());
+                    .BuildJournalBlockedEnvelope(registry.JournalError)["error"]?["code"]?.ToString());
             }
             finally
             {
                 try { if (File.Exists(path)) File.Delete(path); } catch { }
             }
+        }
+
+        [Fact]
+        public void MultiTargetMutationProducesOneDeterministicFencePerTargetPart()
+        {
+            var args = new JObject
+            {
+                ["targets"] = new JArray
+                {
+                    new JObject { ["name"] = "Beta", ["part"] = "Rules" },
+                    new JObject { ["name"] = "Alpha", ["part"] = "Source" },
+                    new JObject { ["name"] = "Beta", ["part"] = "Rules" }
+                }
+            };
+
+            var targets = Program.EnumerateMutationRecoveryTargets("genexus_edit", args);
+
+            Assert.Equal(
+                new[] { "Alpha|Source", "Beta|Rules" },
+                targets.Select(item => item.Target + "|" + item.Part));
+        }
+
+        [Fact]
+        public void PartialReadbackKeepsOtherTargetFenceAndCompleteReadbackClearsAll()
+        {
+            var registry = new MutationRecoveryRegistry();
+            registry.RequireRead("kb", "Alpha", "Source", "op-1");
+            registry.RequireRead("kb", "Beta", "Source", "op-1");
+
+            Assert.True(registry.ConfirmRead("kb", "Alpha", "Source"));
+            Assert.False(registry.TryGet("kb", "Alpha", "Source", out _));
+            Assert.True(registry.TryGet("kb", "Beta", "Source", out var remaining));
+            Assert.Equal("op-1", remaining.OperationId);
+
+            Assert.True(registry.ConfirmRead("kb", "Beta", "Source"));
+            Assert.Equal(0, registry.Count);
         }
     }
 }

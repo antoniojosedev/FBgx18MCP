@@ -145,19 +145,32 @@ namespace GxMcp.Gateway
             }
             catch (Exception ex)
             {
-                return ErrorEnvelope("Failed to crystallize macro: " + ex.Message);
+                string operationId = Guid.NewGuid().ToString("N");
+                Program.Log($"{{\"event\":\"macro_crystallize_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
+                return ErrorEnvelope("Macro crystallization failed. See server logs for details.", operationId);
             }
         }
 
         // --- helpers ---
 
-        private static JObject ErrorEnvelope(string message)
+        private static JObject ErrorEnvelope(string message, string operationId = null)
         {
-            return new JObject
+            var result = new JObject
             {
                 ["status"] = "Error",
                 ["error"] = message
             };
+            if (!string.IsNullOrEmpty(operationId)) result["operationId"] = operationId;
+            return result;
+        }
+
+        internal static string LogValue(string value)
+        {
+            string redacted = Regex.Replace(
+                value ?? string.Empty,
+                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
+                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
 
         // Shape = pipe-joined "tool|sortedKey,sortedKey" tuples. Values not included
