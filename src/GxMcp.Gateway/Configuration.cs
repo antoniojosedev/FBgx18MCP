@@ -23,6 +23,11 @@ namespace GxMcp.Gateway
 
         public static string? CurrentConfigPath { get; private set; }
         public static string ResolvedFrom { get; internal set; } = "launcher";
+
+        internal static void SetCurrentConfigPathForTest(string? path)
+        {
+            CurrentConfigPath = path;
+        }
         private static FileSystemWatcher? _watcher;
         // Debounce state for the config hot-reload, same pattern as tool_definitions.json
         // (McpRouter): editors fire multiple Changed events per save, so coalesce them into

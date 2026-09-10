@@ -40,5 +40,57 @@ namespace GxMcp.Gateway
         {
             _sessionKbContexts.Clear(sessionId);
         }
+
+        internal static IDisposable ConfigureRouteStateForTest(Configuration config, string configPath)
+        {
+            var previousConfig = _activeConfig;
+            var previousResolver = _kbResolver;
+            var previousPool = _workerPool;
+            var previousConfigPath = Configuration.CurrentConfigPath;
+            var previousResolvedFrom = Configuration.ResolvedFrom;
+
+            _activeConfig = config;
+            _kbResolver = new KbResolver(config);
+            _workerPool = new WorkerPool(config);
+            Configuration.SetCurrentConfigPathForTest(configPath);
+
+            return new RouteStateRestore(
+                previousConfig, previousResolver, previousPool, previousConfigPath, previousResolvedFrom);
+        }
+
+        private sealed class RouteStateRestore : IDisposable
+        {
+            private readonly Configuration? _config;
+            private readonly KbResolver? _resolver;
+            private readonly WorkerPool? _pool;
+            private readonly string? _configPath;
+            private readonly string _resolvedFrom;
+            private bool _restored;
+
+            internal RouteStateRestore(
+                Configuration? config,
+                KbResolver? resolver,
+                WorkerPool? pool,
+                string? configPath,
+                string resolvedFrom)
+            {
+                _config = config;
+                _resolver = resolver;
+                _pool = pool;
+                _configPath = configPath;
+                _resolvedFrom = resolvedFrom;
+            }
+
+            public void Dispose()
+            {
+                if (_restored) return;
+                _restored = true;
+                _activeConfig = _config;
+                _kbResolver = _resolver;
+                _workerPool = _pool;
+                Configuration.SetCurrentConfigPathForTest(_configPath);
+                Configuration.ResolvedFrom = _resolvedFrom;
+            }
+        }
     }
 }

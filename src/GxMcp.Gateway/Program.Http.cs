@@ -111,6 +111,13 @@ namespace GxMcp.Gateway
             return _httpSessions.Create();
         }
 
+        internal static string CreateHttpSessionForTest()
+        {
+            var session = CreateHttpSession();
+            session.ProtocolVersion = McpRouter.SupportedProtocolVersion;
+            return session.Id;
+        }
+
         private static void QueueSessionMessage(HttpSessionState session, string payload)
         {
             var channel = GetOrAddSseChannel(session.Id);
