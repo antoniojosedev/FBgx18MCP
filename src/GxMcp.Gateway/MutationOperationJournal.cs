@@ -288,6 +288,9 @@ namespace GxMcp.Gateway
             get { lock (_gate) return _entries.Count; }
         }
 
+        internal static string RecordId(OperationalStateKey owner, string tool, string key)
+            => owner.JournalKey((tool ?? string.Empty).Trim().ToLowerInvariant() + "|" + Hash(key));
+
         internal static string RecordId(string kbPath, string tool, string key)
             => ScopeHash(kbPath) + "|" + (tool ?? string.Empty).Trim().ToLowerInvariant() + "|" + Hash(key);
 

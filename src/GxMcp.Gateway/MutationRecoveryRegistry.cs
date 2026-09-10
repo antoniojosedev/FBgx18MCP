@@ -44,16 +44,27 @@ namespace GxMcp.Gateway
 
         public void RequireRead(string? kbAlias, string? target, string? part, string? operationId)
         {
+            RequireReadCore(null, kbAlias, target, part, operationId);
+        }
+
+        internal void RequireRead(OperationalStateKey owner, string target, string? part, string? operationId)
+        {
+            RequireReadCore(owner, owner.KbId, target, part, operationId);
+        }
+
+        private void RequireReadCore(OperationalStateKey? owner, string? kbAlias, string? target, string? part, string? operationId)
+        {
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return;
             var requirement = new RecoveryRequirement
             {
                 KbAlias = kbAlias.Trim(),
+                OwnerKey = owner.HasValue ? owner.Value.Token : string.Empty,
                 Target = target.Trim(),
                 Part = string.IsNullOrWhiteSpace(part) ? "Source" : part.Trim(),
                 OperationId = operationId?.Trim() ?? string.Empty,
                 RequiredAtUtc = DateTime.UtcNow
             };
-            _pending[Key(requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
+            _pending[Key(requirement.OwnerKey, requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
             PersistJournal();
         }
 
@@ -61,7 +72,7 @@ namespace GxMcp.Gateway
         {
             requirement = null!;
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
-            string prefix = Prefix(kbAlias, target) + "|";
+            string prefix = Key(string.Empty, kbAlias, target, string.Empty).TrimEnd('|') + "|";
             var found = _pending
                 .Where(pair => pair.Key.StartsWith(prefix, StringComparison.Ordinal))
                 .Select(pair => pair.Value)
@@ -77,6 +88,19 @@ namespace GxMcp.Gateway
             requirement = null!;
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
             return _pending.TryGetValue(Key(kbAlias, target, part), out requirement!);
+        }
+
+        internal bool TryGet(OperationalStateKey owner, string target, string? part, out RecoveryRequirement requirement)
+        {
+            return _pending.TryGetValue(Key(owner.Token, owner.KbId, target, part), out requirement!);
+        }
+
+        internal bool ConfirmRead(OperationalStateKey owner, string target, string? part)
+        {
+            if (!TryGet(owner, target, part, out var requirement)) return false;
+            bool removed = _pending.TryRemove(Key(owner.Token, requirement.KbAlias, requirement.Target, requirement.Part), out _);
+            if (removed) PersistJournal();
+            return removed;
         }
 
         public bool ConfirmRead(string? kbAlias, string? target, string? part)
@@ -176,7 +200,7 @@ namespace GxMcp.Gateway
                     if (DateTime.UtcNow - requirement!.RequiredAtUtc.ToUniversalTime() <= JournalRetention)
                     {
                         requirement.RequiredAtUtc = requirement.RequiredAtUtc.ToUniversalTime();
-                        _pending[Key(requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
+                        _pending[Key(requirement.OwnerKey, requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
                     }
                 }
 
@@ -257,12 +281,16 @@ namespace GxMcp.Gateway
             => kbAlias.Trim().ToLowerInvariant() + "|" + target.Trim().ToLowerInvariant();
 
         private static string Key(string kbAlias, string target, string? part)
-            => Prefix(kbAlias, target) + "|" + (string.IsNullOrWhiteSpace(part) ? "source" : part.Trim().ToLowerInvariant());
+            => Key(string.Empty, kbAlias, target, part);
+
+        private static string Key(string ownerKey, string kbAlias, string target, string? part)
+            => (ownerKey ?? string.Empty).Trim().ToLowerInvariant() + "|" + Prefix(kbAlias, target) + "|" + (string.IsNullOrWhiteSpace(part) ? "source" : part.Trim().ToLowerInvariant());
     }
 
     internal sealed class RecoveryRequirement
     {
         public string KbAlias { get; set; } = string.Empty;
+        public string OwnerKey { get; set; } = string.Empty;
         public string Target { get; set; } = string.Empty;
         public string Part { get; set; } = string.Empty;
         public string OperationId { get; set; } = string.Empty;

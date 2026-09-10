@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- Scoped mutation recovery fences, snapshots, jobs, crash ledgers, worker logs, and worker-owned paths by `StateScopeId`, KB identity, and generation; worker-supplied persistence paths are ignored and `GX_KB_PATH` rebinds are rejected.
+
+### Internal
+- There is no durable receipt repository in the current codebase; mutation receipts remain in-band response data, so no receipt file path is fabricated. The journal/idempotency bootstrap is still process-level because its callers do not expose the active owner tuple without changing the prohibited request-loop contract.
+
 ### Added
 - Added explicit `config migrate` for legacy-to-neutral runtime configuration with atomic source backup, read-back receipt, rollback on destination verification failure, and an explicit rejection mode for non-migratable KB fields. `init` and `clients add` no longer rewrite existing configs as an implicit migration; legacy `kb add/remove/switch` destinations remain the `Environment` catalog flow.
 - Added ownership fences to gateway tasks and resource subscriptions, carrying ownerScopeId, kbId, generation, and epoch; delayed or cross-owner events are discarded and stateless streams remain explicitly neutral.

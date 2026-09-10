@@ -22,11 +22,21 @@ namespace GxMcp.Gateway
     {
         public string Alias { get; }
         public string Path { get; }
+        /// <summary>Stable identity and context generation used for operational state.</summary>
+        public string KbId { get; }
+        public long ContextGeneration { get; }
 
         public KbHandle(string alias, string path)
+            : this(alias, path, alias, 0)
+        {
+        }
+
+        internal KbHandle(string alias, string path, string kbId, long contextGeneration)
         {
             Alias = alias;
             Path = path;
+            KbId = string.IsNullOrWhiteSpace(kbId) ? alias : kbId.Trim();
+            ContextGeneration = contextGeneration;
         }
 
         public string NormalizedAlias => Alias.Trim().ToLowerInvariant();

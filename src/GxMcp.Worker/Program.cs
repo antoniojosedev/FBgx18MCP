@@ -320,13 +320,24 @@ namespace GxMcp.Worker
                     ResolveQueueCapacity("GXMCP_MTA_QUEUE_CAPACITY", 256));
                 
                 // Check command line arguments for --kb
+                bool kbArgumentProvided = false;
                 for (int i = 0; i < args.Length; i++)
                 {
                     if (args[i] == "--kb" && i + 1 < args.Length)
                     {
                         kbPath = args[i + 1];
+                        kbArgumentProvided = true;
                         break;
                     }
+                }
+
+                // The gateway owns the binding. An inherited GX_KB_PATH is accepted only
+                // when it agrees with --kb; it can never silently switch the open worker.
+                if (!string.IsNullOrWhiteSpace(kbPath))
+                {
+                    var binding = new WorkerKbBinding(kbPath);
+                    if (kbArgumentProvided)
+                        binding.ValidateEnvironment(Environment.GetEnvironmentVariable("GX_KB_PATH"));
                 }
 
                 if (!string.IsNullOrEmpty(kbPath))

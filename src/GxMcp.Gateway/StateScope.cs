@@ -84,6 +84,21 @@ namespace GxMcp.Gateway
         internal string JobsDirectory { get; }
         internal string LogsDirectory { get; }
 
+        internal OperationalStateKey ForKb(string kbId, long generation)
+            => new OperationalStateKey(Id, kbId, generation);
+
+        internal string JournalPath(string kbId, long generation, string fileName = "mutation-operations.json")
+            => OperationalStatePaths.For(this, kbId, generation, "journal", fileName);
+
+        internal string RecoveryPath(string kbId, long generation, string fileName = "mutation-recovery.json")
+            => OperationalStatePaths.For(this, kbId, generation, "recovery", fileName);
+
+        internal string JobsPath(string kbId, long generation, string fileName = "jobs.json")
+            => OperationalStatePaths.For(this, kbId, generation, "jobs", fileName);
+
+        internal string LogsPath(string kbId, long generation, string fileName = "worker_debug.log")
+            => OperationalStatePaths.For(this, kbId, generation, "logs", fileName);
+
         internal static StateScope Create(string? baseDirectory = null, StateScopeId? id = null)
         {
             string root = baseDirectory ?? GetDefaultBaseDirectory();

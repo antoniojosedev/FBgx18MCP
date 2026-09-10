@@ -768,7 +768,14 @@ namespace GxMcp.Gateway
                 string kbPath = Kb.Path;
                 startInfo.Arguments = $"--kb \"{kbPath}\"";
                 startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = _config.GeneXus?.InstallationPath ?? string.Empty;
+                // GX_KB_PATH is always derived from the gateway-owned handle.
                 startInfo.EnvironmentVariables["GX_KB_PATH"] = kbPath;
+                startInfo.EnvironmentVariables["GXMCP_STATE_SCOPE_ID"] = StateScope.ProcessScopeId.ToString();
+                startInfo.EnvironmentVariables["GXMCP_KB_ID"] = Kb.KbId;
+                startInfo.EnvironmentVariables["GXMCP_KB_GENERATION"] = Kb.ContextGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string scopedOperationalDir = Path.GetDirectoryName(CrashLedger.ResolveScopedPath(StateScope.ProcessScopeId, Kb.KbId, Kb.ContextGeneration))!;
+                startInfo.EnvironmentVariables["GXMCP_LOG_DIR"] = scopedOperationalDir;
+                startInfo.EnvironmentVariables["GXMCP_CRASH_LEDGER_PATH"] = Path.Combine(scopedOperationalDir, "crash-ledger.jsonl");
                 // v2.8.5: hand the worker the authoritative server version so
                 // genexus_doctor reports the same number as whoami (the worker
                 // assembly version can lag the package version between releases).
@@ -1036,7 +1043,8 @@ namespace GxMcp.Gateway
                     lastOperation: _lastOperationInfo,
                     spawnMs: SpawnMs,
                     sdkInitMs: SdkInitMs,
-                    sdkReady: IsSdkReady);
+                    sdkReady: IsSdkReady,
+                    ledgerPath: Kb == null ? null : ScopedCrashLedgerPath());
             }
             catch (Exception ex) { Program.Log($"[Gateway] CrashLedger.Record threw: {ex.Message}"); }
             try { OnWorkerExited?.Invoke(reason); }
@@ -1226,16 +1234,27 @@ namespace GxMcp.Gateway
             }
         }
 
+        private string ScopedCrashLedgerPath()
+        {
+            if (Kb == null) throw new InvalidOperationException("Cannot resolve crash ledger without an owned KB.");
+            return CrashLedger.ResolveScopedPath(StateScope.ProcessScopeId, Kb.KbId, Kb.ContextGeneration);
+        }
+
+        private string ScopedJobsPath()
+        {
+            if (Kb == null) throw new InvalidOperationException("Cannot resolve jobs without an owned KB.");
+            var scope = StateScope.Create(id: StateScope.ProcessScopeId);
+            return scope.JobsPath(Kb.KbId, Kb.ContextGeneration);
+        }
+
         private void TryReloadJobsAfterSoftReload(JObject? p)
         {
             try
             {
-                string? path = p?["path"]?.ToString();
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    Program.Log("[Gateway] soft_reload jobs_restored missing path; skipping.");
-                    return;
-                }
+                // The worker-provided path is untrusted. Rehydrate only from the
+                // gateway-derived owner directory for this worker.
+                string path = ScopedJobsPath();
+                if (!File.Exists(path)) return;
                 int count = Program.JobRegistry.LoadFrom(path, deleteAfterRead: true);
                 Program.Log($"[Gateway] soft_reload rehydrated {count} jobs from {path}");
             }
@@ -1249,12 +1268,7 @@ namespace GxMcp.Gateway
         {
             try
             {
-                string? path = p?["path"]?.ToString();
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    Program.Log("[Gateway] soft_reload persist_jobs_request missing path; skipping.");
-                    return;
-                }
+                string path = ScopedJobsPath();
                 Program.JobRegistry.SaveTo(path);
                 int count = Program.JobRegistry.Count;
                 Program.Log($"[Gateway] soft_reload persisted {count} jobs to {path}");
