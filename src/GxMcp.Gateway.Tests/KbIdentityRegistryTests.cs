@@ -76,6 +76,109 @@ namespace GxMcp.Gateway.Tests
             finally { TryDelete(root); }
         }
 
+        [Fact]
+        public void ExplicitRebindOfRemovedFolderPreservesIdAndAdvancesGeneration()
+        {
+            string root = CreateTempDirectory();
+            string oldKb = Path.Combine(root, "old");
+            string newKb = Path.Combine(root, "new");
+            Directory.CreateDirectory(oldKb);
+            Directory.CreateDirectory(newKb);
+            try
+            {
+                var first = new KbIdentityRegistry(root).GetOrCreate("sales", oldKb);
+                Directory.Delete(oldKb);
+
+                var rebound = new KbIdentityRegistry(root).Rebind("SALES", newKb);
+
+                Assert.Equal(first.KbId, rebound.KbId);
+                Assert.Equal(2, rebound.ContextGeneration);
+            }
+            finally { TryDelete(root); }
+        }
+
+        [Fact]
+        public void ReplacementWithoutExplicitRebindIsRejectedEvenWhenOldFolderWasRemoved()
+        {
+            string root = CreateTempDirectory();
+            string oldKb = Path.Combine(root, "old");
+            string newKb = Path.Combine(root, "new");
+            Directory.CreateDirectory(oldKb);
+            Directory.CreateDirectory(newKb);
+            try
+            {
+                _ = new KbIdentityRegistry(root).GetOrCreate("sales", oldKb);
+                Directory.Delete(oldKb);
+
+                var error = Assert.Throws<KbIdentityConflictException>(() =>
+                    new KbIdentityRegistry(root).GetOrCreate("sales", newKb));
+
+                Assert.Equal("KB_ALIAS_CONFLICT", error.Code);
+            }
+            finally { TryDelete(root); }
+        }
+
+        [Fact]
+        public void ExplicitRebindToSamePhysicalPathOnlyRevalidatesWithoutAdvancingGeneration()
+        {
+            string root = CreateTempDirectory();
+            string kb = Path.Combine(root, "kb");
+            Directory.CreateDirectory(kb);
+            try
+            {
+                var first = new KbIdentityRegistry(root).GetOrCreate("sales", kb);
+                var rebound = new KbIdentityRegistry(root).Rebind("SALES", kb + Path.DirectorySeparatorChar);
+
+                Assert.Equal(first.KbId, rebound.KbId);
+                Assert.Equal(1, rebound.ContextGeneration);
+            }
+            finally { TryDelete(root); }
+        }
+
+        [Fact]
+        public void ExplicitRebindToDifferentPhysicalIdentityCreatesNewId()
+        {
+            string root = CreateTempDirectory();
+            string firstKb = Path.Combine(root, "first");
+            string secondKb = Path.Combine(root, "second");
+            Directory.CreateDirectory(firstKb);
+            Directory.CreateDirectory(secondKb);
+            try
+            {
+                var first = new KbIdentityRegistry(root).GetOrCreate("sales", firstKb);
+
+                var rebound = new KbIdentityRegistry(root).Rebind("sales", secondKb);
+
+                Assert.NotEqual(first.KbId, rebound.KbId);
+                Assert.Equal(1, rebound.ContextGeneration);
+                Assert.Equal(rebound.KbId, new KbIdentityRegistry(root).GetOrCreate("sales", secondKb).KbId);
+            }
+            finally { TryDelete(root); }
+        }
+
+        [Fact]
+        public void RebindConflictLeavesBothIdentitiesDeterministicallyUnchanged()
+        {
+            string root = CreateTempDirectory();
+            string firstKb = Path.Combine(root, "first");
+            string secondKb = Path.Combine(root, "second");
+            Directory.CreateDirectory(firstKb);
+            Directory.CreateDirectory(secondKb);
+            try
+            {
+                var first = new KbIdentityRegistry(root).GetOrCreate("sales", firstKb);
+                var second = new KbIdentityRegistry(root).GetOrCreate("marketing", secondKb);
+
+                var error = Assert.Throws<KbIdentityConflictException>(() =>
+                    new KbIdentityRegistry(root).Rebind("sales", secondKb));
+
+                Assert.Equal("KB_ALIAS_CONFLICT", error.Code);
+                Assert.Equal(first.KbId, new KbIdentityRegistry(root).GetOrCreate("sales", firstKb).KbId);
+                Assert.Equal(second.KbId, new KbIdentityRegistry(root).GetOrCreate("marketing", secondKb).KbId);
+            }
+            finally { TryDelete(root); }
+        }
+
         private static string CreateTempDirectory()
         {
             string root = Path.Combine(Path.GetTempPath(), "gxmcp-identity-" + Guid.NewGuid().ToString("N"));

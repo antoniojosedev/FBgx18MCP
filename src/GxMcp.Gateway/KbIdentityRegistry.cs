@@ -108,6 +108,91 @@ namespace GxMcp.Gateway
             }
         }
 
+        /// <summary>
+        /// Explicitly changes the physical path bound to an alias. This is the
+        /// only operation that may replace a path whose previous folder is gone
+        /// or move an alias to a different physical identity.
+        /// </summary>
+        public KbIdentity Rebind(string alias, string path)
+        {
+            string normalizedAlias = NormalizeAlias(alias);
+            string canonicalPath = CanonicalizePath(path);
+            using var mutex = new Mutex(false, _mutexName);
+            if (!mutex.WaitOne(TimeSpan.FromSeconds(10)))
+                throw new KbIdentityConflictException("KB_IDENTITY_REGISTRY_UNAVAILABLE", "KB identity registry lock could not be acquired.");
+
+            try
+            {
+                var document = ReadDocument();
+                var byAlias = document.Entries.FirstOrDefault(e => string.Equals(e.Alias, normalizedAlias, StringComparison.OrdinalIgnoreCase));
+                var byPath = document.Entries.FirstOrDefault(e => string.Equals(e.CanonicalPath, canonicalPath, StringComparison.OrdinalIgnoreCase));
+
+                if (byPath != null && byAlias != null && !ReferenceEquals(byAlias, byPath))
+                    throw new KbIdentityConflictException("KB_ALIAS_CONFLICT", $"KB alias '{normalizedAlias}' is already bound to another identity.");
+
+                if (byAlias == null)
+                {
+                    if (byPath == null)
+                    {
+                        byPath = new IdentityEntry
+                        {
+                            KbId = Guid.NewGuid().ToString("N"),
+                            Alias = normalizedAlias,
+                            CanonicalPath = canonicalPath,
+                            ContextGeneration = 1
+                        };
+                        document.Entries.Add(byPath);
+                        WriteDocument(document);
+                    }
+                    else if (!string.Equals(byPath.Alias, normalizedAlias, StringComparison.OrdinalIgnoreCase))
+                    {
+                        byPath.Alias = normalizedAlias;
+                        WriteDocument(document);
+                    }
+
+                    return ToIdentity(byPath);
+                }
+
+                if (string.Equals(byAlias.CanonicalPath, canonicalPath, StringComparison.OrdinalIgnoreCase))
+                    return ToIdentity(byAlias);
+
+                if (byPath != null)
+                    throw new KbIdentityConflictException("KB_ALIAS_CONFLICT", $"KB path '{canonicalPath}' is already bound to another identity.");
+
+                if (Directory.Exists(byAlias.CanonicalPath))
+                {
+                    document.Entries.Remove(byAlias);
+                    var replacement = new IdentityEntry
+                    {
+                        KbId = Guid.NewGuid().ToString("N"),
+                        Alias = normalizedAlias,
+                        CanonicalPath = canonicalPath,
+                        ContextGeneration = 1
+                    };
+                    document.Entries.Add(replacement);
+                    WriteDocument(document);
+                    return ToIdentity(replacement);
+                }
+
+                byAlias.CanonicalPath = canonicalPath;
+                checked { byAlias.ContextGeneration++; }
+                WriteDocument(document);
+                return ToIdentity(byAlias);
+            }
+            catch (KbIdentityConflictException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new KbIdentityConflictException("KB_IDENTITY_REGISTRY_UNAVAILABLE", "KB identity registry is unavailable: " + ex.Message);
+            }
+            finally
+            {
+                try { mutex.ReleaseMutex(); } catch { }
+            }
+        }
+
         public static string NormalizeAlias(string alias)
         {
             if (string.IsNullOrWhiteSpace(alias))
