@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Preserve SDK-owned pattern metadata during raw XML property edits and previews. Unchanged XML is a no-op; structural or metadata changes are rejected explicitly instead of rebuilding child-order lists. Preview and save share the same unmodified payload, and unreadable current XML blocks both paths. This does not certify SDK save isolation.
+
 - Respect requested object types when resolving homonyms, including Pattern Settings, and separate read-cache entries by type and read shape.
 - Read Pattern Settings through the SDK pattern tree with explicit pagination instead of the generic properties XML.
 
