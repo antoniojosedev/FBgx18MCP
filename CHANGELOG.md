@@ -14,6 +14,8 @@
 
 ### Added
 
+- Added a protected, opt-in self-hosted Windows CI lane for explicit GeneXus SDK fingerprint validation and live Worker testing, with license/fixture preconditions, pass/skip/fail status artifacts, cleanup, and visible hosted-runner skip reporting (`docs/ci-sdk-validation.md`).
+
 - Added a checked-in GeneXus SDK compatibility manifest, build/startup fingerprint validation with stable diagnostics, focused match/mismatch/missing-path tests, and self-hosted fixture guidance in `docs/sdk-compatibility.md`.
 
 - Added `docs/envelope-coverage.md`, auditing the published tools/actions and

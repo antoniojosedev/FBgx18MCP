@@ -51,6 +51,12 @@ de modelo, runner VS Code interativo e soak prolongado continuam explicitamente
 fora das capabilities suportadas e são gates pré-GA; ausência de fixture nunca
 vira passagem. Esta execução não autoriza publicação.
 
+Plan 094 is implemented in the isolated `agent/plan-094` worktree: hosted CI keeps
+its fast Gateway-only path and writes a visible SDK-lane skip, while the protected
+`gx-sdk-18` lane validates the locked SDK, runs live Worker checks, and publishes
+pass/skip/fail evidence with cleanup. It remains opt-in via
+`GXMCP_SDK_CI_ENABLED=true`; no licensed SDK or credentials are checked in.
+
 - [Manifest de execução e status](./v3-execution.json)
 - [Corpus de 15 cenários e oráculos](./v3-evaluation-corpus.json)
 - 047 é consolidado em 074; 048–049 em 075; tradução/DSO de 050 em 081.
