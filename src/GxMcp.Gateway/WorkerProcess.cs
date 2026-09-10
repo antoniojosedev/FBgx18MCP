@@ -1421,6 +1421,9 @@ namespace GxMcp.Gateway
         // Test seam: invoke the private teardown sink directly (no real process needed).
         internal void StopProcessForTest(WorkerStopReason reason) => StopProcess(reason);
 
+        // Test seam: model the OS process exiting without starting or killing one.
+        internal void SimulateUnexpectedExitForTest() => FireWorkerExitedOnce(WorkerStopReason.None);
+
         // Idle-reap window resolved from config in the ctor. TimeSpan.Zero == disabled.
         internal TimeSpan IdleTimeoutForTest => _workerIdleTimeout;
 

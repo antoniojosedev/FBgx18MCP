@@ -67,6 +67,10 @@
   temporary file, flushes before atomic replacement, and verifies the persisted
   aliases before updating gateway memory; unknown JSON fields remain intact.
 
+### Internal
+
+- Added deterministic Gateway worker crash/respawn coverage for multiple pending RPCs, retry backoff, eventual replacement recovery, and replacement-only index bootstrap without starting real worker processes.
+
 ## v3.0.1 - 2026-09-07
 
 

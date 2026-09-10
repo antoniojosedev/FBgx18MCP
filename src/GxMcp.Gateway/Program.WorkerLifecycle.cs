@@ -96,7 +96,14 @@ namespace GxMcp.Gateway
                             Log($"[Respawn] Attempt {attempt}/{maxAttempts} to respawn worker for KB '{kb.Alias}' failed: {ex.Message}");
                             if (attempt < maxAttempts)
                             {
-                                try { await Task.Delay(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false); } catch { }
+                                try
+                                {
+                                    if (RespawnDelayForTest != null)
+                                        await RespawnDelayForTest(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false);
+                                    else
+                                        await Task.Delay(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false);
+                                }
+                                catch { }
                             }
                         }
                     }

@@ -42,6 +42,33 @@ namespace GxMcp.Gateway
         }
         internal static WorkerPool? GetWorkerPool() => _workerPool;
         internal static KbResolver? GetKbResolver() => _kbResolver;
+        internal static void StartWorkerForTest(Configuration config) => StartWorker(config);
+
+        internal static Task<string> AddPendingRequestForTest(string id, string workerAlias)
+        {
+            var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingRequests[id] = new PendingWorkerRequest
+            {
+                WorkerAlias = workerAlias,
+                ToolName = "test",
+                CorrelationId = id,
+                CompletionSource = completion
+            };
+            return completion.Task;
+        }
+
+        internal static int PendingRequestCountForTest => _pendingRequests.Count;
+
+        internal static void ResetWorkerLifecycleForTest()
+        {
+            try { _workerPool?.StopAll(); } catch { }
+            _workerPool = null;
+            _kbResolver = null;
+            _pendingRequests.Clear();
+            IndexBootstrapTriggerForTest = null;
+            RespawnDelayForTest = null;
+            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
+        }
         // Plan 038: minimal accessor so McpRouter (a separate class) can resolve the
         // per-request KB alias for AutoTypeInjector.CompleteName, same pattern as the two above.
         internal static KbHandle? GetCurrentKb() => _currentKb.Value;
@@ -251,6 +278,10 @@ namespace GxMcp.Gateway
         internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
         private static int _indexBootstrapStarted;
+        // Test seams for deterministic worker-lifecycle coverage. Production leaves
+        // these null, preserving the real asynchronous bootstrap and backoff.
+        internal static Action? IndexBootstrapTriggerForTest;
+        internal static Func<TimeSpan, Task>? RespawnDelayForTest;
         // v2.6.8 (review C6): incremented before any planned worker exit
         // (worker_reload, KB switch, shutdown) so OnWorkerExited can skip the
         // eager respawn — RestartWorker is already orchestrating a fresh spawn.
