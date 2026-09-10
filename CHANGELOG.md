@@ -27,6 +27,7 @@
 
 ### Fixed
 
+- Fixed live fixture timestamp validation to parse invariant UTC timestamps and tolerate serialization precision without accepting materially future verification times.
 - Restored required schema examples for the gateway-only filesystem and worker-pool tools so the contract validator accepts the complete discovery surface.
 - Updated the tool-contract regression expectation to cover the four gateway-only tools already present in the supported schema.
 - Restored the `genexus_io` Object Text batch routes in the umbrella router after integrating the neutral-runtime changes with the current `main` contracts; the discovery schema budget now covers the combined tool surface.
