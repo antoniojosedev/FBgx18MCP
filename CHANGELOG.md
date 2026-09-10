@@ -46,6 +46,9 @@
   types and the shape of `nextSteps` entries.
 - Infrastructure failures at the HTTP gateway, KB import, macro crystallization, and preview adapters now return stable sanitized messages/codes with operation identifiers; full exception diagnostics remain server-side in structured logs.
 - Added regression coverage proving adapter error envelopes do not expose raw exception text or filesystem paths.
+- Added route-level regression coverage for stdio and session-bound HTTP KB selection, independent sessions, invalid aliases, persisted-default read-back, and legacy non-persistent selection.
+- Added the deterministic `conversion-bundle/1.0` schema, canonical SHA-256 validation oracle, acceptance evidence contract, and documented live Business Component fixture gate.
+- Added the typed visual-authoring design contract and machine-readable acceptance corpus covering SDK-only mutations, validation, rollback, baseline preservation, preview evidence, and live-KB gating; no live implementation is claimed.
 
 ### Added
 
