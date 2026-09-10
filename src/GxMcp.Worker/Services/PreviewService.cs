@@ -41,23 +41,22 @@ namespace GxMcp.Worker.Services
         {
             public CliResult Run(string fileName, string arguments, int timeoutMs)
             {
-                // On Windows, only true PE images (.exe/.com) can be launched directly
-                // with UseShellExecute=false. npm CLI shims arrive as .cmd, .bat, .ps1
-                // or an extensionless shell script — CreateProcess fails with
-                // ERROR_BAD_EXE_FORMAT for all of these. Route anything that is not
-                // a native executable through cmd.exe (which honours PATHEXT and
-                // executes .cmd/.bat directly).
                 ProcessStartInfo psi;
                 var ext = Path.GetExtension(fileName);
                 bool isNativeExe = string.Equals(ext, ".exe", StringComparison.OrdinalIgnoreCase) ||
                                    string.Equals(ext, ".com", StringComparison.OrdinalIgnoreCase);
                 if (!isNativeExe)
                 {
-                    psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + fileName + "\" " + arguments + "\"");
+                    // Shims are the only interpreter path. Re-tokenize the logical
+                    // arguments and escape them for cmd.exe; never append raw request
+                    // data to /c.
+                    psi = new ProcessStartInfo("cmd.exe", BrowserDriverProcess.BuildShimArguments(
+                        Path.GetFullPath(fileName), DefaultBrowserDriverInvoker.ParseLegacyArguments(arguments)));
                 }
                 else
                 {
-                    psi = new ProcessStartInfo(fileName, arguments);
+                    psi = new ProcessStartInfo(Path.GetFullPath(fileName),
+                        BrowserDriverProcess.BuildArguments(DefaultBrowserDriverInvoker.ParseLegacyArguments(arguments)));
                 }
                 psi.RedirectStandardOutput = true;
                 psi.RedirectStandardError = true;
@@ -514,6 +513,8 @@ namespace GxMcp.Worker.Services
                     return result;
                 }
 
+                if (!IsSafeObjectName(name)) return InvalidPreviewRequest(result, "name contains unsupported characters");
+
                 // 1) Object type check (best-effort; skipped if ObjectService unavailable in tests)
                 if (_objectService != null)
                 {
@@ -538,6 +539,7 @@ namespace GxMcp.Worker.Services
 
                 var cfg = LoadConfig();
                 var mergedParms = MergeParms(cfg, name, parms);
+                if (!AreSafePreviewValues(mergedParms)) return InvalidPreviewRequest(result, "preview parameters contain control characters");
                 result["parms"] = mergedParms;
 
                 // 2) Optional buildFirst
@@ -582,6 +584,8 @@ namespace GxMcp.Worker.Services
                 // 4) Build launcher URL
                 string baseUrl = (cfg["baseUrl"]?.ToString() ?? "http://localhost/portal3_desenv").TrimEnd('/');
                 string launcherPage = (launcher == null || launcher == "auto") ? (cfg["launcher"]?.ToString() ?? "dani.aspx") : launcher;
+                if (!IsSafeBaseUrl(baseUrl)) return InvalidPreviewRequest(result, "baseUrl must be an absolute http(s) URL");
+                if (!IsSafeLauncherPage(launcherPage)) return InvalidPreviewRequest(result, "launcher must be a relative page path");
                 string launcherUrl = baseUrl + "/" + launcherPage.TrimStart('/');
                 result["launcherUrl"] = launcherUrl;
 
@@ -717,6 +721,8 @@ namespace GxMcp.Worker.Services
                 //     GxFormDriver (logical attr names → selectors → fill JS).
                 if ((fill != null && fill.Count > 0) || !string.IsNullOrWhiteSpace(click))
                 {
+                    if (!AreSafePreviewValues(fill)) return InvalidPreviewRequest(result, "fill contains control characters");
+                    if (!IsSafePreviewText(click)) return InvalidPreviewRequest(result, "click contains control characters");
                     // Give the click above a brief moment to navigate before we
                     // snapshot the resulting GX panel.
                     try { System.Threading.Thread.Sleep(Math.Min(waitMs, 5000)); } catch { }
@@ -957,6 +963,52 @@ namespace GxMcp.Worker.Services
                 .Replace("\r", "\\r")
                 .Replace("\n", "\\n")
                 .Replace("</", "<\\/");
+
+        private static JObject InvalidPreviewRequest(JObject result, string message)
+        {
+            result["status"] = "invalid_request";
+            result["message"] = message;
+            return result;
+        }
+
+        internal static bool IsSafePreviewText(string value)
+        {
+            if (value == null) return true;
+            foreach (var c in value)
+                if (char.IsControl(c) || c == '\u2028' || c == '\u2029') return false;
+            return true;
+        }
+
+        internal static bool AreSafePreviewValues(JObject values)
+        {
+            if (values == null) return true;
+            foreach (var p in values.Properties())
+                if (string.IsNullOrEmpty(p.Name) || !IsSafePreviewText(p.Name) || !IsSafePreviewText(p.Value?.ToString())) return false;
+            return true;
+        }
+
+        private static bool IsSafeObjectName(string value)
+        {
+            if (string.IsNullOrEmpty(value) || !IsSafePreviewText(value)) return false;
+            if (!(char.IsLetter(value[0]) || value[0] == '_')) return false;
+            for (int i = 1; i < value.Length; i++)
+                if (!(char.IsLetterOrDigit(value[i]) || value[i] == '_')) return false;
+            return true;
+        }
+
+        private static bool IsSafeBaseUrl(string value)
+        {
+            if (!IsSafePreviewText(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+            return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
+        }
+
+        private static bool IsSafeLauncherPage(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || !IsSafePreviewText(value) || value.IndexOf('?') >= 0 || value.IndexOf('#') >= 0 || value.Contains("..")) return false;
+            foreach (var c in value)
+                if (!(char.IsLetterOrDigit(c) || c == '/' || c == '_' || c == '-' || c == '.')) return false;
+            return true;
+        }
 
         // ---- FR#17 GAM session injection helpers ----------------------------
 

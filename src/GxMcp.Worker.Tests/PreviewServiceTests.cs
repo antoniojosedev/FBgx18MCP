@@ -243,5 +243,30 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("iPhone12", r["emulation"]?["emulate"]?.ToString());
             Assert.Equal("slow3g", r["emulation"]?["network"]?.ToString());
         }
+        [Fact]
+        public void PreviewSync_RejectsUnsafeObjectNameBeforeDriverCall()
+        {
+            var dir = TempDir();
+            var runner = new FakeRunner();
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+
+            var result = svc.PreviewSync("Panel;alert(1)", null, "auto", false, 0, new[] { "html" }, false, false);
+
+            Assert.Equal("invalid_request", result["status"]?.ToString());
+            Assert.Empty(runner.Calls);
+        }
+
+        [Fact]
+        public void PreviewSync_RejectsControlCharactersInDerivedValues()
+        {
+            var dir = TempDir();
+            var runner = new FakeRunner();
+            var svc = new PreviewService(null, null, runner, Path.Combine(dir, "preview.config.json"), dir);
+
+            var result = svc.PreviewSync("Panel", new JObject { ["PesCod"] = new string(new [] { (char)49, (char)13, (char)10, (char)50 }) }, "auto", false, 0, new [] { "html" }, false, false);
+
+            Assert.Equal("invalid_request", result["status"]?.ToString());
+            Assert.Empty(runner.Calls);
+        }
     }
 }
