@@ -271,15 +271,15 @@ if ($SkipClientConfig) {
         $env:GENEXUS_MCP_GATEWAY_EXE = $gatewayExePath
         try {
             $configArgs = @(
-                "`"$cliRunPath`"", "config", "create", "--config-scope", "neutral", "--output", "`"$configPath`"",
-                "--gx", "`"$($config.GeneXus.InstallationPath)`"",
-                "--worker", "`"$publishDir\\worker\\GxMcp.Worker.exe`"",
+                $cliRunPath, "config", "create", "--config-scope", "neutral", "--output", $configPath,
+                "--gx", $config.GeneXus.InstallationPath,
+                "--worker", "$publishDir\\worker\\GxMcp.Worker.exe",
                 "--gateway-mode", "stdio-isolated", "--resolution-policy", "strict", "--format", "json"
             )
             & $node @configArgs | Out-Null
             if ($LASTEXITCODE -eq 0) {
                 $clientArgs = @(
-                    "`"$cliRunPath`"", "clients", "add", "--all-clients", "--format", "json"
+                    $cliRunPath, "clients", "add", "--all-clients", "--format", "json"
                 )
                 & $node @clientArgs | Out-Null
             }
