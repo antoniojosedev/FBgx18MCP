@@ -17,6 +17,8 @@ namespace GxMcp.Gateway.Pipelines
         public string KbAlias { get; set; }
         public bool IsDryRun { get; set; }
         public JObject? Response { get; set; }
+        /// <summary>Allows a stage to return a response without invoking later stages.</summary>
+        public bool IsShortCircuited => Response != null;
         public Dictionary<string, object?> Properties { get; } = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
 
         public JToken? Id => Request?["id"];
@@ -110,11 +112,16 @@ namespace GxMcp.Gateway.Pipelines
 
         private async Task<JObject?> ExecuteMiddlewareAsync(int index, McpPipelineContext context, Func<McpPipelineContext, Task<JObject?>> terminalHandler)
         {
+            if (context.Response != null) return context.Response;
             if (index < _middlewares.Count)
             {
-                return await _middlewares[index].InvokeAsync(context, () => ExecuteMiddlewareAsync(index + 1, context, terminalHandler)).ConfigureAwait(false);
+                var response = await _middlewares[index].InvokeAsync(context, () => ExecuteMiddlewareAsync(index + 1, context, terminalHandler)).ConfigureAwait(false);
+                context.Response = response;
+                return response;
             }
-            return terminalHandler != null ? await terminalHandler(context).ConfigureAwait(false) : null;
+            var terminalResponse = terminalHandler != null ? await terminalHandler(context).ConfigureAwait(false) : null;
+            context.Response = terminalResponse;
+            return terminalResponse;
         }
     }
 }

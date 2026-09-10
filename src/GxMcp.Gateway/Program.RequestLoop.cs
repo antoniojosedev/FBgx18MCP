@@ -119,6 +119,20 @@ namespace GxMcp.Gateway
             CancellationToken transportCancellation = default,
             bool taskScopeEnabled = true)
         {
+            var context = new GxMcp.Gateway.Pipelines.McpPipelineContext(request, sessionId);
+            var pipeline = GxMcp.Gateway.Pipelines.RequestLoopStages.Create();
+            return await pipeline.ExecuteAsync(context, _ => ProcessMcpRequestCore(
+                request, sessionId, sessionContextEnabled, transportCancellation, taskScopeEnabled))
+                .ConfigureAwait(false);
+        }
+
+        private static async Task<JObject?> ProcessMcpRequestCore(
+            JObject request,
+            string sessionId = "stdio",
+            bool sessionContextEnabled = true,
+            CancellationToken transportCancellation = default,
+            bool taskScopeEnabled = true)
+        {
             string? method = request["method"]?.ToString();
             var idToken = request["id"];
             _currentKb.Value = null;

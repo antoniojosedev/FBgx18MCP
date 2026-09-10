@@ -89,17 +89,11 @@
 
 - Split the legacy `OperationsRouter` into typed domain route modules behind a compatibility facade and registered each module without changing MCP tool names, normalization, or response envelopes.
 
-## v3.0.1 - 2026-09-07
-=======
-### Internal
->>>>>>> 204c25a (refactor: split operations router into domain modules)
+- Decomposed Gateway request-loop orchestration behind an explicit ordered
+  protocol, KB-resolution, argument-validation, idempotency, semantic-cache,
+  worker-dispatch, and response-shaping stage pipeline while retaining the
+  existing dispatch core and MCP envelopes.
 
-- Split the legacy `OperationsRouter` into typed domain route modules behind a compatibility facade and registered each module without changing MCP tool names, normalization, or response envelopes.
-
-
-
-
-## v3.0.1 - 2026-09-07
 
 ### Added
 
