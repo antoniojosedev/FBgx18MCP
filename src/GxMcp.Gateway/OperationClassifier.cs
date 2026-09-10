@@ -47,6 +47,7 @@ namespace GxMcp.Gateway
             "genexus_search_source",
             "genexus_compare",
             "genexus_format",
+            "genexus_kb_diff",
             "genexus_logs" // legacy alias
         };
 
@@ -180,7 +181,13 @@ namespace GxMcp.Gateway
                 ["genexus_wwp"] = Contract(
                     readOnly: new[] { "list" },
                     mutating: new[] { "add_action", "update_action", "move_action", "remove_action",
-                        "add_tab", "move_tab", "remove_tab", "add_grid_attribute" })
+                        "add_tab", "move_tab", "remove_tab", "add_grid_attribute" }),
+                ["genexus_sandbox"] = Contract(
+                    readOnly: Array.Empty<string>(),
+                    mutating: new[] { "create", "remove" }),
+                ["genexus_worker_pool"] = Contract(
+                    readOnly: Array.Empty<string>(),
+                    mutating: new[] { "warm_spares" })
             };
 
         // Only actions with a documented preview mode may become read-only when

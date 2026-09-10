@@ -576,6 +576,21 @@ namespace GxMcp.Gateway
                 "- `add` / `remove` — persist a reference after managed-assembly validation.\n\n" +
                 "The list and dry-run actions are read-only. Add/remove writes object metadata, uses optimistic concurrency when supplied, and verifies the complete post-save snapshot.\n",
 
+            ["genexus_sandbox"] =
+                "# genexus_sandbox\n\n" +
+                "Manage an explicit filesystem sandbox without SDK dispatch.\n\n" +
+                "## Actions\n" +
+                "- `create` — clone a validated source KB into a sandbox.\n" +
+                "- `remove` — remove the named sandbox after path validation.\n\n" +
+                "Both actions mutate filesystem state and require an explicit target; no active KB fallback is used.\n",
+
+            ["genexus_worker_pool"] =
+                "# genexus_worker_pool\n\n" +
+                "Manage gateway-side warm spare Workers.\n\n" +
+                "## Actions\n" +
+                "- `warm_spares` — configure the requested spare count without selecting or mutating a KB.\n\n" +
+                "This changes gateway process state and is not a read-only operation.\n",
+
             ["genexus_wwp"] =
                 "# genexus_wwp\n\n" +
                 "Inspect and edit WorkWithPlus Action Groups, tabs, and grid attributes through the typed PatternInstance contract.\n\n" +

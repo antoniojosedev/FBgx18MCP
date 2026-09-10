@@ -86,6 +86,8 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_api` | `list`, `describe`, `routes_inspect`, `diff_baseline` | `routes_clone`, `routes_update`, `snapshot` |
 | `genexus_apply_pattern` | `list_actions` | `add_grid_action`, `update_action`, `move_action`, `remove_action` |
 | `genexus_security` | `audit_gam`, `scan_secrets`, `scan_native` | — |
+| `genexus_sandbox` | — | `create`, `remove` |
+| `genexus_worker_pool` | — | `warm_spares` |
 | `genexus_edit_form` | — | `add_textblock`, `add_button`, `set_visibility`, `remove_control`, `wrap_in_fieldset` |
 | `genexus_module` | `list` | `install`, `install_builtin`, `update` |
 | `genexus_gxserver` | `status`, `pending`, `ignored`, `conflicts`, `history`, `pipeline_list`, `pipeline_runs`, `pipeline_output` | `commit`, `update`, `lock`, `resolve`, `pipeline_run`, `pipeline_abort` |
