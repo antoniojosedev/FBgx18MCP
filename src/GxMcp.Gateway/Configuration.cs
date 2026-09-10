@@ -45,7 +45,28 @@ namespace GxMcp.Gateway
         // handlers never run in parallel or duplicated.
         private static readonly object _reloadLock = new object();
         private static System.Threading.Timer? _reloadDebounceTimer;
+        private static Configuration? _lastValidConfiguration;
         public static event Action<Configuration>? OnConfigurationChanged;
+
+        // Gateway environment-variable matrix. Structural values belong in a strict
+        // config file; only GX_CONFIG_PATH selects that file. Legacy transport and
+        // presentation overrides remain available to non-strict documents. Secrets
+        // and diagnostics are process concerns and are never copied into Configuration.
+        //
+        // Legacy overrides (strict permits only an exact match with the file): GX_MCP_PORT,
+        // GX_MCP_STDIO. Structural (strict rejects): GXMCP_SHARED_GATEWAY,
+        // GX_MCP_SHARED_GATEWAY, GXMCP_PROFILE,
+        // GXMCP_NO_STRUCTURED_CONTENT, GXMCP_EMIT_STRUCTURED_CONTENT, GXMCP_TERSE.
+        // Bootstrap selector (allowed): GX_CONFIG_PATH.
+        // Secret (allowed): GXMCP_HTTP_TOKEN, GXMCP_AI_COMPLETE_KEY, GXMCP_GAM_PASS.
+        // Diagnostic/operational (allowed): GXMCP_VERBOSE_LOGS, GXMCP_LOG_DIR,
+        // GENEXUS_MCP_NO_UPDATE_CHECK, GENEXUS_MCP_NO_SELF_UPDATE,
+        // GENEXUS_MCP_REAPPLY_TIMEOUT_MS, GXMCP_ASYNC_JOB_WATCHDOG_S,
+        // GXMCP_LEGACY_TOOL_ALIASES, MCP_PERF_PROFILE, GXMCP_SERVER_VERSION,
+        // GXMCP_ALLOW_CONCURRENT_BUILDS, GXMCP_BUILD_NOPROGRESS_SEC,
+        // GXMCP_INPROCESS_BUILD_FASTPATH, GXMCP_REAP_ORPHAN_MSBUILD,
+        // GXMCP_SEMANTIC_CACHE_MAX, PATH, PATHEXT, LOCALAPPDATA, and the
+        // remaining worker/tool-specific variables forwarded or read outside config.
 
         public static Configuration Load()
         {
@@ -105,6 +126,7 @@ namespace GxMcp.Gateway
 
             Program.Log($"[Gateway] Loading config from: {CurrentConfigPath}");
             var config = ParseConfig(CurrentConfigPath);
+            Volatile.Write(ref _lastValidConfiguration, config);
 
             SetupWatcher(CurrentConfigPath);
 
@@ -127,10 +149,17 @@ namespace GxMcp.Gateway
                     // Tolerant parse (E6): a single invalid scalar (e.g. "HttpPort": "abc")
                     // must not take the whole gateway down. Log the offending member and
                     // keep every member that did deserialize.
+                    Exception? strictDeserializationError = null;
                     var settings = new JsonSerializerSettings
                     {
                         Error = (sender, args) =>
                         {
+                            if (strictDocument)
+                            {
+                                strictDeserializationError ??= new InvalidDataException($"Invalid value at '{args.ErrorContext.Path}' in strict config '{path}': {args.ErrorContext.Error.Message}", args.ErrorContext.Error);
+                                args.ErrorContext.Handled = true;
+                                return;
+                            }
                             Program.Log($"[Gateway] WARNING: invalid config.json value at '{args.ErrorContext.Path}' ({args.ErrorContext.Error.Message}) — ignoring it and keeping the rest.");
                             args.ErrorContext.Handled = true;
                         }
@@ -138,6 +167,8 @@ namespace GxMcp.Gateway
                     if (strictDocument)
                         settings.MissingMemberHandling = MissingMemberHandling.Error;
                     var config = JsonConvert.DeserializeObject<Configuration>(json, settings);
+                    if (strictDeserializationError != null)
+                        throw strictDeserializationError;
                     if (config == null)
                     {
                         Program.Log("[Gateway] WARNING: config.json could not be deserialized into any usable state — using defaults.");
@@ -167,6 +198,8 @@ namespace GxMcp.Gateway
                         Program.Log($"[Gateway] KB Path configured: {config.Environment.KBPath}");
 
                     string? portOverride = global::System.Environment.GetEnvironmentVariable("GX_MCP_PORT");
+                    if (strictDocument)
+                        RejectStrictStructuralEnvironment();
                     if (strictDocument && !string.IsNullOrWhiteSpace(portOverride))
                     {
                         if (!int.TryParse(portOverride, out int strictPortOverride))
@@ -292,6 +325,22 @@ namespace GxMcp.Gateway
                 throw new InvalidDataException("Strict config ResolutionPolicy must be 'strict' or 'legacy'.");
         }
 
+        private static void RejectStrictStructuralEnvironment()
+        {
+            // GX_MCP_PORT and GX_MCP_STDIO are the sole legacy overrides retained
+            // for strict documents, and the caller below still rejects conflicts.
+            string[] forbidden =
+            {
+                "GXMCP_SHARED_GATEWAY", "GX_MCP_SHARED_GATEWAY", "GXMCP_PROFILE",
+                "GXMCP_NO_STRUCTURED_CONTENT", "GXMCP_EMIT_STRUCTURED_CONTENT", "GXMCP_TERSE"
+            };
+            foreach (string name in forbidden)
+            {
+                if (!string.IsNullOrWhiteSpace(global::System.Environment.GetEnvironmentVariable(name)))
+                    throw new InvalidDataException($"{name} is a structural environment override and is not permitted with a strict configuration.");
+            }
+        }
+
         private static void RejectUnknown(JObject value, HashSet<string> allowed, string scope, string path)
         {
             var unknown = value.Properties().FirstOrDefault(p => !allowed.Contains(p.Name));
@@ -370,6 +419,7 @@ namespace GxMcp.Gateway
                             lock (_reloadLock)
                             {
                                 newConfig = ParseConfig(path);
+                                Volatile.Write(ref _lastValidConfiguration, newConfig);
                                 OnConfigurationChanged?.Invoke(newConfig);
                             }
                         }

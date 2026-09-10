@@ -292,6 +292,75 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
+        // Environment matrix documented in Configuration.cs:
+        // structural overrides (shared gateway/profile/response shape) are rejected
+        // by strict config; GX_CONFIG_PATH selects the file, GXMCP_HTTP_TOKEN is a
+        // secret, and diagnostics/operational switches do not alter Configuration.
+        [Theory]
+        [InlineData("GXMCP_SHARED_GATEWAY")]
+        [InlineData("GX_MCP_SHARED_GATEWAY")]
+        [InlineData("GXMCP_PROFILE")]
+        [InlineData("GXMCP_NO_STRUCTURED_CONTENT")]
+        [InlineData("GXMCP_EMIT_STRUCTURED_CONTENT")]
+        [InlineData("GXMCP_TERSE")]
+        public void ParseConfig_StrictV2_RejectsStructuralEnvironmentOverride(string variable)
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            string? oldValue = Environment.GetEnvironmentVariable(variable);
+            try
+            {
+                File.WriteAllText(configPath, StrictStdioJson());
+                Environment.SetEnvironmentVariable(variable, "1");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+                Assert.Contains(variable, error.Message);
+                Assert.Contains("not permitted", error.Message);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(variable, oldValue);
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_StrictV2_RejectsInvalidTypedMemberWithoutPublishingPartialConfig()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true, ""AllowedOrigins"": 17 },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+                Assert.Contains("Server.AllowedOrigins", error.Message);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        private static string StrictStdioJson()
+        {
+            return @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}";
+        }
+
         private static Configuration ParseConfig(string path)
         {
             var method = typeof(Configuration).GetMethod("ParseConfig", BindingFlags.NonPublic | BindingFlags.Static);
