@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Preview screenshots and baselines now validate logical object names, resolve canonical artifact roots, and reject paths that escape the configured preview directory.
+
 - Browser-driver launches now resolve absolute `.exe`/`.com` binaries directly and use an escaped, narrow `.cmd`/`.bat` compatibility path; preview shims no longer receive raw request data through `cmd.exe /c`.
 
 - Worker non-SDK command dispatch now uses a bounded dedicated MTA pool with priority for health, cancellation, and status probes, preventing burst-driven task growth while preserving clean shutdown.
