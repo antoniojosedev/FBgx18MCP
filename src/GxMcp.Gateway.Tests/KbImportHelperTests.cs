@@ -124,5 +124,18 @@ namespace GxMcp.Gateway.Tests
             Assert.False(KbImportHelper.IsSafeSegment(""));
             Assert.False(KbImportHelper.IsSafeSegment("a\\b"));
         }
+
+        [Fact]
+        public void LogValue_RedactsQuotedPasswordTokenAndAuthorizationValues()
+        {
+            const string input = "IOException: {\"password\":\"password-value\", \"token\": \"token-value\", \"authorization\": \"Bearer auth-value\"}";
+
+            string result = KbImportHelper.LogValue(input);
+
+            Assert.DoesNotContain("password-value", result);
+            Assert.DoesNotContain("token-value", result);
+            Assert.DoesNotContain("auth-value", result);
+            Assert.Contains("<redacted>", result);
+        }
     }
 }

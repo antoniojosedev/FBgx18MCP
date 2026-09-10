@@ -220,5 +220,18 @@ namespace GxMcp.Gateway.Tests
             Assert.DoesNotContain(dir, result.ToString());
             Assert.NotNull(result["operationId"]);
         }
+
+        [Fact]
+        public void LogValue_RedactsQuotedPasswordTokenAndAuthorizationValues()
+        {
+            const string input = "IOException: {\"password\":\"password-value\", \"token\": \"token-value\", \"authorization\": \"Bearer auth-value\"}";
+
+            string result = MacroSuggestionService.LogValue(input);
+
+            Assert.DoesNotContain("password-value", result);
+            Assert.DoesNotContain("token-value", result);
+            Assert.DoesNotContain("auth-value", result);
+            Assert.Contains("<redacted>", result);
+        }
     }
 }

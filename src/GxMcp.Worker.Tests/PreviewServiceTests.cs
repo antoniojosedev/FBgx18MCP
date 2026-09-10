@@ -134,6 +134,19 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void LogValue_RedactsQuotedPasswordTokenAndAuthorizationValues()
+        {
+            const string input = "PreviewException: {\"password\":\"password-value\", \"token\": \"token-value\", \"authorization\": \"Bearer auth-value\"}";
+
+            string result = PreviewService.LogValue(input);
+
+            Assert.DoesNotContain("password-value", result);
+            Assert.DoesNotContain("token-value", result);
+            Assert.DoesNotContain("auth-value", result);
+            Assert.Contains("<redacted>", result);
+        }
+
+        [Fact]
         public void PreviewSync_OkPathInvokesExpectedCliVerbs()
         {
             var dir = TempDir();

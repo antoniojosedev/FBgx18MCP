@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -574,9 +575,13 @@ namespace GxMcp.Gateway
             }
         }
 
-        private static string LogValue(string value)
+        internal static string LogValue(string value)
         {
-            return (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+            string redacted = Regex.Replace(
+                value ?? string.Empty,
+                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
+                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
 
         // SECURITY: the Origin header only defends against browser-issued cross-site

@@ -63,7 +63,7 @@ namespace GxMcp.Gateway
                 {
                     ["status"] = "Error",
                     ["code"] = "ObjectNotFound",
-                    ["message"] = $"Object '{type}:{name}' not found at {sourceObjDir}.",
+                    ["message"] = $"Object '{type}:{name}' was not found in the source Knowledge Base.",
                     ["hint"] = "Check 'type' (case-sensitive) and 'name'; pass exact directory names from Objects/<Type>/<Name>/."
                 };
             }
@@ -124,10 +124,13 @@ namespace GxMcp.Gateway
             }
         }
 
-        private static string LogValue(string value)
+        internal static string LogValue(string value)
         {
-            string escaped = (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
-            return Regex.Replace(escaped, "(?i)(password|passwd|token|secret|apikey|authorization)(\\s*[:=]\\s*)[^,\\s;}&]+", "$1$2<redacted>");
+            string redacted = Regex.Replace(
+                value ?? string.Empty,
+                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
+                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
     }
 }

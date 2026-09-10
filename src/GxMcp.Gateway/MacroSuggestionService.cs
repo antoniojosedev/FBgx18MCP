@@ -164,10 +164,13 @@ namespace GxMcp.Gateway
             return result;
         }
 
-        private static string LogValue(string value)
+        internal static string LogValue(string value)
         {
-            string escaped = (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
-            return Regex.Replace(escaped, "(?i)(password|passwd|token|secret|apikey|authorization)(\\s*[:=]\\s*)[^,\\s;}&]+", "$1$2<redacted>");
+            string redacted = Regex.Replace(
+                value ?? string.Empty,
+                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
+                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
 
         // Shape = pipe-joined "tool|sortedKey,sortedKey" tuples. Values not included
