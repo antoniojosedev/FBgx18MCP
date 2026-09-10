@@ -1682,14 +1682,12 @@ namespace GxMcp.Gateway
                                 ? "Cancelled by client; the non-preemptible worker was recycled. Re-read the object before another write."
                                 : "Cancelled by client; no live worker remained to recycle. Re-read the object before another write.");
                         if (existed
-                            && IsAsyncMutationTool(cancelledToolName)
+                            && (IsAsyncMutationTool(cancelledToolName)
+                                || IsAsyncGxServerAction(cancelledToolName, cancelledToolArgs))
                             && !string.IsNullOrWhiteSpace(workerAlias))
                         {
-                            _mutationRecovery.RequireRead(
-                                workerAlias,
-                                cancelledToolArgs?["name"]?.ToString(),
-                                cancelledToolArgs?["part"]?.ToString() ?? "Source",
-                                operationId);
+                            foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(cancelledToolName!, cancelledToolArgs))
+                                _mutationRecovery.RequireRead(workerAlias, recoveryTarget.Target, recoveryTarget.Part, operationId);
                         }
 
                         var cancelPayload = new JObject
@@ -1864,9 +1862,9 @@ namespace GxMcp.Gateway
                     if (isMutating && !IsMutationPreview(tArgs))
                     {
                         RecoveryRequirement? recoveryRequirement = null;
-                        foreach (string recoveryTarget in EnumerateMutationTargets(tName, tArgs))
+                        foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName, tArgs))
                         {
-                            if (_mutationRecovery.TryGet(kbScope, recoveryTarget, out var found))
+                            if (_mutationRecovery.TryGet(kbScope, recoveryTarget.Target, recoveryTarget.Part, out var found))
                             {
                                 recoveryRequirement = found;
                                 break;
@@ -2560,11 +2558,8 @@ namespace GxMcp.Gateway
                                             capturedName + " did not return within the " + boundText
                                                 + " time bound; SDK call likely blocked (IDE modal dialog or retrying validation) — see result for recovery steps.",
                                             BuildStalledAsyncMutationEnvelope(editJob.Id, capturedName, estEdit, boundSeconds, workerRecycled));
-                                        _mutationRecovery.RequireRead(
-                                            editJob.WorkerAlias,
-                                            editJob.Target,
-                                            editJob.Part,
-                                            editJob.Id);
+                                        foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(capturedName, tArgs))
+                                            _mutationRecovery.RequireRead(editJob.WorkerAlias, recoveryTarget.Target, recoveryTarget.Part, editJob.Id);
                                         Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled (workerRecycled={workerRecycled}).");
                                     }
                                     return;
@@ -2651,10 +2646,8 @@ namespace GxMcp.Gateway
 
                             if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
                             {
-                                _mutationRecovery.ConfirmRead(
-                                    kbScope,
-                                    tArgs?["name"]?.ToString(),
-                                    tArgs?["part"]?.ToString() ?? "Source");
+                                foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName, tArgs))
+                                    _mutationRecovery.ConfirmRead(kbScope, recoveryTarget.Target, recoveryTarget.Part);
                             }
 
                             // Friction 2026-05-22 #63: attach suggested_next_step on every error
@@ -2795,15 +2788,13 @@ namespace GxMcp.Gateway
                                 help.Add($"Operation is still running. Query genexus_lifecycle(action='status', target='op:{operationId}') or action='result'.");
                                 if (tName != null && (tName.IndexOf("edit", StringComparison.OrdinalIgnoreCase) >= 0
                                                      || tName.IndexOf("write", StringComparison.OrdinalIgnoreCase) >= 0
-                                                     || tName.IndexOf("variable", StringComparison.OrdinalIgnoreCase) >= 0))
+                                                     || tName.IndexOf("variable", StringComparison.OrdinalIgnoreCase) >= 0
+                                                     || isAsyncGxServer))
                                 {
                                     // Writes have usually persisted by the time the gateway times out; poll result, then read — don't retry the edit.
                                     help.Add("For long writes the change is usually already persisted; check action='result' once, then read back instead of retrying.");
-                                    _mutationRecovery.RequireRead(
-                                        kbScope,
-                                        tArgs?["name"]?.ToString(),
-                                        tArgs?["part"]?.ToString() ?? "Source",
-                                        operationId);
+                                    foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName!, tArgs))
+                                        _mutationRecovery.RequireRead(kbScope, recoveryTarget.Target, recoveryTarget.Part, operationId);
                                     timeoutPayload["reReadRequired"] = true;
                                 }
                             }

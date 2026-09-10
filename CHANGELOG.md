@@ -89,6 +89,8 @@
 
 ### Fixed
 
+- Multi-target asynchronous mutation recovery now records deterministic per-target/part fences on watchdog, timeout, and cancellation paths, and confirms them independently on successful read-back so partial reads cannot unblock the remaining targets.
+
 - Aligned OpenCode Desktop client detection and registration with the shared
   `opencode.jsonc`/`opencode.json` configuration path, enabling automatic registration
   and status reporting rather than treating it as an AppData manual setup gap
