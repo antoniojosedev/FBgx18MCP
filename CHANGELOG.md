@@ -12,12 +12,12 @@
   requirement, updated translated getting-started guides, replaced the obsolete
   `setup.bat` command with `build.ps1`, and added a documentation drift test.
 
-### Added
-
 - Added a protected, opt-in self-hosted Windows CI lane for explicit GeneXus SDK fingerprint validation and live Worker testing, with license/fixture preconditions, pass/skip/fail status artifacts, cleanup, and visible hosted-runner skip reporting (`docs/ci-sdk-validation.md`).
 
 - Added a checked-in GeneXus SDK compatibility manifest, build/startup fingerprint validation with stable diagnostics, focused match/mismatch/missing-path tests, and self-hosted fixture guidance in `docs/sdk-compatibility.md`.
 
+- Source metadata searches now resolve each candidate once per request and cache
+  requested part values locally, preserving partial-index and cancellation behavior.
 - Added `docs/envelope-coverage.md`, auditing the published tools/actions and
   separating Worker envelopes from intentional Gateway lifecycle/protocol
   statuses as the migration map for subsequent response-contract work.
