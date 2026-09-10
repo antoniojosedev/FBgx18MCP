@@ -68,6 +68,7 @@ namespace GxMcp.Gateway
             public WorkerProcess? Worker;
             public DateTime LastActivityUtc = DateTime.UtcNow;
             public readonly SemaphoreSlim SpawnGate = new SemaphoreSlim(1, 1);
+            public readonly SemaphoreSlim LifecycleGate = new SemaphoreSlim(1, 1);
             // Draining: set to true when a planned worker reload is in progress.
             // AcquireAsync callers that hit the fast path while Draining==true wait
             // on DrainComplete before returning the freshly-spawned replacement.
@@ -250,18 +251,18 @@ namespace GxMcp.Gateway
                 var capturedHandle = handle;
                 worker.OnWorkerExited += (reason) =>
                 {
+                    // Detach the exited worker BEFORE notifying eager-respawn subscribers:
+                    // they can finish spawning a replacement before this callback returns.
+                    // Remove only the captured entry, preserving concurrent replacements,
+                    // planned drains, and an entry reused by a completed planned reload.
+                    if (!entry.Draining && (entry.Worker == null || ReferenceEquals(entry.Worker, worker)))
+                        _entries.TryRemove(new KeyValuePair<string, Entry>(capturedHandle.NormalizedAlias, entry));
+                    // Keep the durable _known record so this KB remains resolvable.
                     OnWorkerExited?.Invoke(capturedHandle, reason);
-                    // Drop the live-worker entry (a fresh AcquireAsync respawns) but keep
-                    // the durable _known record — issue #26 P3: the KB must stay resolvable.
-                    // Plan 031: skip removal while a planned drain owns this entry —
-                    // DrainAndReplaceAsync manages the entry's lifecycle itself across the
-                    // whole binary-swap window and relies on Draining staying true (and the
-                    // entry staying present) to keep protecting concurrent AcquireAsync
-                    // callers from creating a second, fresh, non-draining entry.
-                    if (_entries.TryGetValue(capturedHandle.NormalizedAlias, out var currentEntry) && currentEntry.Draining)
-                        return;
-                    _entries.TryRemove(capturedHandle.NormalizedAlias, out _);
                 };
+                // Publish before Start: an immediate exit may be reported
+                // synchronously by WorkerProcess.Start().
+                entry.Worker = worker;
                 if (SpawnFactoryForTest == null)
                 {
                     entry.Spawning = true;   // issue #26 P1: a process really is coming up now.
@@ -278,7 +279,15 @@ namespace GxMcp.Gateway
                         Program.OperationTracker.RegisterSpawnSample(handle.NormalizedAlias, worker.SpawnMs.Value);
                     }
                 }
-                entry.Worker = worker;
+                if (!_entries.TryGetValue(handle.NormalizedAlias, out var current)
+                    || !ReferenceEquals(current, entry)
+                    || !ReferenceEquals(current.Worker, worker))
+                {
+                    if (_entries.TryGetValue(handle.NormalizedAlias, out var replacement)
+                        && replacement.Worker != null)
+                        return replacement.Worker;
+                    throw new InvalidOperationException($"Worker for KB '{handle.Alias}' exited during startup.");
+                }
                 entry.LastActivityUtc = DateTime.UtcNow;
                 return worker;
             }
@@ -305,6 +314,9 @@ namespace GxMcp.Gateway
             if (!_entries.TryGetValue(handle.NormalizedAlias, out var entry))
                 throw new InvalidOperationException($"No pool entry for alias '{handle.Alias}'.");
 
+            await entry.LifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
             // Plan 031: the entry now survives the whole drain window (never removed
             // from _entries), so a SECOND drain cycle on the same entry would otherwise
             // reuse the previous cycle's already-completed DrainComplete TCS — any
@@ -365,6 +377,11 @@ namespace GxMcp.Gateway
                 // the entry as no longer draining once it wakes.
                 entry.Draining = false;
                 entry.DrainComplete.TrySetResult(true);
+            }
+            }
+            finally
+            {
+                entry.LifecycleGate.Release();
             }
         }
 
