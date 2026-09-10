@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- Restored the `genexus_io` Object Text batch routes in the umbrella router after integrating the neutral-runtime changes with the current `main` contracts; the discovery schema budget now covers the combined tool surface.
-
 ### Added
 
 - Added the issue #146 neutral runtime contract: explicit `ConfigSchemaVersion`, `GatewayMode`, strict/local-friendly versus hardened policies, and KB-free configuration generation.
@@ -13,18 +9,29 @@
 - Added scoped operational state and isolation fences for caches, receipts, journals, recovery, snapshots, jobs, logs, crash ledgers, Workers, tasks, streams, subscriptions, resources, prompts, and completion.
 - Added explicit `config migrate` with atomic backup, read-back receipt, rollback on verification failure, and rejection of non-migratable KB fields.
 - Added gateway-only contracts for `genexus_kb_diff`, `genexus_kb_import`, `genexus_sandbox`, and `genexus_worker_pool`, with schema, discovery, dispatch, help, and parity coverage.
+- Added deterministic property/fuzz regression coverage for idempotency-key validation, canonicalization, and concurrent deduplication.
 
 ### Changed
 
 - Decoupled MCP client registration from implicit KB paths, aliases, defaults, and session selection; legacy behavior remains available only through explicit legacy configuration.
 - Made stateful and mutating operations require coherent owner, KB identity, generation, and lease context, while authorized stateless reads remain free of global fallback.
 - Updated CLI initialization, neutral config creation, installers, OpenCode layouts, discovery fixtures, compatibility adapters, and onboarding documentation for the multi-version runtime.
+- Source search now uses typed native accessors for Procedure source and Rules/Events where available, while retaining dynamic fallbacks for SDK variants.
+- Extended the live benchmark with wire-level content, structuredContent, and estimated-token measurements while preserving compatibility with legacy two-value probe results.
+- Improved live-KB harness isolation and diagnostics with stale-log cleanup, streaming child progress, timestamps, and explicit phases.
+
+### Fixed
+
+- Restored the `genexus_io` Object Text batch routes in the umbrella router after integrating the neutral-runtime changes with the current `main` contracts; the discovery schema budget now covers the combined tool surface.
+- Prevented concurrent Worker acquisition under different aliases from starting duplicate Workers for the same KB path; this avoids SDK single-instance `BusyReject` loops during initialize and warmup.
+- Serialized default-KB warmup and index bootstrap so initialize does not race two Worker acquisitions on the STA process.
+- Enforced the documented ASCII-only `[A-Za-z0-9_-]` idempotency-key contract.
+- Preserved initialize-time default-KB pre-spawn so strict resolution can warm a configured KB before issuing worker commands.
+- Live SDK/KB acceptance remains gated by the disposable fixture, GeneXus installation, and license prerequisites; unavailable live cases are reported as skipped rather than claimed as passing.
 
 ### Internal
 
 - Added regression coverage for strict configuration, identity/rebind, leases, concurrent sessions, side-channel fences, operational persistence, routing contracts, respawn lifecycle, and CLI migration behavior.
-- Live SDK/KB acceptance remains gated by the disposable fixture, GeneXus installation, and license prerequisites; unavailable live cases are reported as skipped rather than claimed as passing.
-
 
 ## v3.2.1 - 2026-09-09
 

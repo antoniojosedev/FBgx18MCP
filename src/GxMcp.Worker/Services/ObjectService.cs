@@ -3655,11 +3655,19 @@ namespace GxMcp.Worker.Services
             {
                 if (normalizedPart == "source")
                 {
+                    if (obj is Procedure procedure && procedure.ProcedurePart != null)
+                        return procedure.ProcedurePart.Source ?? "";
                     dynamic sp = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource);
                     return sp?.Source ?? "";
                 }
                 if (normalizedPart == "rules")
                 {
+                    if (obj is Procedure procedure)
+                        return procedure.Rules?.Source ?? "";
+                    if (obj is Transaction transaction)
+                        return transaction.Rules?.Source ?? "";
+                    if (obj is WebPanel webPanel)
+                        return webPanel.Rules?.Source ?? "";
                     try { return ((dynamic)obj).Rules?.Source ?? ""; } catch { return ""; }
                 }
                 if (normalizedPart == "conditions")
@@ -3668,6 +3676,10 @@ namespace GxMcp.Worker.Services
                 }
                 if (normalizedPart == "events")
                 {
+                    if (obj is Transaction transaction)
+                        return transaction.Events?.Source ?? "";
+                    if (obj is WebPanel webPanel)
+                        return webPanel.Events?.Source ?? "";
                     try { return ((dynamic)obj).Events?.Source ?? ""; } catch { return ""; }
                 }
                 if (normalizedPart == "webform" || normalizedPart == "layout")

@@ -314,6 +314,8 @@ namespace GxMcp.Gateway
         }
         internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
+        internal static readonly TaskCompletionSource<bool> WorkerWarmupCompleted =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private static int _indexBootstrapStarted;
         // Test seams for deterministic worker-lifecycle coverage. Production leaves
         // these null, preserving the real asynchronous bootstrap and backoff.

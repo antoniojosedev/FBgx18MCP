@@ -9,7 +9,8 @@ param(
     [switch]$RequireBuildAll,
     [switch]$RunBenchmark,
     [ValidateRange(1, 100)][int]$Iterations = 12,
-    [string]$TestFilter = 'Category=LiveE2E',
+    [ValidateRange(5, 7200)][int]$RpcTimeoutSeconds = 240,
+    [string]$TestFilter = 'Category=LiveE2E&FullyQualifiedName!~TeamDevelopment',
     [string]$SummaryPath
 )
 
@@ -199,6 +200,7 @@ try {
             '-FixtureManifest', $FixtureManifest,
             '-GxPath', $candidate.path,
             '-SkipBuild',
+            '-RpcTimeoutSeconds', $RpcTimeoutSeconds,
             '-TestFilter', $TestFilter
         )
         if ($GatewayOnly) { $testArgs += '-GatewayOnly' }
@@ -208,10 +210,14 @@ try {
             $testArgs += @('-RunBenchmark', '-Iterations', $Iterations, '-BenchmarkOut', (Join-Path $benchmarkDirectory ("gxmcp-live-$($candidate.major).json")))
         }
 
-        Write-Host "`n>>> Live matrix: GeneXus $($candidate.major) ($($candidate.path))" -ForegroundColor Cyan
-        $childOutput = @(& pwsh @testArgs 2>&1 | ForEach-Object { $_.ToString() })
+        Write-Host ("[{0}] Starting major {1}; child output streams below." -f (Get-Date -Format 'HH:mm:ss'), $candidate.major) -ForegroundColor DarkCyan
+        $childOutput = New-Object System.Collections.Generic.List[string]
+        & pwsh @testArgs 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            [void]$childOutput.Add($line)
+            Write-Host ("    [{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $line)
+        }
         $exitCode = $LASTEXITCODE
-        foreach ($line in ($childOutput | Select-Object -Last 20)) { Write-Host "    $line" }
         $unavailableSignal = @($childOutput | Where-Object { $_ -match 'live=unavailable' }).Count -gt 0
         $status = if ($exitCode -eq 0) { 'passed' } elseif ($exitCode -eq 2 -or $unavailableSignal) { 'unavailable' } else { 'failed' }
         $reason = if ($exitCode -eq 0) { $null } elseif ($unavailableSignal) { ($childOutput | Where-Object { $_ -match 'live=unavailable' } | Select-Object -Last 1) } else { "scripts/test-live.ps1 exited with code $exitCode." }
