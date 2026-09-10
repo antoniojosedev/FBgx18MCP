@@ -2424,6 +2424,63 @@
     },
     {
       "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Gateway-only filesystem comparison of two KB directories. Requires kbA and kbB aliases or paths; no active KB selection is used.",
+      "inputSchema": {
+        "properties": {
+          "kbA": {
+            "type": "string"
+          },
+          "kbB": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kbA",
+          "kbB"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_diff"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only filesystem copy of one object between two KB directories. Requires source and object identity; run lifecycle index afterwards.",
+      "inputSchema": {
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "name",
+          "type"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_import"
+    },
+    {
+      "annotations": {
         "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": false,
@@ -3700,6 +3757,41 @@
     },
     {
       "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only filesystem sandbox management; clone or remove a KB directory without SDK dispatch.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_sandbox"
+    },
+    {
+      "annotations": {
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,
@@ -4600,6 +4692,33 @@
         "type": "object"
       },
       "name": "genexus_whoami"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only worker-pool warm-spare configuration. Does not require a KB selection or dispatch to the Worker.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "warm_spares"
+            ],
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "spareCount": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_worker_pool"
     },
     {
       "annotations": {

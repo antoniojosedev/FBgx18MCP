@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- Added `config create --config-scope neutral` for explicit KB-free runtime config generation; it requires the new runtime flags and never registers clients or creates a KB catalog.
+
+### Internal
+- Issue #146: keep RequestLoop gateway dispatch names in the declared/legacy-alias/removed tool inventory; advertise the four gateway-only routes and add a parity guard. The schema budget is 27000 to cover these four contracts.
+
 ### Changed
 
 - Began the issue #146 contract migration with an explicit `ConfigSchemaVersion`/

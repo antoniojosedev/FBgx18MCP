@@ -133,6 +133,10 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_generator_reference` | active | Native typed .NET generator references |
 | `genexus_data_view` | active | Native typed Transaction + Data View authoring |
 | `genexus_whoami` | active | KB context, version, health, and playbook/skills discovery |
+| `genexus_kb_diff` | active (gateway-only) | Filesystem comparison of two explicit KB aliases/paths; not KB-bound and does not dispatch to a Worker |
+| `genexus_kb_import` | active (gateway-only) | Filesystem object copy between explicit source/target KBs; target may fall back to the active KB and must be indexed afterwards |
+| `genexus_sandbox` | active (gateway-only) | Filesystem sandbox create/remove; no SDK dispatch |
+| `genexus_worker_pool` | active (gateway-only) | Worker-pool warm-spare configuration; no KB selection or Worker tool dispatch |
 
 ## Resources
 
