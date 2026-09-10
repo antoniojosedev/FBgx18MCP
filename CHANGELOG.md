@@ -55,6 +55,12 @@
 - Bumped tool schema token budget to 26,500 to accommodate `genexus_kb` session selection actions (`select`, `set_session_default`, `set_persistent_default`), `persist` flag, and parameter documentation in discovery fixtures ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
 - `genexus_properties` `action=get` single property queries now return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }` instead of dumping 100+ properties, dramatically cutting context token consumption ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 
+### Fixed
+
+- KB startup-default persistence now stages config updates in a unique sibling
+  temporary file, flushes before atomic replacement, and verifies the persisted
+  aliases before updating gateway memory; unknown JSON fields remain intact.
+
 ## v3.0.1 - 2026-09-07
 
 

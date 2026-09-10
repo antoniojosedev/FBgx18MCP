@@ -949,14 +949,27 @@ namespace GxMcp.Gateway
                                 if (declared == null && !string.IsNullOrWhiteSpace(resolvedPath))
                                 {
                                     promoted = UpsertKbCatalogEntry(envObj, resolvedAlias, resolvedPath);
-                                    if (promoted)
-                                    {
-                                        _activeConfig.Environment!.KBs.Add(new KbEntry { Alias = resolvedAlias, Path = resolvedPath });
-                                    }
                                 }
                                 envObj["DefaultKb"] = resolvedAlias;
                                 envObj["ActiveKb"] = resolvedAlias;
-                                System.IO.File.WriteAllText(configPath, root.ToString(Formatting.Indented));
+                                AtomicJsonFileWriter.Write(configPath, root.ToString(Formatting.Indented));
+
+                                // Do not publish the in-memory selection until the exact aliases
+                                // written above have been read back from disk. This keeps a failed
+                                // or externally replaced config from making the response lie.
+                                JObject persistedRoot;
+                                try { persistedRoot = JObject.Parse(System.IO.File.ReadAllText(configPath)); }
+                                catch (Exception ex) { throw new InvalidOperationException($"Failed to verify persisted config.json: {ex.Message}"); }
+                                var persistedEnvironment = persistedRoot["Environment"] as JObject;
+                                if (!string.Equals(persistedEnvironment?["DefaultKb"]?.ToString(), resolvedAlias, StringComparison.Ordinal) ||
+                                    !string.Equals(persistedEnvironment?["ActiveKb"]?.ToString(), resolvedAlias, StringComparison.Ordinal))
+                                {
+                                    throw new InvalidOperationException($"Persisted config.json did not retain DefaultKb and ActiveKb='{resolvedAlias}'.");
+                                }
+                                if (promoted)
+                                {
+                                    _activeConfig.Environment!.KBs.Add(new KbEntry { Alias = resolvedAlias, Path = resolvedPath });
+                                }
                                 _activeConfig.Environment!.DefaultKb = resolvedAlias;
                                 _activeConfig.Environment!.ActiveKb = resolvedAlias;
                                 _activeConfig.Environment!.RawDefaultKb = resolvedAlias;
