@@ -4,8 +4,10 @@
 
 ### Added
 - Added `config create --config-scope neutral` for explicit KB-free runtime config generation; it requires the new runtime flags and never registers clients or creates a KB catalog.
+- Added session-scoped KB ownership snapshots with owner, KB identity, context generation, and lease validation for stateful gateway acquisition.
 
 ### Internal
+- Cache and idempotency state now expose explicit `StateScopeId` + KB id + generation keys; semantic cache keys no longer rely on alias/path alone, with cross-scope and cross-generation regression coverage.
 - Issue #146: keep RequestLoop gateway dispatch names in the declared/legacy-alias/removed tool inventory; advertise the four gateway-only routes and add a parity guard. The schema budget is 27000 to cover these four contracts.
 
 ### Changed

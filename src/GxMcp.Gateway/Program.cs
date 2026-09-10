@@ -27,6 +27,9 @@ namespace GxMcp.Gateway
         // Set per-call at the top of ProcessMcpRequest; SendWorkerCommandAsync reads it
         // to route the command to the correct WorkerProcess in the pool.
         private static readonly AsyncLocal<KbHandle?> _currentKb = new AsyncLocal<KbHandle?>();
+        private static readonly AsyncLocal<SessionKbContextStore.Snapshot?> _currentSessionContext = new AsyncLocal<SessionKbContextStore.Snapshot?>();
+        private static readonly AsyncLocal<bool> _currentOperationRequiresOwner = new AsyncLocal<bool>();
+        private static readonly KbUseLeaseRegistry _kbLeases = new KbUseLeaseRegistry(new StopwatchMonotonicClock());
         // Legacy single-worker accessor: returns the worker for the AsyncLocal KB if set,
         // otherwise the worker for the DefaultKb (acquiring it lazily).
         private static async Task<WorkerProcess> GetActiveWorkerAsync()
@@ -38,7 +41,8 @@ namespace GxMcp.Gateway
                 // Fall back to default for callers outside a tool-call context (warmup, etc.).
                 kb = _kbResolver!.Resolve(null, _workerPool.ListOpen(), _workerPool.ListKnown());
             }
-            return await _workerPool.AcquireAsync(kb, CancellationToken.None);
+            bool legacy = string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+            return await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, _currentOperationRequiresOwner.Value, legacy);
         }
         internal static WorkerPool? GetWorkerPool() => _workerPool;
         internal static KbResolver? GetKbResolver() => _kbResolver;

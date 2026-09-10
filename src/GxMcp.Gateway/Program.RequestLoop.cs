@@ -136,6 +136,8 @@ namespace GxMcp.Gateway
             string? method = request["method"]?.ToString();
             var idToken = request["id"];
             _currentKb.Value = null;
+            _currentSessionContext.Value = null;
+            _currentOperationRequiresOwner.Value = false;
 
             // Resource subscriptions are stateful protocol operations. Route them
             // before McpRouter's static discovery handler so an ACK is only issued
@@ -259,6 +261,13 @@ namespace GxMcp.Gateway
                             _workerPool.ListKnown(),
                             sessionDefaultAlias,
                             out _);
+                        SessionKbContextStore.Snapshot? sessionSnapshot = null;
+                        if (sessionContextEnabled)
+                            _sessionKbContexts.TryGetSnapshot(sessionId, out sessionSnapshot);
+                        _currentSessionContext.Value = sessionSnapshot;
+                        var resolvedArgs = (request["params"] as JObject)?["arguments"] as JObject;
+                        _currentOperationRequiresOwner.Value = !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase)
+                            && IsMutatingTool(toolNameForResolver ?? string.Empty, resolvedArgs);
                     }
                     catch (KbResolutionException ex)
                     {
@@ -859,7 +868,7 @@ namespace GxMcp.Gateway
                                     }
                                 }
 
-                                SetSessionSelectedKb(sessionId, resolvedAlias);
+                                SetSessionSelectedKb(sessionId, resolvedAlias, resolvedPath ?? resolvedAlias);
 
                                 payload = new JObject
                                 {
@@ -917,7 +926,7 @@ namespace GxMcp.Gateway
                                         }
                                     }
 
-                                    SetSessionSelectedKb(sessionId, sessionAlias);
+                                    SetSessionSelectedKb(sessionId, sessionAlias, sessionPath ?? sessionAlias);
 
                                     payload = new JObject
                                     {

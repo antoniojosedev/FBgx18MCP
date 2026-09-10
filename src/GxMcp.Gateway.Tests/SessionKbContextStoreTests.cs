@@ -70,6 +70,25 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void SessionSnapshotCarriesOwnerKbGenerationAndLeaseIndependently()
+        {
+            var registry = new KbUseLeaseRegistry(new TestClock());
+            var store = new SessionKbContextStore(TimeSpan.FromMinutes(5));
+            var leaseA = registry.Open("session-a", "orders", 1, "path-a", "open-a", TimeSpan.FromMinutes(1));
+            var leaseB = registry.Open("session-b", "customer", 1, "path-b", "open-b", TimeSpan.FromMinutes(1));
+
+            store.Set("session-a", "orders", "orders", leaseA);
+            store.Set("session-b", "customer", "customer", leaseB);
+
+            Assert.True(store.TryGetSnapshot("session-a", out var a));
+            Assert.True(store.TryGetSnapshot("session-b", out var b));
+            Assert.Equal("session-a", a!.OwnerScopeId);
+            Assert.Equal("orders", a.KbId);
+            Assert.Equal(leaseA.Token, a.Lease!.Token);
+            Assert.NotEqual(a.Lease.Token, b!.Lease!.Token);
+        }
+
+        [Fact]
         public void StdioSession_DoesNotExpireOnIdle()
         {
             var store = new SessionKbContextStore(TimeSpan.FromMilliseconds(1));
@@ -117,6 +136,10 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("KB_AMBIGUOUS", exC.Code);
             Assert.Contains("order", exC.Message);
             Assert.Contains("customer", exC.Message);
+        }
+        private sealed class TestClock : IMonotonicClock
+        {
+            public TimeSpan Now => TimeSpan.Zero;
         }
     }
 }

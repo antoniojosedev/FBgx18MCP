@@ -23,6 +23,12 @@ namespace GxMcp.Gateway
         InFlight
     }
 
+    public sealed class KbLeaseValidationException : Exception
+    {
+        public string Code { get; }
+        public KbLeaseValidationException(string code, string message) : base(message) { Code = code; }
+    }
+
     /// <summary>A process-local clock whose value never moves backwards.</summary>
     public interface IMonotonicClock
     {
@@ -209,6 +215,30 @@ namespace GxMcp.Gateway
                 if (!_byToken.TryGetValue(token, out var entry)) return null;
                 RefreshState(entry);
                 return Snapshot(entry);
+            }
+        }
+
+        public void Validate(string token, string ownerScopeId, string kbId, long contextGeneration, string identity)
+        {
+            Require(ownerScopeId, nameof(ownerScopeId));
+            Require(kbId, nameof(kbId));
+            Require(identity, nameof(identity));
+            lock (_gate)
+            {
+                var check = FindOwned(token, ownerScopeId);
+                if (check.Status == KbUseLeaseOperationStatus.WrongOwner)
+                    throw new KbLeaseValidationException("KB_NOT_OWNED", "The KB lease belongs to another session owner.");
+                if (check.Status != KbUseLeaseOperationStatus.Success)
+                    throw new KbLeaseValidationException("KB_LEASE_INVALID", "The KB lease token is invalid.");
+                var entry = check.LeaseEntry!;
+                RefreshState(entry);
+                if (entry.State == KbUseLeaseState.Expired)
+                    throw new KbLeaseValidationException("KB_LEASE_EXPIRED", "The KB lease has expired.");
+                if (entry.State != KbUseLeaseState.Active
+                    || !string.Equals(entry.KbId, kbId, StringComparison.Ordinal)
+                    || entry.ContextGeneration != contextGeneration
+                    || !string.Equals(entry.Identity, identity, StringComparison.Ordinal))
+                    throw new KbLeaseValidationException("KB_LEASE_INVALID", "The KB lease does not match the requested KB context snapshot.");
             }
         }
 

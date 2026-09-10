@@ -120,6 +120,27 @@ namespace GxMcp.Gateway.Tests
             Assert.All(tokens, token => Assert.Equal(tokens[0], token));
         }
 
+        [Fact]
+        public void ValidateRejectsWrongOwnerOldGenerationAndExpiredLease()
+        {
+            var clock = new TestMonotonicClock();
+            var registry = new KbUseLeaseRegistry(clock);
+            var lease = registry.Open("owner-a", "kb-1", 4, "identity-a", "request-1", TimeSpan.FromSeconds(5));
+
+            var wrongOwner = Assert.Throws<KbLeaseValidationException>(() =>
+                registry.Validate(lease.Token, "owner-b", "kb-1", 4, "identity-a"));
+            Assert.Equal("KB_NOT_OWNED", wrongOwner.Code);
+
+            var oldGeneration = Assert.Throws<KbLeaseValidationException>(() =>
+                registry.Validate(lease.Token, "owner-a", "kb-1", 3, "identity-a"));
+            Assert.Equal("KB_LEASE_INVALID", oldGeneration.Code);
+
+            clock.Advance(TimeSpan.FromSeconds(6));
+            var expired = Assert.Throws<KbLeaseValidationException>(() =>
+                registry.Validate(lease.Token, "owner-a", "kb-1", 4, "identity-a"));
+            Assert.Equal("KB_LEASE_EXPIRED", expired.Code);
+        }
+
         private sealed class TestMonotonicClock : IMonotonicClock
         {
             public TimeSpan Now { get; private set; }
