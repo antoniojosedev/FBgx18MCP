@@ -4,8 +4,17 @@
 
 ### Fixed
 
+- Required Events object saves now fail before persistence with
+  `ObjectSaveIsolationUnverified` until SDK/pattern event isolation is verified;
+  dry-run previews remain available. The legacy patch route preserves the
+  requirement, and decreasing revisions no longer count as save evidence.
+
+- Optional profile-owned KB path/version pins now reject mismatched or frozen write destinations after Worker restarts, with pre-open path validation and explicit activation recovery. The guard never activates or updates a version automatically.
+
 - Respect requested object types when resolving homonyms, including Pattern Settings, and separate read-cache entries by type and read shape.
 - Read Pattern Settings through the SDK pattern tree with explicit pagination instead of the generic properties XML.
+- Dirty tracking now classifies the final persisted write outcome, so no-op and pre-mutation failures do not create false dirty entries while confirmed rollbacks clear only the write they undo.
+- PR preflight now reports unavailable `ripwire` analysis explicitly, supports an opt-in required mode, and preserves nonzero tool failures instead of presenting an incomplete analysis as complete.
 
 ### Added
 
