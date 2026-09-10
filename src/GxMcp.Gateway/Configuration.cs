@@ -167,7 +167,14 @@ namespace GxMcp.Gateway
                         Program.Log($"[Gateway] KB Path configured: {config.Environment.KBPath}");
 
                     string? portOverride = global::System.Environment.GetEnvironmentVariable("GX_MCP_PORT");
-                    if (int.TryParse(portOverride, out int httpPortOverride) && httpPortOverride > 0)
+                    if (strictDocument && !string.IsNullOrWhiteSpace(portOverride))
+                    {
+                        if (!int.TryParse(portOverride, out int strictPortOverride))
+                            throw new InvalidDataException("GX_MCP_PORT must be an integer when a strict configuration is used.");
+                        if (strictPortOverride != config.Server!.HttpPort)
+                            throw new InvalidDataException($"GX_MCP_PORT conflicts with strict Server.HttpPort ({config.Server.HttpPort}).");
+                    }
+                    else if (int.TryParse(portOverride, out int httpPortOverride) && httpPortOverride > 0)
                     {
                         config.Server ??= new ServerConfig();
                         config.Server.HttpPort = httpPortOverride;
@@ -175,7 +182,14 @@ namespace GxMcp.Gateway
                     }
 
                     string? stdioOverride = global::System.Environment.GetEnvironmentVariable("GX_MCP_STDIO");
-                    if (bool.TryParse(stdioOverride, out bool mcpStdioOverride))
+                    if (strictDocument && !string.IsNullOrWhiteSpace(stdioOverride))
+                    {
+                        if (!bool.TryParse(stdioOverride, out bool strictStdioOverride))
+                            throw new InvalidDataException("GX_MCP_STDIO must be true or false when a strict configuration is used.");
+                        if (strictStdioOverride != config.Server!.McpStdio)
+                            throw new InvalidDataException($"GX_MCP_STDIO conflicts with strict Server.McpStdio ({config.Server.McpStdio}).");
+                    }
+                    else if (bool.TryParse(stdioOverride, out bool mcpStdioOverride))
                     {
                         config.Server ??= new ServerConfig();
                         config.Server.McpStdio = mcpStdioOverride;

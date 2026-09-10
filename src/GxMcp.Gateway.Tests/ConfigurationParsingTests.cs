@@ -264,6 +264,34 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
+        [Fact]
+        public void ParseConfig_StrictV2_RejectsConflictingTransportEnvironment()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            string? oldPort = Environment.GetEnvironmentVariable("GX_MCP_PORT");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}");
+                Environment.SetEnvironmentVariable("GX_MCP_PORT", "5000");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+                Assert.Contains("GX_MCP_PORT conflicts", error.Message);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_MCP_PORT", oldPort);
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
         private static Configuration ParseConfig(string path)
         {
             var method = typeof(Configuration).GetMethod("ParseConfig", BindingFlags.NonPublic | BindingFlags.Static);
