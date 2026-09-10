@@ -68,6 +68,18 @@ namespace GxMcp.Gateway.Routers
                         type = args?["type"]?.ToString()
                     };
 
+                case "export_kb_to_text":
+                    return new { module = "Object", action = "ExportTextBatch", target = args?["name"]?.ToString(), @params = args };
+
+                case "import_text_to_kb":
+                    return new { module = "Object", action = "ImportTextBatch", target = args?["name"]?.ToString(), @params = args };
+
+                case "validate_kb_text_files":
+                    return new { module = "Object", action = "ValidateTextBatch", target = args?["name"]?.ToString(), @params = args };
+
+                case "delete_kb_objects":
+                    return new { module = "Object", action = "DeleteTextBatch", target = args?["name"]?.ToString(), @params = args };
+
                 case "export_unified":
                     return new
                     {

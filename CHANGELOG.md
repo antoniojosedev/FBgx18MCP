@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Restored the `genexus_io` Object Text batch routes in the umbrella router after integrating the neutral-runtime changes with the current `main` contracts; the discovery schema budget now covers the combined tool surface.
+
 
 ## v3.2.1 - 2026-09-09
 
