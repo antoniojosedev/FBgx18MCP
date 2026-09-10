@@ -175,6 +175,53 @@ namespace GxMcp.Worker.Tests
             finally { cache.DeleteOnDiskSnapshot(); }
         }
 
+        [Fact]
+        public void ShardedLoad_RejectsInvalidManifestAndCanDeltaIsFalse()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "ManifestProbe") });
+                Assert.True(cache.FlushNow());
+                cache.ObserveLastUpdate(DateTime.UtcNow);
+                cache.WriteMetaSidecar(1);
+                File.WriteAllText(cache.ShardManifestPathForTest, "{\"schemaVersion\":999}");
+
+                var validation = cache.ValidateOnDiskCache();
+                Assert.False(validation.CanDelta);
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.ThrowsAny<Exception>(() => reloaded.GetIndex());
+                Assert.Null(reloaded.TryGetLoadedIndex());
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void ShardedLoad_RejectsWrongShardAndDoesNotPublishPartialIndex()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "IntegrityProbe") });
+                Assert.True(cache.FlushNow());
+                int expected = IndexCacheService.ShardOf("Procedure:IntegrityProbe");
+                int wrong = (expected + 1) % IndexCacheService.ShardCount;
+                File.Copy(cache.ShardFilePathForTest(expected), cache.ShardFilePathForTest(wrong), true);
+                File.Delete(cache.ShardFilePathForTest(expected));
+
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.ThrowsAny<Exception>(() => reloaded.GetIndex());
+                Assert.Null(reloaded.TryGetLoadedIndex());
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
         // ── C3 regression: MarkDirty must mark shards BEFORE bumping the generation ──
         // FlushToDisk captures _dirtyGeneration, then pops+writes dirty shards, then
         // publishes _flushedGeneration = captured gen on success. If MarkDirtyForKey
