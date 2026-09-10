@@ -38,6 +38,9 @@
 - Security and recovery paths retain dry-run/confirmation gates, allowlists,
   audit metadata, Worker crash/reload/timeout coverage, and closed-KB/pipe
   failure regressions.
+- Worker ownership is now checkout-scoped through a named mutex and durable PID/start-time
+  lease; startup no longer performs a system-wide orphan scan, while a once-per-minute
+  exact-record reconciliation handles crashed gateways (see `docs/worker-ownership.md`).
 - Canonical MCP error envelopes now expose optional boolean `retryable` and
   `reconciliationRequired` decisions, while conformance tests validate their
   types and the shape of `nextSteps` entries.

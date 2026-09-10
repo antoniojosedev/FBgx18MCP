@@ -117,6 +117,8 @@ namespace GxMcp.Gateway
         private int _lastExitCode = int.MinValue;
         private long _lastWorkingSetBytes = -1;
         private int _lastPid;
+        private WorkerOwnershipLease? _ownershipLease;
+        private DateTime _lastOwnershipReconcileUtc = DateTime.MinValue;
 
         public long? SpawnMs { get { var v = System.Threading.Interlocked.Read(ref _spawnMs); return v < 0 ? (long?)null : v; } }
         public long? SdkInitMs { get { var v = System.Threading.Interlocked.Read(ref _sdkInitMs); return v < 0 ? (long?)null : v; } }
@@ -242,6 +244,11 @@ namespace GxMcp.Gateway
                     if (_process != null && !_process.HasExited)
                     {
                         SnapshotVitals();
+                        if (DateTime.UtcNow - _lastOwnershipReconcileUtc >= TimeSpan.FromMinutes(1))
+                        {
+                            _lastOwnershipReconcileUtc = DateTime.UtcNow;
+                            WorkerOwnershipRegistry.Reconcile(SpawnedExePath ?? string.Empty, Kb.Path);
+                        }
                         if (ShouldStopForIdle())
                         {
                             Program.Log($"[Gateway] worker_idle_shutdown pid={_process.Id} idleTimeoutMinutes={_workerIdleTimeout.TotalMinutes}");
@@ -609,60 +616,6 @@ namespace GxMcp.Gateway
             }
         }
 
-        // Hard "exactly one worker per KB" backstop. Run at the top of every Start():
-        // reap only ORPHANED GxMcp.Worker processes bound to this KB (matched on the
-        // --kb path in its command line) — i.e. workers whose owning gateway is no
-        // longer alive (crash, reload race, gateway died without cleanup). Workers
-        // still owned by a live gateway (ours or a sibling serving the same KB) are
-        // skipped: the sibling's own BusyReject/FR#19 flow already handles them, and
-        // reaping them would cause two gateways to kill each other in a loop.
-        // Our own live process (when self != exited) is preserved. Best-effort per process.
-        private void KillOrphanWorkers()
-        {
-            try
-            {
-                string norm = (Kb?.Path ?? string.Empty).Trim().TrimEnd('\\', '/').ToLowerInvariant();
-                if (norm.Length == 0) return;
-
-                int? ourPid = null;
-                try { ourPid = _process?.HasExited == false ? _process.Id : (int?)null; } catch { }
-
-                foreach (var proc in Process.GetProcessesByName("GxMcp.Worker"))
-                {
-                    try
-                    {
-                        if (ourPid.HasValue && proc.Id == ourPid.Value) continue;
-                        string cmd = GetCommandLine(proc);
-                        if (string.IsNullOrEmpty(cmd)) continue;
-                        if (!CommandLineTargetsKb(cmd, norm)) continue;
-
-                        int parentPid = GetParentProcessId(proc);
-                        if (IsOwnedByLiveGateway(parentPid))
-                        {
-                            // Worker still owned by a live gateway (ours or a sibling
-                            // serving the same KB): not an orphan. The sibling's own
-                            // BusyReject/FR#19 flow handles contention; killing here
-                            // would cause a mutual kill loop between gateways.
-                            Program.Log($"[Gateway] KillOrphanWorkers: skipping pid={proc.Id} — owned by live gateway (parent pid={parentPid}).");
-                            continue;
-                        }
-
-                        Program.Log($"[Gateway] KillOrphanWorkers: reaping orphan worker pid={proc.Id} for KB '{Kb?.Alias}' (parent pid={parentPid} not a live gateway).");
-                        proc.Kill(true);
-                        proc.WaitForExit(3000);
-                    }
-                    catch (Exception ex)
-                    {
-                        Program.Log($"[Gateway] KillOrphanWorkers: probe/kill pid={proc.Id} failed: {ex.Message}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Program.Log($"[Gateway] KillOrphanWorkers: enumeration failed: {ex.Message}");
-            }
-        }
-
         /// <summary>
         /// FR#19: locate an existing GxMcp.Worker process bound to the given KB by
         /// scanning the Win32_Process command-line for "--kb &lt;kbPath&gt;". Used when
@@ -749,63 +702,6 @@ namespace GxMcp.Gateway
             return string.Empty;
         }
 
-        private static int GetParentProcessId(Process process)
-        {
-            try
-            {
-                using var searcher = new ManagementObjectSearcher("SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = " + process.Id);
-                using var objects = searcher.Get();
-                foreach (var obj in objects)
-                {
-                    return Convert.ToInt32(obj["ParentProcessId"]);
-                }
-            }
-            catch
-            {
-            }
-
-            return 0;
-        }
-
-        /// <summary>
-        /// True when <paramref name="parentPid"/> is a currently running GxMcp.Gateway
-        /// (or the dotnet host used during dev via `dotnet run`). Workers whose parent
-        /// matches are live siblings' children, not orphans.
-        /// </summary>
-        private static bool IsOwnedByLiveGateway(int parentPid)
-        {
-            if (parentPid <= 0) return false;
-
-            foreach (string name in new[] { "GxMcp.Gateway", "dotnet" })
-            {
-                Process[] candidates;
-                try
-                {
-                    candidates = Process.GetProcessesByName(name);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                foreach (var candidate in candidates)
-                {
-                    using (candidate)
-                    {
-                        try
-                        {
-                            if (!candidate.HasExited && candidate.Id == parentPid) return true;
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }
-            }
-
-            return false;
-        }
-
         public void Start()
         {
             lock (_processLock)
@@ -820,7 +716,6 @@ namespace GxMcp.Gateway
 
             try
             {
-                KillOrphanWorkers();
                 _stopReason = WorkerStopReason.None;
                 MarkActivity();
                 // Publish the readiness sources under the lock: StopProcess /
@@ -850,6 +745,8 @@ namespace GxMcp.Gateway
                 }
 
                 string workerPath = res.ResolvedPath;
+
+                _ownershipLease = WorkerOwnershipRegistry.Acquire(workerPath, Kb.Path);
 
                 SpawnedExePath = workerPath;
                 try { SpawnedExeBuiltAtUtc = File.GetLastWriteTimeUtc(workerPath); } catch { SpawnedExeBuiltAtUtc = null; }
@@ -946,8 +843,8 @@ namespace GxMcp.Gateway
                     // NOT also restart itself in place. Having both paths active spawned two
                     // live processes per exit — one tracked by the pool, one orphaned-but-alive
                     // — which compounded into a runaway worker-process explosion (a real memory
-                    // leak: hundreds of GxMcp.Worker for a single KB). KillOrphanWorkers() at
-                    // the top of Start() is the hard "exactly one worker per KB" backstop.
+                    // leak: hundreds of GxMcp.Worker for a single KB). Ownership is now released
+                    // before the pool is notified, so a replacement can reserve the same scope.
                     FireWorkerExitedOnce(reason);
                 };
                 }
@@ -961,6 +858,7 @@ namespace GxMcp.Gateway
                     {
                         _process.Start();
                         _lastPid = _process.Id;
+                        _ownershipLease.SetWorker(_process);
                         SpawnedAtUtc = DateTime.UtcNow;
                         _spawnWatch.Stop();
                         System.Threading.Interlocked.Exchange(ref _spawnMs, _spawnWatch.ElapsedMilliseconds);
@@ -1042,6 +940,17 @@ namespace GxMcp.Gateway
                     _healthCheckTask = Task.Run(() => RunHealthCheckAsync(_cts.Token));
                 }
             }
+            catch
+            {
+                try
+                {
+                    if (IsProcessRunning(_process)) _process!.Kill(true);
+                }
+                catch { }
+                _ownershipLease?.Dispose();
+                _ownershipLease = null;
+                throw;
+            }
             finally
             {
                 lock (_processLock)
@@ -1109,6 +1018,8 @@ namespace GxMcp.Gateway
         private void FireWorkerExitedOnce(WorkerStopReason reason)
         {
             if (Interlocked.Exchange(ref _exitNotified, 1) != 0) return;
+            _ownershipLease?.Dispose();
+            _ownershipLease = null;
             try
             {
                 int? exitCode = _lastExitCode == int.MinValue ? (int?)null : _lastExitCode;
