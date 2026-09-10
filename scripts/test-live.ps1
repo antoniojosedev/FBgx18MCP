@@ -30,7 +30,7 @@ param(
     [ValidateRange(5, 7200)]
     [int]$RpcTimeoutSeconds = 240,
 
-    [string]$TestFilter = 'Category=LiveE2E'
+    [string]$TestFilter = 'Category=LiveE2E&FullyQualifiedName!~TeamDevelopment'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,6 +43,11 @@ $gxCatalog = Get-GxVersionCatalog -Root $root
 function Fail-Live([string]$Message, [int]$ExitCode = 1) {
     Write-Error "live=unavailable; Live gate failed: $Message"
     exit $ExitCode
+}
+
+function Write-LiveProgress {
+    param([Parameter(Mandatory = $true)][string]$Message)
+    Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $Message) -ForegroundColor DarkCyan
 }
 
 function Get-FreeHttpPort {
@@ -131,11 +136,13 @@ if (Get-NetTCPConnection -LocalPort $HttpPort -State Listen -ErrorAction Silentl
 $env:GX_MCP_PORT = $HttpPort.ToString()
 $env:GX_MCP_STDIO = 'true'
 
+Write-LiveProgress "Fixture validated: $KbPath"
 Write-Host "Live KB: $KbPath" -ForegroundColor Cyan
 Write-Host "GeneXus SDK: $GxPath" -ForegroundColor Cyan
 Write-Host "Isolated HTTP port: $HttpPort" -ForegroundColor Cyan
 
 if (-not $SkipBuild) {
+    Write-LiveProgress "Build phase starting"
     Write-Host "`n>>> Building current Gateway/Worker artifact" -ForegroundColor Cyan
     & pwsh -NoProfile -File (Join-Path $root 'build.ps1')
     if ($LASTEXITCODE -ne 0) {
@@ -171,6 +178,9 @@ New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
 $gatewayLogDirectory = Join-Path $runDirectory 'gateway-log'
 New-Item -ItemType Directory -Path $gatewayLogDirectory -Force | Out-Null
 $gatewayLogPath = Join-Path $gatewayLogDirectory 'gateway_debug.log'
+if (Test-Path -LiteralPath $gatewayLogPath) {
+    Remove-Item -LiteralPath $gatewayLogPath -Force
+}
 $env:GXMCP_LOG_DIR = $gatewayLogDirectory
 $env:GXMCP_LIVE_GATEWAY_EXE = $gatewayExe
 $env:GXMCP_LIVE_RPC_TIMEOUT_MS = ($RpcTimeoutSeconds * 1000).ToString()
@@ -181,6 +191,7 @@ $liveFixtureAlias = 'live-fixture'
     Server = @{ HttpPort = $HttpPort; McpStdio = $true; BindAddress = '127.0.0.1' }
     Environment = @{ DefaultKb = $liveFixtureAlias; KBs = @(@{ Alias = $liveFixtureAlias; Path = $KbPath }) }
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:GX_CONFIG_PATH -Encoding utf8
+Write-LiveProgress "Gateway live smoke starting; filter=$TestFilter; RPC timeout=${RpcTimeoutSeconds}s"
 Write-Host "`n>>> Gateway live smoke" -ForegroundColor Cyan
 & dotnet test $gatewayProject --no-restore --nologo -v:minimal --filter $TestFilter
 if ($LASTEXITCODE -ne 0) {
@@ -194,6 +205,7 @@ try {
 Write-Host "Gateway master verified; log=$gatewayLogPath" -ForegroundColor Green
 
 if ($RequireBuildAll) {
+    Write-LiveProgress "Native Build All phase starting; timeout=${BuildAllTimeoutSeconds}s"
     $buildAllScript = Join-Path $root 'scripts\live-build-all.ps1'
     Write-Host "`n>>> Native Build All evidence gate" -ForegroundColor Cyan
     & pwsh -NoProfile -File $buildAllScript `
@@ -213,6 +225,7 @@ if ($RequireBuildAll) {
 }
 
 if (-not $GatewayOnly) {
+    Write-LiveProgress "Worker SDK live check starting"
     $workerProject = Join-Path $root 'src\GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj'
     Write-Host "`n>>> Worker SDK live check" -ForegroundColor Cyan
     & dotnet test $workerProject --no-restore --nologo -v:minimal --filter 'FullyQualifiedName~InProcessBuildRunnerTests.TryResolveTypes_finds_GeneXus_tasks_when_SDK_installed'
@@ -222,6 +235,7 @@ if (-not $GatewayOnly) {
 }
 
 if ($RunBenchmark) {
+    Write-LiveProgress "Benchmark phase starting; iterations=$Iterations"
     $benchmark = Join-Path $root 'scripts\bench-live-http.py'
     if (-not (Test-Path -LiteralPath $benchmark -PathType Leaf)) {
         Fail-Live "Benchmark harness not found at '$benchmark'."

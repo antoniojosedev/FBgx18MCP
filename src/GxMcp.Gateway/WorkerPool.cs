@@ -26,6 +26,7 @@ namespace GxMcp.Gateway
         private readonly ConcurrentDictionary<string, Entry> _entries =
             new ConcurrentDictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
 
+
         // issue #26 P3: durable alias→handle registry that OUTLIVES the worker
         // process. `_entries` is torn down the instant a worker exits (crash, idle
         // timeout, reload), which used to drop the only record of an ad-hoc opened

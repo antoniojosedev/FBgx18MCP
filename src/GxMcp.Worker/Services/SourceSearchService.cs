@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Parts;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Helpers;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -216,6 +217,7 @@ namespace GxMcp.Worker.Services
         {
             try
             {
+                var searchSw = System.Diagnostics.Stopwatch.StartNew();
                 if (string.IsNullOrEmpty(c.Callee) && string.IsNullOrEmpty(c.Pattern))
                     return Models.McpResponse.Err(code: "MissingCriteria", message: "Provide 'callee' (semantic) or 'pattern' (regex).");
 
@@ -249,7 +251,13 @@ namespace GxMcp.Worker.Services
                     // build this derived posting map during hydration. Asking for the
                     // map here keeps both paths correct without changing the fixture's
                     // other secondary-index semantics.
-                    try { _index.EnsureSourceTokenIndex(); } catch { }
+                    var tokenIndexSw = System.Diagnostics.Stopwatch.StartNew();
+                    try { _index.EnsureSourceTokenIndex(); }
+                    finally
+                    {
+                        tokenIndexSw.Stop();
+                        Logger.Info($"[SEARCH-SOURCE-PHASE] tokenIndexMs={tokenIndexSw.ElapsedMilliseconds} indexed={_index.GetIndex()?.SourceTokenIndex != null}");
+                    }
                 }
 
                 // Issue #27 item 4: an explicit objectName scope restricts the scan to
@@ -313,6 +321,7 @@ namespace GxMcp.Worker.Services
                 var entries = query
                     .Where(e => string.IsNullOrEmpty(c.TypeFilter) || string.Equals(e.Type, c.TypeFilter, StringComparison.OrdinalIgnoreCase))
                     .ToList();
+                Logger.Info($"[SEARCH-SOURCE-PHASE] candidateFilterMs={searchSw.ElapsedMilliseconds} candidates={entries.Count} literals={literals.Count} partial={partialIndex}");
 
                 // issue #36.7 — an objectName scope that resolved to zero entries must say so
                 // explicitly, not silently return "no hits" (indistinguishable from "found
@@ -337,6 +346,11 @@ namespace GxMcp.Worker.Services
 
                 int produced = 0;
                 int scanned = 0;
+                int sourceCacheHits = 0;
+                int sourceCacheMisses = 0;
+                int sdkResolutions = 0;
+                long sdkResolutionTicks = 0;
+                long sourceReadTicks = 0;
                 // Issue #27 item 4: index-addressable loop so a Timeout/Cancel can report a
                 // resumable nextCursor (the absolute entry index reached).
                 int resumeEntry = -1;
@@ -422,16 +436,21 @@ namespace GxMcp.Worker.Services
                             && _objectService.TryGetPartSourceRaw(e.Guid, part, out src))
                         {
                             haveSrc = true;
+                            sourceCacheHits++;
                         }
                         if (!haveSrc)
                         {
+                            sourceCacheMisses++;
                             if (obj == null)
                             {
                                 // Resolve the object ONCE per candidate; on failure bail the whole
                                 // candidate (review nit: a per-part `continue` here would re-attempt
                                 // FindObject for every remaining part of the same candidate).
+                                var resolveStart = System.Diagnostics.Stopwatch.GetTimestamp();
                                 try { obj = _objectService.FindObject(e); }
                                 catch { obj = null; }
+                                sdkResolutions++;
+                                sdkResolutionTicks += System.Diagnostics.Stopwatch.GetTimestamp() - resolveStart;
                                 if (obj == null)
                                 {
                                     var diagnostic = _objectService?.GetLastResolutionDiagnostic();
@@ -440,9 +459,11 @@ namespace GxMcp.Worker.Services
                                     break;
                                 }
                             }
+                            var sourceReadStart = System.Diagnostics.Stopwatch.GetTimestamp();
                             src = _objectService != null
                                 ? _objectService.ReadPartSourceRaw(obj, part)
                                 : TryGetPartSource(obj, part);
+                            sourceReadTicks += System.Diagnostics.Stopwatch.GetTimestamp() - sourceReadStart;
                         }
                         if (string.IsNullOrEmpty(src)) continue;
 
@@ -696,6 +717,7 @@ namespace GxMcp.Worker.Services
                     resultPayload["unresolvedObjects"] = unresolvedObjects;
                     resultPayload["unresolvedHint"] = "The index listed these objects, but the active SDK could not resolve their native identity; no source was inferred for them.";
                 }
+                Logger.Info($"[SEARCH-SOURCE-PHASE] sdkResolveMs={(long)(sdkResolutionTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency)} sourceReadMs={(long)(sourceReadTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency)} resolutions={sdkResolutions} cacheHits={sourceCacheHits} cacheMisses={sourceCacheMisses} scanned={scanned} totalMs={searchSw.ElapsedMilliseconds}");
                 if (hits.Count > 0 && hits[0] is JObject topHit)
                 {
                     resultPayload["_meta"] = new JObject
@@ -1015,11 +1037,22 @@ namespace GxMcp.Worker.Services
             {
                 if (string.Equals(partName, "source", StringComparison.OrdinalIgnoreCase))
                 {
+                    // Procedure exposes its native source part directly. Avoiding Parts
+                    // enumeration and dynamic dispatch is the cheapest SDK-only path;
+                    // other object kinds retain the compatibility fallback below.
+                    if (obj is Artech.Genexus.Common.Objects.Procedure procedure && procedure.ProcedurePart != null)
+                        return procedure.ProcedurePart.Source ?? "";
                     dynamic sp = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource);
                     return sp?.Source ?? "";
                 }
                 if (string.Equals(partName, "rules", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (obj is Artech.Genexus.Common.Objects.Procedure procedure)
+                        return procedure.Rules?.Source ?? "";
+                    if (obj is Artech.Genexus.Common.Objects.Transaction transaction)
+                        return transaction.Rules?.Source ?? "";
+                    if (obj is Artech.Genexus.Common.Objects.WebPanel webPanel)
+                        return webPanel.Rules?.Source ?? "";
                     try { return ((dynamic)obj).Rules?.Source ?? ""; } catch { return ""; }
                 }
                 if (string.Equals(partName, "conditions", StringComparison.OrdinalIgnoreCase))
@@ -1028,6 +1061,10 @@ namespace GxMcp.Worker.Services
                 }
                 if (string.Equals(partName, "events", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (obj is Artech.Genexus.Common.Objects.Transaction transaction)
+                        return transaction.Events?.Source ?? "";
+                    if (obj is Artech.Genexus.Common.Objects.WebPanel webPanel)
+                        return webPanel.Events?.Source ?? "";
                     try { return ((dynamic)obj).Events?.Source ?? ""; } catch { return ""; }
                 }
                 // WebForm / Layout — the visual XML of WebPanels/Transactions. Not an

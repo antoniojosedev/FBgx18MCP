@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed
+
+- Prevented concurrent Worker acquisition under different aliases from starting duplicate Workers for the same KB path; this avoids SDK single-instance `BusyReject` loops during initialize and warmup.
+
+### Changed
+
+- Source search now uses the native `ProcedurePart` accessor for Procedures and retains the dynamic `ISource` fallback for other SDK object kinds; live validation confirmed equivalent hits on a 500-line Procedure fixture.
+- Source search now uses typed `Rules` and `Events` accessors for Procedures, Transactions, and WebPanels, while preserving the dynamic fallback for SDK variants without those properties.
+- Applied the typed source/rules/events accessors in the Worker raw-read path used by source search; `Parts.Get<ProcedurePart>()` was benchmarked and rejected in favor of the more stable direct `ProcedurePart` property path.
+
+### Fixed
+
+- Serialized default-KB warmup and index bootstrap so initialize does not race two Worker acquisitions on the STA process.
+- Extended the live benchmark with wire-level `content`, `structuredContent`, and estimated-token measurements while preserving compatibility with legacy two-value probe results.
+- Improved live-KB harness isolation by removing stale gateway logs before each run and streaming matrix progress, preventing orphaned-process failures from appearing as silent multi-minute hangs.
+- Enforced the documented ASCII-only `[A-Za-z0-9_-]` idempotency-key contract and added deterministic property/fuzz regression coverage for validation, canonicalization, and concurrent deduplication.
+- Made the live SDK matrix stream child-harness output with timestamps and explicit phase markers instead of buffering progress until process completion.
+
 ## v3.2.1 - 2026-09-09
 
 

@@ -250,6 +250,8 @@ namespace GxMcp.Gateway
         }
         internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
+        internal static readonly TaskCompletionSource<bool> WorkerWarmupCompleted =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         private static int _indexBootstrapStarted;
         // v2.6.8 (review C6): incremented before any planned worker exit
         // (worker_reload, KB switch, shutdown) so OnWorkerExited can skip the
