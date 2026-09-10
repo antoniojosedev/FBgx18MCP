@@ -125,6 +125,9 @@ namespace GxMcp.Worker.Services
         private BuildService _buildService;
         private bool _initialized = false;
         private readonly object _lock = new object();
+        private TaskCompletionSource<SearchIndex> _loadState;
+        private int _loadInvocationCount;
+        internal int LoadInvocationCountForTest => System.Threading.Volatile.Read(ref _loadInvocationCount);
         private DateTime _lastFlushTime = DateTime.MinValue;
         private bool _savingInProgress = false;
         // PERFORMANCE (W-M2): track consecutive flush failures so a silently failing
@@ -552,7 +555,7 @@ namespace GxMcp.Worker.Services
 
                 // PERFORMANCE: Pro-active loading in background. Skipped when proactiveLoad=false
                 // (force reindex) so it doesn't race the imminent Clear()/DeleteOnDiskSnapshot().
-                if (proactiveLoad) Task.Run(() => GetIndex());
+                if (proactiveLoad) StartLoadTask();
             }
             catch (Exception ex) { Logger.Error("IndexCache Init Error: " + ex.Message); }
         }
@@ -1015,7 +1018,7 @@ namespace GxMcp.Worker.Services
         {
             if (_index != null) return;
             try { EnsureInitialized(); } catch { /* best-effort */ }
-            try { System.Threading.Tasks.Task.Run(() => GetIndex()); } catch { /* best-effort */ }
+            try { StartLoadTask(); } catch { /* best-effort */ }
         }
 
         public SearchIndex GetIndex()
@@ -1023,62 +1026,83 @@ namespace GxMcp.Worker.Services
             if (_index != null) return _index;
             EnsureInitialized();
 
+            var loadState = StartLoadTask();
+            try
+            {
+                return loadState.Task.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                // A failed load must not publish an empty index: callers can retry after
+                // the snapshot is repaired, and the failed task is never reused.
+                Logger.Error("Load Index Error: " + ex.Message);
+                System.Threading.Interlocked.CompareExchange(ref _loadState, null, loadState);
+                return new SearchIndex();
+            }
+        }
+
+        private TaskCompletionSource<SearchIndex> StartLoadTask()
+        {
+            var state = System.Threading.Volatile.Read(ref _loadState);
+            if (state != null) return state;
+
+            var candidate = new TaskCompletionSource<SearchIndex>(TaskCreationOptions.RunContinuationsAsynchronously);
+            state = System.Threading.Interlocked.CompareExchange(ref _loadState, candidate, null) ?? candidate;
+            if (ReferenceEquals(state, candidate))
+            {
+                Task.Run(() => CompleteLoad(candidate));
+            }
+            return state;
+        }
+
+        private void CompleteLoad(TaskCompletionSource<SearchIndex> state)
+        {
+            try { state.TrySetResult(LoadIndexCore()); }
+            catch (Exception ex) { state.TrySetException(ex); }
+        }
+
+        private SearchIndex LoadIndexCore()
+        {
+            System.Threading.Interlocked.Increment(ref _loadInvocationCount);
+            // Plan 003: prefer the sharded snapshot (manifest present = the shard
+            // directory is trustworthy); fall back to the legacy single-file gz/plain
+            // snapshot so existing installs keep working without re-indexing.
+            SearchIndex loaded = null;
+            if (!string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath))
+            {
+                Logger.Debug(string.Format("Loading sharded index from disk: {0}", _shardDirPath));
+                loaded = LoadShardedIndex();
+            }
+            else
+            {
+                string json = null;
+                if (File.Exists(_indexPathGz))
+                {
+                    Logger.Debug(string.Format("Loading gzipped index from disk: {0}", _indexPathGz));
+                    json = ReadGzippedText(_indexPathGz);
+                }
+                else if (File.Exists(_indexPath))
+                {
+                    Logger.Debug(string.Format("Loading legacy plain index from disk: {0}", _indexPath));
+                    json = File.ReadAllText(_indexPath);
+                }
+                if (!string.IsNullOrEmpty(json)) loaded = SearchIndex.FromJson(json);
+            }
+
+            if (loaded == null) loaded = new SearchIndex();
+            NormalizeLegacyHierarchy(loaded);
+            BuildParentIndex(loaded);
+            PrimeHierarchyCacheFromIndex(loaded);
             lock (_lock)
             {
+                // A live mutation or test fixture may publish an index while the disk
+                // read is in flight; never replace that newer in-memory state.
                 if (_index != null) return _index;
-                try
-                {
-                    // Plan 003: prefer the sharded snapshot (manifest present = the shard
-                    // directory is trustworthy); fall back to the legacy single-file gz/plain
-                    // snapshot so existing installs keep working without re-indexing. Loading
-                    // the legacy body doesn't clear any shard's dirty flag, so the very next
-                    // flush re-emits it as a sharded snapshot (silent migration).
-                    SearchIndex loaded = null;
-                    if (!string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath))
-                    {
-                        Logger.Debug(string.Format("Loading sharded index from disk: {0}", _shardDirPath));
-                        loaded = LoadShardedIndex();
-                    }
-                    else
-                    {
-                        string json = null;
-                        if (File.Exists(_indexPathGz))
-                        {
-                            Logger.Debug(string.Format("Loading gzipped index from disk: {0}", _indexPathGz));
-                            json = ReadGzippedText(_indexPathGz);
-                        }
-                        else if (File.Exists(_indexPath))
-                        {
-                            Logger.Debug(string.Format("Loading legacy plain index from disk: {0}", _indexPath));
-                            json = File.ReadAllText(_indexPath);
-                        }
-                        if (!string.IsNullOrEmpty(json)) loaded = SearchIndex.FromJson(json);
-                    }
-
-                    if (loaded != null)
-                    {
-                        _index = loaded;
-                        NormalizeLegacyHierarchy(_index);
-                        BuildParentIndex(_index);
-                        PrimeHierarchyCacheFromIndex(_index);
-                        Logger.Info(string.Format("Index loaded. Objects: {0}", _index.Objects.Count));
-                        // v2.3.8 (post-Task 1.2 fix): when we hydrate the in-memory index
-                        // from the on-disk cache (warm start), publish Ready to IndexState
-                        // so whoami doesn't keep reporting Cold while list/search hit a
-                        // fully-populated index. Without this the state machine only
-                        // transitioned via BulkIndex's MarkIndexComplete, which is skipped
-                        // on warm starts (AlreadyIndexed path in KbService.BulkIndex).
-                        if (_index.Objects.Count > 0)
-                        {
-                            MarkIndexComplete(_index.Objects.Count);
-                        }
-                    }
-                }
-                catch (Exception ex) { Logger.Error("Load Index Error: " + ex.Message); }
-
-                if (_index == null) _index = new SearchIndex();
-                return _index;
+                _index = loaded;
             }
+            Logger.Info(string.Format("Index loaded. Objects: {0}", loaded.Objects.Count));
+            if (loaded.Objects.Count > 0) MarkIndexComplete(loaded.Objects.Count);
+            return loaded;
         }
 
         private static string ReadGzippedText(string path)
