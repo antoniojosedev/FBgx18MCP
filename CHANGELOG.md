@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.2.2 - 2026-09-10
+
+
 ### Added
 
 - Added the issue #146 neutral runtime contract: explicit `ConfigSchemaVersion`, `GatewayMode`, strict/local-friendly versus hardened policies, and KB-free configuration generation.
