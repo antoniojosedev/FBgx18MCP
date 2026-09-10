@@ -75,7 +75,9 @@ namespace GxMcp.Gateway.Tests
 
             initial.SimulateUnexpectedExitForTest();
 
-            await EventuallyAsync(() => ReferenceEquals(pool.TryGet("respawn-kb"), replacement));
+            await EventuallyAsync(() => ReferenceEquals(pool.TryGet("respawn-kb"), replacement)
+                && delays.Count == 2
+                && Volatile.Read(ref bootstrapCount) == 1);
             Assert.Equal(4, spawnAttempts);
             Assert.Equal(2, delays.Count);
             Assert.Equal(1, bootstrapCount);

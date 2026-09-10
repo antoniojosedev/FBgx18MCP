@@ -65,6 +65,9 @@ namespace GxMcp.Gateway
 
         internal static void ResetWorkerLifecycleForTest()
         {
+            _respawnTestCancellation.Cancel();
+            _respawnTestCancellation.Dispose();
+            _respawnTestCancellation = new CancellationTokenSource();
             try { _workerPool?.StopAll(); } catch { }
             _workerPool = null;
             _kbResolver = null;
@@ -338,7 +341,8 @@ namespace GxMcp.Gateway
         // an honest "respawn_failed" with the real cause + a recovery hint, instead of a
         // perpetual, misleading "respawning" while no process is actually coming up.
         private static readonly ConcurrentDictionary<string, (DateTime AtUtc, string Error)> _respawnFailures =
-            new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
+                    new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
+        private static CancellationTokenSource _respawnTestCancellation = new CancellationTokenSource();
         private static bool _stdioActive;
         // #3: the client request that triggered a proxy→master promotion, buffered so the new
         // master can replay it once instead of dropping it across the takeover.
