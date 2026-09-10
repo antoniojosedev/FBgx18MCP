@@ -409,6 +409,8 @@ namespace GxMcp.Gateway
 
             var canonicalArgs = CanonicalizeJson(args ?? new JObject());
             string normalizedKb = (kbScope ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedKb.Length == 0)
+                return null;
             string normalizedTool = (toolName ?? string.Empty).Trim().ToLowerInvariant();
             string model = CanonicalizeScopePart(modelScope);
             string environment = CanonicalizeScopePart(environmentScope);
