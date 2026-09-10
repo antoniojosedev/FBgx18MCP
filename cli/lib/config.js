@@ -22,13 +22,13 @@ function generateConfig(gxPath, kbPath) {
     };
 }
 
-function generateNeutralConfig(gxPath) {
+function generateNeutralConfig(gxPath, { workerPath, gatewayMode = 'stdio-isolated', resolutionPolicy = 'strict' } = {}) {
     return {
         ConfigSchemaVersion: 2,
-        GatewayMode: 'stdio-isolated',
+        GatewayMode: gatewayMode,
         GeneXus: {
             InstallationPath: gxPath,
-            WorkerExecutable: path.join(path.dirname(getGatewayExePath()), 'worker', 'GxMcp.Worker.exe')
+            WorkerExecutable: workerPath || path.join(path.dirname(getGatewayExePath()), 'worker', 'GxMcp.Worker.exe')
         },
         Server: {
             HttpPort: 0,
@@ -39,7 +39,7 @@ function generateNeutralConfig(gxPath) {
             TerseResponses: true
         },
         Environment: {
-            ResolutionPolicy: 'strict'
+            ResolutionPolicy: resolutionPolicy
         }
     };
 }

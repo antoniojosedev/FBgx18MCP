@@ -165,6 +165,66 @@ test('non-interactive init supports idempotent no-op', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+test('config create creates explicit neutral runtime without KB or client registration', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-neutral-'));
+    const output = path.join(tempRoot, 'nested', 'runtime.json');
+    const result = runCli([
+        'config', 'create', '--config-scope', 'neutral', '--output', output,
+        '--gx', 'C:\\GeneXus18', '--worker', 'C:\\worker.exe',
+        '--gateway-mode', 'stdio-isolated', '--resolution-policy', 'strict', '--format', 'json'
+    ]);
+    assert.equal(result.status, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.meta.command, 'config.create');
+    assert.equal(parsed.ok.configPath, path.resolve(output));
+    assert.equal(parsed.ok.clientsPatchedCount, 0);
+    assert.equal(parsed.ok.config.Environment.KBPath, undefined);
+    assert.equal(parsed.ok.config.Environment.KBs, undefined);
+    assert.equal(parsed.meta.clientRegistration, 'not_attempted');
+    assert.equal(parsed.meta.kbCatalog, 'not_created');
+    assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), parsed.ok.config);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('config create rejects missing new-format flags', () => {
+    const result = runCli(['config', 'create', '--config-scope', 'neutral', '--format', 'json']);
+    assert.equal(result.status, 2);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.error.code, 'usage_error');
+    assert.match(parsed.error.message, /--output/);
+    assert.match(parsed.error.message, /--worker/);
+    assert.match(parsed.error.message, /--gateway-mode/);
+    assert.match(parsed.error.message, /--resolution-policy/);
+});
+
+test('config create rejects KB in neutral runtime', () => {
+    const result = runCli([
+        'config', 'create', '--config-scope', 'neutral', '--output', path.join(os.tmpdir(), 'should-not-write.json'),
+        '--gx', 'C:\\GeneXus18', '--worker', 'C:\\worker.exe', '--gateway-mode', 'stdio-isolated',
+        '--resolution-policy', 'strict', '--kb', 'C:\\KBs\\forbidden', '--format', 'json'
+    ]);
+    assert.equal(result.status, 2);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.error.code, 'usage_error');
+    assert.match(parsed.error.message, /--kb is not allowed/);
+});
+
+test('config create does not modify client registration', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-neutral-reg-'));
+    const output = path.join(tempRoot, 'runtime.json');
+    const marker = path.join(tempRoot, 'client-config.json');
+    fs.writeFileSync(marker, JSON.stringify({ mcpServers: { existing: { command: 'keep' } } }, null, 2));
+    const before = fs.readFileSync(marker, 'utf8');
+    const result = runCli([
+        'config', 'create', '--config-scope', 'neutral', '--output', output,
+        '--gx', 'C:\\GeneXus18', '--worker', 'C:\\worker.exe', '--gateway-mode', 'stdio-isolated',
+        '--resolution-policy', 'strict', '--format', 'json'
+    ]);
+    assert.equal(result.status, 0);
+    assert.equal(fs.readFileSync(marker, 'utf8'), before);
+    assert.deepEqual(JSON.parse(result.stdout).ok.config, JSON.parse(fs.readFileSync(output, 'utf8')));
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
 test('whoami without config returns disconnected state', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-test-'));
     const res = runCli(['whoami', '--format', 'json'], { cwd: tempRoot });
