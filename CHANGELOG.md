@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Include separate WorkWithPlus for Web Template objects in Settings template discovery and reads, with explicit Settings/Main links, pagination, and version tokens. Preview an existing table class with an exact XML text edit that preserves metadata and formatting; real template saves remain blocked pending isolation validation.
+
 ## v3.2.4 - 2026-09-10
 
 
