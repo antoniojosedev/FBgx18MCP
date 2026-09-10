@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.2.3 - 2026-09-10
+
+
 ### Fixed
 
 - Required Events object saves now fail before persistence with
