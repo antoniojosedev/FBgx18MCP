@@ -279,14 +279,16 @@ function detectInstallMethod() {
 // The method-appropriate upgrade plan. `auto` means no manual install step is
 // needed (the npx launcher fetches @latest on the next client start).
 function upgradePlanFor(method, channel) {
-    const tag = channel && channel !== 'latest' ? `@${channel}` : '@latest';
+    const resolvedChannel = channel || 'latest';
+    const tag = resolvedChannel !== 'latest' ? `@${resolvedChannel}` : '@latest';
     if (method === 'npx-latest') {
         return {
             method,
+            channel: resolvedChannel,
             auto: true,
             steps: [
-                'Your clients launch via `npx genexus-mcp@latest`, which fetches the newest version on each start.',
-                'Just fully restart your AI client — it will pick up the new version automatically.'
+                `Your clients launch via \`npx ${NPM_PACKAGE}${tag}\`, which fetches the newest ${resolvedChannel} version on each start.`,
+                'Just fully restart your AI client — it will pick up the selected channel automatically.'
             ],
             applyCommand: null,
             restartRequired: true
@@ -295,10 +297,11 @@ function upgradePlanFor(method, channel) {
     if (method === 'fixed-path') {
         return {
             method,
+            channel: resolvedChannel,
             auto: false,
             steps: [
-                'Your install runs the gateway from a fixed path (corporate install).',
-                `Re-run the installer to update in place: ${INSTALL_ONE_LINER}`,
+                `Your install runs the gateway from a fixed path (corporate install); npm ${tag} will not update that artifact.`,
+                `Re-run the fixed-path installer for the resolved ${resolvedChannel} release artifact${resolvedChannel === 'latest' ? '' : ` from channel \`${resolvedChannel}\``}: ${INSTALL_ONE_LINER}`,
                 'Then fully restart your AI client.'
             ],
             applyCommand: null, // self-stage is a future enhancement; installer is the path
@@ -309,6 +312,7 @@ function upgradePlanFor(method, channel) {
         const tag = channel && channel !== 'latest' ? `@${channel}` : '@latest';
         return {
             method,
+            channel: resolvedChannel,
             auto: false,
             steps: [
                 'Antigravity launches the gateway executable bundled with the npm package, so each MCP handshake skips npx.',
@@ -322,6 +326,7 @@ function upgradePlanFor(method, channel) {
     // npm-global
     return {
         method: 'npm-global',
+        channel: resolvedChannel,
         auto: false,
         steps: [
             `Run: npm install -g ${NPM_PACKAGE}${tag}`,

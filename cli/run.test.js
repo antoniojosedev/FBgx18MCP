@@ -1780,6 +1780,25 @@ test('detectInstallMethod returns fixed-path when GENEXUS_MCP_GATEWAY_EXE is set
     }
 });
 
+test('upgradePlanFor carries the selected channel through every install method', () => {
+    const npx = upgradePlanFor('npx-latest', 'next');
+    assert.equal(npx.channel, 'next');
+    assert.match(npx.steps.join(' '), /npx genexus-mcp@next/);
+    assert.doesNotMatch(npx.steps.join(' '), /@latest/);
+
+    const npm = upgradePlanFor('npm-global', 'next');
+    assert.equal(npm.channel, 'next');
+    assert.deepEqual(npm.applyCommand.args, ['install', '-g', 'genexus-mcp@next']);
+
+    const fixed = upgradePlanFor('fixed-path', 'next');
+    assert.equal(fixed.channel, 'next');
+    assert.match(fixed.steps.join(' '), /next/);
+    assert.doesNotMatch(fixed.steps.join(' '), /npm @latest/);
+
+    const direct = upgradePlanFor('package-direct', 'next');
+    assert.equal(direct.channel, 'next');
+});
+
 test('upgradePlanFor encodes the per-method upgrade strategy', () => {
     const npx = upgradePlanFor('npx-latest', 'latest');
     assert.equal(npx.auto, true, 'npx@latest auto-updates on restart');
