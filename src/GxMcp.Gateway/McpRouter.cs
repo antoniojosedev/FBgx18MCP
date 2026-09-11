@@ -369,6 +369,7 @@ namespace GxMcp.Gateway
                     }
                 },
                 ["instructions"] = "Use genexus_whoami first, then discover and operate on the active GeneXus Knowledge Base with the narrowest read or write tool that fits.",
+                ["profiles"] = new JArray("exploration", "safe-edit", "ui", "build", "versioning", "deploy"),
                 ["ttlMs"] = 3600000,
                 ["cacheScope"] = "public"
             };
@@ -469,6 +470,20 @@ namespace GxMcp.Gateway
             {
                 values = _objectParts;
             }
+            else if (argumentName == "action")
+            {
+                // Prefer the published schema over a hand-maintained action list so
+                // completion cannot drift when a new umbrella action is added.
+                string toolName = refName;
+                var tool = _toolDefinitions
+                    .OfType<JObject>()
+                    .FirstOrDefault(item => string.Equals(item["name"]?.ToString(), toolName, StringComparison.OrdinalIgnoreCase));
+                values = tool?["inputSchema"]?["properties"]?["action"]?["enum"] is JArray actions
+                    ? actions.Values<string>().Where(value => !string.IsNullOrWhiteSpace(value))
+                    : refName == "genexus_asset"
+                        ? new[] { "find", "read", "write" }
+                        : Enumerable.Empty<string>();
+            }
             // v2.8.0 (S1) — autocomplete object names from the cached index.
             // 'name' / 'target' / 'targets' all carry object references in
             // various tools; offer the same shortlist. Falls back to empty
@@ -483,6 +498,27 @@ namespace GxMcp.Gateway
                 values = string.IsNullOrEmpty(kbAlias)
                     ? Enumerable.Empty<string>()
                     : AutoTypeInjector.CompleteName(kbAlias!, currentValue, cap: 25);
+            }
+            else if (argumentName == "attribute" || argumentName == "attributeName")
+            {
+                string? kbAlias = Program.GetCurrentKb()?.NormalizedAlias;
+                values = string.IsNullOrEmpty(kbAlias)
+                    ? Enumerable.Empty<string>()
+                    : AutoTypeInjector.CompleteNameByType(kbAlias!, currentValue, "Attribute", cap: 25);
+            }
+            else if (argumentName == "module" || argumentName == "moduleName")
+            {
+                string? kbAlias = Program.GetCurrentKb()?.NormalizedAlias;
+                values = string.IsNullOrEmpty(kbAlias)
+                    ? Enumerable.Empty<string>()
+                    : AutoTypeInjector.CompleteNameByType(kbAlias!, currentValue, "Module", cap: 25);
+            }
+            else if (argumentName == "environment" || argumentName == "environmentName")
+            {
+                string? activeEnvironment = Program.GetCurrentKb()?.ActiveEnvironment;
+                values = string.IsNullOrWhiteSpace(activeEnvironment)
+                    ? Enumerable.Empty<string>()
+                    : new[] { activeEnvironment };
             }
             else if (argumentName == "language" || argumentName == "targetLanguage")
             {
@@ -1963,15 +1999,18 @@ namespace GxMcp.Gateway
                 };
             }
 
-            // KB_AMBIGUOUS — point at the kb parameter.
+            // KB_AMBIGUOUS / KB_CONTEXT_REQUIRED — point at the kb parameter or session selection.
             if (string.Equals(code, "KB_AMBIGUOUS", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(code, "KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase)
                 || (msg.IndexOf("KB_AMBIGUOUS", StringComparison.OrdinalIgnoreCase) >= 0)
-                || (msg.IndexOf("multiple KBs", StringComparison.OrdinalIgnoreCase) >= 0))
+                || (msg.IndexOf("KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("multiple KBs", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("Multiple Knowledge Bases", StringComparison.OrdinalIgnoreCase) >= 0))
             {
                 return new JObject
                 {
                     ["action"] = "specify_kb",
-                    ["hint"] = "More than one KB is open. For a one-off call, re-issue it with kb=<alias>. For a session-wide default, run genexus_kb action=set_default alias=<alias>. genexus_whoami / genexus_kb action=list enumerate the available aliases."
+                    ["hint"] = "Explicit KB context is required for this session. For a session-wide selection, run genexus_kb action=select alias=<alias> (or action=set_default alias=<alias>). For a one-off call, pass kb=<alias>. Use genexus_whoami or genexus_kb action=list to inspect available aliases."
                 };
             }
 

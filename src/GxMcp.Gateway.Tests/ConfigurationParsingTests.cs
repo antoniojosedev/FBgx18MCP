@@ -21,7 +21,7 @@ namespace GxMcp.Gateway.Tests
             string configPath = Path.Combine(tempDir, "config.json");
             try
             {
-                var json = "{ \"Environment\": { \"KBPath\": " + System.Text.Json.JsonSerializer.Serialize(kbDir) + " } }";
+                var json = "{ \"Environment\": { \"ResolutionPolicy\": \"legacy\", \"KBPath\": " + System.Text.Json.JsonSerializer.Serialize(kbDir) + " } }";
                 File.WriteAllText(configPath, json);
 
                 var cfg = ParseConfig(configPath);
@@ -32,6 +32,34 @@ namespace GxMcp.Gateway.Tests
                 Assert.Equal("legacydemo", single.Alias);
                 Assert.Equal(kbDir, single.Path);
                 Assert.Equal("legacydemo", cfg.Environment.DefaultKb);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_KbPath_StrictMode_DoesNotAutoPromoteToDefaultKb()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string kbDir = Path.Combine(tempDir, "StrictDemo");
+            Directory.CreateDirectory(kbDir);
+            File.WriteAllText(Path.Combine(kbDir, "StrictDemo.gxw"), "");
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                var json = "{ \"Environment\": { \"ResolutionPolicy\": \"strict\", \"KBPath\": " + System.Text.Json.JsonSerializer.Serialize(kbDir) + " } }";
+                File.WriteAllText(configPath, json);
+
+                var cfg = ParseConfig(configPath);
+
+                Assert.NotNull(cfg.Environment);
+                Assert.NotNull(cfg.Environment!.KBs);
+                var single = Assert.Single(cfg.Environment.KBs);
+                Assert.Equal("strictdemo", single.Alias);
+                Assert.Null(cfg.Environment.DefaultKb);
             }
             finally
             {
@@ -75,7 +103,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void ParseConfig_AppliesEnvOverrides_AndPromotesActiveKb()
+        public void ParseConfig_AppliesEnvOverrides_AndPromotesActiveKb_UnderLegacyPolicy()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
@@ -90,6 +118,7 @@ namespace GxMcp.Gateway.Tests
     ""McpStdio"": true
   },
   ""Environment"": {
+    ""ResolutionPolicy"": ""legacy"",
     ""DefaultKb"": """",
     ""ActiveKb"": ""from_cli"",
     ""KBs"": {
@@ -122,7 +151,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void ParseConfig_SingleDeclaredKb_WithoutDefault_AutoPromotesToDefaultKb()
+        public void ParseConfig_SingleDeclaredKb_WithoutDefault_AutoPromotesToDefaultKb_UnderLegacyPolicy()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
@@ -131,6 +160,7 @@ namespace GxMcp.Gateway.Tests
             {
                 var json = @"{
   ""Environment"": {
+    ""ResolutionPolicy"": ""legacy"",
     ""KBs"": {
       ""mykb"": ""C:/KBs/MyKb""
     }
@@ -148,6 +178,187 @@ namespace GxMcp.Gateway.Tests
             {
                 TryDeleteDirectory(tempDir);
             }
+        }
+
+        [Fact]
+        public void ParseConfig_SingleDeclaredKb_WithoutDefault_DoesNotAutoPromoteToDefaultKb_UnderStrictMode()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                var json = @"{
+  ""Environment"": {
+    ""ResolutionPolicy"": ""strict"",
+    ""KBs"": {
+      ""mykb"": ""C:/KBs/MyKb""
+    }
+  }
+}";
+                File.WriteAllText(configPath, json);
+                var cfg = ParseConfig(configPath);
+
+                Assert.NotNull(cfg.Environment);
+                Assert.Null(cfg.Environment!.DefaultKb);
+                var single = Assert.Single(cfg.Environment.KBs);
+                Assert.Equal("mykb", single.Alias);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_StrictV2_AcceptsNeutralStdioFixture()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true, ""BindAddress"": ""127.0.0.1"" },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}");
+
+                var cfg = ParseConfig(configPath);
+
+                Assert.Equal(2, cfg.ConfigSchemaVersion);
+                Assert.Equal("stdio-isolated", cfg.GatewayMode);
+                Assert.Equal("strict", cfg.Environment!.ResolutionPolicy);
+                Assert.Empty(cfg.Environment.KBs);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_StrictV2_RejectsKbFields()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"", ""KBPath"": ""C:\\KBs\\Demo"" }
+}");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+                Assert.Contains("Environment.KBPath", error.Message);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_StrictV2_RejectsConflictingTransportEnvironment()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            string? oldPort = Environment.GetEnvironmentVariable("GX_MCP_PORT");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}");
+                Environment.SetEnvironmentVariable("GX_MCP_PORT", "5000");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+                Assert.Contains("GX_MCP_PORT conflicts", error.Message);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_MCP_PORT", oldPort);
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        // Environment matrix documented in Configuration.cs:
+        // structural overrides (shared gateway/profile/response shape) are rejected
+        // by strict config; GX_CONFIG_PATH selects the file, GXMCP_HTTP_TOKEN is a
+        // secret, and diagnostics/operational switches do not alter Configuration.
+        [Theory]
+        [InlineData("GXMCP_SHARED_GATEWAY")]
+        [InlineData("GX_MCP_SHARED_GATEWAY")]
+        [InlineData("GXMCP_PROFILE")]
+        [InlineData("GXMCP_NO_STRUCTURED_CONTENT")]
+        [InlineData("GXMCP_EMIT_STRUCTURED_CONTENT")]
+        [InlineData("GXMCP_TERSE")]
+        public void ParseConfig_StrictV2_RejectsStructuralEnvironmentOverride(string variable)
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            string? oldValue = Environment.GetEnvironmentVariable(variable);
+            try
+            {
+                File.WriteAllText(configPath, StrictStdioJson());
+                Environment.SetEnvironmentVariable(variable, "1");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+                Assert.Contains(variable, error.Message);
+                Assert.Contains("not permitted", error.Message);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(variable, oldValue);
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_StrictV2_RejectsInvalidTypedMemberWithoutPublishingPartialConfig()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true, ""AllowedOrigins"": 17 },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+                Assert.Contains("Server.AllowedOrigins", error.Message);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        private static string StrictStdioJson()
+        {
+            return @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}";
         }
 
         private static Configuration ParseConfig(string path)

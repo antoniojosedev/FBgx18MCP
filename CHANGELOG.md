@@ -2,6 +2,87 @@
 
 ## Unreleased
 
+### Fixed
+
+- Preserve the last certified search-index snapshot during forced rebuilds so a Worker crash can warm-start from the previous index instead of leaving the KB cold; allow only manifest-declared SDK patch drift within the same major/minor line while retaining exact-build fingerprints otherwise.
+- Keep the index-readiness fast-fail limited to index-backed reads and analyses; SDK edits, creates and builds remain available while background indexing runs.
+- Never store `Indexing`/`IndexNotReady` responses in the semantic cache, so reads can observe the index as soon as background indexing completes.
+- Make Worker drain replacement fail closed until the old process has really exited; do not register dead replacements, leak draining entries, or run concurrent reloads for one KB.
+- Validate sharded manifests and every shard before publication, reject incomplete/corrupt snapshots, propagate manifest write failures, and atomically replace shard/manifest/warm-snapshot files.
+- Harden update and installer flows with strict semver/channel validation, bounded child commands, atomic update-cache writes, safe npx semantics, correct PowerShell argument passing, exit-code checks, and downgrade protection.
+- Return an explicit retryable error when a Worker reload replaces the process but the SDK does not become ready; keep failed drains fail-closed, prevent acquisitions from reusing a Worker that is still shutting down, and do not infer SDK readiness from RPC error responses.
+- Preserve creations, renames, updates, and removals observed during the lite index walk when publishing the final catalogue; refresh effective object counts after delta deletions and invalidate stale hierarchy data after external moves.
+- Add per-shard hashes to new index manifests so corrupted or mixed shard contents fail closed while retaining compatibility with older manifests.
+- Propagate the selected update channel through npx, global, fixed-path, and package-direct plans; reject release versions with leading-zero components.
+- Make local installation transactional across configuration, build, and client registration outcomes, so failed steps do not report a completed installation.
+- Require typed WorkWithPlus fallback resolution and version preconditions for action mutations; use structural/delimited projection matching so similarly named tabs and events cannot be reported as the requested target.
+
+## v3.2.4 - 2026-09-10
+
+
+### Fixed
+
+- Serialize Worker lifecycle replacement, preserve concurrent healthy replacements, and keep PatternVirtual structural writes on the SDK path while restricting raw PatternInstance edits to safe property changes.
+- Treat standalone WWP template objects as model-wide records without claiming ownership from a name-only Settings match.
+
+- Fixed WorkWithPlus Settings and instance actions failing to resolve objects by name; preserved explicit identities, pagination and version tokens.
+- Preserve a replacement Worker when an eager respawn finishes during the previous Worker's exit callback; remove only the exited entry before notifying subscribers.
+- Include separate WorkWithPlus for Web Template objects in Settings template discovery and reads, with explicit Settings/Main links, pagination, and version tokens. Preview an existing table class with an exact XML text edit that preserves metadata and formatting; real template saves remain blocked pending isolation validation.
+- Preserve SDK-owned pattern metadata during raw XML property edits and previews. Unchanged XML is a no-op; structural or metadata changes are rejected explicitly instead of rebuilding child-order lists. Preview and save share the same unmodified payload, and unreadable current XML blocks both paths. This does not certify SDK save isolation.
+
+- Respect requested object types when resolving homonyms, including Pattern Settings, and separate read-cache entries by type and read shape.
+- Read Pattern Settings through the SDK pattern tree with explicit pagination instead of the generic properties XML.
+- Dirty tracking now classifies the final persisted write outcome, so no-op and pre-mutation failures do not create false dirty entries while confirmed rollbacks clear only the write they undo.
+- PR preflight now reports unavailable `ripwire` analysis explicitly, supports an opt-in required mode, and preserves nonzero tool failures instead of presenting an incomplete analysis as complete.
+
+### Added
+
+- WorkWithPlus Settings template catalog, effective-property reads and pure single-property dry runs with snapshot tokens. Real saves remain explicitly blocked (`SettingsIsolationUnverified`): SDK and WorkWithPlus save hooks and atomic cross-process concurrency have not been certified. No isolated persistence capability is claimed.
+
+### Internal
+
+- Update the contract regression inventory to 225 actions, including the three new Settings actions.
+- Increase the discovery schema budget from 27,500 to 27,750 approximate tokens for the three Settings actions and their identity, pagination and property-preview fields (measured 27,549).
+
+## v3.2.2 - 2026-09-10
+
+
+### Added
+
+- Added the issue #146 neutral runtime contract: explicit `ConfigSchemaVersion`, `GatewayMode`, strict/local-friendly versus hardened policies, and KB-free configuration generation.
+- Added stable physical KB identities (`kbId`), explicit rebind generations, owner-scoped leases, session selection, and audit metadata for KB resolution.
+- Added scoped operational state and isolation fences for caches, receipts, journals, recovery, snapshots, jobs, logs, crash ledgers, Workers, tasks, streams, subscriptions, resources, prompts, and completion.
+- Added explicit `config migrate` with atomic backup, read-back receipt, rollback on verification failure, and rejection of non-migratable KB fields.
+- Added gateway-only contracts for `genexus_kb_diff`, `genexus_kb_import`, `genexus_sandbox`, and `genexus_worker_pool`, with schema, discovery, dispatch, help, and parity coverage.
+- Added deterministic property/fuzz regression coverage for idempotency-key validation, canonicalization, and concurrent deduplication.
+
+### Changed
+
+- Decoupled MCP client registration from implicit KB paths, aliases, defaults, and session selection; legacy behavior remains available only through explicit legacy configuration.
+- Made stateful and mutating operations require coherent owner, KB identity, generation, and lease context, while authorized stateless reads remain free of global fallback.
+- Updated CLI initialization, neutral config creation, installers, OpenCode layouts, discovery fixtures, compatibility adapters, and onboarding documentation for the multi-version runtime.
+- Source search now uses typed native accessors for Procedure source and Rules/Events where available, while retaining dynamic fallbacks for SDK variants.
+- Extended the live benchmark with wire-level content, structuredContent, and estimated-token measurements while preserving compatibility with legacy two-value probe results.
+- Improved live-KB harness isolation and diagnostics with stale-log cleanup, streaming child progress, timestamps, and explicit phases.
+- Clarified KB version timestamp semantics by keeping `lastUpdate` separate from an explicitly unavailable `createdAt` when the SDK provides no reliable creation timestamp.
+- Added an explicit `release.ps1 -CloseIssues` option that links the published release before closing completed GitHub issues and verifies the final state.
+
+### Fixed
+
+- Fixed live fixture timestamp validation to parse invariant UTC timestamps and tolerate serialization precision without accepting materially future verification times.
+- Restored required schema examples for the gateway-only filesystem and worker-pool tools so the contract validator accepts the complete discovery surface.
+- Updated the tool-contract regression expectation to cover the four gateway-only tools already present in the supported schema.
+- Restored the `genexus_io` Object Text batch routes in the umbrella router after integrating the neutral-runtime changes with the current `main` contracts; the discovery schema budget now covers the combined tool surface.
+- Prevented concurrent Worker acquisition under different aliases from starting duplicate Workers for the same KB path; this avoids SDK single-instance `BusyReject` loops during initialize and warmup.
+- Serialized default-KB warmup and index bootstrap so initialize does not race two Worker acquisitions on the STA process.
+- Enforced the documented ASCII-only `[A-Za-z0-9_-]` idempotency-key contract.
+- Preserved initialize-time default-KB pre-spawn so strict resolution can warm a configured KB before issuing worker commands.
+- Live SDK/KB acceptance remains gated by the disposable fixture, GeneXus installation, and license prerequisites; unavailable live cases are reported as skipped rather than claimed as passing.
+
+### Internal
+
+- Added regression coverage for strict configuration, identity/rebind, leases, concurrent sessions, side-channel fences, operational persistence, routing contracts, respawn lifecycle, and CLI migration behavior.
+
 ## v3.2.1 - 2026-09-09
 
 
@@ -90,17 +171,132 @@
 ## v3.0.2 - 2026-09-07
 
 
+### Fixed
+- Stateful routing for worker reload, connection recovery, lifecycle handles, edit-and-build, SDK probes, KB documentation, and recipe crystallization now requires the session-owned KB lease and stable `KB_CONTEXT_REQUIRED`/`KB_NOT_OWNED` envelopes; stateless recipe reads remain free of worker fallback.
+- Scoped mutation recovery fences, snapshots, jobs, crash ledgers, worker logs, and worker-owned paths by `StateScopeId`, KB identity, and generation; worker-supplied persistence paths are ignored and `GX_KB_PATH` rebinds are rejected.
+
+### Internal
+- Scoped receipt/idempotency journals now persist atomically under the validated `StateScope` owner tuple (`StateScopeId`, KB id, generation); restart read-back fails closed on another scope, while legacy constructors and APIs remain available. Request-loop wiring remains intentionally unchanged because that file is prohibited by the integration contract.
+
+### Added
+- Added explicit `config migrate` for legacy-to-neutral runtime configuration with atomic source backup, read-back receipt, rollback on destination verification failure, and an explicit rejection mode for non-migratable KB fields. `init` and `clients add` no longer rewrite existing configs as an implicit migration; legacy `kb add/remove/switch` destinations remain the `Environment` catalog flow.
+- Added ownership fences to gateway tasks and resource subscriptions, carrying ownerScopeId, kbId, generation, and epoch; delayed or cross-owner events are discarded and stateless streams remain explicitly neutral.
+- Added `config create --config-scope neutral` for explicit KB-free runtime config generation; it requires the new runtime flags and never registers clients or creates a KB catalog.
+- Added owner-scoped operational-state path/key derivation for journals, recovery receipts, snapshots, jobs, logs, and crash ledgers; Worker KB binding now rejects `GX_KB_PATH` rebinds.
+- Aligned installer fallback and client registration on the neutral runtime; `clients add --all-clients` now covers every supported adapter without implicit KB fields or structural overrides.
+- Added session-scoped KB ownership snapshots with owner, KB identity, context generation, and lease validation for stateful gateway acquisition.
+
+### Internal
+- Cache and idempotency state now expose explicit `StateScopeId` + KB id + generation keys; semantic cache keys no longer rely on alias/path alone, with cross-scope and cross-generation regression coverage.
+- Issue #146: keep RequestLoop gateway dispatch names in the declared/legacy-alias/removed tool inventory; advertise the four gateway-only routes and add a parity guard. The combined schema budget is 27500 tokens.
+
+### Changed
+
+- Began the issue #146 contract migration with an explicit `ConfigSchemaVersion`/
+  `GatewayMode` pair, a KB-free neutral configuration fixture, and documented
+  local-friendly versus hardened authorization. Explicit local KB opens remain
+  usable without a separate trust-root step; isolation protects against
+  accidental cross-context access.
+
+### Changed
+
+- Issue #146 compatibility contract: documented local-friendly versus hardened deployments, strict versus explicit legacy `ResolutionPolicy`, owner-scoped open/close/select and lease-free boundaries, `KB_NOT_OWNED`/lease/`KB_LOCKED` errors, and the `GXMCP_HTTP_TOKEN` HTTP boundary; aligned ToolHelpCatalog guidance for `edit_and_build`, `sdk_probe`, and `connection_recover`.
+
+- Preview screenshots and baselines now validate logical object names, resolve canonical artifact roots, and reject paths that escape the configured preview directory.
+
+- Browser-driver launches now resolve absolute `.exe`/`.com` binaries directly and use an escaped, narrow `.cmd`/`.bat` compatibility path; preview shims no longer receive raw request data through `cmd.exe /c`.
+
+- Worker non-SDK command dispatch now uses a bounded dedicated MTA pool with priority for health, cancellation, and status probes, preventing burst-driven task growth while preserving clean shutdown.
+
+- Made onboarding documentation authoritative for the package's Node.js 22
+  requirement, updated translated getting-started guides, replaced the obsolete
+  `setup.bat` command with `build.ps1`, and added a documentation drift test.
+
+- Added a protected, opt-in self-hosted Windows CI lane for explicit GeneXus SDK fingerprint validation and live Worker testing, with license/fixture preconditions, pass/skip/fail status artifacts, cleanup, and visible hosted-runner skip reporting (`docs/ci-sdk-validation.md`).
+
+- Added a checked-in GeneXus SDK compatibility manifest, build/startup fingerprint validation with stable diagnostics, focused match/mismatch/missing-path tests, and self-hosted fixture guidance in `docs/sdk-compatibility.md`.
+
+- Source metadata searches now resolve each candidate once per request and cache
+  requested part values locally, preserving partial-index and cancellation behavior.
+- Added `docs/envelope-coverage.md`, auditing the published tools/actions and
+  separating Worker envelopes from intentional Gateway lifecycle/protocol
+  statuses as the migration map for subsequent response-contract work.
+- Added `docs/metrics-baseline.md` with reproducible measurement rules and
+  initial latency, payload, reliability, cache, and workflow targets.
+- Added `docs/live-kb-validation-matrix.md` defining the live SDK assertions,
+  rollback rules, and mandatory edge cases for critical mutating capabilities.
+- Added named discovery profile aliases (`exploration`, `safe-edit`, `build`,
+  `versioning`, and `deploy`) with regression coverage.
+- Subscription conformance coverage now exercises reconnect, disconnect cleanup,
+  slow consumers, multiple subscriptions, and client isolation.
+- Discovery/resource contracts expose progressive profiles and navigable KB
+  resources while keeping extended operational guidance in resources and
+  playbooks instead of requiring every workflow to load it from tools/list.
+- List/read contracts standardize bounded results, pagination metadata,
+  projections, deterministic ordering, and explicit limits across large
+  collection paths.
+- Security and recovery paths retain dry-run/confirmation gates, allowlists,
+  audit metadata, Worker crash/reload/timeout coverage, and closed-KB/pipe
+  failure regressions.
+- Worker ownership is now checkout-scoped through a named mutex and durable PID/start-time
+  lease; startup no longer performs a system-wide orphan scan, while a once-per-minute
+  exact-record reconciliation handles crashed gateways (see `docs/worker-ownership.md`).
+- Canonical MCP error envelopes now expose optional boolean `retryable` and
+  `reconciliationRequired` decisions, while conformance tests validate their
+  types and the shape of `nextSteps` entries.
+- Infrastructure failures at the HTTP gateway, KB import, macro crystallization, and preview adapters now return stable sanitized messages/codes with operation identifiers; full exception diagnostics remain server-side in structured logs.
+- Added regression coverage proving adapter error envelopes do not expose raw exception text or filesystem paths.
+- Added route-level regression coverage for stdio and session-bound HTTP KB selection, independent sessions, invalid aliases, persisted-default read-back, and legacy non-persistent selection.
+- Added the deterministic `conversion-bundle/1.0` schema, canonical SHA-256 validation oracle, acceptance evidence contract, and documented live Business Component fixture gate.
+- Added the typed visual-authoring design contract and machine-readable acceptance corpus covering SDK-only mutations, validation, rollback, baseline preservation, preview evidence, and live-KB gating; no live implementation is claimed.
+
+
 ### Added
 
+- Added the capability release-state design, machine-readable report schema,
+  provenance/expiry rules, CI and release integration proposal, and
+  user-facing examples without changing existing MCP capability payloads.
+- `genexus_kb` `action=select` and `action=set_session_default` for strict per-session KB selection without mutating `config.json` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_kb` `action=set_persistent_default` as an explicit mutating operation that updates the startup fallback in `config.json` and reports `persistedTo` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_kb` `action=set_default` now supports `persist: false` to delegate directly to per-session selection without updating the shared `config.json`, and acts as a legacy persistent operation returning `persistedTo` by default ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_whoami` exposes explicit session auditability metadata: `sessionSelection`, `selectionSource` (`"session-select"` | `"single-open"` | `"config-default"` | `"declared-first"` | `"explicit-arg"` | `"none"`), `selectionState` (`"valid"` | `"absent"` | `"invalid"` | `"conflicting"`), `startupDefault`, `resolutionPolicy`, `config.resolvedFrom`, and backward-compatible aliases (`selected`, `active`, `persistedFallback`, `contextRequired`) even in terse mode ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Zero-config startup outside of a KB: when launched outside a KB workspace without `GX_CONFIG_PATH`, `genexus-mcp` automatically generates and defaults to `~/.genexus-mcp/config.json` with auto-detected GeneXus path, `TransportMode: "stdio-isolated"`, `HttpPort: 0`, `ResolutionPolicy: "strict"`, and empty `Environment.KBs = []` instead of failing ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Added `--global-config` flag to `genexus-mcp init` and `genexus-mcp clients add` for CI or workflows that explicitly require baking fixed `GX_CONFIG_PATH` into client configuration files ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
 - `genexus_properties` `action=get` now honors `propertyName` (single property lookup, comma-separated list, or `*`/`?` wildcards), `propertyNames` (string array), search filter `query`, and preset `projection` modes (`"minimal"` | `"standard"` | `"full"`), returning `versionToken` on `PropertiesRead` envelopes ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 - Added Levenshtein-based "Did you mean?" suggestions and actionable `nextSteps` to `PropertyNotFound` errors when a property name or search query does not match, helping AI agents self-correct in a single turn ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 - Added a flat `values: { [propName]: propValue }` dictionary to all successful `genexus_properties` `action=get` envelopes (single, multi, projection, query, and full) for instant O(1) key-value reads without parsing complex metadata arrays ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 
 ### Changed
 
+- Decoupled MCP client registration: `genexus-mcp init` and `clients add` now register clients (VS Code, Cursor, OpenCode, Codex TOML) without `GX_CONFIG_PATH` by default, enabling client registrations to be completely portable across multiple KBs ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Strict resolution policy matrix (`ResolutionPolicy: "strict"` by default):
+  - Sessions do not inherit `DefaultKb`/`ActiveKb` startup fallbacks.
+  - With exactly 1 KB open and no conflicting default, resolves as `single-open` (`selectionSource="single-open"`).
+  - With a single open KB conflicting with a configured default (`DefaultKb`), fails closed with `KB_CONTEXT_REQUIRED` (`DefaultConflict`).
+  - With 0 open KBs, declared catalog KBs are never auto-opened (`KB_CONTEXT_REQUIRED` or `KB_AMBIGUOUS`).
+  - Invalid session selection fails closed with `KB_SELECTION_INVALID` with zero fallback.
+  - Legacy promotion and fallbacks preserved under explicit `ResolutionPolicy: "legacy"` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `stdio-isolated` transport mode (`Server.TransportMode: "stdio-isolated"`): bypasses shared lease acquisition/refresh, proxy takeover, and HTTP listener entirely, allowing concurrent isolated instances on neutral config with `HttpPort: 0` without port or master lease collisions ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Sessionless HTTP clients: calling `select` on sessionless HTTP now returns `KB_SESSION_UNAVAILABLE` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Bumped tool schema token budget to 26,500 to accommodate `genexus_kb` session selection actions (`select`, `set_session_default`, `set_persistent_default`), `persist` flag, and parameter documentation in discovery fixtures ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
 - `genexus_properties` `action=get` single property queries now return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }` instead of dumping 100+ properties, dramatically cutting context token consumption ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 
-## v3.0.1 - 2026-09-07
+### Fixed
+
+- KB startup-default persistence now stages config updates in a unique sibling
+  temporary file, flushes before atomic replacement, and verifies the persisted
+  aliases before updating gateway memory; unknown JSON fields remain intact.
+
+### Internal
+
+- Added deterministic Gateway worker crash/respawn coverage for multiple pending RPCs, retry backoff, eventual replacement recovery, and replacement-only index bootstrap without starting real worker processes.
+
+- Split the legacy `OperationsRouter` into typed domain route modules behind a compatibility facade and registered each module without changing MCP tool names, normalization, or response envelopes.
+
+- Decomposed Gateway request-loop orchestration behind an explicit ordered
+  protocol, KB-resolution, argument-validation, idempotency, semantic-cache,
+  worker-dispatch, and response-shaping stage pipeline while retaining the
+  existing dispatch core and MCP envelopes.
 
 
 ### Added
@@ -123,6 +319,8 @@
   `GXMCP_REQUIRE_LIVE_BUILD_ALL=1` makes that live gate mandatory.
 
 ### Fixed
+
+- Multi-target asynchronous mutation recovery now records deterministic per-target/part fences on watchdog, timeout, and cancellation paths, and confirms them independently on successful read-back so partial reads cannot unblock the remaining targets.
 
 - Aligned OpenCode Desktop client detection and registration with the shared
   `opencode.jsonc`/`opencode.json` configuration path, enabling automatic registration

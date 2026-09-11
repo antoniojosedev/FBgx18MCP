@@ -41,7 +41,9 @@ function Assert-LiveFixture($Fixture, [string]$ResolvedKbPath) {
     }
     if ($isolation.provisionedBy -notin @('GeneXus', 'XPZ')) { throw 'Fixture must be provisioned through GeneXus or verified XPZ import.' }
     $verifiedAt = [datetimeoffset]::MinValue
-    if (-not [datetimeoffset]::TryParse($isolation.verifiedAt, [ref]$verifiedAt) -or $verifiedAt -gt [datetimeoffset]::UtcNow) {
+    $parseStyles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+    if (-not [datetimeoffset]::TryParse([string]$isolation.verifiedAt, [Globalization.CultureInfo]::InvariantCulture, $parseStyles, [ref]$verifiedAt) -or
+        $verifiedAt -gt [datetimeoffset]::UtcNow.AddMinutes(1)) {
         throw 'Fixture verification timestamp is invalid.'
     }
 

@@ -96,7 +96,8 @@ namespace GxMcp.Gateway
             if (key.Length < 1 || key.Length > 128)
                 throw new UsageException("usage_error", "idempotencyKey length must be 1..128");
             foreach (var c in key)
-                if (!(char.IsLetterOrDigit(c) || c == '_' || c == '-'))
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '_' || c == '-'))
                     throw new UsageException("usage_error",
                         "idempotencyKey charset must be [A-Za-z0-9_-]");
         }

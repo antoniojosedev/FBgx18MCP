@@ -357,5 +357,32 @@ namespace GxMcp.Gateway.Tests
             Assert.False(OperationClassifier.IsReadOnly("genexus_create", new JObject { ["action"] = "scaffold", ["dryRun"] = true }));
             Assert.False(OperationClassifier.IsReadOnly("genexus_gam", new JObject { ["action"] = "define_api", ["dryRun"] = true }));
         }
+        [Fact]
+        public void StatefulRoutingRequiresSessionLeaseButStatelessRecipeReadsDoNot()
+        {
+            var stateful = new[]
+            {
+                new { Tool = "genexus_worker_reload", Args = new JObject() },
+                new { Tool = "genexus_connection_recover", Args = new JObject() },
+                new { Tool = "genexus_edit_and_build", Args = new JObject() },
+                new { Tool = "genexus_sdk_probe", Args = new JObject { ["mode"] = "capabilities" } },
+                new { Tool = "genexus_doc", Args = new JObject { ["action"] = "health" } },
+                new { Tool = "genexus_recipe", Args = new JObject { ["action"] = "crystallize" } },
+                new { Tool = "genexus_lifecycle", Args = new JObject { ["action"] = "result", ["target"] = "op:1" } },
+                new { Tool = "genexus_lifecycle", Args = new JObject { ["action"] = "status", ["target"] = "task-1" } }
+            };
+
+            foreach (var item in stateful)
+                Assert.True(OperationClassifier.RequiresSessionLease(item.Tool, item.Args), item.Tool);
+
+            Assert.False(OperationClassifier.RequiresSessionLease("genexus_recipe",
+                new JObject { ["action"] = "list" }));
+            Assert.False(OperationClassifier.RequiresSessionLease("genexus_recipe",
+                new JObject { ["action"] = "describe", ["name"] = "create_popup" }));
+            Assert.False(OperationClassifier.RequiresSessionLease("genexus_recipe",
+                new JObject { ["action"] = "suggest_macro" }));
+            Assert.False(OperationClassifier.RequiresSessionLease("genexus_lifecycle",
+                new JObject { ["action"] = "status" }));
+        }
     }
 }

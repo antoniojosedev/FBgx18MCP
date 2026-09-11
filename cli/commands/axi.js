@@ -5,10 +5,12 @@ const fs = require('fs');
 const {
     getGatewayExePath,
     getToolDefinitionsPath,
+    generateNeutralConfig,
     resolveConfigPathNoMutate,
     readJsonFileSafe,
     directoryLooksLikeKnowledgeBase,
     createConfigFile,
+    migrateLegacyConfig,
     patchClientConfig,
     unpatchClientConfig,
     getClientConfigTargets,
@@ -946,6 +948,109 @@ async function handleToolsList(options, ctx) {
     };
 }
 
+async function handleConfigCreate(options, ctx) {
+    if (options.kb) {
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('--kb is not allowed when creating a neutral runtime config.', ctx.EXIT_CODES.USAGE) };
+    }
+
+    const required = [
+        ['--config-scope', options.configScope],
+        ['--output', options.output],
+        ['--gx', options.gx],
+        ['--worker', options.worker],
+        ['--gateway-mode', options.gatewayMode],
+        ['--resolution-policy', options.resolutionPolicy]
+    ];
+    const missing = required.filter(([, value]) => !value).map(([flag]) => flag);
+    if (missing.length > 0) {
+        return {
+            exitCode: ctx.EXIT_CODES.USAGE,
+            envelope: usageEnvelope(`config create requires: ${missing.join(', ')}.`, ctx.EXIT_CODES.USAGE)
+        };
+    }
+    if (options.configScope !== 'neutral') {
+        return {
+            exitCode: ctx.EXIT_CODES.USAGE,
+            envelope: usageEnvelope('--config-scope must be `neutral` for config create.', ctx.EXIT_CODES.USAGE)
+        };
+    }
+
+    const outputPath = path.resolve(options.output);
+    try {
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        const config = generateNeutralConfig(options.gx, {
+            workerPath: options.worker,
+            gatewayMode: options.gatewayMode,
+            resolutionPolicy: options.resolutionPolicy
+        });
+        fs.writeFileSync(outputPath, JSON.stringify(config, null, 2));
+        return {
+            exitCode: ctx.EXIT_CODES.OK,
+            envelope: {
+                ok: {
+                    action: 'config.create',
+                    configScope: 'neutral',
+                    configPath: outputPath,
+                    clientsPatchedCount: 0,
+                    config
+                },
+                help: [],
+                meta: { clientRegistration: 'not_attempted', kbCatalog: 'not_created' }
+            }
+        };
+    } catch (err) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(`Could not write neutral config: ${err.message}`, ctx.EXIT_CODES.ERROR)
+        };
+    }
+}
+
+async function handleConfigMigrate(options, ctx) {
+    const sourcePath = options.fromPath || resolveConfigPathNoMutate(ctx.cwd);
+    if (!sourcePath) {
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('config migrate requires --from <legacy-config> (or a config.json in the current directory).', ctx.EXIT_CODES.USAGE) };
+    }
+    const targetPath = options.output || `${sourcePath}.neutral.json`;
+    if (path.resolve(sourcePath) === path.resolve(targetPath)) {
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('config migrate requires --output to differ from --from; the legacy source is never overwritten.', ctx.EXIT_CODES.USAGE) };
+    }
+    try {
+        const receipt = migrateLegacyConfig(sourcePath, targetPath, { rejectNonMigratable: Boolean(options.rejectNonMigratable) });
+        return {
+            exitCode: ctx.EXIT_CODES.OK,
+            envelope: {
+                ok: { action: 'config.migrate', ...receipt },
+                help: receipt.notMigrated.length > 0
+                    ? ['KB fields were not migrated. Keep using `kb add`, `kb remove`, and `kb switch` against the legacy config, or select a KB explicitly through MCP.']
+                    : []
+            }
+        };
+    } catch (err) {
+        if (err.code === 'NON_MIGRATABLE_FIELDS') {
+            return {
+                exitCode: ctx.EXIT_CODES.USAGE,
+                envelope: {
+                    ...usageEnvelope(err.message, ctx.EXIT_CODES.USAGE),
+                    meta: { exitCode: ctx.EXIT_CODES.USAGE, notMigrated: err.notMigrated || [] }
+                }
+            };
+        }
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: {
+                error: {
+                    code: 'operation_error',
+                    message: sanitizeOperationalMessage(`Configuration migration failed: ${err.message}`),
+                    rollback: err.rollback || { rolledBack: false }
+                },
+                help: err.backupPath ? [`The source backup was written to ${err.backupPath}.`] : [],
+                meta: { exitCode: ctx.EXIT_CODES.ERROR, notMigrated: err.notMigrated || [] }
+            }
+        };
+    }
+}
+
 async function handleConfigShow(options, ctx) {
     const configPath = resolveConfigPathNoMutate(ctx.cwd);
     if (!configPath) {
@@ -1631,7 +1736,8 @@ async function handleInit(options, ctx) {
                 ids,
                 onlyExisting: !options.allClients,
                 serverName: options.serverName || DEFAULT_MCP_SERVER_NAME,
-                force: options.force
+                force: options.force,
+                globalConfig: Boolean(options.globalConfig)
             });
         }
 
@@ -2026,11 +2132,11 @@ async function handleClients(subcommand, options, ctx) {
     }
 
     if (sub === 'add' || sub === 'remove') {
-        const ids = resolveClientIds(options);
+        const ids = options.allClients ? listSupportedClientIds() : resolveClientIds(options);
         if (sub === 'add' && (!ids || ids.length === 0)) {
             return {
                 exitCode: ctx.EXIT_CODES.USAGE,
-                envelope: usageEnvelope('`clients add` requires --clients <csv> (e.g. --clients antigravity,vscode).', ctx.EXIT_CODES.USAGE)
+                envelope: usageEnvelope('`clients add` requires --clients <csv> or --all-clients.', ctx.EXIT_CODES.USAGE)
             };
         }
         const validation = validateClientIds(ids);
@@ -2056,7 +2162,8 @@ async function handleClients(subcommand, options, ctx) {
                     ids,
                     onlyExisting: false,
                     serverName,
-                    force: options.force
+                    force: options.force,
+                    globalConfig: Boolean(options.globalConfig)
                 });
             } catch (err) {
                 return {
@@ -2265,8 +2372,8 @@ function commandHelpMap() {
             examples: ['genexus-mcp tools list', 'genexus-mcp tools list --query read --fields name,category --format json']
         },
         config: {
-            usage: 'genexus-mcp config show [--full] [--fields f1,f2] [--format ...]',
-            examples: ['genexus-mcp config show', 'genexus-mcp config show --full --format json']
+            usage: 'genexus-mcp config show [--full] [--fields f1,f2] [--format ...] OR genexus-mcp config create --config-scope neutral --output <path> --gx <path> --worker <path> --gateway-mode <mode> --resolution-policy <policy> OR genexus-mcp config migrate --from <legacy.json> --output <neutral.json> [--reject-non-migratable]',
+            examples: ['genexus-mcp config show', 'genexus-mcp config create --config-scope neutral --output ./config.json --gx <path> --worker <path> --gateway-mode stdio-isolated --resolution-policy strict', 'genexus-mcp config migrate --from ./config.json --output ./.genexus-mcp/config.json']
         },
         init: {
             usage: 'genexus-mcp init [--kb <path>] [--gx <path>] [--server-name <name>] [--force] [--no-write-clients] [--clients <csv>] [--all-clients] [--no-smoke] [--warm] [--format ...] OR genexus-mcp init --interactive',
@@ -2386,7 +2493,7 @@ async function handleHelp(targetCommand, ctx) {
                 bin: binPath,
                 command: 'genexus-mcp',
                 description: 'GeneXus MCP launcher and AXI-oriented utility CLI',
-                commands: ['home', 'axi home', 'status', 'doctor', 'tools list', 'config show', 'layout status', 'layout run', 'layout inspect', 'init', 'whoami', 'uninstall', 'kb list', 'kb add', 'kb remove', 'kb switch', 'llm help', 'update', 'help'],
+                commands: ['home', 'axi home', 'status', 'doctor', 'tools list', 'config show', 'config create', 'layout status', 'layout run', 'layout inspect', 'init', 'whoami', 'uninstall', 'kb list', 'kb add', 'kb remove', 'kb switch', 'llm help', 'update', 'help'],
                 defaults: { format: 'toon', limit: 100 }
             },
             help: [
@@ -2488,6 +2595,8 @@ module.exports = {
     handleDoctor,
     handleToolsList,
     handleConfigShow,
+    handleConfigCreate,
+    handleConfigMigrate,
     handleInit,
     handleWhoami,
     handleUninstall,

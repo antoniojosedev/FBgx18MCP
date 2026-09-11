@@ -4,6 +4,28 @@ Detailed, task-specific guidance for agents working on this repository. The
 short project rules and navigation pointers live in `AGENTS.md`; read the
 relevant section here when a task touches the corresponding behavior.
 
+## Formal legacy configuration migration
+
+Migration is explicit and copy-based; startup commands do not alter legacy configuration. Run:
+
+```text
+genexus-mcp config migrate --from <legacy.json> --output <neutral.json> --format json
+```
+
+The source is preserved and copied to an atomic `*.pre-migrate*.bak` backup. The
+output is a KB-free neutral runtime config and is verified by read-back. If an
+existing output cannot be verified, it is restored atomically and the receipt
+reports `rollback.rolledBack=true`. Use `--reject-non-migratable` to reject
+rather than report legacy KB fields that cannot move to a neutral runtime.
+
+`kb add`, `kb remove`, and `kb switch` intentionally retain their legacy
+meaning and destination: they update `Environment.KBs`, `Environment.KBPath`,
+`Environment.ActiveKb`, and `Environment.DefaultKb` in the config selected by
+`GX_CONFIG_PATH` or `config.json` in the current directory. They are not aliases
+for neutral MCP session selection. For a neutral config, select the KB explicitly
+through the MCP session action; do not expect `init` or `clients add` to migrate
+or rewrite a config as a side effect.
+
 ## Engineering safeguards
 
 ### Adding a mutating tool

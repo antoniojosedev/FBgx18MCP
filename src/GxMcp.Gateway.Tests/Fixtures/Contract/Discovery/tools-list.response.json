@@ -9,7 +9,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Use this for cross-object semantic analysis. mode=context returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs + callers). Other modes: impact, callers, hierarchy, navigation, linter, summary, explain. mode=explain preserves the legacy compatibility envelope and returns NotImplemented until a typed code explanation is available. Requires Ready index for impact/callers.",
+      "description": "Use this for cross-object semantic analysis. mode=context returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs + callers). Other modes: impact, callers, hierarchy, navigation, linter, summary, explain. mode=explain is compatibility-only: it preserves the legacy response envelope and returns NotImplemented; use mode=summary for a concise overview, mode=context for 360° task context, or genexus_read for source. Requires Ready index for impact/callers.",
       "inputSchema": {
         "examples": [
           {
@@ -23,7 +23,7 @@
         ],
         "properties": {
           "code": {
-            "description": "mode=explain: legacy code snippet to carry through the compatibility envelope.",
+            "description": "mode=explain: legacy code snippet carried through the compatibility-only envelope; the result is NotImplemented. Use mode=summary, mode=context, or genexus_read for supported analysis.",
             "type": "string"
           },
           "cursor": {
@@ -1577,7 +1577,7 @@
           },
           "requireObjectSave": {
             "default": false,
-            "description": "Events patch only: require a complete parent-object save, an advanced revision/lastUpdate, fresh content re-read, and unchanged sibling parts. Requires baseVersion for non-dry-run writes; incomplete evidence is returned as ObjectSaveIncomplete without an automatic retry or rollback.",
+            "description": "Events patch complete-save requirement. dryRun remains available; real writes are blocked before persistence with ObjectSaveIsolationUnverified until SDK/pattern save-event isolation is established. No override. baseVersion remains required for a real write.",
             "type": "boolean"
           },
           "return_post_state": {
@@ -2396,12 +2396,20 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Manage open KBs, startup config, and GeneXus environments. list/open/close/set_default operate on WorkerPool; set_default selects the implicit target for calls that omit kb (an explicit kb always wins for parallel or cross-KB work); set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
+      "description": "Manage open KBs, session selection, startup config, and GeneXus environments. list/open/close/select/set_session_default/set_persistent_default/set_default operate on WorkerPool and session context; select sets active KB for current session only without mutating config; set_persistent_default explicitly persists startup default to config.json and returns persistedTo; set_default is a legacy persistent default operation; set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
       "inputSchema": {
         "examples": [
           {
             "action": "open",
             "path": "C:\\KBs\\MyKb"
+          },
+          {
+            "action": "select",
+            "alias": "MyKb"
+          },
+          {
+            "action": "set_persistent_default",
+            "alias": "MyKb"
           },
           {
             "action": "list"
@@ -2424,6 +2432,9 @@
               "list",
               "open",
               "close",
+              "select",
+              "set_session_default",
+              "set_persistent_default",
               "set_default",
               "set_startup",
               "get_startup",
@@ -2448,6 +2459,10 @@
           "path": {
             "description": "Absolute KB path (required for open if alias not in config).",
             "type": "string"
+          },
+          "persist": {
+            "description": "Legacy set_default only: persist to config.json (default true). If false, acts like select.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2459,12 +2474,83 @@
     },
     {
       "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Gateway-only filesystem comparison of two KB directories. Requires kbA and kbB aliases or paths; no active KB selection is used.",
+      "inputSchema": {
+        "examples": [
+          {
+            "kbA": "development",
+            "kbB": "staging"
+          }
+        ],
+        "properties": {
+          "kbA": {
+            "type": "string"
+          },
+          "kbB": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kbA",
+          "kbB"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_diff"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only filesystem copy of one object between two KB directories. Requires source and object identity; run lifecycle index afterwards.",
+      "inputSchema": {
+        "examples": [
+          {
+            "from": "C:\\KBs\\source",
+            "name": "Customer",
+            "to": "C:\\KBs\\target",
+            "type": "Transaction"
+          }
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "name",
+          "type"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_kb_import"
+    },
+    {
+      "annotations": {
         "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "KB model-version management (Create Version/Branch/Activate/Revert) over the SDK's KBVersionHelper — the IDE Version menu's code path. action=list is read-only; freeze/branch/set_active/revert mutate the KB's version tree.",
+      "description": "KB model-version management (Create Version/Branch/Activate/Revert) over the SDK's KBVersionHelper — the IDE Version menu's code path. action=list is read-only; freeze/branch/set_active/revert mutate the KB's version tree. Version results keep lastUpdate separate from createdAt; createdAt is null with createdAtAvailable=false when the SDK has no reliable creation timestamp.",
       "inputSchema": {
         "examples": [
           {
@@ -3735,6 +3821,52 @@
     },
     {
       "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only filesystem sandbox management; clone or remove a KB directory without SDK dispatch.",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "create",
+            "from": "C:\\KBs\\base",
+            "name": "probe"
+          },
+          {
+            "action": "remove",
+            "name": "probe"
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_sandbox"
+    },
+    {
+      "annotations": {
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,
@@ -4639,6 +4771,39 @@
     {
       "annotations": {
         "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Gateway-only worker-pool warm-spare configuration. Does not require a KB selection or dispatch to the Worker.",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "warm_spares",
+            "spareCount": 1
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "warm_spares"
+            ],
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "spareCount": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_worker_pool"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
         "idempotentHint": false,
         "openWorldHint": true,
         "readOnlyHint": false
@@ -4687,7 +4852,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed WorkWithPlus action, tab, and grid edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. No lifecycle operation is implicit.",
+      "description": "Typed WorkWithPlus action, tab, and grid edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. No lifecycle operation is implicit. Settings: embedded and separate WWP templates, paged reads and exact table-class dryRun; saves remain blocked.",
       "inputSchema": {
         "$defs": {
           "wwpControl": {
@@ -4807,7 +4972,10 @@
               "add_tab",
               "move_tab",
               "remove_tab",
-              "add_grid_attribute"
+              "add_grid_attribute",
+              "settings_templates",
+              "settings_read",
+              "settings_edit"
             ],
             "type": "string"
           },
@@ -4858,6 +5026,9 @@
             "description": "Availability condition stored verbatim; expression semantics are not validated.",
             "type": "string"
           },
+          "entityKey": {
+            "type": "string"
+          },
           "expectedVersion": {
             "description": "Alias for baseVersion.",
             "type": "string"
@@ -4870,6 +5041,10 @@
             "description": "Action group name. add_action creates it when absent; update/remove use it as a filter.",
             "type": "string"
           },
+          "guid": {
+            "description": "Pattern Settings object GUID for settings_* actions.",
+            "type": "string"
+          },
           "icon": {
             "description": "add/update: button icon.",
             "type": "string"
@@ -4878,9 +5053,22 @@
             "description": "KB alias.",
             "type": "string"
           },
+          "limit": {
+            "description": "Settings nodes per page; offset=0, limit=0 includes full separate-template XML.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "name": {
             "description": "Transaction, WebPanel, or WorkWithPlus<Object> host.",
             "type": "string"
+          },
+          "nodePath": {
+            "description": "Settings node path returned by settings_read.",
+            "type": "string"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
           },
           "position": {
             "description": "Zero-based action or tab index.",
@@ -4891,6 +5079,10 @@
             "description": "add/update: associated Procedure; existence is validated against the KB.",
             "type": "string"
           },
+          "property": {
+            "description": "Exact SDK property name.",
+            "type": "string"
+          },
           "selection": {
             "description": "add/update: execution scope for grid actions.",
             "enum": [
@@ -4899,12 +5091,19 @@
             ],
             "type": "string"
           },
+          "template": {
+            "description": "Settings catalog path, wwp:<template-guid>, or unique template name.",
+            "type": "string"
+          },
           "title": {
             "description": "add_tab: tab title.",
             "type": "string"
           },
           "toGroup": {
             "description": "move_action: destination group (created when absent).",
+            "type": "string"
+          },
+          "value": {
             "type": "string"
           },
           "versionToken": {

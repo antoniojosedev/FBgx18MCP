@@ -47,6 +47,7 @@ namespace GxMcp.Gateway
             "genexus_search_source",
             "genexus_compare",
             "genexus_format",
+            "genexus_kb_diff",
             "genexus_logs" // legacy alias
         };
 
@@ -119,7 +120,7 @@ namespace GxMcp.Gateway
                     mutating: new[] { "wiki", "visualize" }),
                 ["genexus_kb"] = Contract(
                     readOnly: new[] { "list", "list_environments", "get_environment", "get_startup" },
-                    mutating: new[] { "open", "close", "set_default", "set_startup", "set_environment" }),
+                    mutating: new[] { "open", "close", "select", "set_session_default", "set_persistent_default", "set_default", "set_startup", "set_environment" }),
                 ["genexus_navigation"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "view" }),
@@ -178,9 +179,15 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "list", "dry_run_add", "dry_run_remove" },
                     mutating: new[] { "add", "remove" }),
                 ["genexus_wwp"] = Contract(
-                    readOnly: new[] { "list" },
+                    readOnly: new[] { "list", "settings_templates", "settings_read" },
                     mutating: new[] { "add_action", "update_action", "move_action", "remove_action",
-                        "add_tab", "move_tab", "remove_tab", "add_grid_attribute" })
+                        "add_tab", "move_tab", "remove_tab", "add_grid_attribute", "settings_edit" }),
+                ["genexus_sandbox"] = Contract(
+                    readOnly: Array.Empty<string>(),
+                    mutating: new[] { "create", "remove" }),
+                ["genexus_worker_pool"] = Contract(
+                    readOnly: Array.Empty<string>(),
+                    mutating: new[] { "warm_spares" })
             };
 
         // Only actions with a documented preview mode may become read-only when
@@ -236,6 +243,7 @@ namespace GxMcp.Gateway
             "genexus_db:records_update",
             "genexus_transfer:import",
             "genexus_wwp:add_action",
+            "genexus_wwp:settings_edit",
             "genexus_wwp:update_action",
             "genexus_wwp:move_action",
             "genexus_wwp:remove_action",
@@ -385,6 +393,37 @@ namespace GxMcp.Gateway
             // IsReadOnly so both consumers agree on that exception.
             return kind == OperationKind.ReadOnly
                 && HasKnownSideEffects(effectiveTool, effectiveArgs["action"]?.ToString(), effectiveArgs);
+        }
+
+        /// <summary>
+        /// Returns true for operations whose result or side effects are tied to a
+        /// session-owned KB context. Stateless catalog/help reads deliberately stay
+        /// outside this set; they must not acquire a worker through a global fallback.
+        /// </summary>
+        internal static bool RequiresSessionLease(string? toolName, JObject? args)
+        {
+            if (string.IsNullOrWhiteSpace(toolName)) return false;
+            var effectiveArgs = NormalizeArguments(toolName, args, out var canonical);
+            if (string.Equals(canonical, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(canonical, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(canonical, "genexus_edit_and_build", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(canonical, "genexus_sdk_probe", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(canonical, "genexus_doc", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (string.Equals(canonical, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
+                return string.Equals(effectiveArgs["action"]?.ToString(), "crystallize", StringComparison.OrdinalIgnoreCase);
+
+            if (string.Equals(canonical, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
+            {
+                string? action = effectiveArgs["action"]?.ToString();
+                if (string.Equals(action, "result", StringComparison.OrdinalIgnoreCase)) return true;
+                if (string.Equals(action, "status", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(effectiveArgs["target"]?.ToString())) return true;
+                return IsMutationCandidate(canonical, effectiveArgs);
+            }
+
+            return false;
         }
 
         internal sealed class OperationContract

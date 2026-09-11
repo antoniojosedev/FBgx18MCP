@@ -143,5 +143,40 @@ namespace GxMcp.Gateway.Tests
 
             Assert.DoesNotContain("genexus_deploy", names);
         }
+        [Fact]
+        public void Filter_NamedCapabilityProfilesResolveToExpectedSets()
+        {
+            var tools = CreateSampleTools();
+            var exploration = ToolProfileFilter.Filter(tools, "exploration");
+            var safeEdit = ToolProfileFilter.Filter(tools, "safe-edit");
+            var build = ToolProfileFilter.Filter(tools, "build");
+            var versioning = ToolProfileFilter.Filter(tools, "versioning");
+            var deploy = ToolProfileFilter.Filter(tools, "deploy");
+
+            Assert.DoesNotContain("genexus_create", exploration.Select(t => t["name"]?.ToString()));
+            Assert.Contains("genexus_create", safeEdit.Select(t => t["name"]?.ToString()));
+            Assert.Contains("genexus_test", build.Select(t => t["name"]?.ToString()));
+            Assert.Contains("genexus_gxserver", versioning.Select(t => t["name"]?.ToString()));
+            Assert.Contains("genexus_deploy", deploy.Select(t => t["name"]?.ToString()));
+        }
+
+        [Fact]
+        public void Filter_CompositeCapabilityProfilesCanBeCombined()
+        {
+            var tools = CreateSampleTools();
+            var filtered = ToolProfileFilter.Filter(tools, "exploration+safe-edit");
+            var names = filtered.Select(t => t["name"]?.ToString()).ToHashSet();
+
+            Assert.Contains("genexus_read", names);
+            Assert.Contains("genexus_create", names);
+            Assert.DoesNotContain("genexus_deploy", names);
+        }
+
+        [Fact]
+        public void Filter_UnknownProfileFailsOpenForBackwardCompatibility()
+        {
+            var tools = CreateSampleTools();
+            Assert.Equal(tools.Count, ToolProfileFilter.Filter(tools, "unknown-profile").Count);
+        }
     }
 }

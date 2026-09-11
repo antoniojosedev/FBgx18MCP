@@ -170,10 +170,16 @@ namespace GxMcp.Gateway.Tests
             //   additive outputSchema contract; text content remains compatible.
             //   2026-09-07 (v2.43 compatibility): 26000 → 26300 for typed WWP
             //   tab/grid operations and the API versionToken alias. Measured ~26079.
-            //   2026-09-08 (Object Text/style/build contracts): 26300 → 26900 for
-            //   four batch IO actions, forceWrite, and warm/fast-incremental fields.
-            //   Measured ~26584; ~316 headroom.
-            Assert.True(approxTokens < 26900, $"tool_definitions.json is ~{approxTokens} tokens; budget 26900.");
+            //   2026-09-09 (issue #146 decouple registration): 26300 → 26500 for
+            //   genexus_kb select/set_session_default actions and persist flag. Measured ~26327.
+            //   2026-09-10 (issue #146 inventory parity): 26500 → 27500 for the four
+            //   gateway-only RequestLoop tools: kb_diff, kb_import, sandbox, worker_pool.
+            //   The current schema also includes the independently landed Object Text
+            //   batch contracts from main; measured ~27279.
+            //   2026-09-10 (Pattern Settings): 27500 → 27750 for three Settings
+            //   actions, explicit identity, pagination and single-property preview fields.
+            //   Measured ~27549; real Settings saves remain blocked.
+            Assert.True(approxTokens < 27750, $"tool_definitions.json is ~{approxTokens} tokens; budget 27750.");
         }
     }
 }

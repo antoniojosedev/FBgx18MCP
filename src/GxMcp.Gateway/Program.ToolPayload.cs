@@ -300,6 +300,55 @@ namespace GxMcp.Gateway
             foreach (string target in seen) yield return target;
         }
 
+        internal static IEnumerable<(string Target, string Part)> EnumerateMutationRecoveryTargets(string toolName, JObject? args)
+        {
+            if (args == null) yield break;
+
+            var found = new Dictionary<string, (string Target, string Part)>(StringComparer.OrdinalIgnoreCase);
+            void Add(string? target, string? part)
+            {
+                if (string.IsNullOrWhiteSpace(target)) return;
+                string normalizedTarget = target.Trim();
+                string normalizedPart = string.IsNullOrWhiteSpace(part) ? "Source" : part.Trim();
+                found[normalizedTarget + "|" + normalizedPart] = (normalizedTarget, normalizedPart);
+            }
+
+            string? defaultPart = args["part"]?.ToString();
+            Add(args["name"]?.ToString(), defaultPart);
+            Add(args["target"]?.ToString(), defaultPart);
+
+            if (args["targets"] is JArray targets)
+            {
+                foreach (var token in targets)
+                {
+                    if (token is JObject item)
+                        Add(item["name"]?.ToString() ?? item["target"]?.ToString(), item["part"]?.ToString() ?? defaultPart);
+                    else
+                        Add(token?.ToString(), defaultPart);
+                }
+            }
+
+            if (args["changeSet"] is JObject changeSet)
+            {
+                var changes = changeSet["changes"] as JArray ?? changeSet["targets"] as JArray;
+                if (changes != null)
+                {
+                    foreach (var token in changes)
+                    {
+                        if (token is JObject item)
+                            Add(item["name"]?.ToString() ?? item["target"]?.ToString(), item["part"]?.ToString() ?? defaultPart);
+                        else
+                            Add(token?.ToString(), defaultPart);
+                    }
+                }
+            }
+
+            foreach (var item in found.Values
+                .OrderBy(value => value.Target, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(value => value.Part, StringComparer.OrdinalIgnoreCase))
+                yield return item;
+        }
+
         // Semantic-cache invalidation gate: returns true when a tool call may
         // change KB object state, so DispatchCore can clear _semanticCache before
         // (and only before) a mutation. A MISS here means the next identical read
@@ -311,6 +360,8 @@ namespace GxMcp.Gateway
         internal static void MarkRecordWriteOutcomeUnknown(JObject payload)
         {
             payload["retriable"] = false;
+            payload["retryable"] = false;
+            payload["reconciliationRequired"] = true;
             payload["retrySafe"] = false;
             payload["persisted"] = JValue.CreateNull();
             payload["commitState"] = "Indeterminate";
@@ -326,6 +377,23 @@ namespace GxMcp.Gateway
                 || string.Equals(action, "records_update", StringComparison.OrdinalIgnoreCase);
         }
 
+        internal static bool IsPatternSettingsObservation(string toolName, JObject? args)
+        {
+            if (string.Equals(toolName, "genexus_wwp", StringComparison.OrdinalIgnoreCase))
+                return ((string?)args?["action"])?.StartsWith("settings_", StringComparison.OrdinalIgnoreCase) == true;
+            if (!string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)) return false;
+            bool IsSettings(string? value) => string.Equals(value?.Trim().Replace(" ", ""), "PatternSettings", StringComparison.OrdinalIgnoreCase);
+            // An untyped identity can resolve to Settings even when the requested
+            // part is Source. Resolve it again instead of replaying an old token.
+            bool untypedIdentity = string.IsNullOrWhiteSpace((string?)args?["type"])
+                && (!string.IsNullOrWhiteSpace((string?)args?["guid"])
+                    || !string.IsNullOrWhiteSpace((string?)args?["entityKey"])
+                    || Guid.TryParse((string?)args?["name"], out _));
+            return IsSettings((string?)args?["type"]) || IsSettings((string?)args?["part"])
+                || (args?["parts"] is JArray parts && parts.Any(p => IsSettings((string?)p)))
+                || IsSettings(((string?)args?["name"])?.Split(':')[0]) || untypedIdentity;
+        }
+
         // Record reads and previews are live database observations. Neither an empty
         // query nor an earlier successful mutation may bypass a fresh worker call.
         // The action classifier is also the cache safety boundary: action-dependent
@@ -336,7 +404,7 @@ namespace GxMcp.Gateway
         {
             if (isMutating || isLiveTool
                 || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
-                || IsTransactionRecordOperation(toolName, args))
+                || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args))
                 return null;
             return $"{kbScope}|{toolName}:{args?.ToString(Newtonsoft.Json.Formatting.None)}";
         }
@@ -353,17 +421,23 @@ namespace GxMcp.Gateway
         {
             if (isMutating || isLiveTool
                 || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
-                || IsTransactionRecordOperation(toolName, args))
+                || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args))
                 return null;
 
             var canonicalArgs = CanonicalizeJson(args ?? new JObject());
             string normalizedKb = (kbScope ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedKb.Length == 0)
+                return null;
             string normalizedTool = (toolName ?? string.Empty).Trim().ToLowerInvariant();
             string model = CanonicalizeScopePart(modelScope);
             string environment = CanonicalizeScopePart(environmentScope);
 
-            return $"{normalizedKb}|{normalizedTool}:{canonicalArgs.ToString(Newtonsoft.Json.Formatting.None)}"
-                + $"|rev={cacheRevision}|model={model}|env={environment}";
+            return StateScopedCacheKey.Create(
+                StateScope.ProcessScopeId,
+                normalizedKb,
+                cacheRevision,
+                normalizedTool + ":" + canonicalArgs.ToString(Newtonsoft.Json.Formatting.None)
+                    + $"|model={model}|env={environment}").ToString();
         }
 
         /// <summary>Sorts object properties recursively while preserving array order.</summary>

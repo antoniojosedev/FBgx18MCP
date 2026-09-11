@@ -22,6 +22,7 @@ namespace GxMcp.Gateway
 
         private readonly ConcurrentDictionary<string, RecoveryRequirement> _pending = new();
         private readonly string? _journalPath;
+        private readonly OperationalStateKey? _defaultOwner;
         private readonly object _journalLock = new object();
         private volatile bool _journalHealthy = true;
         private string _journalError = string.Empty;
@@ -29,6 +30,20 @@ namespace GxMcp.Gateway
         public MutationRecoveryRegistry(string? journalPath = null)
         {
             _journalPath = journalPath;
+            LoadJournal();
+        }
+
+        internal MutationRecoveryRegistry(string journalPath, OperationalStateKey owner)
+        {
+            _defaultOwner = owner;
+            _journalPath = journalPath;
+            LoadJournal();
+        }
+
+        internal MutationRecoveryRegistry(StateScope scope, string kbId, long generation)
+        {
+            _defaultOwner = scope.ForKb(kbId, generation);
+            _journalPath = scope.RecoveryPath(kbId, generation);
             LoadJournal();
         }
 
@@ -44,16 +59,27 @@ namespace GxMcp.Gateway
 
         public void RequireRead(string? kbAlias, string? target, string? part, string? operationId)
         {
+            RequireReadCore(_defaultOwner, kbAlias, target, part, operationId);
+        }
+
+        internal void RequireRead(OperationalStateKey owner, string target, string? part, string? operationId)
+        {
+            RequireReadCore(owner, owner.KbId, target, part, operationId);
+        }
+
+        private void RequireReadCore(OperationalStateKey? owner, string? kbAlias, string? target, string? part, string? operationId)
+        {
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return;
             var requirement = new RecoveryRequirement
             {
                 KbAlias = kbAlias.Trim(),
+                OwnerKey = owner.HasValue ? owner.Value.Token : string.Empty,
                 Target = target.Trim(),
                 Part = string.IsNullOrWhiteSpace(part) ? "Source" : part.Trim(),
                 OperationId = operationId?.Trim() ?? string.Empty,
                 RequiredAtUtc = DateTime.UtcNow
             };
-            _pending[Key(requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
+            _pending[Key(requirement.OwnerKey, requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
             PersistJournal();
         }
 
@@ -61,7 +87,8 @@ namespace GxMcp.Gateway
         {
             requirement = null!;
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
-            string prefix = Prefix(kbAlias, target) + "|";
+            string prefix = (_defaultOwner.HasValue ? _defaultOwner.Value.Token.ToLowerInvariant() : string.Empty)
+                + "|" + Prefix(kbAlias, target) + "|";
             var found = _pending
                 .Where(pair => pair.Key.StartsWith(prefix, StringComparison.Ordinal))
                 .Select(pair => pair.Value)
@@ -76,13 +103,26 @@ namespace GxMcp.Gateway
         {
             requirement = null!;
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
-            return _pending.TryGetValue(Key(kbAlias, target, part), out requirement!);
+            return _pending.TryGetValue(Key(_defaultOwner.HasValue ? _defaultOwner.Value.Token : string.Empty, kbAlias, target, part), out requirement!);
+        }
+
+        internal bool TryGet(OperationalStateKey owner, string target, string? part, out RecoveryRequirement requirement)
+        {
+            return _pending.TryGetValue(Key(owner.Token, owner.KbId, target, part), out requirement!);
+        }
+
+        internal bool ConfirmRead(OperationalStateKey owner, string target, string? part)
+        {
+            if (!TryGet(owner, target, part, out var requirement)) return false;
+            bool removed = _pending.TryRemove(Key(owner.Token, requirement.KbAlias, requirement.Target, requirement.Part), out _);
+            if (removed) PersistJournal();
+            return removed;
         }
 
         public bool ConfirmRead(string? kbAlias, string? target, string? part)
         {
             if (!TryGet(kbAlias, target, part, out var requirement)) return false;
-            bool removed = _pending.TryRemove(Key(requirement.KbAlias, requirement.Target, requirement.Part), out _);
+            bool removed = _pending.TryRemove(Key(_defaultOwner.HasValue ? _defaultOwner.Value.Token : string.Empty, requirement.KbAlias, requirement.Target, requirement.Part), out _);
             if (removed) PersistJournal();
             return removed;
         }
@@ -91,14 +131,26 @@ namespace GxMcp.Gateway
         {
             return new JObject
             {
-                ["status"] = "Blocked",
-                ["code"] = "PostTimeoutReadRequired",
+                ["status"] = "error",
                 ["target"] = requirement.Target,
-                ["part"] = requirement.Part,
                 ["operationId"] = requirement.OperationId,
-                ["persisted"] = false,
-                ["message"] = "A previous write timed out or was cancelled, so its persisted state is unknown. Re-read this part before another write.",
-                ["hint"] = "Call genexus_read for the target and part. A successful full read clears this recovery fence; then retry from the returned versionToken."
+                ["error"] = new JObject
+                {
+                    ["code"] = "PostTimeoutReadRequired",
+                    ["message"] = "A previous write timed out or was cancelled, so its persisted state is unknown.",
+                    ["hint"] = "Call genexus_read for the target and part. A successful full read clears this recovery fence; then retry from the returned versionToken.",
+                    ["retryable"] = false,
+                    ["reconciliationRequired"] = true,
+                    ["nextSteps"] = new JArray
+                    {
+                        new JObject
+                        {
+                            ["tool"] = "genexus_read",
+                            ["args"] = new JObject { ["name"] = requirement.Target, ["part"] = requirement.Part },
+                            ["why"] = "Confirm whether the timed-out mutation was persisted before retrying."
+                        }
+                    }
+                }
             };
         }
 
@@ -106,13 +158,16 @@ namespace GxMcp.Gateway
         {
             return new JObject
             {
-                ["status"] = "Blocked",
-                ["code"] = "MutationRecoveryJournalUnavailable",
-                ["persisted"] = false,
-                ["retrySafe"] = false,
-                ["message"] = "The mutation recovery journal could not be trusted after startup or persistence failure; writes are blocked until the journal is repaired.",
-                ["detail"] = string.IsNullOrWhiteSpace(journalError) ? null : journalError,
-                ["hint"] = "Inspect the journal under the Gateway state directory, restore a valid versioned file, then restart the Gateway. Read-only calls remain available."
+                ["status"] = "error",
+                ["error"] = new JObject
+                {
+                    ["code"] = "MutationRecoveryJournalUnavailable",
+                    ["message"] = "The mutation recovery journal could not be trusted; writes are blocked until it is repaired.",
+                    ["hint"] = "Inspect the journal under the Gateway state directory, restore a valid versioned file, then restart the Gateway. Read-only calls remain available.",
+                    ["retryable"] = false,
+                    ["reconciliationRequired"] = true,
+                    ["detail"] = string.IsNullOrWhiteSpace(journalError) ? null : journalError
+                }
             };
         }
 
@@ -158,10 +213,13 @@ namespace GxMcp.Gateway
                     var requirement = json.ToObject<RecoveryRequirement>();
                     if (!IsValid(requirement))
                         throw new InvalidDataException("journal contains an invalid recovery fence");
+                    if (_defaultOwner.HasValue
+                        && !string.Equals(requirement!.OwnerKey, _defaultOwner.Value.Token, StringComparison.Ordinal))
+                        throw new InvalidDataException("recovery fence belongs to another operational state scope");
                     if (DateTime.UtcNow - requirement!.RequiredAtUtc.ToUniversalTime() <= JournalRetention)
                     {
                         requirement.RequiredAtUtc = requirement.RequiredAtUtc.ToUniversalTime();
-                        _pending[Key(requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
+                        _pending[Key(requirement.OwnerKey, requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
                     }
                 }
 
@@ -242,12 +300,16 @@ namespace GxMcp.Gateway
             => kbAlias.Trim().ToLowerInvariant() + "|" + target.Trim().ToLowerInvariant();
 
         private static string Key(string kbAlias, string target, string? part)
-            => Prefix(kbAlias, target) + "|" + (string.IsNullOrWhiteSpace(part) ? "source" : part.Trim().ToLowerInvariant());
+            => Key(string.Empty, kbAlias, target, part);
+
+        private static string Key(string ownerKey, string kbAlias, string target, string? part)
+            => (ownerKey ?? string.Empty).Trim().ToLowerInvariant() + "|" + Prefix(kbAlias, target) + "|" + (string.IsNullOrWhiteSpace(part) ? "source" : part.Trim().ToLowerInvariant());
     }
 
     internal sealed class RecoveryRequirement
     {
         public string KbAlias { get; set; } = string.Empty;
+        public string OwnerKey { get; set; } = string.Empty;
         public string Target { get; set; } = string.Empty;
         public string Part { get; set; } = string.Empty;
         public string OperationId { get; set; } = string.Empty;

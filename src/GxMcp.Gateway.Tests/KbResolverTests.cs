@@ -10,7 +10,7 @@ namespace GxMcp.Gateway.Tests
     {
         private static Configuration MakeConfig(params (string alias, string path)[] kbs)
         {
-            var env = new EnvironmentConfig();
+            var env = new EnvironmentConfig { ResolutionPolicy = "legacy" };
             foreach (var (alias, path) in kbs)
             {
                 env.KBs.Add(new KbEntry { Alias = alias, Path = path });
@@ -136,14 +136,26 @@ namespace GxMcp.Gateway.Tests
             var ex = Assert.Throws<KbResolutionException>(
                 () => resolver.Resolve(null, open, null, "closed"));
 
-            Assert.Equal("KB_NOT_FOUND", ex.Code);
+            Assert.Equal("KB_SELECTION_INVALID", ex.Code);
             Assert.Contains("session", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]
         public void Initialized_session_without_selection_does_not_use_persisted_default()
         {
-            var cfg = MakeConfig(("customer", "C:/KB/Customer"), ("order", "C:/KB/Order"));
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict",
+                    DefaultKb = "customer",
+                    KBs =
+                    {
+                        new KbEntry { Alias = "customer", Path = "C:/KB/Customer" },
+                        new KbEntry { Alias = "order", Path = "C:/KB/Order" }
+                    }
+                }
+            };
             var resolver = new KbResolver(cfg);
             var open = new List<KbHandle>
             {
@@ -152,10 +164,9 @@ namespace GxMcp.Gateway.Tests
             };
 
             var ex = Assert.Throws<KbResolutionException>(
-                () => resolver.Resolve(null, open, null, null, sessionContextInitialized: true));
+                () => resolver.Resolve(null, open));
 
             Assert.Equal("KB_AMBIGUOUS", ex.Code);
-            Assert.Contains("session", ex.Message, StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]
@@ -212,7 +223,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void Throws_ambiguous_when_no_arg_no_default_no_open()
         {
-            var cfg = new Configuration { Environment = new EnvironmentConfig() };
+            var cfg = new Configuration { Environment = new EnvironmentConfig { ResolutionPolicy = "legacy" } };
             var resolver = new KbResolver(cfg);
             var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, Array.Empty<KbHandle>()));
             Assert.Equal("KB_AMBIGUOUS", ex.Code);
@@ -238,7 +249,7 @@ namespace GxMcp.Gateway.Tests
         public void Known_set_does_not_affect_null_arg_ambiguity()
         {
             // Empty-arg resolution still keys off OPEN kbs only, not the durable known set.
-            var cfg = new Configuration { Environment = new EnvironmentConfig() };
+            var cfg = new Configuration { Environment = new EnvironmentConfig { ResolutionPolicy = "legacy" } };
             var resolver = new KbResolver(cfg);
             var known = new List<KbHandle>
             {
@@ -257,6 +268,7 @@ namespace GxMcp.Gateway.Tests
             {
                 Environment = new EnvironmentConfig
                 {
+                    ResolutionPolicy = "legacy",
                     DefaultKb = "missing",
                     KBs =
                     {
@@ -269,6 +281,194 @@ namespace GxMcp.Gateway.Tests
             var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, Array.Empty<KbHandle>()));
 
             Assert.Equal("KB_NOT_FOUND", ex.Code);
+        }
+
+        [Fact]
+        public void Strict_ZeroOpen_ThrowsKbContextRequired_WhenZeroOrOneDeclared()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict",
+                    KBs = { new KbEntry { Alias = "customer", Path = "C:/KB/Customer" } }
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, Array.Empty<KbHandle>()));
+            Assert.Equal("KB_CONTEXT_REQUIRED", ex.Code);
+        }
+
+        [Fact]
+        public void Strict_ZeroOpen_ThrowsKbAmbiguous_WhenMultipleDeclared()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict",
+                    KBs =
+                    {
+                        new KbEntry { Alias = "customer", Path = "C:/KB/Customer" },
+                        new KbEntry { Alias = "order", Path = "C:/KB/Order" }
+                    }
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, Array.Empty<KbHandle>()));
+            Assert.Equal("KB_AMBIGUOUS", ex.Code);
+        }
+
+        [Fact]
+        public void Strict_SingleOpen_NoConflict_ResolvesSingleOpen()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict"
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle> { new KbHandle("order", "C:/KB/Order") };
+            var handle = resolver.Resolve(null, open, null, null, out var source);
+            Assert.Equal("order", handle.Alias);
+            Assert.Equal("single-open", source);
+        }
+
+        [Fact]
+        public void Strict_SingleOpen_WithMatchingDefault_ResolvesSingleOpen()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict",
+                    DefaultKb = "order",
+                    KBs =
+                    {
+                        new KbEntry { Alias = "customer", Path = "C:/KB/Customer" },
+                        new KbEntry { Alias = "order", Path = "C:/KB/Order" }
+                    }
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle> { new KbHandle("order", "C:/KB/Order") };
+            var handle = resolver.Resolve(null, open, null, null, out var source);
+            Assert.Equal("order", handle.Alias);
+            Assert.Equal("single-open", source);
+        }
+
+        [Fact]
+        public void Strict_SingleOpen_WithConflictingDefault_ThrowsKbContextRequired()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict",
+                    DefaultKb = "customer",
+                    KBs =
+                    {
+                        new KbEntry { Alias = "customer", Path = "C:/KB/Customer" },
+                        new KbEntry { Alias = "order", Path = "C:/KB/Order" }
+                    }
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle> { new KbHandle("order", "C:/KB/Order") };
+            var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, open));
+            Assert.Equal("KB_CONTEXT_REQUIRED", ex.Code);
+            Assert.Contains("DefaultConflict", ex.Message);
+        }
+
+        [Fact]
+        public void Strict_MultipleOpen_ThrowsKbAmbiguous()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict"
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("customer", "C:/KB/Customer"),
+                new KbHandle("order", "C:/KB/Order")
+            };
+            var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, open));
+            Assert.Equal("KB_AMBIGUOUS", ex.Code);
+        }
+
+        [Fact]
+        public void Strict_SessionSelection_ResolvesSessionSelect()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict",
+                    KBs =
+                    {
+                        new KbEntry { Alias = "customer", Path = "C:/KB/Customer" },
+                        new KbEntry { Alias = "order", Path = "C:/KB/Order" }
+                    }
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("customer", "C:/KB/Customer"),
+                new KbHandle("order", "C:/KB/Order")
+            };
+            var handle = resolver.Resolve(null, open, null, "order", out var source);
+            Assert.Equal("order", handle.Alias);
+            Assert.Equal("session-select", source);
+        }
+
+        [Fact]
+        public void Strict_InvalidSessionSelection_ThrowsKbSelectionInvalid_NoFallback()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict",
+                    KBs = { new KbEntry { Alias = "customer", Path = "C:/KB/Customer" } }
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle> { new KbHandle("customer", "C:/KB/Customer") };
+            var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, open, null, "unknown_kb"));
+            Assert.Equal("KB_SELECTION_INVALID", ex.Code);
+        }
+
+        [Fact]
+        public void Strict_ExplicitArg_WinsOverSessionSelection()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    ResolutionPolicy = "strict",
+                    KBs =
+                    {
+                        new KbEntry { Alias = "customer", Path = "C:/KB/Customer" },
+                        new KbEntry { Alias = "order", Path = "C:/KB/Order" }
+                    }
+                }
+            };
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("customer", "C:/KB/Customer"),
+                new KbHandle("order", "C:/KB/Order")
+            };
+            var handle = resolver.Resolve("customer", open, null, "order", out var source);
+            Assert.Equal("customer", handle.Alias);
+            Assert.Equal("explicit-arg", source);
         }
     }
 }

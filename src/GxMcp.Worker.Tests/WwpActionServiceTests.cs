@@ -8,6 +8,32 @@ namespace GxMcp.Worker.Tests
 {
     public class WwpActionServiceTests
     {
+        [Theory]
+        [InlineData(null, "WorkWithPlus", "WorkWithPlus")]
+        [InlineData("", "WorkWithPlus", "WorkWithPlus")]
+        [InlineData(" ", "WorkWithPlus", "WorkWithPlus")]
+        [InlineData("ExplicitTarget", "OtherName", "ExplicitTarget")]
+        [InlineData("WorkWithPlusOrder", null, "WorkWithPlusOrder")]
+        [InlineData(null, null, null)]
+        public void LegacyEnvelopeResolvesNameWithoutReplacingExplicitTarget(string target, string name, string expected)
+        {
+            var args = new JObject { ["name"] = name, ["guid"] = "11111111-2222-3333-4444-555555555555" };
+            var original = args.DeepClone();
+
+            Assert.Equal(expected, WwpActionService.ResolveTarget(target, args));
+            Assert.True(JToken.DeepEquals(original, args));
+        }
+
+        [Fact]
+        public void MissingEnvelopeAndNameKeepIdentityOnlyResolutionAvailable()
+        {
+            Assert.Null(WwpActionService.ResolveTarget(null, null));
+            Assert.Null(WwpActionService.ResolveTarget(null, new JObject
+            {
+                ["entityKey"] = "11111111-2222-3333-4444-555555555555-1"
+            }));
+        }
+
         [Fact]
         public void AddGridAction_WritesTypedAttributesAndNeverAddsSecurity()
         {
@@ -115,6 +141,50 @@ namespace GxMcp.Worker.Tests
             JObject invalid = WwpActionService.ApplyTabXml(doc, "rename_tab",
                 new JObject { ["controlName"] = "Two" });
             Assert.Equal("UnknownWwpActionOperation", (string)invalid["code"]);
+        }
+
+        [Fact]
+        public void WebFormProjectionMatchingIsDelimitedAndStructural()
+        {
+            JObject expected = new JObject
+            {
+                ["tabs"] = new JArray
+                {
+                    new JObject { ["controlName"] = "Tab1", ["children"] = new JArray
+                    {
+                        new JObject { ["type"] = "userAction", ["name"] = "Send" }
+                    } },
+                    new JObject { ["controlName"] = "Tab10", ["children"] = new JArray() }
+                }
+            };
+            string webForm = "<form><tab id='Tab10'/><tab id='Tab1'><button event='OnSendNow'/></tab></form>";
+            JObject result = WwpActionService.VerifyWebFormProjectionForTests(webForm, expected, "add_tab", "Tab1");
+            Assert.False(result["confirmed"].Value<bool>());
+            Assert.False(result["actionEventConfirmed"].Value<bool>());
+            Assert.False(WwpActionService.WebFormContainsEventForTests(webForm, "Send"));
+            Assert.True(WwpActionService.WebFormContainsEventForTests("<form><button event='On.Send'/></form>", "Send"));
+        }
+
+        [Fact]
+        public void WebFormProjectionDoesNotConfuseTabPrefixWithExactControlName()
+        {
+            JObject expected = new JObject { ["tabs"] = new JArray
+            {
+                new JObject { ["controlName"] = "Tab1", ["children"] = new JArray() }
+            } };
+            JObject result = WwpActionService.VerifyWebFormProjectionForTests(
+                "<form><tab id='Tab10'/></form>", expected, "add_tab", "Tab1");
+            Assert.False(result["confirmed"].Value<bool>());
+            Assert.False(result["targetPresent"].Value<bool>());
+        }
+
+        [Theory]
+        [InlineData(null, "current", true)]
+        [InlineData("current", "current", true)]
+        [InlineData("stale", "current", false)]
+        public void CommonWwpActionVersionPreconditionRejectsStale(string expected, string current, bool valid)
+        {
+            Assert.Equal(valid, WwpActionService.IsExpectedVersion(expected, current));
         }
 
         [Fact]

@@ -44,6 +44,7 @@ import statistics
 import sys
 import time
 import urllib.request
+import urllib.error
 
 BASE = "http://127.0.0.1:5000/mcp"
 
@@ -85,6 +86,9 @@ class RpcMeasurement:
     envelope: object
     response_bytes: int = 0
     status_code: object = None
+    content_bytes: int = 0
+    structured_content_bytes: int = 0
+    estimated_tokens: int = 0
 
     def __iter__(self):
         yield self.elapsed_ms
@@ -114,12 +118,8 @@ def rpc(session_id, method, params, timeout=180, is_notification=False):
             error_bytes = e.read()
         except Exception:
             error_bytes = b""
-        return RpcMeasurement(
-            (time.perf_counter() - t0) * 1000.0,
-            {"__http_error__": e.code},
-            len(error_bytes),
-            e.code,
-        )
+        return RpcMeasurement((time.perf_counter() - t0) * 1000.0,
+                              {"__http_error__": e.code}, len(error_bytes), e.code)
     elapsed = (time.perf_counter() - t0) * 1000.0
     response_bytes = len(raw_bytes)
     # JSON-in-JSON: result.content[0].text holds the worker envelope
@@ -132,14 +132,27 @@ def rpc(session_id, method, params, timeout=180, is_notification=False):
     result = outer.get("result")
     if not isinstance(result, dict) or result.get("isError"):
         return RpcMeasurement(elapsed, {"isError": True}, response_bytes, status_code)
+    content_bytes = 0
+    content = result.get("content")
+    if isinstance(content, list):
+        content_bytes = sum(
+            len(str(item.get("text", "")).encode("utf-8"))
+            for item in content if isinstance(item, dict)
+        )
+    structured = result.get("structuredContent")
+    structured_bytes = len(json.dumps(structured, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) \
+        if isinstance(structured, (dict, list)) else 0
+    estimated_tokens = (content_bytes + structured_bytes + 3) // 4
     if isinstance(result.get("structuredContent"), dict):
-        return RpcMeasurement(elapsed, result["structuredContent"], response_bytes, status_code)
+        return RpcMeasurement(elapsed, result["structuredContent"], response_bytes, status_code,
+                              content_bytes, structured_bytes, estimated_tokens)
     try:
         txt = outer["result"]["content"][0]["text"]
         inner = json.loads(txt)
     except Exception:
         inner = None
-    return RpcMeasurement(elapsed, inner, response_bytes, status_code)
+    return RpcMeasurement(elapsed, inner, response_bytes, status_code,
+                          content_bytes, structured_bytes, estimated_tokens)
 
 
 def percentile(samples, p):
@@ -637,6 +650,9 @@ def main():
     def run_op(label, build_args):
         samples = []
         byte_samples = []
+        content_byte_samples = []
+        structured_byte_samples = []
+        token_samples = []
         failed = 0
         for i in range(n):
             args_dict = build_args(i)
@@ -658,9 +674,25 @@ def main():
                 # responses always have a non-empty JSON body.
                 if isinstance(response_bytes, (int, float)) and response_bytes > 0:
                     byte_samples.append(response_bytes)
+                for target, value in ((content_byte_samples, getattr(measurement, "content_bytes", 0)),
+                                      (structured_byte_samples, getattr(measurement, "structured_content_bytes", 0)),
+                                      (token_samples, getattr(measurement, "estimated_tokens", 0))):
+                    if isinstance(value, int) and value >= 0:
+                        target.append(value)
             else:
                 failed += 1
         agg(label, samples, results, byte_samples)
+        for key, values in (("contentBytes", content_byte_samples),
+                            ("structuredContentBytes", structured_byte_samples),
+                            ("estimatedTokens", token_samples)):
+            if values:
+                results[label][key] = {
+                    "n": len(values),
+                    "p50": round(percentile(values, 50), 2),
+                    "p95": round(percentile(values, 95), 2),
+                    "avg": round(statistics.mean(values), 2),
+                    "samples": values,
+                }
         results[label].update(attempted=n, succeeded=len(samples), failed=failed, skipped=0)
 
     if "whoami" in ops:

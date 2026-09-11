@@ -42,6 +42,9 @@ param(
     [switch]$SkipBuild,
     [switch]$SkipTests,
     [switch]$AllowDirty,
+    # Issues explicitly completed by this release. Each issue receives the
+    # release URL before it is closed; omitted issues are never touched.
+    [int[]]$CloseIssues,
     # Optional machine-readable progress file. Defaults to %TEMP% and is safe
     # to poll from another shell while a detached release is running.
     [string]$StatusFile,
@@ -76,6 +79,7 @@ $statusState = [ordered]@{
     exitCode = $null
     error = $null
 }
+$releaseUrl = $null
 
 function Write-ReleaseStatus {
     param(
@@ -151,6 +155,37 @@ function Get-ForwardedArgs {
         }
     }
     return ,($fwd.ToArray())
+}
+
+function Close-ReleaseIssues {
+    param([Parameter(Mandatory = $true)][string]$ReleaseUrl)
+    foreach ($issue in @($CloseIssues | Select-Object -Unique)) {
+        if ($issue -le 0) { Fail "Issue number must be positive: $issue" }
+        if ($DryRun) {
+            Warn "[DRY-RUN] would comment release URL and close issue #$issue."
+            continue
+        }
+
+        $state = (gh issue view $issue --json state --jq '.state' 2>$null).Trim().ToLowerInvariant()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($state)) {
+            Fail "Could not read issue #$issue before closing it."
+        }
+        if ($state -eq 'closed') {
+            Warn "Issue #$issue is already closed; leaving it unchanged."
+            continue
+        }
+        if ($state -ne 'open') {
+            Fail "Issue #$issue has unexpected state '$state'; refusing to close it."
+        }
+
+        Invoke-Cmd 'gh' @('issue', 'comment', [string]$issue, '--body', "Released in $ReleaseUrl")
+        Invoke-Cmd 'gh' @('issue', 'close', [string]$issue, '--reason', 'completed')
+        $verifiedState = (gh issue view $issue --json state --jq '.state' 2>$null).Trim().ToLowerInvariant()
+        if ($LASTEXITCODE -ne 0 -or $verifiedState -ne 'closed') {
+            Fail "Issue #$issue was not verified as closed after the release comment."
+        }
+        Ok "Issue #$issue closed with release link."
+    }
 }
 
 $pwshExe = $null
@@ -262,6 +297,10 @@ function Set-LockfileVersion {
 }
 
 # -- 1. Resolve version + sanity-check tree --------------------------------
+function Test-StrictSemVer([string]$Value) {
+    return $Value -match '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+}
+
 Step "Resolving version"
 $pkgPath = Join-Path $root 'package.json'
 if (-not (Test-Path $pkgPath)) { Fail "package.json not found at $pkgPath" }
@@ -272,11 +311,10 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = $currentVersion
     Warn "No -Version passed; using package.json: $Version"
 } else {
-    # Strip leading 'v' if user typed it
     $Version = $Version -replace '^v', ''
-    if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[\w.]+)?$') {
-        Fail "Version '$Version' is not semver (X.Y.Z or X.Y.Z-tag)."
-    }
+}
+if (-not (Test-StrictSemVer $Version)) {
+    Fail "Version '$Version' is not strict semver (X.Y.Z[-prerelease][+build])."
 }
 $tag = "v$Version"
 $numericVersion = ([regex]::Match($Version, '^\d+\.\d+\.\d+')).Value
@@ -883,6 +921,15 @@ if ($releaseExists) {
     }
 }
 if (Test-Path -LiteralPath $notesTmp) { Remove-Item -LiteralPath $notesTmp -Force -ErrorAction SilentlyContinue }
+
+# Close only issues explicitly associated with this release, and only after
+# GitHub confirmed the release operation above. This keeps issue state tied to
+# an available artifact rather than to a merge or a changelog mention.
+if (@($CloseIssues).Count -gt 0) {
+    Step "Closing released issues"
+    $issueReleaseUrl = if ($releaseUrl) { $releaseUrl } else { "https://github.com/lennix1337/Genexus18MCP/releases/tag/$tag" }
+    Close-ReleaseIssues -ReleaseUrl $issueReleaseUrl
+}
 
 # Belt-and-suspenders: verify the publish workflow started, or trigger it manually.
 # Normally the `release.published` event starts the workflow automatically.

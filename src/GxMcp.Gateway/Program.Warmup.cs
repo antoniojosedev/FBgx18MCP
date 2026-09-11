@@ -20,6 +20,12 @@ namespace GxMcp.Gateway
         {
             if (Interlocked.CompareExchange(ref _indexBootstrapStarted, 1, 0) != 0) return;
 
+            if (IndexBootstrapTriggerForTest != null)
+            {
+                IndexBootstrapTriggerForTest();
+                return;
+            }
+
             Log("[IndexBootstrap] firing on initialize");
 
             _ = Task.Run(async () =>
@@ -27,6 +33,11 @@ namespace GxMcp.Gateway
                 try
                 {
                     if (_workerPool == null) { Log("[IndexBootstrap] worker pool null"); return; }
+
+                    // Warmup and index bootstrap both acquire the default KB. Serialize
+                    // them so initialize cannot create two Workers for the same KB and
+                    // leave the gateway holding the BusyRejecting process.
+                    await WorkerWarmupCompleted.Task.ConfigureAwait(false);
 
                     var indexCommand = new JObject
                     {
@@ -95,11 +106,10 @@ namespace GxMcp.Gateway
                         return;
                     }
 
-                    // Perf: pre-spawn the default KB's worker BEFORE any agent call so the
-                    // ~12s cold-start (SM warmup + SDK init + KB open — measured breakdown in
-                    // [COLD-START-BREAKDOWN]) is paid during gateway boot instead of on the
-                    // first KB-bound tool call. Best-effort: a failed spawn just logs; the
-                    // normal open path still works.
+                    // Resolve the configured default KB before issuing the warmup
+                    // command. Strict resolution does not auto-open declared KBs,
+                    // so the command would otherwise fail when initialize starts
+                    // with no worker already attached.
                     await PrespawnDefaultKbWorkerAsync();
 
                     Log("[Warmup] Starting worker warmup sequence...");
@@ -178,6 +188,10 @@ namespace GxMcp.Gateway
                         data = "Worker warmup failed: " + ex.Message,
                         timestamp = DateTime.UtcNow
                     });
+                }
+                finally
+                {
+                    WorkerWarmupCompleted.TrySetResult(true);
                 }
             });
         }

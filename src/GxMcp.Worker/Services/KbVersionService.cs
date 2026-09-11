@@ -164,6 +164,9 @@ namespace GxMcp.Worker.Services
             string err = ResolveVersion(kbase, targetName, out target);
             if (err != null) return err;
 
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(WriteDestinationGuard.VersionVariable)) && target.IsFrozen)
+                return McpResponse.Err(code: "WriteDestinationVersionNotWritable", message: "The pinned target version is frozen; activation was not performed.", hint: "Choose a writable version explicitly in the profile.");
+
             try
             {
                 if (args?["autoUpdate"] != null)
@@ -283,7 +286,7 @@ namespace GxMcp.Worker.Services
         private static JObject DescribeVersion(KBVersion v, KBVersion active)
         {
             if (v == null) return null;
-            return new JObject
+            var result = new JObject
             {
                 ["name"] = v.Name,
                 ["description"] = SafeStr(() => v.Description),
@@ -293,8 +296,21 @@ namespace GxMcp.Worker.Services
                 ["isActive"] = SafeSameVersion(v, active),
                 ["parent"] = SafeStr(() => v.Parent?.Name),
                 ["lastUpdate"] = SafeStr(() => v.LastUpdate.ToUniversalTime().ToString("o")),
+                ["lastUpdateSource"] = "sdk:KBVersion.LastUpdate",
                 ["userName"] = SafeStr(() => v.UserName)
             };
+            AddCreationTimestampMetadata(result);
+            return result;
+        }
+
+        internal static void AddCreationTimestampMetadata(JObject result)
+        {
+            // KBVersion exposes LastUpdate but no creation timestamp. Do not
+            // infer creation from it: a later edit can change LastUpdate.
+            result["createdAt"] = JValue.CreateNull();
+            result["createdAtAvailable"] = false;
+            result["createdAtSource"] = "unavailable:sdk-KBVersion";
+            result["createdAtNote"] = "The GeneXus SDK does not expose a reliable creation timestamp for KB versions.";
         }
 
         private static string SafeStr(Func<string> f)

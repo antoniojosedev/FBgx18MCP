@@ -59,6 +59,8 @@ namespace GxMcp.Gateway
                     Log($"[Respawn] Skipped eager respawn for KB '{kb.Alias}' — planned exit in progress.");
                     return;
                 }
+                var respawnPool = _workerPool;
+                var respawnCancellation = _respawnTestCancellation.Token;
                 Task.Run(async () =>
                 {
                     // issue #26 P1: retry the respawn a few times with backoff instead of
@@ -70,14 +72,14 @@ namespace GxMcp.Gateway
                     Exception? lastEx = null;
                     for (int attempt = 1; attempt <= maxAttempts; attempt++)
                     {
+                        if (respawnCancellation.IsCancellationRequested) return;
                         try
                         {
                             var ctSrc = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                            // Drop only the dead LIVE entry so AcquireAsync's fast path can't
-                            // return the just-exited WorkerProcess — but keep the durable
-                            // _known record (issue #26 P3) so the KB stays resolvable.
-                            try { _workerPool!.DropLiveEntry(kb.NormalizedAlias); } catch { }
-                            await _workerPool!.AcquireAsync(kb, ctSrc.Token).ConfigureAwait(false);
+                            // WorkerPool detaches the exited entry before raising this
+                            // event. Do not remove by alias here: a concurrent AcquireAsync
+                            // may already have installed a healthy replacement.
+                            await respawnPool!.AcquireAsync(kb, ctSrc.Token).ConfigureAwait(false);
                             _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
                             Log($"[Respawn] Replacement worker spawned for KB '{kb.Alias}' (attempt {attempt}).");
                             // issue #25 #2: the index bootstrap fires once per gateway process,
@@ -96,7 +98,15 @@ namespace GxMcp.Gateway
                             Log($"[Respawn] Attempt {attempt}/{maxAttempts} to respawn worker for KB '{kb.Alias}' failed: {ex.Message}");
                             if (attempt < maxAttempts)
                             {
-                                try { await Task.Delay(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false); } catch { }
+                                try
+                                {
+                                    if (respawnCancellation.IsCancellationRequested) return;
+                                    if (RespawnDelayForTest != null)
+                                        await RespawnDelayForTest(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false);
+                                    else
+                                        await Task.Delay(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false);
+                                }
+                                catch { }
                             }
                         }
                     }
@@ -111,6 +121,7 @@ namespace GxMcp.Gateway
                     // early if a worker came up by any path or the gateway is shutting down.
                     for (int slow = 1; slow <= 30; slow++)
                     {
+                        if (respawnCancellation.IsCancellationRequested) return;
                         try { await Task.Delay(TimeSpan.FromSeconds(60), _gatewayLifetime.Token).ConfigureAwait(false); }
                         catch { return; } // gateway shutting down
                         if (IsEagerRespawnSuppressed()) return;
@@ -122,8 +133,8 @@ namespace GxMcp.Gateway
                         try
                         {
                             var slowCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                            try { _workerPool!.DropLiveEntry(kb.NormalizedAlias); } catch { }
-                            await _workerPool!.AcquireAsync(kb, slowCts.Token).ConfigureAwait(false);
+                            try { respawnPool!.DropLiveEntry(kb.NormalizedAlias); } catch { }
+                            await respawnPool!.AcquireAsync(kb, slowCts.Token).ConfigureAwait(false);
                             _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
                             Log($"[Respawn] Slow-retry respawn succeeded for KB '{kb.Alias}' (retry {slow}).");
                             Interlocked.Exchange(ref _indexBootstrapStarted, 0);
@@ -147,29 +158,32 @@ namespace GxMcp.Gateway
         // only the GxMcp.Worker.* assembly files; the dependency DLLs already sit in targetDir.
         private static void CopyWorkerBinaries(string sourceDir, string? targetDir)
         {
-            try
+            if (string.IsNullOrWhiteSpace(targetDir) || !System.IO.Directory.Exists(sourceDir))
             {
-                if (string.IsNullOrWhiteSpace(targetDir) || !System.IO.Directory.Exists(sourceDir))
-                {
-                    Log($"[Gateway] worker_reload copy skipped — sourceDir '{sourceDir}' missing or targetDir unresolved.");
-                    return;
-                }
-                string[] files = { "GxMcp.Worker.exe", "GxMcp.Worker.dll", "GxMcp.Worker.pdb", "GxMcp.Worker.exe.config" };
-                int copied = 0;
-                foreach (var f in files)
-                {
-                    string src = System.IO.Path.Combine(sourceDir, f);
-                    if (!System.IO.File.Exists(src)) continue;
-                    string dst = System.IO.Path.Combine(targetDir!, f);
-                    for (int attempt = 0; attempt < 10; attempt++)
-                    {
-                        try { System.IO.File.Copy(src, dst, overwrite: true); copied++; break; }
-                        catch (System.IO.IOException) when (attempt < 9) { System.Threading.Thread.Sleep(150); }
-                    }
-                }
-                Log($"[Gateway] worker_reload swapped {copied} worker binary file(s): {sourceDir} -> {targetDir}");
+                throw new InvalidOperationException($"Worker binary swap source or target is unavailable (sourceDir='{sourceDir}', targetDir='{targetDir ?? "<null>"}').");
             }
-            catch (Exception ex) { Log($"[Gateway] worker_reload CopyWorkerBinaries failed: {ex.Message}"); }
+
+            string[] requiredFiles = { "GxMcp.Worker.exe", "GxMcp.Worker.dll" };
+            foreach (var file in requiredFiles)
+            {
+                if (!System.IO.File.Exists(System.IO.Path.Combine(sourceDir, file)))
+                    throw new InvalidOperationException($"Worker binary swap source is missing required file '{file}'.");
+            }
+
+            string[] files = { "GxMcp.Worker.exe", "GxMcp.Worker.dll", "GxMcp.Worker.pdb", "GxMcp.Worker.exe.config" };
+            int copied = 0;
+            foreach (var file in files)
+            {
+                string src = System.IO.Path.Combine(sourceDir, file);
+                if (!System.IO.File.Exists(src)) continue;
+                string dst = System.IO.Path.Combine(targetDir, file);
+                for (int attempt = 0; attempt < 10; attempt++)
+                {
+                    try { System.IO.File.Copy(src, dst, overwrite: true); copied++; break; }
+                    catch (System.IO.IOException) when (attempt < 9) { System.Threading.Thread.Sleep(150); }
+                }
+            }
+            Log($"[Gateway] worker_reload swapped {copied} worker binary file(s): {sourceDir} -> {targetDir}");
         }
 
         private static void RestartWorker(Configuration config)

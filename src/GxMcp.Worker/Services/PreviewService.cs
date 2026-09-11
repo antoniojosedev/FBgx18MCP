@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
@@ -41,23 +42,22 @@ namespace GxMcp.Worker.Services
         {
             public CliResult Run(string fileName, string arguments, int timeoutMs)
             {
-                // On Windows, only true PE images (.exe/.com) can be launched directly
-                // with UseShellExecute=false. npm CLI shims arrive as .cmd, .bat, .ps1
-                // or an extensionless shell script — CreateProcess fails with
-                // ERROR_BAD_EXE_FORMAT for all of these. Route anything that is not
-                // a native executable through cmd.exe (which honours PATHEXT and
-                // executes .cmd/.bat directly).
                 ProcessStartInfo psi;
                 var ext = Path.GetExtension(fileName);
                 bool isNativeExe = string.Equals(ext, ".exe", StringComparison.OrdinalIgnoreCase) ||
                                    string.Equals(ext, ".com", StringComparison.OrdinalIgnoreCase);
                 if (!isNativeExe)
                 {
-                    psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + fileName + "\" " + arguments + "\"");
+                    // Shims are the only interpreter path. Re-tokenize the logical
+                    // arguments and escape them for cmd.exe; never append raw request
+                    // data to /c.
+                    psi = new ProcessStartInfo("cmd.exe", BrowserDriverProcess.BuildShimArguments(
+                        Path.GetFullPath(fileName), DefaultBrowserDriverInvoker.ParseLegacyArguments(arguments)));
                 }
                 else
                 {
-                    psi = new ProcessStartInfo(fileName, arguments);
+                    psi = new ProcessStartInfo(Path.GetFullPath(fileName),
+                        BrowserDriverProcess.BuildArguments(DefaultBrowserDriverInvoker.ParseLegacyArguments(arguments)));
                 }
                 psi.RedirectStandardOutput = true;
                 psi.RedirectStandardError = true;
@@ -514,6 +514,13 @@ namespace GxMcp.Worker.Services
                     return result;
                 }
 
+                if (!IsSafeObjectName(name) || !IsValidPreviewName(name))
+                {
+                    result["status"] = "invalid_request";
+                    result["message"] = "name must be a valid logical preview name";
+                    return result;
+                }
+
                 // 1) Object type check (best-effort; skipped if ObjectService unavailable in tests)
                 if (_objectService != null)
                 {
@@ -537,7 +544,17 @@ namespace GxMcp.Worker.Services
                 }
 
                 var cfg = LoadConfig();
+                string baselineDir;
+                string screenshotPath;
+                string baselinePath;
+                if (!TryResolveArtifactPaths(cfg, name, out baselineDir, out screenshotPath, out baselinePath))
+                {
+                    result["status"] = "invalid_request";
+                    result["message"] = "name must be a valid logical preview name";
+                    return result;
+                }
                 var mergedParms = MergeParms(cfg, name, parms);
+                if (!AreSafePreviewValues(mergedParms)) return InvalidPreviewRequest(result, "preview parameters contain control characters");
                 result["parms"] = mergedParms;
 
                 // 2) Optional buildFirst
@@ -564,7 +581,10 @@ namespace GxMcp.Worker.Services
                     catch (Exception bex)
                     {
                         result["status"] = "build_failed";
-                        result["buildError"] = bex.Message;
+                        string operationId = Guid.NewGuid().ToString("N");
+                        Logger.Error($"{{\"event\":\"preview_build_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{bex.GetType().FullName}\",\"exception\":\"{LogValue(bex.ToString())}\"}}");
+                        result["buildError"] = "Preview build failed. See server logs for details.";
+                        result["operationId"] = operationId;
                         return result;
                     }
                 }
@@ -582,6 +602,8 @@ namespace GxMcp.Worker.Services
                 // 4) Build launcher URL
                 string baseUrl = (cfg["baseUrl"]?.ToString() ?? "http://localhost/portal3_desenv").TrimEnd('/');
                 string launcherPage = (launcher == null || launcher == "auto") ? (cfg["launcher"]?.ToString() ?? "dani.aspx") : launcher;
+                if (!IsSafeBaseUrl(baseUrl)) return InvalidPreviewRequest(result, "baseUrl must be an absolute http(s) URL");
+                if (!IsSafeLauncherPage(launcherPage)) return InvalidPreviewRequest(result, "launcher must be a relative page path");
                 string launcherUrl = baseUrl + "/" + launcherPage.TrimStart('/');
                 result["launcherUrl"] = launcherUrl;
 
@@ -717,6 +739,8 @@ namespace GxMcp.Worker.Services
                 //     GxFormDriver (logical attr names → selectors → fill JS).
                 if ((fill != null && fill.Count > 0) || !string.IsNullOrWhiteSpace(click))
                 {
+                    if (!AreSafePreviewValues(fill)) return InvalidPreviewRequest(result, "fill contains control characters");
+                    if (!IsSafePreviewText(click)) return InvalidPreviewRequest(result, "click contains control characters");
                     // Give the click above a brief moment to navigate before we
                     // snapshot the resulting GX panel.
                     try { System.Threading.Thread.Sleep(Math.Min(waitMs, 5000)); } catch { }
@@ -782,19 +806,15 @@ namespace GxMcp.Worker.Services
                 }
                 if (captureSet.Contains("screenshot"))
                 {
-                    string dir = ResolveBaselineDir(cfg);
-                    try { Directory.CreateDirectory(dir); } catch { }
-                    string shotPath = Path.Combine(dir, name + ".png");
-                    var shotRes = _runner.Run(cli, "screenshot " + Quote(shotPath), DefaultCliTimeoutMs);
-                    captures["screenshot"] = shotPath;
+                    try { Directory.CreateDirectory(baselineDir); } catch { }
+                    var shotRes = _runner.Run(cli, "screenshot " + Quote(screenshotPath), DefaultCliTimeoutMs);
+                    captures["screenshot"] = screenshotPath;
                     if (shotRes.ExitCode != 0) captures["screenshotError"] = shotRes.StdErr;
                 }
 
                 result["captures"] = captures;
 
                 // 11) Baseline diff / update
-                string baselineDir = ResolveBaselineDir(cfg);
-                string baselinePath = Path.Combine(baselineDir, name + ".a11y.json");
                 if (diffBaseline)
                 {
                     if (File.Exists(baselinePath) && a11yObj != null)
@@ -807,7 +827,10 @@ namespace GxMcp.Worker.Services
                         catch (Exception dex)
                         {
                             result["diff"] = null;
-                            result["diffError"] = dex.Message;
+                            string operationId = Guid.NewGuid().ToString("N");
+                            Logger.Error($"{{\"event\":\"preview_diff_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{dex.GetType().FullName}\",\"exception\":\"{LogValue(dex.ToString())}\"}}");
+                            result["diffError"] = "Preview baseline diff failed. See server logs for details.";
+                            result["operationId"] = operationId;
                         }
                     }
                     else
@@ -825,7 +848,10 @@ namespace GxMcp.Worker.Services
                     }
                     catch (Exception wex)
                     {
-                        result["baselineUpdateError"] = wex.Message;
+                        string operationId = Guid.NewGuid().ToString("N");
+                        Logger.Error($"{{\"event\":\"preview_baseline_update_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{wex.GetType().FullName}\",\"exception\":\"{LogValue(wex.ToString())}\"}}");
+                        result["baselineUpdateError"] = "Preview baseline update failed. See server logs for details.";
+                        result["operationId"] = operationId;
                     }
                 }
 
@@ -835,26 +861,73 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 result["status"] = "error";
-                result["message"] = ex.Message;
+                string operationId = Guid.NewGuid().ToString("N");
+                Logger.Error($"{{\"event\":\"preview_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
+                result["message"] = "Preview failed. See server logs for details.";
+                result["operationId"] = operationId;
                 return result;
             }
         }
 
+        internal static string LogValue(string value)
+        {
+            string redacted = Regex.Replace(
+                value ?? string.Empty,
+                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
+                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
+        }
+
         private string ResolveBaselineDir(JObject cfg)
         {
-            if (!string.IsNullOrEmpty(_baselineRootOverride)) return _baselineRootOverride;
+            if (!string.IsNullOrEmpty(_baselineRootOverride)) return Path.GetFullPath(_baselineRootOverride);
             string fromCfg = cfg?["baselineDir"]?.ToString();
             if (string.IsNullOrEmpty(fromCfg)) fromCfg = "publish/worker/preview-baselines";
-            if (Path.IsPathRooted(fromCfg)) return fromCfg;
+            if (Path.IsPathRooted(fromCfg)) return Path.GetFullPath(fromCfg);
             try
             {
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? Environment.CurrentDirectory;
-                return Path.Combine(baseDir, "preview-baselines");
+                return Path.GetFullPath(Path.Combine(baseDir, "preview-baselines"));
             }
             catch
             {
-                return fromCfg;
+                return Path.GetFullPath(fromCfg);
             }
+        }
+
+        internal static bool IsValidPreviewName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name) || name.IndexOf("..", StringComparison.Ordinal) >= 0 ||
+                name.IndexOfAny(new[] { '<', '>', ':', '"', '/', '\\', '|', '?', '*' }) >= 0 ||
+                !name.All(c => c >= ' '))
+                return false;
+
+            return !Path.IsPathRooted(name) && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
+        }
+
+        private bool TryResolveArtifactPaths(JObject cfg, string name, out string root, out string screenshotPath, out string baselinePath)
+        {
+            root = screenshotPath = baselinePath = null;
+            try
+            {
+                root = ResolveBaselineDir(cfg);
+                screenshotPath = Path.GetFullPath(Path.Combine(root, name + ".png"));
+                baselinePath = Path.GetFullPath(Path.Combine(root, name + ".a11y.json"));
+                return IsUnderRoot(root, screenshotPath) && IsUnderRoot(root, baselinePath);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsUnderRoot(string root, string path)
+        {
+            string canonicalRoot = Path.GetFullPath(root);
+            if (!canonicalRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) &&
+                !canonicalRoot.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+                canonicalRoot += Path.DirectorySeparatorChar;
+            return path.StartsWith(canonicalRoot, StringComparison.OrdinalIgnoreCase);
         }
 
         internal static bool LooksLikeAuthScreen(string snapshot)
@@ -957,6 +1030,52 @@ namespace GxMcp.Worker.Services
                 .Replace("\r", "\\r")
                 .Replace("\n", "\\n")
                 .Replace("</", "<\\/");
+
+        private static JObject InvalidPreviewRequest(JObject result, string message)
+        {
+            result["status"] = "invalid_request";
+            result["message"] = message;
+            return result;
+        }
+
+        internal static bool IsSafePreviewText(string value)
+        {
+            if (value == null) return true;
+            foreach (var c in value)
+                if (char.IsControl(c) || c == '\u2028' || c == '\u2029') return false;
+            return true;
+        }
+
+        internal static bool AreSafePreviewValues(JObject values)
+        {
+            if (values == null) return true;
+            foreach (var p in values.Properties())
+                if (string.IsNullOrEmpty(p.Name) || !IsSafePreviewText(p.Name) || !IsSafePreviewText(p.Value?.ToString())) return false;
+            return true;
+        }
+
+        private static bool IsSafeObjectName(string value)
+        {
+            if (string.IsNullOrEmpty(value) || !IsSafePreviewText(value)) return false;
+            if (!(char.IsLetter(value[0]) || value[0] == '_')) return false;
+            for (int i = 1; i < value.Length; i++)
+                if (!(char.IsLetterOrDigit(value[i]) || value[i] == '_')) return false;
+            return true;
+        }
+
+        private static bool IsSafeBaseUrl(string value)
+        {
+            if (!IsSafePreviewText(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+            return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
+        }
+
+        private static bool IsSafeLauncherPage(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || !IsSafePreviewText(value) || value.IndexOf('?') >= 0 || value.IndexOf('#') >= 0 || value.Contains("..")) return false;
+            foreach (var c in value)
+                if (!(char.IsLetterOrDigit(c) || c == '/' || c == '_' || c == '-' || c == '.')) return false;
+            return true;
+        }
 
         // ---- FR#17 GAM session injection helpers ----------------------------
 

@@ -113,6 +113,44 @@ namespace GxMcp.Gateway.Tests
             Assert.Null(item["extra"]);
         }
 
+        [Fact]
+        public async Task RequestLoopStages_ExecuteInDeclaredOrder()
+        {
+            var context = new McpPipelineContext(new JObject { ["method"] = "tools/call" });
+            var pipeline = RequestLoopStages.Create();
+            await pipeline.ExecuteAsync(context, _ => Task.FromResult<JObject?>(new JObject()));
+
+            Assert.Equal(RequestLoopStages.Names.Length, context.Properties.Count);
+            foreach (var name in RequestLoopStages.Names)
+                Assert.True((bool)context.Properties["requestLoop.stage." + name]!);
+        }
+
+        [Fact]
+        public async Task Pipeline_ShortCircuits_WhenStageSetsResponse()
+        {
+            var terminalCalled = false;
+            var pipeline = new McpMiddlewarePipeline();
+            pipeline.Use(new ShortCircuitMiddleware());
+
+            var response = await pipeline.ExecuteAsync(new McpPipelineContext(new JObject()), _ =>
+            {
+                terminalCalled = true;
+                return Task.FromResult<JObject?>(new JObject { ["status"] = "terminal" });
+            });
+
+            Assert.Equal("short-circuit", response?["status"]?.ToString());
+            Assert.False(terminalCalled);
+        }
+
+        private sealed class ShortCircuitMiddleware : IMcpMiddleware
+        {
+            public Task<JObject?> InvokeAsync(McpPipelineContext context, McpPipelineNextDelegate next)
+            {
+                context.Response = new JObject { ["status"] = "short-circuit" };
+                return next();
+            }
+        }
+
         private class TestStepMiddleware : IMcpMiddleware
         {
             private readonly string _name;
