@@ -34,6 +34,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw "PowerShell 7+ is required for the live harness. Run with 'pwsh', not Windows PowerShell 5.1."
+}
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'scripts\gx-version-catalog.ps1')
 . (Join-Path $root 'scripts\live-fixture.ps1')
@@ -102,14 +105,23 @@ if (-not (Test-Path -LiteralPath $KbPath -PathType Container)) {
 }
 $KbPath = (Resolve-Path -LiteralPath $KbPath).Path
 if ([string]::IsNullOrWhiteSpace($FixtureManifest)) { $FixtureManifest = $env:GXMCP_TEST_FIXTURE }
-if ([string]::IsNullOrWhiteSpace($FixtureManifest) -or -not (Test-Path -LiteralPath $FixtureManifest -PathType Leaf)) {
-    Fail-Live 'Provide -FixtureManifest or GXMCP_TEST_FIXTURE identifying a verified isolated synthetic KB. See docs/live-kb-test-harness.md.'
+if ($RunBenchmark -and -not [string]::IsNullOrWhiteSpace($FixtureManifest)) {
+    if (-not (Test-Path -LiteralPath $FixtureManifest -PathType Leaf)) {
+        Fail-Live "Fixture manifest not found: $FixtureManifest"
+    }
+    try {
+        $fixture = Get-Content -LiteralPath $FixtureManifest -Raw | ConvertFrom-Json
+        Assert-LiveFixture $fixture $KbPath
+    } catch { Fail-Live $_.Exception.Message }
+} else {
+    # An explicit KB path is sufficient for live operation. A manifest is
+    # optional benchmark metadata only.
+    $fixture = [pscustomobject]@{
+        fixtureId = 'explicit-kb-readonly'
+        fixtureRevision = 'local-working-copy'
+        generator = 'installed-sdk'
+    }
 }
-try {
-    $fixture = Get-Content -LiteralPath $FixtureManifest -Raw | ConvertFrom-Json
-    Assert-LiveFixture $fixture $KbPath
-} catch { Fail-Live $_.Exception.Message }
-
 if ([string]::IsNullOrWhiteSpace($GxPath)) {
     $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
         $env:GX_PATH
@@ -189,7 +201,10 @@ $liveFixtureAlias = 'live-fixture'
 @{
     GeneXus = @{ InstallationPath = $GxPath; WorkerExecutable = (Join-Path $root 'publish\worker\GxMcp.Worker.exe') }
     Server = @{ HttpPort = $HttpPort; McpStdio = $true; BindAddress = '127.0.0.1' }
-    Environment = @{ DefaultKb = $liveFixtureAlias; KBs = @(@{ Alias = $liveFixtureAlias; Path = $KbPath }) }
+    # LiveGatewayHarness opens GXMCP_TEST_KB itself. Do not declare an automatic
+    # default here: strict resolution would leave two aliases open and make
+    # calls without an explicit kb fail with KB_AMBIGUOUS.
+    Environment = @{ ResolutionPolicy = 'strict' }
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:GX_CONFIG_PATH -Encoding utf8
 Write-LiveProgress "Gateway live smoke starting; filter=$TestFilter; RPC timeout=${RpcTimeoutSeconds}s"
 Write-Host "`n>>> Gateway live smoke" -ForegroundColor Cyan
@@ -210,7 +225,6 @@ if ($RequireBuildAll) {
     Write-Host "`n>>> Native Build All evidence gate" -ForegroundColor Cyan
     & pwsh -NoProfile -File $buildAllScript `
         -KbPath $KbPath `
-        -FixtureManifest $FixtureManifest `
         -GatewayExe $gatewayExe `
         -GxPath $GxPath `
         -TimeoutSeconds $BuildAllTimeoutSeconds
@@ -248,13 +262,13 @@ if ($RunBenchmark) {
     $benchmarkArgs = @(
         $benchmark,
         '--kb', $KbPath,
-        '--alias', $liveFixtureAlias,
+        '--alias', 'live-fixture',
         '--fixture-id', [string]$fixture.fixtureId,
         '--fixture-revision', [string]$fixture.fixtureRevision,
         '--generator', [string]$fixture.generator,
         '--iterations', $Iterations.ToString(),
         '--port', $HttpPort.ToString(),
-        '--ops', 'whoami,list_objects,query,search_source,inspect,read,lifecycle_status',
+        '--ops', 'whoami,kb_list,list_objects,query,search_source,inspect,read,lifecycle_status,pattern_diagnose',
         '--out', $BenchmarkOut,
         '--name', 'quality-gate'
     )

@@ -2,9 +2,49 @@
 
 ## Unreleased
 
+## v3.3.1 - 2026-09-11
+
+
+### Tracked issues
+
+- [#174](https://github.com/lennix1337/Genexus18MCP/issues/174) — [Enhancement] Detectar depend├¬ncias locais ausentes e oferecer instala├º├úo confirmada
+- [#176](https://github.com/lennix1337/Genexus18MCP/issues/176) — [Regression] build reports false Succeeded for an ambiguous object name ΓÇö real MSBuild error hidden in fullLogPath (regression after #115 fix)
+- [#177](https://github.com/lennix1337/Genexus18MCP/issues/177) — [Bug] genexus_edit part=Styles returns false WriteNotPersisted ΓÇö verifyMode default not honored (same class as #100, not covered by that fix)
+- [#178](https://github.com/lennix1337/Genexus18MCP/issues/178) — [Bug] genexus_layout set_property with a multi-line Caption silently renames the control and reports an unrelated LayoutReadBackFailed
+- [#181](https://github.com/lennix1337/Genexus18MCP/issues/181) — Worker respawns with a new PID on every tool call, causing KB_NOT_OWNED and indexing never completes
+
+
 ### Fixed
 
-- Preserve the last certified search-index snapshot during forced rebuilds so a Worker crash can warm-start from the previous index instead of leaving the KB cold; allow only manifest-declared SDK patch drift within the same major/minor line while retaining exact-build fingerprints otherwise.
+- Keep the operational release issue list out of the release commit while
+  preserving its immutable JSON snapshot.
+- Initialize release issue snapshot state before release preparation, allowing
+  clean releases to pass PowerShell strict-mode validation.
+- Hardened live probes with bounded asynchronous stdio reads, terminating-error
+  cleanup, explicit success exit codes, and centralized KB alias canonicalization
+  with regression coverage.
+- Canonicalize session-selected KB aliases before opening the gateway lease, preventing stateful operations from failing with `KB_NOT_OWNED` after `genexus_kb action=select`.
+- Corrigido o harness live para abrir a KB de teste uma única vez e evitar `KB_AMBIGUOUS` por alias duplicada em sessões strict.
+- Add executable validation gates for live-contract coverage, upstream drift reporting, bounded .NET output, and explicit PowerShell 7 enforcement in the documented development workflow.
+- Reject multiline layout `Caption` values before SDK persistence, normalize Design System `Styles` writes by default, surface fast-path ambiguous-object build diagnostics as errors, and add actionable locked-dependency setup diagnostics for the root lint command ([#174](https://github.com/lennix1337/Genexus18MCP/issues/174), [#176](https://github.com/lennix1337/Genexus18MCP/issues/176), [#177](https://github.com/lennix1337/Genexus18MCP/issues/177), [#178](https://github.com/lennix1337/Genexus18MCP/issues/178)).
+
+## v3.3.0 - 2026-09-11
+
+
+### Fixed
+
+- Require exact WebPanel replacement identity and structural post-save projection matches, preventing similarly suffixed objects or unrelated controls from being reported as confirmed.
+- Hardened WWP WebPanel replacement identity and post-save projection verification ([#173](https://github.com/lennix1337/Genexus18MCP/pull/173); contributed by [@davidagostini](https://github.com/davidagostini)).
+- Integrated validated Worker lifecycle, SDK compatibility, and index durability fixes ([#170](https://github.com/lennix1337/Genexus18MCP/pull/170); contributed by [@lennix1337](https://github.com/lennix1337)).
+- Documented the merged SDK compatibility and index durability fixes for the release ([#171](https://github.com/lennix1337/Genexus18MCP/pull/171); contributed by [@lennix1337](https://github.com/lennix1337)).
+- Accept SDK patch, build and fingerprint drift within the supported GeneXus major while continuing to reject incompatible majors and missing required assemblies.
+- Preserve dirty index shards for retry when snapshot pointer publication fails, and require a fresh enrichment certificate for each new snapshot body.
+- Extend the bounded live MCP benchmark with KB list/select, dependency graph, design-system inspection, and non-mutating pattern diagnosis operations; cap runs at 20 iterations and validate each operation's result shape before recording latency.
+- Preserved pending index changes after a snapshot publication failure, so a successful retry stores the latest contents instead of certifying stale data.
+- Correct template documentation to distinguish model-wide WWPTemplate records from embedded Settings templates; standalone edits and dry runs remain blocked by unverified ownership, and the original 3.2.2 report is historical.
+- Restore native Domain introspection: database type actions reach the correct Worker action, resolve Domain homonyms by type and read SDK enumeration values.
+- Enforce the selected GeneXus major at build and Worker startup while reporting patch/build and assembly fingerprint drift as diagnostics, including changed DLLs with the same ProductVersion. Missing required assemblies and different majors still fail validation.
+- Preserve the last certified search-index snapshot during forced rebuilds so a Worker crash can warm-start from the previous index instead of leaving the KB cold.
 - Keep the index-readiness fast-fail limited to index-backed reads and analyses; SDK edits, creates and builds remain available while background indexing runs.
 - Never store `Indexing`/`IndexNotReady` responses in the semantic cache, so reads can observe the index as soon as background indexing completes.
 - Make Worker drain replacement fail closed until the old process has really exited; do not register dead replacements, leak draining entries, or run concurrent reloads for one KB.
@@ -16,6 +56,15 @@
 - Propagate the selected update channel through npx, global, fixed-path, and package-direct plans; reject release versions with leading-zero components.
 - Make local installation transactional across configuration, build, and client registration outcomes, so failed steps do not report a completed installation.
 - Require typed WorkWithPlus fallback resolution and version preconditions for action mutations; use structural/delimited projection matching so similarly named tabs and events cannot be reported as the requested target.
+- Publish sharded index generations through immutable rebuild slots and an atomic certified pointer; abandoned or partially written slots are ignored, while legacy snapshots remain readable and migrate lazily.
+- Add bounded benchmarks for versioned snapshot publication and cold searches over built secondary indexes; existing search timing is retained as a separate warm/cache-sensitive benchmark.
+- Allow read-only live smoke tests to use an explicit KB path directly; keep fixture manifests only for destructive Build All and reproducible baseline gates.
+- Remove fixture-manifest requirements from live KB operation and Build All; manifests are now benchmark metadata only.
+
+### Internal
+
+- Select SDK diagnostic manifests for GeneXus 18 U11, U12 and U16 during build and packaging; retain the original U10 reference by default without imposing exact-build compatibility gates.
+- Refresh test SDK dependencies when changing upgrades instead of reusing DLLs from a previous SDK.
 
 ## v3.2.4 - 2026-09-10
 
@@ -24,25 +73,16 @@
 
 - Serialize Worker lifecycle replacement, preserve concurrent healthy replacements, and keep PatternVirtual structural writes on the SDK path while restricting raw PatternInstance edits to safe property changes.
 - Treat standalone WWP template objects as model-wide records without claiming ownership from a name-only Settings match.
+- Complete Events patches now verify SDK and pattern-save isolation before invoking the full object save, preserve pattern projections, invalidate stale reads, and report incomplete persistence instead of claiming success from a part-only write.
 
 - Fixed WorkWithPlus Settings and instance actions failing to resolve objects by name; preserved explicit identities, pagination and version tokens.
 - Preserve a replacement Worker when an eager respawn finishes during the previous Worker's exit callback; remove only the exited entry before notifying subscribers.
 - Include separate WorkWithPlus for Web Template objects in Settings template discovery and reads, with explicit Settings/Main links, pagination, and version tokens. Preview an existing table class with an exact XML text edit that preserves metadata and formatting; real template saves remain blocked pending isolation validation.
 - Preserve SDK-owned pattern metadata during raw XML property edits and previews. Unchanged XML is a no-op; structural or metadata changes are rejected explicitly instead of rebuilding child-order lists. Preview and save share the same unmodified payload, and unreadable current XML blocks both paths. This does not certify SDK save isolation.
-
 - Respect requested object types when resolving homonyms, including Pattern Settings, and separate read-cache entries by type and read shape.
 - Read Pattern Settings through the SDK pattern tree with explicit pagination instead of the generic properties XML.
 - Dirty tracking now classifies the final persisted write outcome, so no-op and pre-mutation failures do not create false dirty entries while confirmed rollbacks clear only the write they undo.
 - PR preflight now reports unavailable `ripwire` analysis explicitly, supports an opt-in required mode, and preserves nonzero tool failures instead of presenting an incomplete analysis as complete.
-
-### Added
-
-- WorkWithPlus Settings template catalog, effective-property reads and pure single-property dry runs with snapshot tokens. Real saves remain explicitly blocked (`SettingsIsolationUnverified`): SDK and WorkWithPlus save hooks and atomic cross-process concurrency have not been certified. No isolated persistence capability is claimed.
-
-### Internal
-
-- Update the contract regression inventory to 225 actions, including the three new Settings actions.
-- Increase the discovery schema budget from 27,500 to 27,750 approximate tokens for the three Settings actions and their identity, pagination and property-preview fields (measured 27,549).
 
 ## v3.2.2 - 2026-09-10
 

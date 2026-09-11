@@ -1,5 +1,7 @@
 using System.Xml.Linq;
 using System.Linq;
+using System;
+using System.Reflection;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -8,6 +10,34 @@ namespace GxMcp.Worker.Tests
 {
     public class WwpActionServiceTests
     {
+        [Fact]
+        public void WebComponentReplacement_RejectsDifferentReferencesWithSameSuffix()
+        {
+            var args = new JObject
+            {
+                ["sourceName"] = "CompanySelector",
+                ["tablePath"] = "Root>CompanySelector",
+                ["gxobject"] = "Other-1234",
+                ["caption"] = "&CompanyName"
+            };
+            var document = XDocument.Parse("<PatternInstance><table name='Root'><webComponent name='CompanySelector' gxobject='WebComponent-1234'/></table></PatternInstance>");
+            var result = WwpActionService.ApplyReplacementXml(document, args);
+            Assert.Equal("GxObjectMismatch", result["code"]?.ToString());
+        }
+
+        [Fact]
+        public void WebComponentReplacement_ProjectionRequiresExactNamedControlAndCaption()
+        {
+            var method = typeof(WwpActionService).GetMethod("VerifyReplacementProjection", BindingFlags.Static | BindingFlags.NonPublic);
+            var requestType = typeof(WwpActionService).GetNestedType("WebComponentReplacementRequest", BindingFlags.NonPublic);
+            var request = Activator.CreateInstance(requestType, nonPublic: true);
+            requestType.GetField("UserActionName", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(request, "CompanySelector");
+            requestType.GetField("Caption", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(request, "&CompanyName");
+            var webForm = "<WebForm><control name='OtherCompanySelector' caption='&amp;CompanyName'/><control name='ddc_CompanySelector' caption='&amp;Other'/></WebForm>";
+            var result = (JObject)method.Invoke(null, new object[] { webForm, request });
+            Assert.Equal("WwpProjectionNotConfirmed", result["code"]?.ToString());
+        }
+
         [Theory]
         [InlineData(null, "WorkWithPlus", "WorkWithPlus")]
         [InlineData("", "WorkWithPlus", "WorkWithPlus")]
@@ -236,6 +266,56 @@ namespace GxMcp.Worker.Tests
                 before, persisted, "ProcessingComplete", existedBefore: false);
 
             Assert.Single(unrelated);
+        }
+
+        [Fact]
+        public void ReplaceWebComponent_UsesExplicitPathAndPreservesUnrelatedPatternNodes()
+        {
+            var doc = XDocument.Parse("<instance childrenOrderedList='root'><WPRoot><table name='TableHeader' childrenOrderedList='header'><table name='TableUserRole' themeClass='keep' childrenOrderedList='role'><webComponent name='EmpresaSelector' gxobject='guid-WWP_MasterPageEmpresaSelectorWC'><parameters /></webComponent><userAction name='RuntimeDesignSettings' ControlType='DropDownComponent' /></table></table><table name='TableContent' /></WPRoot></instance>");
+
+            JObject result = WwpActionService.ApplyReplacementXml(doc, new JObject
+            {
+                ["sourceName"] = "EmpresaSelector",
+                ["userActionName"] = "EmpresaSelector",
+                ["tablePath"] = "TableHeader > TableUserRole > EmpresaSelector",
+                ["gxobject"] = "WWP_MasterPageEmpresaSelectorWC",
+                ["controlType"] = "DropDownComponent",
+                ["caption"] = "&Context.EmpresaDescricao",
+                ["webComponentLoad"] = "On every click",
+                ["trigger"] = "Click"
+            });
+
+            Assert.Null(result["error"]);
+            XElement role = doc.Descendants("table").Single(e => (string)e.Attribute("name") == "TableUserRole");
+            XElement replacement = role.Elements().Single(e => e.Name.LocalName == "userAction" && (string)e.Attribute("name") == "EmpresaSelector");
+            Assert.Equal("DropDownComponent", (string)replacement.Attribute("ControlType"));
+            Assert.Equal("guid-WWP_MasterPageEmpresaSelectorWC", (string)replacement.Attribute("gxobject"));
+            Assert.Equal("&Context.EmpresaDescricao", (string)replacement.Attribute("caption"));
+            Assert.Equal("On every click", (string)replacement.Attribute("webComponentLoad"));
+            Assert.Equal("Click", (string)replacement.Attribute("trigger"));
+            Assert.Equal("keep", (string)role.Attribute("themeClass"));
+            Assert.Equal("role", (string)role.Attribute("childrenOrderedList"));
+            Assert.Single(doc.Descendants("table"), e => (string)e.Attribute("name") == "TableContent");
+        }
+
+        [Fact]
+        public void ReplaceWebComponent_RefusesTargetMismatchAndNonEmptyChildren()
+        {
+            var mismatch = XDocument.Parse("<instance><table name='TableHeader'><table name='TableUserRole'><webComponent name='EmpresaSelector' gxobject='guid-OtherWC' /></table></table></instance>");
+            JObject wrongTarget = WwpActionService.ApplyReplacementXml(mismatch, new JObject
+            {
+                ["sourceName"] = "EmpresaSelector", ["tablePath"] = "TableHeader > TableUserRole > EmpresaSelector",
+                ["gxobject"] = "WWP_MasterPageEmpresaSelectorWC", ["controlType"] = "DropDownComponent", ["caption"] = "Empresa"
+            });
+            Assert.Equal("GxObjectMismatch", (string)wrongTarget["code"]);
+
+            var withParameters = XDocument.Parse("<instance><table name='TableHeader'><table name='TableUserRole'><webComponent name='EmpresaSelector' gxobject='guid-WC'><parameters><parameter name='x' /></parameters></webComponent></table></table></instance>");
+            JObject droppedChild = WwpActionService.ApplyReplacementXml(withParameters, new JObject
+            {
+                ["sourceName"] = "EmpresaSelector", ["tablePath"] = "TableHeader > TableUserRole > EmpresaSelector",
+                ["gxobject"] = "guid-WC", ["controlType"] = "DropDownComponent", ["caption"] = "Empresa"
+            });
+            Assert.Equal("WwpReplacementChildrenUnsupported", (string)droppedChild["code"]);
         }
     }
 }

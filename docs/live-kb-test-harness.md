@@ -1,9 +1,26 @@
 # Live KB test harness
 
-`scripts/test-live.ps1` requires an explicit KB path and fixture manifest before
-building, opening a KB, or starting a gateway. Missing prerequisites fail with
-`live=unavailable` and a nonzero exit code. A directory called `KBTeste` is not
-evidence that a database is disposable.
+`scripts/test-live.ps1` requires an explicit KB path before opening a KB or
+starting a gateway. Read-only smoke tests can use that path directly; a fixture
+manifest is optional metadata for benchmark identity and reproducibility. A
+directory called `KBTeste` is a valid explicit local target for operator-
+authorized smoke tests and Build All, but is not automatically treated as
+disposable.
+
+## Navigation and safety pointers
+
+- `scripts/test-live.ps1`: isolated configuration, build and test gates.
+- `scripts/live-build-all.ps1`: HTTP Build All probe and terminal-state polling.
+- `scripts/test_live_patch_persistence_kbteste.ps1`: disposable issue probes.
+- `Program.KbContext.cs` → `SessionKbContextStore.cs` →
+  `KbUseLeaseRegistry.cs`: session selection, canonical aliases and ownership.
+
+Live probes must use bounded asynchronous stdio reads and must not treat a
+response carrying `operationId` or `job_id` as final evidence. Disposable probes
+must also clean up Gateway/Worker processes on terminating errors.
+When an indexed read returns `IndexNotReady`, use
+`genexus_lifecycle action=status wait=10` before retrying the read; repeated
+`genexus_whoami` calls are health checks, not an index-readiness barrier.
 
 ## Provisioning prerequisite
 
@@ -155,8 +172,9 @@ operações diferentes:
 python scripts/bench-live-http.py --kb C:\fixtures\synthetic-small `
   --fixture-id synthetic-small-r1 --fixture-revision seed-2026-09-05 `
   --generator "GeneXus18-net" --cache-mode warm --concurrency 1 `
-  --iterations 100 --compare scratchpad\synthetic-small.baseline.json `
-  --fail-on-regression --out scratchpad\synthetic-small.current.json
+  --iterations 12 --ops whoami,kb_list,list_objects,query,search_source,inspect,read,lifecycle_status,pattern_diagnose `
+  --compare scratchpad\synthetic-small.baseline.json --fail-on-regression `
+  --out scratchpad\synthetic-small.current.json
 ```
 
 Alternatively set `GXMCP_TEST_KB` and `GXMCP_TEST_FIXTURE`. Without `-SkipBuild`,
@@ -190,5 +208,5 @@ populations. Never count failed operations as fast successful samples.
 The benchmark stores successful response-byte p50/p95 alongside latency and
 never includes failed or skipped calls in either population. The existing Worker gate currently checks SDK type resolution only. Real
 write/reopen persistence, pattern parity, mandatory-scenario/no-skip enforcement,
-and cold/warm baseline captures remain required by plan 074; this harness safety
-increment alone is not release acceptance.
+and cold/warm baseline captures remain required by plan 074; manifests are
+optional benchmark metadata and are not required to use a local KB.
