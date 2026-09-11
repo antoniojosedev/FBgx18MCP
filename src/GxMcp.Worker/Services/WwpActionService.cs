@@ -26,13 +26,22 @@ namespace GxMcp.Worker.Services
             _write = write;
         }
 
+        // Older gateway envelopes kept the name only inside params.
+        internal static string ResolveTarget(string target, JObject args) =>
+            !string.IsNullOrWhiteSpace(target) ? target : (string)args?["name"];
+
         public string Run(string target, JObject args)
         {
+            target = ResolveTarget(target, args);
             if (((string)args?["action"])?.StartsWith("settings_", StringComparison.Ordinal) == true)
                 return new PatternSettingsService(_objects).Run(target, args);
             try
             {
-                KBObject requestedObject = _objects.FindObject(target);
+                KBObject requestedObject = _objects.FindObject(
+                    target,
+                    typeFilter: "WorkWithPlus",
+                    guid: (string)args?["guid"],
+                    entityKey: (string)args?["entityKey"]);
                 const string wwpPrefix = "WorkWithPlus";
                 if (requestedObject == null && !string.IsNullOrEmpty(target) &&
                     target.StartsWith(wwpPrefix, StringComparison.OrdinalIgnoreCase) &&
