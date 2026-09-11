@@ -42,9 +42,16 @@ namespace GxMcp.Gateway
                 _sessionKbContexts.Initialize(sessionId, null);
             long generation = (prior?.ContextGeneration ?? 0) + 1;
             string identity = (kbId ?? string.Empty).Trim().TrimEnd('\\', '/').ToLowerInvariant();
-            string canonicalAlias = alias.Trim().ToLowerInvariant();
+            string canonicalAlias = CanonicalizeKbAlias(alias);
             var lease = _kbLeases.Open(sessionId, canonicalAlias, generation, identity, "session-" + generation, TimeSpan.FromMinutes(10));
             _sessionKbContexts.Set(sessionId, alias, canonicalAlias, lease);
+        }
+
+        internal static string CanonicalizeKbAlias(string alias)
+        {
+            if (string.IsNullOrWhiteSpace(alias))
+                throw new ArgumentException("KB alias is required.", nameof(alias));
+            return alias.Trim().ToLowerInvariant();
         }
 
         internal static void ClearSessionSelectedKb(string sessionId)

@@ -1,4 +1,37 @@
 $ErrorActionPreference = 'Stop'
+$script:pendingRead = $null
+$script:probeNames = @(
+    'LiveStylesProbe133112680', 'LiveCaptionProbe133112680',
+    'LiveStylesProbe133219635', 'LiveCaptionProbe133219635',
+    'LiveStylesProbe133304043', 'LiveCaptionProbe133304043',
+    'LiveStylesProbe133329278', 'LiveCaptionProbe133329278',
+    'LiveStylesProbe133708773', 'LiveStylesProbe140037890',
+    'LiveStylesProbe140119657', 'LiveStylesProbe141602375',
+    'LiveCaptionProbe140037890', 'LiveCaptionProbe140119657',
+    'LiveCaptionProbe141602375', 'LiveAmbiguousProbe140037890',
+    'LiveAmbiguousProbe140119657', 'LiveAmbiguousProbe141602375',
+    'TempMcpProbe'
+)
+
+function Stop-LiveProbeProcess {
+    try { if ($p -and -not $p.HasExited) { $p.StandardInput.Close(); [void]$p.WaitForExit(5000) } } catch {}
+    try { if ($p -and -not $p.HasExited) { $p.Kill(); [void]$p.WaitForExit(5000) } } catch {}
+}
+
+function Remove-LiveProbeObjects {
+    if (-not $p -or $p.HasExited -or -not (Get-Command CallTool -ErrorAction SilentlyContinue)) { return }
+    $index = 200
+    foreach ($name in @($script:probeNames | Select-Object -Unique)) {
+        try { $null = CallTool $index 'genexus_delete_object' @{ name=$name; confirm=$true } 5 } catch {}
+        $index++
+    }
+}
+
+trap {
+    Remove-LiveProbeObjects
+    Stop-LiveProbeProcess
+    throw
+}
 $gw = (Resolve-Path 'publish\GxMcp.Gateway.exe').Path
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -21,8 +54,12 @@ function Send($obj) {
 function ReadId([int]$id, [int]$timeoutSec) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt $timeoutSec) {
-        $line = $p.StandardOutput.ReadLine()
-        if ($null -eq $line) { Start-Sleep -Milliseconds 50; continue }
+        $remainingMs = [Math]::Max(1, [int](($timeoutSec * 1000) - $sw.ElapsedMilliseconds))
+        if ($null -eq $script:pendingRead) { $script:pendingRead = $p.StandardOutput.ReadLineAsync() }
+        if (-not $script:pendingRead.Wait([Math]::Min($remainingMs, 250))) { continue }
+        $line = $script:pendingRead.Result
+        $script:pendingRead = $null
+        if ($null -eq $line) { Start-Sleep -Milliseconds 25; continue }
         if ($line -notmatch '^\s*\{') { continue }
         try { 
             $j = $line | ConvertFrom-Json
@@ -60,6 +97,53 @@ function CallTool($id, $name, $toolArgs, $timeoutSec = 60) {
     return $r
 }
 
+function Assert-TerminalToolResult($payload, [string]$name) {
+    if ($null -eq $payload) { throw "$name returned no payload." }
+    $status = [string]$payload.status
+    $operation = [string]$payload.operationId
+    if ([string]::IsNullOrWhiteSpace($operation)) { $operation = [string]$payload.job_id }
+    if ($status -in @('Running', 'Accepted', 'Queued', 'InProgress', 'Pending') -or
+        ([string]::IsNullOrWhiteSpace($status) -and -not [string]::IsNullOrWhiteSpace($operation))) {
+        throw "$name returned a non-terminal operation; live evidence is incomplete."
+    }
+}
+
+function Read-Ready($id, $name, $arguments, [int]$timeoutSec = 60) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    $attempt = 0
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $result = CallTool $id $name $arguments ([Math]::Min($timeoutSec, 15))
+        if ($result.code -ne 'IndexNotReady' -and $result.status -ne 'Indexing') { return $result }
+        $attempt++
+        Write-Host "    Index is still warming; retry $attempt (120s total budget)" -ForegroundColor DarkYellow
+        $null = CallTool ($id + 1000 + $attempt) 'genexus_lifecycle' @{ action='status'; wait=5 } 15
+        Start-Sleep -Milliseconds 250
+    }
+    throw "$name did not become ready within the 120-second bounded budget."
+}
+
+function Assert-PersistedResult($payload, [string]$name) {
+    $persisted = $payload.persisted
+    if ($null -eq $persisted -and $payload.result) { $persisted = $payload.result.persisted }
+    $verified = $payload.reReadConfirmed
+    if ($null -eq $verified -and $payload.postSaveVerification) { $verified = $payload.postSaveVerification.reReadConfirmed }
+    if ($persisted -ne $true -or ($null -ne $verified -and $verified -ne $true)) {
+        throw "$name did not confirm persistence/read-back: $($payload | ConvertTo-Json -Compress -Depth 12)"
+    }
+}
+
+function Get-PayloadValue($payload, [string]$name) {
+    if ($null -eq $payload) { return $null }
+    $value = $payload.$name
+    if ($null -ne $value) { return $value }
+    if ($payload.result) {
+        $value = $payload.result.$name
+        if ($null -ne $value) { return $value }
+        if ($payload.result.result) { return $payload.result.result.$name }
+    }
+    return $null
+}
+
 Send @{ jsonrpc='2.0'; id=1; method='initialize'; params=@{ protocolVersion='2025-11-25'; capabilities=@{}; clientInfo=@{ name='persistence-verifier'; version='1.0' } } }
 $null = ReadId 1 30
 Send @{ jsonrpc='2.0'; method='notifications/initialized' }
@@ -76,14 +160,16 @@ $null = CallTool 100 'genexus_delete_object' @{ name='LiveStylesProbe133329278';
 $null = CallTool 110 'genexus_delete_object' @{ name='LiveCaptionProbe133329278'; confirm=$true } 20
 $null = CallTool 113 'genexus_delete_object' @{ name='LiveStylesProbe133708773'; confirm=$true } 20
 $null = CallTool 111 'genexus_kb' @{ action='select'; alias='KBTeste' } 20
+$null = CallTool 115 'genexus_lifecycle' @{ action='index'; force=$false } 30
 
 $suffix = (Get-Date -Format 'HHmmssfff')
 $dsoName = "LiveStylesProbe$suffix"
 $webName = "LiveCaptionProbe$suffix"
 $collisionName = "LiveAmbiguousProbe$suffix"
+$script:probeNames += @($dsoName, $webName, $collisionName)
 Write-Host "`n=== Issue #177: Creating disposable Design System $dsoName ==="
 $dso = CallTool 101 'genexus_create' @{ action='object'; type='DesignSystem'; name=$dsoName; description='Temporary Styles live probe' } 60
-$stylesRead = CallTool 102 'genexus_read' @{ name=$dsoName; part='Styles' } 60
+$stylesRead = Read-Ready 102 'genexus_read' @{ name=$dsoName; part='Styles' } 60
 Write-Host "Styles read: $($stylesRead | ConvertTo-Json -Compress)"
 if ($stylesRead.source) {
     $styleLines = ([string]$stylesRead.source) -split "`r?`n"
@@ -91,6 +177,7 @@ if ($stylesRead.source) {
     $replaceStyle = "/* live #177 */`r`n" + $findStyle
     $stylesPatch = CallTool 103 'genexus_edit' @{ name=$dsoName; part='Styles'; mode='patch'; patch=@{ find=$findStyle; replace=$replaceStyle } } 60
     Write-Host "Styles patch: $($stylesPatch | ConvertTo-Json -Compress)"
+    Assert-PersistedResult $stylesPatch 'Styles patch'
 }
 else {
     $stylesFull = CallTool 112 'genexus_edit' @{ name=$dsoName; part='Styles'; mode='full'; content="styles $dsoName { }" } 60
@@ -111,6 +198,7 @@ $collisionTransaction = CallTool 108 'genexus_create' @{ action='object_atomic';
 $null = CallTool 114 'genexus_kb' @{ action='select'; alias='KBTeste' } 30
 $buildAmbiguous = CallTool 109 'genexus_lifecycle' @{ action='build'; target=$collisionName; kb='KBTeste'; includeCallees='none'; estimated_seconds=60; wait_until_done=$true; wait_seconds=120 } 180
 Write-Host "Ambiguous build: $($buildAmbiguous | ConvertTo-Json -Compress)"
+Assert-TerminalToolResult $buildAmbiguous 'Ambiguous build'
 if ($buildAmbiguous.status -eq 'ok' -and $buildAmbiguous.result.errorCount -eq 0 -and $buildAmbiguous.result.Status -eq 'Succeeded') { throw 'Issue #176 live build still reported false success.' }
 
 $testObjName = "TempMcpProbe"
@@ -126,9 +214,9 @@ $create = CallTool 3 'genexus_create' @{
 Write-Host "Create result: $($create | ConvertTo-Json -Compress)"
 
 Write-Host "`n=== 3. Reading Initial State & Version Token ==="
-$read0 = CallTool 4 'genexus_read' @{ name=$testObjName; part='Source' } 30
+$read0 = Read-Ready 4 'genexus_read' @{ name=$testObjName; part='Source' } 30
 Write-Host "Read0 result: $($read0 | ConvertTo-Json -Compress)"
-$token0 = $read0.versionToken
+$token0 = Get-PayloadValue $read0 'versionToken'
 Write-Host "    Initial Token T0: $token0"
 Write-Host "    Initial Source matches: $($read0.source -like '*initial line 1*')"
 
@@ -144,10 +232,11 @@ $patch1 = CallTool 5 'genexus_edit' @{
     baseVersion = $token0
 } 30
 Write-Host "Patch1 result: $($patch1 | ConvertTo-Json -Compress)"
-$token1 = $patch1.versionToken
+$token1 = Get-PayloadValue $patch1 'versionToken'
 Write-Host "    Patch 1 Token T1: $token1"
 Write-Host "    Patch 1 Persisted: $($patch1.persisted)"
 Write-Host "    Patch 1 ReReadConfirmed: $($patch1.reReadConfirmed)"
+Assert-PersistedResult $patch1 'Patch 1'
 
 Write-Host "`n=== 5. Testing Concurrency Rejection with Stale Token T0 ==="
 $stalePatch = CallTool 6 'genexus_edit' @{
@@ -178,33 +267,32 @@ $patch2 = CallTool 7 'genexus_edit' @{
     baseVersion = $token1
 } 30
 Write-Host "Patch2 result: $($patch2 | ConvertTo-Json -Compress)"
-$token2 = $patch2.versionToken
+$token2 = Get-PayloadValue $patch2 'versionToken'
 Write-Host "    Patch 2 Token T2: $token2"
 Write-Host "    Patch 2 Persisted: $($patch2.persisted)"
+Assert-PersistedResult $patch2 'Patch 2'
 
 Write-Host "`n=== 7. Independent Fresh Read ==="
-$readFinal = CallTool 8 'genexus_read' @{ name=$testObjName; part='Source' } 30
+$readFinal = Read-Ready 8 'genexus_read' @{ name=$testObjName; part='Source' } 30
 Write-Host "ReadFinal result: $($readFinal | ConvertTo-Json -Compress)"
 Write-Host "    Final Source contains patch 2: $($readFinal.source -like '*patch 2*')"
-Write-Host "    Final Token matches T2: $($readFinal.versionToken -eq $token2)"
+Write-Host "    Final Token matches T2: $((Get-PayloadValue $readFinal 'versionToken') -eq $token2)"
+if ($readFinal.source -notlike '*patch 2*' -or (Get-PayloadValue $readFinal 'versionToken') -ne $token2) {
+    throw "Fresh read did not confirm Patch 2: $($readFinal | ConvertTo-Json -Compress)"
+}
 
 Write-Host "`n=== 8. Cleaning Up Disposable Object: $testObjName ==="
 $del = CallTool 9 'genexus_delete_object' @{ name=$testObjName; confirm=$true } 30
 Write-Host "Delete result: $($del | ConvertTo-Json -Compress)"
 
 Write-Host "`n=== 9. Confirming Deletion ==="
-$readAfterDel = CallTool 10 'genexus_read' @{ name=$testObjName } 30
+$readAfterDel = Read-Ready 10 'genexus_read' @{ name=$testObjName } 30
 Write-Host "ReadAfterDel: $($readAfterDel | ConvertTo-Json -Compress)"
 if ($readAfterDel.error -or $readAfterDel.code -eq 'ObjectNotFound' -or $readAfterDel.notFound -or ($readAfterDel.source -eq $null -and $readAfterDel.parts -eq $null)) {
     Write-Host "[+] Object cleanly removed from KB." -ForegroundColor Green
 }
-$null = CallTool 92 'genexus_delete_object' @{ name=$dsoName; confirm=$true } 30
-$null = CallTool 93 'genexus_delete_object' @{ name=$webName; confirm=$true } 30
-$null = CallTool 94 'genexus_delete_object' @{ name=$collisionName; type='Table'; confirm=$true } 30
-$null = CallTool 95 'genexus_delete_object' @{ name=$collisionName; type='Transaction'; confirm=$true } 30
-
-try { $p.StandardInput.Close() } catch {}
-try { $p.WaitForExit(5000) } catch {}
-if (-not $p.HasExited) { $p.Kill() }
+Remove-LiveProbeObjects
+Stop-LiveProbeProcess
 
 Write-Host "`n=== Live Source Persistence & Concurrency Validation PASSED! ===" -ForegroundColor Green
+exit 0

@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Hardened live probes with bounded asynchronous stdio reads, terminating-error
+  cleanup, explicit success exit codes, and centralized KB alias canonicalization
+  with regression coverage.
 - Canonicalize session-selected KB aliases before opening the gateway lease, preventing stateful operations from failing with `KB_NOT_OWNED` after `genexus_kb action=select`.
 - Corrigido o harness live para abrir a KB de teste uma única vez e evitar `KB_AMBIGUOUS` por alias duplicada em sessões strict.
 

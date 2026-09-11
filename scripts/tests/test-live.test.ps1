@@ -32,6 +32,11 @@ if ($productionSource -match 'DefaultKb\s*=|KBs\s*=') {
 foreach ($requiredText in @('GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'Assert-LiveGatewayMaster', '-filter $TestFilter')) {
     if ($productionSource -notmatch [regex]::Escape($requiredText)) { throw "Live entrypoint lost required harness guard: $requiredText" }
 }
+$patchProbeSource = Get-Content (Join-Path $root 'scripts/test_live_patch_persistence_kbteste.ps1') -Raw
+foreach ($requiredText in @('ReadLineAsync', 'pendingRead', 'Stop-LiveProbeProcess', 'Remove-LiveProbeObjects', 'Assert-TerminalToolResult', 'Read-Ready', 'Get-PayloadValue', "action='index'", 'trap')) {
+    if ($patchProbeSource -notmatch [regex]::Escape($requiredText)) { throw "Issue probe lost required safety guard: $requiredText" }
+}
+if ($patchProbeSource -notmatch '(?m)^exit 0\s*$') { throw 'Issue probe must set an explicit zero exit code after verified cleanup.' }
 function Expect-Failure([scriptblock]$Action) {
     $failed = $false
     try { & $Action } catch { $failed = $true }
