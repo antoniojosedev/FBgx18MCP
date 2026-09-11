@@ -132,6 +132,10 @@ use the scoped permission below; do not kill unrelated processes.
   Reproduce this case outside the sandbox with a temporary `USERPROFILE` before
   classifying it as a product failure. Do not touch an existing user
   `.genexus-mcp` configuration during reproduction.
+- When the same run also fails `quiet flag suppresses launcher stderr noise`
+  with an `Unhandled CLI failure` envelope, treat it as a secondary symptom
+  of the user-home setup failure until the isolated test passes outside the
+  sandbox.
 
 ## Runtime iteration
 
