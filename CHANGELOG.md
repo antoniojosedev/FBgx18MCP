@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Initialize release issue snapshot state before release preparation, allowing
+  clean releases to pass PowerShell strict-mode validation.
 - Hardened live probes with bounded asynchronous stdio reads, terminating-error
   cleanup, explicit success exit codes, and centralized KB alias canonicalization
   with regression coverage.

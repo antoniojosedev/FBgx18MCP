@@ -95,6 +95,7 @@ $statusState = [ordered]@{
     }
 }
 $releaseUrl = $null
+$script:releaseIssueSnapshotReused = $false
 
 $releaseIssuesPath = Join-Path $root 'release-issues.txt'
 $releaseIssuesSnapshotPath = Join-Path $root 'release-issues.json'
