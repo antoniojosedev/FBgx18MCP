@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+## v3.3.0 - 2026-09-11
+
+
 ### Fixed
 
 - Require exact WebPanel replacement identity and structural post-save projection matches, preventing similarly suffixed objects or unrelated controls from being reported as confirmed.
+- Hardened WWP WebPanel replacement identity and post-save projection verification ([#173](https://github.com/lennix1337/Genexus18MCP/pull/173); contributed by [@davidagostini](https://github.com/davidagostini)).
+- Integrated validated Worker lifecycle, SDK compatibility, and index durability fixes ([#170](https://github.com/lennix1337/Genexus18MCP/pull/170); contributed by [@lennix1337](https://github.com/lennix1337)).
+- Documented the merged SDK compatibility and index durability fixes for the release ([#171](https://github.com/lennix1337/Genexus18MCP/pull/171); contributed by [@lennix1337](https://github.com/lennix1337)).
 - Accept SDK patch, build and fingerprint drift within the supported GeneXus major while continuing to reject incompatible majors and missing required assemblies.
 - Preserve dirty index shards for retry when snapshot pointer publication fails, and require a fresh enrichment certificate for each new snapshot body.
 - Extend the bounded live MCP benchmark with KB list/select, dependency graph, design-system inspection, and non-mutating pattern diagnosis operations; cap runs at 20 iterations and validate each operation's result shape before recording latency.
