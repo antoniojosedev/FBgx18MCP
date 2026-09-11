@@ -59,6 +59,12 @@ namespace GxMcp.Gateway
             _sessionKbContexts.Clear(sessionId);
         }
 
+        // Test-only seam for validating the lease payload without starting a Worker.
+        internal static bool TryGetSessionSnapshotForTest(string sessionId, out SessionKbContextStore.Snapshot? snapshot)
+        {
+            return _sessionKbContexts.TryGetSnapshot(sessionId, out snapshot);
+        }
+
         internal static IDisposable ConfigureRouteStateForTest(Configuration config, string configPath)
         {
             var previousConfig = _activeConfig;

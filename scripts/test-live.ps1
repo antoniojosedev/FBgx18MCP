@@ -34,6 +34,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw "PowerShell 7+ is required for the live harness. Run with 'pwsh', not Windows PowerShell 5.1."
+}
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'scripts\gx-version-catalog.ps1')
 . (Join-Path $root 'scripts\live-fixture.ps1')
