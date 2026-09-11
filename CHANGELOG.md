@@ -2,8 +2,22 @@
 
 ## Unreleased
 
+## v3.3.1 - 2026-09-11
+
+
+### Tracked issues
+
+- [#174](https://github.com/lennix1337/Genexus18MCP/issues/174) — [Enhancement] Detectar depend├¬ncias locais ausentes e oferecer instala├º├úo confirmada
+- [#176](https://github.com/lennix1337/Genexus18MCP/issues/176) — [Regression] build reports false Succeeded for an ambiguous object name ΓÇö real MSBuild error hidden in fullLogPath (regression after #115 fix)
+- [#177](https://github.com/lennix1337/Genexus18MCP/issues/177) — [Bug] genexus_edit part=Styles returns false WriteNotPersisted ΓÇö verifyMode default not honored (same class as #100, not covered by that fix)
+- [#178](https://github.com/lennix1337/Genexus18MCP/issues/178) — [Bug] genexus_layout set_property with a multi-line Caption silently renames the control and reports an unrelated LayoutReadBackFailed
+- [#181](https://github.com/lennix1337/Genexus18MCP/issues/181) — Worker respawns with a new PID on every tool call, causing KB_NOT_OWNED and indexing never completes
+
+
 ### Fixed
 
+- Keep the operational release issue list out of the release commit while
+  preserving its immutable JSON snapshot.
 - Initialize release issue snapshot state before release preparation, allowing
   clean releases to pass PowerShell strict-mode validation.
 - Hardened live probes with bounded asynchronous stdio reads, terminating-error

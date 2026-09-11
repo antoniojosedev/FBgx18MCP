@@ -49,7 +49,8 @@ param(
     # Its entries are combined with -CloseIssues and deduplicated.
     [string]$CloseIssuesFile,
     # Include every open issue carrying fixed-pending-release. The generated
-    # generated release-issues.txt is committed with the release metadata.
+    # generated release-issues.txt is operational and intentionally ignored;
+    # release-issues.json is the immutable committed snapshot.
     [switch]$SkipLabeledIssues,
     # Optional GitHub milestone number used with the automatic label filter.
     [int]$ReleaseMilestone,
@@ -511,7 +512,6 @@ $releaseManagedPaths = @(
     'README.md',
     'AGENTS.md',
     'docs/generated/supported-versions.md',
-    'release-issues.txt',
     'release-issues.json',
     'src/GxMcp.Gateway/GxMcp.Gateway.csproj',
     'src/GxMcp.Worker/GxMcp.Worker.csproj',
