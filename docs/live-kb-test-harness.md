@@ -1,9 +1,10 @@
 # Live KB test harness
 
-`scripts/test-live.ps1` requires an explicit KB path and fixture manifest before
-building, opening a KB, or starting a gateway. Missing prerequisites fail with
-`live=unavailable` and a nonzero exit code. A directory called `KBTeste` is not
-evidence that a database is disposable.
+`scripts/test-live.ps1` requires an explicit KB path before opening a KB or
+starting a gateway. Read-only smoke tests can use that path directly; a fixture
+manifest is required only for destructive Build All or reproducible baseline
+comparisons. A directory called `KBTeste` is a valid explicit local target for
+operator-authorized smoke tests, but is not automatically treated as disposable.
 
 ## Provisioning prerequisite
 

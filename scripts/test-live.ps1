@@ -102,13 +102,28 @@ if (-not (Test-Path -LiteralPath $KbPath -PathType Container)) {
 }
 $KbPath = (Resolve-Path -LiteralPath $KbPath).Path
 if ([string]::IsNullOrWhiteSpace($FixtureManifest)) { $FixtureManifest = $env:GXMCP_TEST_FIXTURE }
-if ([string]::IsNullOrWhiteSpace($FixtureManifest) -or -not (Test-Path -LiteralPath $FixtureManifest -PathType Leaf)) {
-    Fail-Live 'Provide -FixtureManifest or GXMCP_TEST_FIXTURE identifying a verified isolated synthetic KB. See docs/live-kb-test-harness.md.'
+if (-not [string]::IsNullOrWhiteSpace($FixtureManifest)) {
+    if (-not (Test-Path -LiteralPath $FixtureManifest -PathType Leaf)) {
+        Fail-Live "Fixture manifest not found: $FixtureManifest"
+    }
+    try {
+        $fixture = Get-Content -LiteralPath $FixtureManifest -Raw | ConvertFrom-Json
+        Assert-LiveFixture $fixture $KbPath
+    } catch { Fail-Live $_.Exception.Message }
+} else {
+    # An explicit KB path is sufficient for read-only smoke tests. The
+    # isolation manifest remains required by destructive Build All and
+    # reproducible baseline comparisons below.
+    $fixture = [pscustomobject]@{
+        fixtureId = 'explicit-kb-readonly'
+        fixtureRevision = 'local-working-copy'
+        generator = 'installed-sdk'
+    }
 }
-try {
-    $fixture = Get-Content -LiteralPath $FixtureManifest -Raw | ConvertFrom-Json
-    Assert-LiveFixture $fixture $KbPath
-} catch { Fail-Live $_.Exception.Message }
+if (($RequireBuildAll -or ($RunBenchmark -and -not [string]::IsNullOrWhiteSpace($BenchmarkBaseline))) -and
+    [string]::IsNullOrWhiteSpace($FixtureManifest)) {
+    Fail-Live 'Build All and baseline comparison require -FixtureManifest identifying a verified isolated fixture.'
+}
 
 if ([string]::IsNullOrWhiteSpace($GxPath)) {
     $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
