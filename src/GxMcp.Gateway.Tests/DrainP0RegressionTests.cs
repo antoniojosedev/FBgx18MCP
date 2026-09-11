@@ -33,6 +33,8 @@ namespace GxMcp.Gateway.Tests
                 pool.DrainAndReplaceAsync(handle, 10, CancellationToken.None));
 
             Assert.Equal(1, spawns);
+            var acquire = pool.AcquireAsync(handle, CancellationToken.None);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => acquire);
             Assert.Same(old, pool.TryGet(handle.Alias));
             Assert.False(pool.IsDrainingForTest(handle.Alias));
         }
@@ -56,6 +58,8 @@ namespace GxMcp.Gateway.Tests
                 pool.DrainAndReplaceAsync(handle, 100, CancellationToken.None));
 
             Assert.Equal(1, spawns);
+            var acquire = pool.AcquireAsync(handle, CancellationToken.None);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => acquire);
             Assert.Same(old, pool.TryGet(handle.Alias));
             Assert.True(old.CancellationRequestedForTest);
             Assert.False(pool.IsDrainingForTest(handle.Alias));

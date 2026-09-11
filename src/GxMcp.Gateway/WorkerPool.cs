@@ -73,6 +73,8 @@ namespace GxMcp.Gateway
             // AcquireAsync callers that hit the fast path while Draining==true wait
             // on DrainComplete before returning the freshly-spawned replacement.
             public volatile bool Draining;
+            // A failed drain remains fail-closed while the old worker is shutting down.
+            public volatile bool DrainFailed;
             // issue #26 P1: true while a worker process is actively being spawned for
             // this entry (gate held, Start() not yet returned). Lets whoami/health tell
             // "a process really IS coming up" apart from "no worker and nothing spawning"
@@ -193,6 +195,8 @@ namespace GxMcp.Gateway
                 // After the drain the entry was replaced — re-read.
                 entry = _entries.GetOrAdd(handle.NormalizedAlias, _ => new Entry { Handle = handle });
             }
+            if (entry.DrainFailed)
+                throw new InvalidOperationException($"Worker reload for KB '{handle.Alias}' failed; acquire refused until the shutting-down worker exits.");
             if (entry.Worker != null)
             {
                 entry.LastActivityUtc = DateTime.UtcNow;
@@ -326,6 +330,7 @@ namespace GxMcp.Gateway
                 throw new InvalidOperationException($"A worker reload is already in progress for alias '{handle.Alias}'.");
 
             await entry.LifecycleGate.WaitAsync(ct).ConfigureAwait(false);
+            bool drainSucceeded = false;
             try
             {
             // Plan 031: the entry now survives the whole drain window (never removed
@@ -381,7 +386,14 @@ namespace GxMcp.Gateway
                 // but going direct keeps the intent explicit and avoids depending on that
                 // GetOrAdd identity guarantee.
                 var newWorker = await SpawnWorkerAsync(handle, entry, ct).ConfigureAwait(false);
+                drainSucceeded = true;
+                entry.DrainFailed = false;
                 return newWorker;
+            }
+            catch
+            {
+                entry.DrainFailed = true;
+                throw;
             }
             finally
             {
@@ -394,6 +406,8 @@ namespace GxMcp.Gateway
             }
             finally
             {
+                if (!drainSucceeded)
+                    entry.DrainFailed = true;
                 entry.Draining = false;
                 entry.DrainComplete.TrySetResult(true);
                 Interlocked.Exchange(ref entry.Reloading, 0);

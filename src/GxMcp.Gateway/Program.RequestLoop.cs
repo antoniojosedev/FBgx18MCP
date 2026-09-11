@@ -730,6 +730,18 @@ namespace GxMcp.Gateway
                                 newWorker.SdkReadyTask, timeoutMs: 180_000,
                                 progressToken: null, heartbeat: null,
                                 toolName: "worker_reload").ConfigureAwait(false);
+                            if (!sdkReady)
+                            {
+                                return BuildToolTextResponse(idToken,
+                                    new JObject
+                                    {
+                                        ["status"] = "NotReady",
+                                        ["swappedAndReady"] = false,
+                                        ["detail"] = "Worker replaced but new worker did not signal SDK-ready within 180s.",
+                                        ["retryable"] = true
+                                    },
+                                    isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                            }
                             BroadcastToolsListChanged(
                                 "worker_reloaded_soft",
                                 reloadKb.NormalizedAlias,
@@ -743,9 +755,7 @@ namespace GxMcp.Gateway
                                 {
                                     ["status"] = "Reloaded",
                                     ["swappedAndReady"] = sdkReady,
-                                    ["detail"] = sdkReady
-                                        ? "Worker gracefully drained and replaced; new worker is SDK-ready."
-                                        : "Worker replaced but new worker did not signal SDK-ready within 180s."
+                                    ["detail"] = "Worker gracefully drained and replaced; new worker is SDK-ready."
                                 },
                                 isError: false, toolName: toolName, toolArgs: args);
                         }

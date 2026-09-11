@@ -1239,12 +1239,12 @@ namespace GxMcp.Gateway
 
                 if (!string.Equals(id, "heartbeat", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Fallback readiness signal: a real response means the worker is processing
-                    // commands, so it's SDK-ready even if the sdk_ready notification was missed
-                    // (e.g. an older worker binary that doesn't emit it).
-                    _sdkReady.TrySetResult(true);
                     MarkActivity();
                     CompleteInFlight(id);
+                    // A pipe-level RPC error proves only transport, not SDK readiness.
+                    // Accept readiness from a valid success response or sdk_ready notification.
+                    if (payload["error"] == null && payload.TryGetValue("result", out _))
+                        _sdkReady.TrySetResult(true);
                 }
             }
             catch (Exception ex)
@@ -1254,6 +1254,11 @@ namespace GxMcp.Gateway
                 // (worker emitted malformed JSON-RPC) but historically nobody saw it.
                 Program.Log($"[Gateway] HandleWorkerRpcResponse error: {ex.Message}");
             }
+        }
+
+        internal void HandleWorkerRpcResponseForTest(string json)
+        {
+            HandleWorkerRpcResponse(json, out _);
         }
 
         private string ScopedCrashLedgerPath()
