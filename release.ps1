@@ -90,7 +90,7 @@ $releaseUrl = $null
 $releaseIssuesPath = Join-Path $root 'release-issues.txt'
 function Get-LabeledReleaseIssues {
     if ($SkipLabeledIssues) { return @() }
-    $numbers = @(gh issue list --state open --label 'fixed-pending-release' --limit 100 --json number --jq '.[].number' 2>$null)
+    $numbers = @(gh issue list --state open --label 'fixed-pending-release' --limit 1000 --json number --jq '.[].number' 2>$null)
     if ($LASTEXITCODE -ne 0) {
         Fail "Could not list open issues with the fixed-pending-release label."
     }
@@ -493,6 +493,11 @@ if ($changelog -match $versionHeadingPattern) {
     Ok "CHANGELOG has release notes ready to promote into ## v$Version."
 }
 
+$unreleasedBodyMatch = [Regex]::Match(
+    $changelog,
+    '(?ms)^##[ \t]+Unreleased[ \t]*\r?\n(?<body>.*?)(?=\r?\n##[ \t]|\z)')
+$hasTrackedIssuesInUnreleased = $unreleasedBodyMatch.Success -and
+    $unreleasedBodyMatch.Groups['body'].Value -match '(?m)^###\s+Tracked issues\s*$'
 if (@($CloseIssues).Count -gt 0 -and $changelog -notmatch $versionHeadingPattern) {
     $issueLines = @($CloseIssues | ForEach-Object {
         "- [#$($_)](https://github.com/lennix1337/Genexus18MCP/issues/$($_))"
@@ -500,7 +505,7 @@ if (@($CloseIssues).Count -gt 0 -and $changelog -notmatch $versionHeadingPattern
     $trackedIssues = "### Tracked issues`r`n`r`n$issueLines`r`n"
     if ($DryRun) {
         Warn "[DRY-RUN] would add $(@($CloseIssues).Count) tracked issue link(s) to the release changelog."
-    } elseif ($changelog -notmatch '(?m)^###\s+Tracked issues\s*$') {
+    } elseif (-not $hasTrackedIssuesInUnreleased) {
         $updatedChangelog = [Regex]::Replace(
             $changelog,
             '(?m)^##[ \t]+Unreleased[ \t]*',
