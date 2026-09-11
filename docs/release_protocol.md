@@ -53,6 +53,13 @@ closed only after GitHub confirms that the release and its assets were created.
 Use `-SkipLabeledIssues` only when a release must exclude the automatic label
 collection.
 
+Before any issue mutation, the release performs a read-only pre-validation of
+the complete batch. It writes `release-issues.json` with the issue titles and
+URLs as an immutable snapshot for that version, and records discovered,
+validated, commented, and closed issue numbers in the release status file. A
+rerun for the same version reuses the existing snapshot. Use
+`-ReleaseMilestone <number>` to restrict automatic collection to one milestone.
+
 The script never infers issues from changelog text. By default it uses the explicit `fixed-pending-release` label; use `-SkipLabeledIssues` and omit `-CloseIssues`/`-CloseIssuesFile` to leave issue state untouched.
 
 Gateway, tests, and benchmarks build with the .NET 10 SDK; the Worker remains
