@@ -16,6 +16,8 @@
 - Propagate the selected update channel through npx, global, fixed-path, and package-direct plans; reject release versions with leading-zero components.
 - Make local installation transactional across configuration, build, and client registration outcomes, so failed steps do not report a completed installation.
 - Require typed WorkWithPlus fallback resolution and version preconditions for action mutations; use structural/delimited projection matching so similarly named tabs and events cannot be reported as the requested target.
+- Publish sharded index generations through immutable rebuild slots and an atomic certified pointer; abandoned or partially written slots are ignored, while legacy snapshots remain readable and migrate lazily.
+- Add bounded benchmarks for versioned snapshot publication and cold searches over built secondary indexes; existing search timing is retained as a separate warm/cache-sensitive benchmark.
 
 ## v3.2.4 - 2026-09-10
 
