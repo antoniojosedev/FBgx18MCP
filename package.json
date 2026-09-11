@@ -32,8 +32,10 @@
     "automation"
   ],
   "scripts": {
-    "test": "node --test cli/run.test.js cli/lib/client-adapters.test.js cli/docs.test.js",
+    "test": "node --test cli/run.test.js cli/lib/client-adapters.test.js cli/docs.test.js && npm run test:live-contract",
     "lint": "eslint cli scripts eslint.config.js --max-warnings=0",
+    "test:live-contract": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-live.test.ps1",
+    "test:upstream-drift": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-upstream-drift.ps1",
     "test:one": "node scripts/test-one.js",
     "prepack": "node scripts/clean-package.js",
     "postinstall": "node scripts/verify-install.js"

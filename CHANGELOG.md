@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Canonicalize session-selected KB aliases before creating the ownership lease, preventing consecutive stateful calls from failing with `KB_NOT_OWNED` when the client uses a different alias casing.
+- Prevent the live harness from declaring and opening the same KB twice, which caused false `KB_AMBIGUOUS` failures during live validation.
+- Add executable validation gates for live-contract coverage, upstream drift reporting, bounded .NET output, and explicit PowerShell 7 enforcement in the documented development workflow.
+
 ## v3.3.0 - 2026-09-11
 
 

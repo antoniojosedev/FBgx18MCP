@@ -20,8 +20,14 @@ foreach ($name in @('Get-LiveFixtureHash', 'Assert-LiveFixture')) {
     if (-not $definition) { throw "Missing shared fixture function: $name" }
 }
 $productionSource = Get-Content (Join-Path $PSScriptRoot '../test-live.ps1') -Raw
-if ($productionSource -notmatch [regex]::Escape("'--alias', `$liveFixtureAlias")) {
+if ($productionSource -notmatch [regex]::Escape("'--alias', 'live-fixture'")) {
     throw 'The live benchmark must receive the same alias used by its isolated config.'
+}
+if ($productionSource -notmatch [regex]::Escape("ResolutionPolicy = 'strict'")) {
+    throw 'The live config must keep strict KB resolution enabled.'
+}
+if ($productionSource -match 'DefaultKb\s*=|KBs\s*=') {
+    throw 'The live config must not auto-open a second KB alias.'
 }
 foreach ($requiredText in @('GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'Assert-LiveGatewayMaster', '-filter $TestFilter')) {
     if ($productionSource -notmatch [regex]::Escape($requiredText)) { throw "Live entrypoint lost required harness guard: $requiredText" }
