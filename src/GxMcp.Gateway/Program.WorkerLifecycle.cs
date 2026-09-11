@@ -159,29 +159,32 @@ namespace GxMcp.Gateway
         // only the GxMcp.Worker.* assembly files; the dependency DLLs already sit in targetDir.
         private static void CopyWorkerBinaries(string sourceDir, string? targetDir)
         {
-            try
+            if (string.IsNullOrWhiteSpace(targetDir) || !System.IO.Directory.Exists(sourceDir))
             {
-                if (string.IsNullOrWhiteSpace(targetDir) || !System.IO.Directory.Exists(sourceDir))
-                {
-                    Log($"[Gateway] worker_reload copy skipped — sourceDir '{sourceDir}' missing or targetDir unresolved.");
-                    return;
-                }
-                string[] files = { "GxMcp.Worker.exe", "GxMcp.Worker.dll", "GxMcp.Worker.pdb", "GxMcp.Worker.exe.config" };
-                int copied = 0;
-                foreach (var f in files)
-                {
-                    string src = System.IO.Path.Combine(sourceDir, f);
-                    if (!System.IO.File.Exists(src)) continue;
-                    string dst = System.IO.Path.Combine(targetDir!, f);
-                    for (int attempt = 0; attempt < 10; attempt++)
-                    {
-                        try { System.IO.File.Copy(src, dst, overwrite: true); copied++; break; }
-                        catch (System.IO.IOException) when (attempt < 9) { System.Threading.Thread.Sleep(150); }
-                    }
-                }
-                Log($"[Gateway] worker_reload swapped {copied} worker binary file(s): {sourceDir} -> {targetDir}");
+                throw new InvalidOperationException($"Worker binary swap source or target is unavailable (sourceDir='{sourceDir}', targetDir='{targetDir ?? "<null>"}').");
             }
-            catch (Exception ex) { Log($"[Gateway] worker_reload CopyWorkerBinaries failed: {ex.Message}"); }
+
+            string[] requiredFiles = { "GxMcp.Worker.exe", "GxMcp.Worker.dll" };
+            foreach (var file in requiredFiles)
+            {
+                if (!System.IO.File.Exists(System.IO.Path.Combine(sourceDir, file)))
+                    throw new InvalidOperationException($"Worker binary swap source is missing required file '{file}'.");
+            }
+
+            string[] files = { "GxMcp.Worker.exe", "GxMcp.Worker.dll", "GxMcp.Worker.pdb", "GxMcp.Worker.exe.config" };
+            int copied = 0;
+            foreach (var file in files)
+            {
+                string src = System.IO.Path.Combine(sourceDir, file);
+                if (!System.IO.File.Exists(src)) continue;
+                string dst = System.IO.Path.Combine(targetDir, file);
+                for (int attempt = 0; attempt < 10; attempt++)
+                {
+                    try { System.IO.File.Copy(src, dst, overwrite: true); copied++; break; }
+                    catch (System.IO.IOException) when (attempt < 9) { System.Threading.Thread.Sleep(150); }
+                }
+            }
+            Log($"[Gateway] worker_reload swapped {copied} worker binary file(s): {sourceDir} -> {targetDir}");
         }
 
         private static void RestartWorker(Configuration config)

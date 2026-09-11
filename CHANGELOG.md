@@ -5,6 +5,11 @@
 ### Fixed
 
 - Preserve the last certified search-index snapshot during forced rebuilds so a Worker crash can warm-start from the previous index instead of leaving the KB cold; allow only manifest-declared SDK patch drift within the same major/minor line while retaining exact-build fingerprints otherwise.
+- Keep the index-readiness fast-fail limited to index-backed reads and analyses; SDK edits, creates and builds remain available while background indexing runs.
+- Never store `Indexing`/`IndexNotReady` responses in the semantic cache, so reads can observe the index as soon as background indexing completes.
+- Make Worker drain replacement fail closed until the old process has really exited; do not register dead replacements, leak draining entries, or run concurrent reloads for one KB.
+- Validate sharded manifests and every shard before publication, reject incomplete/corrupt snapshots, propagate manifest write failures, and atomically replace shard/manifest/warm-snapshot files.
+- Harden update and installer flows with strict semver/channel validation, bounded child commands, atomic update-cache writes, safe npx semantics, correct PowerShell argument passing, exit-code checks, and downgrade protection.
 
 ## v3.2.4 - 2026-09-10
 
