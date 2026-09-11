@@ -7,6 +7,7 @@
 - Canonicalize session-selected KB aliases before creating the ownership lease, preventing consecutive stateful calls from failing with `KB_NOT_OWNED` when the client uses a different alias casing.
 - Prevent the live harness from declaring and opening the same KB twice, which caused false `KB_AMBIGUOUS` failures during live validation.
 - Add executable validation gates for live-contract coverage, upstream drift reporting, bounded .NET output, and explicit PowerShell 7 enforcement in the documented development workflow.
+- Reject multiline layout `Caption` values before SDK persistence, normalize Design System `Styles` writes by default, surface fast-path ambiguous-object build diagnostics as errors, and add actionable locked-dependency setup diagnostics for the root lint command ([#174](https://github.com/lennix1337/Genexus18MCP/issues/174), [#176](https://github.com/lennix1337/Genexus18MCP/issues/176), [#177](https://github.com/lennix1337/Genexus18MCP/issues/177), [#178](https://github.com/lennix1337/Genexus18MCP/issues/178)).
 
 ## v3.3.0 - 2026-09-11
 
