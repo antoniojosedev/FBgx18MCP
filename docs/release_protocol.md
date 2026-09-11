@@ -37,6 +37,19 @@ To close completed issues as part of the same release, pass them explicitly:
 ./release.ps1 -Version <X.Y.Z> -CloseIssues 146,148
 ```
 
+For a larger batch, keep one issue number per line (optional `#` and commas are
+accepted) and pass the file alongside any inline numbers:
+
+```powershell
+./release.ps1 -Version <X.Y.Z> -CloseIssuesFile .
+elease-issues.txt
+```
+
+The release script deduplicates the combined list and adds a `Tracked issues`
+section with links to the promoted changelog entry. In `-DryRun` it reports the
+planned links without editing the changelog. Issues are still commented and
+closed only after GitHub confirms that the release and its assets were created.
+
 The script reads each issue, comments the verified release URL, closes it, and
 reads the issue back to verify `state=closed`. It never infers issues from
 changelog text; omit `-CloseIssues` to leave issue state untouched.

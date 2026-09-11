@@ -45,6 +45,9 @@ param(
     # Issues explicitly completed by this release. Each issue receives the
     # release URL before it is closed; omitted issues are never touched.
     [int[]]$CloseIssues,
+    # Optional text file with one issue number per line (commas are accepted).
+    # Its entries are combined with -CloseIssues and deduplicated.
+    [string]$CloseIssuesFile,
     # Optional machine-readable progress file. Defaults to %TEMP% and is safe
     # to poll from another shell while a detached release is running.
     [string]$StatusFile,
@@ -80,6 +83,29 @@ $statusState = [ordered]@{
     error = $null
 }
 $releaseUrl = $null
+
+function Get-ReleaseIssueNumbers {
+    $values = New-Object System.Collections.Generic.List[int]
+    foreach ($issue in @($CloseIssues)) {
+        if ($issue -le 0) { Fail "Issue number must be positive: $issue" }
+        $values.Add($issue)
+    }
+    if ($CloseIssuesFile) {
+        if (-not (Test-Path -LiteralPath $CloseIssuesFile -PathType Leaf)) {
+            Fail "CloseIssuesFile not found: $CloseIssuesFile"
+        }
+        $content = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $CloseIssuesFile))
+        foreach ($token in ($content -split '[,\s]+')) {
+            if ([string]::IsNullOrWhiteSpace($token)) { continue }
+            if ($token -notmatch '^#?\d+$') { Fail "Invalid issue number in CloseIssuesFile: $token" }
+            $number = [int]($token.TrimStart('#'))
+            if ($number -le 0) { Fail "Issue number must be positive: $number" }
+            $values.Add($number)
+        }
+    }
+    return @($values | Select-Object -Unique)
+}
+$CloseIssues = @(Get-ReleaseIssueNumbers)
 
 function Write-ReleaseStatus {
     param(
@@ -435,6 +461,25 @@ if ($changelog -match $versionHeadingPattern) {
         Fail "CHANGELOG.md has no substantive '## Unreleased' section to promote into '## v$Version'."
     }
     Ok "CHANGELOG has release notes ready to promote into ## v$Version."
+}
+
+if (@($CloseIssues).Count -gt 0 -and $changelog -notmatch $versionHeadingPattern) {
+    $issueLines = @($CloseIssues | ForEach-Object {
+        "- [#$($_)](https://github.com/lennix1337/Genexus18MCP/issues/$($_))"
+    }) -join "`r`n"
+    $trackedIssues = "### Tracked issues`r`n`r`n$issueLines`r`n"
+    if ($DryRun) {
+        Warn "[DRY-RUN] would add $(@($CloseIssues).Count) tracked issue link(s) to the release changelog."
+    } elseif ($changelog -notmatch '(?m)^###\s+Tracked issues\s*$') {
+        $updatedChangelog = [Regex]::Replace(
+            $changelog,
+            '(?m)^##[ \t]+Unreleased[ \t]*',
+            "## Unreleased`r`n`r`n$trackedIssues",
+            1)
+        [IO.File]::WriteAllText($changelogPath, $updatedChangelog, [Text.UTF8Encoding]::new($false))
+        $changelog = $updatedChangelog
+        Ok "CHANGELOG.md -> added tracked issue links."
+    }
 }
 
 # -- 2. Bump version files if needed ---------------------------------------
