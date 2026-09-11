@@ -97,6 +97,9 @@ class BenchmarkGateTests(unittest.TestCase):
 
     def test_bounded_operation_catalog_contains_lifecycle_and_extended_families(self):
         self.assertLessEqual(bench.MAX_ITERATIONS, 20)
+        for operation in ("whoami", "kb_list", "list_objects", "query", "search_source",
+                          "inspect", "read", "lifecycle_status", "pattern_diagnose"):
+            self.assertIn(operation, bench.DEFAULT_OPS)
         for operation in ("kb_list", "kb_select", "graph", "design_system", "pattern_diagnose"):
             self.assertIn(operation, bench.ALL_OPS)
 
