@@ -48,6 +48,9 @@ param(
     # Optional text file with one issue number per line (commas are accepted).
     # Its entries are combined with -CloseIssues and deduplicated.
     [string]$CloseIssuesFile,
+    # Include every open issue carrying fixed-pending-release. The generated
+    # release-issues.txt is committed with the release metadata.
+    [switch]$SkipLabeledIssues,
     # Optional machine-readable progress file. Defaults to %TEMP% and is safe
     # to poll from another shell while a detached release is running.
     [string]$StatusFile,
@@ -84,6 +87,19 @@ $statusState = [ordered]@{
 }
 $releaseUrl = $null
 
+$releaseIssuesPath = Join-Path $root 'release-issues.txt'
+function Get-LabeledReleaseIssues {
+    if ($SkipLabeledIssues) { return @() }
+    $numbers = @(gh issue list --state open --label 'fixed-pending-release' --limit 100 --json number --jq '.[].number' 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Could not list open issues with the fixed-pending-release label."
+    }
+    return @($numbers | ForEach-Object {
+        $value = ([string]$_).Trim()
+        if ($value -match '^\d+$') { [int]$value }
+    } | Sort-Object -Unique)
+}
+
 function Get-ReleaseIssueNumbers {
     $values = New-Object System.Collections.Generic.List[int]
     foreach ($issue in @($CloseIssues)) {
@@ -105,7 +121,6 @@ function Get-ReleaseIssueNumbers {
     }
     return @($values | Select-Object -Unique)
 }
-$CloseIssues = @(Get-ReleaseIssueNumbers)
 
 function Write-ReleaseStatus {
     param(
@@ -158,6 +173,20 @@ trap {
     Write-ReleaseStatus -Phase 'failed' -State 'failed' -ExitCode 1 -ErrorMessage $message
     throw
 }
+
+$labeledIssues = @(Get-LabeledReleaseIssues)
+if (-not $SkipLabeledIssues) {
+    if ($DryRun) {
+        Warn "[DRY-RUN] would populate release-issues.txt with $($labeledIssues.Count) open fixed-pending-release issue(s)."
+    } else {
+        $content = if ($labeledIssues.Count -gt 0) { (($labeledIssues | ForEach-Object { "#$($_)" }) -join [Environment]::NewLine) + [Environment]::NewLine } else { '' }
+        [IO.File]::WriteAllText($releaseIssuesPath, $content, [Text.UTF8Encoding]::new($false))
+        Ok "release-issues.txt populated from fixed-pending-release ($($labeledIssues.Count) issue(s))."
+    }
+}
+$explicitIssues = if ($null -eq $CloseIssues) { @() } else { @($CloseIssues) }
+$CloseIssues = $explicitIssues + $labeledIssues
+$CloseIssues = @(Get-ReleaseIssueNumbers)
 
 function Get-ForwardedArgs {
     # Rebuild the exact parameter set this invocation received, so a relaunch
@@ -395,6 +424,7 @@ $releaseManagedPaths = @(
     'README.md',
     'AGENTS.md',
     'docs/generated/supported-versions.md',
+    'release-issues.txt',
     'src/GxMcp.Gateway/GxMcp.Gateway.csproj',
     'src/GxMcp.Worker/GxMcp.Worker.csproj',
     'src/nexus-ide/package.json',
