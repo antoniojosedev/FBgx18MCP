@@ -126,6 +126,13 @@ flaky tests are documented in the test section of `docs/agent_playbook.md`.
 If a build/test fails with `MSB3027` or `MSB3021` naming the Gateway/Worker exe,
 use the scoped permission below; do not kill unrelated processes.
 
+- Codex Windows sandbox caveat: `npm test` may report `EPERM` when
+  `applyLauncherConfigOrExit` creates `os.homedir()\.genexus-mcp`. The test
+  uses a temporary working directory but does not isolate the user-home target.
+  Reproduce this case outside the sandbox with a temporary `USERPROFILE` before
+  classifying it as a product failure. Do not touch an existing user
+  `.genexus-mcp` configuration during reproduction.
+
 ## Runtime iteration
 
 The gateway serves Streamable HTTP at `http://127.0.0.1:5000/mcp` by default.
