@@ -90,7 +90,7 @@ $releaseUrl = $null
 $releaseIssuesPath = Join-Path $root 'release-issues.txt'
 function Get-LabeledReleaseIssues {
     if ($SkipLabeledIssues) { return @() }
-    $numbers = @(gh issue list --state open --label 'fixed-pending-release' --limit 1000 --json number --jq '.[].number' 2>$null)
+    $numbers = @(gh api --paginate 'repos/{owner}/{repo}/issues?state=open&labels=fixed-pending-release&per_page=100' --jq '.[] | select(.pull_request == null) | .number' 2>$null)
     if ($LASTEXITCODE -ne 0) {
         Fail "Could not list open issues with the fixed-pending-release label."
     }
