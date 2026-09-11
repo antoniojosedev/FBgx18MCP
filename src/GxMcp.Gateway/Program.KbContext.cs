@@ -42,8 +42,9 @@ namespace GxMcp.Gateway
                 _sessionKbContexts.Initialize(sessionId, null);
             long generation = (prior?.ContextGeneration ?? 0) + 1;
             string identity = (kbId ?? string.Empty).Trim().TrimEnd('\\', '/').ToLowerInvariant();
-            var lease = _kbLeases.Open(sessionId, alias, generation, identity, "session-" + generation, TimeSpan.FromMinutes(10));
-            _sessionKbContexts.Set(sessionId, alias, alias.Trim().ToLowerInvariant(), lease);
+            string canonicalAlias = alias.Trim().ToLowerInvariant();
+            var lease = _kbLeases.Open(sessionId, canonicalAlias, generation, identity, "session-" + generation, TimeSpan.FromMinutes(10));
+            _sessionKbContexts.Set(sessionId, alias, canonicalAlias, lease);
         }
 
         internal static void ClearSessionSelectedKb(string sessionId)

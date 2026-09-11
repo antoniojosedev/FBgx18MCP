@@ -66,6 +66,52 @@ Send @{ jsonrpc='2.0'; method='notifications/initialized' }
 
 Write-Host "=== 1. Opening KB ==="
 $null = CallTool 2 'genexus_kb' @{ action='open'; path='C:\KBs\KBTeste'; alias='KBTeste' } 60
+$null = CallTool 90 'genexus_delete_object' @{ name='LiveStylesProbe133112680'; confirm=$true } 20
+$null = CallTool 91 'genexus_delete_object' @{ name='LiveCaptionProbe133112680'; confirm=$true } 20
+$null = CallTool 96 'genexus_delete_object' @{ name='LiveStylesProbe133219635'; confirm=$true } 20
+$null = CallTool 97 'genexus_delete_object' @{ name='LiveCaptionProbe133219635'; confirm=$true } 20
+$null = CallTool 98 'genexus_delete_object' @{ name='LiveStylesProbe133304043'; confirm=$true } 20
+$null = CallTool 99 'genexus_delete_object' @{ name='LiveCaptionProbe133304043'; confirm=$true } 20
+$null = CallTool 100 'genexus_delete_object' @{ name='LiveStylesProbe133329278'; confirm=$true } 20
+$null = CallTool 110 'genexus_delete_object' @{ name='LiveCaptionProbe133329278'; confirm=$true } 20
+$null = CallTool 113 'genexus_delete_object' @{ name='LiveStylesProbe133708773'; confirm=$true } 20
+$null = CallTool 111 'genexus_kb' @{ action='select'; alias='KBTeste' } 20
+
+$suffix = (Get-Date -Format 'HHmmssfff')
+$dsoName = "LiveStylesProbe$suffix"
+$webName = "LiveCaptionProbe$suffix"
+$collisionName = "LiveAmbiguousProbe$suffix"
+Write-Host "`n=== Issue #177: Creating disposable Design System $dsoName ==="
+$dso = CallTool 101 'genexus_create' @{ action='object'; type='DesignSystem'; name=$dsoName; description='Temporary Styles live probe' } 60
+$stylesRead = CallTool 102 'genexus_read' @{ name=$dsoName; part='Styles' } 60
+Write-Host "Styles read: $($stylesRead | ConvertTo-Json -Compress)"
+if ($stylesRead.source) {
+    $styleLines = ([string]$stylesRead.source) -split "`r?`n"
+    $findStyle = $styleLines[0]
+    $replaceStyle = "/* live #177 */`r`n" + $findStyle
+    $stylesPatch = CallTool 103 'genexus_edit' @{ name=$dsoName; part='Styles'; mode='patch'; patch=@{ find=$findStyle; replace=$replaceStyle } } 60
+    Write-Host "Styles patch: $($stylesPatch | ConvertTo-Json -Compress)"
+}
+else {
+    $stylesFull = CallTool 112 'genexus_edit' @{ name=$dsoName; part='Styles'; mode='full'; content="styles $dsoName { }" } 60
+    Write-Host "Styles full write: $($stylesFull | ConvertTo-Json -Compress)"
+    if (-not $stylesFull.result.verified -or -not $stylesFull.result.persisted -or -not $stylesFull.postSaveVerification.reReadConfirmed) { throw "Issue #177 live Styles persistence/read-back failed: $($stylesFull | ConvertTo-Json -Compress)" }
+}
+
+Write-Host "`n=== Issue #178: Creating disposable WebPanel $webName ==="
+$web = CallTool 104 'genexus_create' @{ action='object'; type='WebPanel'; name=$webName; description='Temporary Caption live probe' } 60
+$button = CallTool 105 'genexus_edit_form' @{ action='add_button'; name=$webName; controlName='btn_LiveProbe'; caption='Initial caption' } 60
+Write-Host "Button result: $($button | ConvertTo-Json -Compress)"
+$caption = CallTool 106 'genexus_layout' @{ action='set_property'; name=$webName; control='Btn1'; propertyName='Caption'; value="Line one`nLine two" } 60
+Write-Host "Caption result: $($caption | ConvertTo-Json -Compress)"
+if ($caption.code -ne 'CaptionNewlineUnsupported') { throw "Issue #178 live guard did not reject multiline Caption: $($caption | ConvertTo-Json -Compress)" }
+
+Write-Host "`n=== Issue #176: Creating disposable ambiguous objects $collisionName ==="
+$collisionTransaction = CallTool 108 'genexus_create' @{ action='object_atomic'; type='Transaction'; name=$collisionName; source='parm(in:&User);' } 60
+$null = CallTool 114 'genexus_kb' @{ action='select'; alias='KBTeste' } 30
+$buildAmbiguous = CallTool 109 'genexus_lifecycle' @{ action='build'; target=$collisionName; kb='KBTeste'; includeCallees='none'; estimated_seconds=60; wait_until_done=$true; wait_seconds=120 } 180
+Write-Host "Ambiguous build: $($buildAmbiguous | ConvertTo-Json -Compress)"
+if ($buildAmbiguous.status -eq 'ok' -and $buildAmbiguous.result.errorCount -eq 0 -and $buildAmbiguous.result.Status -eq 'Succeeded') { throw 'Issue #176 live build still reported false success.' }
 
 $testObjName = "TempMcpProbe"
 Write-Host "`n=== 2. Creating Disposable Procedure: $testObjName ==="
@@ -152,6 +198,10 @@ Write-Host "ReadAfterDel: $($readAfterDel | ConvertTo-Json -Compress)"
 if ($readAfterDel.error -or $readAfterDel.code -eq 'ObjectNotFound' -or $readAfterDel.notFound -or ($readAfterDel.source -eq $null -and $readAfterDel.parts -eq $null)) {
     Write-Host "[+] Object cleanly removed from KB." -ForegroundColor Green
 }
+$null = CallTool 92 'genexus_delete_object' @{ name=$dsoName; confirm=$true } 30
+$null = CallTool 93 'genexus_delete_object' @{ name=$webName; confirm=$true } 30
+$null = CallTool 94 'genexus_delete_object' @{ name=$collisionName; type='Table'; confirm=$true } 30
+$null = CallTool 95 'genexus_delete_object' @{ name=$collisionName; type='Transaction'; confirm=$true } 30
 
 try { $p.StandardInput.Close() } catch {}
 try { $p.WaitForExit(5000) } catch {}

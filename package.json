@@ -32,8 +32,8 @@
     "automation"
   ],
   "scripts": {
-    "test": "node --test cli/run.test.js cli/lib/client-adapters.test.js cli/docs.test.js",
-    "lint": "eslint cli scripts eslint.config.js --max-warnings=0",
+    "test": "node --test cli/run.test.js cli/lib/client-adapters.test.js cli/docs.test.js scripts/lint.test.js",
+    "lint": "node scripts/lint.js",
     "test:one": "node scripts/test-one.js",
     "prepack": "node scripts/clean-package.js",
     "postinstall": "node scripts/verify-install.js"

@@ -198,7 +198,10 @@ $liveFixtureAlias = 'live-fixture'
 @{
     GeneXus = @{ InstallationPath = $GxPath; WorkerExecutable = (Join-Path $root 'publish\worker\GxMcp.Worker.exe') }
     Server = @{ HttpPort = $HttpPort; McpStdio = $true; BindAddress = '127.0.0.1' }
-    Environment = @{ DefaultKb = $liveFixtureAlias; KBs = @(@{ Alias = $liveFixtureAlias; Path = $KbPath }) }
+    # LiveGatewayHarness opens GXMCP_TEST_KB itself. Do not declare an automatic
+    # default here: strict resolution would leave two aliases open and make
+    # calls without an explicit kb fail with KB_AMBIGUOUS.
+    Environment = @{ ResolutionPolicy = 'strict' }
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:GX_CONFIG_PATH -Encoding utf8
 Write-LiveProgress "Gateway live smoke starting; filter=$TestFilter; RPC timeout=${RpcTimeoutSeconds}s"
 Write-Host "`n>>> Gateway live smoke" -ForegroundColor Cyan
@@ -256,7 +259,7 @@ if ($RunBenchmark) {
     $benchmarkArgs = @(
         $benchmark,
         '--kb', $KbPath,
-        '--alias', $liveFixtureAlias,
+        '--alias', 'live-fixture',
         '--fixture-id', [string]$fixture.fixtureId,
         '--fixture-revision', [string]$fixture.fixtureRevision,
         '--generator', [string]$fixture.generator,
