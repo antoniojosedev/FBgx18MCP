@@ -102,7 +102,7 @@ if (-not (Test-Path -LiteralPath $KbPath -PathType Container)) {
 }
 $KbPath = (Resolve-Path -LiteralPath $KbPath).Path
 if ([string]::IsNullOrWhiteSpace($FixtureManifest)) { $FixtureManifest = $env:GXMCP_TEST_FIXTURE }
-if (-not [string]::IsNullOrWhiteSpace($FixtureManifest)) {
+if ($RunBenchmark -and -not [string]::IsNullOrWhiteSpace($FixtureManifest)) {
     if (-not (Test-Path -LiteralPath $FixtureManifest -PathType Leaf)) {
         Fail-Live "Fixture manifest not found: $FixtureManifest"
     }
@@ -120,11 +120,6 @@ if (-not [string]::IsNullOrWhiteSpace($FixtureManifest)) {
         generator = 'installed-sdk'
     }
 }
-if (($RequireBuildAll -or ($RunBenchmark -and -not [string]::IsNullOrWhiteSpace($BenchmarkBaseline))) -and
-    [string]::IsNullOrWhiteSpace($FixtureManifest)) {
-    Fail-Live 'Build All and baseline comparison require -FixtureManifest identifying a verified isolated fixture.'
-}
-
 if ([string]::IsNullOrWhiteSpace($GxPath)) {
     $GxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
         $env:GX_PATH
@@ -225,7 +220,6 @@ if ($RequireBuildAll) {
     Write-Host "`n>>> Native Build All evidence gate" -ForegroundColor Cyan
     & pwsh -NoProfile -File $buildAllScript `
         -KbPath $KbPath `
-        -FixtureManifest $FixtureManifest `
         -GatewayExe $gatewayExe `
         -GxPath $GxPath `
         -TimeoutSeconds $BuildAllTimeoutSeconds

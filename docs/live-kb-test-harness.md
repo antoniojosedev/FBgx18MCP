@@ -2,9 +2,10 @@
 
 `scripts/test-live.ps1` requires an explicit KB path before opening a KB or
 starting a gateway. Read-only smoke tests can use that path directly; a fixture
-manifest is required only for destructive Build All or reproducible baseline
-comparisons. A directory called `KBTeste` is a valid explicit local target for
-operator-authorized smoke tests, but is not automatically treated as disposable.
+manifest is optional metadata for benchmark identity and reproducibility. A
+directory called `KBTeste` is a valid explicit local target for operator-
+authorized smoke tests and Build All, but is not automatically treated as
+disposable.
 
 ## Provisioning prerequisite
 
@@ -191,5 +192,5 @@ populations. Never count failed operations as fast successful samples.
 The benchmark stores successful response-byte p50/p95 alongside latency and
 never includes failed or skipped calls in either population. The existing Worker gate currently checks SDK type resolution only. Real
 write/reopen persistence, pattern parity, mandatory-scenario/no-skip enforcement,
-and cold/warm baseline captures remain required by plan 074; this harness safety
-increment alone is not release acceptance.
+and cold/warm baseline captures remain required by plan 074; manifests are
+optional benchmark metadata and are not required to use a local KB.
