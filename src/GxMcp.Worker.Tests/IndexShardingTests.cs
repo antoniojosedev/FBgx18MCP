@@ -24,6 +24,43 @@ namespace GxMcp.Worker.Tests
             new SearchIndex.IndexEntry { Name = name, Type = type, Guid = Guid.NewGuid().ToString() };
 
         [Fact]
+        public void ReplaceAll_PreservesConcurrentLiteWalkMutation_AndHonorsRemoval()
+        {
+            var cache = new IndexCacheService();
+            var original = Entry("Procedure", "Original");
+            cache.ReplaceAll(new[] { original });
+            cache.BeginLiteWalk();
+            var added = Entry("Procedure", "Added");
+            cache.AddOrUpdateBatch(new[] { added });
+            cache.RemoveEntryByGuid(original.Guid);
+            cache.ReplaceAll(new[] { original });
+
+            var index = cache.GetIndex();
+            Assert.True(index.Objects.ContainsKey("Procedure:Added"));
+            Assert.False(index.Objects.ContainsKey("Procedure:Original"));
+        }
+
+        [Fact]
+        public void ShardedLoad_RejectsPostFlushShardMixUsingManifestHash()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "HashProbe") });
+                Assert.True(cache.FlushNow());
+                int shard = IndexCacheService.ShardOf("Procedure:HashProbe");
+                File.AppendAllText(cache.ShardFilePathForTest(shard), "crash-mix");
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.ThrowsAny<Exception>(() => reloaded.GetIndex());
+                Assert.Null(reloaded.TryGetLoadedIndex());
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
         public void Flush_OnlyRewritesShardsDirtiedSinceLastFlush()
         {
             var cache = new IndexCacheService();
