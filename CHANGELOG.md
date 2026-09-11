@@ -10,6 +10,12 @@
 - Make Worker drain replacement fail closed until the old process has really exited; do not register dead replacements, leak draining entries, or run concurrent reloads for one KB.
 - Validate sharded manifests and every shard before publication, reject incomplete/corrupt snapshots, propagate manifest write failures, and atomically replace shard/manifest/warm-snapshot files.
 - Harden update and installer flows with strict semver/channel validation, bounded child commands, atomic update-cache writes, safe npx semantics, correct PowerShell argument passing, exit-code checks, and downgrade protection.
+- Return an explicit retryable error when a Worker reload replaces the process but the SDK does not become ready; keep failed drains fail-closed, prevent acquisitions from reusing a Worker that is still shutting down, and do not infer SDK readiness from RPC error responses.
+- Preserve creations, renames, updates, and removals observed during the lite index walk when publishing the final catalogue; refresh effective object counts after delta deletions and invalidate stale hierarchy data after external moves.
+- Add per-shard hashes to new index manifests so corrupted or mixed shard contents fail closed while retaining compatibility with older manifests.
+- Propagate the selected update channel through npx, global, fixed-path, and package-direct plans; reject release versions with leading-zero components.
+- Make local installation transactional across configuration, build, and client registration outcomes, so failed steps do not report a completed installation.
+- Require typed WorkWithPlus fallback resolution and version preconditions for action mutations; use structural/delimited projection matching so similarly named tabs and events cannot be reported as the requested target.
 
 ## v3.2.4 - 2026-09-10
 
