@@ -67,6 +67,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
+# Native `gh` output is UTF-8. Set both encodings so PowerShell does not
+# decode issue titles with the OEM code page before JSON parsing.
+$utf8 = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
 $root = $PSScriptRoot
 . (Join-Path $root 'scripts\gx-version-catalog.ps1')
 $gxCatalog = Get-GxVersionCatalog -Root $root
@@ -95,6 +100,7 @@ $statusState = [ordered]@{
         failed = @()
     }
 }
+$tag = $null
 $releaseUrl = $null
 $script:releaseIssueSnapshotReused = $false
 
@@ -152,12 +158,13 @@ function Get-ReleaseIssueSnapshot {
     }
     $records = New-Object System.Collections.Generic.List[object]
     foreach ($issue in @($CloseIssues | Select-Object -Unique)) {
-        $raw = @(gh issue view $issue --json number,title,url,state,labels,milestone 2>$null)
+        $raw = @(gh api "repos/{owner}/{repo}/issues/$issue" --jq '{number,title,url:.html_url,state,labels,milestone}' 2>$null)
         if ($LASTEXITCODE -ne 0 -or $raw.Count -eq 0) {
             Fail "Could not read issue #$issue before the release."
         }
         $record = ($raw -join [Environment]::NewLine) | ConvertFrom-Json
-        if ([string]$record.state -ne 'OPEN') {
+        $recordState = ([string]$record.state).ToUpperInvariant()
+        if ($recordState -ne 'OPEN') {
             Fail "Issue #$issue is not open at release preparation time."
         }
         $records.Add([ordered]@{
