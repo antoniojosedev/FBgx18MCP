@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Distinguish a session-selected KB alias from its live ownership lease: preserve `KB_LEASE_EXPIRED` through stateful recovery, report `leaseState`/`leaseActive` in `whoami`, `genexus_kb list/open/select`, and direct expired sessions to create a fresh context with explicit `select` ([#192](https://github.com/lennix1337/Genexus18MCP/issues/192)).
+
 ## v3.4.2 - 2026-09-13
 
 
