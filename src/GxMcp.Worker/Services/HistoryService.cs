@@ -600,6 +600,11 @@ namespace GxMcp.Worker.Services
                     code: "ObjectNotFound",
                     message: "Object not found.",
                     hint: "Verify the object name and ensure the KB is open.",
+                    nextSteps: new JArray(
+                        Models.McpResponse.NextStep(
+                            tool: "genexus_list_objects",
+                            args: new JObject { ["name_contains"] = target },
+                            why: "Lists objects whose names match, in case of a typo.")),
                     target: target);
             }
 
