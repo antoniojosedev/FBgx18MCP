@@ -37,9 +37,15 @@ namespace GxMcp.Gateway.Tests
                 }, session);
 
                 var payload = ExtractPayload(response!);
-                Assert.True(response["result"]?["isError"]?.Value<bool>());
-                Assert.Equal("KB_LEASE_EXPIRED", payload["error"]?["code"]?.ToString());
-                Assert.Contains("select", payload["error"]?["hint"]?.ToString() ?? string.Empty,
+                var result = response!["result"] as JObject;
+                Assert.NotNull(result);
+                var isError = result!["isError"];
+                Assert.NotNull(isError);
+                Assert.True(isError!.Value<bool>() == true);
+                var error = payload["error"] as JObject;
+                Assert.NotNull(error);
+                Assert.Equal("KB_LEASE_EXPIRED", error!["code"]?.ToString());
+                Assert.Contains("select", error!["hint"]?.ToString() ?? string.Empty,
                     StringComparison.OrdinalIgnoreCase);
             }
             finally
@@ -125,8 +131,12 @@ namespace GxMcp.Gateway.Tests
                 }, session);
 
                 var payload = ExtractPayload(response!);
-                Assert.True(response["result"]?["isError"]?.Value<bool>() == false);
-                Assert.True(payload["selected"]?.Value<bool>());
+                var result = response!["result"] as JObject;
+                Assert.NotNull(result);
+                var isError = result!["isError"];
+                Assert.NotNull(isError);
+                Assert.True(isError!.Value<bool>() == false);
+                Assert.True(payload["selected"]?.Value<bool>() == true);
                 Assert.Equal(JTokenType.Null, payload["workerPid"]?.Type);
                 Assert.Equal("expired", payload["leaseState"]?.ToString());
                 Assert.False(payload["leaseActive"]?.Value<bool>());

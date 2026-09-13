@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v3.4.3 - 2026-09-13
+
+
+### Tracked issues
+
+- [#189](https://github.com/lennix1337/Genexus18MCP/issues/189) — [Bug] `genexus_versioning history_save`/`history_restore` usam diretório compartilhado entre KBs, e o restore pode escrever o Source de uma KB em outra
+- [#190](https://github.com/lennix1337/Genexus18MCP/issues/190) — [Bug] clients classifica launcher sem entrypoint como registrado e não obsoleto
+- [#191](https://github.com/lennix1337/Genexus18MCP/issues/191) — [Bug] install.ps1 imprime snippet manual com a chave legada genexus
+- [#192](https://github.com/lennix1337/Genexus18MCP/issues/192) — [Bug / follow-up #146] recover(force=true) rejeitado com KB_NOT_OWNED em strict enquanto whoami/open ainda reportam KB selecionada
+
+
 ### Fixed
 
 - Distinguish a session-selected KB alias from its live ownership lease: preserve `KB_LEASE_EXPIRED` through stateful recovery, report `leaseState`/`leaseActive` in `whoami`, `genexus_kb list/open/select`, and direct expired sessions to create a fresh context with explicit `select` ([#192](https://github.com/lennix1337/Genexus18MCP/issues/192)).
