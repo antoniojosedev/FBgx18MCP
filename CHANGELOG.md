@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Add the local `scripts/Invoke-PrePushMechanicalChecks.ps1` routine, with machine-readable readiness output, divergence and working-tree gates, PowerShell parsing, and the existing release preflight checks without publishing.
+
 ## v3.4.2 - 2026-09-13
 
 

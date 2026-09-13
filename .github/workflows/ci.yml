@@ -55,6 +55,7 @@ jobs:
           $scriptPaths = @(
             'scripts/pr-preflight.ps1',
             'scripts/pr-push.ps1',
+            'scripts/Invoke-PrePushMechanicalChecks.ps1',
             'scripts/install.ps1',
             'scripts/install-transaction.ps1',
             'scripts/test-live.ps1',
