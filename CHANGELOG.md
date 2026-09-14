@@ -5,6 +5,7 @@
 ### Fixed
 
 - **PowerShell Automation Fail-Fast**: Remove `[Parameter(Mandatory = $true)]` in `scripts/pr-preflight.ps1`, `scripts/build-release-candidate.ps1`, and `scripts/live-build-all.ps1`, replacing interactive stdin blocking with immediate validation and clear usage error exits, preventing headless CI/agent processes from hanging indefinitely.
+- **Multi-major SDK startup**: Resolve Worker SDK compatibility from the explicit `config/gx-versions.json` major catalog instead of the single fingerprint reference version, while preserving patch/build/fingerprint drift diagnostics; expose deterministic SDK refusals through `genexus_whoami`/`genexus_doctor` and stop unsupported-major respawn loops ([#193](https://github.com/lennix1337/Genexus18MCP/issues/193)).
 
 ### Changed
 

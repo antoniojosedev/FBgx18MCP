@@ -20,6 +20,13 @@ namespace GxMcp.Gateway
         }
     }
 
+    public sealed record WorkerStartupFailure(
+        WorkerStopReason Reason,
+        string Code,
+        string Diagnostic,
+        DateTime AtUtc,
+        int? ExitCode);
+
     public sealed class WorkerPool : IWorkerSupervisor
     {
         private readonly Configuration _config;
@@ -35,6 +42,9 @@ namespace GxMcp.Gateway
         // user opened stays resolvable (and auto-re-attaches) across worker recycles.
         private readonly ConcurrentDictionary<string, KbHandle> _known =
             new ConcurrentDictionary<string, KbHandle>(StringComparer.OrdinalIgnoreCase);
+
+        private readonly ConcurrentDictionary<string, WorkerStartupFailure> _startupFailures =
+            new ConcurrentDictionary<string, WorkerStartupFailure>(StringComparer.OrdinalIgnoreCase);
 
         // Item 53: configured warm-spare count. Pre-spawn up to N workers
         // (bound to declared KBs in config.Environment.KBs[]) so the first
@@ -99,6 +109,16 @@ namespace GxMcp.Gateway
         public void RegisterKnown(KbHandle handle)
         {
             if (handle != null) _known[handle.NormalizedAlias] = handle;
+        }
+
+        public bool TryGetStartupFailure(string alias, out WorkerStartupFailure failure)
+        {
+            if (alias == null)
+            {
+                failure = null!;
+                return false;
+            }
+            return _startupFailures.TryGetValue(alias, out failure!);
         }
 
         // issue #26 P1: true when a worker for this alias is in the middle of spawning
@@ -248,15 +268,25 @@ namespace GxMcp.Gateway
                     }
                 }
 
-                WorkerProcess worker = SpawnFactoryForTest != null
-                    ? SpawnFactoryForTest(handle)
-                    : new WorkerProcess(_config, handle);
-                worker.OnRpcResponse += (json, parsed) => OnRpcResponse?.Invoke(json, parsed);
+                WorkerProcess? createdWorker = null;
+                try
+                {
+                    WorkerProcess worker = createdWorker = SpawnFactoryForTest != null
+                        ? SpawnFactoryForTest(handle)
+                        : new WorkerProcess(_config, handle);
+                    worker.OnRpcResponse += (json, parsed) => OnRpcResponse?.Invoke(json, parsed);
                 worker.OnRpcResponseWithContext += (json, parsed, alias) =>
                     OnRpcResponseWithContext?.Invoke(json, parsed, alias);
                 var capturedHandle = handle;
                 worker.OnWorkerExited += (reason) =>
                 {
+                    if (reason == WorkerStopReason.SdkCompatibilityRejected
+                        || !string.IsNullOrWhiteSpace(worker.StartupDiagnostic))
+                    {
+                        RememberStartupFailure(capturedHandle, worker.StartupDiagnostic, worker.LastExitCode,
+                            "Worker exited during startup.");
+                    }
+
                     // Detach the exited worker BEFORE notifying eager-respawn subscribers:
                     // they can finish spawning a replacement before this callback returns.
                     // Remove only the captured entry, preserving concurrent replacements,
@@ -286,6 +316,7 @@ namespace GxMcp.Gateway
                     }
                 }
                 entry.Worker = worker;
+                _startupFailures.TryRemove(handle.NormalizedAlias, out _);
                 if (!worker.IsProcessAliveForPool)
                 {
                     _entries.TryRemove(handle.NormalizedAlias, out _);
@@ -302,11 +333,43 @@ namespace GxMcp.Gateway
                 }
                 entry.LastActivityUtc = DateTime.UtcNow;
                 return worker;
+                }
+                catch (Exception ex)
+                {
+                    if (!(ex is WorkerPoolFullException))
+                    {
+                        RememberStartupFailure(handle, createdWorker?.StartupDiagnostic, createdWorker?.LastExitCode, ex.Message);
+                    }
+                    entry.Worker = null;
+                    if (!entry.Draining)
+                        _entries.TryRemove(new KeyValuePair<string, Entry>(handle.NormalizedAlias, entry));
+                    throw;
+                }
             }
             finally
             {
                 entry.SpawnGate.Release();
             }
+        }
+
+        private void RememberStartupFailure(KbHandle handle, string? workerDiagnostic, int? exitCode, string fallback)
+        {
+            string diagnostic = string.IsNullOrWhiteSpace(workerDiagnostic) ? fallback : workerDiagnostic!;
+            string code = ExtractDiagnosticCode(diagnostic);
+            WorkerStopReason reason = code.StartsWith("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase)
+                ? WorkerStopReason.SdkCompatibilityRejected
+                : WorkerStopReason.None;
+            _startupFailures[handle.NormalizedAlias] = new WorkerStartupFailure(
+                reason, code, diagnostic, DateTime.UtcNow, exitCode);
+        }
+
+        private static string ExtractDiagnosticCode(string diagnostic)
+        {
+            int start = diagnostic.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase);
+            if (start < 0) return "WORKER_STARTUP_FAILED";
+            int end = start;
+            while (end < diagnostic.Length && !char.IsWhiteSpace(diagnostic[end])) end++;
+            return diagnostic.Substring(start, end - start);
         }
 
         /// <summary>
@@ -419,6 +482,7 @@ namespace GxMcp.Gateway
         {
             // Explicit close is the ONE place the durable record is intentionally forgotten.
             _known.TryRemove(alias.ToLowerInvariant(), out _);
+            _startupFailures.TryRemove(alias.ToLowerInvariant(), out _);
             if (_entries.TryRemove(alias.ToLowerInvariant(), out var entry))
             {
                 try { entry.Worker?.StopWithReason(reason); } catch { }

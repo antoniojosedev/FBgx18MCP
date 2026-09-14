@@ -49,7 +49,8 @@ namespace GxMcp.Gateway
                     stopReason == WorkerStopReason.GatewayShutdown ||
                     stopReason == WorkerStopReason.BusyReject ||
                     stopReason == WorkerStopReason.ExplicitClose ||
-                    stopReason == WorkerStopReason.PlannedReload)
+                    stopReason == WorkerStopReason.PlannedReload ||
+                    stopReason == WorkerStopReason.SdkCompatibilityRejected)
                 {
                     Log($"[Respawn] Skipped eager respawn for KB '{kb.Alias}' — stop reason: {stopReason}.");
                     return;

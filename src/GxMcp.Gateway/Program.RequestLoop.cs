@@ -2165,6 +2165,19 @@ namespace GxMcp.Gateway
                         return BuildToolResultContent(whoami, false, tName, tArgs);
                     }
 
+                    // A Worker that is still booting, rejected the SDK, or failed
+                    // before registration cannot answer genexus_doctor itself. Return
+                    // the Gateway-side diagnostic immediately instead of waiting for
+                    // the normal worker timeout (and, for an incompatible SDK, avoid
+                    // triggering another respawn attempt).
+                    if (string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
+                        && !IsWorkerReadyForDoctor())
+                    {
+                        JObject doctor = BuildGatewayDoctorEnvelope(
+                            sessionContextEnabled ? sessionId : null);
+                        return BuildToolResultContent(doctor, false, tName, tArgs);
+                    }
+
                     if (string.Equals(tName, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
                     {
                         string action = tArgs?["action"]?.ToString()?.ToLowerInvariant();

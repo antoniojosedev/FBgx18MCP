@@ -4,9 +4,9 @@ The Worker is compiled against the selected supported GeneXus major installed on
 
 ## Supported fixture
 
-`config/sdk-compatibility.json` records a reference GeneXus product version and SHA-256 fingerprints for selected assemblies the Worker references. The reference version selects the Worker major; minor, patch, build and hash differences within that major are diagnostics, not compatibility failures. The manifest contains no SDK bytes or credentials. The default reference was produced from a self-hosted GeneXus 18 installation whose anchor product version is `18.0.10.184260`.
+`config/sdk-compatibility.json` records a reference GeneXus product version and SHA-256 fingerprints for selected assemblies the Worker references. `config/gx-versions.json` is the source of truth for the supported majors (currently 17 and 18); `supportedVersion` is the fingerprint reference, not a single-major runtime gate. Minor, patch, build and hash differences within an explicitly supported major are diagnostics, not compatibility failures. The manifest contains no SDK bytes or credentials. The default reference was produced from a self-hosted GeneXus 18 installation whose anchor product version is `18.0.10.184260`.
 
-Both build and startup require the reference GeneXus major and all listed assemblies. The legacy `allowPatchVersionDrift` flag is no longer consulted: compatibility within the supported major does not require an opt-in. Fingerprint drift is reported even when ProductVersion is unchanged. These checks establish SDK compatibility, not validation of KB writes or save-event isolation.
+Both build and startup require a major present in `config/gx-versions.json` and all listed assemblies. The legacy `allowPatchVersionDrift` flag is no longer consulted: compatibility within a supported major does not require an opt-in. Fingerprint drift is reported even when ProductVersion is unchanged. These checks establish SDK compatibility, not validation of KB writes or save-event isolation.
 
 Provide the SDK through a self-hosted Windows build image or an installed developer workstation:
 
@@ -15,7 +15,8 @@ installations in `config/sdk-compatibility-u11.json`,
 `config/sdk-compatibility-u12.json` and `config/sdk-compatibility-u16.json`.
 The original U10 lock remains the default. Select one lock for each build;
 the resulting Worker carries only that lock under `sdk-compatibility.json`.
-Both build and startup enforce its exact product version and all fingerprints.
+Build and startup use its fingerprints for diagnostics while accepting any
+major explicitly listed by `config/gx-versions.json`.
 These hashes attest SDK identity, not validation of KB writes or save-event
 isolation. No proprietary SDK assemblies are added by these manifests.
 
@@ -40,10 +41,11 @@ The build target runs `scripts/validate-gx-sdk.ps1` before resolving references.
 
 - `GXMCP_SDK_PATH_MISSING`
 - `GXMCP_SDK_VERSION_MISMATCH`
+- `GXMCP_SDK_VERSION_UNDETECTED`
 - `GXMCP_SDK_ASSEMBLY_MISSING`
 - `GXMCP_SDK_FINGERPRINT_DRIFT` (informational; compatibility still succeeds)
 
-A missing required assembly or different/unreadable major fails build/startup. A different major requires a Worker built and validated for that major; changing the manifest on an existing binary is not an upgrade path. To inspect the selected SDK and reference, run:
+A missing required assembly or a major outside the explicit catalog fails build/startup. The Gateway preflights an unsupported major and records the refusal instead of respawning the Worker in a loop. `genexus_whoami` exposes `geneXus.sdkCompatibility`; `genexus_doctor` returns the same Gateway-side diagnostic when the Worker cannot reach readiness. A supported major still requires a Worker build and live smoke for that major; changing the manifest on an existing binary is not an upgrade path. To inspect the selected SDK and reference, run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `

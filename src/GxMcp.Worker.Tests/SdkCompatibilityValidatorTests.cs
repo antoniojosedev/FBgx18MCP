@@ -39,6 +39,31 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Validate_AllowsSupportedCatalogMajorWithDifferentManifestMajor()
+        {
+            using (var fixture = new SdkFixture("18.0.10.184260", "supported"))
+            {
+                var catalog = new JObject
+                {
+                    ["supportedMajors"] = new JArray(
+                        new JObject { ["major"] = "17" },
+                        new JObject { ["major"] = "18" })
+                };
+                File.WriteAllText(Path.Combine(fixture.Root, "gx-versions.json"), catalog.ToString());
+
+                var result = SdkCompatibilityValidator.Validate(
+                    fixture.Root,
+                    fixture.Manifest,
+                    _ => "17.0.4.153047");
+
+                Assert.True(result.IsCompatible);
+                Assert.Equal("GXMCP_SDK_COMPATIBLE", result.Code);
+                Assert.Contains("major=17", result.Diagnostic);
+                Assert.Contains("supportedMajors=17,18", result.Diagnostic);
+            }
+        }
+
+        [Fact]
         public void Validate_ReportsFingerprintDriftWithTheSameProductVersionWithoutBlocking()
         {
             using (var fixture = new SdkFixture("18.0.10.184260", "supported"))
