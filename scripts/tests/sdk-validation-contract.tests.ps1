@@ -47,14 +47,14 @@ try {
     $fixtureVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($anchor).ProductVersion
     $fixtureMajor = [int]($fixtureVersion -split '\.')[0]
     $compatManifest = Join-Path $outputRoot 'sdk-compatibility.json'
-    $catalogPath = Join-Path $outputRoot 'gx-versions.json'
+    $versionCatalog = Join-Path $outputRoot 'gx-versions.json'
+    $catalog = @{ supportedMajors = @(@{ major = [string]$fixtureMajor }, @{ major = [string]($fixtureMajor + 1) }) }
+    $catalog | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $versionCatalog -Encoding utf8
     $spec = @{
         supportedVersion = $fixtureVersion
         anchor = 'Artech.Architecture.Common.dll'
         assemblies = @(@{ path = 'Artech.Architecture.Common.dll'; sha256 = (Get-FileHash -LiteralPath $anchor -Algorithm SHA256).Hash })
     }
-    @{ supportedMajors = @(@{ major = [string]$fixtureMajor }, @{ major = [string]($fixtureMajor + 1) }) } |
-        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $catalogPath -Encoding utf8
     $validator = Join-Path $PSScriptRoot '../validate-gx-sdk.ps1'
     function Assert-SdkValidation([int]$exitCode, [string]$diagnostic) {
         $spec | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $compatManifest -Encoding utf8
@@ -72,15 +72,14 @@ try {
     $spec.supportedVersion = "$fixtureMajor.1.0.0"
     Assert-SdkValidation 0 'GXMCP_SDK_COMPATIBLE'
     $spec.supportedVersion = "$($fixtureMajor + 1).0.16.189550"
-    Assert-SdkValidation 0 'compatible major; patch/build drift'
-    $spec.supportedVersion = "$($fixtureMajor + 2).0.16.189550"
-    @{ supportedMajors = @(@{ major = [string]($fixtureMajor + 2) }) } |
-        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $catalogPath -Encoding utf8
+    Assert-SdkValidation 0 "supported major $fixtureMajor; reference major $($fixtureMajor + 1)"
+    $catalog.supportedMajors = @(@{ major = [string]($fixtureMajor + 1) })
+    $catalog | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $versionCatalog -Encoding utf8
     Assert-SdkValidation 1 'GXMCP_SDK_VERSION_MISMATCH'
+    $catalog.supportedMajors = @(@{ major = [string]$fixtureMajor }, @{ major = [string]($fixtureMajor + 1) })
+    $catalog | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $versionCatalog -Encoding utf8
     $spec.supportedVersion = 'invalid'
-    Assert-SdkValidation 1 'GXMCP_SDK_VERSION_MISMATCH'
-    @{ supportedMajors = @(@{ major = [string]$fixtureMajor }) } |
-        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $catalogPath -Encoding utf8
+    Assert-SdkValidation 1 'GXMCP_SDK_MANIFEST_INVALID'
     $spec.supportedVersion = $fixtureVersion
     $spec.assemblies[0].path = 'missing-required.dll'
     Assert-SdkValidation 1 'GXMCP_SDK_ASSEMBLY_MISSING'
@@ -91,4 +90,4 @@ finally {
     $env:GXMCP_SDK_CI_LICENSE_ACK = $oldAck
     Remove-Item -LiteralPath $outputRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host 'PASS: SDK lane syntax, pass/skip/fail states, cleanup, and 8 no-KB build-validator major/fingerprint/required-assembly cases.'
+Write-Host 'PASS: SDK lane syntax, pass/skip/fail states, cleanup, and 9 no-KB build-validator catalog/major/fingerprint/required-assembly cases.'

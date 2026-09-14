@@ -18,57 +18,48 @@ if (-not (Test-Path -LiteralPath $Manifest -PathType Leaf)) {
 try { $spec = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json }
 catch { Fail "GXMCP_SDK_MANIFEST_INVALID manifest=$Manifest error=Json" }
 
-function Read-SupportedMajors($entries) {
-    $majors = @()
-    foreach ($entry in @($entries)) {
-        $major = if ($entry -is [string] -or $entry -is [int]) { [string]$entry } else { [string]$entry.major }
-        if (-not [string]::IsNullOrWhiteSpace($major) -and $majors -notcontains $major) {
-            $majors += $major
-        }
+$manifestPath = (Resolve-Path -LiteralPath $Manifest).Path
+$manifestDirectory = Split-Path -Parent $manifestPath
+$catalogCandidates = @()
+if (-not [string]::IsNullOrWhiteSpace($env:GXMCP_VERSION_CATALOG)) {
+    $configuredCatalog = $env:GXMCP_VERSION_CATALOG.Trim().Trim('"')
+    if (-not [IO.Path]::IsPathRooted($configuredCatalog)) {
+        $configuredCatalog = Join-Path $manifestDirectory $configuredCatalog
     }
-    return $majors
+    $catalogCandidates += $configuredCatalog
+}
+$catalogCandidates += (Join-Path $manifestDirectory 'gx-versions.json')
+$catalogCandidates += (Join-Path $manifestDirectory 'config\gx-versions.json')
+$catalogCandidates += (Join-Path $manifestDirectory '..\..\config\gx-versions.json')
+$catalogPath = $catalogCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if (-not $catalogPath) {
+    Fail "GXMCP_SDK_CATALOG_MISSING catalog=$($catalogCandidates -join ';')"
+}
+try { $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json }
+catch { Fail "GXMCP_SDK_CATALOG_INVALID catalog=$catalogPath" }
+$supportedMajors = @($catalog.supportedMajors | ForEach-Object {
+    $major = 0
+    if ([int]::TryParse(([string]$_.major -split '\.')[0], [ref]$major) -and $major -gt 0) { $major }
+} | Sort-Object -Unique)
+if ($supportedMajors.Count -eq 0) {
+    Fail "GXMCP_SDK_CATALOG_INVALID catalog=$catalogPath"
 }
 
-function Resolve-SupportedMajors($manifestObject, [string]$manifestPath) {
-    $manifestDirectory = Split-Path -Parent (Resolve-Path -LiteralPath $manifestPath).Path
-    foreach ($catalogPath in @(
-        (Join-Path $manifestDirectory 'gx-versions.json'),
-        (Join-Path $manifestDirectory 'config/gx-versions.json')
-    )) {
-        try {
-            if (-not (Test-Path -LiteralPath $catalogPath -PathType Leaf)) { continue }
-            $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
-            $catalogMajors = @(Read-SupportedMajors $catalog.supportedMajors)
-            if ($catalogMajors.Count -gt 0) { return $catalogMajors }
-        }
-        catch {
-            # Standalone/older manifests fall back to their declared major below.
-        }
-    }
-
-    $manifestMajors = @(Read-SupportedMajors $manifestObject.supportedMajors)
-    if ($manifestMajors.Count -gt 0) { return $manifestMajors }
-
-    $expectedMajor = 0
-    if ([int]::TryParse(([string]$manifestObject.supportedVersion -split '\.')[0], [ref]$expectedMajor) -and $expectedMajor -gt 0) {
-        return @([string]$expectedMajor)
-    }
-    return @()
+$expectedMajor = 0
+if (-not [int]::TryParse(([string]$spec.supportedVersion -split '\.')[0], [ref]$expectedMajor) -or $expectedMajor -le 0) {
+    Fail "GXMCP_SDK_MANIFEST_INVALID manifest=$Manifest error=supportedVersion"
 }
-
 $anchor = Join-Path $GxPath $spec.anchor
 if (-not (Test-Path -LiteralPath $anchor -PathType Leaf)) {
     Fail "GXMCP_SDK_ANCHOR_MISSING path=$($spec.anchor)"
 }
 $actualVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($anchor).ProductVersion
 $actualMajor = 0
-$supportedMajors = @(Resolve-SupportedMajors $spec $Manifest)
-$sameMajor = [int]::TryParse(([string]$actualVersion -split '\.')[0], [ref]$actualMajor) -and
-    $supportedMajors -contains ([string]$actualMajor)
+$supportedMajor = [int]::TryParse(([string]$actualVersion -split '\.')[0], [ref]$actualMajor) -and
+    $actualMajor -gt 0 -and $supportedMajors -contains $actualMajor
 $exactVersion = $actualVersion -eq $spec.supportedVersion
-if (-not $sameMajor) {
-    $expectedMajors = if ($supportedMajors.Count -gt 0) { $supportedMajors -join ',' } else { '<none>' }
-    Fail "GXMCP_SDK_VERSION_MISMATCH expectedVersion=$($spec.supportedVersion) expectedMajors=$expectedMajors actualVersion=$actualVersion"
+if (-not $supportedMajor) {
+    Fail "GXMCP_SDK_VERSION_MISMATCH expectedVersion=$($spec.supportedVersion) actualVersion=$actualVersion supportedMajors=$($supportedMajors -join ',')"
 }
 if (-not $spec.assemblies -or $spec.assemblies.Count -eq 0) {
     Fail "GXMCP_SDK_MANIFEST_INVALID manifest=$Manifest error=assemblies"
@@ -88,6 +79,12 @@ foreach ($assembly in $spec.assemblies) {
         Write-Output "GXMCP_SDK_FINGERPRINT_DRIFT path=$($assembly.path) expectedSha256=$($assembly.sha256) actualSha256=$actualHash"
     }
 }
-if ($exactVersion) { $versionDiagnostic = $spec.supportedVersion } else { $versionDiagnostic = "$($spec.supportedVersion) actualVersion=$actualVersion (compatible major; patch/build drift)" }
-Write-Output "GXMCP_SDK_COMPATIBLE version=$versionDiagnostic major=$actualMajor supportedMajors=$($supportedMajors -join ',') assemblies=$($spec.assemblies.Count)"
+if ($exactVersion) {
+    $versionDiagnostic = $spec.supportedVersion
+} elseif ($expectedMajor -eq $actualMajor) {
+    $versionDiagnostic = "$($spec.supportedVersion) actualVersion=$actualVersion (compatible major; patch/build drift)"
+} else {
+    $versionDiagnostic = "$($spec.supportedVersion) actualVersion=$actualVersion (supported major $actualMajor; reference major $expectedMajor)"
+}
+Write-Output "GXMCP_SDK_COMPATIBLE version=$versionDiagnostic supportedMajors=$($supportedMajors -join ',') assemblies=$($spec.assemblies.Count)"
 exit 0
