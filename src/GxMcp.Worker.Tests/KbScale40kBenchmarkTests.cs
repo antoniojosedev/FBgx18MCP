@@ -447,5 +447,175 @@ Exact / name:X search across 40,000 objects in memory (x 1,000 searches):
             _output.WriteLine(report);
             Console.WriteLine(report);
         }
+
+        [Fact]
+        public void Benchmark_40k_HealthReport_And_PropertyMatcher()
+        {
+            // Benchmark 1: HealthReport across 40k objects
+            int count = 40000;
+            var objects = new ConcurrentDictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
+            var rng = new Random(42);
+            var types = new[] { "Procedure", "Transaction", "WebPanel", "Attribute", "Table" };
+
+            for (int i = 0; i < count; i++)
+            {
+                string name = "Obj_" + i;
+                string type = types[i % types.Length];
+                objects[type + ":" + name] = new SearchIndex.IndexEntry
+                {
+                    Name = name,
+                    Type = type,
+                    Complexity = rng.Next(0, 100),
+                    Calls = new List<string> { "DepA", "DepB" },
+                    CalledBy = i % 10 == 0 ? null : new List<string> { "Caller1" }
+                };
+            }
+
+            int healthIterations = 20;
+
+            // ANTES: 6 LINQ passes + 2 OrderByDescending full sorts
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            int gen0Start = GC.CollectionCount(0);
+            var sw = Stopwatch.StartNew();
+            for (int it = 0; it < healthIterations; it++)
+            {
+                var entryPointTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Transaction", "WebPanel", "DataSelector", "Menu" };
+                var topHotspots = objects.Values
+                    .Where(o => o.Complexity > 0)
+                    .OrderByDescending(o => o.Complexity)
+                    .Take(10)
+                    .ToList();
+                var candidates = objects.Values
+                    .Where(o => (o.CalledBy == null || o.CalledBy.Count == 0) && !entryPointTypes.Contains(o.Type ?? ""))
+                    .OrderByDescending(o => o.Complexity)
+                    .Take(20)
+                    .ToList();
+                double avgComplexity = objects.Values.Average(o => o.Complexity);
+                int maxComplexity = objects.Values.Max(o => o.Complexity);
+                int totalCalls = objects.Values.Sum(o => o.Calls.Count);
+                int orphaned = objects.Values.Count(o => (o.CalledBy == null || o.CalledBy.Count == 0));
+            }
+            sw.Stop();
+            int gen0Before = GC.CollectionCount(0) - gen0Start;
+            double msBeforeHealth = sw.Elapsed.TotalMilliseconds / healthIterations;
+
+            // DEPOIS: Single-pass accumulation with bounded Top-K
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            gen0Start = GC.CollectionCount(0);
+            sw.Restart();
+            for (int it = 0; it < healthIterations; it++)
+            {
+                var entryPointTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Transaction", "WebPanel", "DataSelector", "Menu" };
+                var topHotspotsList = new List<SearchIndex.IndexEntry>(10);
+                var topDeadCodeList = new List<SearchIndex.IndexEntry>(20);
+
+                long totalComplexity = 0;
+                int maxComplexity = 0;
+                int totalCalls = 0;
+                int orphanedCount = 0;
+                int totalCount = 0;
+
+                foreach (var o in objects.Values)
+                {
+                    if (o == null) continue;
+                    totalCount++;
+                    int c = o.Complexity;
+                    totalComplexity += c;
+                    if (c > maxComplexity) maxComplexity = c;
+                    if (o.Calls != null) totalCalls += o.Calls.Count;
+                    bool isOrphaned = (o.CalledBy == null || o.CalledBy.Count == 0);
+                    if (isOrphaned) orphanedCount++;
+
+                    if (c > 0)
+                    {
+                        PushTopK(topHotspotsList, o, 10);
+                    }
+                    if (isOrphaned && !entryPointTypes.Contains(o.Type ?? ""))
+                    {
+                        PushTopK(topDeadCodeList, o, 20);
+                    }
+                }
+
+                topHotspotsList.Sort((a, b) => b.Complexity.CompareTo(a.Complexity));
+                topDeadCodeList.Sort((a, b) => b.Complexity.CompareTo(a.Complexity));
+                double avgComplexity = totalCount > 0 ? (double)totalComplexity / totalCount : 0.0;
+            }
+            sw.Stop();
+            int gen0After = GC.CollectionCount(0) - gen0Start;
+            double msAfterHealth = sw.Elapsed.TotalMilliseconds / healthIterations;
+
+            // Benchmark 2: PropertyMatcher per-property regex vs precompiled matcher
+            int propCount = 300;
+            var propNames = Enumerable.Range(0, propCount).Select(i => "Property_Name_" + i).ToList();
+            int propIterations = 100;
+            string pattern = "*Name_15*";
+
+            // ANTES: Regex.IsMatch inside MatchesWildcardOrQuery per property
+            sw.Restart();
+            int matchesBefore = 0;
+            for (int it = 0; it < propIterations; it++)
+            {
+                foreach (var p in propNames)
+                {
+                    string regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
+                    if (System.Text.RegularExpressions.Regex.IsMatch(p, regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                        matchesBefore++;
+                }
+            }
+            sw.Stop();
+            double msBeforeProp = sw.Elapsed.TotalMilliseconds / propIterations;
+
+            // DEPOIS: Precompiled matcher once outside the loop
+            sw.Restart();
+            int matchesAfter = 0;
+            for (int it = 0; it < propIterations; it++)
+            {
+                var matcher = Services.PropertyService.BuildPropertyMatcher(pattern);
+                foreach (var p in propNames)
+                {
+                    if (matcher(p))
+                        matchesAfter++;
+                }
+            }
+            sw.Stop();
+            double msAfterProp = sw.Elapsed.TotalMilliseconds / propIterations;
+            Assert.Equal(matchesBefore, matchesAfter);
+
+            string report = $@"
+=== HEALTH_AND_PROPERTY_BENCHMARK ===
+1. HealthReport across 40,000 objects (x {healthIterations} iterations):
+   ANTES (6 LINQ passes + 2 40k Sorts): {msBeforeHealth:F2} ms/report, Gen0: {gen0Before}
+   DEPOIS (Single-pass + Bounded Top-K): {msAfterHealth:F2} ms/report, Gen0: {gen0After}
+   Speedup: {msBeforeHealth / Math.Max(0.001, msAfterHealth):F1}x mais rápido ({100 * (msBeforeHealth - msAfterHealth) / msBeforeHealth:F1}% menos tempo)
+
+2. Property Wildcard Matching across {propCount} properties (x {propIterations} iterations):
+   ANTES (Dynamically compiled Regex per prop): {msBeforeProp:F3} ms/inspection
+   DEPOIS (Precompiled Matcher once per call):  {msAfterProp:F3} ms/inspection
+   Speedup: {msBeforeProp / Math.Max(0.0001, msAfterProp):F1}x mais rápido ({100 * (msBeforeProp - msAfterProp) / msBeforeProp:F1}% menos tempo)
+=====================================";
+            _output.WriteLine(report);
+            Console.WriteLine(report);
+        }
+
+        private static void PushTopK(List<SearchIndex.IndexEntry> list, SearchIndex.IndexEntry item, int k)
+        {
+            if (list.Count < k)
+            {
+                list.Add(item);
+                if (list.Count == k)
+                {
+                    list.Sort((a, b) => a.Complexity.CompareTo(b.Complexity));
+                }
+            }
+            else if (item.Complexity > list[0].Complexity)
+            {
+                list[0] = item;
+                list.Sort((a, b) => a.Complexity.CompareTo(b.Complexity));
+            }
+        }
     }
 }

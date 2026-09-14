@@ -78,4 +78,16 @@ Comparativo de medições antes e depois das 4 otimizações implementadas.
 | **Visualizer Multi-Criteria Filter** (40k objetos) | 40k anonymous objects + scoring antes de filtrar | **Filtro preliminar via DomainIndex / TypeIndex** | **Elimina até 40.000 alocações de objetos por visualização** |
 
 ---
-Relatório atualizado e validado em 2026-09-14T00:16:00.
+
+## 6. Worker Search, Health & Property Benchmarks — KBs Grandes (~40.000 Objetos)
+
+| Benchmark / Cenário | ANTES | DEPOIS | Variação / Ganho |
+|---|---|---|---|
+| **HealthReport** (40k objetos: hotspots, dead code, métricas) | 13,37 ms/relatório (2 Gen0) | **1,79 ms/relatório (0 Gen0)** | **7,5x mais rápido (-86,6% tempo, Zero-alloc)** |
+| **Property Wildcard Inspection** (300 props, wildcard query) | 0,385 ms/inspeção | **0,236 ms/inspeção** | **1,6x mais rápido (-38,7% tempo)** |
+| **SourceSearch Candidate Selection** (busca em 40k objetos) | Scan linear de 40k objetos chamando ObjectNameMatches | **ByNameIndex O(1) + TypeIndex sets** | **Elimina varredura de 40.000 objetos antes da busca de tokens** |
+| **StructureService Logic Item Extraction** (subs e events) | Regex dinâmica + N² strings no Any(s => s.ToString()) | **Static Regexes + HashSet dedup O(N)** | **Zero alocação de JToken string em loops** |
+| **Precompiled Scanners & Parsers** (TableDep, Wcag, ApiIntrospect) | Compilação repetida de Regex a cada execução | **Static Compiled Singletons + ConcurrentDict cache** | **Zero compilações redundantes de Regex por tag/parm/tabela** |
+
+---
+Relatório atualizado e validado em 2026-09-14T00:40:00.

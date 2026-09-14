@@ -24,6 +24,11 @@
   - `LinterService`: Precompile all rule regexes (`ForEachBlockRegex`, `CommitRegex`, `WhereDefinedByRegex`, `SleepWaitRegex`, `DynamicCallRegex`, `NestedForEachRegex`, `WhenNoneRegex`, `NewBlockRegex`, `WhenDuplicateRegex`, `StripCommentsRegex`) as static singletons, eliminating dynamic JIT recompilation and regex cache overhead across all linted objects.
   - `CallerGraphService.BuildAdjacency`: Precompile `InvocationRegex` and initialize `knownNames` directly from `ByNameIndex.Keys`, eliminating full-index scans and regex recompilations during graph construction.
   - `VisualizerService.GenerateGraph`: Pre-filter candidate sets via `DomainIndex` and `TypeIndex` before calculating structural scores, avoiding 40,000 anonymous object allocations and score computations on filtered graph visualizations.
+- **Worker Search, Health & Property Optimization**:
+  - `HealthService.GetHealthReport`: Replace 6 full LINQ passes and two 40,000-element QuickSorts with a single-pass accumulation loop and bounded top-K heaps (7.5x faster, 86.6% latency reduction, 0 Gen0 collections).
+  - `SourceSearchService.SearchCore`: Prune candidate entries using `ByNameIndex` in $O(1)$ when `objectName` is specified and seed candidate entries from `TypeIndex` sets for source types ("Procedure", "DataProvider", "WebPanel", "Transaction"), eliminating linear scans over 40,000 objects.
+  - `PropertyService.ShapeGetPropertiesResult`: Build compiled property matcher once outside the iteration loop instead of dynamically escaping and compiling regexes per property (38.7% faster wildcard inspection) and evaluate candidate property names lazily only on miss paths.
+  - `TableDependencyInjector`, `WcagCheckService`, `ApiIntrospectService`, and `StructureService`: Precompile static regexes and replace $O(N^2)$ linear token collections with $O(N)$ hash set lookups for logic items, table dependencies, WCAG attributes, SDTs, roles, and HTTP protocol markers.
 
 ## v3.4.3 - 2026-09-13
 

@@ -262,18 +262,25 @@ namespace GxMcp.Worker.Services
                 .ToList();
         }
 
-        internal static bool MatchesWildcardOrQuery(string propName, string pattern)
+        internal static Func<string, bool> BuildPropertyMatcher(string pattern)
         {
-            if (string.IsNullOrEmpty(pattern)) return true;
-            if (string.IsNullOrEmpty(propName)) return false;
+            if (string.IsNullOrEmpty(pattern)) return _ => true;
 
             if (pattern.Contains("*") || pattern.Contains("?"))
             {
                 string regexPattern = "^" + Regex.Escape(pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-                return Regex.IsMatch(propName, regexPattern, RegexOptions.IgnoreCase);
+                var rx = new Regex(regexPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                return propName => !string.IsNullOrEmpty(propName) && rx.IsMatch(propName);
             }
 
-            return propName.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0;
+            return propName => !string.IsNullOrEmpty(propName) && propName.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        internal static bool MatchesWildcardOrQuery(string propName, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return true;
+            if (string.IsNullOrEmpty(propName)) return false;
+            return BuildPropertyMatcher(pattern)(propName);
         }
 
         internal static string ShapeGetPropertiesResult(
@@ -287,10 +294,11 @@ namespace GxMcp.Worker.Services
             string query = null)
         {
             var props = fullPropsResult?["properties"] as JArray ?? new JArray();
-            var allPropNames = props
+            List<string> allPropNames = null;
+            List<string> GetAllPropNames() => allPropNames ?? (allPropNames = props
                 .Select(p => p["name"]?.ToString())
                 .Where(n => !string.IsNullOrEmpty(n))
-                .ToList();
+                .ToList());
 
             var requested = new List<string>();
             if (!string.IsNullOrWhiteSpace(propertyName))
@@ -330,11 +338,12 @@ namespace GxMcp.Worker.Services
                 string searchPattern = hasQuery ? query.Trim() : requested[0].Trim();
                 var matchedProps = new JArray();
                 var valuesMap = new JObject();
+                var matcher = BuildPropertyMatcher(searchPattern);
 
                 foreach (JObject p in props)
                 {
                     var n = p["name"]?.ToString();
-                    if (MatchesWildcardOrQuery(n, searchPattern))
+                    if (matcher(n))
                     {
                         matchedProps.Add((JObject)p.DeepClone());
                         if (!string.IsNullOrEmpty(n) && valuesMap[n] == null)
@@ -347,7 +356,7 @@ namespace GxMcp.Worker.Services
                 if (matchedProps.Count == 0)
                 {
                     string cleanSearch = searchPattern.Trim('*', '?');
-                    var suggestions = FindPropertySuggestions(cleanSearch, allPropNames, 3);
+                    var suggestions = FindPropertySuggestions(cleanSearch, GetAllPropNames(), 3);
                     var nextSteps = new JArray();
                     foreach (var sug in suggestions.Take(2))
                     {
@@ -405,7 +414,7 @@ namespace GxMcp.Worker.Services
 
                 if (matched == null)
                 {
-                    var suggestions = FindPropertySuggestions(targetPropName, allPropNames, 3);
+                    var suggestions = FindPropertySuggestions(targetPropName, GetAllPropNames(), 3);
                     var nextSteps = new JArray();
                     foreach (var sug in suggestions.Take(2))
                     {
@@ -479,10 +488,11 @@ namespace GxMcp.Worker.Services
 
                 if (matchedArray.Count == 0)
                 {
+                    var propNames = GetAllPropNames();
                     var suggestions = new List<string>();
                     foreach (var req in requested)
                     {
-                        suggestions.AddRange(FindPropertySuggestions(req, allPropNames, 2));
+                        suggestions.AddRange(FindPropertySuggestions(req, propNames, 2));
                     }
                     suggestions = suggestions.Distinct(StringComparer.OrdinalIgnoreCase).Take(3).ToList();
 
