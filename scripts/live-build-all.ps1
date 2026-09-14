@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$GatewayExe,
+    [string]$GatewayExe,
     [string]$GxPath = $env:GX_PATH,
     [ValidateRange(1024, 65535)][int]$HttpPort,
     [ValidateRange(30, 7200)][int]$TimeoutSeconds = 2400,
@@ -8,6 +8,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($GatewayExe) -or -not (Test-Path -LiteralPath $GatewayExe)) {
+    Write-Error "live-build-all.ps1: -GatewayExe is required and must point to an existing executable. Usage: pwsh -File scripts/live-build-all.ps1 -GatewayExe <path>"
+    exit 1
+}
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'scripts\gx-version-catalog.ps1')
 
