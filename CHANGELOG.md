@@ -6,6 +6,10 @@
 
 - Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.
 
+### Internal
+
+- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type` (227 published actions and 248 classified operations); the early validator now checks the schema and capabilities table together, and the project workflow documents all contract views required before pushing a public action.
+
 ## v3.5.0 - 2026-09-14
 
 
@@ -18,7 +22,6 @@
 - **PowerShell Automation Fail-Fast**: Remove `[Parameter(Mandatory = $true)]` in `scripts/pr-preflight.ps1`, `scripts/build-release-candidate.ps1`, and `scripts/live-build-all.ps1`, replacing interactive stdin blocking with immediate validation and clear usage error exits, preventing headless CI/agent processes from hanging indefinitely.
 - **GeneXus SDK compatibility and startup diagnostics**: Allow the packaged Worker to start with every GeneXus major declared in `config/gx-versions.json`, including GeneXus 17, while keeping missing required SDK assemblies and undeclared majors as hard failures; expose deterministic refusals through `genexus_whoami`/`genexus_doctor` and stop unsupported-major respawn loops ([#193](https://github.com/lennix1337/Genexus18MCP/issues/193)).
 - **Release issue collection**: Combine explicit and `fixed-pending-release` issue lists without relying on PowerShell scalar/array addition, so release preflight and issue tracking work when both sources contain a single issue.
-- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type` (227 published actions and 248 classified operations); the early validator now checks the schema and capabilities table together, and the project workflow documents all contract views required before pushing a public action.
 
 ### Changed
 

@@ -5,6 +5,8 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Artech.Architecture.Common.Objects;
+using GxMcp.Worker.Helpers;
+using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -77,7 +79,7 @@ namespace GxMcp.Worker.Services
                 string currentXml = _patterns.ReadPatternPartXml(lockedTarget, "PatternInstance",
                     out KBObject currentInstance, out _);
                 _patterns.BuildPatternPartEnvelope(lockedTarget, "PatternInstance", currentXml,
-                    out _, out KBObject currentPart);
+                    out _, out KBObjectPart currentPart);
                 if (currentInstance == null || currentPart == null || string.IsNullOrWhiteSpace(currentXml))
                     return McpResponse.Err(code: "WWPInstanceNotFound",
                         message: "The WorkWithPlus PatternInstance could not be re-resolved before save.", target: target);
