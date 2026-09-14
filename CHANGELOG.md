@@ -2,13 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.
+
 ## v3.5.0 - 2026-09-14
 
 
 ### Tracked issues
 
 - [#193](https://github.com/lennix1337/Genexus18MCP/issues/193) — [Bug] Desde a 3.2.2 o worker não abre KB do GeneXus 17: sdk-compatibility.json só aceita o major 18
-
 
 ### Fixed
 
@@ -71,7 +74,6 @@
   - `ResponseSizeGuard`: Add `Write(ReadOnlySpan<char>)` override to `CountingTextWriter` for zero-allocation byte calculation in .NET 10 without `ArrayPool` rents.
   - `McpPipelineContext` & `Program.RequestLoop.cs`: Replace reflection-based `ToObject<bool?>()` and `ToObject<int?>()` calls with zero-allocation explicit `JToken` casts on arguments (`dryRun`, `deploy`, `buildPlanCap`, `skipFullDeploy`).
   - `BuildService.BuildResult`: Replace list instantiation fallbacks (`ErrorsDetailed ?? new List<ErrorDetail>()`) with null-checks and safe enumeration across error categories (`envErrors`, `codeErrors`, `envErrorCount`, `codeErrorCount`, `specErrorCount`), eliminating temporary list allocations during build reporting.
-
 ## v3.4.3 - 2026-09-13
 
 

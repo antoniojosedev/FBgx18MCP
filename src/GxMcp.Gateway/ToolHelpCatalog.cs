@@ -608,6 +608,7 @@ namespace GxMcp.Gateway
                 "- `list` — read the current action groups and ordered actions.\n" +
                 "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n" +
                 "- `add_tab`, `move_tab`, and `remove_tab` — edit WebPanel tabs and typed nested controls.\n" +
+                "- `set_table_type` — change only an existing WWP table's native `type` (`Regular` or `Responsive`) by path, preserving child identity and metadata with reread/rollback guards.\n" +
                 "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children.\n\n" +
                 "- `replace_web_component_with_user_action` — use the U16 Patterns SDK to replace one existing form-level WebComponent with a UserAction DropDownComponent at an explicit path. The operation preserves the referenced Gxobject, snapshots the complete PatternInstance and parent projection, saves through the native element commands, re-reads, and rolls back on divergence.\n\n" +
                 "- `settings_templates` includes embedded Settings templates and separate WorkWithPlus for Web Template objects linked to Settings/Main. `guid` identifies Settings; `template=wwp:<guid>` selects a separate template. Use returned paths, offset/limit, and the same baseVersion on subsequent pages.\n" +

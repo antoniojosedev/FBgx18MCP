@@ -10,8 +10,8 @@ namespace GxMcp.Worker.Services
 {
     /// <summary>
     /// Typed WorkWithPlus Action Group editor.  The WWP package owns the concrete
-    /// element classes, so this adapter deliberately edits its public PatternInstance
-    /// XML contract and delegates persistence/projection to WriteService.
+    /// element classes, so operation-specific adapters use the native PatternInstance
+    /// tree and delegate persistence/projection to the existing typed write helpers.
     /// </summary>
     public sealed partial class WwpActionService
     {
@@ -86,6 +86,8 @@ namespace GxMcp.Worker.Services
                     return RunWebComponentReplacementOperation(target, requestedObject, instance, instancePart, xml, args);
                 if (IsGridAttributeOperation(operation))
                     return RunGridAttributeOperation(target, requestedObject, instance, instancePart, xml, args);
+                if (IsTableTypeOperation(operation))
+                    return RunTableTypeOperation(target, requestedObject, instance, instancePart, xml, args);
                 if (IsTabOperation(operation))
                     return RunTabOperation(target, requestedObject, instance, instancePart, xml, operation, args);
 
