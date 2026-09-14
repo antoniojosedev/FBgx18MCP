@@ -118,11 +118,20 @@ namespace GxMcp.Worker.Services
         private static GraphAdjacency BuildAdjacency(SearchIndex index)
         {
             var adjacency = new GraphAdjacency();
-            if (index?.Objects == null) return adjacency;
+            HashSet<string> fallbackNames = null;
+            if (index.ByNameIndex == null)
+            {
+                fallbackNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var entry in index.Objects.Values)
+                {
+                    if (entry != null && !string.IsNullOrEmpty(entry.Name))
+                        fallbackNames.Add(entry.Name);
+                }
+            }
 
-            Func<string, bool> isKnownName = index.ByNameIndex != null
-                ? (Func<string, bool>)index.ByNameIndex.ContainsKey
-                : (name => index.ContainsName(name));
+            Func<string, bool> isKnownName = fallbackNames != null
+                ? (Func<string, bool>)fallbackNames.Contains
+                : index.ContainsName;
 
             var callerSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var calleeSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);

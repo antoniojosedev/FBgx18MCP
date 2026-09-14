@@ -97,17 +97,28 @@ namespace GxMcp.Worker.Services
                 var addedNodes = new HashSet<string>();
 
                 // 1. Apply Multi-Criteria Filters
-                IEnumerable<SearchIndex.IndexEntry> candidates = index.Objects.Values;
+                IEnumerable<SearchIndex.IndexEntry> candidates;
 
-                if (!string.IsNullOrEmpty(filterDomain) && filterDomain != "All")
+                bool hasDomain = !string.IsNullOrEmpty(filterDomain) && filterDomain != "All";
+                bool hasTypes = !string.IsNullOrEmpty(filterTypes);
+
+                if (hasDomain)
                 {
                     candidates = index.FindByDomain(filterDomain);
+                    if (hasTypes)
+                    {
+                        var typeSet = new HashSet<string>(filterTypes.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()), StringComparer.OrdinalIgnoreCase);
+                        candidates = candidates.Where(e => !string.IsNullOrEmpty(e.Type) && typeSet.Contains(e.Type));
+                    }
                 }
-
-                if (!string.IsNullOrEmpty(filterTypes))
+                else if (hasTypes)
                 {
-                    var types = filterTypes.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()).ToList();
-                    candidates = candidates.Where(e => types.Any(t => string.Equals(e.Type, t, StringComparison.OrdinalIgnoreCase)));
+                    var types = filterTypes.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim());
+                    candidates = index.FindByTypes(types);
+                }
+                else
+                {
+                    candidates = index.Objects.Values;
                 }
 
                 if (!string.IsNullOrEmpty(filterPrefix))

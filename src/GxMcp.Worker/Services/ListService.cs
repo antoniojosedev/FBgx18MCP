@@ -332,7 +332,7 @@ namespace GxMcp.Worker.Services
                     // and no cursor is specified, use a single-pass bounded heap (O(N log K)) instead of sorting all N items.
                     if (string.IsNullOrEmpty(cursor) && needed > 0 && needed <= 200)
                     {
-                        orderedIndexEntries = SelectTopK(entries, needed, comparer, out totalIndex);
+                        orderedIndexEntries = TopKHelper.SelectTopK(entries, needed, comparer, out totalIndex);
                     }
                     else
                     {
@@ -1155,11 +1155,6 @@ namespace GxMcp.Worker.Services
                 return (ts, parts[1], parts[2]);
             }
             catch { return null; }
-        }
-
-        internal static List<SearchIndex.IndexEntry> SelectTopK(IEnumerable<SearchIndex.IndexEntry> source, int k, IComparer<SearchIndex.IndexEntry> comparer, out int totalCount)
-        {
-            return TopKHelper.SelectTopK(source, k, comparer, out totalCount);
         }
     }
 

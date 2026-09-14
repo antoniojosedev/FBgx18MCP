@@ -17,60 +17,97 @@ namespace GxMcp.Worker.Helpers
                 return new List<T>(0);
             }
 
+            var heap = new BoundedHeap<T>(k, comparer);
             int count = 0;
-            var heap = new T[k];
-            int heapSize = 0;
-
             foreach (var item in source)
             {
                 count++;
-                if (heapSize < k)
-                {
-                    heap[heapSize] = item;
-                    int child = heapSize;
-                    while (child > 0)
-                    {
-                        int parent = (child - 1) >> 1;
-                        if (comparer.Compare(heap[child], heap[parent]) > 0)
-                        {
-                            var tmp = heap[child];
-                            heap[child] = heap[parent];
-                            heap[parent] = tmp;
-                            child = parent;
-                        }
-                        else break;
-                    }
-                    heapSize++;
-                }
-                else if (comparer.Compare(item, heap[0]) < 0)
-                {
-                    heap[0] = item;
-                    int parent = 0;
-                    while (true)
-                    {
-                        int left = (parent << 1) + 1;
-                        if (left >= k) break;
-                        int right = left + 1;
-                        int bestChild = (right < k && comparer.Compare(heap[right], heap[left]) > 0) ? right : left;
-                        if (comparer.Compare(heap[bestChild], heap[parent]) > 0)
-                        {
-                            var tmp = heap[parent];
-                            heap[parent] = heap[bestChild];
-                            heap[bestChild] = tmp;
-                            parent = bestChild;
-                        }
-                        else break;
-                    }
-                }
+                heap.Push(item);
             }
 
             totalCount = count;
-            if (heapSize < k)
+            return heap.ToSortedList();
+        }
+
+        /// <summary>
+        /// Bounded heap container that maintains the top-K items according to the given comparer.
+        /// Useful for single-pass accumulation loops that scan collections once.
+        /// </summary>
+        public sealed class BoundedHeap<T>
+        {
+            private readonly int _capacity;
+            private readonly IComparer<T> _comparer;
+            private readonly T[] _heap;
+            private int _count;
+
+            public BoundedHeap(int capacity, IComparer<T> comparer = null)
             {
-                Array.Resize(ref heap, heapSize);
+                if (capacity <= 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+                _capacity = capacity;
+                _comparer = comparer ?? Comparer<T>.Default;
+                _heap = new T[capacity];
             }
-            Array.Sort(heap, comparer);
-            return new List<T>(heap);
+
+            public int Count => _count;
+
+            public void Push(T item)
+            {
+                if (_count < _capacity)
+                {
+                    _heap[_count] = item;
+                    SiftUp(_count);
+                    _count++;
+                }
+                else if (_comparer.Compare(item, _heap[0]) < 0)
+                {
+                    _heap[0] = item;
+                    SiftDown(0);
+                }
+            }
+
+            private void SiftUp(int child)
+            {
+                while (child > 0)
+                {
+                    int parent = (child - 1) >> 1;
+                    if (_comparer.Compare(_heap[child], _heap[parent]) > 0)
+                    {
+                        var tmp = _heap[child];
+                        _heap[child] = _heap[parent];
+                        _heap[parent] = tmp;
+                        child = parent;
+                    }
+                    else break;
+                }
+            }
+
+            private void SiftDown(int parent)
+            {
+                while (true)
+                {
+                    int left = (parent << 1) + 1;
+                    if (left >= _capacity) break;
+                    int right = left + 1;
+                    int bestChild = (right < _capacity && _comparer.Compare(_heap[right], _heap[left]) > 0) ? right : left;
+                    if (_comparer.Compare(_heap[bestChild], _heap[parent]) > 0)
+                    {
+                        var tmp = _heap[parent];
+                        _heap[parent] = _heap[bestChild];
+                        _heap[bestChild] = tmp;
+                        parent = bestChild;
+                    }
+                    else break;
+                }
+            }
+
+            public List<T> ToSortedList()
+            {
+                if (_count == 0) return new List<T>(0);
+                var result = new T[_count];
+                Array.Copy(_heap, result, _count);
+                Array.Sort(result, _comparer);
+                return new List<T>(result);
+            }
         }
     }
 }

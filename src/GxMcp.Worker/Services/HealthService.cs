@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Helpers;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -108,8 +109,8 @@ namespace GxMcp.Worker.Services
 
                 // 1. Single pass over index objects for Hotspots, Dead Code, and Summary Stats
                 var entryPointTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Transaction", "WebPanel", "DataSelector", "Menu" };
-                var topHotspotsList = new List<SearchIndex.IndexEntry>(10);
-                var topDeadCodeList = new List<SearchIndex.IndexEntry>(20);
+                var topHotspots = new TopKHelper.BoundedHeap<SearchIndex.IndexEntry>(10, ComplexityDescendingComparer.Instance);
+                var topDeadCode = new TopKHelper.BoundedHeap<SearchIndex.IndexEntry>(20, ComplexityDescendingComparer.Instance);
 
                 long totalComplexity = 0;
                 int maxComplexity = 0;
@@ -131,18 +132,18 @@ namespace GxMcp.Worker.Services
                     // 1. Complexity Hotspots
                     if (c > 0)
                     {
-                        PushTopK(topHotspotsList, o, 10);
+                        topHotspots.Push(o);
                     }
 
                     // 2. Dead Code Detection
                     if (isOrphaned && !entryPointTypes.Contains(o.Type ?? "") && !IsMainObject(o))
                     {
-                        PushTopK(topDeadCodeList, o, 20);
+                        topDeadCode.Push(o);
                     }
                 }
 
-                topHotspotsList.Sort((a, b) => b.Complexity.CompareTo(a.Complexity));
-                topDeadCodeList.Sort((a, b) => b.Complexity.CompareTo(a.Complexity));
+                var topHotspotsList = topHotspots.ToSortedList();
+                var topDeadCodeList = topDeadCode.ToSortedList();
 
                 var hotspots = new JArray();
                 foreach (var o in topHotspotsList)
@@ -199,25 +200,18 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private static void PushTopK(List<SearchIndex.IndexEntry> list, SearchIndex.IndexEntry item, int k)
+        private sealed class ComplexityDescendingComparer : IComparer<SearchIndex.IndexEntry>
         {
-            if (list.Count < k)
+            public static readonly ComplexityDescendingComparer Instance = new ComplexityDescendingComparer();
+
+            public int Compare(SearchIndex.IndexEntry x, SearchIndex.IndexEntry y)
             {
-                list.Add(item);
-                if (list.Count == k)
-                {
-                    list.Sort((a, b) => a.Complexity.CompareTo(b.Complexity));
-                }
-            }
-            else if (item.Complexity > list[0].Complexity)
-            {
-                int i = 0;
-                while (i + 1 < k && list[i + 1].Complexity < item.Complexity)
-                {
-                    list[i] = list[i + 1];
-                    i++;
-                }
-                list[i] = item;
+                if (ReferenceEquals(x, y)) return 0;
+                if (x == null) return 1;
+                if (y == null) return -1;
+                int c = y.Complexity.CompareTo(x.Complexity);
+                if (c != 0) return c;
+                return string.Compare(x.Name ?? string.Empty, y.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
             }
         }
 

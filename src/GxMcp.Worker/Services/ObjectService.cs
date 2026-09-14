@@ -2646,13 +2646,8 @@ namespace GxMcp.Worker.Services
                 simpleName = simpleName.Substring(lastSlash + 1);
             }
 
-            if (index.ByNameIndex != null)
-            {
-                var candidates = index.FindByName(simpleName);
-                return candidates.FirstOrDefault(candidate => IsEntryType(candidate, type) && IdentityNameMatches(candidate, target));
-            }
-
-            return index.Objects.Values.FirstOrDefault(e => IsEntryType(e, type) && IdentityNameMatches(e, target));
+            var candidates = index.FindByName(simpleName);
+            return candidates.FirstOrDefault(candidate => IsEntryType(candidate, type) && IdentityNameMatches(candidate, target));
         }
 
         public KBObject FindObject(string target, string typeFilter = null, string guid = null, string entityKey = null, string path = null)

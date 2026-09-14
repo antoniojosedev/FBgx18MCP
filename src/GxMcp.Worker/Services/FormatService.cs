@@ -15,9 +15,12 @@ namespace GxMcp.Worker.Services
             "Using", "When Duplicate", "When None", "Return", "Exit", "Call", "Udp", "Commit", "Rollback"
         };
 
-        private static readonly (Regex Regex, string Keyword)[] KeywordRegexes = Keywords
-            .Select(kw => (new Regex(@"\b" + Regex.Escape(kw) + @"\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), kw))
-            .ToArray();
+        private static readonly Regex AllKeywordsRegex = new Regex(
+            @"\b(?:" + string.Join("|", Keywords.OrderByDescending(k => k.Length).Select(Regex.Escape)) + @")\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Dictionary<string, string> KeywordMap =
+            Keywords.ToDictionary(k => k, k => k, StringComparer.OrdinalIgnoreCase);
 
         private static readonly string[] BlockStarters = {
             "For Each", "If", "Do Case", "New", "Sub", "Case", "Otherwise"
@@ -74,11 +77,7 @@ namespace GxMcp.Worker.Services
 
         private string NormalizeKeywords(string line)
         {
-            foreach (var (rx, kw) in KeywordRegexes)
-            {
-                line = rx.Replace(line, kw);
-            }
-            return line;
+            return AllKeywordsRegex.Replace(line, m => KeywordMap.TryGetValue(m.Value, out var proper) ? proper : m.Value);
         }
 
         private bool IsBlockStarter(string line)

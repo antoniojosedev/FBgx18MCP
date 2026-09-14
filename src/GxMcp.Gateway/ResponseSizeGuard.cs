@@ -114,6 +114,12 @@ namespace GxMcp.Gateway
                 if (buffer != null && count > 0)
                     Count += Encoding.UTF8.GetByteCount(buffer, index, count);
             }
+
+            public override void Write(ReadOnlySpan<char> buffer)
+            {
+                if (!buffer.IsEmpty)
+                    Count += Encoding.UTF8.GetByteCount(buffer);
+            }
         }
 
         internal static long ByteSize(JToken token)

@@ -18,8 +18,6 @@ namespace GxMcp.Gateway.Pipelines
             "semantic-cache", "worker-dispatch", "response-shaping"
         };
 
-        public static readonly McpMiddlewarePipeline Default = Create();
-
         public static McpMiddlewarePipeline Create()
         {
             return new McpMiddlewarePipeline()
