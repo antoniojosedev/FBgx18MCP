@@ -103,4 +103,14 @@ Comparativo de medições antes e depois das 4 otimizações implementadas.
 | **DesignSystemService & WritePolicy Comment Stripping** | Regex.Replace dinâmicos | **Static Compiled Regex Singletons** | **Elimina compilações duplicadas em validação** |
 
 ---
-Relatório atualizado e validado em 2026-09-14T09:18:00.
+
+## 8. Gateway Pipeline & Build Diagnostics Optimization (Rodada 5)
+
+| Benchmark / Cenário | ANTES | DEPOIS | Variação / Ganho |
+|---|---|---|---|
+| **RequestLoopStages Execution** (10.000 requisições MCP) | 80k objetos + 70k concatenações de chave | **Pipeline estático singleton + chaves pré-computadas** | **Elimina 8 objetos e 7 strings por requisição** |
+| **McpPipelineContext Argument Parsing** (dryRun, deploy, etc.) | Reflection `ToObject<T>()` por parâmetro | **Zero-allocation explicit `JToken` casts** | **Evita serializador JSON em cada verificação de flag** |
+| **BuildService BuildResult Diagnostics** (getters de erro) | `ErrorsDetailed ?? new List<ErrorDetail>()` | **Safe enumeration sem alocação de fallback list** | **Zero listas temporárias criadas em status de build** |
+
+---
+Relatório atualizado e validado em 2026-09-14T09:25:00.

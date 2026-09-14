@@ -605,20 +605,18 @@ namespace GxMcp.Worker.Services
             // so they auto-serialize into every status/result envelope.
             [JsonProperty("envErrors")]
             public List<string> EnvErrors =>
-                (ErrorsDetailed ?? new List<ErrorDetail>())
-                    .Where(e => e.category == "environment")
-                    .Select(e => e.rewritten ?? e.raw)
-                    .ToList();
+                ErrorsDetailed != null
+                    ? ErrorsDetailed.Where(e => e.category == "environment").Select(e => e.rewritten ?? e.raw).ToList()
+                    : new List<string>();
             [JsonProperty("codeErrors")]
             public List<string> CodeErrors =>
-                (ErrorsDetailed ?? new List<ErrorDetail>())
-                    .Where(e => e.category != "environment")
-                    .Select(e => e.rewritten ?? e.raw)
-                    .ToList();
+                ErrorsDetailed != null
+                    ? ErrorsDetailed.Where(e => e.category != "environment").Select(e => e.rewritten ?? e.raw).ToList()
+                    : new List<string>();
             [JsonProperty("envErrorCount")]
-            public int EnvErrorCount => (ErrorsDetailed ?? new List<ErrorDetail>()).Count(e => e.category == "environment");
+            public int EnvErrorCount => ErrorsDetailed != null ? ErrorsDetailed.Count(e => e.category == "environment") : 0;
             [JsonProperty("codeErrorCount")]
-            public int CodeErrorCount => (ErrorsDetailed ?? new List<ErrorDetail>()).Count(e => e.category != "environment");
+            public int CodeErrorCount => ErrorsDetailed != null ? ErrorsDetailed.Count(e => e.category != "environment") : 0;
             // Populated only when the failure is purely environmental so the agent
             // doesn't chase a phantom code bug. Null (omitted) otherwise.
             [JsonProperty("envErrorsHint")]
@@ -628,7 +626,7 @@ namespace GxMcp.Worker.Services
                     : null;
             [JsonProperty("specErrorCount")]
             public int SpecErrorCount =>
-                (ErrorsDetailed ?? new List<ErrorDetail>()).Count(e => e.category == "spec");
+                ErrorsDetailed != null ? ErrorsDetailed.Count(e => e.category == "spec") : 0;
             // spc####/gen####/src####/qry#### diagnostics are only trustworthy when the build environment
             // is fully generated. In an ungenerated/broken environment the specifier can
             // emit a spurious spc#### that is invariant to the Source (fixed line number,

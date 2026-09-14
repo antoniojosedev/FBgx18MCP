@@ -104,10 +104,10 @@ namespace GxMcp.Gateway
                 ["target"] = args?["target"]?.ToString(),
                 ["client"] = "mcp",
                 ["includeCallees"] = args?["includeCallees"]?.ToString(),
-                ["buildPlanCap"] = args?["buildPlanCap"]?.ToObject<int?>(),
-                ["skipFullDeploy"] = args?["skipFullDeploy"]?.ToObject<bool?>(),
-                ["dryRun"] = args?["dryRun"]?.ToObject<bool?>() ?? false,
-                ["deploy"] = args?["deploy"]?.ToObject<bool?>() ?? false,
+                ["buildPlanCap"] = (int?)args?["buildPlanCap"],
+                ["skipFullDeploy"] = (bool?)args?["skipFullDeploy"],
+                ["dryRun"] = (bool?)args?["dryRun"] ?? false,
+                ["deploy"] = (bool?)args?["deploy"] ?? false,
                 ["cancelToken"] = cancelToken
             };
         }
@@ -120,7 +120,7 @@ namespace GxMcp.Gateway
             bool taskScopeEnabled = true)
         {
             var context = new GxMcp.Gateway.Pipelines.McpPipelineContext(request, sessionId);
-            var pipeline = GxMcp.Gateway.Pipelines.RequestLoopStages.Create();
+            var pipeline = GxMcp.Gateway.Pipelines.RequestLoopStages.Default;
             return await pipeline.ExecuteAsync(context, _ => ProcessMcpRequestCore(
                 request, sessionId, sessionContextEnabled, transportCancellation, taskScopeEnabled))
                 .ConfigureAwait(false);

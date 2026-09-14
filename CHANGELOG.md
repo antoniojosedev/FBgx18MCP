@@ -36,6 +36,10 @@
   - `DbOptimizeService.RemoveNestedForEachBlocks` & `ExtractAttributeRefs`: Avoid repeated string buffer conversions in nested block removals, precompile static anchor and token regexes (`WhereAnchorRegex`, `OrderAnchorRegex`, `QuotedStringsRegex`, `IdentifierTokenRegex`), and cache custom clause anchors in a concurrent dictionary.
   - `ObjectService`: Precompile `_callPatternsRegex` and `_variableRefRegex` static singletons, eliminating dynamic JIT regex compilation during source inspection and variable metadata extraction.
   - `DesignSystemService` & `WritePolicy`: Precompile comment-stripping regexes (`QuotedStringsRegex`, `BlockCommentsRegex`, `LineCommentsRegex`), avoiding repeated dynamic regex recompilations on DSO and rule validations.
+- **Gateway Pipeline & Build Error Optimization (Round 5)**:
+  - `RequestLoopStages`: Precompute stage context keys (`requestLoop.stage.<name>`) in constructor and reuse a singleton `RequestLoopStages.Default` pipeline, eliminating 8 objects and 7 string allocations per MCP request.
+  - `McpPipelineContext` & `Program.RequestLoop.cs`: Replace reflection-based `ToObject<bool?>()` and `ToObject<int?>()` calls with zero-allocation explicit `JToken` casts on arguments (`dryRun`, `deploy`, `buildPlanCap`, `skipFullDeploy`).
+  - `BuildService.BuildResult`: Replace list instantiation fallbacks (`ErrorsDetailed ?? new List<ErrorDetail>()`) with null-checks and safe enumeration across error categories (`envErrors`, `codeErrors`, `envErrorCount`, `codeErrorCount`, `specErrorCount`), eliminating temporary list allocations during build reporting.
 
 ## v3.4.3 - 2026-09-13
 
