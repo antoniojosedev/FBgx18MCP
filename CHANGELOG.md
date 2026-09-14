@@ -18,7 +18,7 @@
 - **PowerShell Automation Fail-Fast**: Remove `[Parameter(Mandatory = $true)]` in `scripts/pr-preflight.ps1`, `scripts/build-release-candidate.ps1`, and `scripts/live-build-all.ps1`, replacing interactive stdin blocking with immediate validation and clear usage error exits, preventing headless CI/agent processes from hanging indefinitely.
 - **GeneXus SDK compatibility and startup diagnostics**: Allow the packaged Worker to start with every GeneXus major declared in `config/gx-versions.json`, including GeneXus 17, while keeping missing required SDK assemblies and undeclared majors as hard failures; expose deterministic refusals through `genexus_whoami`/`genexus_doctor` and stop unsupported-major respawn loops ([#193](https://github.com/lennix1337/Genexus18MCP/issues/193)).
 - **Release issue collection**: Combine explicit and `fixed-pending-release` issue lists without relying on PowerShell scalar/array addition, so release preflight and issue tracking work when both sources contain a single issue.
-- Synchronize the tool-contract regression gate and generated operation inventory with the public schema after adding `set_table_type` (227 published actions and 248 classified operations); both artifacts now have an explicit update point when a future public action changes the catalog.
+- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type` (227 published actions and 248 classified operations); the three contract views now have explicit update points when a future public action changes the catalog.
 
 ### Changed
 
