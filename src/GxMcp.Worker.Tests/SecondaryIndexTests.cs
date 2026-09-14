@@ -277,5 +277,30 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(fullScan, indexed);
             Assert.Equal(new[] { "Proc1", "Proc2" }, indexed.OrderBy(n => n));
         }
+
+        [Fact]
+        public void FindByGuid_IndexedAndFallback_ReturnExpectedEntry()
+        {
+            var indexed = BuildIndexed().TryGetLoadedIndex();
+            var fullScan = BuildFullScan().TryGetLoadedIndex();
+
+            var foundIndexed = indexed.FindByGuid("g1");
+            var foundFullScan = fullScan.FindByGuid("g1");
+
+            Assert.NotNull(foundIndexed);
+            Assert.NotNull(foundFullScan);
+            Assert.Equal("Proc1", foundIndexed.Name);
+            Assert.Equal("Proc1", foundFullScan.Name);
+
+            // Case insensitive lookup
+            Assert.NotNull(indexed.FindByGuid("G1"));
+            Assert.NotNull(fullScan.FindByGuid("G1"));
+
+            // Non-existent guid returns null
+            Assert.Null(indexed.FindByGuid("non-existent"));
+            Assert.Null(fullScan.FindByGuid("non-existent"));
+            Assert.Null(indexed.FindByGuid(null));
+            Assert.Null(indexed.FindByGuid(""));
+        }
     }
 }

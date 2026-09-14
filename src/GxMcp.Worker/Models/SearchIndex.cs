@@ -193,6 +193,22 @@ namespace GxMcp.Worker.Models
         }
 
         /// <summary>
+        /// Finds an object by its Guid.
+        /// Uses GuidToKey (O(1)) when available, otherwise falls back to scanning Objects.Values.
+        /// </summary>
+        public IndexEntry FindByGuid(string guid)
+        {
+            if (string.IsNullOrWhiteSpace(guid) || Objects == null) return null;
+            string trimmed = guid.Trim();
+            if (GuidToKey != null && GuidToKey.TryGetValue(trimmed, out var key) && key != null)
+            {
+                if (Objects.TryGetValue(key, out var entry) && entry != null)
+                    return entry;
+            }
+            return Objects.Values.FirstOrDefault(e => e != null && string.Equals(e.Guid, trimmed, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
         /// Checks whether any object with the given name exists.
         /// </summary>
         public bool ContainsName(string name)

@@ -211,29 +211,17 @@ namespace GxMcp.Worker.Services
                 var idx = _index.GetIndex();
                 if (idx?.Objects == null) return result;
 
-                // Find the requested name (case-insensitive).
-                SearchIndex.IndexEntry trn = null;
-                foreach (var v in idx.Objects.Values)
-                {
-                    if (v == null || string.IsNullOrEmpty(v.Name)) continue;
-                    if (string.Equals(v.Name, transactionName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        trn = v;
-                        break;
-                    }
-                }
+                // Find the requested name (case-insensitive) via O(1) index.
+                var trnCandidates = idx.FindByName(transactionName);
+                SearchIndex.IndexEntry trn = trnCandidates.FirstOrDefault(c => c != null && string.Equals(c.Type, "Transaction", StringComparison.OrdinalIgnoreCase));
                 if (trn == null) return result;
-                if (!string.Equals(trn.Type, "Transaction", StringComparison.OrdinalIgnoreCase)) return result;
 
                 string bcName = transactionName + "_bc";
-                foreach (var v in idx.Objects.Values)
+                var bcCandidates = idx.FindByName(bcName);
+                var bcEntry = bcCandidates.FirstOrDefault(c => c != null && !string.IsNullOrEmpty(c.Name));
+                if (bcEntry != null)
                 {
-                    if (v == null || string.IsNullOrEmpty(v.Name)) continue;
-                    if (string.Equals(v.Name, bcName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        result.Add(v.Name);
-                        break;
-                    }
+                    result.Add(bcEntry.Name);
                 }
             }
             catch (Exception ex)

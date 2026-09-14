@@ -135,11 +135,10 @@ namespace GxMcp.Worker.Services
             // Find candidate procedure via index.
             var idx = _indexCacheService?.GetIndex();
             SearchIndex.IndexEntry entry = null;
-            if (idx?.Objects != null)
+            if (idx != null)
             {
-                entry = idx.Objects.Values.FirstOrDefault(e =>
-                    string.Equals(e.Type, "Procedure", StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(e.Name, target, StringComparison.OrdinalIgnoreCase));
+                entry = idx.FindByName(target).FirstOrDefault(e =>
+                    e != null && string.Equals(e.Type, "Procedure", StringComparison.OrdinalIgnoreCase));
             }
             if (entry == null)
                 return Err("NotFound", $"No Procedure named '{target}' in the index.");
@@ -1304,11 +1303,12 @@ namespace GxMcp.Worker.Services
         private IEnumerable<HttpEndpoint> EnumerateHttpEndpoints(string pathPrefix)
         {
             var idx = _indexCacheService?.GetIndex();
-            if (idx?.Objects != null)
+            if (idx != null)
             {
-                foreach (var entry in idx.Objects.Values)
+                var procedures = idx.FindByType("Procedure");
+                foreach (var entry in procedures)
                 {
-                    if (!string.Equals(entry.Type, "Procedure", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (entry == null) continue;
 
                     string folder = entry.ParentFolderPath ?? entry.ParentPath ?? "";
                     if (!string.IsNullOrEmpty(pathPrefix) && !folder.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase))

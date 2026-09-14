@@ -3065,9 +3065,9 @@ namespace GxMcp.Worker.Services
             {
                 var index = _kbService?.GetIndexCache()?.TryGetLoadedIndex();
                 SearchIndex.IndexEntry entry = null;
-                if (!string.IsNullOrEmpty(guid) && index?.GuidToKey != null && index.GuidToKey.TryGetValue(guid, out var key))
+                if (!string.IsNullOrEmpty(guid) && index != null)
                 {
-                    index.Objects?.TryGetValue(key, out entry);
+                    entry = index.FindByGuid(guid);
                 }
                 if (entry == null && index != null && !string.IsNullOrEmpty(obj.Name))
                 {
@@ -3086,11 +3086,10 @@ namespace GxMcp.Worker.Services
                         }
                     }
                 }
-                if (entry == null)
+                if (entry == null && index?.Objects != null && !string.IsNullOrEmpty(entityKey))
                 {
-                    entry = index?.Objects?.Values?.FirstOrDefault(e =>
-                        (!string.IsNullOrEmpty(guid) && string.Equals(e.Guid, guid, StringComparison.OrdinalIgnoreCase)) ||
-                        (!string.IsNullOrEmpty(entityKey) && string.Equals(e.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase)));
+                    entry = index.Objects.Values.FirstOrDefault(e =>
+                        e != null && string.Equals(e.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase));
                 }
 
                 if (!string.IsNullOrWhiteSpace(entry?.Path))
@@ -4544,9 +4543,7 @@ namespace GxMcp.Worker.Services
             if (index?.Objects == null) return false;
 
             string guid = objectGuid.ToString();
-            SearchIndex.IndexEntry entry = index.Objects.Values.FirstOrDefault(candidate =>
-                candidate != null
-                && string.Equals(candidate.Guid, guid, StringComparison.OrdinalIgnoreCase));
+            SearchIndex.IndexEntry entry = index.FindByGuid(guid);
             return entry != null && indexCache.PromoteSourceForSearch(entry, source);
         }
 

@@ -851,12 +851,13 @@ namespace GxMcp.Worker.Services
                 int objects = 0, withMetrics = 0, missing = 0;
                 var withM = new List<Models.SearchIndex.IndexEntry>();
 
-                foreach (var e in index.Objects.Values)
+                IEnumerable<Models.SearchIndex.IndexEntry> candidatesSource = typed
+                    ? (IEnumerable<Models.SearchIndex.IndexEntry>)index.FindByType(typeFilter)
+                    : index.FindByTypes(new[] { "Procedure", "DataProvider" });
+
+                foreach (var e in candidatesSource)
                 {
                     if (e == null) continue;
-                    if (typed) { if (!string.Equals(e.Type, typeFilter, StringComparison.OrdinalIgnoreCase)) continue; }
-                    else if (!(string.Equals(e.Type, "Procedure", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(e.Type, "DataProvider", StringComparison.OrdinalIgnoreCase))) continue;
                     objects++;
                     if (e.Metrics == null) { missing++; continue; }
                     withMetrics++;

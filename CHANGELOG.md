@@ -4,6 +4,18 @@
 
 ### Changed
 
+- **Worker Scale Index & Secondary Lookups (Untouched Tools)**:
+  - `SearchIndex.FindByGuid`: Introduce $O(1)$ GUID lookup via `GuidToKey` with fallback, accelerating GUID resolution across Worker tools.
+  - `ObjectService.BuildObjectIdentity` & `TryPromoteCompleteSourceRead`: Replace 40,000-object linear scans with `index.FindByGuid` in $O(1)$.
+  - `CallerGraphService.GetBcVariantTargets`: Replace two 40,000-object linear loops over `idx.Objects.Values` with `idx.FindByName` in $O(1)$.
+  - `TransferService.Export`: Replace fallback linear scan in dependency resolution with `index.FindByName(current.Name).FirstOrDefault()`.
+  - `AnalyzeService.GetCodeMetrics`: Pre-filter candidate procedures and data providers via `index.FindByType` / `index.FindByTypes` instead of scanning all 40,000 objects in `index.Objects.Values`.
+  - `ListService`: Retrieve available distinct types in empty-filter results directly from `index.TypeIndex.Keys` instead of scanning and de-duplicating all 40,000 objects.
+  - `RefactorService.BuildRenamePreview`: Pre-query target callers upfront via `index.FindByName` and add an `IndexOf` fast-path guard before running lexical `SymbolRenameTokenizer.Find` across snippets.
+  - `ApiIntrospectService.DoDescribe` & `EnumerateHttpEndpoints`: Replace 40,000-object linear scans with `idx.FindByName` in $O(1)$ and `idx.FindByType("Procedure")`.
+  - `TypeIntrospectService.RunList`: Query `idx.FindByType("Domain")` or `idx.FindByTypes` directly instead of iterating all 40,000 objects on `genexus_types action=list`.
+  - `PatternService.GetSample`: Filter candidates from `index.TypeIndex` and `FindByTypes` before candidate evaluation, and add null-guard for `o.CalledBy`.
+  - `ObjectTextService.TrySelectEntries`: Seed candidates with `index.FindByType(typeFilter)` when a type filter is present rather than scanning the entire index.
 - **Performance & Allocation**: Cache complete `tools/list` response envelopes per profile in `McpRouter`, eliminating allocation and re-filtering overhead on discovery.
 - **IPC & Stdio Streaming**: Stream progress heartbeat notifications directly via `JsonTextWriter` buffer in `Program.RequestLoop.cs` without intermediate string serialization.
 - **Worker STA Concurrency**: Offload JSON parsing from the single-threaded STA thread by enqueuing pre-parsed `SdkCommandItem` instances into `SdkCommandQueue`, eliminating redundant `JObject.Parse` operations in `DescribeCommand`, `ExtractOperationId`, and `ProcessCommand` on the STA thread.
