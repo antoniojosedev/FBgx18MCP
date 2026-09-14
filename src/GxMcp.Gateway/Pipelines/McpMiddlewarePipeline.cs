@@ -32,7 +32,7 @@ namespace GxMcp.Gateway.Pipelines
             ToolName = paramsObj?["name"]?.ToString() ?? Request["method"]?.ToString() ?? string.Empty;
             Arguments = (paramsObj?["arguments"] as JObject) ?? new JObject();
             KbAlias = Arguments["kb"]?.ToString() ?? string.Empty;
-            IsDryRun = Arguments["dryRun"]?.ToObject<bool?>() ?? false;
+            IsDryRun = (bool?)Arguments["dryRun"] ?? false;
         }
     }
 

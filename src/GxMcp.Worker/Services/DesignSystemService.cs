@@ -29,6 +29,18 @@ namespace GxMcp.Worker.Services
     /// </summary>
     public class DesignSystemService
     {
+        private static readonly Regex QuotedStringsRegex = new Regex(
+            @"""(?:[^""\\]|\\.)*""|'(?:[^'\\]|\\.)*'",
+            RegexOptions.Singleline | RegexOptions.Compiled);
+
+        private static readonly Regex BlockCommentsRegex = new Regex(
+            @"/\*.*?\*/",
+            RegexOptions.Singleline | RegexOptions.Compiled);
+
+        private static readonly Regex LineCommentsRegex = new Regex(
+            @"//.*?$",
+            RegexOptions.Multiline | RegexOptions.Compiled);
+
         private readonly KbService _kb;
         private readonly ObjectService _objects;
 
@@ -196,11 +208,11 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrEmpty(input)) return string.Empty;
 
             // Replace quoted strings "..." and '...' with ""
-            string withoutStrings = Regex.Replace(input, @"""(?:[^""\\]|\\.)*""|'(?:[^'\\]|\\.)*'", "\"\"", RegexOptions.Singleline);
+            string withoutStrings = QuotedStringsRegex.Replace(input, "\"\"");
             // Replace block comments /* ... */ with space
-            string withoutBlockComments = Regex.Replace(withoutStrings, @"/\*.*?\*/", " ", RegexOptions.Singleline);
+            string withoutBlockComments = BlockCommentsRegex.Replace(withoutStrings, " ");
             // Replace line comments // ... with newline
-            string withoutLineComments = Regex.Replace(withoutBlockComments, @"//.*?$", "", RegexOptions.Multiline);
+            string withoutLineComments = LineCommentsRegex.Replace(withoutBlockComments, "");
 
             return withoutLineComments;
         }

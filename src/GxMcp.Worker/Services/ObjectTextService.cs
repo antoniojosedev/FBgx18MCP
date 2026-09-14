@@ -400,7 +400,11 @@ namespace GxMcp.Worker.Services
             string pathPrefix = NormalizePath(args["pathPrefix"]?.ToString());
             int limit = args["limit"]?.ToObject<int?>() ?? 0;
 
-            IEnumerable<SearchIndex.IndexEntry> query = index.Objects.Values
+            IEnumerable<SearchIndex.IndexEntry> baseEntries = !string.IsNullOrWhiteSpace(typeFilter)
+                ? (IEnumerable<SearchIndex.IndexEntry>)index.FindByType(typeFilter)
+                : index.Objects.Values;
+
+            IEnumerable<SearchIndex.IndexEntry> query = baseEntries
                 .Where(e => e != null && !string.IsNullOrWhiteSpace(e.Name))
                 .Where(e => !string.Equals(e.Type, "Folder", StringComparison.OrdinalIgnoreCase)
                          && !string.Equals(e.Type, "Module", StringComparison.OrdinalIgnoreCase));

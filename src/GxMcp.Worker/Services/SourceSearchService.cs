@@ -340,13 +340,38 @@ namespace GxMcp.Worker.Services
                     // issue #36.7 — tolerate module-qualified vs bare names in EITHER direction
                     // so passing "Foo" finds "MyModule.Foo" and vice-versa (exact match was too
                     // strict and quietly yielded an empty set that looked like a full-KB scan).
-                    query = query.Where(e => ObjectNameMatches(objectNameSet, e.Name));
+                    var matchingEntries = new List<Models.SearchIndex.IndexEntry>();
+                    foreach (var name in objectNameSet)
+                    {
+                        matchingEntries.AddRange(index.FindByName(name));
+                        int dot = name.LastIndexOf('.');
+                        if (dot >= 0)
+                        {
+                            matchingEntries.AddRange(index.FindByName(name.Substring(dot + 1)));
+                        }
+                    }
+                    if (matchingEntries.Count > 0)
+                    {
+                        query = matchingEntries
+                            .Where(entry => ObjectNameMatches(objectNameSet, entry.Name))
+                            .GroupBy(entry => entry.Guid ?? entry.Name)
+                            .Select(g => g.First())
+                            .ToList();
+                    }
+                    else
+                    {
+                        query = query.Where(e => ObjectNameMatches(objectNameSet, e.Name));
+                    }
                 }
                 else
                 {
-                    query = query
-                        .Where(e => e.Type == "Procedure" || e.Type == "DataProvider" || e.Type == "WebPanel" || e.Type == "Transaction")
-                        .Where(e => scopeTouchesWebForm || indexedSourceScope || MatchesAnyLiteral(e, literals));
+                    string[] targetTypes = !string.IsNullOrEmpty(c.TypeFilter)
+                        ? new[] { c.TypeFilter }
+                        : new[] { "Procedure", "DataProvider", "WebPanel", "Transaction" };
+
+                    query = index.FindByTypes(targetTypes);
+
+                    query = query.Where(e => scopeTouchesWebForm || indexedSourceScope || MatchesAnyLiteral(e, literals));
                     if (indexedSourceScope && literals.Count > 0 && index.SourceTokenIndex != null)
                     {
                         var indexedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

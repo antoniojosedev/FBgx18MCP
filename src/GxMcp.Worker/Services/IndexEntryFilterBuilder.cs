@@ -78,7 +78,7 @@ namespace GxMcp.Worker.Services
         public static Func<SearchIndex.IndexEntry, bool> DescriptionContains(string descriptionFilter)
         {
             if (string.IsNullOrEmpty(descriptionFilter)) return _ => true;
-            return e => (e.Description ?? string.Empty).IndexOf(descriptionFilter, StringComparison.OrdinalIgnoreCase) >= 0;
+            return e => e.Description != null && e.Description.IndexOf(descriptionFilter, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /// <summary>Since is inclusive: LastUpdate &gt;= since.</summary>

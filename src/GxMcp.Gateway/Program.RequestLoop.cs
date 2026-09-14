@@ -104,10 +104,10 @@ namespace GxMcp.Gateway
                 ["target"] = args?["target"]?.ToString(),
                 ["client"] = "mcp",
                 ["includeCallees"] = args?["includeCallees"]?.ToString(),
-                ["buildPlanCap"] = args?["buildPlanCap"]?.ToObject<int?>(),
-                ["skipFullDeploy"] = args?["skipFullDeploy"]?.ToObject<bool?>(),
-                ["dryRun"] = args?["dryRun"]?.ToObject<bool?>() ?? false,
-                ["deploy"] = args?["deploy"]?.ToObject<bool?>() ?? false,
+                ["buildPlanCap"] = (int?)args?["buildPlanCap"],
+                ["skipFullDeploy"] = (bool?)args?["skipFullDeploy"],
+                ["dryRun"] = (bool?)args?["dryRun"] ?? false,
+                ["deploy"] = (bool?)args?["deploy"] ?? false,
                 ["cancelToken"] = cancelToken
             };
         }
@@ -119,10 +119,8 @@ namespace GxMcp.Gateway
             CancellationToken transportCancellation = default,
             bool taskScopeEnabled = true)
         {
-            var context = new GxMcp.Gateway.Pipelines.McpPipelineContext(request, sessionId);
-            var pipeline = GxMcp.Gateway.Pipelines.RequestLoopStages.Create();
-            return await pipeline.ExecuteAsync(context, _ => ProcessMcpRequestCore(
-                request, sessionId, sessionContextEnabled, transportCancellation, taskScopeEnabled))
+            return await ProcessMcpRequestCore(
+                request, sessionId, sessionContextEnabled, transportCancellation, taskScopeEnabled)
                 .ConfigureAwait(false);
         }
 
@@ -1902,7 +1900,7 @@ namespace GxMcp.Gateway
                                     pollResult = await McpRouter.LongPollJob(
                                         JobRegistry, jobId, waitSeconds,
                                         progressToken: clientProgressToken,
-                                        heartbeat: hasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null,
+                                        heartbeat: hasProgressToken ? TryWriteStdout : null,
                                         cancellationToken: longPollCancellationToken);
                                 }
                                 finally
@@ -2449,7 +2447,7 @@ namespace GxMcp.Gateway
                                     pollResult = await McpRouter.LongPollJob(
                                         JobRegistry, job.Id, blockingCap,
                                         progressToken: clientProgressToken,
-                                        heartbeat: hasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null,
+                                        heartbeat: hasProgressToken ? TryWriteStdout : null,
                                         cancellationToken: longPollCancellationToken);
                                 }
                                 finally
@@ -2924,7 +2922,7 @@ namespace GxMcp.Gateway
                         toolArgs: tArgs,
                         trackOperation: true,
                         progressToken: toolProgressToken,
-                        heartbeat: toolHasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null,
+                        heartbeat: toolHasProgressToken ? TryWriteStdout : null,
                         // E9: bind this worker request to the MCP client request id so
                         // notifications/cancelled can find and abort it (the _pendingRequests
                         // key is a gateway GUID, invisible to the client).

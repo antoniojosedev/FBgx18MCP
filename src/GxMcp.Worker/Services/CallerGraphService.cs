@@ -24,6 +24,7 @@ namespace GxMcp.Worker.Services
         private readonly IndexCacheService _index;
         private readonly object _adjacencyGate = new object();
         private SearchIndex _adjacencyIndex;
+        private static readonly Regex InvocationRegex = new Regex(@"\b(\w+)\s*\(", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private long _adjacencyRevision = -1;
         private GraphAdjacency _adjacency;
 
@@ -90,11 +91,7 @@ namespace GxMcp.Worker.Services
 
         private static List<SearchIndex.IndexEntry> FindEntriesByName(SearchIndex index, string name)
         {
-            return index?.Objects?.Values
-                .Where(entry => entry != null
-                    && string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
-                .ToList()
-                ?? new List<SearchIndex.IndexEntry>();
+            return index?.FindByName(name) ?? new List<SearchIndex.IndexEntry>(0);
         }
 
         private GraphAdjacency GetAdjacency(SearchIndex index)
@@ -121,15 +118,25 @@ namespace GxMcp.Worker.Services
         private static GraphAdjacency BuildAdjacency(SearchIndex index)
         {
             var adjacency = new GraphAdjacency();
-            var knownNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var callerSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-            var calleeSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             if (index?.Objects == null) return adjacency;
 
-            foreach (var entry in index.Objects.Values)
+            HashSet<string> fallbackNames = null;
+            if (index.ByNameIndex == null)
             {
-                if (entry != null && !string.IsNullOrEmpty(entry.Name)) knownNames.Add(entry.Name);
+                fallbackNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var entry in index.Objects.Values)
+                {
+                    if (entry != null && !string.IsNullOrEmpty(entry.Name))
+                        fallbackNames.Add(entry.Name);
+                }
             }
+
+            Func<string, bool> isKnownName = fallbackNames != null
+                ? (Func<string, bool>)fallbackNames.Contains
+                : index.ContainsName;
+
+            var callerSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var calleeSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var entry in index.Objects.Values)
             {
@@ -155,10 +162,10 @@ namespace GxMcp.Worker.Services
                 // resolve to a known indexed object become graph edges.
                 if (!string.IsNullOrEmpty(entry.SourceSnippet))
                 {
-                    foreach (Match match in Regex.Matches(entry.SourceSnippet, @"\b(\w+)\s*\(", RegexOptions.IgnoreCase))
+                    foreach (Match match in InvocationRegex.Matches(entry.SourceSnippet))
                     {
                         string called = match.Groups[1].Value;
-                        if (!knownNames.Contains(called)) continue;
+                        if (!isKnownName(called)) continue;
                         if (string.Equals(called, entry.Name, StringComparison.OrdinalIgnoreCase)) continue;
                         AddEdge(calleeSets, entry.Name, called);
                         AddEdge(callerSets, called, entry.Name);
@@ -204,29 +211,17 @@ namespace GxMcp.Worker.Services
                 var idx = _index.GetIndex();
                 if (idx?.Objects == null) return result;
 
-                // Find the requested name (case-insensitive).
-                SearchIndex.IndexEntry trn = null;
-                foreach (var v in idx.Objects.Values)
-                {
-                    if (v == null || string.IsNullOrEmpty(v.Name)) continue;
-                    if (string.Equals(v.Name, transactionName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        trn = v;
-                        break;
-                    }
-                }
+                // Find the requested name (case-insensitive) via O(1) index.
+                var trnCandidates = idx.FindByName(transactionName);
+                SearchIndex.IndexEntry trn = trnCandidates.FirstOrDefault(c => c != null && string.Equals(c.Type, "Transaction", StringComparison.OrdinalIgnoreCase));
                 if (trn == null) return result;
-                if (!string.Equals(trn.Type, "Transaction", StringComparison.OrdinalIgnoreCase)) return result;
 
                 string bcName = transactionName + "_bc";
-                foreach (var v in idx.Objects.Values)
+                var bcCandidates = idx.FindByName(bcName);
+                var bcEntry = bcCandidates.FirstOrDefault(c => c != null && !string.IsNullOrEmpty(c.Name));
+                if (bcEntry != null)
                 {
-                    if (v == null || string.IsNullOrEmpty(v.Name)) continue;
-                    if (string.Equals(v.Name, bcName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        result.Add(v.Name);
-                        break;
-                    }
+                    result.Add(bcEntry.Name);
                 }
             }
             catch (Exception ex)

@@ -6,6 +6,66 @@
 
 - Add the local `scripts/Invoke-PrePushMechanicalChecks.ps1` routine, with machine-readable readiness output, divergence and working-tree gates, PowerShell parsing, and the existing release preflight checks without publishing.
 
+### Fixed
+
+- **PowerShell Automation Fail-Fast**: Remove `[Parameter(Mandatory = $true)]` in `scripts/pr-preflight.ps1`, `scripts/build-release-candidate.ps1`, and `scripts/live-build-all.ps1`, replacing interactive stdin blocking with immediate validation and clear usage error exits, preventing headless CI/agent processes from hanging indefinitely.
+
+### Changed
+
+- **Worker Scale Index & Secondary Lookups (Untouched Tools)**:
+  - `SearchIndex.FindByGuid`: Introduce $O(1)$ GUID lookup via `GuidToKey` with fallback, accelerating GUID resolution across Worker tools.
+  - `ObjectService.BuildObjectIdentity` & `TryPromoteCompleteSourceRead`: Replace 40,000-object linear scans with `index.FindByGuid` in $O(1)$.
+  - `CallerGraphService.GetBcVariantTargets`: Replace two 40,000-object linear loops over `idx.Objects.Values` with `idx.FindByName` in $O(1)$.
+  - `TransferService.Export`: Replace fallback linear scan in dependency resolution with `index.FindByName(current.Name).FirstOrDefault()`.
+  - `AnalyzeService.GetCodeMetrics`: Pre-filter candidate procedures and data providers via `index.FindByType` / `index.FindByTypes` instead of scanning all 40,000 objects in `index.Objects.Values`.
+  - `ListService`: Retrieve available distinct types in empty-filter results directly from `index.TypeIndex.Keys` instead of scanning and de-duplicating all 40,000 objects.
+  - `RefactorService.BuildRenamePreview`: Pre-query target callers upfront via `index.FindByName` and add an `IndexOf` fast-path guard before running lexical `SymbolRenameTokenizer.Find` across snippets.
+  - `ApiIntrospectService.DoDescribe` & `EnumerateHttpEndpoints`: Replace 40,000-object linear scans with `idx.FindByName` in $O(1)$ and `idx.FindByType("Procedure")`.
+  - `TypeIntrospectService.RunList`: Query `idx.FindByType("Domain")` or `idx.FindByTypes` directly instead of iterating all 40,000 objects on `genexus_types action=list`.
+  - `PatternService.GetSample`: Filter candidates from `index.TypeIndex` and `FindByTypes` before candidate evaluation, and add null-guard for `o.CalledBy`.
+  - `ObjectTextService.TrySelectEntries`: Seed candidates with `index.FindByType(typeFilter)` when a type filter is present rather than scanning the entire index.
+- **Performance & Allocation**: Cache complete `tools/list` response envelopes per profile in `McpRouter`, eliminating allocation and re-filtering overhead on discovery.
+- **IPC & Stdio Streaming**: Stream progress heartbeat notifications directly via `JsonTextWriter` buffer in `Program.RequestLoop.cs` without intermediate string serialization.
+- **Worker STA Concurrency**: Offload JSON parsing from the single-threaded STA thread by enqueuing pre-parsed `SdkCommandItem` instances into `SdkCommandQueue`, eliminating redundant `JObject.Parse` operations in `DescribeCommand`, `ExtractOperationId`, and `ProcessCommand` on the STA thread.
+- **Memory & Cache Optimization**: Optimize `ObjectService.BuildReadCacheKey` to zero-alloc 4-argument string concatenation with defaults fast-path (-44% latency, -50% Gen0), and introduce adaptive heap-pressure threshold for idle LOH compaction in `IdleMemoryMaintenance`.
+- **Gateway Zero-Buffer Response Guard**: Replace `StreamWriter` and 32KB buffer allocations in `ResponseSizeGuard` with a zero-buffer, thread-safe `CountingTextWriter` computing UTF-8 character and SIMD-accelerated string byte counts directly without intermediate buffering or thread-static state-poisoning hazards.
+- **Gateway Direct Dispatch**: Bypass empty middleware pipeline loop stages in `Program.RequestLoop.cs` to invoke `ProcessMcpRequestCore` directly, eliminating unnecessary context allocation and task overhead per MCP request.
+- **SearchIndex Query Consolidation**: Centralize secondary index access methods (`FindByName`, `ContainsName`, `FindByType`, `FindByTypes`, `FindByDomain`) directly on `SearchIndex` with a unified `ResolveKeys` helper, thread-safe locking, and fallback, eliminating 18+ raw dictionary lookups and unsynchronized hash set iterations across Worker services (`ObjectService`, `SearchService`, `AnalyzeService`, `KbValidationService`, `DbOptimizeService`, `VisualizerService`, `PatternApplyService`, `SourceSearchService`, `HealingService`, `CallerGraphService`, `IndexCacheService`).
+- **Bounded Top-K Algorithm & Deterministic Pagination**: Unify bounded heap selection into a canonical `TopKHelper.SelectTopK<T>` and `TopKHelper.BoundedHeap<T>` container with documented ordering invariants, replacing bespoke `PushTopK` implementations across `HealthService` and `ListService`, eliminating redundant pass-through wrappers and adding a deterministic `Guid` tie-breaker to `DefaultIndexEntryComparer` to guarantee stable pagination across list queries.
+- **Caller Graph Zero-Allocation Traversal & Fallback Hardening**: Eliminate 40,000-key allocations in `CallerGraphService.BuildAdjacency` by delegating directly to `SearchIndex.ContainsName`, with safe $O(N)$ upfront fallback set construction and restored null-guards on unpopulated/null indices.
+- **Path-Qualified Object Validation**: Restore slash (`/`, `\`) path separator handling in `KbValidationService.IsKnownObject`, eliminating false positives and negatives on modular object references, and direct `index.FindByName` delegation in `ObjectService.FindCandidateEntries` and `FindIndexEntry`.
+- **Gateway O(1) Router Dispatch**: Index tool routers into an $O(1)$ lookup dictionary and replace LINQ checks with an immutable `HashSet<string>`, accelerating dispatch routing from 169.8 ns to 35.6 ns (4.8x faster).
+- **Worker Scale O(1) ByNameIndex Multimap**: Resolve candidates via `ByNameIndex` multimap for exact matches and `criteria.NameFilter` in `SearchService`, cutting 40,000-object query latency from 0.598 ms to 0.00035 ms (1,708x speedup, 0 Gen0 collections).
+- **Worker ListObjects Top-K Bounded Heap**: Single-pass bounded heap selection (`SelectTopK`) in `ListService` for paginated discovery (`limit <= 200`), slashing 40,000-object sort latency from 40.35 ms to 2.17 ms (18.6x speedup), and short-circuit `DescriptionContains` in `IndexEntryFilterBuilder` avoiding string allocations on null descriptions.
+- **Worker Scale Hot-Path Resolution & Validation**:
+  - `ObjectService.FindCandidateEntries`, `FindIndexEntry`, and `FindObject`: resolve entries via `ByNameIndex` multimap in $O(1)$ and eliminate 40,000-object linear fallback scans on lookup misses.
+  - `ObjectService.IdentityNameMatches`: zero-allocation fast-path for bare names, completely skipping path manipulation, substring, and replacement allocations when targets lack path separators.
+  - `IndexCacheService.FindEntriesByName` & `CallerGraphService.FindEntriesByName`: $O(1)$ candidate retrieval via `ByNameIndex`, eliminating full index iterations on misses and caller graph generation.
+  - `AnalyzeService.ResolveIndexEntry` & `TryFindByBareName`: $O(1)$ entry resolution with type-priority ordering in impact analysis and dependency graphs.
+  - `KbValidationService.IsKnownObject`, `AnalyzeImpact`, and `ValidateConditions`: $O(1)$ symbol validation (from 2.527 ms to 0.00024 ms per check, 10,435x speedup with 0 Gen0 collections) and direct `TypeIndex` candidate retrieval.
+  - `HealingService.FormatNotFoundError`: $O(1)$ exact-match ambiguity checks via `ByNameIndex` accelerating error envelope synthesis across 29 tool failure paths.
+  - `PatternApplyService.ListWwpWebTemplates` and `DbOptimizeService.EnumerateCallers`/`EnumerateTransactionNames`: query `TypeIndex` directly instead of iterating all 40,000 objects.
+- **Worker Regex & Graph Precompilation**:
+  - `LinterService`: Precompile all rule regexes (`ForEachBlockRegex`, `CommitRegex`, `WhereDefinedByRegex`, `SleepWaitRegex`, `DynamicCallRegex`, `NestedForEachRegex`, `WhenNoneRegex`, `NewBlockRegex`, `WhenDuplicateRegex`, `StripCommentsRegex`) as static singletons, eliminating dynamic JIT recompilation and regex cache overhead across all linted objects.
+  - `CallerGraphService.BuildAdjacency`: Precompile `InvocationRegex` and initialize `knownNames` directly from `ByNameIndex.Keys`, eliminating full-index scans and regex recompilations during graph construction.
+  - `VisualizerService.GenerateGraph`: Pre-filter candidate sets via `DomainIndex` and `TypeIndex` ($O(1)$ `FindByTypes`) before calculating structural scores, avoiding 40,000 anonymous object allocations and score computations on filtered graph visualizations.
+- **Worker Search, Health & Property Optimization**:
+  - `HealthService.GetHealthReport`: Replace 6 full LINQ passes and two 40,000-element QuickSorts with a single-pass accumulation loop and `TopKHelper.BoundedHeap` (7.5x faster, 86.6% latency reduction, 0 Gen0 collections).
+  - `SourceSearchService.SearchCore`: Prune candidate entries using `ByNameIndex` in $O(1)$ when `objectName` is specified and seed candidate entries from `TypeIndex` sets for source types ("Procedure", "DataProvider", "WebPanel", "Transaction"), eliminating linear scans over 40,000 objects.
+  - `PropertyService.ShapeGetPropertiesResult`: Build compiled property matcher once outside the iteration loop instead of dynamically escaping and compiling regexes per property (38.7% faster wildcard inspection) and evaluate candidate property names lazily only on miss paths.
+  - `TableDependencyInjector`, `WcagCheckService`, `ApiIntrospectService`, and `StructureService`: Precompile static regexes and replace $O(N^2)$ linear token collections with $O(N)$ hash set lookups for logic items, table dependencies, WCAG attributes, SDTs, roles, and HTTP protocol markers.
+- **Worker Formatting, Linter & Parsing Hot-Paths (Round 4)**:
+  - `FormatService.NormalizeKeywords`: Unify all 26 keyword regex replacements into a single compiled regex and dictionary lookup (eliminating 26 sequential passes per line and quadratic string allocations).
+  - `LinterService`: Fast-path string scanner for variable declarations in `FindVariableDeclarationLine` (9.7x faster, replacing per-line dynamic regex matches with zero-regex string checks) and precompile static singletons for subroutines, parm rules, and out-variables (`SubDefinitionsRegex`, `SubCallsRegex`, `ParmRuleRegex`, `OutVarRegex`).
+  - `PatchTextEditor.NormalizeWhitespace`: Replace dynamic regex replacements with a zero-regex character scanner and pre-sized `StringBuilder` fast path (8.9x faster, -88.7% latency), eliminating regex compilation overhead across diff and patch operations.
+  - `DbOptimizeService.RemoveNestedForEachBlocks` & `ExtractAttributeRefs`: Avoid repeated string buffer conversions in nested block removals, precompile static anchor and token regexes (`WhereAnchorRegex`, `OrderAnchorRegex`, `QuotedStringsRegex`, `IdentifierTokenRegex`), and cache custom clause anchors in a concurrent dictionary.
+  - `ObjectService`: Precompile `_callPatternsRegex` and `_variableRefRegex` static singletons, eliminating dynamic JIT regex compilation during source inspection and variable metadata extraction.
+  - `DesignSystemService` & `WritePolicy`: Precompile comment-stripping regexes (`QuotedStringsRegex`, `BlockCommentsRegex`, `LineCommentsRegex`), avoiding repeated dynamic regex recompilations on DSO and rule validations.
+- **Gateway Pipeline & Build Error Optimization (Round 5)**:
+  - `ResponseSizeGuard`: Add `Write(ReadOnlySpan<char>)` override to `CountingTextWriter` for zero-allocation byte calculation in .NET 10 without `ArrayPool` rents.
+  - `McpPipelineContext` & `Program.RequestLoop.cs`: Replace reflection-based `ToObject<bool?>()` and `ToObject<int?>()` calls with zero-allocation explicit `JToken` casts on arguments (`dryRun`, `deploy`, `buildPlanCap`, `skipFullDeploy`).
+  - `BuildService.BuildResult`: Replace list instantiation fallbacks (`ErrorsDetailed ?? new List<ErrorDetail>()`) with null-checks and safe enumeration across error categories (`envErrors`, `codeErrors`, `envErrorCount`, `codeErrorCount`, `specErrorCount`), eliminating temporary list allocations during build reporting.
+
 ## v3.4.3 - 2026-09-13
 
 

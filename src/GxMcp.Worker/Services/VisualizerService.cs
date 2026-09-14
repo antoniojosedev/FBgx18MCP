@@ -96,39 +96,49 @@ namespace GxMcp.Worker.Services
                 var edges = new List<object>();
                 var addedNodes = new HashSet<string>();
 
-                IEnumerable<SearchIndex.IndexEntry> sourceObjects = index.Objects.Values;
-
                 // 1. Apply Multi-Criteria Filters
-                var scoredObjects = index.Objects.Values.Select(e => new {
-                    Entry = e,
-                    Score = CalculateStructuralScore(e)
-                });
+                IEnumerable<SearchIndex.IndexEntry> candidates;
 
-                if (!string.IsNullOrEmpty(filterDomain) && filterDomain != "All")
+                bool hasDomain = !string.IsNullOrEmpty(filterDomain) && filterDomain != "All";
+                bool hasTypes = !string.IsNullOrEmpty(filterTypes);
+
+                if (hasDomain)
                 {
-                    scoredObjects = scoredObjects.Where(o => string.Equals(o.Entry.BusinessDomain, filterDomain, StringComparison.OrdinalIgnoreCase));
+                    candidates = index.FindByDomain(filterDomain);
+                    if (hasTypes)
+                    {
+                        var typeSet = new HashSet<string>(filterTypes.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()), StringComparer.OrdinalIgnoreCase);
+                        candidates = candidates.Where(e => !string.IsNullOrEmpty(e.Type) && typeSet.Contains(e.Type));
+                    }
                 }
-
-                if (!string.IsNullOrEmpty(filterTypes))
+                else if (hasTypes)
                 {
-                    var types = filterTypes.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()).ToList();
-                    scoredObjects = scoredObjects.Where(o => types.Any(t => string.Equals(o.Entry.Type, t, StringComparison.OrdinalIgnoreCase)));
+                    var types = filterTypes.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim());
+                    candidates = index.FindByTypes(types);
+                }
+                else
+                {
+                    candidates = index.Objects.Values;
                 }
 
                 if (!string.IsNullOrEmpty(filterPrefix))
                 {
-                    scoredObjects = scoredObjects.Where(o => {
-                        string nameOnly = o.Entry.Name.Contains(":") ? o.Entry.Name.Split(':')[1] : o.Entry.Name;
+                    candidates = candidates.Where(e => {
+                        string nameOnly = e.Name.Contains(":") ? e.Name.Split(':')[1] : e.Name;
                         return nameOnly.StartsWith(filterPrefix, StringComparison.OrdinalIgnoreCase);
                     });
                 }
 
                 if (!string.IsNullOrEmpty(filterName))
                 {
-                    scoredObjects = scoredObjects.Where(o => o.Entry.Name.IndexOf(filterName, StringComparison.OrdinalIgnoreCase) >= 0);
+                    candidates = candidates.Where(e => e.Name.IndexOf(filterName, StringComparison.OrdinalIgnoreCase) >= 0);
                 }
 
-                var relevantObjects = scoredObjects
+                var relevantObjects = candidates
+                    .Select(e => new {
+                        Entry = e,
+                        Score = CalculateStructuralScore(e)
+                    })
                     .OrderByDescending(o => o.Score)
                     .Take(1000)
                     .ToList();

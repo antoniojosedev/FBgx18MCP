@@ -133,7 +133,7 @@ namespace GxMcp.Worker.Services
                         SearchIndex.IndexEntry entry = null;
                         if (!index.Objects.TryGetValue(storageKey, out entry))
                         {
-                            entry = index.Objects.Values.FirstOrDefault(e => string.Equals(e.Name, current.Name, StringComparison.OrdinalIgnoreCase));
+                            entry = index.FindByName(current.Name).FirstOrDefault();
                         }
 
                         if (entry != null)

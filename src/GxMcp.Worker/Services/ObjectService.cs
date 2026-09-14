@@ -84,6 +84,16 @@ namespace GxMcp.Worker.Services
                 @"\[(ERROR|CRITICAL|FATAL)\]|\bCRITICAL\s+(?:Init|Error|Failure|Exception)\b|\bUnhandled\s+exception\b",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
+        private static readonly System.Text.RegularExpressions.Regex _callPatternsRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"\b(?:call|udp|submit)\s*\(\s*(\w+)|\b(\w+)\s*\.\s*(?:call|udp|submit)\b",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        private static readonly System.Text.RegularExpressions.Regex _variableRefRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"&(\w+)",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
         private readonly KbService _kbService;
         private readonly BuildService _buildService;
         private DataInsightService _dataInsightService;
@@ -126,14 +136,9 @@ namespace GxMcp.Worker.Services
             // warm yet the ambiguity hint is simply skipped and FindObject (already
             // non-blocking) resolves the object anyway.
             var index = GetLoadedIndexOrNull();
-            if (index?.Objects == null) return new List<SearchIndex.IndexEntry>();
-            var results = new List<SearchIndex.IndexEntry>();
-            foreach (var entry in index.Objects.Values)
-            {
-                if (string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
-                    results.Add(entry);
-            }
-            return results;
+            if (index == null) return new List<SearchIndex.IndexEntry>();
+
+            return index.FindByName(name);
         }
 
         public string CreateObject(string type, string name)
@@ -2471,17 +2476,32 @@ namespace GxMcp.Worker.Services
         private static bool IdentityNameMatches(SearchIndex.IndexEntry entry, string target)
         {
             if (entry == null || string.IsNullOrWhiteSpace(target)) return false;
+            if (string.Equals(entry.Name, target, StringComparison.OrdinalIgnoreCase)) return true;
+
             string value = target.Trim().Replace('\\', '/');
+            if (string.Equals(entry.Name, value, StringComparison.OrdinalIgnoreCase)) return true;
+
+            bool hasSeparator = value.IndexOf('/') >= 0 || value.IndexOf('.') >= 0;
+            if (!hasSeparator) return false;
+
             string path = (entry.Path ?? string.Empty).Trim().Replace('\\', '/');
+            if (string.Equals(path, value, StringComparison.OrdinalIgnoreCase)) return true;
             string pathWithoutRoot = path.StartsWith("Root Module/", StringComparison.OrdinalIgnoreCase)
                 ? path.Substring("Root Module/".Length) : path;
+            if (string.Equals(pathWithoutRoot, value, StringComparison.OrdinalIgnoreCase)) return true;
             string dottedPath = pathWithoutRoot.Replace('/', '.');
-            return string.Equals(entry.Name, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(path, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(pathWithoutRoot, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(dottedPath, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals((entry.Module ?? string.Empty) + "/" + entry.Name, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals((entry.Module ?? string.Empty) + "." + entry.Name, value, StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(dottedPath, value, StringComparison.OrdinalIgnoreCase)) return true;
+
+            string module = entry.Module ?? string.Empty;
+            if (module.Length > 0 && entry.Name != null)
+            {
+                if (value.Length == module.Length + 1 + entry.Name.Length)
+                {
+                    if (string.Equals(module + "/" + entry.Name, value, StringComparison.OrdinalIgnoreCase)) return true;
+                    if (string.Equals(module + "." + entry.Name, value, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            return false;
         }
 
         private static IEnumerable<string> QualifiedIdentityCandidates(SearchIndex.IndexEntry entry)
@@ -2619,28 +2639,15 @@ namespace GxMcp.Worker.Services
             string key = string.IsNullOrWhiteSpace(type) ? null : type.Trim() + ":" + target.Trim();
             if (key != null && index.Objects.TryGetValue(key, out var exact)) return exact;
 
-            if (index.ByNameIndex != null)
+            string simpleName = target.Trim().Replace('\\', '/');
+            int lastSlash = Math.Max(simpleName.LastIndexOf('/'), simpleName.LastIndexOf('.'));
+            if (lastSlash >= 0 && lastSlash < simpleName.Length - 1)
             {
-                string simpleName = target.Trim();
-                int lastSlash = Math.Max(simpleName.LastIndexOf('/'), simpleName.LastIndexOf('.'));
-                if (lastSlash >= 0 && lastSlash < simpleName.Length - 1)
-                {
-                    simpleName = simpleName.Substring(lastSlash + 1);
-                }
-
-                if (index.ByNameIndex.TryGetValue(simpleName, out var keys))
-                {
-                    foreach (var k in keys)
-                    {
-                        if (index.Objects.TryGetValue(k, out var candidate) && IsEntryType(candidate, type) && IdentityNameMatches(candidate, target))
-                        {
-                            return candidate;
-                        }
-                    }
-                }
+                simpleName = simpleName.Substring(lastSlash + 1);
             }
 
-            return index.Objects.Values.FirstOrDefault(e => IsEntryType(e, type) && IdentityNameMatches(e, target));
+            var candidates = index.FindByName(simpleName);
+            return candidates.FirstOrDefault(candidate => IsEntryType(candidate, type) && IdentityNameMatches(candidate, target));
         }
 
         public KBObject FindObject(string target, string typeFilter = null, string guid = null, string entityKey = null, string path = null)
@@ -2828,22 +2835,23 @@ namespace GxMcp.Worker.Services
                         // usedby filter already uses. Falls back to the full scan only
                         // when the index hasn't built ByNameIndex yet (LoadFromEntries
                         // test seam / older in-memory indexes).
-                        if (index.ByNameIndex != null
-                            && index.ByNameIndex.TryGetValue(namePart, out var nameKeys))
+                        string lookupName = namePart.Replace('\\', '/');
+                        int lastSep = Math.Max(lookupName.LastIndexOf('/'), lookupName.LastIndexOf('.'));
+                        if (lastSep >= 0 && lastSep < lookupName.Length - 1)
                         {
-                            if (nameKeys != null)
+                            lookupName = lookupName.Substring(lastSep + 1);
+                        }
+
+                        foreach (var entry in index.FindByName(lookupName))
+                        {
+                            if (IdentityNameMatches(entry, namePart))
                             {
-                                lock (nameKeys)
-                                {
-                                    foreach (var key in nameKeys)
-                                    {
-                                        if (!index.Objects.TryGetValue(key, out var entry) || entry == null) continue;
-                                        matches.Add(entry);
-                                    }
-                                }
+                                matches.Add(entry);
                             }
                         }
-                        else
+
+                        // Fallback for unindexed/legacy entries whose stored Name differs from the key
+                        if (matches.Count == 0 && index.ByNameIndex == null)
                         {
                             foreach (var kv in index.Objects)
                             {
@@ -3057,34 +3065,31 @@ namespace GxMcp.Worker.Services
             {
                 var index = _kbService?.GetIndexCache()?.TryGetLoadedIndex();
                 SearchIndex.IndexEntry entry = null;
-                if (!string.IsNullOrEmpty(guid) && index?.GuidToKey != null && index.GuidToKey.TryGetValue(guid, out var key))
+                if (!string.IsNullOrEmpty(guid) && index != null)
                 {
-                    index.Objects?.TryGetValue(key, out entry);
+                    entry = index.FindByGuid(guid);
                 }
-                if (entry == null && index != null && !string.IsNullOrEmpty(obj.Name) && index.ByNameIndex != null && index.ByNameIndex.TryGetValue(obj.Name, out var candidateKeys))
+                if (entry == null && index != null && !string.IsNullOrEmpty(obj.Name))
                 {
-                    foreach (var cKey in candidateKeys)
+                    var candidates = index.FindByName(obj.Name);
+                    foreach (var candidate in candidates)
                     {
-                        if (index.Objects != null && index.Objects.TryGetValue(cKey, out var candidate))
+                        if (!string.IsNullOrEmpty(guid) && string.Equals(candidate.Guid, guid, StringComparison.OrdinalIgnoreCase))
                         {
-                            if (!string.IsNullOrEmpty(guid) && string.Equals(candidate.Guid, guid, StringComparison.OrdinalIgnoreCase))
-                            {
-                                entry = candidate;
-                                break;
-                            }
-                            if (!string.IsNullOrEmpty(entityKey) && string.Equals(candidate.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase))
-                            {
-                                entry = candidate;
-                                break;
-                            }
+                            entry = candidate;
+                            break;
+                        }
+                        if (!string.IsNullOrEmpty(entityKey) && string.Equals(candidate.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase))
+                        {
+                            entry = candidate;
+                            break;
                         }
                     }
                 }
-                if (entry == null)
+                if (entry == null && index?.Objects != null && !string.IsNullOrEmpty(entityKey))
                 {
-                    entry = index?.Objects?.Values?.FirstOrDefault(e =>
-                        (!string.IsNullOrEmpty(guid) && string.Equals(e.Guid, guid, StringComparison.OrdinalIgnoreCase)) ||
-                        (!string.IsNullOrEmpty(entityKey) && string.Equals(e.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase)));
+                    entry = index.Objects.Values.FirstOrDefault(e =>
+                        e != null && string.Equals(e.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase));
                 }
 
                 if (!string.IsNullOrWhiteSpace(entry?.Path))
@@ -4349,18 +4354,19 @@ namespace GxMcp.Worker.Services
             string normalizedClient = string.IsNullOrWhiteSpace(client) ? "mcp" : client.Trim().ToLowerInvariant();
             int normalizedOffset = offset ?? -1;
             int normalizedLimit = limit ?? -1;
+
+            if (normalizedOffset == -1 && normalizedLimit == -1 && normalizedClient == "mcp")
+            {
+                return string.Concat(objectGuid.ToString("N"), "|", normalizedPart, minimize ? "|-1|-1|mcp|1" : "|-1|-1|mcp|0");
+            }
+
+            string offsetStr = normalizedOffset == -1 ? "-1" : normalizedOffset.ToString();
+            string limitStr = normalizedLimit == -1 ? "-1" : normalizedLimit.ToString();
             return string.Concat(
                 objectGuid.ToString("N"),
-                "|",
-                normalizedPart,
-                "|",
-                normalizedOffset.ToString(),
-                "|",
-                normalizedLimit.ToString(),
-                "|",
-                normalizedClient,
-                "|",
-                minimize ? "1" : "0");
+                "|" + normalizedPart + "|",
+                offsetStr + "|" + limitStr + "|",
+                normalizedClient + (minimize ? "|1" : "|0"));
         }
 
         private static bool TryGetReadCache(string key, out string payload)
@@ -4537,9 +4543,7 @@ namespace GxMcp.Worker.Services
             if (index?.Objects == null) return false;
 
             string guid = objectGuid.ToString();
-            SearchIndex.IndexEntry entry = index.Objects.Values.FirstOrDefault(candidate =>
-                candidate != null
-                && string.Equals(candidate.Guid, guid, StringComparison.OrdinalIgnoreCase));
+            SearchIndex.IndexEntry entry = index.FindByGuid(guid);
             return entry != null && indexCache.PromoteSourceForSearch(entry, source);
         }
 
@@ -4607,9 +4611,7 @@ namespace GxMcp.Worker.Services
                 var calledObjectNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 // Regex for common call patterns in GeneXus
-                var callMatches = System.Text.RegularExpressions.Regex.Matches(source, 
-                    @"\b(?:call|udp|submit)\s*\(\s*(\w+)|\b(\w+)\s*\.\s*(?:call|udp|submit)\b", 
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                var callMatches = _callPatternsRegex.Matches(source);
 
                 foreach (System.Text.RegularExpressions.Match match in callMatches)
                 {
@@ -4651,7 +4653,7 @@ namespace GxMcp.Worker.Services
                 if (varPart != null)
                 {
                     var referencedVars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    var matches = System.Text.RegularExpressions.Regex.Matches(source, @"&(\w+)");
+                    var matches = _variableRefRegex.Matches(source);
                     foreach (System.Text.RegularExpressions.Match match in matches) {
                         referencedVars.Add(match.Groups[1].Value);
                     }

@@ -25,6 +25,14 @@ namespace GxMcp.Worker.Services
         private readonly SDTService _sdtService;
         private readonly GroupStructureService _groupStructureService;
 
+        private static readonly System.Text.RegularExpressions.Regex SubRegex = new System.Text.RegularExpressions.Regex(
+            @"\bsub\s+['""]?([\w\.]+)['""]?",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        private static readonly System.Text.RegularExpressions.Regex EventRegex = new System.Text.RegularExpressions.Regex(
+            @"\bevent\s+['""]?([\w\.]+)['""]?",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
         public StructureService(ObjectService objectService)
         {
             _objectService = objectService;
@@ -2176,22 +2184,38 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrEmpty(source)) return;
 
-            // Sub Extraction
-            var subMatches = System.Text.RegularExpressions.Regex.Matches(source, @"(?i)\bsub\s+['""]?([\w\.]+)['""]?");
-            foreach (System.Text.RegularExpressions.Match match in subMatches)
+            var existingSubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var s in subs)
             {
-                string name = match.Groups[1].Value;
-                if (!subs.Any(s => s.ToString().Equals(name, StringComparison.OrdinalIgnoreCase)))
-                    subs.Add(name);
+                var str = s?.ToString();
+                if (!string.IsNullOrEmpty(str)) existingSubs.Add(str);
             }
 
-            // Event Extraction
-            var eventMatches = System.Text.RegularExpressions.Regex.Matches(source, @"(?i)\bevent\s+['""]?([\w\.]+)['""]?");
-            foreach (System.Text.RegularExpressions.Match match in eventMatches)
+            var subMatches = SubRegex.Matches(source);
+            for (int i = 0; i < subMatches.Count; i++)
             {
-                string name = match.Groups[1].Value;
-                if (!events.Any(e => e.ToString().Equals(name, StringComparison.OrdinalIgnoreCase)))
+                string name = subMatches[i].Groups[1].Value;
+                if (existingSubs.Add(name))
+                {
+                    subs.Add(name);
+                }
+            }
+
+            var existingEvents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in events)
+            {
+                var str = e?.ToString();
+                if (!string.IsNullOrEmpty(str)) existingEvents.Add(str);
+            }
+
+            var eventMatches = EventRegex.Matches(source);
+            for (int i = 0; i < eventMatches.Count; i++)
+            {
+                string name = eventMatches[i].Groups[1].Value;
+                if (existingEvents.Add(name))
+                {
                     events.Add(name);
+                }
             }
         }
 

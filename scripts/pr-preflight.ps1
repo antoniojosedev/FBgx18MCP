@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true, Position = 0)]
-    [int]$PullRequest,
+    [Parameter(Position = 0)]
+    [int]$PullRequest = 0,
     [switch]$RequireRipwire
 )
 
@@ -10,6 +10,10 @@ $ErrorActionPreference = 'Stop'
 function Fail-Preflight([string]$Message) {
     Write-Error "PR preflight failed: $Message"
     exit 1
+}
+
+if ($PullRequest -le 0) {
+    Fail-Preflight "Missing required -PullRequest <number> argument. Usage: pwsh -File scripts/pr-preflight.ps1 <PR_NUMBER>"
 }
 
 function Get-GhJson([string[]]$Arguments, [string]$GhPath = 'gh') {

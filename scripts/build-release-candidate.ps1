@@ -1,12 +1,17 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')][string]$Version,
+    [string]$Version,
     [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'scratchpad\release-candidate'),
     [string]$GxPath = $env:GX_PATH
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($Version) -or $Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+    Write-Error "build-release-candidate.ps1: A valid -Version <semver> is required. Usage: pwsh -File scripts/build-release-candidate.ps1 -Version 3.4.4"
+    exit 1
+}
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'scripts\gx-version-catalog.ps1')
 $gxCatalog = Get-GxVersionCatalog -Root $root

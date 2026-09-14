@@ -155,14 +155,12 @@ namespace GxMcp.Worker.Services
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (index?.Objects != null)
             {
-                foreach (var entry in index.Objects.Values)
+                var targetEntries = index.FindByName(oldName);
+                foreach (var targetEntry in targetEntries)
                 {
-                    if (entry == null || string.IsNullOrEmpty(entry.Name)) continue;
-
-                    if (string.Equals(entry.Name, oldName, StringComparison.OrdinalIgnoreCase)
-                        && entry.CalledBy != null)
+                    if (targetEntry?.CalledBy != null)
                     {
-                        foreach (var caller in entry.CalledBy)
+                        foreach (var caller in targetEntry.CalledBy)
                         {
                             if (string.IsNullOrEmpty(caller)) continue;
                             string key = caller + "|sdk";
@@ -178,6 +176,11 @@ namespace GxMcp.Worker.Services
                             }
                         }
                     }
+                }
+
+                foreach (var entry in index.Objects.Values)
+                {
+                    if (entry == null || string.IsNullOrEmpty(entry.Name)) continue;
 
                     if (entry.Calls != null && entry.Calls.Any(c =>
                         string.Equals(c, oldName, StringComparison.OrdinalIgnoreCase)))
@@ -195,7 +198,8 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
-                    if (!string.IsNullOrEmpty(entry.SourceSnippet))
+                    if (!string.IsNullOrEmpty(entry.SourceSnippet)
+                        && entry.SourceSnippet.IndexOf(oldName, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         foreach (var occurrence in SymbolRenameTokenizer.Find(entry.SourceSnippet, oldName))
                         {

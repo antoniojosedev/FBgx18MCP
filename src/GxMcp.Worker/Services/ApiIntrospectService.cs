@@ -41,6 +41,22 @@ namespace GxMcp.Worker.Services
             @"(?<dir>in|out|inout)\s*:\s*&(?<name>[A-Za-z_][A-Za-z0-9_]*)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        private static readonly Regex ParmDeclRegex = new Regex(
+            @"parm\s*\(([^)]*)\)\s*;",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex SdtVarRegex = new Regex(
+            @"SDT[:\s=]+(?<n>[A-Za-z_][A-Za-z0-9_]*)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex AllowedRolesRegex = new Regex(
+            @"AllowedRoles?\s*:\s*['""]?(?<r>[A-Za-z0-9_,\s]+)['""]?",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex GamMarkerRegex = new Regex(
+            @"\bGAM\b|\bIntegratedSecurityLevel\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         public ApiIntrospectService(KbService kbService, ObjectService objectService, IndexCacheService indexCacheService)
         {
             _kbService = kbService;
@@ -119,11 +135,10 @@ namespace GxMcp.Worker.Services
             // Find candidate procedure via index.
             var idx = _indexCacheService?.GetIndex();
             SearchIndex.IndexEntry entry = null;
-            if (idx?.Objects != null)
+            if (idx != null)
             {
-                entry = idx.Objects.Values.FirstOrDefault(e =>
-                    string.Equals(e.Type, "Procedure", StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(e.Name, target, StringComparison.OrdinalIgnoreCase));
+                entry = idx.FindByName(target).FirstOrDefault(e =>
+                    e != null && string.Equals(e.Type, "Procedure", StringComparison.OrdinalIgnoreCase));
             }
             if (entry == null)
                 return Err("NotFound", $"No Procedure named '{target}' in the index.");
@@ -1288,11 +1303,12 @@ namespace GxMcp.Worker.Services
         private IEnumerable<HttpEndpoint> EnumerateHttpEndpoints(string pathPrefix)
         {
             var idx = _indexCacheService?.GetIndex();
-            if (idx?.Objects != null)
+            if (idx != null)
             {
-                foreach (var entry in idx.Objects.Values)
+                var procedures = idx.FindByType("Procedure");
+                foreach (var entry in procedures)
                 {
-                    if (!string.Equals(entry.Type, "Procedure", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (entry == null) continue;
 
                     string folder = entry.ParentFolderPath ?? entry.ParentPath ?? "";
                     if (!string.IsNullOrEmpty(pathPrefix) && !folder.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase))
@@ -1492,7 +1508,7 @@ namespace GxMcp.Worker.Services
 
         internal static string ExtractParmDeclaration(string rulesSource)
         {
-            var m = Regex.Match(rulesSource, @"parm\s*\(([^)]*)\)\s*;", RegexOptions.IgnoreCase);
+            var m = ParmDeclRegex.Match(rulesSource);
             return m.Success ? m.Groups[1].Value : null;
         }
 
@@ -1517,7 +1533,7 @@ namespace GxMcp.Worker.Services
             // SDT typenames appear in variables as basedOn=SDT:Name or Type=Name (when
             // the type resolves to an SDT). Pull whatever looks like an identifier
             // following 'SDT:' tokens.
-            foreach (Match m in Regex.Matches(varsSrc, @"SDT[:\s=]+(?<n>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.IgnoreCase))
+            foreach (Match m in SdtVarRegex.Matches(varsSrc))
             {
                 string n = m.Groups["n"].Value;
                 if (!sdtNames.Contains(n, StringComparer.OrdinalIgnoreCase))
@@ -1530,9 +1546,7 @@ namespace GxMcp.Worker.Services
         {
             var arr = new JArray();
             if (string.IsNullOrEmpty(rulesSource)) return arr;
-            foreach (Match m in Regex.Matches(rulesSource,
-                @"AllowedRoles?\s*:\s*['""]?(?<r>[A-Za-z0-9_,\s]+)['""]?",
-                RegexOptions.IgnoreCase))
+            foreach (Match m in AllowedRolesRegex.Matches(rulesSource))
             {
                 foreach (var role in m.Groups["r"].Value.Split(','))
                 {
@@ -1546,7 +1560,7 @@ namespace GxMcp.Worker.Services
         private static bool ContainsGamMarker(string rulesSource)
         {
             if (string.IsNullOrEmpty(rulesSource)) return false;
-            return Regex.IsMatch(rulesSource, @"\bGAM\b|\bIntegratedSecurityLevel\b", RegexOptions.IgnoreCase);
+            return GamMarkerRegex.IsMatch(rulesSource);
         }
 
         // ---- json projection ------------------------------------------------

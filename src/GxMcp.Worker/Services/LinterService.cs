@@ -18,6 +18,22 @@ namespace GxMcp.Worker.Services
         private readonly NavigationService _navigationService;
         private WriteService _writeService;
 
+        private static readonly Regex ForEachBlockRegex = new Regex(@"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+        private static readonly Regex CommitRegex = new Regex(@"(?i)\bcommit\b", RegexOptions.Compiled);
+        private static readonly Regex WhereDefinedByRegex = new Regex(@"(?i)\bwhere\b|\bdefined\s+by\b", RegexOptions.Compiled);
+        private static readonly Regex SleepWaitRegex = new Regex(@"(?i)\b(?:sleep|wait)\s*\(\s*\d+\s*\)", RegexOptions.Compiled);
+        private static readonly Regex DynamicCallRegex = new Regex(@"(?i)\b(?:call|udp)\s*\(\s*&\w+\s*.*?\)", RegexOptions.Compiled);
+        private static readonly Regex NestedForEachRegex = new Regex(@"(?is)\bfor\s+each\b\s*.*?\bfor\s+each\b\s*.*?\bendfor\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+        private static readonly Regex WhenNoneRegex = new Regex(@"(?i)\bwhen\s+none\b", RegexOptions.Compiled);
+        private static readonly Regex NewBlockRegex = new Regex(@"(?is)\bnew\b\s*.*?\s*\bendnew\b", RegexOptions.Compiled);
+        private static readonly Regex WhenDuplicateRegex = new Regex(@"(?i)\bwhen\s+duplicate\b", RegexOptions.Compiled);
+        private static readonly Regex StripCommentsRegex = new Regex(@"/\*.*?\*/|//.*?\n", RegexOptions.Compiled | RegexOptions.Singleline);
+        private static readonly Regex SubDefinitionsRegex = new Regex(@"(?is)\bsub\s+'([^']+)'(.*?)\bendsub\b", RegexOptions.Compiled);
+        private static readonly Regex SubCallsRegex = new Regex(@"(?i)\bdo\s+'([^']+)'", RegexOptions.Compiled);
+        private static readonly Regex ParmRuleExistsRegex = new Regex(@"(?i)\bparm\s*\(", RegexOptions.Compiled);
+        private static readonly Regex ParmRuleRegex = new Regex(@"(?is)\bparm\s*\(([^)]*)\)", RegexOptions.Compiled);
+        private static readonly Regex OutVarRegex = new Regex(@"(?i)\bout\s*:\s*&(\w+)", RegexOptions.Compiled);
+
         public LinterService(ObjectService objectService, NavigationService navigationService)
         {
             _objectService = objectService;
@@ -281,7 +297,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckNestedForEach(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var nestedMatch = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\bfor\s+each\b\s*.*?\bendfor\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+            var nestedMatch = NestedForEachRegex.Matches(cleanCode);
             foreach (Match m in nestedMatch)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -291,10 +307,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckMissingWhenNone(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhen\s+none\b", RegexOptions.Compiled))
+                if (!WhenNoneRegex.IsMatch(m.Value))
                 {
                     if (m.Value.Length > 200) {
                         int line = GetLineNumber(originalCode, m.Index);
@@ -310,10 +326,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckCommitInsideLoop(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (Regex.IsMatch(m.Value, @"(?i)\bcommit\b", RegexOptions.Compiled))
+                if (CommitRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX001", "Commit inside loop", "Critical", "Avoid Commit inside For Each.", "Commit", line, partName));
@@ -323,10 +339,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckUnfilteredLoop(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhere\b|\bdefined\s+by\b", RegexOptions.Compiled))
+                if (!WhereDefinedByRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX002", "Unfiltered loop", "Critical", "Full table scan detected.", "For Each", line, partName));
@@ -336,7 +352,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckSleepWait(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var matches = Regex.Matches(cleanCode, @"(?i)\b(?:sleep|wait)\s*\(\s*\d+\s*\)", RegexOptions.Compiled);
+            var matches = SleepWaitRegex.Matches(cleanCode);
             foreach (Match m in matches)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -346,7 +362,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckDynamicCall(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var matches = Regex.Matches(cleanCode, @"(?i)\b(?:call|udp)\s*\(\s*&\w+\s*.*?\)", RegexOptions.Compiled);
+            var matches = DynamicCallRegex.Matches(cleanCode);
             foreach (Match m in matches)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -388,12 +404,15 @@ namespace GxMcp.Worker.Services
             var lines = variablesText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             for (int i = 0; i < lines.Length; i++)
             {
-                if (Regex.IsMatch(
-                    lines[i],
-                    @"^\s*&" + Regex.Escape(variableName) + @"\s*:",
-                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                string line = lines[i].TrimStart();
+                if (line.StartsWith("&" + variableName, StringComparison.OrdinalIgnoreCase))
                 {
-                    return i + 1;
+                    int idx = 1 + variableName.Length;
+                    while (idx < line.Length && char.IsWhiteSpace(line[idx])) idx++;
+                    if (idx < line.Length && line[idx] == ':')
+                    {
+                        return i + 1;
+                    }
                 }
             }
 
@@ -402,8 +421,8 @@ namespace GxMcp.Worker.Services
 
         private void CheckSubroutines(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var subDefinitions = Regex.Matches(cleanCode, @"(?is)\bsub\s+'([^']+)'(.*?)\bendsub\b", RegexOptions.Compiled);
-            var subCalls = Regex.Matches(cleanCode, @"(?i)\bdo\s+'([^']+)'", RegexOptions.Compiled);
+            var subDefinitions = SubDefinitionsRegex.Matches(cleanCode);
+            var subCalls = SubCallsRegex.Matches(cleanCode);
             var calledSubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (Match m in subCalls) calledSubs.Add(m.Groups[1].Value);
 
@@ -419,7 +438,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckParmRule(string cleanCode, string objName, JArray issues, string partName)
         {
-            if (string.IsNullOrWhiteSpace(cleanCode) || !Regex.IsMatch(cleanCode, @"(?i)\bparm\s*\(", RegexOptions.Compiled))
+            if (string.IsNullOrWhiteSpace(cleanCode) || !ParmRuleExistsRegex.IsMatch(cleanCode))
                 issues.Add(CreateIssue("GX006", "Parm rule missing", "Warning", "No parameters defined.", "parm(...)", 1, partName));
         }
 
@@ -530,12 +549,12 @@ namespace GxMcp.Worker.Services
                 string rulesSrc = (rulesPart as ISource)?.Source ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(rulesSrc)) return;
 
-                var parmMatch = Regex.Match(rulesSrc, @"(?is)\bparm\s*\(([^)]*)\)", RegexOptions.Compiled);
+                var parmMatch = ParmRuleRegex.Match(rulesSrc);
                 if (!parmMatch.Success) return;
                 string parmBody = parmMatch.Groups[1].Value;
 
                 var outVars = new List<string>();
-                foreach (Match m in Regex.Matches(parmBody, @"(?i)\bout\s*:\s*&(\w+)"))
+                foreach (Match m in OutVarRegex.Matches(parmBody))
                 {
                     outVars.Add(m.Groups[1].Value);
                 }
@@ -547,19 +566,21 @@ namespace GxMcp.Worker.Services
 
                 foreach (var v in outVars)
                 {
-                    var rx = new Regex(@"(?i)&" + Regex.Escape(v) + @"\s*\.\s*Enabled\s*=\s*1");
-                    if (!rx.IsMatch(eventsSrc))
+                    if (eventsSrc.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        issues.Add(CreateIssue(
-                            "GX021",
-                            "out: parm may render disabled",
-                            "Info",
-                            $"&{v} is declared `out:` in parm rule — GeneXus may render its control as disabled. " +
-                            $"If editable, add `&{v}.Enabled = 1` in Event Start.",
-                            $"out: &{v}",
-                            1,
-                            "Rules"));
+                        var rx = new Regex(@"(?i)&" + Regex.Escape(v) + @"\s*\.\s*Enabled\s*=\s*1");
+                        if (rx.IsMatch(eventsSrc)) continue;
                     }
+
+                    issues.Add(CreateIssue(
+                        "GX021",
+                        "out: parm may render disabled",
+                        "Info",
+                        $"&{v} is declared `out:` in parm rule — GeneXus may render its control as disabled. " +
+                        $"If editable, add `&{v}.Enabled = 1` in Event Start.",
+                        $"out: &{v}",
+                        1,
+                        "Rules"));
                 }
             }
             catch (Exception ex) { Logger.Debug("CheckOutParmEnabled: " + ex.Message); }
@@ -567,10 +588,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckNewWhenDuplicate(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var newBlocks = Regex.Matches(cleanCode, @"(?is)\bnew\b\s*.*?\s*\bendnew\b", RegexOptions.Compiled);
+            var newBlocks = NewBlockRegex.Matches(cleanCode);
             foreach (Match m in newBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhen\s+duplicate\b", RegexOptions.Compiled))
+                if (!WhenDuplicateRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX005", "New without When Duplicate", "Info", "Consider adding 'when duplicate'.", "New", line, partName));
@@ -580,7 +601,7 @@ namespace GxMcp.Worker.Services
 
         private static string StripComments(string code)
         {
-            return Regex.Replace(code, @"/\*.*?\*/|//.*?\n", " ", RegexOptions.Singleline);
+            return StripCommentsRegex.Replace(code, " ");
         }
 
         private int GetLineNumber(string text, int index)

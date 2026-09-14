@@ -55,17 +55,13 @@ namespace GxMcp.Worker.Services
                             args: new JObject { ["action"] = "index" },
                             why: "Builds the on-disk search index required for validation.")));
 
-                var attrNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var entry in index.Objects.Values)
-                {
-                    if (string.Equals(entry.Type, "Attribute", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(entry.Name))
-                        attrNames.Add(entry.Name);
-                }
+                var attrNames = new HashSet<string>(
+                    index.FindByType("Attribute")
+                        .Select(e => e.Name)
+                        .Where(n => !string.IsNullOrEmpty(n)),
+                    StringComparer.OrdinalIgnoreCase);
 
-                var candidates = index.Objects.Values
-                    .Where(e => string.Equals(e.Type, "Transaction", StringComparison.OrdinalIgnoreCase)
-                             || string.Equals(e.Type, "WebPanel", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
+                var candidates = index.FindByTypes(new[] { "Transaction", "WebPanel" });
 
                 var issues = new JArray();
                 int scanned = 0;
@@ -240,15 +236,13 @@ namespace GxMcp.Worker.Services
             }
 
             SearchIndex.IndexEntry sourceEntry = null;
-            foreach (var entry in index.Objects.Values)
+            if (index.Objects.TryGetValue(targetName, out var exact))
             {
-                if (entry == null) continue;
-                if (string.Equals(entry.Name, targetName, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(entry.Type + ":" + entry.Name, targetName, StringComparison.OrdinalIgnoreCase))
-                {
-                    sourceEntry = entry;
-                    break;
-                }
+                sourceEntry = exact;
+            }
+            else
+            {
+                sourceEntry = index.FindByName(targetName).FirstOrDefault();
             }
 
             string fromName = sourceEntry?.Name ?? targetName;
@@ -298,20 +292,17 @@ namespace GxMcp.Worker.Services
         {
             if (index?.Objects == null || string.IsNullOrWhiteSpace(reference)) return false;
             string normalized = reference.Trim();
-            foreach (var entry in index.Objects.Values)
-            {
-                if (entry == null) continue;
-                if (string.Equals(entry.Name, normalized, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(entry.Type + ":" + entry.Name, normalized, StringComparison.OrdinalIgnoreCase))
-                    return true;
 
-                // The source language commonly uses a module-qualified call while
-                // the SDK index stores the bare object name. Accept that spelling
-                // only when the suffix maps to an actual indexed object.
-                int dot = normalized.LastIndexOf('.');
-                if (dot >= 0 && string.Equals(entry.Name, normalized.Substring(dot + 1), StringComparison.OrdinalIgnoreCase))
-                    return true;
+            if (index.Objects.ContainsKey(normalized)) return true;
+            if (index.ContainsName(normalized)) return true;
+
+            int lastSep = Math.Max(normalized.LastIndexOf('.'), Math.Max(normalized.LastIndexOf('/'), normalized.LastIndexOf('\\')));
+            if (lastSep >= 0 && lastSep < normalized.Length - 1)
+            {
+                string suffix = normalized.Substring(lastSep + 1);
+                if (index.ContainsName(suffix)) return true;
             }
+
             return false;
         }
 

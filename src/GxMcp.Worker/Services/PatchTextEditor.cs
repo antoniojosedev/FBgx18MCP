@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.RegularExpressions;
 using GxMcp.Worker.Helpers;
 
@@ -332,7 +333,41 @@ namespace GxMcp.Worker.Services
         private static string NormalizeWhitespace(string value)
         {
             if (string.IsNullOrEmpty(value)) return string.Empty;
-            return Regex.Replace(value.Trim(), @"\s+", " ");
+            string trimmed = value.Trim();
+            if (trimmed.Length == 0) return string.Empty;
+
+            // Fast path: if there are no consecutive spaces or non-space whitespace chars, return trimmed
+            bool hasMultipleWs = false;
+            for (int i = 0; i < trimmed.Length; i++)
+            {
+                if (char.IsWhiteSpace(trimmed[i]) && (trimmed[i] != ' ' || (i + 1 < trimmed.Length && char.IsWhiteSpace(trimmed[i + 1]))))
+                {
+                    hasMultipleWs = true;
+                    break;
+                }
+            }
+            if (!hasMultipleWs) return trimmed;
+
+            var sb = new StringBuilder(trimmed.Length);
+            bool inWs = false;
+            for (int i = 0; i < trimmed.Length; i++)
+            {
+                char c = trimmed[i];
+                if (char.IsWhiteSpace(c))
+                {
+                    if (!inWs)
+                    {
+                        sb.Append(' ');
+                        inWs = true;
+                    }
+                }
+                else
+                {
+                    sb.Append(c);
+                    inWs = false;
+                }
+            }
+            return sb.ToString();
         }
 
         private static string NormalizeEol(string value)

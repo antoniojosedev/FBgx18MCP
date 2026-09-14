@@ -58,7 +58,21 @@ namespace GxMcp.Worker.Services
                 var idx = _kbService?.GetIndexCache()?.GetIndex();
                 if (idx != null)
                 {
-                    foreach (var entry in idx.Objects.Values)
+                    IEnumerable<SearchIndex.IndexEntry> candidates;
+                    if (string.Equals(kind, "domain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        candidates = idx.FindByType("Domain");
+                    }
+                    else if (string.Equals(kind, "sdt", StringComparison.OrdinalIgnoreCase))
+                    {
+                        candidates = idx.FindByTypes(new[] { "SDT", "StructuredDataType" });
+                    }
+                    else
+                    {
+                        candidates = idx.FindByTypes(new[] { "Domain", "SDT", "StructuredDataType" });
+                    }
+
+                    foreach (var entry in candidates)
                     {
                         string t = entry.Type ?? string.Empty;
                         bool isDomain = t.Equals("Domain", StringComparison.OrdinalIgnoreCase);

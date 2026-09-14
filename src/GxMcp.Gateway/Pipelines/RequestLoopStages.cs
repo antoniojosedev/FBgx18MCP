@@ -33,47 +33,55 @@ namespace GxMcp.Gateway.Pipelines
 
     public abstract class RequestLoopStageMiddleware : IMcpMiddleware
     {
-        protected abstract string StageName { get; }
+        private readonly string _propertyKey;
+
+        protected RequestLoopStageMiddleware(string stageName)
+        {
+            StageName = stageName;
+            _propertyKey = "requestLoop.stage." + stageName;
+        }
+
+        protected string StageName { get; }
 
         public Task<JObject?> InvokeAsync(McpPipelineContext context, McpPipelineNextDelegate next)
         {
-            context.Properties["requestLoop.stage." + StageName] = true;
+            context.Properties[_propertyKey] = true;
             return next();
         }
     }
 
     public sealed class ProtocolHandshakeMiddleware : RequestLoopStageMiddleware
     {
-        protected override string StageName => "protocol";
+        public ProtocolHandshakeMiddleware() : base("protocol") { }
     }
 
     public sealed class KbResolutionMiddleware : RequestLoopStageMiddleware
     {
-        protected override string StageName => "kb-resolution";
+        public KbResolutionMiddleware() : base("kb-resolution") { }
     }
 
     public sealed class ArgsValidationMiddleware : RequestLoopStageMiddleware
     {
-        protected override string StageName => "args-validation";
+        public ArgsValidationMiddleware() : base("args-validation") { }
     }
 
     public sealed class IdempotencyStageMiddleware : RequestLoopStageMiddleware
     {
-        protected override string StageName => "idempotency";
+        public IdempotencyStageMiddleware() : base("idempotency") { }
     }
 
     public sealed class SemanticCacheMiddleware : RequestLoopStageMiddleware
     {
-        protected override string StageName => "semantic-cache";
+        public SemanticCacheMiddleware() : base("semantic-cache") { }
     }
 
     public sealed class WorkerDispatchMiddleware : RequestLoopStageMiddleware
     {
-        protected override string StageName => "worker-dispatch";
+        public WorkerDispatchMiddleware() : base("worker-dispatch") { }
     }
 
     public sealed class ResponseShapingMiddleware : RequestLoopStageMiddleware
     {
-        protected override string StageName => "response-shaping";
+        public ResponseShapingMiddleware() : base("response-shaping") { }
     }
 }
