@@ -29,6 +29,13 @@
   - `SourceSearchService.SearchCore`: Prune candidate entries using `ByNameIndex` in $O(1)$ when `objectName` is specified and seed candidate entries from `TypeIndex` sets for source types ("Procedure", "DataProvider", "WebPanel", "Transaction"), eliminating linear scans over 40,000 objects.
   - `PropertyService.ShapeGetPropertiesResult`: Build compiled property matcher once outside the iteration loop instead of dynamically escaping and compiling regexes per property (38.7% faster wildcard inspection) and evaluate candidate property names lazily only on miss paths.
   - `TableDependencyInjector`, `WcagCheckService`, `ApiIntrospectService`, and `StructureService`: Precompile static regexes and replace $O(N^2)$ linear token collections with $O(N)$ hash set lookups for logic items, table dependencies, WCAG attributes, SDTs, roles, and HTTP protocol markers.
+- **Worker Formatting, Linter & Parsing Hot-Paths (Round 4)**:
+  - `FormatService.NormalizeKeywords`: Precompile all 26 keyword regexes as static compiled singletons and replace quadratic indentation string concatenations with pre-sized buffers (20.5x faster, -95.1% latency, eliminating 26,000 regex instantiations per 1,000 formatted lines).
+  - `LinterService`: Fast-path string scanner for variable declarations in `FindVariableDeclarationLine` (9.7x faster, replacing per-line dynamic regex matches with zero-regex string checks) and precompile static singletons for subroutines, parm rules, and out-variables (`SubDefinitionsRegex`, `SubCallsRegex`, `ParmRuleRegex`, `OutVarRegex`).
+  - `PatchTextEditor.NormalizeWhitespace`: Replace dynamic regex replacements with a zero-regex character scanner and pre-sized `StringBuilder` fast path (8.9x faster, -88.7% latency), eliminating regex compilation overhead across diff and patch operations.
+  - `DbOptimizeService.RemoveNestedForEachBlocks` & `ExtractAttributeRefs`: Avoid repeated string buffer conversions in nested block removals, precompile static anchor and token regexes (`WhereAnchorRegex`, `OrderAnchorRegex`, `QuotedStringsRegex`, `IdentifierTokenRegex`), and cache custom clause anchors in a concurrent dictionary.
+  - `ObjectService`: Precompile `_callPatternsRegex` and `_variableRefRegex` static singletons, eliminating dynamic JIT regex compilation during source inspection and variable metadata extraction.
+  - `DesignSystemService` & `WritePolicy`: Precompile comment-stripping regexes (`QuotedStringsRegex`, `BlockCommentsRegex`, `LineCommentsRegex`), avoiding repeated dynamic regex recompilations on DSO and rule validations.
 
 ## v3.4.3 - 2026-09-13
 

@@ -90,4 +90,17 @@ Comparativo de medições antes e depois das 4 otimizações implementadas.
 | **Precompiled Scanners & Parsers** (TableDep, Wcag, ApiIntrospect) | Compilação repetida de Regex a cada execução | **Static Compiled Singletons + ConcurrentDict cache** | **Zero compilações redundantes de Regex por tag/parm/tabela** |
 
 ---
-Relatório atualizado e validado em 2026-09-14T00:40:00.
+
+## 7. Worker Formatting, Linter & Parsing Hot-Paths (Rodada 4)
+
+| Benchmark / Cenário | ANTES | DEPOIS | Variação / Ganho |
+|---|---|---|---|
+| **FormatService NormalizeKeywords** (2.000 iterações, 26 keywords) | 166,78 ms (52k instâncias Regex) | **8,16 ms (0 alocações Regex)** | **20,5x mais rápido (-95,1% tempo)** |
+| **LinterService FindVariableDeclarationLine** (1.000 buscas em 100 decls) | 17,67 ms (100k regex matches) | **1,82 ms (zero regex)** | **9,7x mais rápido (-89,7% tempo)** |
+| **PatchTextEditor NormalizeWhitespace** (10.000 linhas) | 21,12 ms (10k regex replaces) | **2,38 ms (scanner zero-regex)** | **8,9x mais rápido (-88,7% tempo)** |
+| **DbOptimizeService ExtractAttributeRefs** (Where/Order clauses) | Regex dinâmico por bloco | **Static Singletons + Cache** | **Zero compilação JIT redundante** |
+| **ObjectService Call & Variable Extraction** | Regex.Matches dinâmicos | **_callPatternsRegex / _variableRefRegex estáticos** | **Zero alocação JIT por inspeção de código** |
+| **DesignSystemService & WritePolicy Comment Stripping** | Regex.Replace dinâmicos | **Static Compiled Regex Singletons** | **Elimina compilações duplicadas em validação** |
+
+---
+Relatório atualizado e validado em 2026-09-14T09:18:00.

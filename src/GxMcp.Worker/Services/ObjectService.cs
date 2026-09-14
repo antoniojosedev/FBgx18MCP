@@ -84,6 +84,16 @@ namespace GxMcp.Worker.Services
                 @"\[(ERROR|CRITICAL|FATAL)\]|\bCRITICAL\s+(?:Init|Error|Failure|Exception)\b|\bUnhandled\s+exception\b",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
+        private static readonly System.Text.RegularExpressions.Regex _callPatternsRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"\b(?:call|udp|submit)\s*\(\s*(\w+)|\b(\w+)\s*\.\s*(?:call|udp|submit)\b",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        private static readonly System.Text.RegularExpressions.Regex _variableRefRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"&(\w+)",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
         private readonly KbService _kbService;
         private readonly BuildService _buildService;
         private DataInsightService _dataInsightService;
@@ -4656,9 +4666,7 @@ namespace GxMcp.Worker.Services
                 var calledObjectNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 // Regex for common call patterns in GeneXus
-                var callMatches = System.Text.RegularExpressions.Regex.Matches(source, 
-                    @"\b(?:call|udp|submit)\s*\(\s*(\w+)|\b(\w+)\s*\.\s*(?:call|udp|submit)\b", 
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                var callMatches = _callPatternsRegex.Matches(source);
 
                 foreach (System.Text.RegularExpressions.Match match in callMatches)
                 {
@@ -4700,7 +4708,7 @@ namespace GxMcp.Worker.Services
                 if (varPart != null)
                 {
                     var referencedVars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    var matches = System.Text.RegularExpressions.Regex.Matches(source, @"&(\w+)");
+                    var matches = _variableRefRegex.Matches(source);
                     foreach (System.Text.RegularExpressions.Match match in matches) {
                         referencedVars.Add(match.Groups[1].Value);
                     }
