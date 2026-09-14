@@ -39,9 +39,33 @@ if (process.platform === 'win32') {
     fs.chmodSync(testGatewayPath, 0o755);
 }
 const testGatewayEnv = { GENEXUS_MCP_GATEWAY_EXE: testGatewayPath };
+
+const RETRYABLE_REMOVE_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+function waitForRemoveRetry(delayMs) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+}
+
+function removeTempPath(targetPath, options = {}, deps = {}) {
+    const fsImpl = deps.fsImpl || fs;
+    const platform = deps.platform || process.platform;
+    const sleep = deps.sleep || waitForRemoveRetry;
+    const maxAttempts = platform === 'win32' ? 5 : 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+            fsImpl.rmSync(targetPath, options);
+            return;
+        } catch (error) {
+            const retryable = RETRYABLE_REMOVE_CODES.has(error?.code);
+            if (!retryable || attempt === maxAttempts) throw error;
+            sleep(10 * (2 ** (attempt - 1)));
+        }
+    }
+}
+
 test.after(() => {
-    fs.rmSync(testGxPath, { recursive: true, force: true });
-    fs.rmSync(testGatewayPath, { force: true });
+    removeTempPath(testGxPath, { recursive: true, force: true });
+    removeTempPath(testGatewayPath, { force: true });
 });
 
 function runCli(args, opts = {}) {
@@ -52,6 +76,37 @@ function runCli(args, opts = {}) {
     };
     return spawnSync(process.execPath, [cliPath, ...args], spawnOptions);
 }
+
+test('temporary cleanup retries transient Windows removal errors', () => {
+    let attempts = 0;
+    const sleeps = [];
+    const fakeFs = {
+        rmSync() {
+            attempts += 1;
+            if (attempts < 3) {
+                const error = new Error('file is still in use');
+                error.code = 'EPERM';
+                throw error;
+            }
+        }
+    };
+
+    removeTempPath('fixture', { recursive: true, force: true }, {
+        fsImpl: fakeFs,
+        platform: 'win32',
+        sleep: (delayMs) => sleeps.push(delayMs)
+    });
+
+    assert.equal(attempts, 3);
+    assert.deepEqual(sleeps, [10, 20]);
+
+    const permanentError = Object.assign(new Error('invalid path'), { code: 'EINVAL' });
+    assert.throws(() => removeTempPath('fixture', {}, {
+        fsImpl: { rmSync: () => { throw permanentError; } },
+        platform: 'win32',
+        sleep: () => assert.fail('non-retryable cleanup errors must not sleep')
+    }), permanentError);
+});
 
 test('status returns structured json envelope with schema version', () => {
     const result = runCli(['status', '--format', 'json']);
@@ -193,7 +248,7 @@ test('non-interactive init supports idempotent no-op', () => {
     const cfgPath = path.join(kbDir, 'config.json');
     assert.equal(fs.existsSync(cfgPath), true);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('config create creates explicit neutral runtime without KB or client registration', () => {
@@ -214,7 +269,7 @@ test('config create creates explicit neutral runtime without KB or client regist
     assert.equal(parsed.meta.clientRegistration, 'not_attempted');
     assert.equal(parsed.meta.kbCatalog, 'not_created');
     assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), parsed.ok.config);
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('config create rejects missing new-format flags', () => {
@@ -254,7 +309,7 @@ test('config create does not modify client registration', () => {
     assert.equal(result.status, 0);
     assert.equal(fs.readFileSync(marker, 'utf8'), before);
     assert.deepEqual(JSON.parse(result.stdout).ok.config, JSON.parse(fs.readFileSync(output, 'utf8')));
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 test('config migrate creates a neutral config with an atomic backup and read-back receipt', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-migrate-'));
@@ -277,7 +332,7 @@ test('config migrate creates a neutral config with an atomic backup and read-bac
         assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).ConfigSchemaVersion, 2);
         assert.deepEqual(parsed.ok.notMigrated, ['Environment.KBPath', 'Environment.KBs', 'Environment.DefaultKb']);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -299,7 +354,7 @@ test('config migrate rolls back an existing destination when read-back fails', (
         assert.equal(fs.readFileSync(target, 'utf8'), original);
         assert.equal(parsed.error.rollback.rolledBack, true);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -315,7 +370,7 @@ test('config migrate rejects non-migratable fields when explicitly requested', (
         assert.match(parsed.error.message, /non-migratable/i);
         assert.equal(fs.existsSync(target), false);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -326,7 +381,7 @@ test('whoami without config returns disconnected state', () => {
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.ok.connected, false);
     assert.ok(parsed.ok.reason, 'should explain why not connected');
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('whoami with config returns kb and geneXus details', () => {
@@ -345,7 +400,7 @@ test('whoami with config returns kb and geneXus details', () => {
     assert.equal(parsed.ok.geneXus.installationPath, testGxPath);
     assert.equal(parsed.meta.command, 'whoami');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('uninstall --yes removes local config and reports plan', () => {
@@ -366,7 +421,7 @@ test('uninstall --yes removes local config and reports plan', () => {
     assert.equal(parsed.ok.configRemoved, true);
     assert.equal(fs.existsSync(cfgPath), false, 'config.json should be deleted');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('uninstall --help returns usage entry', () => {
@@ -401,7 +456,7 @@ test('init auto-discovers KB from cwd when --kb is omitted', () => {
     assert.equal(parsed.ok.resolved.kb.source, 'cwd');
     assert.equal(parsed.ok.resolved.gx.source, 'flag');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('GeneXus installation identity falls back to executable metadata', () => {
@@ -417,7 +472,7 @@ test('GeneXus installation identity falls back to executable metadata', () => {
             source: 'executable-metadata'
         });
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -435,7 +490,7 @@ test('GeneXus installation identity ignores an invalid version file when executa
             source: 'executable-metadata'
         });
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -449,7 +504,7 @@ test('GeneXus installation identity does not infer a major from a missing folder
             source: 'unavailable'
         });
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -465,7 +520,7 @@ test('KB identity reads the GeneXus major from its gxw metadata', () => {
         assert.equal(identity.major, '17');
         assert.equal(identity.source, 'gxw-version');
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -481,7 +536,7 @@ test('KB identity fails closed for malformed gxw metadata', () => {
         assert.equal(identity.source, 'unavailable');
         assert.equal(identity.reason, 'malformed-gxw');
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -513,7 +568,7 @@ test('init rejects a known KB and SDK major mismatch before writing config', () 
         assert.equal(parsed.error.code, 'sdk_kb_mismatch');
         assert.equal(fs.existsSync(path.join(kbDir, 'config.json')), false);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -549,7 +604,7 @@ test('interactive init does not silently choose the primary SDK when KB metadata
     } finally {
         if (previousGeneXusHome === undefined) delete process.env.GENEXUS_HOME;
         else process.env.GENEXUS_HOME = previousGeneXusHome;
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -566,7 +621,7 @@ test('init fails clearly when paths cannot be auto-discovered', () => {
     assert.equal(parsed.error.code, 'usage_error');
     assert.ok(parsed.error.message.includes('--kb'), 'error should mention --kb');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb list shows the KB auto-registered by init', () => {
@@ -585,7 +640,7 @@ test('kb list shows the KB auto-registered by init', () => {
     assert.equal(parsed.ok.kbs[0].active, true);
     assert.equal(parsed.ok.kbs[0].path, kbDir);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb list reads gateway-style KB arrays and DefaultKb', () => {
@@ -611,7 +666,7 @@ test('kb list reads gateway-style KB arrays and DefaultKb', () => {
     assert.deepEqual(parsed.ok.kbs.map((entry) => entry.name), ['main', 'legacy']);
     assert.equal(parsed.ok.kbs[1].active, true);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb switch preserves gateway-style array entries', () => {
@@ -640,7 +695,7 @@ test('kb switch preserves gateway-style array entries', () => {
     assert.equal(cfg.Environment.ActiveKb, 'legacy');
     assert.equal(cfg.Environment.DefaultKb, 'legacy');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb add and switch update active KB', () => {
@@ -668,7 +723,7 @@ test('kb add and switch update active KB', () => {
     assert.equal(cfg.Environment.KBPath, kbB, 'legacy KBPath should be updated');
     assert.equal(cfg.Environment.ActiveKb, 'bravo');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb switch rejects unknown name', () => {
@@ -684,7 +739,7 @@ test('kb switch rejects unknown name', () => {
     assert.equal(parsed.error.code, 'usage_error');
     assert.ok(parsed.error.message.includes('nonexistent'));
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb remove deletes entry and reassigns active when applicable', () => {
@@ -703,7 +758,7 @@ test('kb remove deletes entry and reassigns active when applicable', () => {
     assert.equal(parsed.ok.removed, true);
     assert.equal(parsed.ok.activeKb, 'second', 'active should fall back to remaining KB');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb switch --kb refuses to overwrite existing entry with different path', () => {
@@ -723,7 +778,7 @@ test('kb switch --kb refuses to overwrite existing entry with different path', (
     const cfg = JSON.parse(fs.readFileSync(path.join(kbA, 'config.json'), 'utf8'));
     assert.equal(cfg.Environment.KBs.Sales, kbA, 'original entry must be preserved');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb remove of last KB clears legacy KBPath', () => {
@@ -740,7 +795,7 @@ test('kb remove of last KB clears legacy KBPath', () => {
     assert.equal(cfg.Environment.ActiveKb, undefined, 'ActiveKb should be cleared');
     assert.equal(cfg.Environment.DefaultKb, undefined, 'DefaultKb should be cleared');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('kb subcommand validation: missing subcommand returns usage error', () => {
@@ -755,7 +810,7 @@ test('kb subcommand validation: missing subcommand returns usage error', () => {
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.error.code, 'usage_error');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('tool_definitions.json is valid and disambiguation tools have use-when guidance', () => {
@@ -850,7 +905,7 @@ test('config show truncates large raw content and suggests --full', () => {
     assert.equal(parsed.meta.truncated, true);
     assert.ok(parsed.help.some((h) => h.includes('--full')));
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('config show suppresses truncation hint when raw field is not requested', () => {
@@ -876,7 +931,7 @@ test('config show suppresses truncation hint when raw field is not requested', (
     assert.equal(parsed.meta.truncated, false);
     assert.equal(parsed.help.length, 0);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('--fields validation returns usage error for invalid doctor field', () => {
@@ -940,7 +995,7 @@ test('doctor marks HTTP smoke not applicable for stdio-isolated runtime', () => 
         assert.equal(target.baseUrl, null);
         assert.match(target.detail, /stdio-isolated|HTTP listener is disabled/);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -975,7 +1030,7 @@ test('doctor reports a KB and SDK major mismatch', () => {
         assert.equal(check.status, 'fail');
         assert.match(check.detail, /KB major 17.*SDK major 18/);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1009,7 +1064,7 @@ test('doctor rejects a KB and SDK major that is outside the compatibility catalo
         assert.match(check.detail, /KB major 19 is not supported/);
         assert.match(check.detail, /Supported majors: 17, 18/);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1043,7 +1098,7 @@ test('quiet flag suppresses launcher stderr noise', () => {
         assert.equal(result.status, 1);
         assert.equal(result.stderr.trim(), '');
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1070,7 +1125,7 @@ test('stdio launcher writes a breadcrumb when the gateway is missing before spaw
         assert.match(log, /Gateway executable not found/);
         assert.match(log, /missing[\\/]GxMcp\.Gateway\.exe/);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1091,7 +1146,7 @@ test('doctor surfaces the stdio error breadcrumb when one exists', () => {
         assert.equal(check.status, 'warn');
         assert.ok(check.detail.includes(logPath));
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1124,7 +1179,7 @@ test('detectClientInstalled flags an agent installed via marker even with no MCP
     assert.equal(det.hasConfig, false, 'config file does not exist yet');
     assert.equal(det.markerHit, installDir);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('detectClientInstalled reports not-installed and lists checked paths', () => {
@@ -1140,7 +1195,7 @@ test('detectClientInstalled reports not-installed and lists checked paths', () =
     assert.equal(det.markerHit, null);
     assert.deepEqual(det.markersChecked, client.installMarkers);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('detectClientInstalled treats an existing config file as installed', () => {
@@ -1153,7 +1208,7 @@ test('detectClientInstalled treats an existing config file as installed', () => 
     assert.equal(det.installed, true);
     assert.equal(det.hasConfig, true);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 // Build a throwaway HOME so client-config writes never touch the real machine.
@@ -1222,7 +1277,7 @@ test('clients list reports OpenCode Desktop with shared opencode config', () => 
         assert.equal(rowRegistered.configPath, opencodeCfg);
         assert.equal(rowRegistered.registrationMode, 'automatic');
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1251,7 +1306,7 @@ test('clients add patches OpenCode Desktop into shared opencode config', () => {
         const row = JSON.parse(listRes.stdout).ok.clients.find((client) => client.id === 'opencode-desktop');
         assert.ok(row && row.registered, 'OpenCode Desktop should now report registered');
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1274,7 +1329,7 @@ test('OpenCode Desktop is not falsely reported as installed when only CLI config
         assert.ok(cliRow, 'OpenCode CLI should be present in targets');
         assert.equal(cliRow.installed, true, 'OpenCode CLI is detected installed via config file');
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1299,7 +1354,7 @@ test('clients add still refuses a missing gateway for writable clients', () => {
         assert.match(parsed.error.message, /GATEWAY_EXE_MISSING|does not exist/i);
         assert.equal(fs.existsSync(cursorConfig), false, 'failed validation must not create a client config');
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1323,7 +1378,7 @@ test('getLauncher prefers the packaged gateway for Antigravity only', () => {
     } finally {
         if (previous === undefined) delete process.env.GENEXUS_MCP_GATEWAY_EXE;
         else process.env.GENEXUS_MCP_GATEWAY_EXE = previous;
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1353,7 +1408,7 @@ test('clients add selects a direct gateway for Antigravity and npx for other cli
             assert.equal(antigravity.command, 'npx.cmd', 'source checkouts without publish artifacts retain the fallback');
         }
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1385,7 +1440,7 @@ test('clients add uses the unified Antigravity config when it already exists', (
         }
         assert.equal(fs.existsSync(path.join(tempRoot, '.gemini', 'antigravity', 'mcp_config.json')), false);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1415,7 +1470,7 @@ test('clients add registers a client into a sandbox home with backup + atomic wr
     const baks = fs.readdirSync(path.dirname(cursorCfg)).filter((f) => f.includes('.bak'));
     assert.ok(baks.length >= 1, 'a .bak backup should be created before mutating');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients add tolerates a JSONC (commented) VS Code mcp.json', () => {
@@ -1439,7 +1494,7 @@ test('clients add tolerates a JSONC (commented) VS Code mcp.json', () => {
     assert.ok(written.servers.genexus18mcp, 'genexus18mcp server entry written');
     assert.ok(written.servers.foo, 'pre-existing server preserved');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients add preserves OpenCode 1.x direct mcp shape', () => {
@@ -1470,7 +1525,7 @@ test('clients add preserves OpenCode 1.x direct mcp shape', () => {
     const row = JSON.parse(listed.stdout).ok.clients.find((client) => client.id === 'opencode');
     assert.ok(row && row.registered, 'clients list should read the direct OpenCode entry');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients add preserves OpenCode v2 nested mcp.servers shape', () => {
@@ -1501,7 +1556,7 @@ test('clients add preserves OpenCode v2 nested mcp.servers shape', () => {
     const row = JSON.parse(listed.stdout).ok.clients.find((client) => client.id === 'opencode');
     assert.ok(row && row.registered, 'clients list should read the nested OpenCode entry');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('init auto-registers detected OpenCode in either config layout', () => {
@@ -1534,7 +1589,7 @@ test('init auto-registers detected OpenCode in either config layout', () => {
             assert.equal(entry.environment?.GX_CONFIG_PATH, undefined);
             assert.ok(label === 'nested' ? written.mcp.servers.other : written.mcp.other);
         } finally {
-            fs.rmSync(tempRoot, { recursive: true, force: true });
+            removeTempPath(tempRoot, { recursive: true, force: true });
         }
     }
 });
@@ -1559,7 +1614,7 @@ test('init with --global-config persists GX_CONFIG_PATH into client entry', () =
         assert.ok(written.mcp.genexus18mcp);
         assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, path.join(kbDir, 'config.json'));
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1581,7 +1636,7 @@ test('clients add with --global-config persists GX_CONFIG_PATH into client entry
         assert.ok(written.mcp.genexus18mcp);
         assert.equal(written.mcp.genexus18mcp.environment.GX_CONFIG_PATH, cfgPath);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1606,7 +1661,7 @@ test('init auto-registers detected OpenCode Desktop when its marker is present',
         const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
         assert.ok(written.mcp.genexus18mcp);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1629,7 +1684,7 @@ test('clients add replaces a legacy genexus18 entry instead of duplicating it', 
     assert.ok(written.mcpServers.genexus18mcp, 'new genexus18mcp entry present');
     assert.equal(written.mcpServers.genexus18, undefined, 'legacy genexus18 removed (no duplicate)');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients list flags a registered command pointing at a missing launcher as stale (.bat too)', () => {
@@ -1649,7 +1704,7 @@ test('clients list flags a registered command pointing at a missing launcher as 
     assert.equal(cursor.commandStale, true, 'missing launcher => stale');
     assert.ok(parsed.help.some((h) => h.includes('missing gateway exe')), 'help should call out the stale client');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients list separates a registered node launcher without an entrypoint from semantic validity', () => {
@@ -1680,7 +1735,7 @@ test('clients list separates a registered node launcher without an entrypoint fr
         assert.equal(codex.commandStale, true, 'known invalid launcher is actionable through the existing stale flag');
         assert.match(codex.commandStaleReason, /entrypoint/i);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1745,7 +1800,7 @@ test('clients list validates existing Gateway and known npx launchers locally', 
         assert.equal(node.commandStale, false);
         assert.equal(parsed.ok.summary.semanticInvalid, 0);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1767,7 +1822,7 @@ test('clients list keeps an existing unrecognized launcher indeterminate', () =>
         assert.equal(cursor.launcherSemanticState, 'unknown');
         assert.equal(cursor.commandStale, false, 'unknown commands are not treated as invalid');
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1797,7 +1852,7 @@ test('clients list marks an Antigravity launcher from an old package cache as st
         assert.equal(antigravity.commandStale, true);
         assert.match(antigravity.commandStaleReason, /different package gateway/);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -1811,7 +1866,7 @@ test('readJsonFileSafe parses JSONC without corrupting string values containing 
     assert.ok(parsed, 'should parse');
     assert.equal(parsed.servers.x.command, 'a, ]b', 'comma inside string value preserved');
     assert.deepEqual(parsed.servers.x.args, ['c,]'], 'comma inside array string preserved');
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('readJsonFileSafe strips a genuine trailing comma', () => {
@@ -1821,7 +1876,7 @@ test('readJsonFileSafe strips a genuine trailing comma', () => {
     const parsed = readJsonFileSafe(f);
     assert.deepEqual(parsed.a, [1, 2, 3]);
     assert.deepEqual(parsed.b, { x: 1 });
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients add without --clients is a usage error', () => {
@@ -1847,7 +1902,7 @@ test('clients remove drops the genexus entry (sandbox home)', () => {
     assert.equal(written.mcpServers.genexus18mcp, undefined, 'genexus18mcp removed');
     assert.equal(written.mcpServers.genexus18, undefined, 'legacy genexus18 also removed');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients remove drops both OpenCode config shapes and legacy key', () => {
@@ -1880,7 +1935,7 @@ test('clients remove drops both OpenCode config shapes and legacy key', () => {
     assert.equal(written.mcp.servers.genexus18mcp, undefined);
     assert.ok(written.mcp.servers.other, 'unrelated nested MCP server should be preserved');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('strict semver compares prerelease precedence and ignores build metadata', () => {
@@ -1988,7 +2043,7 @@ test('gateway passthrough remains intact when no AXI subcommand is used', () => 
     assert.equal(result.status, 0);
     assert.ok(result.stdout.includes('gateway:hello,world'));
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('stdio launcher persists the last child stderr when the gateway exits non-zero', () => {
@@ -2017,7 +2072,7 @@ test('stdio launcher persists the last child stderr when the gateway exits non-z
         assert.match(log, /gateway bootstrap failed/);
         assert.match(log, /second line/);
     } finally {
-        fs.rmSync(tempRoot, { recursive: true, force: true });
+        removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
@@ -2108,7 +2163,7 @@ test('clients add refuses to overwrite a third-party HTTP MCP server without --f
     const after = JSON.parse(fs.readFileSync(cursorCfg, 'utf8'));
     assert.equal(after.mcpServers.genexus18mcp.url, 'http://localhost:8001/mcp');
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients add with --force overwrites an existing third-party entry', () => {
@@ -2136,7 +2191,7 @@ test('clients add with --force overwrites an existing third-party entry', () => 
     assert.equal(after.mcpServers.genexus18mcp.url, undefined);
     assert.ok(after.mcpServers.genexus18mcp.command);
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients add supports custom --server-name across all formats for multi-MCP coexistence', () => {
@@ -2195,7 +2250,7 @@ test('clients add supports custom --server-name across all formats for multi-MCP
     assert.ok(codexWritten.includes('[mcp_servers.genexus]'));
     assert.ok(codexWritten.includes('[mcp_servers.Gx18byLennix]'));
 
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
 test('clients add rejects invalid --server-name characters with usage error', () => {
@@ -2250,7 +2305,7 @@ test('patchClientConfig reports backup failure without claiming that client patc
         assert.deepEqual(result.failed, [{ client: 'OpenCode (CLI)', reason: 'backup denied' }]);
         assert.equal(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp, undefined);
         assert.ok(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp);
-    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+    } finally { removeTempPath(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
 test('patchClientConfig preserves earlier success when a later client write fails', () => {
@@ -2264,7 +2319,7 @@ test('patchClientConfig preserves earlier success when a later client write fail
         assert.deepEqual(result.failed, [{ client: 'VS Code', reason: 'write denied' }]);
         assert.ok(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp);
         assert.equal(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp, undefined);
-    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+    } finally { removeTempPath(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
 test('patchClientConfig reports post-write read-back failure as partial state', () => {
@@ -2278,7 +2333,7 @@ test('patchClientConfig reports post-write read-back failure as partial state', 
         assert.deepEqual(result.failed, [{ client: 'OpenCode (CLI)', reason: 'post-write verification failed (genexus18mcp entry not found after write)' }]);
         assert.ok(JSON.parse(fs.readFileSync(fixture.openCodeCfg, 'utf8')).mcp.genexus18mcp);
         assert.ok(JSON.parse(fs.readFileSync(fixture.vscodeCfg, 'utf8')).servers.genexus18mcp);
-    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+    } finally { removeTempPath(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
 test('patchClientConfig keeps a stale same-second backup and writes a distinct backup', () => {
@@ -2293,5 +2348,5 @@ test('patchClientConfig keeps a stale same-second backup and writes a distinct b
         const backups = fs.readdirSync(path.dirname(fixture.openCodeCfg)).filter((name) => name.startsWith(path.basename(fixture.openCodeCfg)) && name.endsWith('.bak'));
         assert.equal(backups.length, 2);
         assert.ok(backups.some((name) => name !== path.basename(stale)));
-    } finally { fs.rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+    } finally { removeTempPath(fixture.tempRoot, { recursive: true, force: true }); }
 });

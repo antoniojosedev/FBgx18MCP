@@ -92,13 +92,47 @@ pwsh -NoProfile -File .\scripts\release-preflight.ps1 -GxPath $env:GX_PATH `
 
 The summary uses schema `gxmcp-release-preflight/1` and records each phase's
 `name`, `command`, `status`, `exitCode`, `durationSeconds`, timestamps, and an
-optional `reason`. Contract, inventory, and script checks run before the
-expensive build/test phases. On a local Windows SDK machine, the preflight
+optional `reason`. It also records `sourceCommit`, `artifactFingerprint`,
+`executionMode`, and `resumedFrom` when applicable; reused phases remain
+observable with `reused=true`. Contract, inventory, and script checks run before
+the expensive build/test phases. After those prerequisites, independent CLI,
+PowerShell, Nexus, and solution-test phases run in parallel. The live-artifact
+phase runs after the warning baseline because it also invokes `dotnet test`
+against the Gateway test binaries; keeping it sequenced prevents testhost and
+`bin/obj` races. The warning-baseline rebuild runs after the solution phase so
+shared MSBuild `bin/obj` outputs are never written concurrently. The summary is
+written atomically at startup and after each phase starts or completes, retaining
+`running` and terminal states if the host is interrupted. On a local Windows SDK machine, the preflight
 automatically selects `C:/KBs/KBTeste` for GeneXus 18 or `C:/KBs/KBTeste17`
 for GeneXus 17 when `GXMCP_TEST_KB` is unset. `GXMCP_TEST_FIXTURE` is optional
 for normal live validation and is only needed for attested benchmark
 populations. Set `GXMCP_REQUIRE_LIVE_BUILD_ALL=1` to make the live Build All
 gate mandatory.
+
+### Fast iteration and safe preflight resume
+
+During development, run the narrowest affected test after each edit. Before a
+release, run one canonical `release-preflight.ps1` and use its phase timings;
+do not rerun the same complete .NET, CLI, script, lint, and live suites manually
+after the canonical gate unless the source, SDK, fixture, or relevant
+environment changed. The preflight owns the warning baseline on its normal
+path; `release.ps1` invokes that check separately only when `-SkipTests` was
+explicitly selected.
+
+If the preflight fails after producing a source commit and `publish/` artifacts,
+rerun the same version. `release.ps1` passes the previous summary back to the
+preflight and may reuse the existing build only when the version, repository
+root, source commit, selected SDK path, live inputs, and artifact fingerprint
+all match. A missing or blank fingerprint is also a mismatch and invalidates
+reuse; it is never treated as proof that artifacts are unchanged. This is a retry
+optimization, not permission to skip an individual gate.
+
+The npm workflow uses `--no-audit --no-fund`, bounds each registry probe with no
+hidden npm retries, and avoids sleeping after the final attempt. It still waits
+synchronously for an exact `package@version` registry read-back. GitHub Step
+Summary reports publish acceptance, registry visibility, probe count, and
+propagation seconds; registry propagation is external latency and is not
+treated as a local development-performance win.
 
 Release progress is written atomically to a status file under `%TEMP%` by
 default. Detached runs record that status path plus their stdout/stderr log

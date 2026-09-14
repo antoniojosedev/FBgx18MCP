@@ -18,6 +18,9 @@
 
 ### Changed
 
+- **Release preflight throughput**: Run independent CLI, script, Nexus, and solution-test gates in parallel while keeping the warning baseline and live testhost gates serialized.
+- **Release retry resilience**: Reuse only source- and artifact-matched preflight phases after a failed run (a missing fingerprint fails closed), persist in-flight phase state atomically, and retry transient Windows temporary-directory locks without hiding permanent cleanup errors.
+- **npm publication verification**: Bound registry probes, avoid unnecessary npm audit/fund work, skip the final polling sleep, and expose publish-to-registry propagation timing in the workflow summary.
 - **Worker Scale Index & Secondary Lookups (Untouched Tools)**:
   - `SearchIndex.FindByGuid`: Introduce $O(1)$ GUID lookup via `GuidToKey` with fallback, accelerating GUID resolution across Worker tools.
   - `ObjectService.BuildObjectIdentity` & `TryPromoteCompleteSourceRead`: Replace 40,000-object linear scans with `index.FindByGuid` in $O(1)$.
