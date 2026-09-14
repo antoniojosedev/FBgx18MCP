@@ -73,6 +73,9 @@ Comparativo de medições antes e depois das 4 otimizações implementadas.
 | **Type Gathering / Candidates** (DbOptimize, PatternApply, ValidateConditions) | 1,215 ms/filtro | **0,475 ms/filtro** | **2,6x mais rápido (O(1) TypeIndex buckets)** |
 | **IdentityNameMatches Path Evaluation** (nomes simples sem `/` ou `.`) | Substring, Replace e Concat (~200k alocações) | **Zero-allocation short-circuit** | **Elimina 100% das alocações de path em nomes simples** |
 | **FormatNotFoundError Ambiguity Check** (29 ferramentas de leitura/edição/estrutura) | Varredura de 40.000 objetos | **O(1) ByNameIndex lookup** | **Envelope de erro imediato sem latência de varredura** |
+| **Linter Regex Singletons** (10 regras GX001-GX011) | Compilação dinâmica a cada execução | **Static Compiled Singletons** | **Zero compilação JIT repetida e zero contenção de cache** |
+| **CallerGraph BuildAdjacency** (grafo de chamadas em 40k objetos) | Varredura de 40k para nomes + regex dinâmica | **ByNameIndex.Keys + InvocationRegex compilada** | **Grafo inicializado sem scan redundante de nomes** |
+| **Visualizer Multi-Criteria Filter** (40k objetos) | 40k anonymous objects + scoring antes de filtrar | **Filtro preliminar via DomainIndex / TypeIndex** | **Elimina até 40.000 alocações de objetos por visualização** |
 
 ---
-Relatório atualizado e validado em 2026-09-14T00:10:00.
+Relatório atualizado e validado em 2026-09-14T00:16:00.

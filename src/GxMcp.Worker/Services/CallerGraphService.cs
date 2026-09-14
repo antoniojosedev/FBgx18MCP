@@ -24,6 +24,7 @@ namespace GxMcp.Worker.Services
         private readonly IndexCacheService _index;
         private readonly object _adjacencyGate = new object();
         private SearchIndex _adjacencyIndex;
+        private static readonly Regex InvocationRegex = new Regex(@"\b(\w+)\s*\(", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private long _adjacencyRevision = -1;
         private GraphAdjacency _adjacency;
 
@@ -141,15 +142,22 @@ namespace GxMcp.Worker.Services
         private static GraphAdjacency BuildAdjacency(SearchIndex index)
         {
             var adjacency = new GraphAdjacency();
-            var knownNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var callerSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-            var calleeSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             if (index?.Objects == null) return adjacency;
 
-            foreach (var entry in index.Objects.Values)
+            var knownNames = index.ByNameIndex != null
+                ? new HashSet<string>(index.ByNameIndex.Keys, StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (index.ByNameIndex == null)
             {
-                if (entry != null && !string.IsNullOrEmpty(entry.Name)) knownNames.Add(entry.Name);
+                foreach (var entry in index.Objects.Values)
+                {
+                    if (entry != null && !string.IsNullOrEmpty(entry.Name)) knownNames.Add(entry.Name);
+                }
             }
+
+            var callerSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var calleeSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var entry in index.Objects.Values)
             {
@@ -175,7 +183,7 @@ namespace GxMcp.Worker.Services
                 // resolve to a known indexed object become graph edges.
                 if (!string.IsNullOrEmpty(entry.SourceSnippet))
                 {
-                    foreach (Match match in Regex.Matches(entry.SourceSnippet, @"\b(\w+)\s*\(", RegexOptions.IgnoreCase))
+                    foreach (Match match in InvocationRegex.Matches(entry.SourceSnippet))
                     {
                         string called = match.Groups[1].Value;
                         if (!knownNames.Contains(called)) continue;

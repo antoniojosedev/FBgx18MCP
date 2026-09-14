@@ -20,6 +20,10 @@
   - `KbValidationService.IsKnownObject`, `AnalyzeImpact`, and `ValidateConditions`: $O(1)$ symbol validation (from 2.527 ms to 0.00024 ms per check, 10,435x speedup with 0 Gen0 collections) and direct `TypeIndex` candidate retrieval.
   - `HealingService.FormatNotFoundError`: $O(1)$ exact-match ambiguity checks via `ByNameIndex` accelerating error envelope synthesis across 29 tool failure paths.
   - `PatternApplyService.ListWwpWebTemplates` and `DbOptimizeService.EnumerateCallers`/`EnumerateTransactionNames`: query `TypeIndex` directly instead of iterating all 40,000 objects.
+- **Worker Regex & Graph Precompilation**:
+  - `LinterService`: Precompile all rule regexes (`ForEachBlockRegex`, `CommitRegex`, `WhereDefinedByRegex`, `SleepWaitRegex`, `DynamicCallRegex`, `NestedForEachRegex`, `WhenNoneRegex`, `NewBlockRegex`, `WhenDuplicateRegex`, `StripCommentsRegex`) as static singletons, eliminating dynamic JIT recompilation and regex cache overhead across all linted objects.
+  - `CallerGraphService.BuildAdjacency`: Precompile `InvocationRegex` and initialize `knownNames` directly from `ByNameIndex.Keys`, eliminating full-index scans and regex recompilations during graph construction.
+  - `VisualizerService.GenerateGraph`: Pre-filter candidate sets via `DomainIndex` and `TypeIndex` before calculating structural scores, avoiding 40,000 anonymous object allocations and score computations on filtered graph visualizations.
 
 ## v3.4.3 - 2026-09-13
 

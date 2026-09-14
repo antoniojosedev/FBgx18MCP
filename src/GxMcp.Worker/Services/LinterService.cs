@@ -18,6 +18,17 @@ namespace GxMcp.Worker.Services
         private readonly NavigationService _navigationService;
         private WriteService _writeService;
 
+        private static readonly Regex ForEachBlockRegex = new Regex(@"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+        private static readonly Regex CommitRegex = new Regex(@"(?i)\bcommit\b", RegexOptions.Compiled);
+        private static readonly Regex WhereDefinedByRegex = new Regex(@"(?i)\bwhere\b|\bdefined\s+by\b", RegexOptions.Compiled);
+        private static readonly Regex SleepWaitRegex = new Regex(@"(?i)\b(?:sleep|wait)\s*\(\s*\d+\s*\)", RegexOptions.Compiled);
+        private static readonly Regex DynamicCallRegex = new Regex(@"(?i)\b(?:call|udp)\s*\(\s*&\w+\s*.*?\)", RegexOptions.Compiled);
+        private static readonly Regex NestedForEachRegex = new Regex(@"(?is)\bfor\s+each\b\s*.*?\bfor\s+each\b\s*.*?\bendfor\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+        private static readonly Regex WhenNoneRegex = new Regex(@"(?i)\bwhen\s+none\b", RegexOptions.Compiled);
+        private static readonly Regex NewBlockRegex = new Regex(@"(?is)\bnew\b\s*.*?\s*\bendnew\b", RegexOptions.Compiled);
+        private static readonly Regex WhenDuplicateRegex = new Regex(@"(?i)\bwhen\s+duplicate\b", RegexOptions.Compiled);
+        private static readonly Regex StripCommentsRegex = new Regex(@"/\*.*?\*/|//.*?\n", RegexOptions.Compiled | RegexOptions.Singleline);
+
         public LinterService(ObjectService objectService, NavigationService navigationService)
         {
             _objectService = objectService;
@@ -281,7 +292,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckNestedForEach(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var nestedMatch = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\bfor\s+each\b\s*.*?\bendfor\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+            var nestedMatch = NestedForEachRegex.Matches(cleanCode);
             foreach (Match m in nestedMatch)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -291,10 +302,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckMissingWhenNone(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhen\s+none\b", RegexOptions.Compiled))
+                if (!WhenNoneRegex.IsMatch(m.Value))
                 {
                     if (m.Value.Length > 200) {
                         int line = GetLineNumber(originalCode, m.Index);
@@ -310,10 +321,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckCommitInsideLoop(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (Regex.IsMatch(m.Value, @"(?i)\bcommit\b", RegexOptions.Compiled))
+                if (CommitRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX001", "Commit inside loop", "Critical", "Avoid Commit inside For Each.", "Commit", line, partName));
@@ -323,10 +334,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckUnfilteredLoop(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhere\b|\bdefined\s+by\b", RegexOptions.Compiled))
+                if (!WhereDefinedByRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX002", "Unfiltered loop", "Critical", "Full table scan detected.", "For Each", line, partName));
@@ -336,7 +347,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckSleepWait(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var matches = Regex.Matches(cleanCode, @"(?i)\b(?:sleep|wait)\s*\(\s*\d+\s*\)", RegexOptions.Compiled);
+            var matches = SleepWaitRegex.Matches(cleanCode);
             foreach (Match m in matches)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -346,7 +357,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckDynamicCall(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var matches = Regex.Matches(cleanCode, @"(?i)\b(?:call|udp)\s*\(\s*&\w+\s*.*?\)", RegexOptions.Compiled);
+            var matches = DynamicCallRegex.Matches(cleanCode);
             foreach (Match m in matches)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -567,10 +578,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckNewWhenDuplicate(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var newBlocks = Regex.Matches(cleanCode, @"(?is)\bnew\b\s*.*?\s*\bendnew\b", RegexOptions.Compiled);
+            var newBlocks = NewBlockRegex.Matches(cleanCode);
             foreach (Match m in newBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhen\s+duplicate\b", RegexOptions.Compiled))
+                if (!WhenDuplicateRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX005", "New without When Duplicate", "Info", "Consider adding 'when duplicate'.", "New", line, partName));
@@ -580,7 +591,7 @@ namespace GxMcp.Worker.Services
 
         private static string StripComments(string code)
         {
-            return Regex.Replace(code, @"/\*.*?\*/|//.*?\n", " ", RegexOptions.Singleline);
+            return StripCommentsRegex.Replace(code, " ");
         }
 
         private int GetLineNumber(string text, int index)
