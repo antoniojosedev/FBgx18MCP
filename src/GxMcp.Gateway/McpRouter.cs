@@ -64,8 +64,12 @@ namespace GxMcp.Gateway
         private static readonly IReadOnlyDictionary<string, PromptDefinition> _promptDefinitions = BuildPromptDefinitions();
         private static readonly string[] _promptNames = _promptDefinitions.Keys.ToArray();
         private static readonly List<IMcpModuleRouter> _routers;
+        private static Dictionary<string, IMcpModuleRouter> _routerByTool = new Dictionary<string, IMcpModuleRouter>(StringComparer.OrdinalIgnoreCase);
+        private static HashSet<string> _declaredToolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static JArray _toolDefinitions = new JArray();
         private static JObject? _cachedToolsListResponse;
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> _cachedProfileResponses =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
         private static readonly object _cachedResourcesListResponse = BuildResourcesListResponse();
         private static readonly object _cachedResourceTemplatesListResponse = BuildResourceTemplatesListResponse();
         private static readonly object _cachedPromptsListResponse = new
@@ -147,12 +151,14 @@ namespace GxMcp.Gateway
             {
                 if (_toolDefinitions == null || _toolDefinitions.Count == 0) return;
                 var duplicates = new List<string>();
+                var routerByTool = new Dictionary<string, IMcpModuleRouter>(StringComparer.OrdinalIgnoreCase);
                 foreach (var def in _toolDefinitions.OfType<JObject>())
                 {
                     string toolName = def["name"]?.ToString();
                     if (string.IsNullOrEmpty(toolName)) continue;
                     int hits = 0;
                     var claimers = new List<string>();
+                    IMcpModuleRouter? claimingRouter = null;
                     foreach (var router in _routers)
                     {
                         try
@@ -160,13 +166,22 @@ namespace GxMcp.Gateway
                             // empty JObject probe — safer than null; routers that gate on
                             // required args will return null without throwing.
                             object result = router.ConvertToolCall(toolName, new JObject());
-                            if (result != null) { hits++; claimers.Add(router.GetType().Name); }
+                            if (result != null)
+                            {
+                                hits++;
+                                claimers.Add(router.GetType().Name);
+                                claimingRouter = router;
+                            }
                         }
                         catch { /* throwing router doesn't claim the tool */ }
                     }
                     if (hits > 1)
                     {
                         duplicates.Add(toolName + " → " + string.Join(", ", claimers));
+                    }
+                    else if (hits == 1 && claimingRouter != null)
+                    {
+                        routerByTool[toolName] = claimingRouter;
                     }
                 }
                 if (duplicates.Count > 0)
@@ -177,7 +192,8 @@ namespace GxMcp.Gateway
                     Program.Log(msg);
                     throw new InvalidOperationException(msg);
                 }
-                Program.Log($"[McpRouter] Router-dup guard OK ({_toolDefinitions.Count} tools, {_routers.Count} routers).");
+                _routerByTool = routerByTool;
+                Program.Log($"[McpRouter] Router-dup guard OK ({_toolDefinitions.Count} tools, {_routers.Count} routers, {_routerByTool.Count} mapped).");
             }
             catch (InvalidOperationException) { throw; }
             catch (Exception ex)
@@ -202,6 +218,11 @@ namespace GxMcp.Gateway
                     // the source JSON is edited in a different order.
                     _toolDefinitions = new JArray(parsed.OfType<JObject>()
                         .OrderBy(definition => definition["name"]?.ToString() ?? string.Empty, StringComparer.Ordinal));
+                    _declaredToolNames = new HashSet<string>(
+                        _toolDefinitions.OfType<JObject>()
+                            .Select(d => d["name"]?.ToString() ?? string.Empty)
+                            .Where(n => !string.IsNullOrEmpty(n)),
+                        StringComparer.OrdinalIgnoreCase);
                     _cachedToolsListResponse = new JObject
                     {
                         ["resultType"] = "complete",
@@ -209,6 +230,8 @@ namespace GxMcp.Gateway
                         ["ttlMs"] = 3600000,
                         ["cacheScope"] = "public"
                     };
+                    _cachedProfileResponses.Clear();
+                    ToolProfileFilter.InvalidateCache();
                     Program.Log($"[McpRouter] Loaded {_toolDefinitions.Count} tool definitions from JSON.");
                 }
                 else
@@ -406,14 +429,14 @@ namespace GxMcp.Gateway
                                 ["cacheScope"] = "public"
                             };
                         }
-                        return new JObject
+                        return _cachedProfileResponses.GetOrAdd(activeProfile, p => new JObject
                         {
                             ["resultType"] = "complete",
-                            ["tools"] = ToolProfileFilter.GetOrCreateFiltered(_toolDefinitions, activeProfile),
-                            ["profile"] = activeProfile,
+                            ["tools"] = ToolProfileFilter.GetOrCreateFiltered(_toolDefinitions, p),
+                            ["profile"] = p,
                             ["ttlMs"] = 3600000,
                             ["cacheScope"] = "public"
-                        };
+                        });
                     }
                 case "resources/list":
                     return _cachedResourcesListResponse;
@@ -1380,15 +1403,26 @@ namespace GxMcp.Gateway
 
             if (RemovedToolsRegistry.Map.ContainsKey(toolName)) return null;
 
-            foreach (var router in _routers)
+            // PERFORMANCE (G-C1): O(1) direct router lookup instead of iterating all routers
+            if (_routerByTool.TryGetValue(toolName, out var matchedRouter))
             {
-                var converted = router.ConvertToolCall(toolName, args);
+                var converted = matchedRouter.ConvertToolCall(toolName, args);
                 if (converted != null) return converted;
+            }
+            else
+            {
+                foreach (var router in _routers)
+                {
+                    var converted = router.ConvertToolCall(toolName, args);
+                    if (converted != null) return converted;
+                }
             }
 
             // Direct declarative tool dispatch seam (Candidate 1 deepening)
             // Forwards canonical tools declared in tool_definitions.json directly to Worker CommandHandlerRegistry.
-            bool isDeclared = _toolDefinitions != null && _toolDefinitions.Any(t => string.Equals(t["name"]?.ToString(), toolName, StringComparison.OrdinalIgnoreCase));
+            bool isDeclared = _declaredToolNames != null
+                ? _declaredToolNames.Contains(toolName)
+                : (_toolDefinitions != null && _toolDefinitions.Any(t => string.Equals(t["name"]?.ToString(), toolName, StringComparison.OrdinalIgnoreCase)));
             if (isDeclared)
             {
                 return new

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- **Performance & Allocation**: Cache complete `tools/list` response envelopes per profile in `McpRouter`, eliminating allocation and re-filtering overhead on discovery.
+- **IPC & Stdio Streaming**: Stream progress heartbeat notifications directly via `JsonTextWriter` buffer in `Program.RequestLoop.cs` without intermediate string serialization.
+- **Worker STA Concurrency**: Offload JSON parsing from the single-threaded STA thread by enqueuing pre-parsed `SdkCommandItem` instances into `SdkCommandQueue`, eliminating redundant `JObject.Parse` operations in `DescribeCommand`, `ExtractOperationId`, and `ProcessCommand` on the STA thread.
+- **Memory & Cache Optimization**: Optimize `ObjectService.BuildReadCacheKey` to zero-alloc 4-argument string concatenation with defaults fast-path (-44% latency, -50% Gen0), and introduce adaptive heap-pressure threshold for idle LOH compaction in `IdleMemoryMaintenance`.
+- **Gateway Zero-Allocation Response Guard**: Replace per-request `CountingStream`, `StreamWriter`, and 32KB buffer allocations in `ResponseSizeGuard` with a thread-static reusable `CountingContext` with non-emitting UTF-8 encoder, reducing payload check overhead from 196.6 µs to 29.2 µs with 0 Gen0 collections.
+- **Gateway O(1) Router Dispatch**: Index tool routers into an $O(1)$ lookup dictionary and replace LINQ checks with an immutable `HashSet<string>`, accelerating dispatch routing from 169.8 ns to 35.6 ns (4.8x faster).
+- **Worker Scale O(1) ByNameIndex Multimap**: Resolve candidates via `ByNameIndex` multimap for exact matches and `criteria.NameFilter` in `SearchService`, cutting 40,000-object query latency from 0.598 ms to 0.00035 ms (1,708x speedup, 0 Gen0 collections).
+- **Worker ListObjects Top-K Bounded Heap**: Single-pass bounded heap selection (`SelectTopK`) in `ListService` for paginated discovery (`limit <= 200`), slashing 40,000-object sort latency from 40.35 ms to 2.17 ms (18.6x speedup), and short-circuit `DescriptionContains` in `IndexEntryFilterBuilder` avoiding string allocations on null descriptions.
+
 ## v3.4.3 - 2026-09-13
 
 

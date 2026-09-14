@@ -85,17 +85,39 @@ namespace GxMcp.Gateway
             return Encoding.UTF8.GetByteCount(serializedJson);
         }
 
+        private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
+
+        [ThreadStatic]
+        private static CountingContext? t_countingContext;
+
+        private sealed class CountingContext
+        {
+            public readonly CountingStream Stream = new CountingStream();
+            public readonly StreamWriter Writer;
+
+            public CountingContext()
+            {
+                Writer = new StreamWriter(Stream, Utf8NoBom, bufferSize: 32 * 1024, leaveOpen: true) { AutoFlush = false };
+            }
+
+            public void Reset()
+            {
+                Stream.Count = 0;
+            }
+        }
+
         internal static long ByteSize(JToken token)
         {
-            var counter = new CountingStream();
-            using (var writer = new StreamWriter(counter, Encoding.UTF8, bufferSize: 32 * 1024, leaveOpen: true) { AutoFlush = false })
-            using (var jw = new JsonTextWriter(writer) { Formatting = Formatting.None })
+            if (token == null) return 0;
+            var ctx = t_countingContext ??= new CountingContext();
+            ctx.Reset();
+            using (var jw = new JsonTextWriter(ctx.Writer) { Formatting = Formatting.None, CloseOutput = false })
             {
                 token.WriteTo(jw);
                 jw.Flush();
-                writer.Flush();
+                ctx.Writer.Flush();
             }
-            return counter.Length;
+            return ctx.Stream.Length;
         }
 
         private sealed class CountingStream : Stream

@@ -4349,18 +4349,19 @@ namespace GxMcp.Worker.Services
             string normalizedClient = string.IsNullOrWhiteSpace(client) ? "mcp" : client.Trim().ToLowerInvariant();
             int normalizedOffset = offset ?? -1;
             int normalizedLimit = limit ?? -1;
+
+            if (normalizedOffset == -1 && normalizedLimit == -1 && normalizedClient == "mcp")
+            {
+                return string.Concat(objectGuid.ToString("N"), "|", normalizedPart, minimize ? "|-1|-1|mcp|1" : "|-1|-1|mcp|0");
+            }
+
+            string offsetStr = normalizedOffset == -1 ? "-1" : normalizedOffset.ToString();
+            string limitStr = normalizedLimit == -1 ? "-1" : normalizedLimit.ToString();
             return string.Concat(
                 objectGuid.ToString("N"),
-                "|",
-                normalizedPart,
-                "|",
-                normalizedOffset.ToString(),
-                "|",
-                normalizedLimit.ToString(),
-                "|",
-                normalizedClient,
-                "|",
-                minimize ? "1" : "0");
+                "|" + normalizedPart + "|",
+                offsetStr + "|" + limitStr + "|",
+                normalizedClient + (minimize ? "|1" : "|0"));
         }
 
         private static bool TryGetReadCache(string key, out string payload)

@@ -1902,7 +1902,7 @@ namespace GxMcp.Gateway
                                     pollResult = await McpRouter.LongPollJob(
                                         JobRegistry, jobId, waitSeconds,
                                         progressToken: clientProgressToken,
-                                        heartbeat: hasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null,
+                                        heartbeat: hasProgressToken ? TryWriteStdout : null,
                                         cancellationToken: longPollCancellationToken);
                                 }
                                 finally
@@ -2449,7 +2449,7 @@ namespace GxMcp.Gateway
                                     pollResult = await McpRouter.LongPollJob(
                                         JobRegistry, job.Id, blockingCap,
                                         progressToken: clientProgressToken,
-                                        heartbeat: hasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null,
+                                        heartbeat: hasProgressToken ? TryWriteStdout : null,
                                         cancellationToken: longPollCancellationToken);
                                 }
                                 finally
@@ -2924,7 +2924,7 @@ namespace GxMcp.Gateway
                         toolArgs: tArgs,
                         trackOperation: true,
                         progressToken: toolProgressToken,
-                        heartbeat: toolHasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null,
+                        heartbeat: toolHasProgressToken ? TryWriteStdout : null,
                         // E9: bind this worker request to the MCP client request id so
                         // notifications/cancelled can find and abort it (the _pendingRequests
                         // key is a gateway GUID, invisible to the client).

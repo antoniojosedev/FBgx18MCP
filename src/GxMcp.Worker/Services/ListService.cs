@@ -317,26 +317,30 @@ namespace GxMcp.Worker.Services
                     bool sortByLastUpdate = !string.IsNullOrEmpty(sort) &&
                         string.Equals(sort, "lastUpdate", StringComparison.OrdinalIgnoreCase);
 
+                    IComparer<SearchIndex.IndexEntry> comparer = sortByLastUpdate
+                        ? (IComparer<SearchIndex.IndexEntry>)LastUpdateIndexEntryComparer.Instance
+                        : DefaultIndexEntryComparer.Instance;
+
+                    int startIndex = Math.Max(0, offset);
+                    int pageSize = limit <= 0 ? int.MaxValue : limit;
+                    int needed = (startIndex <= int.MaxValue - pageSize) ? startIndex + pageSize : int.MaxValue;
+
                     List<SearchIndex.IndexEntry> orderedIndexEntries;
-                    if (sortByLastUpdate)
+                    int totalIndex;
+
+                    // PERFORMANCE: If we only need top-K items (common MCP list paging, e.g. limit=50, offset=0)
+                    // and no cursor is specified, use a single-pass bounded heap (O(N log K)) instead of sorting all N items.
+                    if (string.IsNullOrEmpty(cursor) && needed > 0 && needed <= 200)
                     {
-                        orderedIndexEntries = entries
-                            .OrderByDescending(e => e.LastUpdate)
-                            .ThenBy(e => e.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                            .ThenBy(e => e.Guid ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                            .ToList();
+                        orderedIndexEntries = SelectTopK(entries, needed, comparer, out totalIndex);
                     }
                     else
                     {
-                        orderedIndexEntries = entries
-                            .OrderBy(e => GetTypeSortBucket(e.Type))
-                            .ThenBy(e => e.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                            .ThenBy(e => e.Type ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                            .ToList();
+                        var candidateList = entries.ToList();
+                        totalIndex = candidateList.Count;
+                        candidateList.Sort(comparer);
+                        orderedIndexEntries = candidateList;
                     }
-
-                    int totalIndex = orderedIndexEntries.Count;
-                    int startIndex = Math.Max(0, offset);
 
                     // v2.6.8: stable cursor wins over offset when both arrive. Decode
                     // pulls (lastUpdate, guid); we scan the ordered list to the first
@@ -367,7 +371,6 @@ namespace GxMcp.Worker.Services
                     }
 
                     bool legacyMode = IsLegacyPerfProfile();
-                    int pageSize = limit <= 0 ? int.MaxValue : limit;
                     int endIndex = Math.Min(totalIndex, (int)Math.Min((long)totalIndex, (long)startIndex + pageSize));
                     for (int i = startIndex; i < endIndex; i++)
                     {
@@ -1078,7 +1081,7 @@ namespace GxMcp.Worker.Services
             return _likelyTypes.Contains(s);
         }
 
-        private int GetTypeSortBucket(string type)
+        internal static int GetTypeSortBucket(string type)
         {
             if (string.Equals(type, "Folder", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(type, "Module", StringComparison.OrdinalIgnoreCase))
@@ -1152,6 +1155,106 @@ namespace GxMcp.Worker.Services
                 return (ts, parts[1], parts[2]);
             }
             catch { return null; }
+        }
+
+        internal static List<SearchIndex.IndexEntry> SelectTopK(IEnumerable<SearchIndex.IndexEntry> source, int k, IComparer<SearchIndex.IndexEntry> comparer, out int totalCount)
+        {
+            int count = 0;
+            var heap = new SearchIndex.IndexEntry[k];
+            int heapSize = 0;
+
+            foreach (var item in source)
+            {
+                count++;
+                if (heapSize < k)
+                {
+                    heap[heapSize] = item;
+                    int child = heapSize;
+                    while (child > 0)
+                    {
+                        int parent = (child - 1) >> 1;
+                        if (comparer.Compare(heap[child], heap[parent]) > 0)
+                        {
+                            var tmp = heap[child];
+                            heap[child] = heap[parent];
+                            heap[parent] = tmp;
+                            child = parent;
+                        }
+                        else break;
+                    }
+                    heapSize++;
+                }
+                else if (comparer.Compare(item, heap[0]) < 0)
+                {
+                    heap[0] = item;
+                    int parent = 0;
+                    while (true)
+                    {
+                        int left = (parent << 1) + 1;
+                        if (left >= k) break;
+                        int right = left + 1;
+                        int bestChild = (right < k && comparer.Compare(heap[right], heap[left]) > 0) ? right : left;
+                        if (comparer.Compare(heap[bestChild], heap[parent]) > 0)
+                        {
+                            var tmp = heap[parent];
+                            heap[parent] = heap[bestChild];
+                            heap[bestChild] = tmp;
+                            parent = bestChild;
+                        }
+                        else break;
+                    }
+                }
+            }
+
+            totalCount = count;
+            if (heapSize < k)
+            {
+                Array.Resize(ref heap, heapSize);
+            }
+            Array.Sort(heap, comparer);
+            return new List<SearchIndex.IndexEntry>(heap);
+        }
+    }
+
+    internal sealed class DefaultIndexEntryComparer : IComparer<SearchIndex.IndexEntry>
+    {
+        public static readonly DefaultIndexEntryComparer Instance = new DefaultIndexEntryComparer();
+
+        public int Compare(SearchIndex.IndexEntry x, SearchIndex.IndexEntry y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return -1;
+            if (y == null) return 1;
+
+            int bucketX = ListService.GetTypeSortBucket(x.Type);
+            int bucketY = ListService.GetTypeSortBucket(y.Type);
+            int c = bucketX.CompareTo(bucketY);
+            if (c != 0) return c;
+
+            c = string.Compare(x.Name ?? string.Empty, y.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (c != 0) return c;
+
+            return string.Compare(x.Type ?? string.Empty, y.Type ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    internal sealed class LastUpdateIndexEntryComparer : IComparer<SearchIndex.IndexEntry>
+    {
+        public static readonly LastUpdateIndexEntryComparer Instance = new LastUpdateIndexEntryComparer();
+
+        public int Compare(SearchIndex.IndexEntry x, SearchIndex.IndexEntry y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return -1;
+            if (y == null) return 1;
+
+            int c = y.LastUpdate.CompareTo(x.LastUpdate);
+            if (c != 0) return c;
+
+            c = string.Compare(x.Name ?? string.Empty, y.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (c != 0) return c;
+
+            return string.Compare(x.Guid ?? string.Empty, y.Guid ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
     }
 

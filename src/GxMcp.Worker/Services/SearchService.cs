@@ -133,11 +133,38 @@ namespace GxMcp.Worker.Services
 
                     if (exactList == null || exactList.Count == 0)
                     {
-                        var exactCandidates = index.Objects.Values
-                            .Where(e => criteria.Terms.Any(t => string.Equals(e.Name, t, StringComparison.OrdinalIgnoreCase)));
-                        if (!string.IsNullOrEmpty(criteria.TypeFilter))
-                            exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
-                        exactList = exactCandidates.ToList();
+                        // PERFORMANCE (W-C2): O(1) ByNameIndex lookup for exact matches
+                        if (index.ByNameIndex != null)
+                        {
+                            exactList = new List<SearchIndex.IndexEntry>();
+                            foreach (var t in criteria.Terms)
+                            {
+                                if (index.ByNameIndex.TryGetValue(t, out var keys))
+                                {
+                                    lock (keys)
+                                    {
+                                        foreach (var k in keys)
+                                        {
+                                            if (index.Objects.TryGetValue(k, out var e) && e != null)
+                                            {
+                                                if (string.IsNullOrEmpty(criteria.TypeFilter) || IsTypeMatch(e.Type, criteria.TypeFilter))
+                                                {
+                                                    exactList.Add(e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            var exactCandidates = index.Objects.Values
+                                .Where(e => criteria.Terms.Any(t => string.Equals(e.Name, t, StringComparison.OrdinalIgnoreCase)));
+                            if (!string.IsNullOrEmpty(criteria.TypeFilter))
+                                exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
+                            exactList = exactCandidates.ToList();
+                        }
                     }
                     var exactResultsArr = new JArray();
                     foreach (var e in exactList)
@@ -221,6 +248,31 @@ namespace GxMcp.Worker.Services
                 {
                     sourceSet = index.Objects.Values;
                     sourceIsFullScan = true;
+                }
+
+                // PERFORMANCE: When no parent/path filter narrowed sourceSet and criteria.NameFilter is specified,
+                // resolve candidate entries directly through ByNameIndex instead of scanning all objects.
+                if (sourceIsFullScan && index.ByNameIndex != null && !string.IsNullOrEmpty(criteria.NameFilter))
+                {
+                    if (index.ByNameIndex.TryGetValue(criteria.NameFilter, out var nameKeys))
+                    {
+                        var candidateList = new List<SearchIndex.IndexEntry>(nameKeys.Count);
+                        lock (nameKeys)
+                        {
+                            foreach (var k in nameKeys)
+                            {
+                                if (index.Objects.TryGetValue(k, out var e) && e != null)
+                                    candidateList.Add(e);
+                            }
+                        }
+                        sourceSet = candidateList;
+                        sourceIsFullScan = false;
+                    }
+                    else
+                    {
+                        sourceSet = Enumerable.Empty<SearchIndex.IndexEntry>();
+                        sourceIsFullScan = false;
+                    }
                 }
 
                 // Plan 002: when no parent/parentPath filter already narrowed sourceSet,
