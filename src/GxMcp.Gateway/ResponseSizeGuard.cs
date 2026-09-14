@@ -85,54 +85,48 @@ namespace GxMcp.Gateway
             return Encoding.UTF8.GetByteCount(serializedJson);
         }
 
-        private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
-
         [ThreadStatic]
-        private static CountingContext? t_countingContext;
+        private static CountingTextWriter? t_countingWriter;
 
-        private sealed class CountingContext
+        private sealed class CountingTextWriter : TextWriter
         {
-            public readonly CountingStream Stream = new CountingStream();
-            public readonly StreamWriter Writer;
+            public override Encoding Encoding => Encoding.UTF8;
+            public long Count;
 
-            public CountingContext()
+            public void Reset() => Count = 0;
+
+            public override void Write(char value)
             {
-                Writer = new StreamWriter(Stream, Utf8NoBom, bufferSize: 32 * 1024, leaveOpen: true) { AutoFlush = false };
+                if (value <= 0x7F) Count++;
+                else if (value <= 0x7FF) Count += 2;
+                else if (char.IsSurrogate(value)) Count += 2;
+                else Count += 3;
             }
 
-            public void Reset()
+            public override void Write(string? value)
             {
-                Stream.Count = 0;
+                if (!string.IsNullOrEmpty(value))
+                    Count += Encoding.UTF8.GetByteCount(value);
+            }
+
+            public override void Write(char[] buffer, int index, int count)
+            {
+                if (buffer != null && count > 0)
+                    Count += Encoding.UTF8.GetByteCount(buffer, index, count);
             }
         }
 
         internal static long ByteSize(JToken token)
         {
             if (token == null) return 0;
-            var ctx = t_countingContext ??= new CountingContext();
-            ctx.Reset();
-            using (var jw = new JsonTextWriter(ctx.Writer) { Formatting = Formatting.None, CloseOutput = false })
+            var writer = t_countingWriter ??= new CountingTextWriter();
+            writer.Reset();
+            using (var jw = new JsonTextWriter(writer) { Formatting = Formatting.None, CloseOutput = false })
             {
                 token.WriteTo(jw);
                 jw.Flush();
-                ctx.Writer.Flush();
             }
-            return ctx.Stream.Length;
-        }
-
-        private sealed class CountingStream : Stream
-        {
-            public long Count;
-            public override bool CanWrite => true;
-            public override bool CanRead => false;
-            public override bool CanSeek => false;
-            public override long Length => Count;
-            public override long Position { get => Count; set => throw new NotSupportedException(); }
-            public override void Write(byte[] buffer, int offset, int count) => Count += count;
-            public override void Flush() { }
-            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-            public override void SetLength(long value) => throw new NotSupportedException();
+            return writer.Count;
         }
     }
 }

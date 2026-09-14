@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.Linq;
 using Newtonsoft.Json;
 
 namespace GxMcp.Worker.Models
@@ -153,5 +154,156 @@ namespace GxMcp.Worker.Models
 
         public string ToJson() => JsonConvert.SerializeObject(this, Formatting.Indented);
         public static SearchIndex FromJson(string json) => JsonConvert.DeserializeObject<SearchIndex>(json);
+
+        /// <summary>
+        /// Finds all objects with the given bare name.
+        /// Uses ByNameIndex (O(1)) when available, otherwise falls back to scanning Objects.Values.
+        /// </summary>
+        public List<IndexEntry> FindByName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name) || Objects == null)
+                return new List<IndexEntry>(0);
+
+            string trimmed = name.Trim();
+            if (ByNameIndex != null)
+            {
+                if (ByNameIndex.TryGetValue(trimmed, out var keys) && keys != null)
+                {
+                    lock (keys)
+                    {
+                        var results = new List<IndexEntry>(keys.Count);
+                        foreach (var k in keys)
+                        {
+                            if (Objects.TryGetValue(k, out var entry) && entry != null)
+                                results.Add(entry);
+                        }
+                        return results;
+                    }
+                }
+                return new List<IndexEntry>(0);
+            }
+
+            return Objects.Values
+                .Where(e => e != null && string.Equals(e.Name, trimmed, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        /// <summary>
+        /// Checks whether any object with the given name exists.
+        /// </summary>
+        public bool ContainsName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name) || Objects == null) return false;
+            string trimmed = name.Trim();
+            if (ByNameIndex != null)
+            {
+                return ByNameIndex.ContainsKey(trimmed);
+            }
+            return Objects.Values.Any(e => e != null && string.Equals(e.Name, trimmed, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Finds all objects of the specified type.
+        /// Uses TypeIndex (O(1)) when available, otherwise falls back to scanning Objects.Values.
+        /// </summary>
+        public List<IndexEntry> FindByType(string type)
+        {
+            if (string.IsNullOrWhiteSpace(type) || Objects == null)
+                return new List<IndexEntry>(0);
+
+            string trimmed = type.Trim();
+            if (TypeIndex != null)
+            {
+                if (TypeIndex.TryGetValue(trimmed, out var keys) && keys != null)
+                {
+                    lock (keys)
+                    {
+                        var results = new List<IndexEntry>(keys.Count);
+                        foreach (var k in keys)
+                        {
+                            if (Objects.TryGetValue(k, out var entry) && entry != null)
+                                results.Add(entry);
+                        }
+                        return results;
+                    }
+                }
+                return new List<IndexEntry>(0);
+            }
+
+            return Objects.Values
+                .Where(e => e != null && string.Equals(e.Type, trimmed, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        /// <summary>
+        /// Finds all objects matching any of the specified types.
+        /// Uses TypeIndex (O(1)) when available, otherwise falls back to scanning Objects.Values.
+        /// </summary>
+        public List<IndexEntry> FindByTypes(IEnumerable<string> types)
+        {
+            if (types == null || Objects == null)
+                return new List<IndexEntry>(0);
+
+            var typeList = types.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()).ToList();
+            if (typeList.Count == 0) return new List<IndexEntry>(0);
+
+            if (TypeIndex != null)
+            {
+                var uniqueKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var t in typeList)
+                {
+                    if (TypeIndex.TryGetValue(t, out var keys) && keys != null)
+                    {
+                        lock (keys) { uniqueKeys.UnionWith(keys); }
+                    }
+                }
+
+                var results = new List<IndexEntry>(uniqueKeys.Count);
+                foreach (var k in uniqueKeys)
+                {
+                    if (Objects.TryGetValue(k, out var entry) && entry != null)
+                        results.Add(entry);
+                }
+                return results;
+            }
+
+            var typeSet = new HashSet<string>(typeList, StringComparer.OrdinalIgnoreCase);
+            return Objects.Values
+                .Where(e => e != null && !string.IsNullOrEmpty(e.Type) && typeSet.Contains(e.Type))
+                .ToList();
+        }
+
+        /// <summary>
+        /// Finds all objects of the specified business domain.
+        /// Uses DomainIndex (O(1)) when available, otherwise falls back to scanning Objects.Values.
+        /// </summary>
+        public List<IndexEntry> FindByDomain(string domain)
+        {
+            if (string.IsNullOrWhiteSpace(domain) || Objects == null)
+                return new List<IndexEntry>(0);
+
+            string trimmed = domain.Trim();
+            if (DomainIndex != null)
+            {
+                if (DomainIndex.TryGetValue(trimmed, out var keys) && keys != null)
+                {
+                    lock (keys)
+                    {
+                        var results = new List<IndexEntry>(keys.Count);
+                        foreach (var k in keys)
+                        {
+                            if (Objects.TryGetValue(k, out var entry) && entry != null)
+                                results.Add(entry);
+                        }
+                        return results;
+                    }
+                }
+                return new List<IndexEntry>(0);
+            }
+
+            return Objects.Values
+                .Where(e => e != null && string.Equals(e.BusinessDomain, trimmed, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
     }
 }

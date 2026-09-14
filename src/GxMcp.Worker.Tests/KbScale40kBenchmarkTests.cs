@@ -3,7 +3,9 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Services;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -16,38 +18,6 @@ namespace GxMcp.Worker.Tests
         public KbScale40kBenchmarkTests(ITestOutputHelper output)
         {
             _output = output;
-        }
-
-        private static int GetTypeSortBucket(string type)
-        {
-            if (string.Equals(type, "Folder", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(type, "Module", StringComparison.OrdinalIgnoreCase))
-            {
-                return 0;
-            }
-            return 1;
-        }
-
-        private sealed class DefaultIndexEntryComparer : IComparer<SearchIndex.IndexEntry>
-        {
-            public static readonly DefaultIndexEntryComparer Instance = new DefaultIndexEntryComparer();
-
-            public int Compare(SearchIndex.IndexEntry x, SearchIndex.IndexEntry y)
-            {
-                if (ReferenceEquals(x, y)) return 0;
-                if (x == null) return -1;
-                if (y == null) return 1;
-
-                int bucketX = GetTypeSortBucket(x.Type);
-                int bucketY = GetTypeSortBucket(y.Type);
-                int c = bucketX.CompareTo(bucketY);
-                if (c != 0) return c;
-
-                c = string.Compare(x.Name, y.Name, StringComparison.OrdinalIgnoreCase);
-                if (c != 0) return c;
-
-                return string.Compare(x.Type, y.Type, StringComparison.OrdinalIgnoreCase);
-            }
         }
 
         [Fact]
@@ -72,7 +42,7 @@ namespace GxMcp.Worker.Tests
             int iterations = 10;
 
             // Warmup
-            var warmup1 = baseList.OrderBy(e => GetTypeSortBucket(e.Type)).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ThenBy(e => e.Type, StringComparer.OrdinalIgnoreCase).ToList();
+            var warmup1 = baseList.OrderBy(e => ListService.GetTypeSortBucket(e.Type)).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ThenBy(e => e.Type, StringComparer.OrdinalIgnoreCase).ToList();
             var warmup2 = new List<SearchIndex.IndexEntry>(baseList);
             warmup2.Sort(DefaultIndexEntryComparer.Instance);
             Assert.Equal(warmup1.Count, warmup2.Count);
@@ -87,7 +57,7 @@ namespace GxMcp.Worker.Tests
             for (int it = 0; it < iterations; it++)
             {
                 var sorted = baseList
-                    .OrderBy(e => GetTypeSortBucket(e.Type))
+                    .OrderBy(e => ListService.GetTypeSortBucket(e.Type))
                     .ThenBy(e => e.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
                     .ThenBy(e => e.Type ?? string.Empty, StringComparer.OrdinalIgnoreCase)
                     .ToList();
@@ -122,7 +92,7 @@ namespace GxMcp.Worker.Tests
             for (int it = 0; it < iterations; it++)
             {
                 // Top-K selection using PriorityQueue / bounded heap
-                var topK = SelectTopK(baseList, k, DefaultIndexEntryComparer.Instance);
+                var topK = TopKHelper.SelectTopK(baseList, k, DefaultIndexEntryComparer.Instance, out _);
             }
             sw.Stop();
             int gen0TopK = GC.CollectionCount(0) - gen0Start;
@@ -136,70 +106,6 @@ Sorting 40,000 KB objects (x 10 iterations):
 =======================================";
             _output.WriteLine(report);
             Console.WriteLine(report);
-        }
-
-        private static List<SearchIndex.IndexEntry> SelectTopK(List<SearchIndex.IndexEntry> list, int k, IComparer<SearchIndex.IndexEntry> comparer)
-        {
-            if (list.Count <= k)
-            {
-                var copy = new List<SearchIndex.IndexEntry>(list);
-                copy.Sort(comparer);
-                return copy;
-            }
-
-            // Simple array-based binary heap of size K (max-heap to keep smallest K elements)
-            var heap = new SearchIndex.IndexEntry[k];
-            int heapSize = 0;
-
-            for (int i = 0; i < list.Count; i++)
-            {
-                var item = list[i];
-                if (heapSize < k)
-                {
-                    heap[heapSize] = item;
-                    // sift up
-                    int child = heapSize;
-                    while (child > 0)
-                    {
-                        int parent = (child - 1) >> 1;
-                        if (comparer.Compare(heap[child], heap[parent]) > 0)
-                        {
-                            var tmp = heap[child];
-                            heap[child] = heap[parent];
-                            heap[parent] = tmp;
-                            child = parent;
-                        }
-                        else break;
-                    }
-                    heapSize++;
-                }
-                else if (comparer.Compare(item, heap[0]) < 0)
-                {
-                    // Item is smaller than the largest in our top-K heap
-                    heap[0] = item;
-                    // sift down
-                    int parent = 0;
-                    while (true)
-                    {
-                        int left = (parent << 1) + 1;
-                        if (left >= k) break;
-                        int right = left + 1;
-                        int bestChild = (right < k && comparer.Compare(heap[right], heap[left]) > 0) ? right : left;
-                        if (comparer.Compare(heap[bestChild], heap[parent]) > 0)
-                        {
-                            var tmp = heap[parent];
-                            heap[parent] = heap[bestChild];
-                            heap[bestChild] = tmp;
-                            parent = bestChild;
-                        }
-                        else break;
-                    }
-                }
-            }
-
-            // Sort the final K items
-            Array.Sort(heap, comparer);
-            return new List<SearchIndex.IndexEntry>(heap);
         }
 
         [Fact]

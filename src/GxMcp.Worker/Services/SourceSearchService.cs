@@ -340,42 +340,23 @@ namespace GxMcp.Worker.Services
                     // issue #36.7 — tolerate module-qualified vs bare names in EITHER direction
                     // so passing "Foo" finds "MyModule.Foo" and vice-versa (exact match was too
                     // strict and quietly yielded an empty set that looked like a full-KB scan).
-                    if (index.ByNameIndex != null)
+                    var matchingEntries = new List<Models.SearchIndex.IndexEntry>();
+                    foreach (var name in objectNameSet)
                     {
-                        var candidateKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        foreach (var name in objectNameSet)
+                        matchingEntries.AddRange(index.FindByName(name));
+                        int dot = name.LastIndexOf('.');
+                        if (dot >= 0)
                         {
-                            if (index.ByNameIndex.TryGetValue(name, out var keys) && keys != null)
-                            {
-                                lock (keys) { candidateKeys.UnionWith(keys); }
-                            }
-                            int dot = name.LastIndexOf('.');
-                            if (dot >= 0)
-                            {
-                                string bare = name.Substring(dot + 1);
-                                if (index.ByNameIndex.TryGetValue(bare, out var bareKeys) && bareKeys != null)
-                                {
-                                    lock (bareKeys) { candidateKeys.UnionWith(bareKeys); }
-                                }
-                            }
+                            matchingEntries.AddRange(index.FindByName(name.Substring(dot + 1)));
                         }
-
-                        if (candidateKeys.Count > 0)
-                        {
-                            var list = new List<Models.SearchIndex.IndexEntry>(candidateKeys.Count);
-                            foreach (var k in candidateKeys)
-                            {
-                                if (index.Objects.TryGetValue(k, out var entry) && entry != null && ObjectNameMatches(objectNameSet, entry.Name))
-                                {
-                                    list.Add(entry);
-                                }
-                            }
-                            query = list;
-                        }
-                        else
-                        {
-                            query = query.Where(e => ObjectNameMatches(objectNameSet, e.Name));
-                        }
+                    }
+                    if (matchingEntries.Count > 0)
+                    {
+                        query = matchingEntries
+                            .Where(entry => ObjectNameMatches(objectNameSet, entry.Name))
+                            .GroupBy(entry => entry.Guid ?? entry.Name)
+                            .Select(g => g.First())
+                            .ToList();
                     }
                     else
                     {
@@ -384,36 +365,11 @@ namespace GxMcp.Worker.Services
                 }
                 else
                 {
-                    if (index.TypeIndex != null)
-                    {
-                        var candidateKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        string[] targetTypes = !string.IsNullOrEmpty(c.TypeFilter)
-                            ? new[] { c.TypeFilter }
-                            : new[] { "Procedure", "DataProvider", "WebPanel", "Transaction" };
+                    string[] targetTypes = !string.IsNullOrEmpty(c.TypeFilter)
+                        ? new[] { c.TypeFilter }
+                        : new[] { "Procedure", "DataProvider", "WebPanel", "Transaction" };
 
-                        foreach (var t in targetTypes)
-                        {
-                            if (index.TypeIndex.TryGetValue(t, out var keys) && keys != null)
-                            {
-                                lock (keys) { candidateKeys.UnionWith(keys); }
-                            }
-                        }
-
-                        var list = new List<Models.SearchIndex.IndexEntry>(candidateKeys.Count);
-                        foreach (var k in candidateKeys)
-                        {
-                            if (index.Objects.TryGetValue(k, out var entry) && entry != null)
-                            {
-                                list.Add(entry);
-                            }
-                        }
-                        query = list;
-                    }
-                    else
-                    {
-                        query = query
-                            .Where(e => e.Type == "Procedure" || e.Type == "DataProvider" || e.Type == "WebPanel" || e.Type == "Transaction");
-                    }
+                    query = index.FindByTypes(targetTypes);
 
                     query = query.Where(e => scopeTouchesWebForm || indexedSourceScope || MatchesAnyLiteral(e, literals));
                     if (indexedSourceScope && literals.Count > 0 && index.SourceTokenIndex != null)

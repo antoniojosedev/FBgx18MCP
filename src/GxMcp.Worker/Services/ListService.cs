@@ -1159,60 +1159,7 @@ namespace GxMcp.Worker.Services
 
         internal static List<SearchIndex.IndexEntry> SelectTopK(IEnumerable<SearchIndex.IndexEntry> source, int k, IComparer<SearchIndex.IndexEntry> comparer, out int totalCount)
         {
-            int count = 0;
-            var heap = new SearchIndex.IndexEntry[k];
-            int heapSize = 0;
-
-            foreach (var item in source)
-            {
-                count++;
-                if (heapSize < k)
-                {
-                    heap[heapSize] = item;
-                    int child = heapSize;
-                    while (child > 0)
-                    {
-                        int parent = (child - 1) >> 1;
-                        if (comparer.Compare(heap[child], heap[parent]) > 0)
-                        {
-                            var tmp = heap[child];
-                            heap[child] = heap[parent];
-                            heap[parent] = tmp;
-                            child = parent;
-                        }
-                        else break;
-                    }
-                    heapSize++;
-                }
-                else if (comparer.Compare(item, heap[0]) < 0)
-                {
-                    heap[0] = item;
-                    int parent = 0;
-                    while (true)
-                    {
-                        int left = (parent << 1) + 1;
-                        if (left >= k) break;
-                        int right = left + 1;
-                        int bestChild = (right < k && comparer.Compare(heap[right], heap[left]) > 0) ? right : left;
-                        if (comparer.Compare(heap[bestChild], heap[parent]) > 0)
-                        {
-                            var tmp = heap[parent];
-                            heap[parent] = heap[bestChild];
-                            heap[bestChild] = tmp;
-                            parent = bestChild;
-                        }
-                        else break;
-                    }
-                }
-            }
-
-            totalCount = count;
-            if (heapSize < k)
-            {
-                Array.Resize(ref heap, heapSize);
-            }
-            Array.Sort(heap, comparer);
-            return new List<SearchIndex.IndexEntry>(heap);
+            return TopKHelper.SelectTopK(source, k, comparer, out totalCount);
         }
     }
 
@@ -1234,7 +1181,10 @@ namespace GxMcp.Worker.Services
             c = string.Compare(x.Name ?? string.Empty, y.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
             if (c != 0) return c;
 
-            return string.Compare(x.Type ?? string.Empty, y.Type ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            c = string.Compare(x.Type ?? string.Empty, y.Type ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (c != 0) return c;
+
+            return string.Compare(x.Guid ?? string.Empty, y.Guid ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
     }
 

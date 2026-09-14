@@ -49,32 +49,7 @@ namespace GxMcp.Worker.Helpers
             // Exact-name matches across the index (case-insensitive). If 2+
             // come back with different types and no type filter was applied,
             // that's ambiguity — surface candidates so the LLM picks one.
-            List<SearchIndex.IndexEntry> exactMatches = null;
-            if (index.ByNameIndex != null)
-            {
-                if (!string.IsNullOrEmpty(target) && index.ByNameIndex.TryGetValue(target, out var keys) && keys != null)
-                {
-                    lock (keys)
-                    {
-                        exactMatches = new List<SearchIndex.IndexEntry>(keys.Count);
-                        foreach (var k in keys)
-                        {
-                            if (index.Objects.TryGetValue(k, out var m) && m != null)
-                                exactMatches.Add(m);
-                        }
-                    }
-                }
-                else
-                {
-                    exactMatches = new List<SearchIndex.IndexEntry>(0);
-                }
-            }
-            else
-            {
-                exactMatches = index.Objects.Values
-                    .Where(e => string.Equals(e.Name, target, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-            }
+            var exactMatches = index.FindByName(target);
 
             if (exactMatches.Count >= 2)
             {

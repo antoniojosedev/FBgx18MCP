@@ -133,38 +133,12 @@ namespace GxMcp.Worker.Services
 
                     if (exactList == null || exactList.Count == 0)
                     {
-                        // PERFORMANCE (W-C2): O(1) ByNameIndex lookup for exact matches
-                        if (index.ByNameIndex != null)
-                        {
-                            exactList = new List<SearchIndex.IndexEntry>();
-                            foreach (var t in criteria.Terms)
-                            {
-                                if (index.ByNameIndex.TryGetValue(t, out var keys))
-                                {
-                                    lock (keys)
-                                    {
-                                        foreach (var k in keys)
-                                        {
-                                            if (index.Objects.TryGetValue(k, out var e) && e != null)
-                                            {
-                                                if (string.IsNullOrEmpty(criteria.TypeFilter) || IsTypeMatch(e.Type, criteria.TypeFilter))
-                                                {
-                                                    exactList.Add(e);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        else
-                        {
-                            var exactCandidates = index.Objects.Values
-                                .Where(e => criteria.Terms.Any(t => string.Equals(e.Name, t, StringComparison.OrdinalIgnoreCase)));
-                            if (!string.IsNullOrEmpty(criteria.TypeFilter))
-                                exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
-                            exactList = exactCandidates.ToList();
-                        }
+                        var exactCandidates = criteria.Terms
+                            .SelectMany(t => index.FindByName(t))
+                            .Distinct();
+                        if (!string.IsNullOrEmpty(criteria.TypeFilter))
+                            exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
+                        exactList = exactCandidates.ToList();
                     }
                     var exactResultsArr = new JArray();
                     foreach (var e in exactList)
@@ -251,28 +225,11 @@ namespace GxMcp.Worker.Services
                 }
 
                 // PERFORMANCE: When no parent/path filter narrowed sourceSet and criteria.NameFilter is specified,
-                // resolve candidate entries directly through ByNameIndex instead of scanning all objects.
-                if (sourceIsFullScan && index.ByNameIndex != null && !string.IsNullOrEmpty(criteria.NameFilter))
+                // resolve candidate entries directly through index.FindByName instead of scanning all objects.
+                if (sourceIsFullScan && !string.IsNullOrEmpty(criteria.NameFilter))
                 {
-                    if (index.ByNameIndex.TryGetValue(criteria.NameFilter, out var nameKeys))
-                    {
-                        var candidateList = new List<SearchIndex.IndexEntry>(nameKeys.Count);
-                        lock (nameKeys)
-                        {
-                            foreach (var k in nameKeys)
-                            {
-                                if (index.Objects.TryGetValue(k, out var e) && e != null)
-                                    candidateList.Add(e);
-                            }
-                        }
-                        sourceSet = candidateList;
-                        sourceIsFullScan = false;
-                    }
-                    else
-                    {
-                        sourceSet = Enumerable.Empty<SearchIndex.IndexEntry>();
-                        sourceIsFullScan = false;
-                    }
+                    sourceSet = index.FindByName(criteria.NameFilter);
+                    sourceIsFullScan = false;
                 }
 
                 // Plan 002: when no parent/parentPath filter already narrowed sourceSet,
@@ -389,39 +346,15 @@ namespace GxMcp.Worker.Services
                     // Build the set of objects that reference the target via the inverted CalledBy index.
                     // Multiple entries can share a name across types (e.g. Attribute:X and Domain:X), so collect all.
                     var consumerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    // PERFORMANCE (perf-review): resolve the candidate entries through the
-                    // derived ByNameIndex multimap (name → storage keys) instead of
-                    // scanning all ~38k objects. Falls back to the full scan when the
-                    // index hasn't built ByNameIndex (LoadFromEntries test seam / older
-                    // in-memory indexes).
-                    if (index.ByNameIndex != null
-                        && index.ByNameIndex.TryGetValue(criteria.UsedByFilter, out var nameKeys))
+                    var candidates = index.FindByName(criteria.UsedByFilter);
+                    foreach (var t in candidates)
                     {
-                        foreach (var key in nameKeys)
+                        if (t?.CalledBy == null) continue;
+                        lock (t.CalledBy)
                         {
-                            if (!index.Objects.TryGetValue(key, out var t) || t == null) continue;
-                            if (t.CalledBy == null) continue;
-                            lock (t.CalledBy)
+                            foreach (var c in t.CalledBy)
                             {
-                                foreach (var c in t.CalledBy)
-                                {
-                                    if (!string.IsNullOrEmpty(c)) consumerNames.Add(c);
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        foreach (var t in index.Objects.Values)
-                        {
-                            if (!string.Equals(t.Name, criteria.UsedByFilter, StringComparison.OrdinalIgnoreCase)) continue;
-                            if (t.CalledBy == null) continue;
-                            lock (t.CalledBy)
-                            {
-                                foreach (var c in t.CalledBy)
-                                {
-                                    if (!string.IsNullOrEmpty(c)) consumerNames.Add(c);
-                                }
+                                if (!string.IsNullOrEmpty(c)) consumerNames.Add(c);
                             }
                         }
                     }

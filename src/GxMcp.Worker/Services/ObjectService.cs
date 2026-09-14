@@ -136,33 +136,9 @@ namespace GxMcp.Worker.Services
             // warm yet the ambiguity hint is simply skipped and FindObject (already
             // non-blocking) resolves the object anyway.
             var index = GetLoadedIndexOrNull();
-            if (index?.Objects == null) return new List<SearchIndex.IndexEntry>();
+            if (index == null) return new List<SearchIndex.IndexEntry>();
 
-            if (index.ByNameIndex != null)
-            {
-                if (index.ByNameIndex.TryGetValue(name, out var keys) && keys != null)
-                {
-                    var results = new List<SearchIndex.IndexEntry>(keys.Count);
-                    lock (keys)
-                    {
-                        foreach (var key in keys)
-                        {
-                            if (index.Objects.TryGetValue(key, out var entry) && entry != null)
-                                results.Add(entry);
-                        }
-                    }
-                    return results;
-                }
-                return new List<SearchIndex.IndexEntry>();
-            }
-
-            var fallbackResults = new List<SearchIndex.IndexEntry>();
-            foreach (var entry in index.Objects.Values)
-            {
-                if (string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
-                    fallbackResults.Add(entry);
-            }
-            return fallbackResults;
+            return index.FindByName(name);
         }
 
         public string CreateObject(string type, string name)
@@ -2663,30 +2639,17 @@ namespace GxMcp.Worker.Services
             string key = string.IsNullOrWhiteSpace(type) ? null : type.Trim() + ":" + target.Trim();
             if (key != null && index.Objects.TryGetValue(key, out var exact)) return exact;
 
+            string simpleName = target.Trim().Replace('\\', '/');
+            int lastSlash = Math.Max(simpleName.LastIndexOf('/'), simpleName.LastIndexOf('.'));
+            if (lastSlash >= 0 && lastSlash < simpleName.Length - 1)
+            {
+                simpleName = simpleName.Substring(lastSlash + 1);
+            }
+
             if (index.ByNameIndex != null)
             {
-                string simpleName = target.Trim().Replace('\\', '/');
-                int lastSlash = Math.Max(simpleName.LastIndexOf('/'), simpleName.LastIndexOf('.'));
-                if (lastSlash >= 0 && lastSlash < simpleName.Length - 1)
-                {
-                    simpleName = simpleName.Substring(lastSlash + 1);
-                }
-
-                if (index.ByNameIndex.TryGetValue(simpleName, out var keys) && keys != null)
-                {
-                    lock (keys)
-                    {
-                        foreach (var k in keys)
-                        {
-                            if (index.Objects.TryGetValue(k, out var candidate) && IsEntryType(candidate, type) && IdentityNameMatches(candidate, target))
-                            {
-                                return candidate;
-                            }
-                        }
-                    }
-                }
-
-                return null;
+                var candidates = index.FindByName(simpleName);
+                return candidates.FirstOrDefault(candidate => IsEntryType(candidate, type) && IdentityNameMatches(candidate, target));
             }
 
             return index.Objects.Values.FirstOrDefault(e => IsEntryType(e, type) && IdentityNameMatches(e, target));
@@ -2886,18 +2849,11 @@ namespace GxMcp.Worker.Services
                                 lookupName = lookupName.Substring(lastSep + 1);
                             }
 
-                            if (index.ByNameIndex.TryGetValue(lookupName, out var nameKeys) && nameKeys != null)
+                            foreach (var entry in index.FindByName(lookupName))
                             {
-                                lock (nameKeys)
+                                if (IdentityNameMatches(entry, namePart))
                                 {
-                                    foreach (var key in nameKeys)
-                                    {
-                                        if (!index.Objects.TryGetValue(key, out var entry) || entry == null) continue;
-                                        if (IdentityNameMatches(entry, namePart))
-                                        {
-                                            matches.Add(entry);
-                                        }
-                                    }
+                                    matches.Add(entry);
                                 }
                             }
                         }
@@ -3119,22 +3075,20 @@ namespace GxMcp.Worker.Services
                 {
                     index.Objects?.TryGetValue(key, out entry);
                 }
-                if (entry == null && index != null && !string.IsNullOrEmpty(obj.Name) && index.ByNameIndex != null && index.ByNameIndex.TryGetValue(obj.Name, out var candidateKeys))
+                if (entry == null && index != null && !string.IsNullOrEmpty(obj.Name))
                 {
-                    foreach (var cKey in candidateKeys)
+                    var candidates = index.FindByName(obj.Name);
+                    foreach (var candidate in candidates)
                     {
-                        if (index.Objects != null && index.Objects.TryGetValue(cKey, out var candidate))
+                        if (!string.IsNullOrEmpty(guid) && string.Equals(candidate.Guid, guid, StringComparison.OrdinalIgnoreCase))
                         {
-                            if (!string.IsNullOrEmpty(guid) && string.Equals(candidate.Guid, guid, StringComparison.OrdinalIgnoreCase))
-                            {
-                                entry = candidate;
-                                break;
-                            }
-                            if (!string.IsNullOrEmpty(entityKey) && string.Equals(candidate.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase))
-                            {
-                                entry = candidate;
-                                break;
-                            }
+                            entry = candidate;
+                            break;
+                        }
+                        if (!string.IsNullOrEmpty(entityKey) && string.Equals(candidate.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase))
+                        {
+                            entry = candidate;
+                            break;
                         }
                     }
                 }

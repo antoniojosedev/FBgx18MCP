@@ -431,73 +431,27 @@ namespace GxMcp.Worker.Services
                 return direct;
             }
 
-            // Stage 2: ByNameIndex multimap lookup (O(1)) with type-priority ordering
-            if (index.ByNameIndex != null)
+            // Stage 2: index lookup with type-priority ordering
+            var candidates = index.FindByName(targetName);
+            if (candidates.Count == 0 && targetName != null && targetName.Trim() != targetName)
             {
-                if (index.ByNameIndex.TryGetValue(targetName, out var keys) && keys != null && keys.Count > 0)
-                {
-                    lock (keys)
-                    {
-                        foundKey = keys.FirstOrDefault(k => k.StartsWith("Procedure:", StringComparison.OrdinalIgnoreCase))
-                                 ?? keys.FirstOrDefault(k => k.StartsWith("Transaction:", StringComparison.OrdinalIgnoreCase))
-                                 ?? keys.FirstOrDefault(k => k.StartsWith("WebPanel:", StringComparison.OrdinalIgnoreCase))
-                                 ?? keys.FirstOrDefault(k => k.StartsWith("DataProvider:", StringComparison.OrdinalIgnoreCase))
-                                 ?? keys.FirstOrDefault(k => k.StartsWith("Table:", StringComparison.OrdinalIgnoreCase))
-                                 ?? keys.FirstOrDefault();
-                    }
-                    if (foundKey != null && index.Objects.TryGetValue(foundKey, out var byKey)) return byKey;
-                }
-
-                var trimmedName = targetName.Trim();
-                if (trimmedName.Length > 0 && !string.Equals(trimmedName, targetName, StringComparison.Ordinal)
-                    && index.ByNameIndex.TryGetValue(trimmedName, out var trimmedKeys) && trimmedKeys != null && trimmedKeys.Count > 0)
-                {
-                    lock (trimmedKeys)
-                    {
-                        foundKey = trimmedKeys.FirstOrDefault(k => k.StartsWith("Procedure:", StringComparison.OrdinalIgnoreCase))
-                                 ?? trimmedKeys.FirstOrDefault(k => k.StartsWith("Transaction:", StringComparison.OrdinalIgnoreCase))
-                                 ?? trimmedKeys.FirstOrDefault(k => k.StartsWith("WebPanel:", StringComparison.OrdinalIgnoreCase))
-                                 ?? trimmedKeys.FirstOrDefault(k => k.StartsWith("DataProvider:", StringComparison.OrdinalIgnoreCase))
-                                 ?? trimmedKeys.FirstOrDefault(k => k.StartsWith("Table:", StringComparison.OrdinalIgnoreCase))
-                                 ?? trimmedKeys.FirstOrDefault();
-                    }
-                    if (foundKey != null && index.Objects.TryGetValue(foundKey, out var byTrimmedKey)) return byTrimmedKey;
-                }
-
-                return null;
+                candidates = index.FindByName(targetName.Trim());
+            }
+            if (candidates.Count > 0)
+            {
+                var preferred = candidates.FirstOrDefault(c => string.Equals(c.Type, "Procedure", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates.FirstOrDefault(c => string.Equals(c.Type, "Transaction", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates.FirstOrDefault(c => string.Equals(c.Type, "WebPanel", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates.FirstOrDefault(c => string.Equals(c.Type, "DataProvider", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates.FirstOrDefault(c => string.Equals(c.Type, "Table", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates[0];
+                foundKey = preferred.Type + ":" + preferred.Name;
+                return preferred;
             }
 
-            // Stage 2 fallback: EndsWith on the key suffix, type-priority ordering.
-            var possibleKeys = index.Objects.Keys
-                .Where(k => k.EndsWith(":" + targetName, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (possibleKeys.Count > 0)
-            {
-                foundKey = possibleKeys.FirstOrDefault(k => k.StartsWith("Procedure:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("Transaction:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("WebPanel:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("DataProvider:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("Table:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.First();
-                if (index.Objects.TryGetValue(foundKey, out var byKey)) return byKey;
-            }
-
-            // Stage 3: exact Name match on the values (handles entries whose
-            // stored Type is empty/null so the EndsWith on the key missed).
-            foreach (var kv in index.Objects)
-            {
-                if (kv.Value != null && string.Equals(kv.Value.Name, targetName, StringComparison.OrdinalIgnoreCase))
-                {
-                    foundKey = kv.Key;
-                    return kv.Value;
-                }
-            }
-
-            // Stage 4: trimmed match — last resort for whitespace/encoding drift
-            // on the entry side. Runs unconditionally on miss; the caller's name
-            // might be clean while the index entry's Name carries SDK whitespace.
-            var trimmed = targetName.Trim();
-            if (trimmed.Length > 0)
+            // Fallback for objects whose index entry Name might have stored whitespace
+            var trimmed = targetName?.Trim();
+            if (!string.IsNullOrEmpty(trimmed))
             {
                 foreach (var kv in index.Objects)
                 {
@@ -519,36 +473,8 @@ namespace GxMcp.Worker.Services
         {
             entry = null;
             if (index?.Objects == null || string.IsNullOrEmpty(bareName)) return false;
-
-            if (index.ByNameIndex != null)
-            {
-                if (index.ByNameIndex.TryGetValue(bareName, out var keys) && keys != null)
-                {
-                    lock (keys)
-                    {
-                        foreach (var k in keys)
-                        {
-                            if (index.Objects.TryGetValue(k, out var candidate) && candidate != null)
-                            {
-                                entry = candidate;
-                                return true;
-                            }
-                        }
-                    }
-                }
-                return false;
-            }
-
-            foreach (var kv in index.Objects)
-            {
-                var v = kv.Value;
-                if (v != null && string.Equals(v.Name, bareName, StringComparison.OrdinalIgnoreCase))
-                {
-                    entry = v;
-                    return true;
-                }
-            }
-            return false;
+            entry = index.FindByName(bareName).FirstOrDefault();
+            return entry != null;
         }
 
         // v2.8.5: container for SDK reference-graph cross-check results.
@@ -1039,30 +965,11 @@ namespace GxMcp.Worker.Services
                     {
                         var others = new JArray();
                         var seenTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { obj.TypeDescriptor.Name ?? string.Empty };
-                        if (ambIndex.ByNameIndex != null && ambIndex.ByNameIndex.TryGetValue(obj.Name, out var keys))
+                        foreach (var e in ambIndex.FindByName(obj.Name))
                         {
-                            foreach (var key in keys)
+                            if (e != null && !string.IsNullOrEmpty(e.Type) && seenTypes.Add(e.Type))
                             {
-                                if (ambIndex.Objects.TryGetValue(key, out var e) && e != null && !string.IsNullOrEmpty(e.Type))
-                                {
-                                    if (seenTypes.Add(e.Type))
-                                    {
-                                        others.Add(new JObject { ["name"] = e.Name, ["type"] = e.Type });
-                                    }
-                                }
-                            }
-                        }
-                        else
-                        {
-                            foreach (var kv in ambIndex.Objects)
-                            {
-                                var e = kv.Value;
-                                if (e == null || string.IsNullOrEmpty(e.Type)) continue;
-                                if (string.Equals(e.Name, obj.Name, StringComparison.OrdinalIgnoreCase)
-                                    && seenTypes.Add(e.Type))
-                                {
-                                    others.Add(new JObject { ["name"] = e.Name, ["type"] = e.Type });
-                                }
+                                others.Add(new JObject { ["name"] = e.Name, ["type"] = e.Type });
                             }
                         }
                         if (others.Count > 0)

@@ -91,31 +91,7 @@ namespace GxMcp.Worker.Services
 
         private static List<SearchIndex.IndexEntry> FindEntriesByName(SearchIndex index, string name)
         {
-            if (index?.Objects == null || string.IsNullOrWhiteSpace(name))
-                return new List<SearchIndex.IndexEntry>();
-
-            if (index.ByNameIndex != null)
-            {
-                if (index.ByNameIndex.TryGetValue(name, out var keys) && keys != null)
-                {
-                    var results = new List<SearchIndex.IndexEntry>(keys.Count);
-                    lock (keys)
-                    {
-                        foreach (var k in keys)
-                        {
-                            if (index.Objects.TryGetValue(k, out var entry) && entry != null)
-                                results.Add(entry);
-                        }
-                    }
-                    return results;
-                }
-                return new List<SearchIndex.IndexEntry>();
-            }
-
-            return index.Objects.Values
-                .Where(entry => entry != null
-                    && string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            return index?.FindByName(name) ?? new List<SearchIndex.IndexEntry>(0);
         }
 
         private GraphAdjacency GetAdjacency(SearchIndex index)
@@ -144,17 +120,9 @@ namespace GxMcp.Worker.Services
             var adjacency = new GraphAdjacency();
             if (index?.Objects == null) return adjacency;
 
-            var knownNames = index.ByNameIndex != null
-                ? new HashSet<string>(index.ByNameIndex.Keys, StringComparer.OrdinalIgnoreCase)
-                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            if (index.ByNameIndex == null)
-            {
-                foreach (var entry in index.Objects.Values)
-                {
-                    if (entry != null && !string.IsNullOrEmpty(entry.Name)) knownNames.Add(entry.Name);
-                }
-            }
+            Func<string, bool> isKnownName = index.ByNameIndex != null
+                ? (Func<string, bool>)index.ByNameIndex.ContainsKey
+                : (name => index.ContainsName(name));
 
             var callerSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var calleeSets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
@@ -186,7 +154,7 @@ namespace GxMcp.Worker.Services
                     foreach (Match match in InvocationRegex.Matches(entry.SourceSnippet))
                     {
                         string called = match.Groups[1].Value;
-                        if (!knownNames.Contains(called)) continue;
+                        if (!isKnownName(called)) continue;
                         if (string.Equals(called, entry.Name, StringComparison.OrdinalIgnoreCase)) continue;
                         AddEdge(calleeSets, entry.Name, called);
                         AddEdge(callerSets, called, entry.Name);

@@ -881,76 +881,21 @@ namespace GxMcp.Worker.Services
             public IEnumerable<ObjectRef> EnumerateCallers()
             {
                 var index = _cache?.GetIndex();
-                if (index == null) yield break;
+                if (index == null) return Enumerable.Empty<ObjectRef>();
 
-                if (index.TypeIndex != null)
-                {
-                    var targetTypes = new[] { "Procedure", "WebPanel", "DataProvider", "WorkPanel", "SDPanel" };
-                    foreach (var t in targetTypes)
-                    {
-                        if (index.TypeIndex.TryGetValue(t, out var keys) && keys != null)
-                        {
-                            List<string> snapshot;
-                            lock (keys)
-                            {
-                                snapshot = new List<string>(keys);
-                            }
-                            foreach (var k in snapshot)
-                            {
-                                if (index.Objects.TryGetValue(k, out var entry) && entry != null)
-                                    yield return new ObjectRef { Name = entry.Name, Type = entry.Type };
-                            }
-                        }
-                    }
-                    yield break;
-                }
-
-                foreach (var entry in index.Objects.Values)
-                {
-                    if (string.IsNullOrEmpty(entry.Type)) continue;
-                    string t = entry.Type;
-                    if (t.Equals("Procedure", StringComparison.OrdinalIgnoreCase)
-                        || t.Equals("WebPanel", StringComparison.OrdinalIgnoreCase)
-                        || t.Equals("DataProvider", StringComparison.OrdinalIgnoreCase)
-                        || t.Equals("WorkPanel", StringComparison.OrdinalIgnoreCase)
-                        || t.Equals("SDPanel", StringComparison.OrdinalIgnoreCase))
-                    {
-                        yield return new ObjectRef { Name = entry.Name, Type = entry.Type };
-                    }
-                }
+                var targetTypes = new[] { "Procedure", "WebPanel", "DataProvider", "WorkPanel", "SDPanel" };
+                return index.FindByTypes(targetTypes)
+                    .Select(entry => new ObjectRef { Name = entry.Name, Type = entry.Type });
             }
 
             public IEnumerable<string> EnumerateTransactionNames()
             {
                 var index = _cache?.GetIndex();
-                if (index == null) yield break;
+                if (index == null) return Enumerable.Empty<string>();
 
-                if (index.TypeIndex != null)
-                {
-                    if (index.TypeIndex.TryGetValue("Transaction", out var keys) && keys != null)
-                    {
-                        List<string> snapshot;
-                        lock (keys)
-                        {
-                            snapshot = new List<string>(keys);
-                        }
-                        foreach (var k in snapshot)
-                        {
-                            if (index.Objects.TryGetValue(k, out var entry) && entry?.Name != null)
-                                yield return entry.Name;
-                        }
-                    }
-                    yield break;
-                }
-
-                foreach (var entry in index.Objects.Values)
-                {
-                    if (entry.Type != null
-                        && entry.Type.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
-                    {
-                        yield return entry.Name;
-                    }
-                }
+                return index.FindByType("Transaction")
+                    .Where(entry => entry?.Name != null)
+                    .Select(entry => entry.Name);
             }
         }
 

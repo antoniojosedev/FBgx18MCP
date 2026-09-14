@@ -211,8 +211,13 @@ namespace GxMcp.Worker.Services
             }
             else if (item.Complexity > list[0].Complexity)
             {
-                list[0] = item;
-                list.Sort((a, b) => a.Complexity.CompareTo(b.Complexity));
+                int i = 0;
+                while (i + 1 < k && list[i + 1].Complexity < item.Complexity)
+                {
+                    list[i] = list[i + 1];
+                    i++;
+                }
+                list[i] = item;
             }
         }
 

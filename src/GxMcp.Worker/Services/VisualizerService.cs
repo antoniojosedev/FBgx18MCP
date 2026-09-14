@@ -101,23 +101,7 @@ namespace GxMcp.Worker.Services
 
                 if (!string.IsNullOrEmpty(filterDomain) && filterDomain != "All")
                 {
-                    if (index.DomainIndex != null && index.DomainIndex.TryGetValue(filterDomain, out var dKeys) && dKeys != null)
-                    {
-                        var dList = new List<SearchIndex.IndexEntry>(dKeys.Count);
-                        lock (dKeys)
-                        {
-                            foreach (var k in dKeys)
-                            {
-                                if (index.Objects.TryGetValue(k, out var e) && e != null)
-                                    dList.Add(e);
-                            }
-                        }
-                        candidates = dList;
-                    }
-                    else
-                    {
-                        candidates = candidates.Where(e => string.Equals(e.BusinessDomain, filterDomain, StringComparison.OrdinalIgnoreCase));
-                    }
+                    candidates = index.FindByDomain(filterDomain);
                 }
 
                 if (!string.IsNullOrEmpty(filterTypes))
