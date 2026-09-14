@@ -154,6 +154,31 @@ function Get-ReleaseIssueNumbers {
     return @($values | Select-Object -Unique)
 }
 
+function Get-ReleaseArtifactFingerprint {
+    param([Parameter(Mandatory = $true)][string]$PublishDirectory)
+
+    $relativePaths = @(
+        'GxMcp.Gateway.exe',
+        'worker/GxMcp.Worker.exe',
+        'tool_definitions.json',
+        'nexus-ide.vsix'
+    )
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($relativePath in $relativePaths) {
+        $path = Join-Path $PublishDirectory $relativePath
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        [void]$parts.Add(('{0}={1}' -f $relativePath, $hash))
+    }
+    $payload = $parts -join "`n"
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($payload))) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function Get-ReleaseIssueSnapshot {
     if (-not $DryRun -and (Test-Path -LiteralPath $releaseIssuesSnapshotPath -PathType Leaf)) {
         try {
@@ -837,6 +862,30 @@ Invoke-Cmd 'python' @(
 )
 if ($DryRun) { Warn "[DRY-RUN] would validate package and lockfile versions at $Version." } else { Ok "Package and lockfile versions are synchronized at $Version." }
 
+$preflightSummaryPath = Join-Path $env:TEMP "gxmcp-release-preflight-$Version.json"
+$preflightGxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { Get-GxPrimaryInstallPath -Catalog $gxCatalog }
+if (-not $DryRun -and -not $SkipBuild -and -not $SkipTests -and (Test-Path -LiteralPath $preflightSummaryPath -PathType Leaf)) {
+    try {
+        $priorPreflight = Get-Content -LiteralPath $preflightSummaryPath -Raw | ConvertFrom-Json
+        $currentArtifactFingerprint = Get-ReleaseArtifactFingerprint -PublishDirectory (Join-Path $root 'publish')
+        $canResumeBuild = $priorPreflight.schemaVersion -eq 'gxmcp-release-preflight/1' -and
+            $priorPreflight.status -in @('failed', 'running', 'passed') -and
+            [string]$priorPreflight.root -eq [string]$root -and
+            [string]$priorPreflight.version -eq [string]$Version -and
+            [string]$priorPreflight.sourceCommit -eq [string]$releaseSourceCommit -and
+            [string]$priorPreflight.gxPath -eq [string]$preflightGxPath -and
+            $null -ne $currentArtifactFingerprint -and
+            -not [string]::IsNullOrWhiteSpace([string]$priorPreflight.artifactFingerprint) -and
+            [string]$priorPreflight.artifactFingerprint -eq [string]$currentArtifactFingerprint
+        if ($canResumeBuild) {
+            $SkipBuild = $true
+            Warn "Reusing publish/ and VSIX from the matching preflight summary; build will not be repeated."
+        }
+    } catch {
+        Warn "Ignoring preflight summary that could not be validated for build reuse: $($_.Exception.Message)"
+    }
+}
+
 # -- 3. Build + zip publish/ -----------------------------------------------
 if (-not $SkipBuild) {
     Step "Building (build.ps1)"
@@ -905,13 +954,13 @@ if (-not $SkipBuild) {
 # -- 4. Optional test pass -------------------------------------------------
 if (-not $SkipTests) {
     Step "Running complete release preflight"
-    $preflightGxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { Get-GxPrimaryInstallPath -Catalog $gxCatalog }
     Invoke-Cmd 'pwsh' @(
         '-NoProfile',
-        '-File', (Join-Path $root 'scripts\release-preflight.ps1'),
+        '-File', (Join-Path $root 'scripts/release-preflight.ps1'),
         '-Version', $Version,
         '-GxPath', $preflightGxPath,
-        '-SummaryPath', (Join-Path $env:TEMP "gxmcp-release-preflight-$Version.json")
+        '-SummaryPath', $preflightSummaryPath,
+        '-ResumeSummaryPath', $preflightSummaryPath
     )
     if ($DryRun) { Warn '[DRY-RUN] would run the complete release preflight.' } else { Ok 'Complete release preflight passed.' }
 } else {
@@ -920,17 +969,24 @@ if (-not $SkipTests) {
 }
 
 # A release build can succeed while adding a new nullable/analyzer warning.
-# Keep this gate independent from the test switch: skipping tests must not skip
-# the warning-surface regression check.
-Step "Checking Release warning baseline"
-Invoke-Cmd 'pwsh' @(
-    '-NoProfile',
-    '-File',
-    (Join-Path $root 'scripts\check-build-warning-baseline.ps1'),
-    '-BaselineFile',
-    (Join-Path $root 'docs\build_warning_baseline.json')
-)
-if ($DryRun) { Warn '[DRY-RUN] would run the Release warning baseline gate.' } else { Ok 'Release warning baseline passed.' }
+# The complete preflight owns this gate on the normal path. Keep the direct
+# invocation only for -SkipTests so that skipping the broader suites does not
+# silently skip the warning-surface regression check.
+if ($SkipTests) {
+    Step "Checking Release warning baseline"
+    Invoke-Cmd 'pwsh' @(
+        '-NoProfile',
+        '-File',
+        (Join-Path $root 'scripts\check-build-warning-baseline.ps1'),
+        '-BaselineFile',
+        (Join-Path $root 'docs\build_warning_baseline.json')
+    )
+    if ($DryRun) { Warn '[DRY-RUN] would run the Release warning baseline gate.' } else { Ok 'Release warning baseline passed.' }
+} elseif ($DryRun) {
+    Warn '[DRY-RUN] warning baseline is included in the complete preflight.'
+} else {
+    Ok 'Release warning baseline was included in the complete preflight.'
+}
 
 # -- 4b. Validate artefact version stamps match $Version ------------------
 # With -SkipBuild a stale publish/ can ship silently; catch it here.

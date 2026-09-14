@@ -86,11 +86,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version >/dev/null 2>&1; then
+          CHECK_STARTED_EPOCH="$(date +%s)"
+          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version --fetch-retries=0 --fetch-timeout=5000 >/dev/null 2>&1; then
+            CHECK_ELAPSED_SECONDS=$(( $(date +%s) - CHECK_STARTED_EPOCH ))
             echo "already_published=true" >> "$GITHUB_OUTPUT"
-            echo "Already on npm; skipping publish."
+            echo "Already on npm; skipping publish (registry check ${CHECK_ELAPSED_SECONDS}s)."
           else
+            CHECK_ELAPSED_SECONDS=$(( $(date +%s) - CHECK_STARTED_EPOCH ))
             echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "Exact npm version is not published yet (registry check ${CHECK_ELAPSED_SECONDS}s)."
           fi
 
       - name: Download release artifacts
@@ -184,7 +188,7 @@ jobs:
         if: steps.npm_check.outputs.already_published == 'false'
         # --force: package.json declares os=win32 (correct for end users);
         # the linux publish runner only needs devDependencies to run npm publish.
-        run: npm install --force
+        run: npm install --force --no-audit --no-fund
 
       - name: Enforce OIDC-only npm auth
         if: steps.npm_check.outputs.already_published == 'false'
@@ -208,6 +212,8 @@ jobs:
           set -euo pipefail
           unset NODE_AUTH_TOKEN NPM_TOKEN
           TARGET_SPEC="${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}"
+          PUBLISH_STARTED_EPOCH="$(date +%s)"
+          PUBLISH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
           echo "Publishing ${TARGET_SPEC} to npm with provenance..."
           set +e
@@ -218,30 +224,55 @@ jobs:
           echo "$PUBLISH_OUT"
 
           if [ $PUBLISH_EXIT -eq 0 ]; then
+            PUBLISH_OUTCOME="accepted"
             echo "npm publish accepted by registry (staged with provenance)."
           elif echo "$PUBLISH_OUT" | grep -Eq "E409|previously staged|previously published"; then
+            PUBLISH_OUTCOME="already-staged"
             echo "Notice: ${TARGET_SPEC} is already staged or published on npm (E409 conflict). Proceeding to verify registry propagation..."
           else
             echo "::error::npm publish failed with exit code $PUBLISH_EXIT"
             exit $PUBLISH_EXIT
           fi
+          PUBLISH_ACCEPTED_EPOCH="$(date +%s)"
+          PUBLISH_ACCEPTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
           echo "Verifying that ${TARGET_SPEC} is live on npm registry..."
           MAX_ATTEMPTS=60
           SLEEP_SECONDS=10
+          REQUEST_TIMEOUT_SECONDS=5
+          MAX_WAIT_SECONDS=$((MAX_ATTEMPTS * REQUEST_TIMEOUT_SECONDS + (MAX_ATTEMPTS - 1) * SLEEP_SECONDS))
           AVAILABLE=false
+          REGISTRY_VISIBLE_EPOCH=""
+          REGISTRY_VISIBLE_AT=""
 
           for i in $(seq 1 $MAX_ATTEMPTS); do
-            if npm view "${TARGET_SPEC}" version >/dev/null 2>&1; then
+            if npm view "${TARGET_SPEC}" version --fetch-retries=0 --fetch-timeout=$((REQUEST_TIMEOUT_SECONDS * 1000)) >/dev/null 2>&1; then
               AVAILABLE=true
+              REGISTRY_VISIBLE_EPOCH="$(date +%s)"
+              REGISTRY_VISIBLE_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
               echo "Successfully verified ${TARGET_SPEC} on npm registry (attempt $i/$MAX_ATTEMPTS)!"
               break
             fi
-            echo "Package not yet queryable on npm (attempt $i/$MAX_ATTEMPTS). Waiting ${SLEEP_SECONDS}s..."
-            sleep $SLEEP_SECONDS
+            if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Package not yet queryable on npm (attempt $i/$MAX_ATTEMPTS). Waiting ${SLEEP_SECONDS}s..."
+              sleep $SLEEP_SECONDS
+            fi
           done
 
           if [ "$AVAILABLE" != "true" ]; then
-            echo "::error::Package ${TARGET_SPEC} was submitted but did not become available on npm registry within $((MAX_ATTEMPTS * SLEEP_SECONDS)) seconds."
+            echo "::error::Package ${TARGET_SPEC} was submitted but did not become available on npm registry within ${MAX_WAIT_SECONDS}s maximum probe budget."
             exit 1
           fi
+
+          PROPAGATION_SECONDS=$((REGISTRY_VISIBLE_EPOCH - PUBLISH_ACCEPTED_EPOCH))
+          echo "npm registry propagation: ${PROPAGATION_SECONDS}s (${PUBLISH_ACCEPTED_AT} -> ${REGISTRY_VISIBLE_AT}, ${i} probe(s))."
+          {
+            echo "### npm publication verification"
+            echo "- Target: \`${TARGET_SPEC}\`"
+            echo "- Publish result: \`${PUBLISH_OUTCOME}\`"
+            echo "- Publish started: \`${PUBLISH_STARTED_AT}\`"
+            echo "- Publish accepted: \`${PUBLISH_ACCEPTED_AT}\`"
+            echo "- Registry visible: \`${REGISTRY_VISIBLE_AT}\`"
+            echo "- Propagation: \`${PROPAGATION_SECONDS}s\`"
+            echo "- Verification probes: \`${i}/${MAX_ATTEMPTS}\`"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

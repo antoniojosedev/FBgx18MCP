@@ -55,9 +55,40 @@ try {
     $statusStartIndex = $releaseSource.IndexOf("Write-ReleaseStatus -Phase 'starting'", [StringComparison]::Ordinal)
     $tagInitIndex = $releaseSource.IndexOf('$tag = $null', [StringComparison]::Ordinal)
     if ($statusStartIndex -lt 0 -or $tagInitIndex -lt 0 -or $tagInitIndex -gt $statusStartIndex) { throw 'Release status must initialize the tag before the first status write.' }
-    foreach ($marker in @('CloseIssuesFile', 'Get-ReleaseIssueNumbers', 'Get-LabeledReleaseIssues', 'release-issues.txt', 'release-issues.json', 'gh api --paginate', 'repos/{owner}/{repo}/issues/$issue', 'per_page=100', 'OutputEncoding', 'Console]::OutputEncoding', 'ReleaseMilestone', 'Tracked issues', 'deduplicated', 'SkipLabeledIssues', 'hasTrackedIssuesInUnreleased', 'release-issues.ps1', 'Get-ReleaseIssueData', 'Assert-ReleaseIssueAction', 'CloseAfterRelease', 'issues = [ordered]', 'ToUpperInvariant()', '$CloseIssues = @(', 'foreach ($issueNumber in @($explicitIssues))', 'foreach ($issueNumber in @($labeledIssues))')) {
+    foreach ($marker in @('CloseIssuesFile', 'Get-ReleaseIssueNumbers', 'Get-LabeledReleaseIssues', 'release-issues.txt', 'release-issues.json', 'gh api --paginate', 'repos/{owner}/{repo}/issues/$issue', 'per_page=100', 'OutputEncoding', 'Console]::OutputEncoding', 'ReleaseMilestone', 'Tracked issues', 'deduplicated', 'SkipLabeledIssues', 'hasTrackedIssuesInUnreleased', 'release-issues.ps1', 'Get-ReleaseIssueData', 'Assert-ReleaseIssueAction', 'CloseAfterRelease', 'issues = [ordered]', 'ToUpperInvariant()', '$CloseIssues = @(', 'foreach ($issueNumber in @($explicitIssues))', 'foreach ($issueNumber in @($labeledIssues))', 'Get-ReleaseArtifactFingerprint', 'preflightSummaryPath', 'ResumeSummaryPath', 'warning baseline is included in the complete preflight')) {
         if ($releaseSource -notmatch [regex]::Escape($marker)) { throw "Release issue batch support is missing: $marker" }
     }
+
+    # Exercise the production issue normalizer instead of only checking source
+    # markers. The one-element int[] case used to unwrap to a scalar before
+    # concatenation, which could silently lose or duplicate release issues.
+    $tokens = $null; $errors = $null
+    $releaseAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'release.ps1'), [ref]$tokens, [ref]$errors)
+    if ($errors.Count) { throw $errors[0] }
+    $issueFunction = $releaseAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ReleaseIssueNumbers' }, $true)
+    if (-not $issueFunction) { throw 'Missing Get-ReleaseIssueNumbers production function.' }
+    . ([scriptblock]::Create($issueFunction.Extent.Text))
+    function Fail([string]$message) { throw $message }
+    $CloseIssuesFile = $null
+    $CloseIssues = [int[]](42)
+    $single = @(Get-ReleaseIssueNumbers)
+    if ($single.Count -ne 1 -or $single[0] -ne 42) { throw 'A scalar-equivalent int[] issue input was not preserved.' }
+    $CloseIssues = [int[]](42, 42, 7)
+    $deduplicated = @(Get-ReleaseIssueNumbers)
+    if (($deduplicated -join ',') -ne '42,7') { throw "Issue array was not deduplicated: $($deduplicated -join ',')" }
+    $CloseIssuesFile = Join-Path $temp 'issues.txt'
+    Set-Content -LiteralPath $CloseIssuesFile -Value "#7, 42`n42" -Encoding ascii
+    $fromFile = @(Get-ReleaseIssueNumbers)
+    if (($fromFile -join ',') -ne '42,7') { throw "Explicit and file issue inputs were combined incorrectly: $($fromFile -join ',')" }
+    $CloseIssuesFile = Join-Path $temp 'invalid-issues.txt'
+    Set-Content -LiteralPath $CloseIssuesFile -Value 'not-an-issue' -Encoding ascii
+    try {
+        [void](Get-ReleaseIssueNumbers)
+        throw 'Invalid issue-file input must fail closed.'
+    } catch {
+        if ($_.Exception.Message -notmatch 'Invalid issue number') { throw }
+    }
+
     Write-Host 'release-orchestration: exact provenance, dirty rejection and checksum asset checks passed' -ForegroundColor Green
 }
 finally {

@@ -75,4 +75,11 @@ if ($buildSource -notmatch '\$artifactGxPath\s*=\s*Get-GxPrimaryInstallPath\s+-C
     $buildSource -match '\$gxPath') {
     throw 'Build must keep the catalog artifact path separate from machine-specific SDK overrides.'
 }
+$releaseSource = Get-Content -LiteralPath (Join-Path $root 'release.ps1') -Raw
+$resumeBuildBlock = [regex]::Match($releaseSource, '(?s)\$canResumeBuild\s*=.*?\n\s*if \(\$canResumeBuild\)').Value
+if ([string]::IsNullOrWhiteSpace($resumeBuildBlock) -or
+    $resumeBuildBlock -notmatch '\$null\s+-ne\s+\$currentArtifactFingerprint' -or
+    $resumeBuildBlock -notmatch 'IsNullOrWhiteSpace\(\[string\]\$priorPreflight\.artifactFingerprint\)') {
+    throw 'Release build resume must fail closed when artifact fingerprints are missing.'
+}
 Write-Host 'release-entrypoint: wrapper and metadata checks passed' -ForegroundColor Green
