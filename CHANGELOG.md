@@ -62,6 +62,10 @@
   - `McpPipelineContext` & `Program.RequestLoop.cs`: Replace reflection-based `ToObject<bool?>()` and `ToObject<int?>()` calls with zero-allocation explicit `JToken` casts on arguments (`dryRun`, `deploy`, `buildPlanCap`, `skipFullDeploy`).
   - `BuildService.BuildResult`: Replace list instantiation fallbacks (`ErrorsDetailed ?? new List<ErrorDetail>()`) with null-checks and safe enumeration across error categories (`envErrors`, `codeErrors`, `envErrorCount`, `codeErrorCount`, `specErrorCount`), eliminating temporary list allocations during build reporting.
 
+### Fixed
+
+- Allow the packaged Worker to start with every GeneXus major declared in `config/gx-versions.json`, including GeneXus 17, while keeping missing required SDK assemblies and undeclared majors as hard failures ([#193](https://github.com/lennix1337/Genexus18MCP/issues/193)).
+
 ## v3.4.3 - 2026-09-13
 
 

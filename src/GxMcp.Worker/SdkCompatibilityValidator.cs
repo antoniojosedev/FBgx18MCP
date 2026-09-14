@@ -39,6 +39,12 @@ namespace GxMcp.Worker
             catch (Exception ex) { return Fail("GXMCP_SDK_MANIFEST_INVALID", "GXMCP_SDK_MANIFEST_INVALID manifest=" + manifestPath + " error=" + ex.GetType().Name); }
 
             string expectedVersion = (string)manifest["supportedVersion"];
+            if (!TryParseMajor(expectedVersion, out int expectedMajor))
+                return Fail("GXMCP_SDK_MANIFEST_INVALID", "GXMCP_SDK_MANIFEST_INVALID manifest=" + manifestPath + " error=supportedVersion");
+
+            if (!TryLoadSupportedMajors(manifestPath, out string catalogPath, out HashSet<int> supportedMajors, out string catalogError))
+                return Fail(catalogError, catalogError + " catalog=" + catalogPath);
+
             string anchor = (string)manifest["anchor"];
             string anchorPath = Path.Combine(sdkPath, anchor ?? string.Empty);
             if (string.IsNullOrWhiteSpace(anchor) || !File.Exists(anchorPath))
@@ -46,8 +52,8 @@ namespace GxMcp.Worker
 
             string actualVersion = versionReader(anchorPath);
             bool exactVersion = string.Equals(expectedVersion, actualVersion, StringComparison.OrdinalIgnoreCase);
-            if (!SameMajor(expectedVersion, actualVersion))
-                return Fail("GXMCP_SDK_VERSION_MISMATCH", "GXMCP_SDK_VERSION_MISMATCH expectedVersion=" + expectedVersion + " actualVersion=" + actualVersion);
+            if (!TryParseMajor(actualVersion, out int actualMajor) || !supportedMajors.Contains(actualMajor))
+                return Fail("GXMCP_SDK_VERSION_MISMATCH", "GXMCP_SDK_VERSION_MISMATCH expectedVersion=" + expectedVersion + " actualVersion=" + actualVersion + " supportedMajors=" + JoinMajors(supportedMajors));
 
             var assemblies = manifest["assemblies"] as JArray;
             if (assemblies == null || assemblies.Count == 0)
@@ -64,18 +70,87 @@ namespace GxMcp.Worker
                 if (!string.Equals(expectedHash, actualHash, StringComparison.OrdinalIgnoreCase))
                     fingerprintDrift.Add("GXMCP_SDK_FINGERPRINT_DRIFT path=" + relativePath + " expectedSha256=" + expectedHash + " actualSha256=" + actualHash);
             }
-            string versionDiagnostic = exactVersion ? expectedVersion : expectedVersion + " actualVersion=" + actualVersion + " (compatible major; patch/build drift)";
-            string diagnostic = "GXMCP_SDK_COMPATIBLE version=" + versionDiagnostic + " assemblies=" + assemblies.Count;
+            string versionDiagnostic = exactVersion
+                ? expectedVersion
+                : expectedMajor == actualMajor
+                    ? expectedVersion + " actualVersion=" + actualVersion + " (compatible major; patch/build drift)"
+                    : expectedVersion + " actualVersion=" + actualVersion + " (supported major " + actualMajor + "; reference major " + expectedMajor + ")";
+            string diagnostic = "GXMCP_SDK_COMPATIBLE version=" + versionDiagnostic + " supportedMajors=" + JoinMajors(supportedMajors) + " assemblies=" + assemblies.Count;
             if (fingerprintDrift.Count > 0) diagnostic += "\n" + string.Join("\n", fingerprintDrift);
             return new SdkCompatibilityResult(true, "GXMCP_SDK_COMPATIBLE", diagnostic);
         }
 
-        private static bool SameMajor(string expected, string actual)
+        private static bool TryParseMajor(string version, out int major)
         {
-            if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(actual)) return false;
-            return int.TryParse(expected.Split('.')[0], out int expectedMajor)
-                && int.TryParse(actual.Split('.')[0], out int actualMajor)
-                && expectedMajor > 0 && expectedMajor == actualMajor;
+            major = 0;
+            return !string.IsNullOrWhiteSpace(version)
+                && int.TryParse(version.Split('.')[0], out major)
+                && major > 0;
+        }
+
+        private static bool TryLoadSupportedMajors(string manifestPath, out string catalogPath, out HashSet<int> supportedMajors, out string error)
+        {
+            supportedMajors = new HashSet<int>();
+            string manifestDirectory = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? string.Empty;
+            var candidates = new List<string>();
+            string configuredCatalog = Environment.GetEnvironmentVariable("GXMCP_VERSION_CATALOG");
+            if (!string.IsNullOrWhiteSpace(configuredCatalog))
+            {
+                configuredCatalog = configuredCatalog.Trim().Trim('"');
+                candidates.Add(Path.IsPathRooted(configuredCatalog) ? configuredCatalog : Path.Combine(manifestDirectory, configuredCatalog));
+            }
+            candidates.Add(Path.Combine(manifestDirectory, "gx-versions.json"));
+            candidates.Add(Path.Combine(manifestDirectory, "config", "gx-versions.json"));
+            candidates.Add(Path.Combine(manifestDirectory, "..", "..", "config", "gx-versions.json"));
+
+            catalogPath = null;
+            foreach (string candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    catalogPath = Path.GetFullPath(candidate);
+                    break;
+                }
+            }
+            if (catalogPath == null)
+            {
+                catalogPath = string.Join(";", candidates);
+                error = "GXMCP_SDK_CATALOG_MISSING";
+                return false;
+            }
+
+            try
+            {
+                var catalog = JObject.Parse(File.ReadAllText(catalogPath));
+                var entries = catalog["supportedMajors"] as JArray;
+                if (entries != null)
+                {
+                    foreach (var entry in entries)
+                    {
+                        if (TryParseMajor((string)entry["major"], out int major)) supportedMajors.Add(major);
+                    }
+                }
+            }
+            catch
+            {
+                error = "GXMCP_SDK_CATALOG_INVALID";
+                return false;
+            }
+            if (supportedMajors.Count == 0)
+            {
+                error = "GXMCP_SDK_CATALOG_INVALID";
+                return false;
+            }
+
+            error = null;
+            return true;
+        }
+
+        private static string JoinMajors(HashSet<int> majors)
+        {
+            var ordered = new List<int>(majors);
+            ordered.Sort();
+            return string.Join(",", ordered);
         }
 
         private static SdkCompatibilityResult Fail(string code, string diagnostic)
