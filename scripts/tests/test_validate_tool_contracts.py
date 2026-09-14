@@ -24,7 +24,9 @@ class ValidateToolContractsTests(unittest.TestCase):
         )
         counts = MODULE.validate_document(document)
         self.assertEqual(54, counts["tools"])
-        self.assertEqual(226, counts["actions"])
+        # The published action count is a deliberate contract gate. Update it
+        # together with the schema when a new public action is added.
+        self.assertEqual(227, counts["actions"])
 
     def test_invalid_action_example_is_rejected(self):
         tool = {
