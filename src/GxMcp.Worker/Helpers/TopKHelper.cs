@@ -30,8 +30,14 @@ namespace GxMcp.Worker.Helpers
         }
 
         /// <summary>
-        /// Bounded heap container that maintains the top-K items according to the given comparer.
-        /// Useful for single-pass accumulation loops that scan collections once.
+        /// Bounded heap container that maintains the top-K items according to the order defined by <paramref name="comparer"/>.
+        /// <para>
+        /// <b>Ordering invariant:</b> The comparer must define the desired final sort order (i.e. <c>Compare(a, b) &lt; 0</c>
+        /// means <c>a</c> precedes <c>b</c> in the final sorted list).
+        /// Internally, the heap keeps the <i>least preferred</i> (worst) candidate at the root (<c>_heap[0]</c>).
+        /// When the heap is full, incoming items comparing less than the root (<c>Compare(item, root) &lt; 0</c>)
+        /// evict the root in <c>O(log K)</c> time. Calling <see cref="ToSortedList"/> sorts and returns the top-K in final order.
+        /// </para>
         /// </summary>
         public sealed class BoundedHeap<T>
         {

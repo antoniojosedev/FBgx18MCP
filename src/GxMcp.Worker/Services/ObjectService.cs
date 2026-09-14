@@ -2835,24 +2835,23 @@ namespace GxMcp.Worker.Services
                         // usedby filter already uses. Falls back to the full scan only
                         // when the index hasn't built ByNameIndex yet (LoadFromEntries
                         // test seam / older in-memory indexes).
-                        if (index.ByNameIndex != null)
+                        string lookupName = namePart.Replace('\\', '/');
+                        int lastSep = Math.Max(lookupName.LastIndexOf('/'), lookupName.LastIndexOf('.'));
+                        if (lastSep >= 0 && lastSep < lookupName.Length - 1)
                         {
-                            string lookupName = namePart.Replace('\\', '/');
-                            int lastSep = Math.Max(lookupName.LastIndexOf('/'), lookupName.LastIndexOf('.'));
-                            if (lastSep >= 0 && lastSep < lookupName.Length - 1)
-                            {
-                                lookupName = lookupName.Substring(lastSep + 1);
-                            }
+                            lookupName = lookupName.Substring(lastSep + 1);
+                        }
 
-                            foreach (var entry in index.FindByName(lookupName))
+                        foreach (var entry in index.FindByName(lookupName))
+                        {
+                            if (IdentityNameMatches(entry, namePart))
                             {
-                                if (IdentityNameMatches(entry, namePart))
-                                {
-                                    matches.Add(entry);
-                                }
+                                matches.Add(entry);
                             }
                         }
-                        else
+
+                        // Fallback for unindexed/legacy entries whose stored Name differs from the key
+                        if (matches.Count == 0 && index.ByNameIndex == null)
                         {
                             foreach (var kv in index.Objects)
                             {

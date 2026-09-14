@@ -118,6 +118,8 @@ namespace GxMcp.Worker.Services
         private static GraphAdjacency BuildAdjacency(SearchIndex index)
         {
             var adjacency = new GraphAdjacency();
+            if (index?.Objects == null) return adjacency;
+
             HashSet<string> fallbackNames = null;
             if (index.ByNameIndex == null)
             {

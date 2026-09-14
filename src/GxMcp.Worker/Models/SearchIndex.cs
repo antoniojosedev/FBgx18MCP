@@ -155,6 +155,21 @@ namespace GxMcp.Worker.Models
         public string ToJson() => JsonConvert.SerializeObject(this, Formatting.Indented);
         public static SearchIndex FromJson(string json) => JsonConvert.DeserializeObject<SearchIndex>(json);
 
+        private List<IndexEntry> ResolveKeys(HashSet<string> keys)
+        {
+            if (keys == null || Objects == null) return new List<IndexEntry>(0);
+            lock (keys)
+            {
+                var results = new List<IndexEntry>(keys.Count);
+                foreach (var k in keys)
+                {
+                    if (Objects.TryGetValue(k, out var entry) && entry != null)
+                        results.Add(entry);
+                }
+                return results;
+            }
+        }
+
         /// <summary>
         /// Finds all objects with the given bare name.
         /// Uses ByNameIndex (O(1)) when available, otherwise falls back to scanning Objects.Values.
@@ -167,20 +182,9 @@ namespace GxMcp.Worker.Models
             string trimmed = name.Trim();
             if (ByNameIndex != null)
             {
-                if (ByNameIndex.TryGetValue(trimmed, out var keys) && keys != null)
-                {
-                    lock (keys)
-                    {
-                        var results = new List<IndexEntry>(keys.Count);
-                        foreach (var k in keys)
-                        {
-                            if (Objects.TryGetValue(k, out var entry) && entry != null)
-                                results.Add(entry);
-                        }
-                        return results;
-                    }
-                }
-                return new List<IndexEntry>(0);
+                return ByNameIndex.TryGetValue(trimmed, out var keys)
+                    ? ResolveKeys(keys)
+                    : new List<IndexEntry>(0);
             }
 
             return Objects.Values
@@ -214,20 +218,9 @@ namespace GxMcp.Worker.Models
             string trimmed = type.Trim();
             if (TypeIndex != null)
             {
-                if (TypeIndex.TryGetValue(trimmed, out var keys) && keys != null)
-                {
-                    lock (keys)
-                    {
-                        var results = new List<IndexEntry>(keys.Count);
-                        foreach (var k in keys)
-                        {
-                            if (Objects.TryGetValue(k, out var entry) && entry != null)
-                                results.Add(entry);
-                        }
-                        return results;
-                    }
-                }
-                return new List<IndexEntry>(0);
+                return TypeIndex.TryGetValue(trimmed, out var keys)
+                    ? ResolveKeys(keys)
+                    : new List<IndexEntry>(0);
             }
 
             return Objects.Values
@@ -257,14 +250,7 @@ namespace GxMcp.Worker.Models
                         lock (keys) { uniqueKeys.UnionWith(keys); }
                     }
                 }
-
-                var results = new List<IndexEntry>(uniqueKeys.Count);
-                foreach (var k in uniqueKeys)
-                {
-                    if (Objects.TryGetValue(k, out var entry) && entry != null)
-                        results.Add(entry);
-                }
-                return results;
+                return ResolveKeys(uniqueKeys);
             }
 
             var typeSet = new HashSet<string>(typeList, StringComparer.OrdinalIgnoreCase);
@@ -285,20 +271,9 @@ namespace GxMcp.Worker.Models
             string trimmed = domain.Trim();
             if (DomainIndex != null)
             {
-                if (DomainIndex.TryGetValue(trimmed, out var keys) && keys != null)
-                {
-                    lock (keys)
-                    {
-                        var results = new List<IndexEntry>(keys.Count);
-                        foreach (var k in keys)
-                        {
-                            if (Objects.TryGetValue(k, out var entry) && entry != null)
-                                results.Add(entry);
-                        }
-                        return results;
-                    }
-                }
-                return new List<IndexEntry>(0);
+                return DomainIndex.TryGetValue(trimmed, out var keys)
+                    ? ResolveKeys(keys)
+                    : new List<IndexEntry>(0);
             }
 
             return Objects.Values
