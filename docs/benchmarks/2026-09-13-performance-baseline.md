@@ -63,4 +63,16 @@ Comparativo de medições antes e depois das 4 otimizações implementadas.
 | **IndexEntryFilterBuilder DescriptionContains** | Concatenação e IndexOf em null | **Short-circuit com verificação de null** | **Zero alocação em objetos sem descrição** |
 
 ---
-Relatório gerado e validado em 2026-09-13T23:35:00.
+
+## 5. Worker Hot-Path Resolution & Validation Benchmarks — KBs Grandes (~40.000 Objetos)
+
+| Benchmark / Cenário | ANTES | DEPOIS | Variação / Ganho |
+|---|---|---|---|
+| **Symbol Validation / IsKnownObject** (validação de referências em 40k objetos) | 2,527 ms/check (262 Gen0) | **0,00024 ms/check (0 Gen0)** | **10.435x mais rápido (O(1) ByNameIndex, Zero-alloc)** |
+| **Object Resolution / FindIndexEntry & FindObject** (busca exata/miss em 40k objetos) | 0,384 ms/busca (16 Gen0) | **0,00022 ms/busca (0 Gen0)** | **1.745x mais rápido (O(1) multimap sem fallback de 40k)** |
+| **Type Gathering / Candidates** (DbOptimize, PatternApply, ValidateConditions) | 1,215 ms/filtro | **0,475 ms/filtro** | **2,6x mais rápido (O(1) TypeIndex buckets)** |
+| **IdentityNameMatches Path Evaluation** (nomes simples sem `/` ou `.`) | Substring, Replace e Concat (~200k alocações) | **Zero-allocation short-circuit** | **Elimina 100% das alocações de path em nomes simples** |
+| **FormatNotFoundError Ambiguity Check** (29 ferramentas de leitura/edição/estrutura) | Varredura de 40.000 objetos | **O(1) ByNameIndex lookup** | **Envelope de erro imediato sem latência de varredura** |
+
+---
+Relatório atualizado e validado em 2026-09-14T00:10:00.

@@ -127,13 +127,32 @@ namespace GxMcp.Worker.Services
             // non-blocking) resolves the object anyway.
             var index = GetLoadedIndexOrNull();
             if (index?.Objects == null) return new List<SearchIndex.IndexEntry>();
-            var results = new List<SearchIndex.IndexEntry>();
+
+            if (index.ByNameIndex != null)
+            {
+                if (index.ByNameIndex.TryGetValue(name, out var keys) && keys != null)
+                {
+                    var results = new List<SearchIndex.IndexEntry>(keys.Count);
+                    lock (keys)
+                    {
+                        foreach (var key in keys)
+                        {
+                            if (index.Objects.TryGetValue(key, out var entry) && entry != null)
+                                results.Add(entry);
+                        }
+                    }
+                    return results;
+                }
+                return new List<SearchIndex.IndexEntry>();
+            }
+
+            var fallbackResults = new List<SearchIndex.IndexEntry>();
             foreach (var entry in index.Objects.Values)
             {
                 if (string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
-                    results.Add(entry);
+                    fallbackResults.Add(entry);
             }
-            return results;
+            return fallbackResults;
         }
 
         public string CreateObject(string type, string name)
@@ -2471,17 +2490,32 @@ namespace GxMcp.Worker.Services
         private static bool IdentityNameMatches(SearchIndex.IndexEntry entry, string target)
         {
             if (entry == null || string.IsNullOrWhiteSpace(target)) return false;
+            if (string.Equals(entry.Name, target, StringComparison.OrdinalIgnoreCase)) return true;
+
             string value = target.Trim().Replace('\\', '/');
+            if (string.Equals(entry.Name, value, StringComparison.OrdinalIgnoreCase)) return true;
+
+            bool hasSeparator = value.IndexOf('/') >= 0 || value.IndexOf('.') >= 0;
+            if (!hasSeparator) return false;
+
             string path = (entry.Path ?? string.Empty).Trim().Replace('\\', '/');
+            if (string.Equals(path, value, StringComparison.OrdinalIgnoreCase)) return true;
             string pathWithoutRoot = path.StartsWith("Root Module/", StringComparison.OrdinalIgnoreCase)
                 ? path.Substring("Root Module/".Length) : path;
+            if (string.Equals(pathWithoutRoot, value, StringComparison.OrdinalIgnoreCase)) return true;
             string dottedPath = pathWithoutRoot.Replace('/', '.');
-            return string.Equals(entry.Name, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(path, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(pathWithoutRoot, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(dottedPath, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals((entry.Module ?? string.Empty) + "/" + entry.Name, value, StringComparison.OrdinalIgnoreCase)
-                || string.Equals((entry.Module ?? string.Empty) + "." + entry.Name, value, StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(dottedPath, value, StringComparison.OrdinalIgnoreCase)) return true;
+
+            string module = entry.Module ?? string.Empty;
+            if (module.Length > 0 && entry.Name != null)
+            {
+                if (value.Length == module.Length + 1 + entry.Name.Length)
+                {
+                    if (string.Equals(module + "/" + entry.Name, value, StringComparison.OrdinalIgnoreCase)) return true;
+                    if (string.Equals(module + "." + entry.Name, value, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            return false;
         }
 
         private static IEnumerable<string> QualifiedIdentityCandidates(SearchIndex.IndexEntry entry)
@@ -2621,23 +2655,28 @@ namespace GxMcp.Worker.Services
 
             if (index.ByNameIndex != null)
             {
-                string simpleName = target.Trim();
+                string simpleName = target.Trim().Replace('\\', '/');
                 int lastSlash = Math.Max(simpleName.LastIndexOf('/'), simpleName.LastIndexOf('.'));
                 if (lastSlash >= 0 && lastSlash < simpleName.Length - 1)
                 {
                     simpleName = simpleName.Substring(lastSlash + 1);
                 }
 
-                if (index.ByNameIndex.TryGetValue(simpleName, out var keys))
+                if (index.ByNameIndex.TryGetValue(simpleName, out var keys) && keys != null)
                 {
-                    foreach (var k in keys)
+                    lock (keys)
                     {
-                        if (index.Objects.TryGetValue(k, out var candidate) && IsEntryType(candidate, type) && IdentityNameMatches(candidate, target))
+                        foreach (var k in keys)
                         {
-                            return candidate;
+                            if (index.Objects.TryGetValue(k, out var candidate) && IsEntryType(candidate, type) && IdentityNameMatches(candidate, target))
+                            {
+                                return candidate;
+                            }
                         }
                     }
                 }
+
+                return null;
             }
 
             return index.Objects.Values.FirstOrDefault(e => IsEntryType(e, type) && IdentityNameMatches(e, target));
@@ -2828,17 +2867,26 @@ namespace GxMcp.Worker.Services
                         // usedby filter already uses. Falls back to the full scan only
                         // when the index hasn't built ByNameIndex yet (LoadFromEntries
                         // test seam / older in-memory indexes).
-                        if (index.ByNameIndex != null
-                            && index.ByNameIndex.TryGetValue(namePart, out var nameKeys))
+                        if (index.ByNameIndex != null)
                         {
-                            if (nameKeys != null)
+                            string lookupName = namePart.Replace('\\', '/');
+                            int lastSep = Math.Max(lookupName.LastIndexOf('/'), lookupName.LastIndexOf('.'));
+                            if (lastSep >= 0 && lastSep < lookupName.Length - 1)
+                            {
+                                lookupName = lookupName.Substring(lastSep + 1);
+                            }
+
+                            if (index.ByNameIndex.TryGetValue(lookupName, out var nameKeys) && nameKeys != null)
                             {
                                 lock (nameKeys)
                                 {
                                     foreach (var key in nameKeys)
                                     {
                                         if (!index.Objects.TryGetValue(key, out var entry) || entry == null) continue;
-                                        matches.Add(entry);
+                                        if (IdentityNameMatches(entry, namePart))
+                                        {
+                                            matches.Add(entry);
+                                        }
                                     }
                                 }
                             }

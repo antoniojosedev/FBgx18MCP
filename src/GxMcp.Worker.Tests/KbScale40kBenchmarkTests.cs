@@ -292,5 +292,160 @@ Exact / name:X search across 40,000 objects in memory (x 1,000 searches):
             _output.WriteLine(report);
             Console.WriteLine(report);
         }
+
+        [Fact]
+        public void Benchmark_40k_Validation_And_ResolveEntry()
+        {
+            int count = 40000;
+            var candidateTypes = new[] { "Procedure", "Transaction", "WebPanel", "Attribute", "Table", "DataProvider" };
+            var objects = new ConcurrentDictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
+            var byNameIndex = new ConcurrentDictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var typeIndex = new ConcurrentDictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = 0; i < count; i++)
+            {
+                string name = "Obj_" + i;
+                string type = candidateTypes[i % candidateTypes.Length];
+                string key = type + ":" + name;
+                var entry = new SearchIndex.IndexEntry
+                {
+                    Guid = Guid.NewGuid().ToString(),
+                    Name = name,
+                    Type = type,
+                    StorageKey = key,
+                    Path = "Root Module/" + name
+                };
+                objects[key] = entry;
+
+                var nameSet = byNameIndex.GetOrAdd(name, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                lock (nameSet) { nameSet.Add(key); }
+
+                var typeSet = typeIndex.GetOrAdd(type, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                lock (typeSet) { typeSet.Add(key); }
+            }
+
+            var index = new SearchIndex
+            {
+                Objects = objects,
+                ByNameIndex = byNameIndex,
+                TypeIndex = typeIndex
+            };
+
+            // Test 1: IsKnownObject validation (references lookup during edit impact analysis)
+            var references = new[] { "Obj_500", "Obj_20000", "Root Module.Obj_39999", "MissingRef_1", "MissingRef_2" };
+            int valIterations = 500;
+
+            // ANTES: linear scan over 40k objects
+            int foundBefore = 0;
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            int gen0Start = GC.CollectionCount(0);
+            var sw = Stopwatch.StartNew();
+            for (int it = 0; it < valIterations; it++)
+            {
+                string refName = references[it % references.Length];
+                bool found = false;
+                foreach (var entry in index.Objects.Values)
+                {
+                    if (entry == null) continue;
+                    if (string.Equals(entry.Name, refName, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(entry.Type + ":" + entry.Name, refName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = true;
+                        break;
+                    }
+                    int dot = refName.LastIndexOf('.');
+                    if (dot >= 0 && string.Equals(entry.Name, refName.Substring(dot + 1), StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) foundBefore++;
+            }
+            sw.Stop();
+            int gen0Before = GC.CollectionCount(0) - gen0Start;
+            double msBeforeVal = sw.Elapsed.TotalMilliseconds / valIterations;
+
+            // DEPOIS: O(1) ByNameIndex lookup
+            int foundAfter = 0;
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            gen0Start = GC.CollectionCount(0);
+            sw.Restart();
+            for (int it = 0; it < valIterations; it++)
+            {
+                string refName = references[it % references.Length];
+                bool found = false;
+                if (index.Objects.ContainsKey(refName) || index.ByNameIndex.ContainsKey(refName))
+                {
+                    found = true;
+                }
+                else
+                {
+                    int dot = refName.LastIndexOf('.');
+                    if (dot >= 0 && dot < refName.Length - 1 && index.ByNameIndex.ContainsKey(refName.Substring(dot + 1)))
+                    {
+                        found = true;
+                    }
+                }
+                if (found) foundAfter++;
+            }
+            sw.Stop();
+            Assert.Equal(foundBefore, foundAfter);
+            int gen0After = GC.CollectionCount(0) - gen0Start;
+            double msAfterVal = sw.Elapsed.TotalMilliseconds / valIterations;
+
+            // Test 2: TypeIndex candidate gathering (DbOptimize / PatternApply / ValidateConditions)
+            int typeIterations = 100;
+
+            // ANTES: linear scan over 40k objects filtering transactions
+            sw.Restart();
+            for (int it = 0; it < typeIterations; it++)
+            {
+                var txs = new List<string>();
+                foreach (var entry in index.Objects.Values)
+                {
+                    if (entry.Type != null && entry.Type.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
+                        txs.Add(entry.Name);
+                }
+            }
+            sw.Stop();
+            double msBeforeType = sw.Elapsed.TotalMilliseconds / typeIterations;
+
+            // DEPOIS: TypeIndex O(1) bucket retrieval
+            sw.Restart();
+            for (int it = 0; it < typeIterations; it++)
+            {
+                var txs = new List<string>();
+                if (index.TypeIndex.TryGetValue("Transaction", out var keys) && keys != null)
+                {
+                    foreach (var k in keys)
+                    {
+                        if (index.Objects.TryGetValue(k, out var entry) && entry?.Name != null)
+                            txs.Add(entry.Name);
+                    }
+                }
+            }
+            sw.Stop();
+            double msAfterType = sw.Elapsed.TotalMilliseconds / typeIterations;
+
+            string report = $@"
+=== VALIDATION_AND_RESOLUTION_40K_BENCHMARK ===
+1. Symbol Validation / IsKnownObject across 40k KB (x {valIterations} iterations):
+   ANTES (Linear scan of Objects.Values): {msBeforeVal:F3} ms/check, Gen0: {gen0Before}
+   DEPOIS (ByNameIndex O(1) check):       {msAfterVal:F5} ms/check, Gen0: {gen0After}
+   Speedup: {msBeforeVal / Math.Max(0.0001, msAfterVal):F0}x mais rápido
+
+2. Type Gathering / Candidates across 40k KB (x {typeIterations} iterations):
+   ANTES (Linear scan of Objects.Values): {msBeforeType:F3} ms/filter
+   DEPOIS (TypeIndex O(1) bucket):        {msAfterType:F3} ms/filter
+   Speedup: {msBeforeType / Math.Max(0.0001, msAfterType):F0}x mais rápido
+===============================================";
+            _output.WriteLine(report);
+            Console.WriteLine(report);
+        }
     }
 }

@@ -931,11 +931,28 @@ namespace GxMcp.Worker.Services
                 var index = _objectService.GetIndex();
                 if (index != null && index.Objects != null && index.Objects.Count > 0)
                 {
-                    foreach (var entry in index.Objects.Values)
+                    if (index.TypeIndex != null)
                     {
-                        if (entry == null || string.IsNullOrEmpty(entry.Name)) continue;
-                        if (string.Equals(entry.Type, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase))
-                            names.Add(entry.Name);
+                        if (index.TypeIndex.TryGetValue("WorkWithPlus for Web Template", out var keys) && keys != null)
+                        {
+                            lock (keys)
+                            {
+                                foreach (var k in keys)
+                                {
+                                    if (index.Objects.TryGetValue(k, out var entry) && !string.IsNullOrEmpty(entry?.Name))
+                                        names.Add(entry.Name);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        foreach (var entry in index.Objects.Values)
+                        {
+                            if (entry == null || string.IsNullOrEmpty(entry.Name)) continue;
+                            if (string.Equals(entry.Type, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase))
+                                names.Add(entry.Name);
+                        }
                     }
                 }
                 else

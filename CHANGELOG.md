@@ -12,6 +12,14 @@
 - **Gateway O(1) Router Dispatch**: Index tool routers into an $O(1)$ lookup dictionary and replace LINQ checks with an immutable `HashSet<string>`, accelerating dispatch routing from 169.8 ns to 35.6 ns (4.8x faster).
 - **Worker Scale O(1) ByNameIndex Multimap**: Resolve candidates via `ByNameIndex` multimap for exact matches and `criteria.NameFilter` in `SearchService`, cutting 40,000-object query latency from 0.598 ms to 0.00035 ms (1,708x speedup, 0 Gen0 collections).
 - **Worker ListObjects Top-K Bounded Heap**: Single-pass bounded heap selection (`SelectTopK`) in `ListService` for paginated discovery (`limit <= 200`), slashing 40,000-object sort latency from 40.35 ms to 2.17 ms (18.6x speedup), and short-circuit `DescriptionContains` in `IndexEntryFilterBuilder` avoiding string allocations on null descriptions.
+- **Worker Scale Hot-Path Resolution & Validation**:
+  - `ObjectService.FindCandidateEntries`, `FindIndexEntry`, and `FindObject`: resolve entries via `ByNameIndex` multimap in $O(1)$ and eliminate 40,000-object linear fallback scans on lookup misses.
+  - `ObjectService.IdentityNameMatches`: zero-allocation fast-path for bare names, completely skipping path manipulation, substring, and replacement allocations when targets lack path separators.
+  - `IndexCacheService.FindEntriesByName` & `CallerGraphService.FindEntriesByName`: $O(1)$ candidate retrieval via `ByNameIndex`, eliminating full index iterations on misses and caller graph generation.
+  - `AnalyzeService.ResolveIndexEntry` & `TryFindByBareName`: $O(1)$ entry resolution with type-priority ordering in impact analysis and dependency graphs.
+  - `KbValidationService.IsKnownObject`, `AnalyzeImpact`, and `ValidateConditions`: $O(1)$ symbol validation (from 2.527 ms to 0.00024 ms per check, 10,435x speedup with 0 Gen0 collections) and direct `TypeIndex` candidate retrieval.
+  - `HealingService.FormatNotFoundError`: $O(1)$ exact-match ambiguity checks via `ByNameIndex` accelerating error envelope synthesis across 29 tool failure paths.
+  - `PatternApplyService.ListWwpWebTemplates` and `DbOptimizeService.EnumerateCallers`/`EnumerateTransactionNames`: query `TypeIndex` directly instead of iterating all 40,000 objects.
 
 ## v3.4.3 - 2026-09-13
 

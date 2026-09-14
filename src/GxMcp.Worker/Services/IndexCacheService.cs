@@ -514,9 +514,23 @@ namespace GxMcp.Worker.Services
             {
                 var idx = GetIndex();
                 if (idx?.Objects == null) return Array.Empty<SearchIndex.IndexEntry>();
-                if (idx.ByNameIndex != null && idx.ByNameIndex.TryGetValue(name, out var keys))
-                    return keys.Where(key => idx.Objects.TryGetValue(key, out var entry) && entry != null)
-                        .Select(key => idx.Objects[key]).ToList();
+                if (idx.ByNameIndex != null)
+                {
+                    if (idx.ByNameIndex.TryGetValue(name, out var keys) && keys != null)
+                    {
+                        lock (keys)
+                        {
+                            var list = new List<SearchIndex.IndexEntry>(keys.Count);
+                            foreach (var key in keys)
+                            {
+                                if (idx.Objects.TryGetValue(key, out var entry) && entry != null)
+                                    list.Add(entry);
+                            }
+                            return list;
+                        }
+                    }
+                    return Array.Empty<SearchIndex.IndexEntry>();
+                }
                 // Test/legacy snapshots may not carry derived indexes yet. Keep
                 // correctness while the next rebuild creates the multimap.
                 return idx.Objects.Values.Where(entry => entry != null

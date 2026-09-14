@@ -859,6 +859,29 @@ namespace GxMcp.Worker.Services
             {
                 var index = _cache?.GetIndex();
                 if (index == null) yield break;
+
+                if (index.TypeIndex != null)
+                {
+                    var targetTypes = new[] { "Procedure", "WebPanel", "DataProvider", "WorkPanel", "SDPanel" };
+                    foreach (var t in targetTypes)
+                    {
+                        if (index.TypeIndex.TryGetValue(t, out var keys) && keys != null)
+                        {
+                            List<string> snapshot;
+                            lock (keys)
+                            {
+                                snapshot = new List<string>(keys);
+                            }
+                            foreach (var k in snapshot)
+                            {
+                                if (index.Objects.TryGetValue(k, out var entry) && entry != null)
+                                    yield return new ObjectRef { Name = entry.Name, Type = entry.Type };
+                            }
+                        }
+                    }
+                    yield break;
+                }
+
                 foreach (var entry in index.Objects.Values)
                 {
                     if (string.IsNullOrEmpty(entry.Type)) continue;
@@ -878,6 +901,25 @@ namespace GxMcp.Worker.Services
             {
                 var index = _cache?.GetIndex();
                 if (index == null) yield break;
+
+                if (index.TypeIndex != null)
+                {
+                    if (index.TypeIndex.TryGetValue("Transaction", out var keys) && keys != null)
+                    {
+                        List<string> snapshot;
+                        lock (keys)
+                        {
+                            snapshot = new List<string>(keys);
+                        }
+                        foreach (var k in snapshot)
+                        {
+                            if (index.Objects.TryGetValue(k, out var entry) && entry?.Name != null)
+                                yield return entry.Name;
+                        }
+                    }
+                    yield break;
+                }
+
                 foreach (var entry in index.Objects.Values)
                 {
                     if (entry.Type != null

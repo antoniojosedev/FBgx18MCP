@@ -431,7 +431,43 @@ namespace GxMcp.Worker.Services
                 return direct;
             }
 
-            // Stage 2: EndsWith on the key suffix, type-priority ordering.
+            // Stage 2: ByNameIndex multimap lookup (O(1)) with type-priority ordering
+            if (index.ByNameIndex != null)
+            {
+                if (index.ByNameIndex.TryGetValue(targetName, out var keys) && keys != null && keys.Count > 0)
+                {
+                    lock (keys)
+                    {
+                        foundKey = keys.FirstOrDefault(k => k.StartsWith("Procedure:", StringComparison.OrdinalIgnoreCase))
+                                 ?? keys.FirstOrDefault(k => k.StartsWith("Transaction:", StringComparison.OrdinalIgnoreCase))
+                                 ?? keys.FirstOrDefault(k => k.StartsWith("WebPanel:", StringComparison.OrdinalIgnoreCase))
+                                 ?? keys.FirstOrDefault(k => k.StartsWith("DataProvider:", StringComparison.OrdinalIgnoreCase))
+                                 ?? keys.FirstOrDefault(k => k.StartsWith("Table:", StringComparison.OrdinalIgnoreCase))
+                                 ?? keys.FirstOrDefault();
+                    }
+                    if (foundKey != null && index.Objects.TryGetValue(foundKey, out var byKey)) return byKey;
+                }
+
+                var trimmedName = targetName.Trim();
+                if (trimmedName.Length > 0 && !string.Equals(trimmedName, targetName, StringComparison.Ordinal)
+                    && index.ByNameIndex.TryGetValue(trimmedName, out var trimmedKeys) && trimmedKeys != null && trimmedKeys.Count > 0)
+                {
+                    lock (trimmedKeys)
+                    {
+                        foundKey = trimmedKeys.FirstOrDefault(k => k.StartsWith("Procedure:", StringComparison.OrdinalIgnoreCase))
+                                 ?? trimmedKeys.FirstOrDefault(k => k.StartsWith("Transaction:", StringComparison.OrdinalIgnoreCase))
+                                 ?? trimmedKeys.FirstOrDefault(k => k.StartsWith("WebPanel:", StringComparison.OrdinalIgnoreCase))
+                                 ?? trimmedKeys.FirstOrDefault(k => k.StartsWith("DataProvider:", StringComparison.OrdinalIgnoreCase))
+                                 ?? trimmedKeys.FirstOrDefault(k => k.StartsWith("Table:", StringComparison.OrdinalIgnoreCase))
+                                 ?? trimmedKeys.FirstOrDefault();
+                    }
+                    if (foundKey != null && index.Objects.TryGetValue(foundKey, out var byTrimmedKey)) return byTrimmedKey;
+                }
+
+                return null;
+            }
+
+            // Stage 2 fallback: EndsWith on the key suffix, type-priority ordering.
             var possibleKeys = index.Objects.Keys
                 .Where(k => k.EndsWith(":" + targetName, StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -483,6 +519,26 @@ namespace GxMcp.Worker.Services
         {
             entry = null;
             if (index?.Objects == null || string.IsNullOrEmpty(bareName)) return false;
+
+            if (index.ByNameIndex != null)
+            {
+                if (index.ByNameIndex.TryGetValue(bareName, out var keys) && keys != null)
+                {
+                    lock (keys)
+                    {
+                        foreach (var k in keys)
+                        {
+                            if (index.Objects.TryGetValue(k, out var candidate) && candidate != null)
+                            {
+                                entry = candidate;
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+
             foreach (var kv in index.Objects)
             {
                 var v = kv.Value;
