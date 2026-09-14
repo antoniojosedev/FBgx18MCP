@@ -82,6 +82,7 @@ namespace GxMcp.Gateway
                 case WorkerStopReason.ExplicitClose:
                 case WorkerStopReason.PlannedReload:
                 case WorkerStopReason.HeapRecycle:
+                case WorkerStopReason.SdkCompatibilityRejected:
                     return false;
                 default:
                     // None / Wedged. A clean exit code 0 with reason None is a benign

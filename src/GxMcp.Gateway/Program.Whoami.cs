@@ -74,6 +74,11 @@ namespace GxMcp.Gateway
             }
         }
 
+        private static JObject BuildSdkCompatibilityBlock(string? gxPath)
+        {
+            return WorkerSdkCompatibilityProbe.Check(gxPath).ToDiagnosticObject();
+        }
+
         // v2.3.8 Task 1.2: gateway-side mirror of the worker's IndexCacheService.GetState().
         // The worker is the source of truth (CommandDispatcher.GetIndexState), but the gateway
         // keeps a last-known snapshot so `whoami` returns instantly without round-tripping
@@ -756,7 +761,7 @@ namespace GxMcp.Gateway
         // and, crucially, SELF-HEALS: when there's a known KB but no worker and none
         // spawning, it kicks an AcquireAsync so the worker actually comes back without the
         // agent having to run worker_reload force by hand.
-        private static JObject BuildHonestWorkerHealth(JObject payload)
+        private static JObject BuildHonestWorkerHealth(JObject payload, bool allowSelfHeal = true)
         {
             try
             {
@@ -770,6 +775,40 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrEmpty(alias)) alias = _currentKb.Value?.NormalizedAlias;
                 var known = pool.ListKnown();
                 if (string.IsNullOrEmpty(alias)) alias = known.FirstOrDefault()?.NormalizedAlias;
+
+                if (!string.IsNullOrEmpty(alias)
+                    && pool.TryGetStartupFailure(alias!, out var startupFailure))
+                {
+                    return BuildStartupFailureHealth(alias!, startupFailure);
+                }
+
+                if (!string.IsNullOrEmpty(alias))
+                {
+                    var activeWorker = pool.TryGet(alias!);
+                    if (activeWorker != null && !activeWorker.IsSdkReady)
+                    {
+                        return new JObject
+                        {
+                            ["status"] = "starting",
+                            ["alias"] = alias,
+                            ["hint"] = "Worker process is alive but has not completed SDK readiness. Retry in a few seconds."
+                        };
+                    }
+
+                    var sdk = WorkerSdkCompatibilityProbe.Check(_activeConfig?.GeneXus?.InstallationPath);
+                    if (sdk.IsRejected)
+                    {
+                        return new JObject
+                        {
+                            ["status"] = "sdk_incompatible",
+                            ["alias"] = alias,
+                            ["code"] = sdk.Code,
+                            ["error"] = sdk.Diagnostic,
+                            ["sdkCompatibility"] = sdk.ToDiagnosticObject(),
+                            ["hint"] = "The configured GeneXus major is outside the explicit compatibility catalog. Change GeneXus.InstallationPath or use a Worker build validated for that major; no respawn will be attempted."
+                        };
+                    }
+                }
 
                 if (!string.IsNullOrEmpty(alias) && pool.IsSpawning(alias))
                 {
@@ -799,6 +838,15 @@ namespace GxMcp.Gateway
                 {
                     var handle = known.FirstOrDefault(h =>
                         string.Equals(h.NormalizedAlias, alias, StringComparison.OrdinalIgnoreCase));
+                    if (!allowSelfHeal)
+                    {
+                        return new JObject
+                        {
+                            ["status"] = "no_worker",
+                            ["alias"] = alias,
+                            ["hint"] = "No ready worker is running for this KB."
+                        };
+                    }
                     if (handle != null)
                     {
                         _ = Task.Run(async () =>
@@ -825,6 +873,104 @@ namespace GxMcp.Gateway
             {
                 return new JObject { ["status"] = "unknown", ["hint"] = "Worker health probe failed: " + ex.Message };
             }
+        }
+
+        private static JObject BuildStartupFailureHealth(string alias, WorkerStartupFailure failure)
+        {
+            bool sdkFailure = failure.Code.StartsWith("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase);
+            var health = new JObject
+            {
+                ["status"] = sdkFailure ? "sdk_incompatible" : "startup_failed",
+                ["alias"] = alias,
+                ["code"] = failure.Code,
+                ["error"] = failure.Diagnostic,
+                ["failedAtUtc"] = failure.AtUtc,
+                ["exitCode"] = failure.ExitCode
+            };
+            health["hint"] = sdkFailure
+                ? "The Worker rejected the configured GeneXus SDK before opening the KB. Check geneXus.sdkCompatibility and use a supported major; the gateway will not restart this rejected worker in a loop."
+                : "The Worker failed during startup. Check the error above and retry after correcting the reported path or process problem.";
+            return health;
+        }
+
+        internal static bool IsWorkerReadyForDoctor()
+        {
+            try
+            {
+                if (_workerPool == null) return false;
+                KbHandle? current = _currentKb.Value;
+                if (current != null)
+                {
+                    var worker = _workerPool.TryGet(current.NormalizedAlias);
+                    return worker != null && worker.Pid.HasValue && worker.IsSdkReady;
+                }
+
+                foreach (var handle in _workerPool.ListOpen())
+                {
+                    var worker = _workerPool.TryGet(handle.NormalizedAlias);
+                    if (worker != null && worker.Pid.HasValue && worker.IsSdkReady) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        internal static JObject BuildGatewayDoctorEnvelope(string? sessionId = null)
+        {
+            var whoami = BuildWhoamiPayload(false, sessionId);
+            var geneXus = whoami["geneXus"] is JObject gx
+                ? (JObject)gx.DeepClone()
+                : new JObject();
+            var kb = whoami["kb"] is JObject kbObject
+                ? (JObject)kbObject.DeepClone()
+                : new JObject();
+            var worker = whoami["worker"] is JObject workerObject
+                ? (JObject)workerObject.DeepClone()
+                : new JObject();
+            var health = BuildHonestWorkerHealth(whoami, allowSelfHeal: false);
+            var warnings = new JArray();
+
+            string sdkStatus = geneXus["sdkCompatibility"]?["status"]?.ToString() ?? "unavailable";
+            if (sdkStatus == "incompatible")
+                warnings.Add("CRITICAL: " + (geneXus["sdkCompatibility"]?["diagnostic"]?.ToString() ?? "GeneXus SDK major is incompatible."));
+            else if (sdkStatus == "unavailable")
+                warnings.Add("GeneXus SDK version could not be verified before Worker startup.");
+
+            string workerStatus = health["status"]?.ToString() ?? "unknown";
+            if (workerStatus != "running")
+                warnings.Add("Worker status: " + workerStatus + ".");
+            if (kb["active"] == null || kb["active"]!.Type == JTokenType.Null)
+                warnings.Add("No active KB is selected.");
+
+            var index = whoami["index"] as JObject;
+            var result = new JObject
+            {
+                ["checkedAt"] = DateTime.UtcNow.ToString("o"),
+                ["version"] = new JObject
+                {
+                    ["current"] = McpRouter.ServerVersion,
+                    ["source"] = "gateway"
+                },
+                ["geneXus"] = geneXus,
+                ["kb"] = kb,
+                ["worker"] = worker,
+                ["workerHealth"] = health,
+                ["cache"] = new JObject
+                {
+                    ["indexEntries"] = index?["totalObjects"] ?? 0,
+                    ["ageHours"] = JValue.CreateNull()
+                },
+                ["telemetry"] = new JObject { ["source"] = "gateway" },
+                ["warnings"] = warnings,
+                ["hint"] = warnings.Count > 0 ? warnings[0] : JValue.CreateNull()
+            };
+
+            return new JObject
+            {
+                ["status"] = "ok",
+                ["code"] = "DoctorOk",
+                ["result"] = result
+            };
         }
 
         // PERFORMANCE (perf round 5): CrashLedger.Summarize reads the ledger file on
@@ -1003,6 +1149,7 @@ namespace GxMcp.Gateway
             bool kbExists = !string.IsNullOrEmpty(kbPath) && Directory.Exists(kbPath);
             bool kbValid = kbExists && IsKbPathValid(kbPath!);
             string? gxVersion = GetCachedGxVersion(gxPath);
+            JObject sdkCompatibility = BuildSdkCompatibilityBlock(gxPath);
 
             var payload = new JObject
             {
@@ -1043,7 +1190,8 @@ namespace GxMcp.Gateway
                     ["supportedMajor"] = SupportedGeneXusMajor,
                     ["supportedMajors"] = JArray.FromObject(GeneXusVersionCatalog.SupportedMajors),
                     ["matchedMajor"] = GeneXusVersionCatalog.GetMatchingMajor(gxVersion),
-                    ["versionMatches"] = gxVersion != null && GeneXusVersionCatalog.IsSupported(gxVersion),
+                    ["versionMatches"] = sdkCompatibility["status"]?.ToString() == "compatible",
+                    ["sdkCompatibility"] = sdkCompatibility,
                     ["catalog"] = GeneXusVersionCatalog.ToDiagnosticObject()
                 },
                 ["config"] = new JObject
@@ -1491,6 +1639,17 @@ namespace GxMcp.Gateway
                 }
                 if (wp == null)
                 {
+                    if (_workerPool != null)
+                    {
+                        string? failedAlias = _currentKb.Value?.NormalizedAlias;
+                        if (string.IsNullOrEmpty(failedAlias))
+                            failedAlias = _workerPool.ListKnown().FirstOrDefault()?.NormalizedAlias;
+                        if (!string.IsNullOrEmpty(failedAlias)
+                            && _workerPool.TryGetStartupFailure(failedAlias!, out var startupFailure))
+                        {
+                            return BuildStartupFailureHealth(failedAlias!, startupFailure);
+                        }
+                    }
                     return new JObject
                     {
                         ["status"] = "not_spawned",

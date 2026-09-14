@@ -6,9 +6,18 @@
 
 - Add the local `scripts/Invoke-PrePushMechanicalChecks.ps1` routine, with machine-readable readiness output, divergence and working-tree gates, PowerShell parsing, and the existing release preflight checks without publishing.
 
+## v3.5.0 - 2026-09-14
+
+
+### Tracked issues
+
+- [#193](https://github.com/lennix1337/Genexus18MCP/issues/193) — [Bug] Desde a 3.2.2 o worker não abre KB do GeneXus 17: sdk-compatibility.json só aceita o major 18
+
 ### Fixed
 
 - **PowerShell Automation Fail-Fast**: Remove `[Parameter(Mandatory = $true)]` in `scripts/pr-preflight.ps1`, `scripts/build-release-candidate.ps1`, and `scripts/live-build-all.ps1`, replacing interactive stdin blocking with immediate validation and clear usage error exits, preventing headless CI/agent processes from hanging indefinitely.
+- **GeneXus SDK compatibility and startup diagnostics**: Allow the packaged Worker to start with every GeneXus major declared in `config/gx-versions.json`, including GeneXus 17, while keeping missing required SDK assemblies and undeclared majors as hard failures; expose deterministic refusals through `genexus_whoami`/`genexus_doctor` and stop unsupported-major respawn loops ([#193](https://github.com/lennix1337/Genexus18MCP/issues/193)).
+- **Release issue collection**: Combine explicit and `fixed-pending-release` issue lists without relying on PowerShell scalar/array addition, so release preflight and issue tracking work when both sources contain a single issue.
 
 ### Changed
 

@@ -22,8 +22,9 @@ namespace GxMcp.Gateway
         ExplicitClose,   // genexus_kb action=close
         PlannedReload,   // genexus_worker_reload (non-force); gateway is orchestrating drain+respawn
         Wedged,          // BUG-03: an in-flight command exceeded WedgedCommandTimeoutMinutes with no response
-        HeapRecycle      // idle worker exceeded WorkerHeapRecycleMB; recycled proactively so a long
+        HeapRecycle,      // idle worker exceeded WorkerHeapRecycleMB; recycled proactively so a long
                          // session can't drift into an OOM/fragmented state. Eager-respawns.
+        SdkCompatibilityRejected // Worker refused the configured SDK before opening the KB.
     }
 
     /// <summary>
@@ -121,11 +122,14 @@ namespace GxMcp.Gateway
         private int _lastExitCode = int.MinValue;
         private long _lastWorkingSetBytes = -1;
         private int _lastPid;
+        private string? _startupDiagnostic;
         private WorkerOwnershipLease? _ownershipLease;
         private DateTime _lastOwnershipReconcileUtc = DateTime.MinValue;
 
         public long? SpawnMs { get { var v = System.Threading.Interlocked.Read(ref _spawnMs); return v < 0 ? (long?)null : v; } }
         public long? SdkInitMs { get { var v = System.Threading.Interlocked.Read(ref _sdkInitMs); return v < 0 ? (long?)null : v; } }
+        public int? LastExitCode => _lastExitCode == int.MinValue ? (int?)null : _lastExitCode;
+        public string? StartupDiagnostic => _startupDiagnostic;
 
         // PERFORMANCE (perf-review): carries the raw string (needed for stdio/http
         // forwarding) together with the already-parsed JObject (WorkerProcess parses
@@ -724,6 +728,7 @@ namespace GxMcp.Gateway
             try
             {
                 _stopReason = WorkerStopReason.None;
+                _startupDiagnostic = null;
                 Volatile.Write(ref _exitConfirmed, 0);
                 MarkActivity();
                 // Publish the readiness sources under the lock: StopProcess /
@@ -753,6 +758,17 @@ namespace GxMcp.Gateway
                 }
 
                 string workerPath = res.ResolvedPath;
+
+                // Fail before creating a process for a major that the explicit
+                // compatibility catalog rejects. The Worker still performs the
+                // authoritative manifest/fingerprint validation; this preflight
+                // only prevents a deterministic unsupported-major respawn loop.
+                var sdkProbe = WorkerSdkCompatibilityProbe.Check(_config.GeneXus?.InstallationPath);
+                if (sdkProbe.IsRejected)
+                {
+                    ObserveStartupDiagnostic(sdkProbe.Diagnostic);
+                    throw new InvalidOperationException(sdkProbe.Diagnostic);
+                }
 
                 _ownershipLease = WorkerOwnershipRegistry.Acquire(workerPath, Kb.Path);
 
@@ -862,6 +878,7 @@ namespace GxMcp.Gateway
                     // exit code says so (can override an earlier "none").
                     WorkerStopReason reason = _stopReason;
                     if (busyReject) reason = WorkerStopReason.BusyReject;
+                    else if (IsSdkCompatibilityFailure(_startupDiagnostic)) reason = WorkerStopReason.SdkCompatibilityRejected;
 
                     Program.Log($"[Gateway] Worker process EXITED with code {exitCode}. reason={reason}");
 
@@ -920,6 +937,7 @@ namespace GxMcp.Gateway
                     if (!string.IsNullOrEmpty(e.Data))
                     {
                         _lastResponse = DateTime.UtcNow;
+                        ObserveStartupDiagnostic(e.Data);
                         if (_sdkInitWatch != null && _sdkInitWatch.IsRunning &&
                             e.Data.Contains("Full SDK Initialization SUCCESS"))
                         {
@@ -950,6 +968,7 @@ namespace GxMcp.Gateway
                     if (!string.IsNullOrEmpty(e.Data))
                     {
                         _lastResponse = DateTime.UtcNow;
+                        ObserveStartupDiagnostic(e.Data);
                         Program.Log($"[Worker-Err] {e.Data}");
                     }
                 };
@@ -969,8 +988,9 @@ namespace GxMcp.Gateway
                     _healthCheckTask = Task.Run(() => RunHealthCheckAsync(_cts.Token));
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                ObserveStartupDiagnostic(ex.Message);
                 try
                 {
                     if (IsProcessRunning(_process)) _process!.Kill(true);
@@ -1045,6 +1065,20 @@ namespace GxMcp.Gateway
                 throw failure;
             }
             StopProcess(reason);
+        }
+
+        private void ObserveStartupDiagnostic(string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            if (line.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase) >= 0)
+                _startupDiagnostic = line.Trim();
+        }
+
+        private static bool IsSdkCompatibilityFailure(string? diagnostic)
+        {
+            return !string.IsNullOrWhiteSpace(diagnostic)
+                && diagnostic.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase) >= 0
+                && diagnostic.IndexOf("GXMCP_SDK_COMPATIBLE", StringComparison.OrdinalIgnoreCase) < 0;
         }
 
         // Invokes OnWorkerExited at most once per WorkerProcess lifetime. Both the async

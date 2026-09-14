@@ -4,18 +4,19 @@ The Worker is compiled against the selected supported GeneXus major installed on
 
 ## Supported fixture
 
-`config/sdk-compatibility.json` records a reference GeneXus product version and SHA-256 fingerprints for selected assemblies the Worker references. The reference version selects the Worker major; minor, patch, build and hash differences within that major are diagnostics, not compatibility failures. The manifest contains no SDK bytes or credentials. The default reference was produced from a self-hosted GeneXus 18 installation whose anchor product version is `18.0.10.184260`.
+`config/sdk-compatibility.json` records a reference GeneXus product version and SHA-256 fingerprints for selected assemblies the Worker references. `config/gx-versions.json` is the single source of truth for supported majors (currently GeneXus 17 and 18). Patch, build and hash differences are diagnostics, not compatibility failures. The manifest contains no SDK bytes or credentials. The default reference was produced from a self-hosted GeneXus 18 installation whose anchor product version is `18.0.10.184260`.
 
-Both build and startup require the reference GeneXus major and all listed assemblies. The legacy `allowPatchVersionDrift` flag is no longer consulted: compatibility within the supported major does not require an opt-in. Fingerprint drift is reported even when ProductVersion is unchanged. These checks establish SDK compatibility, not validation of KB writes or save-event isolation.
+Both build and startup require a major declared in the version catalog and all assemblies listed in the compatibility manifest. The legacy `allowPatchVersionDrift` flag is no longer consulted. Fingerprint drift is reported even when ProductVersion is unchanged. These checks establish SDK compatibility, not validation of KB writes or save-event isolation.
 
 Provide the SDK through a self-hosted Windows build image or an installed developer workstation:
 
 Additional explicit locks are available for the inspected U11, U12 and U16
 installations in `config/sdk-compatibility-u11.json`,
 `config/sdk-compatibility-u12.json` and `config/sdk-compatibility-u16.json`.
-The original U10 lock remains the default. Select one lock for each build;
-the resulting Worker carries only that lock under `sdk-compatibility.json`.
-Both build and startup enforce its exact product version and all fingerprints.
+The original U10 reference remains the default. Select one manifest for each build;
+the resulting Worker carries that reference under `sdk-compatibility.json` and the
+version catalog under `config/gx-versions.json`. Both build and startup require a
+catalog-supported major and all listed assemblies; version/hash drift is diagnostic.
 These hashes attest SDK identity, not validation of KB writes or save-event
 isolation. No proprietary SDK assemblies are added by these manifests.
 
@@ -39,11 +40,14 @@ dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
 The build target runs `scripts/validate-gx-sdk.ps1` before resolving references. Worker startup repeats the same check from the copied manifest, before SDK initialization. Both checks use stable diagnostics such as:
 
 - `GXMCP_SDK_PATH_MISSING`
+- `GXMCP_SDK_CATALOG_MISSING`
+- `GXMCP_SDK_CATALOG_INVALID`
 - `GXMCP_SDK_VERSION_MISMATCH`
+- `GXMCP_SDK_VERSION_UNDETECTED`
 - `GXMCP_SDK_ASSEMBLY_MISSING`
 - `GXMCP_SDK_FINGERPRINT_DRIFT` (informational; compatibility still succeeds)
 
-A missing required assembly or different/unreadable major fails build/startup. A different major requires a Worker built and validated for that major; changing the manifest on an existing binary is not an upgrade path. To inspect the selected SDK and reference, run:
+A missing required assembly or an unreadable/undeclared major fails build/startup. The Gateway preflights an unsupported major and records the refusal instead of respawning the Worker in a loop. `genexus_whoami` exposes `geneXus.sdkCompatibility`; `genexus_doctor` returns the same Gateway-side diagnostic when the Worker cannot reach readiness. The validator resolves the catalog beside the source manifest during builds, from `config/gx-versions.json` beside the packaged Worker, or from the npm package root. `GXMCP_VERSION_CATALOG` can select an explicit catalog. To inspect the selected SDK and reference, run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `

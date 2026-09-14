@@ -39,6 +39,28 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Validate_AllowsCatalogSupportedMajorFromNpmPackageLayout()
+        {
+            using (var fixture = new SdkFixture("18.0.10.184260", "supported"))
+            {
+                string packageRoot = Path.Combine(fixture.Root, "package");
+                string workerDirectory = Path.Combine(packageRoot, "publish", "worker");
+                string packagedManifest = Path.Combine(workerDirectory, "sdk-compatibility.json");
+                string packagedCatalog = Path.Combine(packageRoot, "config", "gx-versions.json");
+                Directory.CreateDirectory(workerDirectory);
+                Directory.CreateDirectory(Path.GetDirectoryName(packagedCatalog));
+                File.Move(fixture.Manifest, packagedManifest);
+                File.Move(fixture.Catalog, packagedCatalog);
+                var result = SdkCompatibilityValidator.Validate(fixture.Root, packagedManifest, _ => "17.0.4.153047");
+
+                Assert.True(result.IsCompatible);
+                Assert.Equal("GXMCP_SDK_COMPATIBLE", result.Code);
+                Assert.Contains("supported major 17; reference major 18", result.Diagnostic);
+                Assert.Contains("supportedMajors=17,18", result.Diagnostic);
+            }
+        }
+
+        [Fact]
         public void Validate_ReportsFingerprintDriftWithTheSameProductVersionWithoutBlocking()
         {
             using (var fixture = new SdkFixture("18.0.10.184260", "supported"))
@@ -67,7 +89,6 @@ namespace GxMcp.Worker.Tests
         }
 
         [Theory]
-        [InlineData("17.0.10.184260")]
         [InlineData("19.0.10.184260")]
         [InlineData("invalid")]
         [InlineData("")]
@@ -85,6 +106,21 @@ namespace GxMcp.Worker.Tests
                 Assert.Equal("GXMCP_SDK_VERSION_MISMATCH", result.Code);
                 Assert.Contains("expectedVersion=18.0.10.184260", result.Diagnostic);
                 Assert.Contains("actualVersion=" + actualVersion, result.Diagnostic);
+                Assert.Contains("supportedMajors=17,18", result.Diagnostic);
+            }
+        }
+
+        [Fact]
+        public void Validate_RejectsMissingVersionCatalog()
+        {
+            using (var fixture = new SdkFixture("18.0.10.184260", "supported"))
+            {
+                File.Delete(fixture.Catalog);
+                var result = SdkCompatibilityValidator.Validate(fixture.Root, fixture.Manifest, _ => "18.0.10.184260");
+
+                Assert.False(result.IsCompatible);
+                Assert.Equal("GXMCP_SDK_CATALOG_MISSING", result.Code);
+                Assert.Contains("gx-versions.json", result.Diagnostic);
             }
         }
 
@@ -151,6 +187,7 @@ namespace GxMcp.Worker.Tests
         {
             public readonly string Root = Path.Combine(Path.GetTempPath(), "gxmcp-sdk-" + Guid.NewGuid().ToString("N"));
             public readonly string Manifest;
+            public readonly string Catalog;
 
             public SdkFixture(string version, string contents)
             {
@@ -171,6 +208,14 @@ namespace GxMcp.Worker.Tests
                     })
                 };
                 File.WriteAllText(Manifest, manifest.ToString());
+                Catalog = Path.Combine(Root, "gx-versions.json");
+                var catalog = new JObject
+                {
+                    ["supportedMajors"] = new JArray(
+                        new JObject { ["major"] = "17" },
+                        new JObject { ["major"] = "18" })
+                };
+                File.WriteAllText(Catalog, catalog.ToString());
             }
 
             public void Dispose()

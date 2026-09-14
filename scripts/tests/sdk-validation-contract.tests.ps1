@@ -47,6 +47,9 @@ try {
     $fixtureVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($anchor).ProductVersion
     $fixtureMajor = [int]($fixtureVersion -split '\.')[0]
     $compatManifest = Join-Path $outputRoot 'sdk-compatibility.json'
+    $versionCatalog = Join-Path $outputRoot 'gx-versions.json'
+    $catalog = @{ supportedMajors = @(@{ major = [string]$fixtureMajor }, @{ major = [string]($fixtureMajor + 1) }) }
+    $catalog | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $versionCatalog -Encoding utf8
     $spec = @{
         supportedVersion = $fixtureVersion
         anchor = 'Artech.Architecture.Common.dll'
@@ -69,9 +72,14 @@ try {
     $spec.supportedVersion = "$fixtureMajor.1.0.0"
     Assert-SdkValidation 0 'GXMCP_SDK_COMPATIBLE'
     $spec.supportedVersion = "$($fixtureMajor + 1).0.16.189550"
+    Assert-SdkValidation 0 "supported major $fixtureMajor; reference major $($fixtureMajor + 1)"
+    $catalog.supportedMajors = @(@{ major = [string]($fixtureMajor + 1) })
+    $catalog | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $versionCatalog -Encoding utf8
     Assert-SdkValidation 1 'GXMCP_SDK_VERSION_MISMATCH'
+    $catalog.supportedMajors = @(@{ major = [string]$fixtureMajor }, @{ major = [string]($fixtureMajor + 1) })
+    $catalog | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $versionCatalog -Encoding utf8
     $spec.supportedVersion = 'invalid'
-    Assert-SdkValidation 1 'GXMCP_SDK_VERSION_MISMATCH'
+    Assert-SdkValidation 1 'GXMCP_SDK_MANIFEST_INVALID'
     $spec.supportedVersion = $fixtureVersion
     $spec.assemblies[0].path = 'missing-required.dll'
     Assert-SdkValidation 1 'GXMCP_SDK_ASSEMBLY_MISSING'
@@ -82,4 +90,4 @@ finally {
     $env:GXMCP_SDK_CI_LICENSE_ACK = $oldAck
     Remove-Item -LiteralPath $outputRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Host 'PASS: SDK lane syntax, pass/skip/fail states, cleanup, and 8 no-KB build-validator major/fingerprint/required-assembly cases.'
+Write-Host 'PASS: SDK lane syntax, pass/skip/fail states, cleanup, and 9 no-KB build-validator catalog/major/fingerprint/required-assembly cases.'
