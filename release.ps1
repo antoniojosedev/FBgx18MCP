@@ -387,7 +387,10 @@ if (-not $SkipLabeledIssues) {
     }
 }
 $explicitIssues = if ($null -eq $CloseIssues) { @() } else { @($CloseIssues) }
-$CloseIssues = $explicitIssues + $labeledIssues
+$CloseIssues = @(
+    foreach ($issueNumber in @($explicitIssues)) { $issueNumber }
+    foreach ($issueNumber in @($labeledIssues)) { $issueNumber }
+)
 $CloseIssues = @(Get-ReleaseIssueNumbers)
 $statusState.issues.discovered = @($CloseIssues)
 Write-ReleaseStatus -Phase 'release-issues-collected' -State 'running'
