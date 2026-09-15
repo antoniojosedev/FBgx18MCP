@@ -224,16 +224,17 @@ namespace GxMcp.Worker.Services
                         var obj = kb.DesignModel.Objects.Get((Artech.Udm.Framework.EntityKey)key);
                         if (obj == null) continue;
 
-                        if (obj.LastUpdate > _lastCheckTime)
+                        DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
+                        if (objectLastUpdate > _lastCheckTime)
                         {
-                            if (obj.LastUpdate > nextCheckTime) 
+                            if (objectLastUpdate > nextCheckTime)
                             {
-                                nextCheckTime = obj.LastUpdate;
+                                nextCheckTime = objectLastUpdate;
                                 foundNewer = true;
                             }
                             batch.Add(obj);
                         }
-                        else if (obj.LastUpdate == _lastCheckTime && !_notifiedInLastTick.Contains(obj.Guid))
+                        else if (objectLastUpdate == _lastCheckTime && !_notifiedInLastTick.Contains(obj.Guid))
                         {
                             batch.Add(obj);
                         }
@@ -250,12 +251,13 @@ namespace GxMcp.Worker.Services
 
                     foreach (var obj in batch)
                     {
-                        if (obj.LastUpdate == nextCheckTime)
+                        DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
+                        if (objectLastUpdate == nextCheckTime)
                         {
                             _notifiedInLastTick.Add(obj.Guid);
                         }
 
-                        Logger.Info($"External change detected: {obj.Name} ({obj.TypeDescriptor.Name}) at {obj.LastUpdate}");
+                        Logger.Info($"External change detected: {obj.Name} ({obj.TypeDescriptor.Name}) at {objectLastUpdate:o}");
                         // Fase 2: keep the in-memory index warm on live edits. The watcher
                         // thread is STA and already holds the KBObject, so UpdateEntry runs in
                         // the right context. This re-enriches the changed object (and collapses
@@ -263,7 +265,7 @@ namespace GxMcp.Worker.Services
                         // Skipped during write transactions by the IsWriteInProgress gate above.
                         try { _indexCache?.UpdateEntry((global::Artech.Architecture.Common.Objects.KBObject)obj); }
                         catch (Exception ixe) { Logger.Debug($"Watcher index update failed for {obj.Name}: {ixe.Message}"); }
-                        _onObjectChanged?.Invoke(obj.Name, obj.TypeDescriptor.Name, obj.LastUpdate);
+                        _onObjectChanged?.Invoke(obj.Name, obj.TypeDescriptor.Name, objectLastUpdate);
                     }
 
                     _lastCheckTime = nextCheckTime;

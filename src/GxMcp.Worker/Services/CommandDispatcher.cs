@@ -1067,6 +1067,10 @@ namespace GxMcp.Worker.Services
                 var j = new JObject
                 {
                     ["indexStatus"] = st.Status ?? "Cold",
+                    ["freshness"] = st.Freshness ?? "stale",
+                    ["lastSuccessfulScanAt"] = st.LastSuccessfulScanAt.HasValue
+                        ? (JToken)st.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                        : JValue.CreateNull(),
                     ["totalObjects"] = st.TotalObjects,
                     ["lastIndexedAt"] = st.LastIndexedAt.HasValue
                         ? (JToken)st.LastIndexedAt.Value.ToUniversalTime().ToString("o")
@@ -1483,6 +1487,17 @@ namespace GxMcp.Worker.Services
                     args?["outputPath"]?.ToString() ?? args?["path"]?.ToString(),
                     args?["part"]?.ToString(),
                     args?["type"]?.ToString(),
+                    args?["overwrite"]?.ToObject<bool?>() ?? false);
+            }
+            if (action == "ReadBlob")
+            {
+                return _objectService.ReadObjectBlob(
+                    target,
+                    args?["outputPath"]?.ToString() ?? args?["path"]?.ToString(),
+                    args?["part"]?.ToString(),
+                    args?["type"]?.ToString(),
+                    args?["maxBytes"]?.ToObject<int?>(),
+                    args?["includeBase64"]?.ToObject<bool?>() ?? false,
                     args?["overwrite"]?.ToObject<bool?>() ?? false);
             }
             if (action == "ImportText") return _objectService.ImportObjectFromText(target, args?["inputPath"]?.ToString() ?? args?["path"]?.ToString(), args?["part"]?.ToString(), args?["type"]?.ToString());

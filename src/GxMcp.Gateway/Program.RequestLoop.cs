@@ -93,6 +93,18 @@ namespace GxMcp.Gateway
             return args?["dryRun"]?.ToObject<bool?>() == true;
         }
 
+        internal static bool CanReloadWithoutLeaseForTest(JObject? args, int openKbCount)
+        {
+            return !string.IsNullOrWhiteSpace(args?["kb"]?.ToString())
+                || !string.IsNullOrWhiteSpace(args?["alias"]?.ToString())
+                || openKbCount == 1;
+        }
+
+        private static bool CanReloadWithoutLease(JObject? args)
+        {
+            return CanReloadWithoutLeaseForTest(args, _workerPool?.ListOpen().Count ?? 0);
+        }
+
         internal static JObject BuildAsyncLifecycleCommand(string lifecycleAction, JObject args, string cancelToken)
         {
             bool rebuild = string.Equals(lifecycleAction, "rebuild", StringComparison.OrdinalIgnoreCase);
@@ -290,9 +302,12 @@ namespace GxMcp.Gateway
                         {
                             var paramsObj = request["params"] as JObject;
                             var argsObj = paramsObj?["arguments"] as JObject;
-                            kbArg = argsObj?["kb"]?.ToString();
-                            // Strip `kb` from worker-bound args (worker is single-KB scoped).
-                            argsObj?.Remove("kb");
+                            kbArg = argsObj?["kb"]?.ToString() ?? argsObj?["alias"]?.ToString();
+                            // Strip `kb` from worker-bound args (worker is single-KB scoped),
+                            // but keep it for gateway-only reload so lease bypass and the
+                            // explicit target remain available to the orchestrator below.
+                            if (!string.Equals(toolNameForResolver, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase))
+                                argsObj?.Remove("kb");
                         }
                         else if (string.Equals(method, "resources/read", StringComparison.OrdinalIgnoreCase))
                         {
@@ -571,6 +586,8 @@ namespace GxMcp.Gateway
                 // Reject stateful calls before any gateway handler can select a
                 // process-wide worker. Stateless recipe/catalog reads remain global.
                 if (OperationClassifier.RequiresSessionLease(toolName, args)
+                    && !(string.Equals(toolName, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
+                        && CanReloadWithoutLease(args))
                     && !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase))
                 {
                     var ownershipError = ValidateCurrentSessionLease(sessionId);
@@ -698,16 +715,34 @@ namespace GxMcp.Gateway
                             ["error"] = JToken.FromObject(new { code = -32603, message = "Reload refused: gateway has no active configuration." })
                         };
                     }
-                    string? reloadAlias = args?["alias"]?.ToString();
-                    KbHandle? reloadKb = null;
-                    if (!string.IsNullOrWhiteSpace(reloadAlias))
+
+                    string? reloadAlias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
+                    KbHandle? reloadKb = _currentKb.Value;
+                    if (reloadKb == null && !string.IsNullOrWhiteSpace(reloadAlias))
                     {
                         reloadKb = _workerPool.ListOpen().FirstOrDefault(h =>
-                            string.Equals(h.NormalizedAlias, reloadAlias.ToLowerInvariant(), StringComparison.OrdinalIgnoreCase));
+                            string.Equals(h.NormalizedAlias, reloadAlias, StringComparison.OrdinalIgnoreCase));
                     }
-                    else
+                    if (reloadKb == null)
                     {
-                        reloadKb = _workerPool.ListOpen().FirstOrDefault();
+                        var openKbs = _workerPool.ListOpen().ToList();
+                        if (openKbs.Count == 1)
+                            reloadKb = openKbs[0];
+                        else if (openKbs.Count > 1)
+                        {
+                            return BuildToolTextResponse(idToken,
+                                new JObject
+                                {
+                                    ["status"] = "error",
+                                    ["error"] = new JObject
+                                    {
+                                        ["code"] = "KB_AMBIGUOUS",
+                                        ["message"] = "Multiple KB workers are open; select one or pass alias/kb explicitly.",
+                                        ["hint"] = "Run genexus_kb action=select alias=<alias>, or pass alias=<alias> to genexus_worker_reload."
+                                    }
+                                },
+                                isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                        }
                     }
                     if (reloadKb == null)
                     {
@@ -722,6 +757,8 @@ namespace GxMcp.Gateway
                     string? reloadSrcDir = args?["sourceDir"]?.ToString();
                     try
                     {
+                        InvalidateIndexStateForKb(reloadKb.NormalizedAlias);
+                        ResetIndexBootstrapForAlias(reloadKb.NormalizedAlias);
                         using (SuppressEagerRespawn())
                         {
                             Func<WorkerProcess?, Task>? swapHook = string.IsNullOrWhiteSpace(reloadSrcDir)
@@ -752,6 +789,7 @@ namespace GxMcp.Gateway
                                     },
                                     isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
                             }
+                            TriggerIndexBootstrapOnce(reloadKb.NormalizedAlias);
                             BroadcastToolsListChanged(
                                 "worker_reloaded_soft",
                                 reloadKb.NormalizedAlias,
@@ -1152,6 +1190,7 @@ namespace GxMcp.Gateway
                                 }
 
                                 var w = await _workerPool.AcquireAsync(handleToOpen, CancellationToken.None);
+                                TriggerIndexBootstrapOnce(handleToOpen.NormalizedAlias);
                                 // Opening a worker must not mutate the persisted default or
                                 // another MCP session's selection. Use set_default to select
                                 // this KB for the current session, or pass kb explicitly.
@@ -1191,6 +1230,8 @@ namespace GxMcp.Gateway
                                     throw new ArgumentException("Missing 'alias' for action=close.");
                                 }
                                 bool closed = _workerPool.Close(alias!);
+                                InvalidateIndexStateForKb(alias!);
+                                ResetIndexBootstrapForAlias(alias!);
                                 // The alias may be reopened against a different KB later;
                                 // never let cached name/type resolutions cross that boundary.
                                 InvalidateFullNameTypeMap(alias!);
@@ -2115,8 +2156,7 @@ namespace GxMcp.Gateway
                     // indexing, and it doubles as an escape hatch when the mirror is wrong.
                     if (IsIndexDependentTool(tName))
                     {
-                        IndexStateSnapshot idxSnap;
-                        lock (_lastKnownIndexStateLock) { idxSnap = _lastKnownIndexState; }
+                        IndexStateSnapshot idxSnap = GetLastKnownIndexState(_currentKb.Value?.NormalizedAlias);
                         bool indexUsable = IsIndexUsableForReads(idxSnap);
                         if (!indexUsable)
                         {
@@ -2132,9 +2172,10 @@ namespace GxMcp.Gateway
                             bool cacheStale = idxSnap == null
                                 || idxSnap.RefreshedAtUtc == DateTime.MinValue
                                 || (DateTime.UtcNow - idxSnap.RefreshedAtUtc).TotalSeconds > 2;
-                            if (cacheStale && await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 1200))
+                            if (cacheStale && await TryRefreshIndexStateFromWorkerAsync(
+                                timeoutMs: 1200, kbAlias: _currentKb.Value?.NormalizedAlias))
                             {
-                                lock (_lastKnownIndexStateLock) { idxSnap = _lastKnownIndexState; }
+                                idxSnap = GetLastKnownIndexState(_currentKb.Value?.NormalizedAlias);
                                 indexUsable = IsIndexUsableForReads(idxSnap);
                             }
                         }
@@ -2144,7 +2185,8 @@ namespace GxMcp.Gateway
                             {
                                 ["status"] = "Indexing",
                                 ["code"] = "IndexNotReady",
-                                ["indexStatus"] = idxSnap?.Status ?? "Cold",
+                                ["indexStatus"] = idxSnap?.Freshness == "current" ? idxSnap.Status : "Refreshing",
+                                ["freshness"] = idxSnap?.Freshness ?? "stale",
                                 ["totalObjects"] = idxSnap?.TotalObjects ?? 0,
                                 ["message"] = BuildIndexingMessage(idxSnap?.Status, idxSnap?.Progress, idxSnap?.EtaMs),
                                 ["hint"] = "Call genexus_whoami to observe progress, then re-issue this tool."
