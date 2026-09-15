@@ -186,7 +186,18 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   - Search & orientation: `ripwire <dir> --for="<task in words>"` — ranked signatures by PageRank, AST and caller context.
   - Blast radius & callers: `ripwire <dir> --callers=SYM` and `--impact=SYM` (transitive callers before modifying contracts).
   - Contract check: `ripwire <dir> --edit-check=SYM`.
-  - Diff & PR review: `ripwire . --pr-context` (automatically enforced in `pr-preflight.ps1`).
+  - Diff & PR review: `ripwire . --pr-context=<BaseRef>` (for this checkout, normally `origin/main`; this is also the form used by `pr-preflight.ps1`).
+  - On Windows, `ripwire.cmd` delegates to WSL. `Wsl/Service/E_ACCESSDENIED` or `Wsl/EnumerateDistros/Service/E_ACCESSDENIED` means the WSL launcher was blocked by the execution context; it does not prove that `ripwire` is unavailable or failed. Re-run in an authorized context, capture the emitted bundle and exit code, and report the environment restriction separately.
+  - The PR bundle is budgeted and may report `trimmed`/`truncated` nested lists; treat its counts and caps as evidence boundaries and use targeted `--callers`, `--impact`, `--edit-check`, or `--offset` follow-ups when deeper coverage is required.
+- **Shared peer-review assets:** `C:\Dev\Knowledge\GeneXus-XPZ-Skills` is the canonical root for the shared `xpz-llm-delegate` skill, its `15-revisao-por-pares.md` methodology, and its `scripts\` directory. Do not copy those scripts into this fork. If that root is inaccessible, report the limitation and do not invent an alternative path or label an informal consultation as peer review.
+- **Peer review and reinforced pre-push:** When the user requests a peer review or a reinforced pre-push review, load and follow the `xpz-llm-delegate` skill. Do not label informal subagent feedback as a peer review.
+  - Load `C:\Dev\Knowledge\GeneXus-XPZ-Skills\xpz-llm-delegate\SKILL.md` and `C:\Dev\Knowledge\GeneXus-XPZ-Skills\15-revisao-por-pares.md` before responding.
+  - Resolve the preferred reviewers with `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegatePreferredReviewers.ps1 -Orchestrator codex`; a resolved list is a human preference, not authorization.
+  - Classify the payload and run `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegateAuthorization.ps1` for every destination. Announce each destination before dispatch; `kb-sensitive` material requires the gate outcome and any required human authorization.
+  - Before dispatch, evaluate the full preferred list with `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegatePanelDiversity.ps1`. A peer-review panel needs at least two *effectively consulted* known model-creator families; an unavailable, errored, empty, or off-task response does not count.
+  - Use one identical manuscript and explicit reviewer-only prompt. Record every preferred reviewer's final state, including technical failures; do not silently reduce the panel to the diversity minimum.
+  - Dispatch CLI reviewers only through `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Invoke-LlmDelegatePanelDispatch.ps1`; adapters and support scripts remain in the same shared root.
+  - Before reporting the round as complete, run `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegatePeerReviewCloseout.ps1` with the initial preference snapshot, selected reviewers, actual reviewer states, diversity state, and vNext state. If drafting a revised vNext from the feedback, it is pending resubmission until the panel reviews it again or the human explicitly declines that resubmission.
 - Inspect the actual input/request/route/function/query/response path before
   fixing behavior. Add a regression test when technically viable.
 - Make the smallest scoped change; preserve unrelated working-tree changes.
