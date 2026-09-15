@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v3.5.1 - 2026-09-15
+
+
+### Tracked issues
+
+- [#196](https://github.com/lennix1337/Genexus18MCP/issues/196) — [Bug] Índice restaurado após open/worker_reload pode permanecer desatualizado sem indicador de frescor
+- [#197](https://github.com/lennix1337/Genexus18MCP/issues/197) — [Bug] list_objects pode devolver GUID obsoleto; sweep de deleção pode remover objeto recriado
+- [#198](https://github.com/lennix1337/Genexus18MCP/issues/198) — [Melhoria] Não há como ler o conteúdo (bytes) de um File (WikiFileKBObject)
+- [#199](https://github.com/lennix1337/Genexus18MCP/issues/199) — [Bug] genexus_worker_reload não-executável após open sem select e ignora a KB do lease com várias KBs
+- [#200](https://github.com/lennix1337/Genexus18MCP/issues/200) — [Melhoria] Convenção de fuso de KBObject.LastUpdate é assumida, não medida
+- [#201](https://github.com/lennix1337/Genexus18MCP/issues/201) — [Bug] Espelho de estado do índice no gateway é process-wide e não isolado por KB
+
+
 ### Added
 
 - Add `genexus_io action=read_blob` for bounded Base64 or atomic file export of a File's real `WikiBlob` bytes, including byte count and SHA-256 verification.
