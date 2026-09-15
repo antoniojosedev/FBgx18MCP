@@ -51,9 +51,10 @@ namespace GxMcp.Gateway
                 "- `result` — fetch the completion payload of a finished operation.\n" +
                 "- `inspect` — read the redacted durable mutation journal for an operation key after a lost response; it never replays the write.\n" +
                 "- `reconcile` — close an unknown mutation fence only after an independent read and explicit `confirmed: true` verification; use a fresh key for any later write.\n" +
-                "- `stop-worker` — gracefully recycle the worker process for the active KB.\n\n" +
+                "Worker restart is handled by `genexus_worker_reload`; use that dedicated tool instead of a lifecycle action.\n\n" +
                 "## target format\n" +
                 "- Build/validate: object name(s), comma- or semicolon-separated.\n" +
+                "- compile_check: use a unique object name, `Type:Name`, or GUID. Folder paths and textual EntityKey values are unsupported build identifiers.\n" +
                 "- Build All: omit `target`; the action always covers the selected KB.\n" +
                 "- Status/result on a background op: `op:<operationId>` or just `<job_id>`.\n\n" +
                 "## Build-evidence checklist (issue #42)\n" +
@@ -68,6 +69,18 @@ namespace GxMcp.Gateway
                 "- `{ action: 'status', target: 'op:abc123', wait_seconds: 600 }`\n" +
                 "- `{ action: 'build', target: 'InvoiceProc', wait_until_done: true }`\n" +
                 "- `{ action: 'index', force: true }`\n",
+
+            ["genexus_worker_reload"] =
+                "# genexus_worker_reload\n\n" +
+                "Restart the gateway-managed Worker for an open Knowledge Base. This is a gateway operation, not a `genexus_lifecycle` action.\n\n" +
+                "## Modes\n" +
+                "- `mode=soft` — drain the selected worker, replace it, and wait for SDK readiness. This is the normal restart path.\n" +
+                "- `mode=hard` — copy Worker binaries from `sourceDir` during the drain window, then replace the worker.\n" +
+                "- `force=true` — kill and respawn directly when the worker is wedged and cannot acknowledge a graceful drain.\n\n" +
+                "## Selection and safety\n" +
+                "- With one open KB, `mode=soft` is sufficient. With multiple workers, pass `alias=<alias>` (or its `kb` alias) to select the target explicitly.\n" +
+                "- `mode=hard` requires a valid `sourceDir`; use the repository's Worker `bin/Debug` directory when hot-swapping a local build.\n" +
+                "- A graceful response means the replacement signalled SDK-ready. A forced reload abandons in-flight Worker jobs; retry only after checking the returned worker state.\n",
 
             ["genexus_edit"] =
                 "# genexus_edit\n\n" +
@@ -353,7 +366,7 @@ namespace GxMcp.Gateway
                 "- `asset_find` — search files in KB or target directories matching a glob `pattern`.\n" +
                 "- `asset_read` — read asset file content (text or binary bytes up to `maxBytes`).\n" +
                 "- `asset_write` — write or update asset files using `contentBase64`.\n" +
-                "- `read_blob` — read the real bytes of a `WikiFileKBObject`/`WikiBlobPart`; returns Base64 inline or exports atomically to `outputPath` with byte count and SHA-256.\n" +
+                "- `read_blob` — read the real bytes of a `WikiFileKBObject`/`WikiBlobPart`; returns Base64 inline or exports atomically to `outputPath` with byte count and SHA-256. `overwrite=true` replaces an existing file; false returns `FileAlreadyExists`. A post-promotion verification failure returns `BlobVerificationFailed` with reconciliation metadata.\n" +
                 "- `export_part` — export a single object part (e.g. Source, Rules) to an external file.\n" +
                 "- `import_part` — import object part content from a file.\n" +
                 "- `export_kb_to_text` — export selected objects, or the full indexed KB, into deterministic `.gxtext` files plus a manifest.\n" +

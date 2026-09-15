@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- Describe the `read_blob` output controls (`outputPath`, `includeBase64`, and `overwrite`) so the schema validator accepts the published tool contract.
+- Keep `compile_check` preview and execution aligned on target resolution and caller controls, including Transaction `_bc` companions, EntityKey-safe `Type:Name`/GUID execution, fail-closed caller evidence, async environment forwarding, and compact polling metadata ([#202](https://github.com/lennix1337/Genexus18MCP/issues/202)).
+- Replace the stale lifecycle `stop-worker` guidance with the supported `genexus_worker_reload` soft/hard flow, validate hard binary swaps, and add reverse help/schema coverage ([#203](https://github.com/lennix1337/Genexus18MCP/issues/203)).
+- Make `genexus_io action=read_blob overwrite=true` atomically replace an existing output and report post-promotion verification failures explicitly ([#204](https://github.com/lennix1337/Genexus18MCP/issues/204)).
+
 ## v3.5.1 - 2026-09-15
 
 
@@ -24,7 +31,6 @@
 - Re-arm and scope index bootstrap/freshness state across KB open, close, reload, and worker respawn; normalize SDK timestamps to UTC and remove stale GUID mappings during delete/recreate deltas.
 - Route worker reload to the resolved or explicitly named KB, allow an unambiguous single open KB without a session selection, and keep Gateway index mirrors isolated by KB alias.
 - Preserve UTC timestamps when JSON.NET materializes Worker index timestamps as `JTokenType.Date`, so `whoami` does not drop `lastSuccessfulScanAt`/`lastIndexedAt` under non-US cultures.
-- Describe the `read_blob` output controls (`outputPath`, `includeBase64`, and `overwrite`) so published tool contracts pass the fail-closed schema validator.
 
 ## v3.5.0 - 2026-09-14
 

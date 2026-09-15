@@ -2949,7 +2949,7 @@
             "type": "string"
           },
           "target": {
-            "description": "Object name(s), taskId, job_id, or op:<id>. Build accepts CSV ('Foo,Bar'); build_all is KB-global and rejects target.",
+            "description": "Object/task ID/op:<id>. compile_check accepts unique name, Type:Name, GUID; no paths. build_all rejects target.",
             "type": "string"
           },
           "verification": {
@@ -4848,7 +4848,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Reload worker. modes: soft (drain+respawn), warm (restore validated index snapshot + soft respawn), hard (copy sourceDir+respawn). force=true: gateway kills directly. See tool-help.",
+      "description": "Reload worker. mode=soft drains and respawns; mode=hard copies sourceDir during the drain window and respawns. force=true: gateway kills directly. See tool-help.",
       "inputSchema": {
         "examples": [
           {
@@ -4879,7 +4879,6 @@
           "mode": {
             "enum": [
               "soft",
-              "warm",
               "hard"
             ],
             "type": "string"

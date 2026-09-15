@@ -693,11 +693,14 @@ namespace GxMcp.Worker.Services
             // the KB-wide DeveloperMenu regeneration (the dominant cost of a full
             // build-all) is skipped. Surfaced in the status/accepted envelope.
             public bool CompileCheck { get; set; }
+            public bool CompileCheckCallersRequested { get; set; }
+            public int CompileCheckCallerCap { get; set; }
             // Callers pulled in by compile_check beyond the objects the user named,
             // and whether the caller graph was capped. Echoed so the agent knows
             // the coverage of the check.
             public List<string> CompileCheckCallers { get; set; }
             public bool CompileCheckTruncated { get; set; }
+            public bool CompileCheckGraphAvailable { get; set; }
             // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental decision metadata.
             // Surfaced under top-level response fields (not status output) so the
             // agent sees the decision exactly once, with the Accepted envelope.
@@ -829,6 +832,20 @@ namespace GxMcp.Worker.Services
             public string IncludeCallees { get; set; }
         }
 
+        private sealed class CompileCheckPlan
+        {
+            public List<string> RequestedTargets { get; } = new List<string>();
+            public List<string> ExpandedTargets { get; } = new List<string>();
+            public List<string> CanonicalSeeds { get; } = new List<string>();
+            public List<string> CallersAdded { get; } = new List<string>();
+            public List<string> AmbiguousTargets { get; } = new List<string>();
+            public List<string> UnresolvedTargets { get; } = new List<string>();
+            public bool CallerGraphAvailable { get; set; }
+            public bool TargetResolutionAvailable { get; set; }
+            public bool Truncated { get; set; }
+            public int CallerCap { get; set; }
+        }
+
         public BuildPlan ExpandTargets(IEnumerable<string> targets, string includeCallees = "transitive", int cap = 200)
         {
             var plan = new BuildPlan { NodeCap = cap, IncludeCallees = includeCallees ?? "transitive" };
@@ -933,10 +950,18 @@ namespace GxMcp.Worker.Services
             if (_indexCacheService == null) return result;
             foreach (var t in originalList)
             {
-                var entry = _indexCacheService.TryGetEntryByName(t);
+                SearchIndex.IndexEntry entry = null;
+                var index = _indexCacheService.TryGetLoadedIndex();
+                if (index != null)
+                {
+                    var candidates = FindCompileCheckTargetCandidates(index, t);
+                    if (candidates.Count == 1) entry = candidates[0];
+                }
+                if (entry == null && !t.Contains(":"))
+                    entry = _indexCacheService.TryGetEntryByName(t);
                 if (entry == null) continue;
                 if (!string.Equals(entry.Type, "Transaction", StringComparison.OrdinalIgnoreCase)) continue;
-                var bcName = t + "_bc";
+                var bcName = entry.Name + "_bc";
                 if (originalSet.Contains(bcName)) continue;
                 if (seen.Contains(bcName)) continue;
                 // Single name-keyed lookup confirms presence; previously this
@@ -993,59 +1018,209 @@ namespace GxMcp.Worker.Services
         public string CompileCheck(string target, int buildPlanCap = 200,
             bool includeCallers = true, int callerCap = 0)
         {
-            var seeds = ParseTargets(target);
-            if (seeds.Count == 0)
+            var plan = BuildCompileCheckPlan(target, buildPlanCap, includeCallers, callerCap);
+            string validationError = BuildCompileCheckValidationError(plan, target);
+            if (validationError != null) return validationError;
+
+            // Callers already gives the objects that must recompile against the
+            // changed target; re-expanding callees here would pull the whole
+            // dependency graph back in. Keep the plan to {seeds + callers}.
+            string result = Build("Build", string.Join(",", plan.ExpandedTargets),
+                includeCallees: "none", buildPlanCap: buildPlanCap,
+                skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false,
+                specifyOnly: false, compileCheck: true,
+                compileCheckCallers: plan.CallersAdded, compileCheckTruncated: plan.Truncated,
+                compileCheckGraphAvailable: plan.CallerGraphAvailable,
+                compileCheckCallersRequested: includeCallers,
+                compileCheckCallerCap: plan.CallerCap);
+            return result;
+        }
+
+        private CompileCheckPlan BuildCompileCheckPlan(
+            string target, int buildPlanCap, bool includeCallers, int callerCap)
+        {
+            var plan = new CompileCheckPlan
+            {
+                CallerGraphAvailable = includeCallers && _callerGraphService != null,
+                CallerCap = callerCap > 0
+                    ? Math.Min(callerCap, Math.Max(0, buildPlanCap))
+                    : Math.Min(CompileCheckDefaultCallerCap, Math.Max(0, buildPlanCap))
+            };
+            plan.RequestedTargets.AddRange(ParseTargets(target));
+
+            if (plan.RequestedTargets.Count == 0)
+            {
+                plan.TargetResolutionAvailable = true;
+                return plan;
+            }
+
+            SearchIndex index = _indexCacheService?.TryGetLoadedIndex();
+            plan.TargetResolutionAvailable = _indexCacheService == null || index != null;
+            if (!plan.TargetResolutionAvailable) return plan;
+
+            foreach (var requested in plan.RequestedTargets)
+            {
+                if (index == null)
+                {
+                    plan.CanonicalSeeds.Add(requested);
+                    continue;
+                }
+
+                var candidates = FindCompileCheckTargetCandidates(index, requested);
+                if (candidates.Count > 1)
+                {
+                    plan.AmbiguousTargets.Add(requested);
+                    continue;
+                }
+                if (candidates.Count == 0)
+                {
+                    plan.UnresolvedTargets.Add(requested);
+                    continue;
+                }
+
+                plan.CanonicalSeeds.Add(candidates[0].Name);
+            }
+
+            if (plan.AmbiguousTargets.Count > 0 || plan.UnresolvedTargets.Count > 0)
+                return plan;
+
+            // Keep the compile-check preview identical to the actual Build() expansion.
+            // In particular, a Transaction's <name>_bc companion must be present before
+            // both the Transaction and its caller closure. Use the resolved typed seed
+            // when finding the companion so Type:Name does not fall back to a homonym.
+            var requestedSet = new HashSet<string>(plan.RequestedTargets, StringComparer.OrdinalIgnoreCase);
+            foreach (var seed in plan.CanonicalSeeds) requestedSet.Add(seed);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var bcPrefix = CollectBcVariants(plan.RequestedTargets, requestedSet, seen);
+            plan.ExpandedTargets.AddRange(bcPrefix);
+            plan.ExpandedTargets.AddRange(plan.RequestedTargets);
+            foreach (var seed in plan.CanonicalSeeds) seen.Add(seed);
+
+            if (includeCallers && _callerGraphService != null && plan.CallerCap > 0)
+            {
+                foreach (var seed in plan.CanonicalSeeds)
+                {
+                    // CallerGraphService is name-keyed. A typed target that shares its
+                    // bare name with another object cannot safely provide caller
+                    // coverage, even though the build target itself is unambiguous.
+                    if (index != null && index.FindByName(seed).Count != 1)
+                    {
+                        plan.CallerGraphAvailable = false;
+                        continue;
+                    }
+
+                    TransitiveResult transitive;
+                    try { transitive = _callerGraphService.GetCallersTransitive(seed, plan.CallerCap); }
+                    catch
+                    {
+                        plan.CallerGraphAvailable = false;
+                        continue;
+                    }
+                    if (transitive == null)
+                    {
+                        plan.CallerGraphAvailable = false;
+                        continue;
+                    }
+                    if (transitive.Truncated) plan.Truncated = true;
+                    foreach (var caller in transitive.Nodes ?? Enumerable.Empty<string>())
+                    {
+                        if (index != null && index.FindByName(caller).Count != 1)
+                        {
+                            plan.CallerGraphAvailable = false;
+                            continue;
+                        }
+                        if (plan.CallersAdded.Count >= plan.CallerCap)
+                        {
+                            plan.Truncated = true;
+                            break;
+                        }
+                        if (seen.Add(caller))
+                        {
+                            plan.ExpandedTargets.Add(caller);
+                            plan.CallersAdded.Add(caller);
+                        }
+                    }
+                }
+            }
+
+            return plan;
+        }
+
+        private static List<SearchIndex.IndexEntry> FindCompileCheckTargetCandidates(
+            SearchIndex index, string requested)
+        {
+            if (index == null || string.IsNullOrWhiteSpace(requested))
+                return new List<SearchIndex.IndexEntry>();
+
+            string trimmed = requested.Trim();
+            int colon = trimmed.IndexOf(':');
+            if (colon > 0)
+            {
+                string type = trimmed.Substring(0, colon).Trim();
+                string name = trimmed.Substring(colon + 1).Trim();
+                return index.FindByType(type)
+                    .Where(entry => entry != null
+                        && string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
+            if (Guid.TryParse(trimmed, out var guid))
+            {
+                var byGuid = index.FindByGuid(guid.ToString("D")) ?? index.FindByGuid(trimmed);
+                return byGuid == null
+                    ? new List<SearchIndex.IndexEntry>()
+                    : new List<SearchIndex.IndexEntry> { byGuid };
+            }
+
+            return index.FindByName(trimmed);
+        }
+
+        private static string BuildCompileCheckValidationError(CompileCheckPlan plan, string target)
+        {
+            if (plan == null || plan.RequestedTargets.Count == 0)
             {
                 return McpResponse.Err(
                     code: "CompileCheckNeedsTarget",
                     message: "mode=compile_check requires target=<object(s)> (comma-separated). It compiles the named objects plus everything that calls them, skipping the DeveloperMenu regeneration — so it must know which objects you changed. For a full from-scratch KB compile, use action=build with no target.");
             }
 
-            // Expand to transitive callers so a changed signature surfaces errors in
-            // every object that invokes it — the KB-wide breakage a plain targeted
-            // build misses. Callers unavailable (no caller graph / index not built)
-            // degrades gracefully to just the named objects, with a note.
-            // callers=false skips this entirely (target-only check).
-            var expanded = new List<string>(seeds);
-            var seen = new HashSet<string>(seeds, StringComparer.OrdinalIgnoreCase);
-            var addedCallers = new List<string>();
-            bool truncated = false;
-            // Cap the caller closure so a base BC doesn't drag the whole KB. An
-            // explicit callerCap>0 overrides the modest default; both stay under
-            // buildPlanCap (the hard BuildPlanTooLarge ceiling in ExpandTargets).
-            int effectiveCallerCap = callerCap > 0
-                ? Math.Min(callerCap, buildPlanCap)
-                : Math.Min(CompileCheckDefaultCallerCap, buildPlanCap);
-            bool graphAvailable = _callerGraphService != null;
-            if (includeCallers && graphAvailable)
+            var supportedFormats = new JArray("unique object name", "Type:Name", "GUID");
+            if (!plan.TargetResolutionAvailable)
             {
-                foreach (var s in seeds)
-                {
-                    TransitiveResult tr;
-                    try { tr = _callerGraphService.GetCallersTransitive(s, effectiveCallerCap); }
-                    catch { continue; }
-                    if (tr == null) continue;
-                    if (tr.Truncated) truncated = true;
-                    foreach (var c in tr.Nodes)
-                    {
-                        if (addedCallers.Count >= effectiveCallerCap) { truncated = true; break; }
-                        if (seen.Add(c)) { expanded.Add(c); addedCallers.Add(c); }
-                    }
-                }
+                return McpResponse.Err(
+                    code: "CompileCheckTargetResolutionUnavailable",
+                    message: "compile_check could not validate its target because the Worker index is not ready.",
+                    hint: "Wait for the KB index to become ready, then retry. Supported target formats are a unique object name, Type:Name, or GUID.",
+                    target: target,
+                    extra: new JObject { ["supportedTargetFormats"] = supportedFormats });
             }
-
-            // A3: callers already gives the objects that must recompile against the
-            // changed target; re-expanding CALLEES (transitive) here would pull each
-            // caller's whole dependency graph back in — re-dragging orchestrators and
-            // the DeveloperMenu the check is meant to skip. Keep the plan to exactly
-            // {seeds + callers}: includeCallees=none.
-            string result = Build("Build", string.Join(",", expanded),
-                includeCallees: "none", buildPlanCap: buildPlanCap,
-                skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false,
-                specifyOnly: false, compileCheck: true,
-                compileCheckCallers: addedCallers, compileCheckTruncated: truncated,
-                compileCheckGraphAvailable: graphAvailable);
-            return result;
+            if (plan.AmbiguousTargets.Count > 0)
+            {
+                return McpResponse.Err(
+                    code: "BuildTargetAmbiguous",
+                    message: "One or more compile_check targets resolve to multiple typed GeneXus objects. Use Type:Name or GUID.",
+                    hint: "Disambiguate each target with its object type or GUID.",
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["targets"] = JArray.FromObject(plan.AmbiguousTargets),
+                        ["supportedTargetFormats"] = supportedFormats
+                    });
+            }
+            if (plan.UnresolvedTargets.Count > 0)
+            {
+                return McpResponse.Err(
+                    code: "CompileCheckTargetUnresolved",
+                    message: "One or more compile_check targets do not resolve to indexed GeneXus objects.",
+                    hint: "Use a unique object name, Type:Name, or GUID. Folder paths and textual EntityKey values are not supported build identifiers.",
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["targets"] = JArray.FromObject(plan.UnresolvedTargets),
+                        ["supportedTargetFormats"] = supportedFormats
+                    });
+            }
+            return null;
         }
 
         /// <summary>
@@ -1053,7 +1228,13 @@ namespace GxMcp.Worker.Services
         /// Returns code=DryRun with the resolved targets list so the agent can
         /// preview what would compile.
         /// </summary>
-        public string BuildDryRun(string action, string target, string includeCallees, int buildPlanCap)
+        public string BuildDryRun(
+            string action,
+            string target,
+            string includeCallees,
+            int buildPlanCap,
+            bool includeCallers = true,
+            int callerCap = 0)
         {
             try
             {
@@ -1080,6 +1261,32 @@ namespace GxMcp.Worker.Services
                                 ["wouldBuild"] = new JArray("<entire selected Knowledge Base>"),
                                 ["includeCallees"] = "ignored for Build All",
                                 ["buildPlanCap"] = buildPlanCap
+                            }
+                        });
+                }
+
+                if (string.Equals(action, "CompileCheck", StringComparison.OrdinalIgnoreCase))
+                {
+                    var compilePlan = BuildCompileCheckPlan(target, buildPlanCap, includeCallers, callerCap);
+                    string validationError = BuildCompileCheckValidationError(compilePlan, target);
+                    if (validationError != null) return validationError;
+
+                    return McpResponse.Ok(
+                        code: "DryRun",
+                        result: new JObject
+                        {
+                            ["preview"] = new JObject
+                            {
+                                ["action"] = "CompileCheck",
+                                ["wouldBuild"] = JArray.FromObject(compilePlan.ExpandedTargets),
+                                ["includeCallees"] = "none",
+                                ["buildPlanCap"] = buildPlanCap,
+                                ["callers"] = includeCallers,
+                                ["callerCap"] = compilePlan.CallerCap,
+                                ["callersAdded"] = JArray.FromObject(compilePlan.CallersAdded),
+                                ["truncated"] = compilePlan.Truncated,
+                                ["callerGraphAvailable"] = compilePlan.CallerGraphAvailable,
+                                ["targetResolutionAvailable"] = compilePlan.TargetResolutionAvailable
                             }
                         });
                 }
@@ -1144,7 +1351,8 @@ namespace GxMcp.Worker.Services
                      compileCheck: false, compileCheckCallers: null, compileCheckTruncated: false, compileCheckGraphAvailable: true, fullDeploy: fullDeploy);
 
         public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly,
-                            bool compileCheck, List<string> compileCheckCallers, bool compileCheckTruncated, bool compileCheckGraphAvailable, bool fullDeploy = false)
+                            bool compileCheck, List<string> compileCheckCallers, bool compileCheckTruncated, bool compileCheckGraphAvailable,
+                            bool fullDeploy = false, bool compileCheckCallersRequested = true, int compileCheckCallerCap = 0)
         {
             if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase)
                 && !string.IsNullOrWhiteSpace(target))
@@ -1326,8 +1534,11 @@ namespace GxMcp.Worker.Services
                 FastIncrementalForceFullBuild = fastIncremental && fiDecision?.ForceFullBuild == true,
                 FastIncrementalAppliedPath = fastIncrementalAppliedPath,
                 CompileCheck = compileCheck,
+                CompileCheckCallersRequested = compileCheck && compileCheckCallersRequested,
+                CompileCheckCallerCap = compileCheck ? compileCheckCallerCap : 0,
                 CompileCheckCallers = (compileCheck && compileCheckCallers != null && compileCheckCallers.Count > 0) ? compileCheckCallers : null,
-                CompileCheckTruncated = compileCheck && compileCheckTruncated
+                CompileCheckTruncated = compileCheck && compileCheckTruncated,
+                CompileCheckGraphAvailable = compileCheck && compileCheckGraphAvailable
             };
 
             // Best-effort caller lookup for hint (only meaningful for single-object builds)
@@ -1355,9 +1566,11 @@ namespace GxMcp.Worker.Services
             if (compileCheck)
             {
                 acceptedMessage = $"compile_check started for {targets.Count} object(s) "
-                    + (compileCheckGraphAvailable
+                    + (!compileCheckCallersRequested
+                        ? "(named objects only — caller expansion disabled). "
+                        : compileCheckGraphAvailable
                         ? $"(named objects + their transitive callers) — spec+gen+compile only, DeveloperMenu regeneration skipped. "
-                        : "(named objects only — caller graph unavailable, run genexus_lifecycle action=index to check the full blast radius). ")
+                        : "(named targets plus any callers resolved; caller graph unavailable or incomplete, so caller coverage is not guaranteed). ")
                     + "Poll action='status' target=<taskId> for progress.";
             }
             else
@@ -1382,11 +1595,15 @@ namespace GxMcp.Worker.Services
                 string compileCheckNote = null;
                 if (compileCheckTruncated)
                 {
-                    compileCheckNote = "Caller graph hit the buildPlanCap — some callers were not included. Raise buildPlanCap or check the omitted callers separately.";
+                    compileCheckNote = $"Caller graph hit callerCap={status.CompileCheckCallerCap} — some callers were not included. Raise callerCap or check the omitted callers separately.";
+                }
+                else if (!status.CompileCheckCallersRequested)
+                {
+                    compileCheckNote = "Caller expansion was disabled — only the named objects were checked.";
                 }
                 else if (!compileCheckGraphAvailable)
                 {
-                    compileCheckNote = "Caller graph unavailable (index not built) — only the named objects were checked, not their callers.";
+                    compileCheckNote = "Caller graph unavailable or incomplete — caller coverage is not guaranteed; inspect callersAdded.";
                 }
 
                 compileCheckPayload = new JObject();
@@ -1394,6 +1611,8 @@ namespace GxMcp.Worker.Services
                     compileCheckPayload["callersAdded"] = JValue.CreateNull();
                 else
                     compileCheckPayload["callersAdded"] = JArray.FromObject(status.CompileCheckCallers);
+                compileCheckPayload["callers"] = status.CompileCheckCallersRequested;
+                compileCheckPayload["callerCap"] = status.CompileCheckCallerCap;
                 compileCheckPayload["truncated"] = status.CompileCheckTruncated;
                 compileCheckPayload["callerGraphAvailable"] = compileCheckGraphAvailable;
                 compileCheckPayload["note"] = compileCheckNote;
@@ -1898,13 +2117,27 @@ namespace GxMcp.Worker.Services
                 || action.Equals("Sync", StringComparison.OrdinalIgnoreCase);
         }
 
-        // Strip a "Type:Name" qualifier down to the bare object name the generator
-        // uses for the file (<Name>.cs). Null/empty-safe.
-        private static string BareName(string t)
+        // Resolve the generated-file key used by the evidence gate. BuildOne receives
+        // the original target identity; this helper only normalizes the filename key.
+        // Null/empty-safe.
+        private string BareName(string t)
         {
             if (string.IsNullOrWhiteSpace(t)) return null;
-            t = t.Trim();
-            return t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
+            string candidate = t.Trim();
+            int colon = candidate.LastIndexOf(':');
+            if (colon >= 0) candidate = candidate.Substring(colon + 1).Trim();
+
+            if (Guid.TryParse(candidate, out var guid))
+            {
+                try
+                {
+                    var index = _indexCacheService?.TryGetLoadedIndex();
+                    var entry = index?.FindByGuid(guid.ToString("D")) ?? index?.FindByGuid(candidate);
+                    if (!string.IsNullOrWhiteSpace(entry?.Name)) return entry.Name;
+                }
+                catch { }
+            }
+            return candidate;
         }
 
         // Split a JS argument list on top-level commas, ignoring commas inside string

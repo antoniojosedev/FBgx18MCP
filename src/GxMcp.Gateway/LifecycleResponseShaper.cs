@@ -84,6 +84,31 @@ namespace GxMcp.Gateway
             if (obj["Environment"] != null)
                 compactObj["Environment"] = obj["Environment"];
 
+            // compile_check metadata is attached to the raw BuildTaskStatus with
+            // PascalCase property names. Preserve it in the compact polling/result
+            // shape; otherwise async status silently loses caller-cap evidence.
+            if (obj["CompileCheck"]?.ToObject<bool?>() == true || obj["compileCheck"] != null)
+            {
+                var compileCheck = obj["compileCheck"] as JObject;
+                if (compileCheck != null)
+                {
+                    compactObj["compileCheck"] = compileCheck;
+                }
+                else
+                {
+                    var compileCheckPayload = new JObject
+                    {
+                        ["callers"] = obj["CompileCheckCallersRequested"],
+                        ["callerCap"] = obj["CompileCheckCallerCap"],
+                        ["callersAdded"] = obj["CompileCheckCallers"] ?? JValue.CreateNull(),
+                        ["truncated"] = obj["CompileCheckTruncated"],
+                        ["callerGraphAvailable"] = obj["CompileCheckGraphAvailable"]
+                            ?? obj["compileCheckGraphAvailable"]
+                    };
+                    compactObj["compileCheck"] = compileCheckPayload;
+                }
+            }
+
             // FR (2026-05-21): when CS0246/CS2001 fired, BuildService already extracted
             // the missing object names into SuggestedRebuildTargets. Surface them as a
             // ready-to-fire retry hint so the agent doesn't have to scrape the paths

@@ -171,7 +171,13 @@ namespace GxMcp.Worker.Services
                     var includeCallees = args["includeCallees"]?.ToString();
                     if (string.IsNullOrWhiteSpace(includeCallees)) includeCallees = "transitive";
                     var cap = args["buildPlanCap"]?.ToObject<int?>() ?? 200;
-                    return _buildService.BuildDryRun(action, target, includeCallees, cap);
+                    return _buildService.BuildDryRun(
+                        action,
+                        target,
+                        includeCallees,
+                        cap,
+                        includeCallers: args["callers"]?.ToObject<bool?>() ?? true,
+                        callerCap: args["callerCap"]?.ToObject<int?>() ?? 0);
                 }
 
                 if (action == "Specify") return _buildService.Specify(target);
