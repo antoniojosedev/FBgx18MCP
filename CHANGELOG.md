@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Add `genexus_io action=read_blob` for bounded Base64 or atomic file export of a File's real `WikiBlob` bytes, including byte count and SHA-256 verification.
+
+### Fixed
+
+- Re-arm and scope index bootstrap/freshness state across KB open, close, reload, and worker respawn; normalize SDK timestamps to UTC and remove stale GUID mappings during delete/recreate deltas.
+- Route worker reload to the resolved or explicitly named KB, allow an unambiguous single open KB without a session selection, and keep Gateway index mirrors isolated by KB alias.
+- Preserve UTC timestamps when JSON.NET materializes Worker index timestamps as `JTokenType.Date`, so `whoami` does not drop `lastSuccessfulScanAt`/`lastIndexedAt` under non-US cultures.
+
 ## v3.5.0 - 2026-09-14
 
 

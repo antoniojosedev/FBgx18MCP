@@ -2281,7 +2281,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "IO umbrella for assets, Object Text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write | export_part|import_part (single part) | export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects (official GeneXus for Agents Object Text parity) | export_unified|screenshot_publish|ocr.",
+      "description": "IO umbrella for assets, Object Text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write | read_blob | export_part|import_part (single part) | export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects (official GeneXus for Agents Object Text parity) | export_unified|screenshot_publish|ocr.",
       "inputSchema": {
         "examples": [
           {
@@ -2313,6 +2313,7 @@
               "asset_find",
               "asset_read",
               "asset_write",
+              "read_blob",
               "export_part",
               "import_part",
               "export_kb_to_text",
@@ -2341,6 +2342,9 @@
             "description": "Object Text import/delete preview without persisting changes.",
             "type": "boolean"
           },
+          "includeBase64": {
+            "type": "boolean"
+          },
           "includeContent": {
             "description": "asset_find: inline file content.",
             "type": "boolean"
@@ -2358,7 +2362,7 @@
             "type": "integer"
           },
           "maxBytes": {
-            "description": "asset_read: max bytes to return.",
+            "description": "asset_read/read_blob: inline byte limit.",
             "type": "integer"
           },
           "module": {
@@ -2370,11 +2374,9 @@
             "type": "string"
           },
           "outputPath": {
-            "description": "export_part: destination file; export_kb_to_text: destination directory.",
             "type": "string"
           },
           "overwrite": {
-            "description": "export_part/export_kb_to_text: overwrite existing output.",
             "type": "boolean"
           },
           "part": {
@@ -4855,6 +4857,10 @@
           }
         ],
         "properties": {
+          "alias": {
+            "description": "KB alias to reload when more than one worker is open.",
+            "type": "string"
+          },
           "drainTimeoutMs": {
             "description": "Soft only; default 30000.",
             "type": "integer"
@@ -4862,6 +4868,10 @@
           "force": {
             "description": "Bypass drain; gateway kills + respawns. Use when worker is wedged.",
             "type": "boolean"
+          },
+          "kb": {
+            "description": "Alias of alias.",
+            "type": "string"
           },
           "mode": {
             "enum": [

@@ -240,7 +240,9 @@ namespace GxMcp.Worker.Services
                 return new IndexState
                 {
                     Status = _state.Status,
+                    Freshness = _state.Freshness,
                     LastIndexedAt = _state.LastIndexedAt,
+                    LastSuccessfulScanAt = _state.LastSuccessfulScanAt,
                     TotalObjects = _state.TotalObjects,
                     Progress = _state.Progress,
                     EtaMs = _state.EtaMs,
@@ -255,6 +257,7 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Reindexing";
+                _state.Freshness = "refreshing";
                 _state.Progress = 0;
                 _state.EtaMs = null;
                 _state.LastIndexedAt = null;
@@ -288,8 +291,43 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Cold";
+                _state.Freshness = "stale";
                 _state.Progress = null;
                 _state.EtaMs = null;
+            }
+            SignalStateChanged();
+        }
+
+        /// <summary>
+        /// Publishes a validated on-disk index without claiming that the current KB
+        /// has been scanned in this worker lifetime. The snapshot timestamp is the
+        /// last known successful scan, while Freshness remains stale until a delta
+        /// or full scan completes.
+        /// </summary>
+        public void MarkIndexRestored(int totalObjects, DateTime? snapshotCapturedAtUtc)
+        {
+            DateTime? captured = snapshotCapturedAtUtc.HasValue
+                ? SdkTimestampNormalizer.NormalizeUtc(snapshotCapturedAtUtc.Value)
+                : (DateTime?)null;
+            lock (_stateLock)
+            {
+                _state.Status = "Ready";
+                _state.Freshness = "stale";
+                _state.LastIndexedAt = captured;
+                _state.LastSuccessfulScanAt = captured;
+                _state.TotalObjects = totalObjects;
+                _state.Progress = null;
+                _state.EtaMs = null;
+            }
+            SignalStateChanged();
+        }
+
+        /// <summary>Marks a usable snapshot as being checked against the open KB.</summary>
+        public void MarkIndexRefreshing()
+        {
+            lock (_stateLock)
+            {
+                _state.Freshness = "refreshing";
             }
             SignalStateChanged();
         }
@@ -299,7 +337,9 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Ready";
+                _state.Freshness = "current";
                 _state.LastIndexedAt = DateTime.UtcNow;
+                _state.LastSuccessfulScanAt = _state.LastIndexedAt;
                 _state.TotalObjects = totalObjects;
                 _state.Progress = null;
                 _state.EtaMs = null;
@@ -318,8 +358,10 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "LiteReady";
+                _state.Freshness = "current";
                 _state.TotalObjects = totalObjects;
                 _state.LitePassCompletedUtc = DateTime.UtcNow;
+                _state.LastSuccessfulScanAt = _state.LitePassCompletedUtc;
                 _state.Progress = 1.0;
                 _state.EtaMs = 0;
             }
@@ -345,6 +387,7 @@ namespace GxMcp.Worker.Services
                 if (_state.Status == "LiteReady" || _state.Status == "Enriching" || _state.Status == "Ready")
                     return;
                 _state.Status = "UltraLiteReady";
+                _state.Freshness = "refreshing";
                 _state.TotalObjects = objectsSoFar;
                 _state.Progress = null;
                 _state.EtaMs = null;
@@ -362,6 +405,7 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Enriching";
+                _state.Freshness = "current";
                 _state.EnrichmentStartedUtc = DateTime.UtcNow;
                 _state.Progress = 0;
             }
@@ -827,20 +871,23 @@ namespace GxMcp.Worker.Services
                     }
 
                     NormalizeLegacyHierarchy(restored);
+                    NormalizeLifecycleTimestamps(restored);
                     BuildParentIndex(restored);
                     _index = restored;
                     _initialized = true;
                     PrimeHierarchyCacheFromIndex(restored);
                     ResetHighWaterMark();
-                    if (!string.IsNullOrWhiteSpace(metadata.HighWaterMarkUtc)
-                        && DateTime.TryParse(metadata.HighWaterMarkUtc, null,
-                            System.Globalization.DateTimeStyles.RoundtripKind, out var hwm))
+                    if (SdkTimestampNormalizer.TryParseUtc(metadata.HighWaterMarkUtc, out var hwm)
+                        )
                     {
-                        ObserveLastUpdate(hwm.ToUniversalTime());
+                        ObserveLastUpdate(hwm);
                     }
                 }
 
-                MarkIndexComplete(restored.Objects.Count);
+                DateTime? capturedAt = SdkTimestampNormalizer.TryParseUtc(metadata.CapturedAtUtc, out var captured)
+                    ? captured
+                    : (DateTime?)null;
+                MarkIndexRestored(restored.Objects.Count, capturedAt);
                 response["loaded"] = true;
                 response["fallback"] = false;
                 response["objectCount"] = restored.Objects.Count;
@@ -963,6 +1010,19 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private static void NormalizeLifecycleTimestamps(SearchIndex index)
+        {
+            if (index == null) return;
+            index.LastUpdated = SdkTimestampNormalizer.NormalizeUtc(index.LastUpdated);
+            if (index.Objects == null) return;
+            foreach (var entry in index.Objects.Values)
+            {
+                if (entry == null) continue;
+                entry.LastUpdate = SdkTimestampNormalizer.NormalizeUtc(entry.LastUpdate);
+                entry.CreatedAt = SdkTimestampNormalizer.NormalizeUtc(entry.CreatedAt);
+            }
+        }
+
         private string InferLegacyParentPath(SearchIndex.IndexEntry entry)
         {
             if (entry == null) return string.Empty;
@@ -1029,14 +1089,24 @@ namespace GxMcp.Worker.Services
             lock (list)
             {
                 string entryKey = GetEntryStorageKey(entry);
-                // O(1) dedup via the companion key-set instead of an O(n) List.Any scan.
-                // HashSet.Add returns false when the key is already present. Fall back to the
-                // linear scan only if the companion set is somehow absent (defensive).
-                bool isNew = keys != null
-                    ? keys.Add(entryKey)
-                    : !list.Any(e => string.Equals(GetEntryStorageKey(e), entryKey, StringComparison.OrdinalIgnoreCase));
-                if (isNew)
+                // The primary map replaces entries at the same Type:Name key. Keep the
+                // parent projection in lockstep as well; merely deduplicating here leaves
+                // a deleted object's GUID in parent-filtered list_objects results.
+                int existingIndex = list.FindIndex(e =>
+                    string.Equals(GetEntryStorageKey(e), entryKey, StringComparison.OrdinalIgnoreCase));
+                if (existingIndex >= 0)
                 {
+                    list[existingIndex] = entry;
+                    for (int i = list.Count - 1; i >= 0; i--)
+                    {
+                        if (i != existingIndex && string.Equals(GetEntryStorageKey(list[i]), entryKey, StringComparison.OrdinalIgnoreCase))
+                            list.RemoveAt(i);
+                    }
+                    keys?.Add(entryKey);
+                }
+                else
+                {
+                    keys?.Add(entryKey);
                     list.Add(entry);
                 }
             }
@@ -1088,12 +1158,39 @@ namespace GxMcp.Worker.Services
 
         public void RemoveEntryByGuid(string guid)
         {
-            if (string.IsNullOrEmpty(guid)) return;
+            if (string.IsNullOrWhiteSpace(guid)) return;
             var index = GetIndex();
             string removedKey = null;
+            string requestedGuid = guid.Trim();
             lock (_lock)
             {
-                if (index.GuidToKey == null || !index.GuidToKey.TryGetValue(guid, out var key)) return;
+                if (index.GuidToKey == null || index.Objects == null) return;
+
+                string key = null;
+                if (!index.GuidToKey.TryGetValue(requestedGuid, out key))
+                {
+                    // Keep deletion safe even if an older snapshot was missing its
+                    // derived reverse map. This is a read-only fallback; normal paths
+                    // remain O(1) through GuidToKey.
+                    var fallback = index.Objects.FirstOrDefault(pair =>
+                        pair.Value != null && string.Equals(pair.Value.Guid, requestedGuid, StringComparison.OrdinalIgnoreCase));
+                    key = fallback.Key;
+                }
+                if (string.IsNullOrEmpty(key)) return;
+
+                // A Type:Name key can now belong to a newly-created object. A stale
+                // reverse mapping must never turn deletion of the old GUID into deletion
+                // of that replacement.
+                if (!index.Objects.TryGetValue(key, out var current)
+                    || current == null
+                    || !string.Equals(current.Guid, requestedGuid, StringComparison.OrdinalIgnoreCase))
+                {
+                    index.GuidToKey.TryRemove(requestedGuid, out _);
+                    if (current != null && !string.IsNullOrWhiteSpace(current.Guid))
+                        index.GuidToKey[current.Guid] = key;
+                    return;
+                }
+
                 if (index.Objects.TryRemove(key, out var removed))
                 {
                     removedKey = key;
@@ -1104,9 +1201,9 @@ namespace GxMcp.Worker.Services
                     }
                     TouchGraph(index);
                     if (index.ChildrenByParent != null) RemoveEntryFromParentIndex(index, removed);
-                    if (Guid.TryParse(guid, out var g)) _hierarchyCache.TryRemove(g, out _);
+                    if (Guid.TryParse(requestedGuid, out var g)) _hierarchyCache.TryRemove(g, out _);
                 }
-                index.GuidToKey.TryRemove(guid, out _);
+                index.GuidToKey.TryRemove(requestedGuid, out _);
             }
             MarkDirtyForKey(removedKey);
         }
@@ -1348,6 +1445,7 @@ namespace GxMcp.Worker.Services
         {
             if (loaded == null) loaded = new SearchIndex();
             NormalizeLegacyHierarchy(loaded);
+            NormalizeLifecycleTimestamps(loaded);
             BuildParentIndex(loaded);
             PrimeHierarchyCacheFromIndex(loaded);
             lock (_lock)
@@ -1356,7 +1454,11 @@ namespace GxMcp.Worker.Services
                 _index = loaded;
             }
             Logger.Info(string.Format("Index loaded. Objects: {0}", loaded.Objects.Count));
-            if (loaded.Objects.Count > 0) MarkIndexComplete(loaded.Objects.Count);
+            if (loaded.Objects.Count > 0)
+            {
+                DateTime? snapshotAt = loaded.LastUpdated == DateTime.MinValue ? (DateTime?)null : loaded.LastUpdated;
+                MarkIndexRestored(loaded.Objects.Count, snapshotAt);
+            }
             return loaded;
         }
 
@@ -1590,7 +1692,7 @@ namespace GxMcp.Worker.Services
         /// <summary>Advance the high-water-mark if <paramref name="lastUpdate"/> is newer. Lock-free.</summary>
         public void ObserveLastUpdate(DateTime lastUpdate)
         {
-            long t = lastUpdate.Ticks;
+            long t = SdkTimestampNormalizer.NormalizeUtc(lastUpdate).Ticks;
             long cur;
             while (true)
             {
@@ -1972,7 +2074,7 @@ namespace GxMcp.Worker.Services
         // a crashed indexer.
         private static DateTime SafeReadDate(Func<DateTime> read)
         {
-            try { return read(); } catch { return DateTime.MinValue; }
+            try { return SdkTimestampNormalizer.NormalizeUtc(read()); } catch { return DateTime.MinValue; }
         }
 
         private static string SafeReadString(Func<string> read)
@@ -2134,6 +2236,22 @@ namespace GxMcp.Worker.Services
                     || !string.Equals(previousEntry.Module, entry.Module, StringComparison.OrdinalIgnoreCase)))
             {
                 RemoveEntryFromParentIndex(index, previousEntry);
+            }
+            if (previousEntry != null)
+            {
+                // Secondary indexes are set-based, so replacing the primary entry must
+                // first remove its old domain/name membership. Parent changes already
+                // performed this removal above; repeating it is harmless and keeps the
+                // same-key replacement path correct too.
+                RemoveEntryFromSecondaryIndexes(index, previousEntry);
+                if (index.GuidToKey != null
+                    && !string.IsNullOrEmpty(previousEntry.Guid)
+                    && !string.Equals(previousEntry.Guid, entry.Guid, StringComparison.OrdinalIgnoreCase)
+                    && index.GuidToKey.TryGetValue(previousEntry.Guid, out var mappedKey)
+                    && string.Equals(mappedKey, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    index.GuidToKey.TryRemove(previousEntry.Guid, out _);
+                }
             }
             if (index.SourceTokenIndex != null)
             {

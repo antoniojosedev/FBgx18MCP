@@ -353,6 +353,7 @@ namespace GxMcp.Gateway
                 "- `asset_find` — search files in KB or target directories matching a glob `pattern`.\n" +
                 "- `asset_read` — read asset file content (text or binary bytes up to `maxBytes`).\n" +
                 "- `asset_write` — write or update asset files using `contentBase64`.\n" +
+                "- `read_blob` — read the real bytes of a `WikiFileKBObject`/`WikiBlobPart`; returns Base64 inline or exports atomically to `outputPath` with byte count and SHA-256.\n" +
                 "- `export_part` — export a single object part (e.g. Source, Rules) to an external file.\n" +
                 "- `import_part` — import object part content from a file.\n" +
                 "- `export_kb_to_text` — export selected objects, or the full indexed KB, into deterministic `.gxtext` files plus a manifest.\n" +

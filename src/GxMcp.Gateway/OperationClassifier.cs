@@ -155,7 +155,7 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "history_list", "history_get", "time_travel", "blame", "diff", "diff_generated" },
                     mutating: new[] { "history_save", "history_restore", "undo" }),
                 ["genexus_io"] = Contract(
-                    readOnly: new[] { "asset_find", "asset_read", "ocr", "validate_kb_text_files" },
+                    readOnly: new[] { "asset_find", "asset_read", "read_blob", "ocr", "validate_kb_text_files" },
                     mutating: new[] { "asset_write", "export_part", "import_part", "export_kb_to_text", "import_text_to_kb", "delete_kb_objects", "export_unified", "screenshot_publish" }),
                 ["genexus_variable"] = Contract(
                     readOnly: Array.Empty<string>(),

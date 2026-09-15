@@ -74,7 +74,8 @@ namespace GxMcp.Gateway
             _pendingRequests.Clear();
             IndexBootstrapTriggerForTest = null;
             RespawnDelayForTest = null;
-            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
+            _indexBootstrapStartedByKb.Clear();
+            ResetIndexStateMirrorForTest();
         }
         // Plan 038: minimal accessor so McpRouter (a separate class) can resolve the
         // per-request KB alias for AutoTypeInjector.CompleteName, same pattern as the two above.
@@ -316,7 +317,13 @@ namespace GxMcp.Gateway
         private static int _workerWarmupStarted;
         internal static readonly TaskCompletionSource<bool> WorkerWarmupCompleted =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        private static int _indexBootstrapStarted;
+        private static readonly ConcurrentDictionary<string, byte> _indexBootstrapStartedByKb =
+            new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        internal static void ResetIndexBootstrapForAlias(string? alias)
+        {
+            string key = NormalizeKbAlias(alias) ?? "__default__";
+            _indexBootstrapStartedByKb.TryRemove(key, out _);
+        }
         // Test seams for deterministic worker-lifecycle coverage. Production leaves
         // these null, preserving the real asynchronous bootstrap and backoff.
         internal static Action? IndexBootstrapTriggerForTest;

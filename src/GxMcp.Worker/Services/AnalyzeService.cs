@@ -1066,7 +1066,7 @@ namespace GxMcp.Worker.Services
                         var life = new JObject();
                         DateTime lu = default;
                         string lub = null;
-                        try { lu = obj.LastUpdate; } catch { }
+                        try { lu = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate); } catch { }
                         try { lub = obj.UserName; } catch { }
                         if (lu > DateTime.MinValue) life["lastUpdate"] = lu.ToUniversalTime().ToString("o");
                         if (!string.IsNullOrEmpty(lub)) life["lastModifiedBy"] = lub;
@@ -1355,8 +1355,8 @@ namespace GxMcp.Worker.Services
                         var life = new JObject();
                         DateTime lu = default, ca = default;
                         string lub = null;
-                        try { lu = obj.LastUpdate; } catch { }
-                        try { ca = obj.VersionDate; } catch { }
+                        try { lu = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate); } catch { }
+                        try { ca = SdkTimestampNormalizer.NormalizeUtc(obj.VersionDate); } catch { }
                         try { lub = obj.UserName; } catch { }
                         if (lu > DateTime.MinValue) life["lastUpdate"] = lu.ToUniversalTime().ToString("o");
                         if (ca > DateTime.MinValue) life["createdAt"] = ca.ToUniversalTime().ToString("o");

@@ -45,6 +45,20 @@ namespace GxMcp.Gateway.Routers
                     };
                 }
 
+                case "read_blob":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ReadBlob",
+                        target = args?["name"]?.ToString(),
+                        outputPath = args?["outputPath"]?.ToString(),
+                        part = args?["part"]?.ToString(),
+                        type = args?["type"]?.ToString(),
+                        maxBytes = args?["maxBytes"]?.ToObject<int?>(),
+                        includeBase64 = args?["includeBase64"]?.ToObject<bool?>() ?? false,
+                        overwrite = args?["overwrite"]?.ToObject<bool?>() ?? false
+                    };
+
                 case "export_part":
                     return new
                     {
@@ -100,7 +114,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|export_part|import_part|export_unified|screenshot_publish|ocr."
+                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|read_blob|export_part|import_part|export_unified|screenshot_publish|ocr."
                     };
             }
         }

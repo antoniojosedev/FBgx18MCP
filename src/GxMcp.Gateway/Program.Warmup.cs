@@ -16,9 +16,11 @@ namespace GxMcp.Gateway
         // notifications/message tells the agent that search/analyze return partial
         // results while indexing runs in the background — read/edit/build are
         // immediate regardless.
-        private static void TriggerIndexBootstrapOnce()
+        private static void TriggerIndexBootstrapOnce(string? kbAlias = null)
         {
-            if (Interlocked.CompareExchange(ref _indexBootstrapStarted, 1, 0) != 0) return;
+            string bootstrapKey = NormalizeKbAlias(kbAlias) ?? NormalizeKbAlias(_currentKb.Value?.NormalizedAlias)
+                ?? "__default__";
+            if (!_indexBootstrapStartedByKb.TryAdd(bootstrapKey, 0)) return;
 
             if (IndexBootstrapTriggerForTest != null)
             {
@@ -30,9 +32,22 @@ namespace GxMcp.Gateway
 
             _ = Task.Run(async () =>
             {
+                KbHandle? previousKb = _currentKb.Value;
+                bool previousOwnerRequirement = _currentOperationRequiresOwner.Value;
                 try
                 {
                     if (_workerPool == null) { Log("[IndexBootstrap] worker pool null"); return; }
+
+                    if (bootstrapKey != "__default__")
+                    {
+                        _currentKb.Value = _workerPool.ListOpen()
+                            .FirstOrDefault(h => string.Equals(h.NormalizedAlias, bootstrapKey, StringComparison.OrdinalIgnoreCase));
+                        if (_currentKb.Value == null)
+                        {
+                            Log($"[IndexBootstrap] KB '{bootstrapKey}' is no longer open");
+                            return;
+                        }
+                    }
 
                     // Warmup and index bootstrap both acquire the default KB. Serialize
                     // them so initialize cannot create two Workers for the same KB and
@@ -46,6 +61,10 @@ namespace GxMcp.Gateway
                         ["client"] = "mcp"
                     };
 
+                    // Bootstrap is an internal gateway operation, not a client mutation;
+                    // it must not require the caller's session lease after an explicit open
+                    // or reload selected the worker by alias.
+                    _currentOperationRequiresOwner.Value = false;
                     var resp = await SendWorkerCommandAsync(
                         indexCommand,
                         30000,
@@ -85,6 +104,11 @@ namespace GxMcp.Gateway
                 catch (Exception ex)
                 {
                     Log($"[IndexBootstrap] {ex.Message}");
+                }
+                finally
+                {
+                    _currentKb.Value = previousKb;
+                    _currentOperationRequiresOwner.Value = previousOwnerRequirement;
                 }
             });
         }
