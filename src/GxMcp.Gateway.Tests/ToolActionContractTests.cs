@@ -129,6 +129,30 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void HelpDoesNotDocumentActionsMissingFromSchema()
+        {
+            var schemaTools = LoadToolDefinitions()
+                .Where(tool => tool["inputSchema"]?["properties"]?["action"]?["enum"] is JArray)
+                .ToDictionary(tool => tool["name"]!.ToString(), StringComparer.OrdinalIgnoreCase);
+            var stale = new List<string>();
+
+            foreach (var pair in schemaTools)
+            {
+                string help = ToolHelpCatalog.Get(pair.Key) ?? string.Empty;
+                var actions = ((JArray)pair.Value["inputSchema"]!["properties"]!["action"]!["enum"]!)
+                    .Select(token => token.ToString())
+                    .ToHashSet(StringComparer.Ordinal);
+                foreach (var documented in ActionTokensFromActionsSection(help))
+                {
+                    if (!actions.Contains(documented)) stale.Add(pair.Key + ":" + documented);
+                }
+            }
+
+            Assert.True(stale.Count == 0,
+                "Help documents actions missing from the published schema: " + string.Join(", ", stale));
+        }
+
+        [Fact]
         public void InventoryActionsMatchTheSchemaAndTheirClassifier()
         {
             var inventory = LoadInventory();
@@ -207,5 +231,32 @@ namespace GxMcp.Gateway.Tests
                 .Cast<Match>()
                 .Select(match => match.Groups[1].Value)
                 .ToHashSet(StringComparer.Ordinal);
+
+        private static HashSet<string> ActionTokensFromActionsSection(string help)
+        {
+            var result = new HashSet<string>(StringComparer.Ordinal);
+            if (string.IsNullOrWhiteSpace(help)) return result;
+
+            int start = help.IndexOf("## Actions", StringComparison.Ordinal);
+            if (start < 0) return result;
+            int end = help.IndexOf("\n## ", start + "## Actions".Length, StringComparison.Ordinal);
+            if (end < 0) end = help.Length;
+
+            foreach (var line in help.Substring(start, end - start).Split('\n'))
+            {
+                int separator = line.IndexOf(" — ", StringComparison.Ordinal);
+                if (separator <= 0) continue;
+                string bulletPrefix = line.Substring(0, separator);
+                foreach (Match match in Regex.Matches(
+                    bulletPrefix, "`([^`]+)`", RegexOptions.CultureInvariant))
+                {
+                    string token = match.Groups[1].Value.Trim();
+                    int suffix = token.IndexOfAny(new[] { ' ', '[', '(', '=' });
+                    if (suffix > 0) token = token.Substring(0, suffix);
+                    if (token.Length > 0) result.Add(token);
+                }
+            }
+            return result;
+        }
     }
 }

@@ -2343,6 +2343,7 @@
             "type": "boolean"
           },
           "includeBase64": {
+            "description": "include Base64 response",
             "type": "boolean"
           },
           "includeContent": {
@@ -2362,7 +2363,7 @@
             "type": "integer"
           },
           "maxBytes": {
-            "description": "asset_read/read_blob: inline byte limit.",
+            "description": "inline limit",
             "type": "integer"
           },
           "module": {
@@ -2374,9 +2375,11 @@
             "type": "string"
           },
           "outputPath": {
+            "description": "path",
             "type": "string"
           },
           "overwrite": {
+            "description": "replace file",
             "type": "boolean"
           },
           "part": {
@@ -2946,7 +2949,7 @@
             "type": "string"
           },
           "target": {
-            "description": "Object name(s), taskId, job_id, or op:<id>. Build accepts CSV ('Foo,Bar'); build_all is KB-global and rejects target.",
+            "description": "Object/task ID/op:<id>. compile_check accepts unique name, Type:Name, GUID; no paths. build_all rejects target.",
             "type": "string"
           },
           "verification": {
@@ -4845,7 +4848,7 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Reload worker. modes: soft (drain+respawn), warm (restore validated index snapshot + soft respawn), hard (copy sourceDir+respawn). force=true: gateway kills directly. See tool-help.",
+      "description": "Reload worker. mode=soft drains and respawns; mode=hard copies sourceDir during the drain window and respawns. force=true: gateway kills directly. See tool-help.",
       "inputSchema": {
         "examples": [
           {
@@ -4876,7 +4879,6 @@
           "mode": {
             "enum": [
               "soft",
-              "warm",
               "hard"
             ],
             "type": "string"
@@ -4897,7 +4899,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed WorkWithPlus action, tab, grid, and native structural edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. No lifecycle operation is implicit. Settings: embedded and separate WWP templates, paged reads and exact table-class dryRun; saves remain blocked.",
+      "description": "Typed WorkWithPlus action, tab, grid, native table-type, and structural edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. set_table_type mutates only an existing table type through the native PatternInstance SDK and preserves children, bindings, events, names, classes, defaultType, and childrenOrderedList. No lifecycle operation is implicit. Settings: embedded and separate WWP templates, paged reads and exact table-class dryRun; saves remain blocked.",
       "inputSchema": {
         "$defs": {
           "wwpControl": {
@@ -5016,6 +5018,13 @@
             "trigger": "Click",
             "userActionName": "EmpresaSelector",
             "webComponentLoad": "On every click"
+          },
+          {
+            "action": "set_table_type",
+            "dryRun": true,
+            "name": "SamplePanel",
+            "tablePath": "TableMain > TableContent > TableLogin",
+            "tableType": "Responsive"
           }
         ],
         "properties": {
@@ -5030,6 +5039,7 @@
               "add_tab",
               "move_tab",
               "remove_tab",
+              "set_table_type",
               "add_grid_attribute",
               "replace_web_component_with_user_action",
               "settings_templates",
@@ -5166,7 +5176,15 @@
             "type": "string"
           },
           "tablePath": {
-            "description": "replace_web_component_with_user_action: full breadcrumb including the source node, for example TableHeader > TableUserRole > EmpresaSelector.",
+            "description": "set_table_type: existing table breadcrumb by names or indexed table segments; replace_web_component_with_user_action: full breadcrumb including the source node, for example TableHeader > TableUserRole > EmpresaSelector.",
+            "type": "string"
+          },
+          "tableType": {
+            "description": "set_table_type: requested native WWP table type. Only the existing table @type changes; defaultType and all child identity/metadata remain guarded.",
+            "enum": [
+              "Regular",
+              "Responsive"
+            ],
             "type": "string"
           },
           "template": {

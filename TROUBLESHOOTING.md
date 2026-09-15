@@ -184,7 +184,7 @@ To keep it warm longer, edit `config.json`:
 The worker holds open handles to KB files while running. If you need to do something in the GeneXus IDE that conflicts (rebuild, change DBMS, etc.):
 
 ```bash
-npx genexus-mcp lifecycle --action stop-worker
+genexus_worker_reload mode=soft
 ```
 
 The worker will respawn on the next MCP call.

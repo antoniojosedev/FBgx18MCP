@@ -180,10 +180,10 @@ Detalles completos del workflow, la matriz de capacidades verificadas y orientac
 
 **3. La primera petición después de un rato es lenta.** El "worker" (la parte que habla con GeneXus) se apaga después de 5 minutos sin uso para no bloquear archivos. La primera llamada después de eso tarda 3-8 segundos en arrancar. Es por diseño, no es un bug.
 
-**4. Si vas a buildear la KB desde el IDE de GeneXus, pará el worker primero:**
+**4. Si vas a buildear la KB desde el IDE de GeneXus, pará el worker primero usando la tool MCP:**
 
 ```bash
-npx genexus-mcp lifecycle --action stop-worker
+genexus_worker_reload mode=soft
 ```
 
 Si no, podés tener conflictos de archivos bloqueados.

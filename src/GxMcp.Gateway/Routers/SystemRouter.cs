@@ -27,6 +27,8 @@ namespace GxMcp.Gateway.Routers
                                     target = target,
                                     environment = args?["environment"]?.ToString(),
                                     buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
+                                    callers = args?["callers"]?.ToObject<bool?>() ?? true,
+                                    callerCap = args?["callerCap"]?.ToObject<int?>() ?? 0,
                                     dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                                     deploy = args?["deploy"]?.ToObject<bool?>() ?? false
                                 };

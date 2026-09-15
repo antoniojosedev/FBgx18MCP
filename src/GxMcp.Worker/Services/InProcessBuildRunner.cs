@@ -196,6 +196,7 @@ namespace GxMcp.Worker.Services
                         && !fullDeploy
                         && _typeBuildOne != null
                         && !string.Equals(Environment.GetEnvironmentVariable("GXMCP_INPROCESS_BUILD_FASTPATH"), "0", StringComparison.OrdinalIgnoreCase);
+                    bool hasExplicitTargetIdentity = targets != null && targets.Any(HasExplicitTargetIdentity);
 
                     // Compile-only fast-fast path (experimental).
                     // GXMCP_BUILD_COMPILE_ONLY=1 → call GenexusBLServices.Build.Build with only
@@ -222,6 +223,35 @@ namespace GxMcp.Worker.Services
                         // Reset engine flags before the BuildOne fallback so leftover state
                         // from this attempt doesn't contaminate the BuildOne partial-success check.
                         engine.ResetSectionFlags();
+                    }
+
+                    // BuildOne accepts only the bare ObjectName string and resolves it
+                    // through ObjectNameHelper. Use the EntityKey-based BL path for
+                    // Type:Name and GUID targets so homonyms cannot silently redirect
+                    // the build. If that compatibility member is unavailable, return
+                    // CouldNotRun and let RunBuild use its external fallback.
+                    if (useBuildOne && hasExplicitTargetIdentity)
+                    {
+                        if (_miBuildWithTheseOnly == null)
+                        {
+                            lineSink("[BUILD-INPROCESS] explicit Type:Name/GUID target requires BuildWithTheseOnly; falling back without running ambiguous BuildOne.", false);
+                            return InProcessBuildOutcome.CouldNotRun;
+                        }
+
+                        engine.ResetSectionFlags();
+                        var explicitIdentityResult = ExecuteBuildWithTheseOnly(kbHandle, targets, lineSink);
+                        if (explicitIdentityResult == BatchOutcome.Success)
+                        {
+                            foreach (var t in targets) EditDirtyTracker.MarkClean(kbPath, t);
+                            return status.ErrorCount == 0
+                                ? InProcessBuildOutcome.Succeeded
+                                : InProcessBuildOutcome.FailedWithDiagnostics;
+                        }
+                        if (explicitIdentityResult == BatchOutcome.Failure)
+                            return InProcessBuildOutcome.FailedWithDiagnostics;
+
+                        lineSink("[BUILD-INPROCESS] BuildWithTheseOnly could not resolve explicit target identity; falling back to MSBuild.exe.", false);
+                        return InProcessBuildOutcome.CouldNotRun;
                     }
 
                     if (useBuildOne)
@@ -774,6 +804,15 @@ namespace GxMcp.Worker.Services
 
         // Fast per-object build (IDE F5 parity). Returns true on Execute returning
         // true; engine sink already captured any spec/gen/compile diagnostics.
+        internal static bool HasExplicitTargetIdentity(string target)
+        {
+            if (string.IsNullOrWhiteSpace(target)) return false;
+            string trimmed = target.Trim();
+            if (Guid.TryParse(trimmed, out _)) return true;
+            int colon = trimmed.IndexOf(':');
+            return colon > 0 && colon < trimmed.Length - 1;
+        }
+
         private static bool ExecuteBuildOne(object kbHandle, string objectName, IBuildEngine engine, bool buildCalled)
         {
             try
@@ -784,16 +823,12 @@ namespace GxMcp.Worker.Services
                     Logger.Error("[BUILD-INPROCESS] BuildOne type not loaded");
                     return false;
                 }
-                string cleanName = objectName;
-                if (!string.IsNullOrEmpty(cleanName))
-                {
-                    int c = cleanName.IndexOf(':');
-                    if (c > 0) cleanName = cleanName.Substring(c + 1).Trim();
-                }
-
                 object task = Activator.CreateInstance(typeBuildOne);
                 SetProp(task, "KB", kbHandle);
-                SetProp(task, "ObjectName", cleanName);
+                // Preserve Type:Name and GUID identities. ResolveTargetKBObject already
+                // proves these forms are valid; stripping the type here would let a
+                // same-name Table/Procedure homonym receive the build.
+                SetProp(task, "ObjectName", objectName);
                 SetProp(task, "ForceRebuild", false);
                 SetProp(task, "BuildCalled", buildCalled);
                 SetProp(task, "Output", "IDE");

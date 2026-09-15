@@ -317,5 +317,47 @@ namespace GxMcp.Worker.Tests
             });
             Assert.Equal("WwpReplacementChildrenUnsupported", (string)droppedChild["code"]);
         }
+
+        [Fact]
+        public void SetTableType_ChangesOnlyRequestedTypeAndPreservesPatternIdentity()
+        {
+            const string source = "<instance><WPRoot><table name='TableMain' type='Responsive' defaultType='Responsive' childrenOrderedList='1;2'><table name='Content' type='Responsive'><variable name='UserName' controlName='UserName' /></table></table></WPRoot></instance>";
+            var before = XDocument.Parse(source, LoadOptions.PreserveWhitespace);
+            var after = XDocument.Parse(source, LoadOptions.PreserveWhitespace);
+
+            JObject result = WwpActionService.ApplyTableTypeXml(after, "TableMain", "Regular");
+
+            Assert.Null(result["error"]);
+            Assert.True(result["changed"].ToObject<bool>());
+            XElement table = after.Descendants("table").First();
+            Assert.Equal("Regular", (string)table.Attribute("type"));
+            Assert.Equal("Responsive", (string)table.Attribute("defaultType"));
+            Assert.Equal("1;2", (string)table.Attribute("childrenOrderedList"));
+            Assert.True(WwpActionService.VerifyOnlyTableTypeChanged(before, after, "TableMain", "Regular", out string error), error);
+        }
+
+        [Fact]
+        public void SetTableType_RejectsAmbiguousUnnamedTablePath()
+        {
+            var doc = XDocument.Parse("<instance><WPRoot><table type='Responsive' /><table type='Responsive' /></WPRoot></instance>");
+
+            JObject result = WwpActionService.ApplyTableTypeXml(doc, "WPRoot > table", "Regular");
+
+            Assert.Equal("WwpTableNotFound", result["code"]?.ToString());
+            Assert.True((result["error"]?.ToString() ?? string.Empty)
+                .IndexOf("ambiguous", System.StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        [Fact]
+        public void SetTableType_AcceptsIndexedTableBreadcrumb()
+        {
+            var doc = XDocument.Parse("<instance><WPRoot><table type='Responsive' /><table type='Responsive' /></WPRoot></instance>");
+
+            JObject result = WwpActionService.ApplyTableTypeXml(doc, "WPRoot > table[1]", "Regular");
+
+            Assert.Null(result["error"]);
+            Assert.Equal("Responsive", (string)doc.Descendants("table").First().Attribute("type"));
+            Assert.Equal("Regular", (string)doc.Descendants("table").Skip(1).First().Attribute("type"));
+        }
     }
 }

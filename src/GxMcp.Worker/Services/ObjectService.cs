@@ -3977,12 +3977,42 @@ namespace GxMcp.Worker.Services
 
                     if (temporaryPath != null)
                     {
-                        File.Move(temporaryPath, fullPath);
+                        var promotion = AtomicFilePromoter.Promote(temporaryPath, fullPath, overwrite);
+                        if (promotion == AtomicFilePromotionResult.DestinationExists)
+                        {
+                            return McpResponse.Err(
+                                code: "FileAlreadyExists",
+                                message: "Output file already exists. Set overwrite=true to replace it.",
+                                hint: "Pass overwrite=true to replace the existing file.",
+                                target: fullPath);
+                        }
                         temporaryPath = null;
                         long verifiedLength;
-                        string verifiedHash = ComputeFileSha256(fullPath, out verifiedLength);
-                        if (verifiedLength != copiedBytes || !string.Equals(verifiedHash, sha256, StringComparison.OrdinalIgnoreCase))
-                            throw new IOException("The exported blob failed read-back verification.");
+                        try
+                        {
+                            string verifiedHash = ComputeFileSha256(fullPath, out verifiedLength);
+                            if (verifiedLength != copiedBytes || !string.Equals(verifiedHash, sha256, StringComparison.OrdinalIgnoreCase))
+                                throw new IOException("The exported blob failed read-back verification.");
+                        }
+                        catch (Exception verificationError)
+                        {
+                            // Promotion is atomic, but read-back happens after it. If
+                            // verification fails, the new destination may already be
+                            // installed; report that explicitly instead of claiming the
+                            // old file was preserved or inviting a blind retry.
+                            return McpResponse.Err(
+                                code: "BlobVerificationFailed",
+                                message: "The exported blob was promoted but read-back verification failed: " + verificationError.Message,
+                                hint: "Inspect the returned path and hash before retrying; the new file may already be installed.",
+                                target: target,
+                                extra: new JObject
+                                {
+                                    ["path"] = fullPath,
+                                    ["persisted"] = File.Exists(fullPath),
+                                    ["verificationFailed"] = true
+                                },
+                                reconciliationRequired: true);
+                        }
                     }
                 }
                 finally

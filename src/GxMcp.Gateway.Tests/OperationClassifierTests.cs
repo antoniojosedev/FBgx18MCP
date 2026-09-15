@@ -82,6 +82,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("add_tab")]
         [InlineData("move_tab")]
         [InlineData("remove_tab")]
+        [InlineData("set_table_type")]
         [InlineData("add_grid_attribute")]
         public void WorkWithPlusTypedWritesRespectPreviewBoundary(string action)
         {

@@ -275,6 +275,15 @@ namespace GxMcp.Worker.Tests
             var resGuid = InProcessBuildRunner.ResolveTargetKBObject(dummyModel, Guid.NewGuid().ToString());
             Assert.Null(resGuid);
         }
+
+        [Theory]
+        [InlineData("Procedure:Customer", true)]
+        [InlineData("11111111-1111-1111-1111-111111111111", true)]
+        [InlineData("Customer", false)]
+        public void Explicit_build_identity_is_key_resolved(string target, bool expected)
+        {
+            Assert.Equal(expected, InProcessBuildRunner.HasExplicitTargetIdentity(target));
+        }
     }
 
     public sealed class FakeSpecifyOneOnlyTask

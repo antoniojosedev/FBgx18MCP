@@ -945,7 +945,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void ToolHelpCatalog_HasEntriesForTrimmedTools()
         {
-            string[] expected = { "genexus_query", "genexus_lifecycle", "genexus_edit", "genexus_analyze", "genexus_read" };
+            string[] expected = { "genexus_query", "genexus_lifecycle", "genexus_edit", "genexus_analyze", "genexus_read", "genexus_worker_reload" };
             foreach (var name in expected)
             {
                 var help = ToolHelpCatalog.Get(name);
@@ -1020,6 +1020,24 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("genexus://kb/tool-help/genexus_query", first["uri"]!.ToString());
             Assert.Equal("text/markdown", first["mimeType"]!.ToString());
             Assert.Contains("Query prefixes", first["text"]!.ToString());
+        }
+
+        [Fact]
+        public void ResourcesRead_ToolHelp_ReturnsWorkerReloadGuidance()
+        {
+            var request = JObject.Parse(@"{
+                ""method"": ""resources/read"",
+                ""params"": { ""uri"": ""genexus://kb/tool-help/genexus_worker_reload"" }
+            }");
+
+            var result = McpRouter.Handle(request);
+            Assert.NotNull(result);
+
+            var json = JObject.FromObject(result!);
+            var text = ((JArray)json["contents"]!)[0]!["text"]!.ToString();
+            Assert.Contains("genexus_worker_reload", text);
+            Assert.Contains("mode=soft", text);
+            Assert.Contains("force=true", text);
         }
 
         [Fact]

@@ -109,15 +109,20 @@ namespace GxMcp.Gateway
         {
             bool rebuild = string.Equals(lifecycleAction, "rebuild", StringComparison.OrdinalIgnoreCase);
             bool buildAll = string.Equals(lifecycleAction, "build_all", StringComparison.OrdinalIgnoreCase);
+            bool compileCheck = string.Equals(lifecycleAction, "build", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(args?["mode"]?.ToString(), "compile_check", StringComparison.OrdinalIgnoreCase);
             return new JObject
             {
                 ["module"] = "Build",
-                ["action"] = rebuild ? "RebuildAll" : buildAll ? "BuildAll" : "Build",
+                ["action"] = compileCheck ? "CompileCheck" : rebuild ? "RebuildAll" : buildAll ? "BuildAll" : "Build",
                 ["target"] = args?["target"]?.ToString(),
                 ["client"] = "mcp",
                 ["includeCallees"] = args?["includeCallees"]?.ToString(),
                 ["buildPlanCap"] = (int?)args?["buildPlanCap"],
                 ["skipFullDeploy"] = (bool?)args?["skipFullDeploy"],
+                ["callers"] = (bool?)args?["callers"] ?? true,
+                ["callerCap"] = (int?)args?["callerCap"] ?? 0,
+                ["environment"] = args?["environment"]?.ToString(),
                 ["dryRun"] = (bool?)args?["dryRun"] ?? false,
                 ["deploy"] = (bool?)args?["deploy"] ?? false,
                 ["cancelToken"] = cancelToken
@@ -609,6 +614,43 @@ namespace GxMcp.Gateway
                     if (paramsObj != null) paramsObj["arguments"] = args;
                 }
 
+                if (string.Equals(toolName, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase))
+                {
+                    string reloadMode = args?["mode"]?.ToString()?.Trim().ToLowerInvariant() ?? "soft";
+                    if (reloadMode != "soft" && reloadMode != "hard")
+                    {
+                        return BuildToolTextResponse(
+                            idToken,
+                            new JObject
+                            {
+                                ["status"] = "error",
+                                ["error"] = new JObject
+                                {
+                                    ["code"] = "UnsupportedReloadMode",
+                                    ["message"] = "genexus_worker_reload supports mode=soft or mode=hard.",
+                                    ["hint"] = "Use mode=soft for a graceful restart, or mode=hard with sourceDir to hot-swap Worker binaries."
+                                }
+                            },
+                            isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                    }
+                    if (reloadMode == "hard" && string.IsNullOrWhiteSpace(args?["sourceDir"]?.ToString()))
+                    {
+                        return BuildToolTextResponse(
+                            idToken,
+                            new JObject
+                            {
+                                ["status"] = "error",
+                                ["error"] = new JObject
+                                {
+                                    ["code"] = "ReloadSourceRequired",
+                                    ["message"] = "mode=hard requires sourceDir.",
+                                    ["hint"] = "Pass the Worker build directory in sourceDir, or use mode=soft."
+                                }
+                            },
+                            isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                    }
+                }
+
                 // Friction 2026-05-22: genexus_worker_reload force=true bypasses
                 // the JSON-RPC pipe and kills the worker directly. The soft path
                 // is unreachable when the worker is wedged on a hung preview
@@ -750,11 +792,12 @@ namespace GxMcp.Gateway
                             new JObject { ["status"] = "NoWorker", ["detail"] = "No open KB worker found to reload." },
                             isError: false, toolName: toolName, toolArgs: args);
                     }
+                    string reloadMode = args?["mode"]?.ToString()?.Trim().ToLowerInvariant() ?? "soft";
                     // mode=hard: sourceDir carries new worker binaries to swap in. The gateway
                     // does the copy in the drain window (old worker exited → exe unlocked → eager
                     // respawn suppressed) so it can't lose the race to a respawn. Previously
                     // sourceDir was ignored here (plain drain+respawn ran the OLD binary).
-                    string? reloadSrcDir = args?["sourceDir"]?.ToString();
+                    string? reloadSrcDir = reloadMode == "hard" ? args?["sourceDir"]?.ToString() : null;
                     try
                     {
                         InvalidateIndexStateForKb(reloadKb.NormalizedAlias);
