@@ -24,7 +24,24 @@ class ValidateToolContractsTests(unittest.TestCase):
         )
         counts = MODULE.validate_document(document)
         self.assertEqual(54, counts["tools"])
-        self.assertEqual(226, counts["actions"])
+        # The published action count is a deliberate contract gate. Update it
+        # together with the schema when a new public action is added.
+        self.assertEqual(228, counts["actions"])
+        capabilities = MODULE.validate_capabilities_inventory(document)
+        self.assertEqual(counts["actions"], capabilities["actions"])
+
+    def test_capabilities_inventory_rejects_missing_public_action(self):
+        document = json.loads(
+            (ROOT / "src" / "GxMcp.Gateway" / "tool_definitions.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source = (ROOT / "docs" / "mcp_capabilities_inventory.md").read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "mcp_capabilities_inventory.md"
+            path.write_text(source.replace("`set_table_type`, ", ""), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.ContractError, "genexus_wwp"):
+                MODULE.validate_capabilities_inventory(document, path)
 
     def test_invalid_action_example_is_rejected(self):
         tool = {

@@ -183,7 +183,10 @@ namespace GxMcp.Gateway.Tests
             //   the explicit WebComponent-to-DropDownComponent UserAction contract,
             //   including target identity, preserved Gxobject, trigger/load metadata,
             //   and the dry-run example. Measured ~27980.
-            Assert.True(approxTokens < 28250, $"tool_definitions.json is ~{approxTokens} tokens; budget 28250.");
+            //   2026-09-14 (native WWP table type): 28250 → 28600 for the typed
+            //   set_table_type operation, path identity, preservation guarantees,
+            //   and dry-run example. Measured ~28385.
+            Assert.True(approxTokens < 28600, $"tool_definitions.json is ~{approxTokens} tokens; budget 28600.");
         }
     }
 }

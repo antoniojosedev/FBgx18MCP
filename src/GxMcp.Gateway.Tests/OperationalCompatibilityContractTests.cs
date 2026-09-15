@@ -66,10 +66,13 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("add_tab", actions);
             Assert.Contains("move_tab", actions);
             Assert.Contains("remove_tab", actions);
+            Assert.Contains("set_table_type", actions);
             Assert.Contains("add_grid_attribute", actions);
             Assert.NotNull(schema["properties"]!["baseVersion"]);
             Assert.NotNull(schema["properties"]!["expectedVersion"]);
             Assert.NotNull(schema["properties"]!["versionToken"]);
+            Assert.Equal(new[] { "Regular", "Responsive" },
+                ((JArray)schema["properties"]!["tableType"]!["enum"]!).Select(value => value.ToString()));
 
             JObject control = (JObject)schema["$defs"]!["wwpControl"]!;
             Assert.Equal("type", control["required"]![0]!.ToString());

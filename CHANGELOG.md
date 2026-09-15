@@ -2,12 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.
+
 ### Fixed
 
 - Describe the `read_blob` output controls (`outputPath`, `includeBase64`, and `overwrite`) so the schema validator accepts the published tool contract.
 - Keep `compile_check` preview and execution aligned on target resolution and caller controls, including Transaction `_bc` companions, EntityKey-safe `Type:Name`/GUID execution, fail-closed caller evidence, async environment forwarding, and compact polling metadata ([#202](https://github.com/lennix1337/Genexus18MCP/issues/202)).
 - Replace the stale lifecycle `stop-worker` guidance with the supported `genexus_worker_reload` soft/hard flow, validate hard binary swaps, and add reverse help/schema coverage ([#203](https://github.com/lennix1337/Genexus18MCP/issues/203)).
 - Make `genexus_io action=read_blob overwrite=true` atomically replace an existing output and report post-promotion verification failures explicitly ([#204](https://github.com/lennix1337/Genexus18MCP/issues/204)).
+
+### Internal
+
+- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type`; the early validator now checks the schema and capabilities table together, and the project workflow documents all contract views required before pushing a public action.
 
 ## v3.5.1 - 2026-09-15
 
@@ -38,7 +46,6 @@
 ### Tracked issues
 
 - [#193](https://github.com/lennix1337/Genexus18MCP/issues/193) — [Bug] Desde a 3.2.2 o worker não abre KB do GeneXus 17: sdk-compatibility.json só aceita o major 18
-
 
 ### Fixed
 
@@ -104,7 +111,6 @@
   - `ResponseSizeGuard`: Add `Write(ReadOnlySpan<char>)` override to `CountingTextWriter` for zero-allocation byte calculation in .NET 10 without `ArrayPool` rents.
   - `McpPipelineContext` & `Program.RequestLoop.cs`: Replace reflection-based `ToObject<bool?>()` and `ToObject<int?>()` calls with zero-allocation explicit `JToken` casts on arguments (`dryRun`, `deploy`, `buildPlanCap`, `skipFullDeploy`).
   - `BuildService.BuildResult`: Replace list instantiation fallbacks (`ErrorsDetailed ?? new List<ErrorDetail>()`) with null-checks and safe enumeration across error categories (`envErrors`, `codeErrors`, `envErrorCount`, `codeErrorCount`, `specErrorCount`), eliminating temporary list allocations during build reporting.
-
 ## v3.4.3 - 2026-09-13
 
 

@@ -20,6 +20,7 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "src" / "GxMcp.Gateway" / "tool_definitions.json"
 ROUTER_FILES = ("AnalyzeRouter.cs", "SearchRouter.cs", "ObjectRouter.cs")
+CAPABILITIES_INVENTORY = ROOT / "docs" / "mcp_capabilities_inventory.md"
 
 
 # Existing top-level description debt is an explicit baseline, not permission
@@ -237,6 +238,69 @@ def validate_descriptions(document: list[Any]) -> dict[str, int]:
     }
 
 
+def validate_capabilities_inventory(
+    document: list[Any], path: Path = CAPABILITIES_INVENTORY
+) -> dict[str, int]:
+    """Keep the human-readable action table aligned with the published schema."""
+    schema_actions: dict[str, set[str]] = {}
+    for tool in document:
+        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+            continue
+        properties = tool.get("inputSchema", {}).get("properties", {})
+        action = properties.get("action") if isinstance(properties, dict) else None
+        actions = action.get("enum") if isinstance(action, dict) else None
+        if isinstance(actions, list):
+            schema_actions[tool["name"]] = {str(value) for value in actions}
+
+    rows: dict[str, tuple[set[str], set[str]]] = {}
+    in_action_table = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            in_action_table = line.casefold().startswith("## action contract")
+            continue
+        if not in_action_table or not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.split("|")]
+        if len(cells) < 4 or cells[1].casefold() == "tool":
+            continue
+        match = re.fullmatch(r"`([^`]+)`", cells[1])
+        if not match:
+            continue
+        tool = match.group(1)
+        if tool in rows:
+            raise ContractError(f"duplicate capabilities inventory row for {tool}")
+        rows[tool] = (
+            set(re.findall(r"`([^`]+)`", cells[2])),
+            set(re.findall(r"`([^`]+)`", cells[3])),
+        )
+
+    missing_tools = sorted(set(schema_actions) - set(rows))
+    extra_tools = sorted(set(rows) - set(schema_actions))
+    if missing_tools or extra_tools:
+        details = []
+        if missing_tools:
+            details.append("missing=" + ", ".join(missing_tools))
+        if extra_tools:
+            details.append("extra=" + ", ".join(extra_tools))
+        raise ContractError("capabilities inventory tools differ from schema: " + "; ".join(details))
+
+    mismatches = []
+    for tool, actions in schema_actions.items():
+        documented = rows[tool][0] | rows[tool][1]
+        if documented != actions:
+            mismatches.append(
+                f"{tool}: schema={','.join(sorted(actions))}; "
+                f"inventory={','.join(sorted(documented))}"
+            )
+    if mismatches:
+        raise ContractError("capabilities inventory actions differ from schema: " + "; ".join(mismatches))
+
+    return {
+        "tools": len(rows),
+        "actions": sum(len(read_only | mutating) for read_only, mutating in rows.values()),
+    }
+
+
 def _strip_csharp_comments(source: str) -> str:
     source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
     return re.sub(r"//.*$", "", source, flags=re.MULTILINE)
@@ -406,6 +470,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         document = json.loads(args.path.read_text(encoding="utf-8"))
         counts = validate_document(document)
+        capabilities = validate_capabilities_inventory(document)
         print(
             "tool-contracts: valid "
             f"tools={counts['tools']} actions={counts['actions']} "
@@ -413,7 +478,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             f"actionDescriptionDebt={counts['actionDescriptionDebt']} "
             f"routerTools={counts['routerTools']} "
             f"routerParameters={counts['routerParameters']} "
-            f"allowlistedRouterParameters={counts['allowlistedRouterParameters']}"
+            f"allowlistedRouterParameters={counts['allowlistedRouterParameters']} "
+            f"capabilitiesTools={capabilities['tools']} "
+            f"capabilitiesActions={capabilities['actions']}"
         )
         return 0
     except (OSError, json.JSONDecodeError, ContractError) as error:
