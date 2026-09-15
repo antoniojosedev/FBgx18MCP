@@ -583,7 +583,7 @@ namespace GxMcp.Worker.Services
                             && validation.CanDeltaAcrossDll;
                         if (Configuration.UseDeltaOnOpen && (validation.CanDelta || dllRebaseline))
                         {
-                            try { _indexCacheService.MarkIndexComplete(loaded.Objects.Count); } catch { }
+                            try { _indexCacheService.MarkIndexRefreshing(); } catch { }
                             _isIndexing = true;
                             StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count);
                             Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}, dllRebaseline={dllRebaseline}) — delta refresh started.");
@@ -664,8 +664,8 @@ namespace GxMcp.Worker.Services
                         // forcing the user to wait for enrichment.
                         DateTime lu = DateTime.MinValue, ca = DateTime.MinValue;
                         string lub = null;
-                        try { lu = obj.LastUpdate; } catch { }
-                        try { ca = obj.VersionDate; } catch { }
+                        try { lu = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate); } catch { }
+                        try { ca = SdkTimestampNormalizer.NormalizeUtc(obj.VersionDate); } catch { }
                         try { lub = obj.UserName; } catch { }
                         // Fase 1: track the delta baseline (max LastUpdate) during the walk.
                         if (lu != DateTime.MinValue) _indexCacheService.ObserveLastUpdate(lu);
@@ -929,8 +929,11 @@ namespace GxMcp.Worker.Services
 
                     // 2s safety margin for clock granularity / same-second edits (mirrors the
                     // watcher's > hwm re-filter below).
-                    DateTime safeHwm = highWaterMark.AddSeconds(-2);
-                    DateTime newHwm = highWaterMark;
+                    DateTime normalizedHwm = SdkTimestampNormalizer.NormalizeUtc(highWaterMark);
+                    DateTime safeHwm = normalizedHwm > DateTime.MinValue.AddSeconds(2)
+                        ? normalizedHwm.AddSeconds(-2)
+                        : DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+                    DateTime newHwm = normalizedHwm;
 
                     var changedKeys = kb.DesignModel.Objects.GetKeys(safeHwm);
                     foreach (var key in (System.Collections.IEnumerable)changedKeys)
@@ -939,9 +942,10 @@ namespace GxMcp.Worker.Services
                         {
                             var obj = kb.DesignModel.Objects.Get((Artech.Udm.Framework.EntityKey)key);
                             if (obj == null) continue;
-                            if (obj.LastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
+                            DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
+                            if (objectLastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
                             _indexCacheService.UpdateEntry(obj);
-                            if (obj.LastUpdate > newHwm) newHwm = obj.LastUpdate;
+                            if (objectLastUpdate > newHwm) newHwm = objectLastUpdate;
                             changed++;
                         }
                         catch { /* skip individual object failures */ }
@@ -1003,8 +1007,9 @@ namespace GxMcp.Worker.Services
                         enrichQueue.DrainAsync(default(CancellationToken),
                             (proc, tot) => _indexCacheService.MarkEnrichmentProgress(proc, tot))
                             .GetAwaiter().GetResult();
-                        _indexCacheService.MarkIndexComplete(loadedCount);
-                        try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(loadedCount); }
+                        int resumedCount = _indexCacheService.GetIndex().Objects.Count;
+                        _indexCacheService.MarkIndexComplete(resumedCount);
+                        try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(resumedCount); }
                         catch (Exception fx) { Logger.Warn("Resume-enrich flush/sidecar failed: " + fx.Message); }
                         Logger.Info($"[DELTA-RESUME-ENRICH-DONE] enriched={pendingEnrich.Count} {IndexCacheService.GetEnrichTimingSummary()}");
                     }
@@ -1214,6 +1219,11 @@ namespace GxMcp.Worker.Services
             json["totalKnown"] = !_isIndexing;
             json["objectsWalked"] = _totalCount;
             json["status"] = _currentStatus;
+            var state = _indexCacheService?.GetState();
+            json["freshness"] = state?.Freshness ?? "stale";
+            json["lastSuccessfulScanAt"] = state?.LastSuccessfulScanAt.HasValue == true
+                ? (JToken)state.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                : JValue.CreateNull();
             json["isBusy"] = _isIndexing || _isOpenInProgress;
             // Issue #27 item 3 (measured): when the index is loaded from the warm/delta
             // cache, the in-session walk counters (_totalCount/_processedCount) are never

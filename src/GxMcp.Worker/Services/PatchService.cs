@@ -1049,8 +1049,8 @@ namespace GxMcp.Worker.Services
                 try { revision = obj.VersionId.ToString(System.Globalization.CultureInfo.InvariantCulture); } catch { }
                 try
                 {
-                    if (obj.LastUpdate > DateTime.MinValue)
-                        lastUpdate = obj.LastUpdate.ToUniversalTime().ToString("o");
+                    if (SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate) > DateTime.MinValue)
+                        lastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate).ToString("o");
                 }
                 catch { }
                 return new ObjectMetadataSnapshot

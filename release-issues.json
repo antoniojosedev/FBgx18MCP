@@ -1,13 +1,63 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.5.0",
-  "tag": "v3.5.0",
-  "collectedAtUtc": "2026-09-14T18:46:14.5528887Z",
+  "version": "3.5.1",
+  "tag": "v3.5.1",
+  "collectedAtUtc": "2026-09-15T03:22:29.2084449Z",
   "issues": [
     {
-      "number": 193,
-      "title": "[Bug] Desde a 3.2.2 o worker não abre KB do GeneXus 17: sdk-compatibility.json só aceita o major 18",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/193",
+      "number": 196,
+      "title": "[Bug] Índice restaurado após open/worker_reload pode permanecer desatualizado sem indicador de frescor",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/196",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 197,
+      "title": "[Bug] list_objects pode devolver GUID obsoleto; sweep de deleção pode remover objeto recriado",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/197",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 198,
+      "title": "[Melhoria] Não há como ler o conteúdo (bytes) de um File (WikiFileKBObject)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/198",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 199,
+      "title": "[Bug] genexus_worker_reload não-executável após open sem select e ignora a KB do lease com várias KBs",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/199",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 200,
+      "title": "[Melhoria] Convenção de fuso de KBObject.LastUpdate é assumida, não medida",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/200",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 201,
+      "title": "[Bug] Espelho de estado do índice no gateway é process-wide e não isolado por KB",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/201",
       "state": "open",
       "labels": [
         "fixed-pending-release"

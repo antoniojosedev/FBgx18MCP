@@ -2388,7 +2388,7 @@ async function handleKb(subcommand, options, ctx) {
                     kbPath: result.switchedTo.path
                 },
                 help: [
-                    'Restart your AI client (or run `genexus_lifecycle action=stop-worker` via MCP) so the worker reloads with the new KB.'
+                    'Restart your AI client (or call `genexus_worker_reload mode=soft` via MCP) so the worker reloads with the new KB.'
                 ]
             }
         };

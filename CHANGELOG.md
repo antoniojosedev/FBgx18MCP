@@ -6,9 +6,39 @@
 
 - Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.
 
+### Fixed
+
+- Describe the `read_blob` output controls (`outputPath`, `includeBase64`, and `overwrite`) so the schema validator accepts the published tool contract.
+- Keep `compile_check` preview and execution aligned on target resolution and caller controls, including Transaction `_bc` companions, EntityKey-safe `Type:Name`/GUID execution, fail-closed caller evidence, async environment forwarding, and compact polling metadata ([#202](https://github.com/lennix1337/Genexus18MCP/issues/202)).
+- Replace the stale lifecycle `stop-worker` guidance with the supported `genexus_worker_reload` soft/hard flow, validate hard binary swaps, and add reverse help/schema coverage ([#203](https://github.com/lennix1337/Genexus18MCP/issues/203)).
+- Make `genexus_io action=read_blob overwrite=true` atomically replace an existing output and report post-promotion verification failures explicitly ([#204](https://github.com/lennix1337/Genexus18MCP/issues/204)).
+
 ### Internal
 
-- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type` (227 published actions and 248 classified operations); the early validator now checks the schema and capabilities table together, and the project workflow documents all contract views required before pushing a public action.
+- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type`; the early validator now checks the schema and capabilities table together, and the project workflow documents all contract views required before pushing a public action.
+
+## v3.5.1 - 2026-09-15
+
+
+### Tracked issues
+
+- [#196](https://github.com/lennix1337/Genexus18MCP/issues/196) — [Bug] Índice restaurado após open/worker_reload pode permanecer desatualizado sem indicador de frescor
+- [#197](https://github.com/lennix1337/Genexus18MCP/issues/197) — [Bug] list_objects pode devolver GUID obsoleto; sweep de deleção pode remover objeto recriado
+- [#198](https://github.com/lennix1337/Genexus18MCP/issues/198) — [Melhoria] Não há como ler o conteúdo (bytes) de um File (WikiFileKBObject)
+- [#199](https://github.com/lennix1337/Genexus18MCP/issues/199) — [Bug] genexus_worker_reload não-executável após open sem select e ignora a KB do lease com várias KBs
+- [#200](https://github.com/lennix1337/Genexus18MCP/issues/200) — [Melhoria] Convenção de fuso de KBObject.LastUpdate é assumida, não medida
+- [#201](https://github.com/lennix1337/Genexus18MCP/issues/201) — [Bug] Espelho de estado do índice no gateway é process-wide e não isolado por KB
+
+
+### Added
+
+- Add `genexus_io action=read_blob` for bounded Base64 or atomic file export of a File's real `WikiBlob` bytes, including byte count and SHA-256 verification.
+
+### Fixed
+
+- Re-arm and scope index bootstrap/freshness state across KB open, close, reload, and worker respawn; normalize SDK timestamps to UTC and remove stale GUID mappings during delete/recreate deltas.
+- Route worker reload to the resolved or explicitly named KB, allow an unambiguous single open KB without a session selection, and keep Gateway index mirrors isolated by KB alias.
+- Preserve UTC timestamps when JSON.NET materializes Worker index timestamps as `JTokenType.Date`, so `whoami` does not drop `lastSuccessfulScanAt`/`lastIndexedAt` under non-US cultures.
 
 ## v3.5.0 - 2026-09-14
 

@@ -6,8 +6,10 @@ using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Cryptography;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Descriptors;
+using Artech.Genexus.Common.Wiki;
 using Artech.Genexus.Common.Objects;
 using Artech.Genexus.Common.Parts;
 using Newtonsoft.Json.Linq;
@@ -3872,6 +3874,211 @@ namespace GxMcp.Worker.Services
             }
             catch { return null; }
             return "";
+        }
+
+        public string ReadObjectBlob(string target, string outputPath = null, string partName = null, string typeFilter = null, int? maxBytes = null, bool includeBase64 = false, bool overwrite = false)
+        {
+            const int DefaultInlineMaxBytes = 1024 * 1024;
+            try
+            {
+                if (maxBytes.HasValue && maxBytes.Value <= 0)
+                    return McpResponse.Err(code: "InvalidMaxBytes", message: "maxBytes must be greater than zero.", hint: "Use a positive maxBytes value or omit it.", target: target);
+
+                var obj = FindObject(target, typeFilter);
+                if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+
+                WikiBlobPart blobPart = null;
+                if (obj is IBlobWikiObject blobObject)
+                    blobPart = blobObject.BlobPart;
+                if (blobPart == null)
+                {
+                    foreach (KBObjectPart candidate in obj.Parts)
+                    {
+                        if (candidate is WikiBlobPart candidateBlob)
+                        {
+                            blobPart = candidateBlob;
+                            break;
+                        }
+                    }
+                }
+
+                var data = blobPart?.Data;
+                if (data == null)
+                {
+                    return McpResponse.Err(
+                        code: "BlobUnavailable",
+                        message: "The object does not expose binary WikiBlob content.",
+                        hint: "Use part=WikiBlob with a File object that has stored content.",
+                        target: target,
+                        extra: new JObject { ["part"] = string.IsNullOrWhiteSpace(partName) ? "WikiBlob" : partName });
+                }
+
+                long sourceLength = data.Length;
+                int inlineLimit = maxBytes ?? DefaultInlineMaxBytes;
+                if (sourceLength > inlineLimit && (string.IsNullOrWhiteSpace(outputPath) || includeBase64))
+                {
+                    return McpResponse.Err(
+                        code: "BlobTooLarge",
+                        message: "Inline blob output exceeds maxBytes.",
+                        hint: "Provide outputPath for a file export or increase maxBytes explicitly.",
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["sizeBytes"] = sourceLength,
+                            ["maxBytes"] = inlineLimit,
+                            ["part"] = "WikiBlob"
+                        });
+                }
+
+                string fullPath = null;
+                string temporaryPath = null;
+                byte[] inlineBytes = null;
+                long copiedBytes;
+                string sha256;
+                if (!string.IsNullOrWhiteSpace(outputPath))
+                {
+                    fullPath = Path.GetFullPath(outputPath);
+                    if (File.Exists(fullPath) && !overwrite)
+                        return McpResponse.Err(code: "FileAlreadyExists", message: "Output file already exists. Set overwrite=true to replace it.", hint: "Pass overwrite=true to replace the existing file.", target: fullPath);
+
+                    string directory = Path.GetDirectoryName(fullPath);
+                    if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+                        Directory.CreateDirectory(directory);
+                    temporaryPath = fullPath + ".gxmcp-" + Guid.NewGuid().ToString("N") + ".tmp";
+                }
+
+                try
+                {
+                    MemoryStream inlineSink = null;
+                    FileStream fileSink = null;
+                    try
+                    {
+                        if (temporaryPath != null)
+                            fileSink = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, FileOptions.SequentialScan);
+                        if (string.IsNullOrWhiteSpace(outputPath) || includeBase64)
+                            inlineSink = new MemoryStream(sourceLength > 0 && sourceLength <= int.MaxValue ? (int)sourceLength : 0);
+
+                        using (Stream input = data.GetStream())
+                        {
+                            copiedBytes = CopyAndHash(input, fileSink ?? (Stream)inlineSink, inlineSink, out sha256);
+                        }
+                        if (fileSink != null) fileSink.Flush(true);
+                    }
+                    finally
+                    {
+                        if (fileSink != null) fileSink.Dispose();
+                    }
+
+                    if (inlineSink != null)
+                    {
+                        inlineBytes = inlineSink.ToArray();
+                        inlineSink.Dispose();
+                    }
+
+                    if (temporaryPath != null)
+                    {
+                        var promotion = AtomicFilePromoter.Promote(temporaryPath, fullPath, overwrite);
+                        if (promotion == AtomicFilePromotionResult.DestinationExists)
+                        {
+                            return McpResponse.Err(
+                                code: "FileAlreadyExists",
+                                message: "Output file already exists. Set overwrite=true to replace it.",
+                                hint: "Pass overwrite=true to replace the existing file.",
+                                target: fullPath);
+                        }
+                        temporaryPath = null;
+                        long verifiedLength;
+                        try
+                        {
+                            string verifiedHash = ComputeFileSha256(fullPath, out verifiedLength);
+                            if (verifiedLength != copiedBytes || !string.Equals(verifiedHash, sha256, StringComparison.OrdinalIgnoreCase))
+                                throw new IOException("The exported blob failed read-back verification.");
+                        }
+                        catch (Exception verificationError)
+                        {
+                            // Promotion is atomic, but read-back happens after it. If
+                            // verification fails, the new destination may already be
+                            // installed; report that explicitly instead of claiming the
+                            // old file was preserved or inviting a blind retry.
+                            return McpResponse.Err(
+                                code: "BlobVerificationFailed",
+                                message: "The exported blob was promoted but read-back verification failed: " + verificationError.Message,
+                                hint: "Inspect the returned path and hash before retrying; the new file may already be installed.",
+                                target: target,
+                                extra: new JObject
+                                {
+                                    ["path"] = fullPath,
+                                    ["persisted"] = File.Exists(fullPath),
+                                    ["verificationFailed"] = true
+                                },
+                                reconciliationRequired: true);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (temporaryPath != null)
+                    {
+                        try { File.Delete(temporaryPath); } catch { }
+                    }
+                }
+
+                var result = new JObject
+                {
+                    ["part"] = "WikiBlob",
+                    ["bytes"] = copiedBytes,
+                    ["sha256"] = sha256,
+                    ["contentType"] = "application/octet-stream"
+                };
+                if (fullPath != null)
+                {
+                    result["path"] = fullPath;
+                    result["persisted"] = true;
+                }
+                if (inlineBytes != null)
+                {
+                    result["encoding"] = "base64";
+                    result["contentBase64"] = Convert.ToBase64String(inlineBytes);
+                }
+                return McpResponse.Ok(target: target, code: "BlobReadCompleted", result: result);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(code: "BlobReadFailed", message: "Blob read failed: " + ex.Message, hint: "Check that the File exposes a readable WikiBlob part and that outputPath is writable.", target: target);
+            }
+        }
+
+        private static long CopyAndHash(Stream input, Stream output, MemoryStream inlineCopy, out string sha256)
+        {
+            if (input == null || output == null) throw new InvalidOperationException("Blob stream is unavailable.");
+            using (var hash = SHA256.Create())
+            {
+                byte[] buffer = new byte[65536];
+                long total = 0;
+                int read;
+                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    output.Write(buffer, 0, read);
+                    if (inlineCopy != null && !ReferenceEquals(output, inlineCopy))
+                        inlineCopy.Write(buffer, 0, read);
+                    hash.TransformBlock(buffer, 0, read, buffer, 0);
+                    total += read;
+                }
+                hash.TransformFinalBlock(new byte[0], 0, 0);
+                sha256 = BitConverter.ToString(hash.Hash).Replace("-", string.Empty).ToLowerInvariant();
+                return total;
+            }
+        }
+
+        private static string ComputeFileSha256(string path, out long length)
+        {
+            using (var stream = File.OpenRead(path))
+            using (var hash = SHA256.Create())
+            {
+                length = stream.Length;
+                byte[] digest = hash.ComputeHash(stream);
+                return BitConverter.ToString(digest).Replace("-", string.Empty).ToLowerInvariant();
+            }
         }
 
         public string ExportObjectToText(string target, string outputPath, string partName = null, string typeFilter = null, bool overwrite = false)

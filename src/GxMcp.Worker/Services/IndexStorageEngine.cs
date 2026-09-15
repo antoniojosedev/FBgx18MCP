@@ -136,8 +136,7 @@ namespace GxMcp.Worker.Services
 
         private static void AtomicReplace(string tempPath, string destinationPath)
         {
-            if (File.Exists(destinationPath)) File.Replace(tempPath, destinationPath, null);
-            else File.Move(tempPath, destinationPath);
+            AtomicFilePromoter.Promote(tempPath, destinationPath, overwrite: true);
         }
 
         private static void TryDelete(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }

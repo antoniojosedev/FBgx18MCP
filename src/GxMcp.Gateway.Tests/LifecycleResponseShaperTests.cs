@@ -62,6 +62,28 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void Compact_True_PreservesCompileCheckCallerEvidence()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 0));
+            rawObj["CompileCheck"] = true;
+            rawObj["CompileCheckCallersRequested"] = true;
+            rawObj["CompileCheckCallerCap"] = 7;
+            rawObj["CompileCheckCallers"] = new JArray("CallerA", "CallerB");
+            rawObj["CompileCheckTruncated"] = true;
+            rawObj["CompileCheckGraphAvailable"] = true;
+
+            var compact = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+            var evidence = compact["compileCheck"] as JObject;
+
+            Assert.NotNull(evidence);
+            Assert.True(evidence!["callers"]!.Value<bool>());
+            Assert.Equal(7, evidence["callerCap"]!.Value<int>());
+            Assert.Equal(new[] { "CallerA", "CallerB" }, evidence["callersAdded"]!.ToObject<string[]>());
+            Assert.True(evidence["truncated"]!.Value<bool>());
+            Assert.True(evidence["callerGraphAvailable"]!.Value<bool>());
+        }
+
+        [Fact]
         public void Compact_False_PreservesOriginal()
         {
             var raw = MakeBuildStatus(3, 2);

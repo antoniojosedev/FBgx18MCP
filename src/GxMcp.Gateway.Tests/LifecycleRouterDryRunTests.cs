@@ -130,6 +130,27 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ConvertToolCall_LifecycleCompileCheck_PropagatesCallerControls()
+        {
+            var router = new SystemRouter();
+            var routed = router.ConvertToolCall("genexus_lifecycle", new JObject
+            {
+                ["action"] = "build",
+                ["mode"] = "compile_check",
+                ["target"] = "Transaction:Boleto",
+                ["callers"] = false,
+                ["callerCap"] = 1,
+                ["buildPlanCap"] = 12
+            });
+
+            var jobj = JObject.FromObject(routed!);
+            Assert.Equal("CompileCheck", jobj["action"]?.ToString());
+            Assert.False(jobj["callers"]?.Value<bool>());
+            Assert.Equal(1, jobj["callerCap"]?.Value<int>());
+            Assert.Equal(12, jobj["buildPlanCap"]?.Value<int>());
+        }
+
+        [Fact]
         public void ConvertToolCall_LifecycleIndex_PropagatesDryRun()
         {
             var router = new SystemRouter();
@@ -174,6 +195,28 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Build", command["action"]!.ToString());
             Assert.True(command["dryRun"]!.Value<bool>());
             Assert.Equal("none", command["includeCallees"]!.ToString());
+        }
+
+        [Fact]
+        public void AsyncLifecycleBuildCommand_CompileCheck_ForwardsModeAndCallerControls()
+        {
+            var command = Program.BuildAsyncLifecycleCommand(
+                "build",
+                new JObject
+                {
+                    ["mode"] = "compile_check",
+                    ["target"] = "Transaction:Boleto",
+                    ["callers"] = false,
+                    ["callerCap"] = 1,
+                    ["environment"] = "NETCoreMySQL"
+                },
+                "job-compile-check");
+
+            Assert.Equal("CompileCheck", command["action"]!.ToString());
+            Assert.Equal("Transaction:Boleto", command["target"]!.ToString());
+            Assert.False(command["callers"]!.Value<bool>());
+            Assert.Equal(1, command["callerCap"]!.Value<int>());
+            Assert.Equal("NETCoreMySQL", command["environment"]!.ToString());
         }
     }
 }

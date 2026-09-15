@@ -122,6 +122,7 @@ namespace GxMcp.Worker.Services
                 // walk is still in progress and the index is growing; we surface
                 // `partial:true` so the agent knows to retry for the full set.
                 string indexStatusUpper = indexState?.Status ?? string.Empty;
+                bool indexFresh = string.Equals(indexState?.Freshness, "current", StringComparison.OrdinalIgnoreCase);
                 // issue #26 P9: `indexPartial` is the single source of truth for
                 // "the catalogue walk is demonstrably incomplete". Ready/LiteReady/
                 // Enriching all mean the full object catalogue HAS been walked
@@ -135,11 +136,11 @@ namespace GxMcp.Worker.Services
                 // a build in progress. Only a null index or a not-yet-built status is
                 // "not ready"; count==0 with Ready/LiteReady/Enriching falls through to
                 // the honest empty-listing branch below instead of looping IndexNotReady.
-                bool indexNotReady = index == null
+                bool indexNotReady = index == null || ((!indexFresh && !indexPartial)
                     || !(string.Equals(indexStatusUpper, "Ready", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(indexStatusUpper, "LiteReady", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(indexStatusUpper, "Enriching", StringComparison.OrdinalIgnoreCase)
-                        || indexPartial);
+                        || indexPartial));
                 if (indexNotReady)
                 {
                     _indexCacheService.EnsureLoadStarted();
@@ -148,6 +149,7 @@ namespace GxMcp.Worker.Services
                         ["status"] = "Indexing",
                         ["code"] = "IndexNotReady",
                         ["indexStatus"] = indexState?.Status ?? "Cold",
+                        ["freshness"] = indexState?.Freshness ?? "stale",
                         ["totalObjects"] = indexState?.TotalObjects ?? 0,
                         ["message"] = BuildIndexingMessage(indexState),
                         ["hint"] = "Call genexus_whoami to observe progress, then re-issue list_objects."
@@ -621,8 +623,8 @@ namespace GxMcp.Worker.Services
                     DateTime rtLastUpdate = default(DateTime);
                     DateTime rtCreatedAt = default(DateTime);
                     string rtLastModifiedBy = null;
-                    try { rtLastUpdate = item.Object.LastUpdate; } catch { }
-                    try { rtCreatedAt = item.Object.VersionDate; } catch { }
+                    try { rtLastUpdate = SdkTimestampNormalizer.NormalizeUtc(item.Object.LastUpdate); } catch { }
+                    try { rtCreatedAt = SdkTimestampNormalizer.NormalizeUtc(item.Object.VersionDate); } catch { }
                     try { rtLastModifiedBy = item.Object.UserName; } catch { }
 
                     array.Add(BuildItemInternal(
@@ -1056,6 +1058,7 @@ namespace GxMcp.Worker.Services
         private static string BuildIndexingMessage(GxMcp.Worker.Models.IndexState state)
         {
             string status = state?.Status ?? "Cold";
+            string freshness = state?.Freshness ?? "stale";
             int? etaMs = state?.EtaMs;
             double? progress = state?.Progress;
 
@@ -1072,7 +1075,8 @@ namespace GxMcp.Worker.Services
                 progressSegment = $"{(int)Math.Round(progress.Value * 100)}% complete";
             }
 
-            string phase = string.Equals(status, "Reindexing", StringComparison.OrdinalIgnoreCase) ? "Rebuilding index"
+            string phase = !string.Equals(freshness, "current", StringComparison.OrdinalIgnoreCase) && string.Equals(status, "Ready", StringComparison.OrdinalIgnoreCase) ? "Refreshing restored index"
+                : string.Equals(status, "Reindexing", StringComparison.OrdinalIgnoreCase) ? "Rebuilding index"
                 : string.Equals(status, "UltraLiteReady", StringComparison.OrdinalIgnoreCase) ? "Walking KB (ultra-lite pass)"
                 : string.Equals(status, "Cold", StringComparison.OrdinalIgnoreCase) ? "Building index from cold start"
                 : "Building index";
