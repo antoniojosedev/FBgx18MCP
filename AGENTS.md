@@ -239,6 +239,37 @@ Before creating or proposing any new script for build, installation, upgrade, or
 | Post-sync validation | `npx genexus-mcp clients --format json`<br>`npx genexus-mcp doctor --mcp-smoke --format json` | Validates registration, gateway HTTP loopback, and live MCP protocol smoke. |
 | Release publication | `.\release.ps1` | Only upon explicit user request. See `docs/release_protocol.md`. |
 
+### LOCAL OVERRIDE — checkout operators (TEMPORARY until upstream #210)
+
+> **Temporary local policy** for sessions whose cwd is this checkout. Remove or
+> rewrite this subsection when
+> https://github.com/lennix1337/Genexus18MCP/issues/210 is reflected in upstream
+> docs. On `git pull` / sync, re-check that this block survived.
+
+This checkout keeps harnesses on `publish\GxMcp.Gateway.exe` (not the npm
+cache). Root `.\install.ps1` already sets `GENEXUS_MCP_GATEWAY_EXE` and runs
+`clients add --all-clients`, so **all writable clients** get the checkout
+Gateway — not only Antigravity.
+
+While #210 is open, **override** the matrix rows that recommend `npx … clients
+add` / `npx … clients` / `npx … doctor` for local-checkout work:
+
+| Scenario (checkout) | Use this instead of the npx matrix rows |
+|---|---|
+| Updated local checkout | `.\install.ps1` at repo root (already registers all writable clients via `GENEXUS_MCP_GATEWAY_EXE`) |
+| Stale / wrong launcher (any client) | From repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --clients <id>` (or `.\install.ps1` again) |
+| Post-sync validation | From repo root: `node cli\run.js clients --format json` and `node cli\run.js doctor --mcp-smoke --format json` (**same** CLI/env as install) |
+
+**Do not** (for this checkout workflow):
+
+- `npx genexus-mcp@latest clients add …` — rewrites harnesses away from `publish\`
+- `npx genexus-mcp clients` / `doctor` as “fix” for a checkout-registered
+  launcher — can report false stale / `client_config_sync` against the npm
+  package Gateway
+
+Keep the npx matrix rows for operators who **do not** run from a local
+`publish\` checkout (npm-only installs).
+
 ### Operational safety and side effects
 
 - **Installer vs. build**: `install.ps1` mutates `config.json` and client configs; treat it as an installer, not a neutral build. `build.ps1` is the neutral compiler.
