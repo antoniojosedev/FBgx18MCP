@@ -247,23 +247,30 @@ Before creating or proposing any new script for build, installation, upgrade, or
 > docs. On `git pull` / sync, re-check that this block survived.
 
 This checkout keeps harnesses on `publish\GxMcp.Gateway.exe` (not the npm
-cache). Root `.\install.ps1` already sets `GENEXUS_MCP_GATEWAY_EXE` and runs
-`clients add --all-clients`, so **all writable clients** get the checkout
-Gateway — not only Antigravity.
+cache). Until #210 lands upstream, the Antigravity-style target applies to
+**all writable clients**: `command` = `<repo>\publish\GxMcp.Gateway.exe`,
+empty `args`, server key `genexus18mcp` (not the official `genexus` HTTP
+entry). Root `.\install.ps1` already sets `GENEXUS_MCP_GATEWAY_EXE` and runs
+`clients add --all-clients`.
 
 While #210 is open, **override** the matrix rows that recommend `npx … clients
 add` / `npx … clients` / `npx … doctor` for local-checkout work:
 
 | Scenario (checkout) | Use this instead of the npx matrix rows |
 |---|---|
-| Updated local checkout | `.\install.ps1` at repo root (already registers all writable clients via `GENEXUS_MCP_GATEWAY_EXE`) |
-| Stale / wrong launcher (any client) | From repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --clients <id>` (or `.\install.ps1` again) |
+| Updated local checkout (build + config + harnesses) | `.\install.ps1` at repo root |
+| Re-point **all** writable harnesses to checkout Gateway (no rebuild) | From repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --all-clients` |
+| Stale / wrong launcher (one client) | Same env + `node cli\run.js clients add --clients <id>` (or `.\install.ps1` again) |
 | Post-sync validation | From repo root: `node cli\run.js clients --format json` and `node cli\run.js doctor --mcp-smoke --format json` (**same** CLI/env as install) |
+
+Acceptance for a harness refresh: every registered writable client lists that
+`publish\GxMcp.Gateway.exe` path with no `commandStale`, and `doctor` reports
+`client_config_sync` pass on this same CLI/env (not via `npx`).
 
 **Do not** (for this checkout workflow):
 
 - `npx genexus-mcp@latest clients add …` — rewrites harnesses away from `publish\`
-- `npx genexus-mcp clients` / `doctor` as “fix” for a checkout-registered
+- `npx genexus-mcp clients` / `doctor` as “truth” for a checkout-registered
   launcher — can report false stale / `client_config_sync` against the npm
   package Gateway
 
