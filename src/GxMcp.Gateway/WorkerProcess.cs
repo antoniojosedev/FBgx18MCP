@@ -333,12 +333,24 @@ namespace GxMcp.Gateway
                         }
                     }
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
                 catch (Exception ex)
                 {
                     Program.Log($"[Health] Error during health check loop: {ex.Message}");
                 }
 
-                await Task.Delay(15000, ct);
+                if (ct.IsCancellationRequested) break;
+                try
+                {
+                    await Task.Delay(15000, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
 
@@ -792,6 +804,8 @@ namespace GxMcp.Gateway
                 string kbPath = Kb.Path;
                 startInfo.Arguments = $"--kb \"{kbPath}\"";
                 startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = _config.GeneXus?.InstallationPath ?? string.Empty;
+                startInfo.EnvironmentVariables["GXMCP_DRIVER"] = sdkProbe.Driver ?? "native-sdk";
+                startInfo.EnvironmentVariables["GXMCP_TARGET_MAJOR"] = sdkProbe.Major ?? string.Empty;
                 // GX_KB_PATH is always derived from the gateway-owned handle.
                 startInfo.EnvironmentVariables["GX_KB_PATH"] = kbPath;
                 startInfo.EnvironmentVariables["GXMCP_STATE_SCOPE_ID"] = StateScope.ProcessScopeId.ToString();
@@ -1071,15 +1085,16 @@ namespace GxMcp.Gateway
         {
             if (string.IsNullOrWhiteSpace(line)) return;
             if (line.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase) >= 0)
-                _startupDiagnostic = line.Trim();
+            {
+                string candidate = line.Trim();
+                if (string.IsNullOrWhiteSpace(_startupDiagnostic)) _startupDiagnostic = candidate;
+                else if (_startupDiagnostic.IndexOf(candidate, StringComparison.OrdinalIgnoreCase) < 0)
+                    _startupDiagnostic += Environment.NewLine + candidate;
+            }
         }
 
         private static bool IsSdkCompatibilityFailure(string? diagnostic)
-        {
-            return !string.IsNullOrWhiteSpace(diagnostic)
-                && diagnostic.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase) >= 0
-                && diagnostic.IndexOf("GXMCP_SDK_COMPATIBLE", StringComparison.OrdinalIgnoreCase) < 0;
-        }
+            => WorkerStartupFailure.IsFatalSdkDiagnostic(diagnostic);
 
         // Invokes OnWorkerExited at most once per WorkerProcess lifetime. Both the async
         // Process.Exited event and StopProcess route through here; whichever runs first

@@ -88,9 +88,12 @@ function getGeneXusVersionCatalog() {
             const catalog = JSON.parse(fs.readFileSync(candidate, 'utf8'));
             if (!catalog || !catalog.primaryMajor || !Array.isArray(catalog.supportedMajors)) continue;
             const entries = catalog.supportedMajors.filter((entry) => entry && /^\d+$/.test(String(entry.major)));
+            const legacyEntries = Array.isArray(catalog.legacyMajors)
+                ? catalog.legacyMajors.filter((entry) => entry && /^(?:10\.[1-3]|\d+)$/.test(String(entry.major)))
+                : [];
             const primary = entries.find((entry) => String(entry.major) === String(catalog.primaryMajor));
             if (entries.length > 0 && primary?.defaultInstallPath) {
-                return { ...catalog, supportedMajors: entries };
+                return { ...catalog, supportedMajors: entries, legacyMajors: legacyEntries };
             }
         } catch {
         }
@@ -101,13 +104,19 @@ function getGeneXusVersionCatalog() {
             { major: '17', displayName: 'GeneXus 17', defaultInstallPath: 'C:\\Program Files (x86)\\GeneXus\\GeneXus17Trial' },
             { major: '18', displayName: 'GeneXus 18', defaultInstallPath: 'C:\\Program Files (x86)\\GeneXus\\GeneXus18' }
         ],
+        legacyMajors: [
+            { major: '10.3', displayName: 'GeneXus Evolution 3', defaultInstallPath: 'C:\\Program Files (x86)\\GeneXus\\GeneXusXEv3' },
+            { major: '9', displayName: 'GeneXus 9.0', defaultInstallPath: 'C:\\Program Files (x86)\\ARTech\\GeneXus\\GeneXus 9.0' },
+            { major: '8', displayName: 'GeneXus 8.0', defaultInstallPath: 'C:\\Program Files (x86)\\ARTech\\GeneXus\\GeneXus 8.0' }
+        ],
         source: 'built-in-fallback'
     };
 }
 
 function getGeneXusCatalogEntries(preferredMajor = null) {
     const catalog = getGeneXusVersionCatalog();
-    return [...catalog.supportedMajors].sort((left, right) => {
+    const all = [...catalog.supportedMajors, ...(catalog.legacyMajors || [])];
+    return all.sort((left, right) => {
         const leftPreferred = preferredMajor !== null && String(left.major) === String(preferredMajor);
         const rightPreferred = preferredMajor !== null && String(right.major) === String(preferredMajor);
         if (leftPreferred !== rightPreferred) return Number(rightPreferred) - Number(leftPreferred);
@@ -708,6 +717,12 @@ function resolveOpenCodeConfigPath(xdgConfig) {
     return path.join(xdgConfig, 'opencode', 'opencode.json');
 }
 
+function alternateOpenCodeConfigPath(filePath) {
+    return path.extname(filePath).toLowerCase() === '.jsonc'
+        ? filePath.slice(0, -1)
+        : filePath.replace(/\.json$/i, '.jsonc');
+}
+
 // VS Code stores its user profile (and native MCP mcp.json) in a per-platform
 // location. `variant` is 'Code' (stable) or 'Code - Insiders'.
 function vscodeUserDir(variant, { appData, macAppSupport, xdgConfig }) {
@@ -807,6 +822,7 @@ function getClientConfigTargets() {
             name: 'OpenCode (CLI)',
             format: 'opencode',
             path: resolveOpenCodeConfigPath(xdgConfig),
+            alternatePaths: [alternateOpenCodeConfigPath(resolveOpenCodeConfigPath(xdgConfig))],
             installMarkers: [
                 path.join(xdgConfig, 'opencode'),
                 path.join(home, '.local', 'share', 'opencode')
@@ -826,6 +842,7 @@ function getClientConfigTargets() {
             name: 'OpenCode Desktop',
             format: 'opencode',
             path: resolveOpenCodeConfigPath(xdgConfig),
+            alternatePaths: [alternateOpenCodeConfigPath(resolveOpenCodeConfigPath(xdgConfig))],
             detectByMarkerOnly: true,
             installMarkers: [
                 path.join(localAppData, 'Programs', '@opencode-aidesktop'),
@@ -1149,7 +1166,8 @@ function clientsStatus(opts = {}) {
             serverName,
             isThirdParty: Boolean(isThirdParty),
             writeSupported: client.writeSupported !== false,
-            configPath: client.path,
+            configPath: entry && entry.configPath ? entry.configPath : client.path,
+            configPaths: entry && entry.configPath ? [entry.configPath] : [client.path],
             command: entry && entry.command ? entry.command : null,
             args: entry && Array.isArray(entry.args) ? entry.args : [],
             url: entry && entry.url ? entry.url : null,
@@ -1446,7 +1464,7 @@ function getOpenCodeMcpContainer(cfgObj) {
     };
 }
 
-function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false, fs: fileSystem = fs } = {}) {
+function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false, alternatePaths = [], fs: fileSystem = fs } = {}) {
     const parsed = fileSystem.existsSync(filePath) ? readJsonFileSafe(filePath, fileSystem) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -1490,10 +1508,20 @@ function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = 
         }
     }
     writeClientJson(filePath, cfgObj, fileSystem);
+    for (const alternatePath of alternatePaths || []) {
+        if (!fileSystem.existsSync(alternatePath)) continue;
+        applyOpenCodeJson(alternatePath, launcher, targetConfigPath, {
+            serverName,
+            force,
+            globalConfig,
+            alternatePaths: [],
+            fs: fileSystem
+        });
+    }
 }
 
-function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, fs: fileSystem = fs } = {}) {
-    const parsed = readJsonFileSafe(filePath);
+function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, alternatePaths = [], fs: fileSystem = fs } = {}) {
+    const parsed = readJsonFileSafe(filePath, fileSystem);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     if (!cfgObj.mcp || typeof cfgObj.mcp !== 'object') return false;
@@ -1523,9 +1551,17 @@ function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, fs
             }
         }
     }
-    if (!removedAny) return false;
-    writeClientJson(filePath, cfgObj, fileSystem);
-    return true;
+    if (removedAny) writeClientJson(filePath, cfgObj, fileSystem);
+    let removedAlternate = false;
+    for (const alternatePath of alternatePaths || []) {
+        if (!fileSystem.existsSync(alternatePath)) continue;
+        removedAlternate = removeOpenCodeJson(alternatePath, {
+            serverName,
+            alternatePaths: [],
+            fs: fileSystem
+        }) || removedAlternate;
+    }
+    return removedAny || removedAlternate;
 }
 
 function extractCodexTomlEntry(content, serverName = DEFAULT_MCP_SERVER_NAME) {
@@ -1670,8 +1706,49 @@ function normalizeExePath(p) {
     return s;
 }
 
+function readOpenCodeCommandEntry(filePath, serverName, fileSystem) {
+    if (!fileSystem.existsSync(filePath)) return null;
+    const parsed = readJsonFileSafe(filePath, fileSystem);
+    if (!parsed || typeof parsed !== 'object') return null;
+    let entry = parsed.mcp?.servers?.[serverName] || parsed.mcp?.[serverName];
+    if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
+        const legacyGx = parsed.mcp?.servers?.genexus || parsed.mcp?.genexus;
+        if (legacyGx && !isThirdPartyMcpEntry(legacyGx)) entry = legacyGx;
+        else entry = parsed.mcp?.servers?.genexus18 || parsed.mcp?.genexus18;
+    }
+    if (!entry) return null;
+    if (Array.isArray(entry.command) && entry.command.length > 0) {
+        return {
+            command: entry.command[0],
+            args: entry.command.slice(1),
+            url: entry.url || null,
+            type: entry.type || null,
+            environment: entry.environment || null,
+            raw: entry,
+            configPath: filePath
+        };
+    }
+    return {
+        command: null,
+        args: [],
+        url: entry.url || null,
+        type: entry.type || null,
+        environment: entry.environment || null,
+        raw: entry,
+        configPath: filePath
+    };
+}
+
 function readClientCommandEntry(client, serverName = DEFAULT_MCP_SERVER_NAME, { fs: fileSystem = fs } = {}) {
     if (client.writeSupported === false) return null;
+    if (client.format === 'opencode') {
+        const paths = [client.path, ...(client.alternatePaths || [])];
+        for (const configPath of paths) {
+            const entry = readOpenCodeCommandEntry(configPath, serverName, fileSystem);
+            if (entry) return entry;
+        }
+        return null;
+    }
     if (!fileSystem.existsSync(client.path)) return null;
     try {
         if (client.format === 'mcpServers') {
@@ -1772,7 +1849,7 @@ function getLocalAppDataCacheDir() {
 }
 
 function getGeneXusMajor(version) {
-    const match = String(version || '').match(/^\s*(\d+)/);
+    const match = String(version || '').match(/^\s*(10\.[1-3](?!\d)|\d+)/);
     return match ? match[1] : null;
 }
 
@@ -1829,7 +1906,10 @@ function readGeneXusInstallationIdentity(gxPath, options = {}) {
     const readExecutableVersion = typeof options.readExecutableVersion === 'function'
         ? options.readExecutableVersion
         : readExecutableProductVersion;
-    const executableVersion = readExecutableVersion(path.join(gxPath, 'GeneXus.exe'));
+    let executableVersion = readExecutableVersion(path.join(gxPath, 'GeneXus.exe'));
+    if (!executableVersion) {
+        executableVersion = readExecutableVersion(path.join(gxPath, 'gx.exe'));
+    }
     if (executableVersion) {
         return {
             version: executableVersion,
@@ -1915,14 +1995,24 @@ function readGeneXusKbIdentity(kbPath) {
     if (!kbPath) return { version: null, major: null, source: 'unavailable', reason: 'missing-kb-path' };
 
     let gxwFiles;
+    let gxiFiles = [];
     try {
-        gxwFiles = fs.readdirSync(kbPath)
+        const allFiles = fs.readdirSync(kbPath);
+        gxwFiles = allFiles
             .filter((fileName) => fileName.toLowerCase().endsWith('.gxw'))
+            .map((fileName) => path.join(kbPath, fileName));
+        gxiFiles = allFiles
+            .filter((fileName) => fileName.toLowerCase().endsWith('.gxi'))
             .map((fileName) => path.join(kbPath, fileName));
     } catch {
         return { version: null, major: null, source: 'unavailable', reason: 'unreadable-kb-path' };
     }
-    if (gxwFiles.length === 0) return { version: null, major: null, source: 'unavailable', reason: 'no-gxw' };
+    if (gxwFiles.length === 0) {
+        if (gxiFiles.length > 0) {
+            return { version: '9.0', major: '9', source: 'gxi-classic', reason: null };
+        }
+        return { version: null, major: null, source: 'unavailable', reason: 'no-gxw' };
+    }
     if (gxwFiles.length > 1) return { version: null, major: null, source: 'unavailable', reason: 'multiple-gxw' };
 
     try {

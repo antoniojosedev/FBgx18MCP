@@ -75,6 +75,7 @@ namespace GxMcp.Worker.Services
         private readonly ValidatePayloadService _validatePayloadService;
         private readonly ExportObjectService _exportObjectService;
         private readonly ObjectTextService _objectTextService;
+        private readonly TextMirrorService _textMirrorService;
         private readonly DiffService _diffService;
         private readonly ApplyTemplateService _applyTemplateService;
         private readonly EditAndBuildOrchestrator _editAndBuildOrchestrator;
@@ -237,6 +238,7 @@ namespace GxMcp.Worker.Services
             _validatePayloadService = new ValidatePayloadService(_objectService);
             _exportObjectService = new ExportObjectService(_objectService);
             _objectTextService = new ObjectTextService(_objectService, _indexCacheService);
+            _textMirrorService = new TextMirrorService(_kbService, _objectTextService, _indexCacheService);
             _diffService = new DiffService(_objectService);
             _applyTemplateService = new ApplyTemplateService(_writeService);
             _editAndBuildOrchestrator = new EditAndBuildOrchestrator(_writeService, _analyzeService, _buildService);
@@ -361,6 +363,7 @@ namespace GxMcp.Worker.Services
 
         public KbService GetKbService() { return _kbService; }
         public IndexCacheService GetIndexCacheService() { return _indexCacheService; }
+        public TextMirrorService GetTextMirrorService() { return _textMirrorService; }
 
         // Item 51 (Tier-S, EXPERIMENTAL) — capture IndexCacheService state to disk
         // before a warm reload. Returns a small JObject result the dispatcher
@@ -676,7 +679,14 @@ namespace GxMcp.Worker.Services
                     }
                     foreach (var prop in args.Properties())
                     {
-                        if (prop.Name == "params") continue;
+                        // These are worker-routing fields, not user arguments. In particular,
+                        // the router module is "Object" and must not become the Object Text
+                        // module filter when the caller omitted module altogether. The inner
+                        // tool args already win on collision, so keep only non-routing fallbacks.
+                        if (prop.Name == "params"
+                            || prop.Name == "module"
+                            || prop.Name == "action"
+                            || prop.Name == "target") continue;
                         if (merged[prop.Name] == null) merged[prop.Name] = prop.Value;
                     }
                     args = merged;
@@ -704,6 +714,11 @@ namespace GxMcp.Worker.Services
                     string toolName = request["tool"]?.ToString()
                         ?? request["name"]?.ToString()
                         ?? (request["params"] as JObject)?["name"]?.ToString();
+
+                    if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.CheckCapability(method, toolName, target, out string capError))
+                    {
+                        return capError;
+                    }
 
                     var ctx = new CommandContext(request, method, action, target, payload, args, toolName);
                     if (_registry != null && _registry.TryDispatch(ctx, out var regResult))
@@ -894,6 +909,25 @@ namespace GxMcp.Worker.Services
         {
             if (action == "Open")
             {
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    if (GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.OpenKB(target, out string openErr))
+                    {
+                        Environment.SetEnvironmentVariable("GX_KB_PATH", target);
+                        return Models.McpResponse.Ok(
+                            target: target,
+                            code: "GXMCP_KB_OPENED",
+                            result: new JObject
+                            {
+                                ["kbPath"] = target,
+                                ["driver"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentDriver,
+                                ["major"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentMajor,
+                                ["progId"] = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ResolvedProgId
+                            });
+                    }
+                    return openErr;
+                }
+
                 string result = _kbService.OpenKB(target);
                 try
                 {
@@ -945,14 +979,25 @@ namespace GxMcp.Worker.Services
             // cache miss. Pure SDK read, no side effects.
             if (action == "GetActiveEnvironment")
             {
-                string env = _kbService.GetActiveEnvironment();
-                string ver = _kbService.GetActiveEnvironmentVersion();
-                return new JObject
+                try
                 {
-                    ["environment"] = env,
-                    ["version"] = ver,
-                    ["webPath"] = _kbService.GetActiveEnvironmentWebPath()
-                }.ToString(Newtonsoft.Json.Formatting.None);
+                    string env = _kbService.GetActiveEnvironment();
+                    string ver = _kbService.GetActiveEnvironmentVersion();
+                    return new JObject
+                    {
+                        ["environment"] = env,
+                        ["version"] = ver,
+                        ["webPath"] = _kbService.GetActiveEnvironmentWebPath()
+                    }.ToString(Newtonsoft.Json.Formatting.None);
+                }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(
+                        code: "EnvironmentReadFailed",
+                        message: "The active GeneXus environment could not be read: " + ex.Message,
+                        hint: "Retry after the KB finishes opening or inspect the Worker log for the SDK member that is unavailable on this GeneXus major.",
+                        extra: new JObject { ["operation"] = "get_environment", ["sdkType"] = ex.GetType().FullName });
+                }
             }
             if (action == "ListEnvironments")
             {
@@ -1245,6 +1290,22 @@ namespace GxMcp.Worker.Services
         {
             if (action == "Query")
             {
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjects(args?["typeFilter"]?.ToString(), target, out string qErr);
+                    if (qErr != null) return Models.McpResponse.Err(code: "ComQueryError", message: qErr, target: target);
+                    var arr = new JArray();
+                    foreach (var obj in objects)
+                    {
+                        arr.Add(new JObject { ["name"] = obj });
+                    }
+                    return Models.McpResponse.Ok(code: "QueryResults", result: new JObject
+                    {
+                        ["objects"] = arr,
+                        ["total"] = arr.Count
+                    });
+                }
+
                 DateTime sinceArgQ = default(DateTime);
                 DateTime modifiedBeforeArgQ = default(DateTime);
                 string sinceTokQ = args?["since"]?.ToString();
@@ -1324,6 +1385,22 @@ namespace GxMcp.Worker.Services
         {
             if (action == "Objects")
             {
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjects(args?["typeFilter"]?.ToString(), args?["nameFilter"]?.ToString() ?? target, out string listErr);
+                    if (listErr != null) return Models.McpResponse.Err(code: "ComListError", message: listErr, target: target);
+                    var arr = new JArray();
+                    foreach (var obj in objects)
+                    {
+                        arr.Add(new JObject { ["name"] = obj });
+                    }
+                    return Models.McpResponse.Ok(code: "ListObjects", result: new JObject
+                    {
+                        ["objects"] = arr,
+                        ["total"] = arr.Count
+                    });
+                }
+
                 DateTime sinceArg = default(DateTime);
                 DateTime modifiedBeforeArg = default(DateTime);
                 string sinceTok = args?["since"]?.ToString();
@@ -1359,6 +1436,22 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Read(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                string partName = args?["part"]?.ToString() ?? "Source";
+                string partContent = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ReadObjectPart(target, partName, out string readErr);
+                if (readErr != null)
+                {
+                    return Models.McpResponse.Err(code: "ComReadError", message: readErr, target: target);
+                }
+                return Models.McpResponse.Ok(target: target, code: "ObjectPart", result: new JObject
+                {
+                    ["name"] = target,
+                    ["part"] = partName,
+                    ["source"] = partContent ?? string.Empty
+                });
+            }
+
             if (action == "ExtractFullObject")
             {
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
@@ -1444,7 +1537,15 @@ namespace GxMcp.Worker.Services
                 // rolledBack=false with a note (delete the object via genexus_delete_object).
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(createResp, target, args, "Source");
             }
-            if (action == "Delete") return _objectService.DeleteObject(target, args?["type"]?.ToString(), args?["confirm"]?.ToObject<bool?>() ?? false, args?["dryRun"]?.ToObject<bool?>() ?? false, args?["expectedVersion"]?.ToString());
+            if (action == "Delete")
+            {
+                bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
+                string type = args?["type"]?.ToString();
+                string response = _objectService.DeleteObject(target, type, args?["confirm"]?.ToObject<bool?>() ?? false, dryRun, args?["expectedVersion"]?.ToString());
+                if (!dryRun && IsSuccessfulMutation(response))
+                    NotifyMirrorDeleted(target, type);
+                return response;
+            }
             if (action == "SaveAs") return _saveAsService.SaveAs(args ?? new JObject());
             if (action == "WorkerReload")
             {
@@ -1517,16 +1618,69 @@ namespace GxMcp.Worker.Services
                     args?["overwrite"]?.ToObject<bool?>() ?? false);
             }
             if (action == "ImportText") return _objectService.ImportObjectFromText(target, args?["inputPath"]?.ToString() ?? args?["path"]?.ToString(), args?["part"]?.ToString(), args?["type"]?.ToString());
+            if (action.StartsWith("TextMirror", StringComparison.OrdinalIgnoreCase))
+            {
+                string mirrorAction = action.Substring("TextMirror".Length).ToLowerInvariant();
+                if (mirrorAction == "setreferences") mirrorAction = "set_reference_export_enabled";
+                return _textMirrorService.Run(mirrorAction, args ?? new JObject());
+            }
             if (action == "ExportTextBatch" || action == "ImportTextBatch"
-                || action == "ValidateTextBatch" || action == "DeleteTextBatch")
+                || action == "ValidateTextBatch" || action == "DeleteTextBatch"
+                || action == "ValidateTextInMemory" || action == "ListTextInMemory")
             {
                 string cancelToken = args?["cancelToken"]?.ToString();
                 using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(cancelToken, out var objectTextCt))
                 {
-                    return _objectTextService.Execute(action, target, args, objectTextCt);
+                    string response = _objectTextService.Execute(action, target, args, objectTextCt);
+                    if (action == "DeleteTextBatch") NotifyMirrorDeletesFromBatch(response, args);
+                    return response;
                 }
             }
             return null;
+        }
+
+        private void NotifyMirrorDeleted(string target, string type)
+        {
+            if (_textMirrorService == null || string.IsNullOrWhiteSpace(target)) return;
+            string name = target.Trim();
+            string resolvedType = type;
+            int separator = name.IndexOf(':');
+            if (separator > 0 && separator + 1 < name.Length)
+            {
+                if (string.IsNullOrWhiteSpace(resolvedType)) resolvedType = name.Substring(0, separator);
+                name = name.Substring(separator + 1);
+            }
+            _textMirrorService.NotifyObjectDeleted(name, resolvedType, DateTime.UtcNow);
+        }
+
+        private void NotifyMirrorDeletesFromBatch(string rawResponse, JObject args)
+        {
+            if (args?["dryRun"]?.ToObject<bool?>() ?? false) return;
+            try
+            {
+                JObject response = JObject.Parse(rawResponse ?? "{}");
+                JArray results = response["result"]?["results"] as JArray;
+                if (results == null) return;
+                foreach (JObject item in results.OfType<JObject>())
+                {
+                    string nested = item["response"]?.ToString();
+                    if (IsSuccessfulMutation(nested))
+                        NotifyMirrorDeleted(item["name"]?.ToString(), item["type"]?.ToString());
+                }
+            }
+            catch { }
+        }
+
+        private static bool IsSuccessfulMutation(string rawResponse)
+        {
+            try
+            {
+                JObject response = JObject.Parse(rawResponse ?? "{}");
+                string status = response["status"]?.ToString();
+                return string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "success", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         private string Handle_Mutation(JObject request, string method, string action, string target, string payload, JObject args)
@@ -2557,6 +2711,55 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Transfer(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                string act = (args?["action"]?.ToString() ?? action ?? "").Trim().ToLowerInvariant();
+                if (act == "export")
+                {
+                    string outputFile = args?["outputFile"]?.ToString() ?? args?["filePath"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(outputFile))
+                        return Models.McpResponse.Err(code: "BadArgs", message: "action=export requires outputFile.", hint: "Pass outputFile=<absolute .xpz path>.");
+
+                    var targets = args?["targets"] as JArray;
+                    var list = new System.Collections.Generic.List<string>();
+                    if (targets != null)
+                    {
+                        foreach (var t in targets) if (t != null) list.Add(t.ToString());
+                    }
+
+                    if (!GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ExportXPZ(outputFile, list, out var err))
+                        return Models.McpResponse.Err(code: "TransferFailed", message: err ?? "Failed to export XPZ via GXPublic COM.", target: outputFile);
+
+                    var resp = new JObject
+                    {
+                        ["status"] = "ok",
+                        ["action"] = "export",
+                        ["outputFile"] = outputFile,
+                        ["driver"] = "com-gxpublic",
+                        ["objectCount"] = list.Count
+                    };
+                    return resp.ToString(Newtonsoft.Json.Formatting.None);
+                }
+                else if (act == "import")
+                {
+                    string inputFile = args?["inputFile"]?.ToString() ?? args?["filePath"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(inputFile))
+                        return Models.McpResponse.Err(code: "BadArgs", message: "action=import requires inputFile.", hint: "Pass inputFile=<absolute .xpz path>.");
+
+                    if (!GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ImportXPZ(inputFile, out var err))
+                        return Models.McpResponse.Err(code: "TransferFailed", message: err ?? "Failed to import XPZ via GXPublic COM.", target: inputFile);
+
+                    var resp = new JObject
+                    {
+                        ["status"] = "ok",
+                        ["action"] = "import",
+                        ["inputFile"] = inputFile,
+                        ["driver"] = "com-gxpublic"
+                    };
+                    return resp.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            }
+
             // genexus_transfer — real XPZ export/import over IKnowledgeManagerService.
             // action=export|inspect|import (import destructive; see TransferService guards).
             return _transferService.Run(args ?? new JObject());

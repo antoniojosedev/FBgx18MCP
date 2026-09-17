@@ -619,8 +619,45 @@ test('KB identity fails closed for malformed gxw metadata', () => {
 
 test('catalog discovery ordering can prefer the KB major', () => {
     assert.equal(getGeneXusMajor('17.0.11.163677'), '17');
+    assert.equal(getGeneXusMajor('10.3.0.86550'), '10.3');
+    assert.equal(getGeneXusMajor('10.2.0'), '10.2');
+    assert.equal(getGeneXusMajor('10.1.0'), '10.1');
+    assert.equal(getGeneXusMajor('9.0.123'), '9');
+    assert.equal(getGeneXusMajor('8.0.456'), '8');
     assert.equal(getGeneXusCatalogEntries('17')[0].major, '17');
     assert.equal(getGeneXusCatalogEntries('18')[0].major, '18');
+    assert.equal(getGeneXusCatalogEntries('10.3')[0].major, '10.3');
+    assert.equal(getGeneXusCatalogEntries('9')[0].major, '9');
+    assert.equal(getGeneXusCatalogEntries('8')[0].major, '8');
+});
+
+test('KB identity reads Evolution 3 decimal major from gxw metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-ev3-'));
+    try {
+        fs.writeFileSync(
+            path.join(tempRoot, 'KnowledgeBase.gxw'),
+            '<KnowledgeBase><FriendlyVersion>GeneXus Evolution 3</FriendlyVersion><VersionNumber>10.3.0.86550</VersionNumber></KnowledgeBase>'
+        );
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.version, '10.3.0.86550');
+        assert.equal(identity.major, '10.3');
+        assert.equal(identity.source, 'gxw-version');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('KB identity reads GeneXus 9.0 classic major from gxi when gxw is absent', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-gx9-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'MyLegacyKb.gxi'), 'binary-or-header-data');
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.major, '9');
+        assert.equal(identity.version, '9.0');
+        assert.equal(identity.source, 'gxi-classic');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('init rejects a known KB and SDK major mismatch before writing config', () => {
@@ -1145,6 +1182,42 @@ test('doctor rejects a KB and SDK major that is outside the compatibility catalo
     }
 });
 
+test('doctor evaluates gxpublic_com_registration and legacy_ide_lock checks for classic GeneXus', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-classic-'));
+    const kbDir = path.join(tempRoot, 'kb9');
+    const gxDir = path.join(tempRoot, 'GeneXus9');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(path.join(kbDir, 'test.gxi'), 'legacy classic kb index');
+    fs.writeFileSync(path.join(gxDir, 'gx.exe'), 'classic-genexus-exe');
+    const configPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+        GeneXus: { InstallationPath: gxDir },
+        Environment: { KBPath: kbDir }
+    }));
+
+    try {
+        const result = runCli(['doctor', '--format', 'json', '--limit', '50'], {
+            env: {
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: process.execPath,
+                LOCALAPPDATA: tempRoot
+            }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        const comCheck = parsed.ok.checks.find((row) => row.id === 'gxpublic_com_registration');
+        assert.ok(comCheck, 'gxpublic_com_registration check should be present');
+        assert.ok(['pass', 'warn'].includes(comCheck.status), `expected pass or warn, got ${comCheck.status}`);
+
+        const ideCheck = parsed.ok.checks.find((row) => row.id === 'legacy_ide_lock');
+        assert.ok(ideCheck, 'legacy_ide_lock check should be present');
+        assert.ok(['pass', 'warn'].includes(ideCheck.status), `expected pass or warn, got ${ideCheck.status}`);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('invalid format returns usage exit code 2', () => {
     const result = runCli(['status', '--format', 'yaml']);
     assert.equal(result.status, 2);
@@ -1382,6 +1455,41 @@ test('clients add patches OpenCode Desktop into shared opencode config', () => {
         const listRes = runCli(['clients', '--format', 'json'], { env });
         const row = JSON.parse(listRes.stdout).ok.clients.find((client) => client.id === 'opencode-desktop');
         assert.ok(row && row.registered, 'OpenCode Desktop should now report registered');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('OpenCode status and remove inspect both json and jsonc when they coexist', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-dual-config-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const configPath = path.join(tempRoot, 'config.json');
+        const openCodeDir = path.join(env.XDG_CONFIG_HOME, 'opencode');
+        const jsonPath = path.join(openCodeDir, 'opencode.json');
+        const jsoncPath = path.join(openCodeDir, 'opencode.jsonc');
+        fs.mkdirSync(openCodeDir, { recursive: true });
+        fs.writeFileSync(configPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        fs.writeFileSync(jsoncPath, JSON.stringify({ mcp: { servers: {} } }));
+        fs.writeFileSync(jsonPath, JSON.stringify({ mcp: { genexus18mcp: {
+            type: 'local',
+            command: ['npx.cmd', '-y', 'genexus-mcp@latest']
+        } } }));
+
+        const status = runCli(['clients', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: configPath }
+        });
+        assert.equal(status.status, 0);
+        const row = JSON.parse(status.stdout).ok.clients.find((client) => client.id === 'opencode');
+        assert.ok(row && row.registered);
+        assert.equal(row.configPath, jsonPath);
+
+        const removed = runCli(['clients', 'remove', '--clients', 'opencode', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: configPath }
+        });
+        assert.equal(removed.status, 0);
+        assert.equal(JSON.parse(fs.readFileSync(jsonPath, 'utf8')).mcp.genexus18mcp, undefined);
+        assert.equal(JSON.parse(fs.readFileSync(jsoncPath, 'utf8')).mcp.servers.genexus18mcp, undefined);
     } finally {
         removeTempPath(tempRoot, { recursive: true, force: true });
     }
