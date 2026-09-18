@@ -20,9 +20,13 @@ const {
     getLauncher,
     getGeneXusMajor,
     getGeneXusCatalogEntries,
+    discoverGeneXusInstallation,
     readGeneXusInstallationIdentity,
+    directoryLooksLikeKnowledgeBase,
     readGeneXusKbIdentity,
     compareGeneXusKbAndInstallation,
+    readKbCatalog,
+    switchActiveKb,
     patchClientConfig
 } = require('./lib/config');
 const { handleInit, resolveMcpSmokeTarget } = require('./commands/axi');
@@ -553,6 +557,54 @@ test('GeneXus installation identity falls back to executable metadata', () => {
     }
 });
 
+test('classic GeneXus installation identity reads gx.exe metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-classic-version-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'gx.exe'), 'not-a-real-executable');
+        const identity = readGeneXusInstallationIdentity(tempRoot, {
+            readExecutableVersion: (exePath) => exePath.endsWith('gx.exe') ? '9.0.123' : null
+        });
+        assert.deepEqual(identity, {
+            version: '9.0.123',
+            major: '9',
+            source: 'executable-metadata'
+        });
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('GeneXus 8 installation identity reads gxw32.exe metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx8-version-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'gxw32.exe'), 'not-a-real-executable');
+        const identity = readGeneXusInstallationIdentity(tempRoot, {
+            readExecutableVersion: (exePath) => exePath.endsWith('gxw32.exe') ? '8.0.0.632' : null
+        });
+        assert.deepEqual(identity, {
+            version: '8.0.0.632',
+            major: '8',
+            source: 'executable-metadata'
+        });
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('classic GeneXus installation discovery accepts GENEXUS_HOME with gx.exe', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-classic-home-'));
+    const previousHome = process.env.GENEXUS_HOME;
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'gx.exe'), 'not-a-real-executable');
+        process.env.GENEXUS_HOME = tempRoot;
+        assert.equal(discoverGeneXusInstallation(), tempRoot);
+    } finally {
+        if (previousHome === undefined) delete process.env.GENEXUS_HOME;
+        else process.env.GENEXUS_HOME = previousHome;
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('GeneXus installation identity ignores an invalid version file when executable metadata is valid', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-invalid-version-'));
     try {
@@ -657,6 +709,72 @@ test('KB identity reads GeneXus 9.0 classic major from gxi when gxw is absent', 
         assert.equal(identity.source, 'gxi-classic');
     } finally {
         removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('classic DAT KB identity recognizes GX8/9 model markers without inventing a major', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-classic-dat-'));
+    try {
+        for (const marker of ['DATA001', 'GXSPC001', 'ATTRIBUT.DAT', 'ATT.XPW']) {
+            fs.writeFileSync(path.join(tempRoot, marker), 'classic');
+        }
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.major, null);
+        assert.equal(identity.source, 'classic-dat');
+        assert.equal(identity.reason, 'classic-generation-requires-provider');
+        assert.equal(directoryLooksLikeKnowledgeBase(tempRoot), true);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('KB catalog edits preserve per-KB legacy driver metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-catalog-'));
+    const configPath = path.join(tempRoot, 'config.json');
+    try {
+        fs.writeFileSync(configPath, JSON.stringify({
+            Environment: {
+                KBs: {
+                    sect80: {
+                        Path: 'D:\\\\GX80\\\\SECT',
+                        Driver: 'com-gxpublic',
+                        InstallationPath: 'C:\\\\gxw80',
+                        Major: '8'
+                    }
+                },
+                ActiveKb: 'sect80'
+            }
+        }));
+
+        const catalog = readKbCatalog(configPath);
+        assert.equal(catalog.kbs.sect80, 'D:\\\\GX80\\\\SECT');
+        assert.equal(Object.keys(catalog.kbs).length, 1);
+        const switched = switchActiveKb(configPath, { name: 'sect80' });
+        assert.equal(switched.ok, true);
+        const persisted = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        assert.equal(persisted.Environment.KBs.sect80.Driver, 'com-gxpublic');
+        assert.equal(persisted.Environment.KBs.sect80.InstallationPath, 'C:\\\\gxw80');
+        assert.equal(persisted.Environment.KBs.sect80.Major, '8');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('classic gxi identity does not invent a GX8/GX9 mismatch before provider open', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-gxi-compare-'));
+    const gx8Root = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx8-compare-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'Legacy.gxi'), 'classic-kb');
+        fs.writeFileSync(path.join(gx8Root, 'gxw32.exe'), 'not-a-real-executable');
+        const compatibility = compareGeneXusKbAndInstallation(tempRoot, gx8Root, {
+            readExecutableVersion: (exePath) => exePath.endsWith('gxw32.exe') ? '8.0.0.632' : null
+        });
+        assert.equal(compatibility.status, 'unresolved');
+        assert.equal(compatibility.kb.source, 'gxi-classic');
+        assert.equal(compatibility.gx.major, '8');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+        removeTempPath(gx8Root, { recursive: true, force: true });
     }
 });
 

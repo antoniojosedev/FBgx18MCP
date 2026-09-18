@@ -19,6 +19,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("native-sdk", result.Driver);
             Assert.Contains("17", result.ToDiagnosticObject()["supportedMajors"]!.ToString());
             Assert.Equal("native-sdk", result.ToDiagnosticObject()["driver"]?.ToString());
+            Assert.Equal("native-sdk", result.ToDiagnosticObject()["supportLevel"]?.ToString());
         }
 
         [Fact]
@@ -47,6 +48,8 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("10.3", result.Major);
             Assert.Equal("dotnet-reflection", result.Driver);
             Assert.Equal("dotnet-reflection", result.ToDiagnosticObject()["driver"]?.ToString());
+            Assert.Equal("basic-legacy", result.ToDiagnosticObject()["supportLevel"]?.ToString());
+            Assert.Contains("8", result.ToDiagnosticObject()["legacyMajors"]!.ToString());
             Assert.Equal("GXMCP_SDK_LEGACY_COMPATIBLE version=10.3.0.86550 major=10.3 driver=dotnet-reflection", result.Diagnostic);
         }
 
@@ -62,7 +65,10 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("9", result.Major);
             Assert.Equal("com-gxpublic", result.Driver);
             Assert.Equal("com-gxpublic", result.ToDiagnosticObject()["driver"]?.ToString());
+            Assert.Equal("basic-legacy", result.ToDiagnosticObject()["supportLevel"]?.ToString());
             Assert.Equal("GXMCP_SDK_LEGACY_COMPATIBLE version=9.0.123 major=9 driver=com-gxpublic", result.Diagnostic);
+            Assert.Equal("supported-after-provider-open", result.ToDiagnosticObject()["capabilities"]?["metadataQuery"]?.ToString());
+            Assert.Equal("unsupported-by-gxpublic-contract", result.ToDiagnosticObject()["capabilities"]?["sourceParts"]?.ToString());
         }
 
         [Fact]
@@ -109,6 +115,31 @@ namespace GxMcp.Gateway.Tests
                 Assert.True(result.IsCompatible);
                 Assert.Equal("GXMCP_SDK_LEGACY_COMPATIBLE", result.Code);
                 Assert.Equal("9", result.Major);
+                Assert.Equal("com-gxpublic", result.Driver);
+            }
+            finally
+            {
+                WorkerSdkCompatibilityProbe.FileVersionReader = null;
+                try { Directory.Delete(tmp, recursive: true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void Check_DetectsGeneXus8Installation_WhenGxw32ExePresent()
+        {
+            string tmp = Path.Combine(Path.GetTempPath(), "gx8-gxw32-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tmp);
+            try
+            {
+                File.WriteAllText(Path.Combine(tmp, "gxw32.exe"), string.Empty);
+                WorkerSdkCompatibilityProbe.FileVersionReader = path =>
+                    path.EndsWith("gxw32.exe", StringComparison.OrdinalIgnoreCase) ? "8.0.0.632" : null;
+
+                var result = WorkerSdkCompatibilityProbe.Check(tmp);
+
+                Assert.True(result.IsCompatible);
+                Assert.Equal("GXMCP_SDK_LEGACY_COMPATIBLE", result.Code);
+                Assert.Equal("8", result.Major);
                 Assert.Equal("com-gxpublic", result.Driver);
             }
             finally

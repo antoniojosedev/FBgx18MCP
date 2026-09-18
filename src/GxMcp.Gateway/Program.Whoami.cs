@@ -32,21 +32,20 @@ namespace GxMcp.Gateway
                 }
                 catch { }
             }
-            // Fallback: read FileVersion from GeneXus.exe metadata (standard install layout)
-            try
+            // Legacy GeneXus 8/9 installations expose gxw32.exe/gx.exe/gxdl32.dll
+            // instead of the modern GeneXus.exe anchor.
+            foreach (string executableName in new[] { "GeneXus.exe", "gxw32.exe", "gx.exe", "gxdl32.dll" })
             {
-                string exePath = Path.Combine(installationPath, "GeneXus.exe");
-                if (File.Exists(exePath))
+                try
                 {
-                    var info = FileVersionInfo.GetVersionInfo(exePath);
+                    string executablePath = Path.Combine(installationPath, executableName);
+                    if (!File.Exists(executablePath)) continue;
+                    var info = FileVersionInfo.GetVersionInfo(executablePath);
                     string? version = info.ProductVersion ?? info.FileVersion;
-                    if (!string.IsNullOrWhiteSpace(version))
-                    {
-                        return version.Trim();
-                    }
+                    if (!string.IsNullOrWhiteSpace(version)) return version.Trim();
                 }
+                catch { }
             }
-            catch { }
             return null;
         }
 
@@ -68,8 +67,8 @@ namespace GxMcp.Gateway
                 Log($"[Gateway] GeneXus version not detected at '{gxPath}' (no version.txt). Supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}.");
                 return;
             }
-            Log($"[Gateway] Detected GeneXus version: {detected} (supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}).");
-            if (!GeneXusVersionCatalog.IsSupported(detected))
+            Log($"[Gateway] Detected GeneXus version: {detected} (native SDK majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}; legacy majors: {string.Join(", ", GeneXusVersionCatalog.LegacyMajors)}).");
+            if (!GeneXusVersionCatalog.IsSupportedOrLegacy(detected))
             {
                 Log($"[Gateway] WARNING: detected GeneXus version '{detected}' is outside the MCP compatibility catalog. Some tools may behave unexpectedly.");
             }
@@ -122,6 +121,7 @@ namespace GxMcp.Gateway
         // pure waste. Keyed by normalized KB alias.
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> _databaseInfoByKb
             = new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+        private static long _databaseInfoCacheEpoch;
 
         // PERFORMANCE (perf round 5): whoami is the most-called first-turn tool, and
         // DetectGeneXusVersion hits the disk on EVERY call (up to 3 version.txt probes
@@ -726,6 +726,7 @@ namespace GxMcp.Gateway
             }
             if (string.IsNullOrEmpty(alias)) return false;
             if (_databaseInfoByKb.ContainsKey(alias!)) return true;
+            long fetchEpoch = System.Threading.Interlocked.Read(ref _databaseInfoCacheEpoch);
             try
             {
                 var cmd = new JObject { ["module"] = "kb", ["action"] = "GetDatabaseInfo" };
@@ -740,6 +741,7 @@ namespace GxMcp.Gateway
 
                 JObject? info = ExtractDatabaseInfoFromWorkerResult(env);
                 if (info == null) return false;
+                if (fetchEpoch != System.Threading.Interlocked.Read(ref _databaseInfoCacheEpoch)) return false;
                 _databaseInfoByKb[alias!] = info;
                 return true;
             }
@@ -789,8 +791,32 @@ namespace GxMcp.Gateway
         {
             KbHandle? kb = _currentKb.Value;
             string? alias = kb?.NormalizedAlias;
+            if (string.IsNullOrEmpty(alias))
+            {
+                // whoami is a meta-tool and normally has no per-request KB binding.
+                // TryRefreshDatabaseInfoFromWorkerAsync already falls back to the sole
+                // open worker; use the same alias here so the freshly fetched payload
+                // is not hidden behind the Pending placeholder.
+                try
+                {
+                    var open = _workerPool?.ListOpen();
+                    if (open != null && open.Count == 1) alias = open[0].NormalizedAlias;
+                }
+                catch { }
+            }
             if (string.IsNullOrEmpty(alias)) return null;
             return _databaseInfoByKb.TryGetValue(alias!, out var info) ? info : null;
+        }
+
+        internal static void InvalidateDatabaseInfoCache(string? kbAlias)
+        {
+            System.Threading.Interlocked.Increment(ref _databaseInfoCacheEpoch);
+            if (string.IsNullOrWhiteSpace(kbAlias))
+            {
+                _databaseInfoByKb.Clear();
+                return;
+            }
+            _databaseInfoByKb.TryRemove(kbAlias.Trim(), out _);
         }
 
         private static string? ResolveWhoamiIndexAlias(string? sessionId)
@@ -848,13 +874,6 @@ namespace GxMcp.Gateway
                 // with real data as soon as it arrives. Net effect on the bench:
                 // first whoami pays ~400ms once, subsequent calls drop to ms-range.
                 bool refreshed = await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 400, kbAlias: whoamiAlias).ConfigureAwait(false);
-                // DB info is stable; fetch once per KB and cache forever. Await on first
-                // whoami of a session so the database block populates inline; subsequent
-                // calls short-circuit on the cache and pay nothing. The timeout is generous
-                // (3s) because GetDatabaseInfo enumerates the DataStoresPart across the
-                // environment's models, which the SDK lazy-loads on first touch after a cold
-                // start — 600ms missed it, leaving database stuck at "Pending" for the session.
-                await TryRefreshDatabaseInfoFromWorkerAsync(timeoutMs: 3000).ConfigureAwait(false);
                 if (!refreshed)
                 {
                     lock (_lastKnownIndexStateLock)
@@ -880,6 +899,14 @@ namespace GxMcp.Gateway
                         }
                     }
                 }
+            }
+            if (workerHealthy)
+            {
+                // Database info is cached per KB but invalidated when the active
+                // environment changes. Keep this refresh independent from the index
+                // freshness cache so a recent index snapshot cannot hide a newly
+                // selected environment's datastore.
+                await TryRefreshDatabaseInfoFromWorkerAsync(timeoutMs: 3000).ConfigureAwait(false);
             }
             var payload = BuildWhoamiPayload(verbose, sessionId);
             if (!workerHealthy)
@@ -1198,7 +1225,7 @@ namespace GxMcp.Gateway
                     foreach (var k in cfg.Environment.KBs)
                     {
                         if (!string.IsNullOrWhiteSpace(k.Alias))
-                            available[k.Alias] = new KbHandle(k.Alias, k.Path);
+                            available[k.Alias] = KbHandle.FromEntry(k);
                     }
                 }
                 foreach (var k in openKbs)
