@@ -2,8 +2,31 @@
 
 ## Unreleased
 
+## v3.6.0 - 2026-09-18
+
+
+### Tracked issues
+
+- [#210](https://github.com/lennix1337/Genexus18MCP/issues/210) — [Docs] Checkout local: `npx clients add` pode reescrever o launcher do `install.ps1`
+- [#211](https://github.com/lennix1337/Genexus18MCP/issues/211) — [Bug] npm test no Windows: stub do gateway (cópia de cmd.exe) pode deixar o after-hook falhar com EPERM
+- [#212](https://github.com/lennix1337/Genexus18MCP/issues/212) — [Bug] `records_query` falha após a troca de environment e pode resolver o datastore fora do `TargetModel` ativo
+- [#215](https://github.com/lennix1337/Genexus18MCP/issues/215) — [Contrato/Bug] genexus_worker_reload force=true reinicia o pool e não aplica sourceDir em mode=hard
+- [#216](https://github.com/lennix1337/Genexus18MCP/issues/216) — [OpenCode] Possível divergência quando opencode.json e opencode.jsonc coexistem
+- [#217](https://github.com/lennix1337/Genexus18MCP/issues/217) — genexus_create Transaction auto-seeds a "<Name>Id" attribute that can't be removed; update_visual rollback leaves orphan global attributes
+- [#218](https://github.com/lennix1337/Genexus18MCP/issues/218) — [GX17] `Could not load type Artech.Genexus.Common.Objects.SuperApp` breaks create, save_as, delete, sql_ddl, wwp and not-found resolution
+- [#219](https://github.com/lennix1337/Genexus18MCP/issues/219) — Gateway does not exit on stdin EOF: orphan keeps worker ownership and the next session sees a false "cold start"
+- [#220](https://github.com/lennix1337/Genexus18MCP/issues/220) — [GX17] Full index rebuild stalls silently after `[LITE-ENUM]`; `index force=true` is refused with `AlreadyInProgress`
+- [#221](https://github.com/lennix1337/Genexus18MCP/issues/221) — `genexus_transfer import` reports "no import was attempted" but creates the object with every part empty
+- [#223](https://github.com/lennix1337/Genexus18MCP/issues/223) — [GX17] `genexus_kb action=list_environments` and `action=get_environment` return JSON-RPC `Internal error`
+- [#224](https://github.com/lennix1337/Genexus18MCP/issues/224) — [GX17] `genexus_db action=sql_navigation` builds SQL from concatenated node text
+- [#225](https://github.com/lennix1337/Genexus18MCP/issues/225) — KB lease expires about 20 minutes after `select` even with continuous `kb`-explicit calls
+- [#226](https://github.com/lennix1337/Genexus18MCP/issues/226) — [GX17] `specify` of an existing Main procedure: "object not found in the Knowledge Base", `Status: Failed` with `ExitCode: 0`, and `status wait` does not block
+- [#227](https://github.com/lennix1337/Genexus18MCP/issues/227) — Smaller contract gaps: dryRun without target resolution, status wait vs worker timeout, delete preview needs confirm, pathPrefix, callers edges
+
+
 ### Added
 
+- **Permanent live reload/lifecycle smoke promoted to `scripts/tests/test-live-reload-smoke.ps1`.** Parameterized, fail-closed smoke (`0` pass / `1` fail / `2` unavailable) that validates soft drain+replace reload, forced alias reload through the shared restore core, the `mode=hard` guards, lifecycle status/long-poll and the whoami SDK version smoke end to end against a real KB, with an isolated config, structured summary JSON and dedicated `GXMCP_LOG_DIR` per run. Documented in `docs/live-kb-test-harness.md`.
 - **SDK-backed native Object Text tree and in-memory filesystem operations.** `genexus_io` now supports `format=native` for a dependency-aware `src/`/`ref/` projection, `all|newAndModified|newOnly` export modes, deterministic `.gx` documents, optional visual companions, dry-run imports, and safe XML/header/duplicate validation without loading GX4A DLLs. `list_text_files` and `validate_text_in_memory` inspect external trees without a KB read.
 - **Watermark-backed incremental text mirror.** `text_mirror_start|stop|status|catchup|set_references` coalesces watcher identities, queues SDK work onto the Worker's owning STA, persists `.mirror-sync`, removes verified orphan files during full reconciliation, mirrors explicit/MCP and detected external deletions by updating the manifest atomically, and exposes pending/batch/error counters.
 - **Official Module Manager task coverage.** `genexus_module` now exposes package, publish, restore, configured-server management, and server module search through the installed SDK's `IModuleManagerService`; external writes and uploads require explicit confirmation.
@@ -44,19 +67,33 @@
 
 ### Internal
 
+- **The release-entrypoint issue-reference test is hermetic.** `test-release-entrypoint.ps1` now validates `Assert-ChangelogIssueReferences` against an isolated temp changelog instead of hardcoding issues 210/227 against the live `## Unreleased` section, which the release itself had already promoted mid-run; `Assert-ChangelogIssueReferences` gained an optional `-ChangelogPath` with unchanged default behavior.
+- **The MCP request loop was decomposed into focused partial files.** `Program.RequestLoop.cs` shrank from ~3.5k to ~750 lines: `genexus_worker_reload` handling moved to `Program.WorkerReload.cs` (one handler covering validation, forced and graceful paths), Gateway-served tools (telemetry views, `genexus_kb`, worker pool warm spares, connection recovery, sandbox/kb_diff/kb_import) to `Program.GatewayTools.cs`, `genexus_lifecycle` gateway intercepts (journal inspect/reconcile, op: status/result/cancel, long-poll) to `Program.LifecycleGateway.cs`, and the inner worker dispatch to `Program.ToolDispatch.cs`. The former `DispatchCore` local function became `DispatchToolCallCoreAsync` with explicit request/session parameters, and `genexus_connection_recover` now reuses the shared `RestoreWorkersAsync` core instead of its own restore loop. No tool contract, envelope, or routing behavior changed.
+- **SDK startup-diagnostic classification was consolidated into `SdkDiagnosticClassifier`.** The fatal/informational taxonomy and code extraction now live in a single Gateway class instead of diverging between `WorkerStartupFailure` and `WorkerPool`; unknown `GXMCP_SDK_*` codes fail closed as fatal and are reported as their own code instead of being mislabeled `GXMCP_SDK_COMPATIBLE`, and the redundant `ExtractDiagnosticCode`/`IsFatalSdkDiagnosticCode` passthroughs were deleted.
+- **`genexus_kb` environment actions and explicit-KB meta-tool reads are classified by `OperationClassifier`.** The gateway request loop no longer reimplements the `set_environment`/`list_environments`/`get_environment` and doctor/doc/sdk_probe checks inline at five call sites; adding the next KB action now touches one canonical predicate instead of scattered string comparisons in `Program.RequestLoop.cs`.
+- **The force-reload restore core was extracted into `RestoreWorkersAsync`.** The alias-scoped and global `genexus_worker_reload force=true` paths share one respawn + SDK-ready wait + restored/failed reporting implementation instead of two diverging copies, and `IsForceHardReloadUnsupportedForTest` was renamed to `IsForceHardReloadUnsupported` to stop leaking test intent into a production validation rule.
+- **Transaction/SDT seed naming is owned by `SeedItemPlan`.** The requested-vs-default `firstItem`/`firstItemType` resolution and the `name : type [Key]` description are now defined once, so dry-run previews and the real creation cannot drift (the preview previously did not normalize a leading `&` the executor stripped).
+- **The stalled-index watchdog was extracted into `IndexBuildWatchdog`.** Heartbeat clock, no-progress detection and the cancellation thread now live in their own class with `Thread.Abort` isolated in the recovery path, instead of being threaded through `KbService` fields.
+- **Object deletion member variance moved to `SdkDeletionAdapter`.** The `Delete` vs `Remove` reflection candidate order lives in `src/GxMcp.Worker/Compatibility/` with the other major-specific adapters rather than inline in structure rollback.
+
 - **Text exchange responsibilities were decomposed into focused seams.** The façade now delegates selection, filesystem validation/listing, batch options, legacy pipelines, native export/import pipelines, document/support logic and mirror reconciliation to dedicated files/classes; the public MCP contracts and legacy/native behavior remain unchanged.
+- **Release preflight now verifies the changelog issue ledger.** Every issue selected for closure must have its canonical `/issues/<number>` URL in `## Unreleased`; grouped fixes must list each issue explicitly, and missing references fail before the release snapshot is written.
 
 ### Fixed
 
 - **The integration preflight accepts a clean worktree.** Its changed-path validation now permits an empty path collection, so `-ValidateOnly` and clean-check invocations fail only on actual validation errors.
 
-- **Hardened the open unlabeled issue paths for build, lifecycle, SDK compatibility, KB routing, transfers, structure DSL, and CLI configuration.**
-  - Target resolution now keeps build dry-runs and execution on the same plan, Specify reports real in-process exit status and suppresses only verified false not-found diagnostics, status waits honor a non-zero wait without a prior snapshot, and stalled index walks expose bounded recovery through `force=true` without discarding the certified snapshot.
-  - Explicit KB selectors bypass session ownership only for that request while selected-session leases renew on use; isolated stdio gateways terminate on EOF, diagnostics distinguish compatible SDK fingerprint drift from rejection, and doctor reports fresh gateway telemetry/fallback state.
-  - Normal health-loop cancellation during Gateway shutdown is no longer reported as an operational error, keeping EOF cleanup telemetry truthful.
-  - Internal warmup requests canceled by Gateway shutdown no longer become failed tool telemetry or misleading crash envelopes.
-  - Transaction creation/DSL metadata, structure rollback cleanup, active-environment datastore selection, SQL navigation filter parsing, XPZ import preflight, and OpenCode `json`/`jsonc` coexistence now fail closed or preserve the requested target with structured evidence.
-  - The live Gateway harness now gives cold SDK/KB startup a bounded 180-second settle window instead of reporting a false failure at the first 15-second probe.
+- **Hardened the open issue paths for build, lifecycle, SDK compatibility, KB routing, transfers, structure DSL, and CLI configuration.**
+  - Build/Specify target resolution now keeps dry-runs and execution on the same plan, reports real in-process exit status, and honors the requested lifecycle wait ([#226](https://github.com/lennix1337/Genexus18MCP/issues/226)); variable/edit/delete previews fail closed for unresolved targets or missing confirmation, and `pathPrefix` plus caller-edge gaps are covered ([#227](https://github.com/lennix1337/Genexus18MCP/issues/227)).
+  - Stalled index walks expose bounded recovery through `force=true` without discarding the certified snapshot ([#220](https://github.com/lennix1337/Genexus18MCP/issues/220)).
+  - Explicit KB selectors bypass session ownership only for that request while selected-session leases renew on use ([#225](https://github.com/lennix1337/Genexus18MCP/issues/225)); forced reload validates the selected alias and rejects `force=true` with `mode=hard` before stopping a Worker ([#215](https://github.com/lennix1337/Genexus18MCP/issues/215)).
+  - Isolated stdio gateways terminate on EOF, and expected shutdown cancellation no longer becomes failed health telemetry or misleading warmup failure ([#219](https://github.com/lennix1337/Genexus18MCP/issues/219)).
+  - Active-environment datastore selection no longer falls back to the design model, and environment list/read failures return structured envelopes ([#212](https://github.com/lennix1337/Genexus18MCP/issues/212), [#223](https://github.com/lennix1337/Genexus18MCP/issues/223)).
+  - GX17 dry-runs and missing-object resolution avoid loading unavailable `SuperApp` types and return typed results ([#218](https://github.com/lennix1337/Genexus18MCP/issues/218)).
+  - Transaction creation and structure rollback support explicit seed metadata, remove orphan global Attributes, preserve formula/description metadata, and default omitted index uniqueness to non-unique ([#217](https://github.com/lennix1337/Genexus18MCP/issues/217)).
+  - SQL navigation reads structured filter nodes without concatenating their inner XML text ([#224](https://github.com/lennix1337/Genexus18MCP/issues/224)); XPZ import validates stable identities and rolls back newly created objects on verification failure ([#221](https://github.com/lennix1337/Genexus18MCP/issues/221)).
+  - OpenCode status/apply/remove inspect and synchronize both `opencode.json` and `opencode.jsonc` when both exist ([#216](https://github.com/lennix1337/Genexus18MCP/issues/216)).
+  - The live Gateway harness gives cold SDK/KB startup a bounded 180-second settle window instead of reporting a false failure at the first 15-second probe.
 
 
 

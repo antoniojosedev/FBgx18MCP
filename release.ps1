@@ -219,6 +219,51 @@ function Get-ReleaseIssueSnapshot {
     return $records.ToArray()
 }
 
+function Assert-ChangelogIssueReferences {
+    param(
+        [int[]]$IssueNumbers,
+        [string]$ChangelogPath,
+        [string]$Version
+    )
+
+    $numbers = @($IssueNumbers | Where-Object { $_ -gt 0 } | Select-Object -Unique)
+    if ($numbers.Count -eq 0) { return }
+    if (-not $ChangelogPath) { $ChangelogPath = Join-Path $root 'CHANGELOG.md' }
+    if (-not (Test-Path -LiteralPath $changelogPath -PathType Leaf)) {
+        throw "CHANGELOG.md is missing; cannot verify release issue references."
+    }
+    $changelog = [IO.File]::ReadAllText($changelogPath)
+    $unreleased = [regex]::Match(
+        $changelog,
+        '(?ms)^## Unreleased\s*(?<body>.*?)(?=^## v|\z)')
+    if (-not $unreleased.Success) {
+        throw 'CHANGELOG.md must contain a readable ## Unreleased section before issue-reference validation.'
+    }
+
+    # A rerun after a failed mid-release attempt finds the issue links already
+    # promoted under the version heading; accept that state as long as every
+    # tracked issue is referenced there.
+    $promotedBody = ''
+    if ($Version -and $changelog -match "(?m)^##[ \t]+v$([Regex]::Escape($Version))(?=[ \t]|$)") {
+        $promoted = [regex]::Match(
+            $changelog,
+            "(?ms)^## v$([Regex]::Escape($Version))\s*(?<body>.*?)(?=^## v|\z)")
+        if ($promoted.Success) { $promotedBody = $promoted.Groups['body'].Value }
+    }
+
+    $missing = New-Object System.Collections.Generic.List[int]
+    foreach ($number in $numbers) {
+        $url = "https://github.com/lennix1337/Genexus18MCP/issues/$number"
+        if ($unreleased.Groups['body'].Value.IndexOf($url, [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
+            $promotedBody.IndexOf($url, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            [void]$missing.Add([int]$number)
+        }
+    }
+    if ($missing.Count -gt 0) {
+        throw "CHANGELOG.md ## Unreleased is missing canonical issue links for: $($missing -join ', ')."
+    }
+}
+
 function Write-ReleaseIssueSnapshot {
     param([object[]]$Records)
     $snapshot = [ordered]@{
@@ -513,6 +558,7 @@ if ($branch -ne 'main') {
 
 Step "Snapshotting release issues"
 $releaseIssueRecords = @(Get-ReleaseIssueSnapshot)
+Assert-ChangelogIssueReferences -IssueNumbers @($releaseIssueRecords | ForEach-Object { [int]$_.number }) -Version $Version
 Write-ReleaseIssueSnapshot -Records $releaseIssueRecords
 $CloseIssues = @($releaseIssueRecords | ForEach-Object { [int]$_.number } | Select-Object -Unique)
 $statusState.issues.validated = @($releaseIssueRecords | ForEach-Object { [int]$_.number })
