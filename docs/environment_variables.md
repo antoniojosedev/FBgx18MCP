@@ -19,7 +19,7 @@ All are optional. Unset means the documented default applies.
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `GXMCP_HTTP_TOKEN` | Shared secret required on every `/mcp` HTTP request (`Authorization: Bearer <token>` or `X-GXMCP-Token`). Binding to a non-loopback address **requires** this — without it, non-loopback `/mcp` requests are refused. The default `127.0.0.1` bind with no token is unchanged. | unset (loopback-only, no auth) |
-| `GXMCP_NO_STRUCTURED_CONTENT` | Set to `1` (or `true`) to omit the MCP `structuredContent` field from tool results — it duplicates the whole payload already present in `content[0].text`, adding ~45% to each response's byte size. Equivalent config: `Server.EmitStructuredContent: false`. Env wins over config. | unset (structuredContent emitted) |
+| `GXMCP_NO_STRUCTURED_CONTENT` | Set to `1` (or `true`) to omit the MCP `structuredContent` field from tool results — it duplicates the whole payload already present in `content[0].text`, adding ~45% to each response's byte size. Equivalent config: `Server.EmitStructuredContent: false`. Env wins over config. `genexus_lifecycle` is the deliberate exception because it advertises `outputSchema`; successful lifecycle results keep `structuredContent` to satisfy strict MCP clients. | unset (structuredContent emitted) |
 | `GXMCP_EMIT_STRUCTURED_CONTENT` | Set to `0` (or `false`) to disable `structuredContent` emission, or `1`/`true` to force it on. Complement to `GXMCP_NO_STRUCTURED_CONTENT`. | unset |
 | `GXMCP_TERSE` | Set to `1` (or `true`) for terse responses: omits `next_legal_actions` and the `_meta.tokens` block from tool results, keeping only the payload plus error hints. Equivalent config: `Server.TerseResponses: true`. Env wins over config. | unset (full UX sugar emitted) |
 | `GXMCP_PROFILE` | Tool profile for `tools/list` surface (`core`, `authoring`, `devops`, `ui`, `db`, `all`). Lean profiles like `core` (11 tools) or `authoring` (29 tools) drastically reduce initial system prompt tokens vs the full 52-tool surface. | `all` |
@@ -83,7 +83,16 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GENEXUS_MCP_REAPPLY_TIMEOUT_MS` | Worker reapply timeout; the gateway aligns its wait to it. | 300000 (5 min) |
 | `GXMCP_PREVIEW_BUDGET_MS` | Time budget for the headless preview render before it stops blocking. | see `PreviewService` |
 | `GXMCP_BUILD_TIMEOUT_SEC` | Wall-clock cap for a single `genexus_lifecycle` build/reorg task. On expiry the task is force-failed and any spawned MSBuild tree is killed, so a wedged deploy/reorg step can't leave the status stuck at `Running`. Clamped to `[60, 7200]`. | 900 (2400 for `rebuild`/RebuildAll) |
+| `GXMCP_BUILD_NOPROGRESS_SEC` | No-progress watchdog for a running build. Progress includes phase, current object, output-line count, target completion, and diagnostic counts; it is independent from the compact `status` long-poll ETag. On expiry the task is force-failed while preserving the pre-terminal phase in the envelope and message. `0` disables it; values are clamped to `[30, 3600]`. A larger value does not repair a false liveness signal. | 180 |
+| `GXMCP_BUILD_TASK_CAP` | Maximum completed build statuses retained in the worker's `_tasks` registry. A sweep on every new build evicts terminal entries past the cap (oldest-completed first; never non-terminal, never anything completed <60s ago). Floored at 10 so the gateway's Take(10) task listing stays intact. | 50 |
+| `GXMCP_BUILD_TASK_TTL_MIN` | Age in minutes after which a terminal build status is evicted from `_tasks`, even under the cap. Floored at 60 so async pollers (up to 45min hard cap) keep resolving their taskId. | 180 |
+| `GXMCP_BUILD_FULLOUTPUT_KEEP_MIN` | Age in minutes after which a terminal build's in-memory `FullOutput` buffer is released. The status envelope keeps answering (counts, shaped output, errors, `fullLogPath`) — only the raw buffer is dropped. | 15 |
+| `GXMCP_BUILD_LOG_RETAIN_COUNT` | Newest per-build `build-<taskId>.log` files kept in the worker `logs/` dir; older ones are deleted best-effort after each write. `0` (or negative) disables the sweep. Only `build-*.log` is ever touched. | 50 |
 | `GXMCP_READ_CACHE_TTL_SEC` | In-memory read cache TTL for `ObjectService` in seconds. Since writes perform deterministic cache invalidation, a longer TTL prevents redundant COM disk re-reads across multi-turn sessions. | 300 (5 min) |
+| `GXMCP_READ_CACHE_MAX` | Maximum entries in the worker `ObjectService` read cache; oldest evicted past the cap (floored at 16). Pairs with the TTL above: TTL bounds age, this bounds count. | 256 |
+| `GXMCP_SEMANTIC_CACHE_MAX_BYTES` | Total serialized-payload ceiling (bytes) for the gateway semantic cache, evicted LRU alongside the 256-entry count cap (`GXMCP_SEMANTIC_CACHE_MAX`). Caps worst-case memory when a few giant read envelopes would otherwise crowd out hundreds of small ones. | 67108864 (64MB) |
+| `GXMCP_FRICTION_LOG_MAX_LINES` | Newest lines kept in `<kb>/.gx/friction.jsonl`; older tail-trimmed best-effort after each append. `0` (or negative) disables rotation. | 5000 |
+| `GXMCP_SNAPSHOT_SWEEP` | Orphan index-snapshot sweep on worker boot: `index_<hash>` families whose meta names a KB path that no longer exists are deleted (current KB never touched). Set to `0` to disable. | on |
 | `GXMCP_COMMAND_QUEUE_CAPACITY` | Maximum number of input commands admitted before the worker returns `WorkerBusy`; protects the reader from unbounded memory growth. | 256 |
 | `GXMCP_SDK_COMMAND_QUEUE_CAPACITY` | Maximum number of SDK-bound commands waiting for the STA bridge before the worker returns `WorkerBusy`. | 64 |
 | `GXMCP_SDK_QUEUE_CAPACITY` | Maximum number of low-priority SDK actions (watcher/index callbacks) admitted by `SdkExecutor`. | 64 |
@@ -99,6 +108,7 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_LEGACY_TOOL_ALIASES` | Set to `0` to opt out of legacy tool-name aliases (de-advertised tools reachable by old names). | aliases on |
 | `GXMCP_RESILIENT_SPEC` | Set to `1` to opt into the resilient specifier path (slower; opt-in). | off |
 | `GXMCP_OCR_ENGINE` | Set to `tesseract` to select the Tesseract OCR engine (requires the Tesseract.NET dependency). | unset |
+| `DOTNET_gcServer` | .NET runtime switch (not GxMcp-owned): set to `0` to run the Gateway on Workstation GC instead of the built-in Server GC. Measured 2026-09 on 90 steady-state JSON calls: no memory win either way (WS ~99 vs ~105MB, within noise) with latency parity, so the Server default stays; use `0` only on hard memory-constrained hosts. No rebuild needed. | `1` (Server, via csproj) |
 
 ## Client registration / config location
 

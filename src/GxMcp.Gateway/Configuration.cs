@@ -303,7 +303,7 @@ namespace GxMcp.Gateway
                 "HttpPort", "McpStdio", "BindAddress", "AllowedOrigins", "SessionIdleTimeoutMinutes",
                 "WorkerIdleTimeoutMinutes", "WedgedCommandTimeoutMinutes", "WorkerHeapRecycleMB",
                 "ArtifactOutputDirectory", "IdempotencyTtlMinutes", "IdempotencyCacheSize", "BuildSyncThresholdSeconds", "MaxOpenKbs",
-                "ToolProfile", "EmitStructuredContent", "TerseResponses"
+                "ToolProfile", "EmitStructuredContent", "TerseResponses", "WorkerSharingMode"
             }, StringComparer.Ordinal), "Server", path);
             if (server["HttpPort"]?.Type != JTokenType.Integer || server["McpStdio"]?.Type != JTokenType.Boolean)
                 throw new InvalidDataException("Strict config requires typed Server.HttpPort and Server.McpStdio.");
@@ -313,6 +313,12 @@ namespace GxMcp.Gateway
                 throw new InvalidDataException("stdio-isolated requires HttpPort=0 and McpStdio=true.");
             if (mode == "http-shared" && (port <= 0 || stdio))
                 throw new InvalidDataException("http-shared requires HttpPort>0 and McpStdio=false.");
+
+            string sharingMode = server.Value<string>("WorkerSharingMode")?.Trim().ToLowerInvariant() ?? "isolated";
+            if (sharingMode != "isolated" && sharingMode != "shared-host")
+                throw new InvalidDataException("Strict config Server.WorkerSharingMode must be 'isolated' or 'shared-host'.");
+            if (sharingMode == "shared-host" && mode != "stdio-isolated")
+                throw new InvalidDataException("Strict config Server.WorkerSharingMode='shared-host' requires GatewayMode='stdio-isolated'.");
 
             if (document["Logging"] is JObject logging)
                 RejectUnknown(logging, new HashSet<string>(new[] { "Level", "Path" }, StringComparer.Ordinal), "Logging", path);
@@ -510,22 +516,26 @@ namespace GxMcp.Gateway
     public class ServerConfig
     {
         public string TransportMode { get; set; } = "legacy";
+        public string WorkerSharingMode { get; set; } = "isolated";
         public int HttpPort { get; set; } = 5000;
         public bool McpStdio { get; set; } = true;
         public bool SharedGateway { get; set; } = false;
         public string BindAddress { get; set; } = "127.0.0.1";
         public List<string> AllowedOrigins { get; set; } = new List<string>();
         public int SessionIdleTimeoutMinutes { get; set; } = 10;
-        // Idle-reap window for a worker with no in-flight work. Raised from 5 to 60:
-        // the worker's cold start is ~90s (95% of it the intrinsic, unshrinkable
-        // GxServiceManager activation — see the worker's [COLD-START-BREAKDOWN] log and
-        // docs), so reaping the sole warm worker after 5 idle minutes made the very next
-        // tool call re-pay the full ~90s tax. 60 minutes keeps the worker warm across a
-        // normal working session while still reclaiming a genuinely abandoned worker.
+        // Idle-reap window for a worker with no in-flight work. 30 minutes: an idle
+        // worker holds ~130-160MB, so parking it past a normal focus break returns
+        // that memory on shared/long-running machines. Trade-off, measured: the
+        // worker's cold start is ~90s (95% of it the intrinsic, unshrinkable
+        // GxServiceManager activation — see the worker's [COLD-START-BREAKDOWN] log
+        // and docs; the warm index snapshot does NOT shorten it), so returning in
+        // the 30-60min window re-pays ~90s once. Was 60 (raised from 5 for the same
+        // reason); 30 splits the difference now that the warm snapshot makes the
+        // index half of the restart cheap. Override per deployment as needed.
         // Set to 0 (or any value <= 0) to disable idle reaping entirely — the worker then
         // lives for the gateway's lifetime and is bounded only by MaxOpenKbs LRU eviction
         // and process exit on client disconnect.
-        public int WorkerIdleTimeoutMinutes { get; set; } = 60;
+        public int WorkerIdleTimeoutMinutes { get; set; } = 30;
         /// <summary>
         /// BUG-03: hard ceiling on how long a single in-flight command may sit
         /// unanswered before the worker is force-stopped as wedged. Deliberately
