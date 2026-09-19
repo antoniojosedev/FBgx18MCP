@@ -259,15 +259,12 @@ Before creating or proposing any new script for build, installation, upgrade, or
 | Distributed package: post-sync validation | `npx genexus-mcp clients --format json`<br>`npx genexus-mcp doctor --mcp-smoke --format json` | Validates registration, gateway HTTP loopback, and live MCP protocol smoke. |
 | Release publication | `.\release.ps1` | Only upon explicit user request. See `docs/release_protocol.md`. |
 
-### LOCAL OVERRIDE — checkout operators (TEMPORARY until upstream #210 closes)
+### LOCAL POLICY — checkout operators (this fork)
 
-> **Temporary local policy** for sessions whose cwd is this checkout. Remove or
-> rewrite this subsection when
-> https://github.com/lennix1337/Genexus18MCP/issues/210 is **closed** (fix
-> released; label `fixed-pending-release` alone is not enough). Docs for the
-> checkout branch already landed in upstream `main` (`30b3060`); this block
-> remains for **agent default selection** until the issue closes. On `git pull`
-> / sync, re-check that this block survived.
+> **Permanent preference** for sessions whose cwd is this checkout
+> (`FBgx18MCP`). It does not replace the upstream matrix above; it sets the
+> **agent default** when working from this tree. On `git pull` / sync,
+> re-check that this block survived.
 
 This checkout keeps harnesses on `publish\GxMcp.Gateway.exe` (not the npm
 cache). The Antigravity-style target applies to **all writable clients**:
@@ -289,8 +286,8 @@ user clearly asks to re-point without compiling (e.g. “só reapontar”, “se
 rebuild”, “sem build”, “não recompile”). Ambiguous or incomplete requests
 default to `.\install.ps1`.
 
-While #210 is open, **override** the matrix rows that recommend `npx … clients
-add` / `npx … clients` / `npx … doctor` for local-checkout work:
+For local-checkout work in this fork, **prefer** the rows below over matrix
+rows that recommend `npx … clients add` / `npx … clients` / `npx … doctor`:
 
 | Scenario (checkout) | Use this instead of the npx matrix rows |
 |---|---|
