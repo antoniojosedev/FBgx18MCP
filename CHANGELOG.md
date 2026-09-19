@@ -9,6 +9,7 @@
 - **Classic metadata operations now bypass the native search-index gate safely.** GXPublic opens mark the gateway state ready from the provider catalogue, `genexus_query`/`genexus_list_objects` return canonical paged metadata results with a legacy capability block, and ambiguous `.gxi` generation is reported as unresolved until the matching provider opens the KB instead of being misclassified as a GX8/GX9 mismatch.
 - **The live harness now recognizes classic GX8/GX9 runtime anchors.** Legacy runs require a published Worker plus `-SkipBuild`, avoid compiling against the classic installation, and report missing provider/KB prerequisites as explicit unavailable evidence.
 - **Checkout MCP policy in `AGENTS.md` is a permanent fork preference.** For this tree, install/update/refresh of machine harnesses defaults to `.\install.ps1` (`config` + build + `clients add`); the no-rebuild `clients add` shortcut stays reserved for explicit “sem rebuild / só reapontar” requests, and local-checkout work prefers the checkout CLI over `npx` validation.
+- **Mechanical pre-push docs now live in `AGENTS.md`.** The fork-local `scripts/Invoke-PrePushMechanicalChecks.ps1` invocation is documented under Required workflow; `CONTRIBUTING.md` only points there instead of duplicating the command.
 
 ### Fixed
 

@@ -36,17 +36,8 @@ npm test
 npx . doctor --mcp-smoke
 ```
 
-Before publishing a committed change, run the local mechanical checker after
-refreshing the comparison ref:
-
-```pwsh
-git fetch origin
-pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson
-```
-
-This routine never runs `git push`. `pushReadiness=readyLocal` means that the
-local mechanical gates and checkout state are ready; semantic review, real-KB
-and IDE behavior, remote CI, and publication remain separate checks.
+For the mechanical pre-push checker on this fork, see `AGENTS.md`
+(Required workflow → Mechanical pre-push).
 
 If you only touched `cli/`, `npm test` is enough. If you touched the Gateway or Worker, you need `.\build.ps1` and a real KB to verify — there is no mock.
 

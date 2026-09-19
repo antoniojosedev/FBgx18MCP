@@ -212,6 +212,17 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   - Use one identical manuscript and explicit reviewer-only prompt. Record every preferred reviewer's final state, including technical failures; do not silently reduce the panel to the diversity minimum.
   - Dispatch CLI reviewers only through `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Invoke-LlmDelegatePanelDispatch.ps1`; adapters and support scripts remain in the same shared root.
   - Before reporting the round as complete, run `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegatePeerReviewCloseout.ps1` with the initial preference snapshot, selected reviewers, actual reviewer states, diversity state, and vNext state. If drafting a revised vNext from the feedback, it is pending resubmission until the panel reviews it again or the human explicitly declines that resubmission.
+- **Mechanical pre-push (this fork):** When the user asks for a pre-push routine
+  without peer review, run the local checker after refreshing the comparison
+  ref. Canonical form from the repo root:
+  `git fetch origin` then
+  `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson`.
+  This script is **fork-local** (not upstream); it never runs `git push`.
+  `pushReadiness=readyLocal` means only the mechanical gates and checkout state
+  are ready — semantic review, real-KB/IDE behavior, remote CI, and publication
+  remain separate. Follow with the semantic coherence search required by the
+  global pre-push rules; do not treat mechanical `exit 0` as authorization to
+  push.
 - Inspect the actual input/request/route/function/query/response path before
   fixing behavior. Add a regression test when technically viable.
 - Make the smallest scoped change; preserve unrelated working-tree changes.
