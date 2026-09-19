@@ -259,28 +259,44 @@ Before creating or proposing any new script for build, installation, upgrade, or
 | Distributed package: post-sync validation | `npx genexus-mcp clients --format json`<br>`npx genexus-mcp doctor --mcp-smoke --format json` | Validates registration, gateway HTTP loopback, and live MCP protocol smoke. |
 | Release publication | `.\release.ps1` | Only upon explicit user request. See `docs/release_protocol.md`. |
 
-### LOCAL OVERRIDE — checkout operators (TEMPORARY until upstream #210)
+### LOCAL OVERRIDE — checkout operators (TEMPORARY until upstream #210 closes)
 
 > **Temporary local policy** for sessions whose cwd is this checkout. Remove or
 > rewrite this subsection when
-> https://github.com/lennix1337/Genexus18MCP/issues/210 is reflected in upstream
-> docs. On `git pull` / sync, re-check that this block survived.
+> https://github.com/lennix1337/Genexus18MCP/issues/210 is **closed** (fix
+> released; label `fixed-pending-release` alone is not enough). Docs for the
+> checkout branch already landed in upstream `main` (`30b3060`); this block
+> remains for **agent default selection** until the issue closes. On `git pull`
+> / sync, re-check that this block survived.
 
 This checkout keeps harnesses on `publish\GxMcp.Gateway.exe` (not the npm
-cache). Until #210 lands upstream, the Antigravity-style target applies to
-**all writable clients**: `command` = `<repo>\publish\GxMcp.Gateway.exe`,
-empty `args`, server key `genexus18mcp` (not the official `genexus` HTTP
-entry). Root `.\install.ps1` already sets `GENEXUS_MCP_GATEWAY_EXE` and runs
-`clients add --all-clients`.
+cache). The Antigravity-style target applies to **all writable clients**:
+`command` = `<repo>\publish\GxMcp.Gateway.exe`, empty `args`, server key
+`genexus18mcp` (not the official `genexus` HTTP entry).
+
+**Default (complete path):** when the user asks to install, update, refresh, or
+re-register MCP on this machine's harnesses/clients — including after an
+upstream sync, and including phrasing such as “atualize o mcp nos harnesses” /
+“atualize os clientes” / “instale o mcp” — run `.\install.ps1` at the repo
+root. That path updates `config.json`, runs `build.ps1`, sets
+`GENEXUS_MCP_GATEWAY_EXE` to `publish\GxMcp.Gateway.exe`, and runs
+`clients add --all-clients`. Do **not** interpret those requests as a cue for
+the no-rebuild re-point row.
+
+**No-rebuild re-point only when explicit:** use
+`$env:GENEXUS_MCP_GATEWAY_EXE=…; node cli\run.js clients add …` **only** if the
+user clearly asks to re-point without compiling (e.g. “só reapontar”, “sem
+rebuild”, “sem build”, “não recompile”). Ambiguous or incomplete requests
+default to `.\install.ps1`.
 
 While #210 is open, **override** the matrix rows that recommend `npx … clients
 add` / `npx … clients` / `npx … doctor` for local-checkout work:
 
 | Scenario (checkout) | Use this instead of the npx matrix rows |
 |---|---|
-| Updated local checkout (build + config + harnesses) | `.\install.ps1` at repo root |
-| Re-point **all** writable harnesses to checkout Gateway (no rebuild) | From repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --all-clients` |
-| Stale / wrong launcher (one client) | Same env + `node cli\run.js clients add --clients <id>` (or `.\install.ps1` again) |
+| **Default:** install / update / refresh MCP harnesses (after sync or otherwise) | `.\install.ps1` at repo root |
+| Explicit no-rebuild re-point of **all** writable harnesses | From repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --all-clients` |
+| Stale / wrong launcher (one client) | Prefer `.\install.ps1`; or same env + `node cli\run.js clients add --clients <id>` only if the user forbade rebuild |
 | Post-sync validation | From repo root: `node cli\run.js clients --format json` and `node cli\run.js doctor --mcp-smoke --format json` (**same** CLI/env as install) |
 
 Acceptance for a harness refresh: every registered writable client lists that
@@ -289,6 +305,8 @@ Acceptance for a harness refresh: every registered writable client lists that
 
 **Do not** (for this checkout workflow):
 
+- Choose the no-rebuild `clients add` path from surface wording about
+  “harnesses” / “clientes” alone — that is still the `.\install.ps1` default
 - `npx genexus-mcp@latest clients add …` — rewrites harnesses away from `publish\`
 - `npx genexus-mcp clients` / `doctor` as “truth” for a checkout-registered
   launcher — can report false stale / `client_config_sync` against the npm
