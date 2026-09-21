@@ -2,6 +2,19 @@
 
 This document records the MCP-facing surface that is currently exposed by the repository.
 
+`genexus_compare` preserves SDK `equal`/`differences`. For divergent content it
+adds per-part `diffs` with a `genexus_read` alias (`part`), SDK descriptor
+(`partType`) and A-to-B `unified` evidence. CRLF/CR normalize to LF; final-newline
+changes remain explicit. A single contiguous replacement hunk has three context
+lines and is not necessarily minimal. Input bodies have a 1,048,576 UTF-16-unit
+cap; unified output has 16,384 units per part and a 131,072-byte serialized JSON
+evidence budget across parts (metadata is retained). Over-limit hunks are omitted
+entirely with `omittedReason=truncated`, `truncated=true`, `limit` and
+`maxChars`/`maxBytes`. Other omission reasons
+are `nonTextualPart`, `readFailed`, `compareFailed`, `normalizedTextEqual`.
+Enumeration failures report `diffsOmittedReason=readFailed`. Only shared parts
+are compared, and `mode=properties` is unchanged. This operation never writes.
+
 Agent usage reference:
 - [`docs/llm_cli_mcp_playbook.md`](llm_cli_mcp_playbook.md)
 
@@ -72,6 +85,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | Tool | Read-only actions | Mutating actions |
 | --- | --- | --- |
 | `genexus_data_view` | `inspect`, `dry_run` | `create`, `update`, `delete` |
+| `genexus_connection_recover` | `journal_status` | `recover`, `journal_repair` |
 | `genexus_recipe` | `list`, `describe`, `suggest_macro` | `crystallize` |
 | `genexus_lifecycle` | `inspect`, `reorg_preview`, `status`, `result`, `snapshots-list` | `build`, `build_all`, `cancel`, `reconcile`, `specify`, `validate`, `validate-kb`, `rebuild`, `reorg`, `sync`, `index`, `snapshots-restore` |
 | `genexus_refactor` | — | `RenameAttribute`, `RenameVariable`, `RenameObject`, `ExtractProcedure`, `ExtractSubroutine`, `WWPSetCondition` |
@@ -128,7 +142,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_query` | active | `Search -> Query` |
 | `genexus_list_objects` | active | `List -> Objects` |
 | `genexus_read` | active | `Read -> ExtractSource`; `targets[]` plural form routes to `Batch -> BatchRead` |
-| `genexus_edit` | active | `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or `Patch -> Apply` (mode=patch + string, and the abbreviated `patch={find,replace}` form that additionally accepts `patch.scope` / `patch.indentation`); `targets[]` plural form routes to `Batch -> MultiEdit`, `parts[]` to `Batch -> BatchEdit`, `changeSet` to `Mutation -> ChangeSet` |
+| `genexus_edit` | active | Full Source forwards `verifyMode`/`requireObjectSave`, verifies public-read text, and separates physical save from comparison evidence; `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or `Patch -> Apply` (mode=patch + string, and the abbreviated `patch={find,replace}` form that additionally accepts `patch.scope` / `patch.indentation`); `targets[]` plural form routes to `Batch -> MultiEdit`, `parts[]` to `Batch -> BatchEdit`, `changeSet` to `Mutation -> ChangeSet` |
 | `genexus_inspect` | active | `Analyze -> GetConversionContext` |
 | `genexus_analyze` | active | `Analyze`, `Linter`, or `UI` depending on mode |
 | `genexus_lifecycle` | active | `Build`, `KB`, or `Validation` depending on action (specify, compile_check, build, build_all, rebuild, index, status, result, reorg, validate); index `status` waits accept `wait`/`since`/`freshness` and report `waitSatisfied` |
