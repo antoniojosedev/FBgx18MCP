@@ -335,6 +335,37 @@ Acceptance for a harness refresh: every registered writable client lists that
 Keep the npx matrix rows for operators who **do not** run from a local
 `publish\` checkout (npm-only installs).
 
+#### TEMPORARY — `npm test` can rewrite real harnesses to `npx` (until upstream fixes)
+
+> **Temporary fork operator note.** Remove or shrink this subsection once
+> upstream https://github.com/lennix1337/Genexus18MCP/issues/255 and
+> https://github.com/lennix1337/Genexus18MCP/issues/256 are fixed and verified
+> on this machine. It does **not** replace the permanent “no npx for checkout”
+> policy above; it documents a known test side effect.
+
+On this machine, `npm test` / `release-preflight` may still run CLI `init` /
+`uninstall` paths that patch the **real** agent home (no `USERPROFILE`
+sandbox). That silently replaces checkout launchers with
+`npx.cmd -y genexus-mcp@latest` (Antigravity may keep a direct exe). This is
+collateral damage from the suite, not an approved install path.
+
+**Required after any `npm test`, `npm run test:*` that exercises the CLI, or
+mechanical pre-push that runs those suites:**
+
+1. `node cli\run.js clients --format json` (with
+   `GENEXUS_MCP_GATEWAY_EXE=<repo>\publish\GxMcp.Gateway.exe` set).
+2. If any writable client shows `npx` / `genexus-mcp@latest`, treat it as an
+   incident and re-point immediately: `.\install.ps1` (default) or the
+   explicit no-rebuild `clients add --all-clients` row above.
+3. Do not leave the session green on tests alone while harnesses point at npx.
+
+Related tracked upstream work (do not drop from follow-up):
+
+- https://github.com/lennix1337/Genexus18MCP/issues/255 — isolate `init`/`uninstall` tests
+- https://github.com/lennix1337/Genexus18MCP/issues/256 — fail-closed guard against real-home mutation
+- https://github.com/lennix1337/Genexus18MCP/issues/257 — `whoami` `sharingMode` vocabulary (`isolated` vs `stdio-isolated`)
+- https://github.com/lennix1337/Genexus18MCP/issues/258 — duplicate `#241` bullet in CHANGELOG v3.7.0
+
 ### Operational safety and side effects
 
 - **Installer vs. build**: `install.ps1` mutates `config.json` and client configs; treat it as an installer, not a neutral build. `build.ps1` is the neutral compiler.

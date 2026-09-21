@@ -6,6 +6,8 @@
 
 - Wait for the MTA executor's active-slot cleanup in the burst concurrency test. Callback completion precedes the executor's `finally` block, so an immediate zero-count assertion could fail after all work completed.
 
+- **Fork `AGENTS.md`: temporary operator note after `npm test` may rewrite harnesses to `npx`.** Documents mandatory `clients` re-check / `install.ps1` re-point until upstream https://github.com/lennix1337/Genexus18MCP/issues/255 and https://github.com/lennix1337/Genexus18MCP/issues/256 land; also tracks https://github.com/lennix1337/Genexus18MCP/issues/257 and https://github.com/lennix1337/Genexus18MCP/issues/258.
+
 ### Fixed
 
 - **Style edits, validation and direct batch edits reject oversized inline data URIs before invoking the SDK.** The GeneXus style lexer can terminate the x86 Worker with a stack overflow even during a dry run. Raw CSS and structured `css`/`source` edits now reject data URIs over 1,024 characters (including the prefix) and advise using an Image object or an external asset URL. This conservative limit applies to the embedded URI, not the size of the stylesheet.
