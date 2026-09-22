@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Internal
+
+- **Fork `AGENTS.md`: removed the temporary operator note about `npm test` rewriting harnesses to `npx`.** Upstream [#255](https://github.com/lennix1337/Genexus18MCP/issues/255)/[#256](https://github.com/lennix1337/Genexus18MCP/issues/256) landed via [#259](https://github.com/lennix1337/Genexus18MCP/pull/259) and were verified locally (`cli/run.test.js` green; real client configs unchanged). Permanent checkout "no npx" policy remains.
+
+## v3.7.2 - 2026-09-22
+
+
+### Tracked issues
+
+- [#265](https://github.com/lennix1337/Genexus18MCP/issues/265) — Full Source save verification can contradict an exact public reread and misreport saved=false
+- [#266](https://github.com/lennix1337/Genexus18MCP/issues/266) — [Perf] Large KBs fully re-index in most new sessions: slot flushes drop the delta sidecar and interrupted rebuilds restart from zero
+- [#270](https://github.com/lennix1337/Genexus18MCP/issues/270) — genexus_create action=object_atomic rejects a valid payload with "Required field 'action' is missing"
+- [#271](https://github.com/lennix1337/Genexus18MCP/issues/271) — [Bug] McpSmokeScript_Succeeds_AgainstLiveGateway: falha possivelmente intermitente no lote paralelo do release-preflight (Windows)
+- [#273](https://github.com/lennix1337/Genexus18MCP/issues/273) — [Bug] changed_objects: CHANGED pós-freeze por token de concorrência, não por conteúdo (vs IDE Compare)
+
+
 ### Added
 
 - `genexus_compare` now returns bounded, per-part unified text diffs for divergent
@@ -28,11 +44,15 @@
 
 - Wait for the MTA executor's active-slot cleanup in the burst concurrency test. Callback completion precedes the executor's `finally` block, so an immediate zero-count assertion could fail after all work completed.
 
-- **Fork `AGENTS.md`: removed the temporary operator note about `npm test` rewriting harnesses to `npx`.** Upstream [#255](https://github.com/lennix1337/Genexus18MCP/issues/255)/[#256](https://github.com/lennix1337/Genexus18MCP/issues/256) landed via [#259](https://github.com/lennix1337/Genexus18MCP/pull/259) and were verified locally (`cli/run.test.js` green; real client configs unchanged). Permanent checkout “no npx” policy remains.
-
 ### Fixed
 
 - Full Source save verification ([#265](https://github.com/lennix1337/Genexus18MCP/issues/265)) now preserves complete public-read text (including original line endings and trailing newline), forwards `verifyMode` and `requireObjectSave`, and reports physical SDK save separately from post-save comparison. Exact differences carry bounded expected/read lines and typed reasons; unknown reads and concurrent rollback state fail closed without automatic write retries or lifecycle actions.
+
+- `genexus_create` now honors the existing action-inference path for object and atomic creation, accepts the documented `objectType` compatibility alias, and keeps atomic payloads consistent before dispatch. `genexus_variable` modify also accepts `newTypeName` and `dataType` aliases instead of dropping the requested replacement type ([#270](https://github.com/lennix1337/Genexus18MCP/issues/270)).
+
+- The Windows MCP smoke contract now invokes the repository-required `pwsh` host, retries only post-listener transport failures with a bounded budget, and includes smoke-host plus Gateway process/output diagnostics when the subprocess fails; HTTP contract responses are not retried ([#271](https://github.com/lennix1337/Genexus18MCP/issues/271)).
+
+- `genexus_kb_version action=changed_objects` now filters candidate revisions by object `LastUpdate` and confirms content with the SDK comparer instead of treating the optimistic write token (including parent identity) as content equality. The response identifies the frozen baseline path and comparison semantics, and fails closed when the SDK cannot compare content ([#273](https://github.com/lennix1337/Genexus18MCP/issues/273)).
 
 - **Large-KB index warm starts no longer discard the last usable delta baseline.** Every certified-slot promotion carries the previous conservative `meta.json` sidecar, interrupted lite walks checkpoint a resumable partial index, and per-KB publication locks prevent a lagging Worker from replacing a newer certified slot. Lifecycle status/whoami now expose the cache rejection reason, slot generation, checkpoint resume point, and background index activity ([#266](https://github.com/lennix1337/Genexus18MCP/issues/266)).
 
@@ -144,8 +164,6 @@
 - **GX8/GX9 compatibility now uses the documented GXPublic OLE DB metadata surface.** The Worker tries the versioned GXPublic providers in 32-bit mode, supports read-only `Object` metadata queries/lists, and returns explicit unsupported envelopes for source-part edits and XPZ operations instead of invoking guessed COM members.
 - **Classic metadata operations now bypass the native search-index gate safely.** GXPublic opens mark the gateway state ready from the provider catalogue, `genexus_query`/`genexus_list_objects` return canonical paged metadata results with a legacy capability block, and ambiguous `.gxi` generation is reported as unresolved until the matching provider opens the KB instead of being misclassified as a GX8/GX9 mismatch.
 - **The live harness now recognizes classic GX8/GX9 runtime anchors.** Legacy runs require a published Worker plus `-SkipBuild`, avoid compiling against the classic installation, and report missing provider/KB prerequisites as explicit unavailable evidence.
-- **Checkout MCP policy in `AGENTS.md` is a permanent fork preference.** For this tree, install/update/refresh of machine harnesses defaults to `.\install.ps1` (`config` + build + `clients add`); the no-rebuild `clients add` shortcut stays reserved for explicit “sem rebuild / só reapontar” requests, and local-checkout work prefers the checkout CLI over `npx` validation.
-- **Mechanical pre-push docs now live in `AGENTS.md`.** The fork-local `scripts/Invoke-PrePushMechanicalChecks.ps1` invocation is documented under Required workflow; `CONTRIBUTING.md` only points there instead of duplicating the command.
 
 ### Internal
 
@@ -357,7 +375,6 @@
 
 ### Added
 
-- Add the local `scripts/Invoke-PrePushMechanicalChecks.ps1` routine, with machine-readable readiness output, divergence and working-tree gates, PowerShell parsing, and the existing release preflight checks without publishing.
 - Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.
 
 ### Fixed
@@ -944,9 +961,6 @@
 - Live Build All evidence parsing now preserves terminal fields from JSON-in-JSON
   responses with duplicate-case keys, so an SDK exit code cannot mask missing
   completion evidence.
-- `AGENTS.md` no longer tells agents that OpenCode Desktop needs a separate
-  manual UI registration; on Windows it shares `opencode.jsonc` with the CLI
-  (upstream [#135](https://github.com/lennix1337/Genexus18MCP/issues/135)).
 
 ## v3.0.0 - 2026-09-06
 
