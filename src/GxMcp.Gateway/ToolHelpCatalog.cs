@@ -118,7 +118,8 @@ namespace GxMcp.Gateway
                 "## Examples (source code)\n" +
                 "- `{ name: 'InvoiceProc', part: 'Source', mode: 'patch', operation: 'Replace', context: '<old block>', content: '<new block>', dryRun: true }`\n" +
                 "- `{ name: 'OrderTrn', part: 'Rules', mode: 'full', content: '<rules text>' }`\n\n" +
-                "## Editing WorkWithPlus pattern parts (PatternInstance / PatternVirtual)\n" +
+                "## Editing pattern parts (PatternInstance / PatternVirtual)\n" +
+                "Any installed pattern's instance can be edited (WorkWithPlus, K2BTools `K2BEntityServices<Trn>`, ...). Name the instance object, or its parent: a parent resolves to its WorkWithPlus instance when it has one (historical behaviour), otherwise to its single pattern instance; a parent with several non-WorkWithPlus instances returns `PatternInstanceAmbiguous` with `candidates`. Editing a non-WorkWithPlus instance saves the instance only (the result carries `generatedObjectsRegenerated: false`); regenerate its objects by applying the pattern in the GeneXus IDE. The WorkWithPlus-specific notes below (apply-on-save, projection, typed actions) apply only to WorkWithPlus.\n\n" +
                 "Pattern XML is the IDE's structural model — containers, controls, actions, grids, orders, filters all live there. `PatternVirtual` continues to support structural full/patch edits through the SDK. Raw `PatternInstance` XML edits are limited to existing property changes; identity, defaults, templates, ordering metadata and structure are rejected explicitly. Use the typed WorkWithPlus actions or SDK pattern operations for structural changes.\n\n" +
                 "### Element kinds (XML node → IDE control)\n" +
                 "- `<textBlock controlName=\"...\" caption=\"...\" themeClass=\"BigTitle|LinkText|...\" format=\"HTML\" />`\n" +
@@ -177,11 +178,15 @@ namespace GxMcp.Gateway
                 "- `varName` — variable name, including `&` when that is how the KB stores it\n" +
                 "- `typeName` or `newTypeName` — replacement type for `add`/`modify` (`dataType` is also accepted as a legacy alias)\n\n" +
                 "## Optional\n" +
-                "- `basedOn` — domain name for compatible typed variables\n" +
+                "- `basedOn` — domain name for compatible typed variables (`Attribute:<name>` also binds an attribute)\n" +
+                "- `basedOnAttribute` — attribute name (or `Attribute:<name>`) binding the variable by native SDK identity, preserving picture/semantics (e.g. `9999999999` vs `ZZZZZZZZZ9`)\n" +
+                "- `typeName: 'Attribute:<name>'` — same attribute binding via the type slot; `variables[]` items accept `basedOn`/`basedOnAttribute` too\n" +
                 "- `async: true` returns immediately with `operationId` / `job_id`; poll `genexus_lifecycle action=status|result target=op:<id>` for completion.\n\n" +
                 "## Notes\n" +
                 "- GAM / WWP+ framework-managed variables are protected and return a refusal instead of mutating them.\n" +
-                "- `modify` preserves the variable name and description while changing the type atomically.\n\n" +
+                "- `modify` preserves the variable name and description while changing the type atomically.\n" +
+                "- `modify` refuses to silently drop an `Attribute:` binding (`AttributeBindingWouldBeLost`); pass `basedOnAttribute` to preserve or retarget it.\n" +
+                "- Untyped `add` inherits a same-named attribute *with its binding*; reads (`genexus_read part=Variables`, `genexus_inspect include=[\"variables\"]`) surface `basedOn`/`basedOnAttribute`.\n\n" +
                 "## Examples\n" +
                 "- `{ action: 'add', name: 'InvoiceProc', varName: '&Total', typeName: 'Numeric(10.2)' }`\n" +
                 "- `{ action: 'modify', name: 'InvoiceProc', varName: '&State', newTypeName: 'Character(20)', async: true }`\n" +
@@ -210,7 +215,9 @@ namespace GxMcp.Gateway
             ["genexus_apply_pattern"] =
                 "# genexus_apply_pattern\n\n" +
                 "Apply a GeneXus pattern to a KBObject — equivalent to the IDE's `Right-click → Apply Pattern` menu. " +
-                "Currently registered: `WorkWithPlus` (alias `WWP`).\n\n" +
+                "Registered patterns are discovered from the installation's `Packages\\Patterns\\*\\*.Pattern` manifests (for example `WorkWithPlus`, alias `WWP`, or K2BTools `K2BEntityServices`); an unknown key returns `availablePatterns`. Omit `pattern` only with `reapply=true` to infer it from the existing instance. " +
+                "WorkWithPlus keeps its dedicated route below. Other patterns use the generic pattern-engine route: the manifest's `ParentObjects` gate the target type, `reapply=true` takes the pattern from the existing instance (a different `pattern` is `PatternMismatch`, several instances without `pattern` are `PatternInstanceAmbiguous`), and a route that is not supported returns `PatternRouteUnsupported` (`mode=diagnose` reports it as a critical `routeUnsupported` finding). First apply generates the instance and its objects; headless reapply of a non-WorkWithPlus pattern does not regenerate its objects, so it returns `PatternRouteUnsupported` - apply the pattern in the GeneXus IDE to regenerate. " +
+                "Existing instances of any pattern are read and edited with `genexus_read` / `genexus_edit part=PatternInstance`.\n\n" +
                 "## When to use this — and when NOT to\n" +
                 "**Use this** any time the user asks for a WorkWithPlus / Work With Plus / WWP screen on a new or existing object. " +
                 "`apply_pattern` is the *only* path that creates a real `PatternInstance` — once that exists, `genexus_edit part=PatternInstance` can shape columns, actions, filters, orders, grids, themes, etc.\n\n" +
@@ -564,8 +571,8 @@ namespace GxMcp.Gateway
                 "Inspect and manage modules through the GeneXus Module Manager.\n\n" +
                 "## Actions\n" +
                 "- `list` — read installed Module objects from the SDK, deduplicated by GUID/EntityKey and returned with `parent`, `path`, `qualifiedName`, and description so homonymous namespaces remain distinguishable.\n" +
-                "- `install` / `install_builtin` — add a module to the KB.\n" +
-                "- `update` / `restore` — update or restore an installed module through the SDK.\n" +
+                "- `install` / `install_builtin` — add a module to the KB. Both accept `dryRun=true` for a read-only preview (package identity, dependencies, affected modules) without calling the SDK install; a verified repeat install is a safe no-op at the KB level.\n" +
+                "- `update` / `restore` — update or restore an installed module through the SDK. `update` also accepts `dryRun=true` for a read-only preview.\n" +
                 "- `list_modules_servers` — list configured module-server metadata without contacting remote catalogs; pass one returned name to `search_modules_in_servers` to bound network work.\n" +
                 "- `package` — create an `.opc` package from a Module and its selected environments (`confirm=true`).\n" +
                 "- `publish` — publish a package or installed Module to a configured module server (`server`, `confirm=true`).\n" +
