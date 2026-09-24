@@ -11,10 +11,10 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
     <NoWarn>$(NoWarn);MSB3277</NoWarn>
-    <Version>3.8.0</Version>
-    <AssemblyVersion>3.8.0.0</AssemblyVersion>
-    <FileVersion>3.8.0.0</FileVersion>
-    <InformationalVersion>3.8.0</InformationalVersion>
+    <Version>3.9.0</Version>
+    <AssemblyVersion>3.9.0.0</AssemblyVersion>
+    <FileVersion>3.9.0.0</FileVersion>
+    <InformationalVersion>3.9.0</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -159,6 +159,7 @@
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="8.0.3" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <Compile Include="..\GxMcp.Shared\JsonIngress.cs" Link="Shared\JsonIngress.cs" />
   </ItemGroup>
 
   <ItemGroup>

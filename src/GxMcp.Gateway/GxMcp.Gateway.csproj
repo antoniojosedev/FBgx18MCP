@@ -5,10 +5,10 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>3.8.0</Version>
-    <AssemblyVersion>3.8.0.0</AssemblyVersion>
-    <FileVersion>3.8.0.0</FileVersion>
-    <InformationalVersion>3.8.0</InformationalVersion>
+    <Version>3.9.0</Version>
+    <AssemblyVersion>3.9.0.0</AssemblyVersion>
+    <FileVersion>3.9.0.0</FileVersion>
+    <InformationalVersion>3.9.0</InformationalVersion>
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
@@ -32,6 +32,9 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="System.Management" Version="10.0.5" />
     <PackageReference Include="System.Security.Permissions" Version="10.0.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\GxMcp.Shared\JsonIngress.cs" Link="Shared\JsonIngress.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\config\gx-versions.json" Link="config\gx-versions.json">

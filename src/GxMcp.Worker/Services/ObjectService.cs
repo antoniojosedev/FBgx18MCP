@@ -3175,6 +3175,39 @@ namespace GxMcp.Worker.Services
             return fresh;
         }
 
+        /// <summary>Re-reads an object by its native identity after invalidating SDK caches.</summary>
+        internal KBObject FindObjectFreshByIdentity(KBObject expected)
+        {
+            _lastResolutionDiagnostic = null;
+            if (expected == null) return null;
+            string guid = expected.Guid.ToString("D");
+            string type = expected.TypeDescriptor?.Name;
+            string entityKey = null;
+            try { entityKey = expected.Key?.ToString(); } catch { }
+            if (!InvalidateCache(expected))
+            {
+                _lastResolutionDiagnostic = new JObject
+                {
+                    ["code"] = "FreshReadUnavailable",
+                    ["message"] = "The SDK object cache could not be invalidated; a verification read was not attempted."
+                };
+                return null;
+            }
+
+            InvalidateAllReadCaches();
+            var fresh = FindObject(null, type, guid, entityKey);
+            if (fresh == null || fresh.Guid != expected.Guid || object.ReferenceEquals(fresh, expected))
+            {
+                _lastResolutionDiagnostic = new JObject
+                {
+                    ["code"] = "FreshReadUnavailable",
+                    ["message"] = "The native identity resolver did not return a fresh instance of the same object."
+                };
+                return null;
+            }
+            return fresh;
+        }
+
         private string FormatReadNotFound(string target)
         {
             var diagnostic = GetLastResolutionDiagnostic();
@@ -3937,7 +3970,7 @@ namespace GxMcp.Worker.Services
             return TryGetFullReadSourceCache(normalizedGuid, normalizedPart, out src);
         }
 
-        private static string NormalizeRawSourcePart(string partName)
+        internal static string NormalizeRawSourcePart(string partName)
         {
             return string.IsNullOrWhiteSpace(partName) ? "source" : partName.Trim().ToLowerInvariant();
         }
@@ -4579,6 +4612,16 @@ namespace GxMcp.Worker.Services
                                 errorExtra: freshDiagnostic);
                         }
 
+                        if (!string.IsNullOrWhiteSpace(patternDiagnostic?["code"]?.ToString()))
+                        {
+                            return McpResponse.Err(
+                                code: patternDiagnostic["code"].ToString(),
+                                message: patternDiagnostic["message"]?.ToString() ?? "PatternInstance could not be resolved or read.",
+                                hint: patternDiagnostic["hint"]?.ToString() ?? "The result reflects the exact typed parent identity; no object was selected by homonymous name.",
+                                target: targetName,
+                                errorExtra: patternDiagnostic);
+                        }
+
                         // PatternVirtual fallback: serialise the matching part directly when the pattern analyser bails.
                         try
                         {
@@ -4626,8 +4669,11 @@ namespace GxMcp.Worker.Services
                     if (resolvedObject != null)
                     {
                         patternResult["resolvedObject"] = resolvedObject.Name;
+                        patternResult["resolvedGuid"] = resolvedObject.Guid.ToString("D");
+                        patternResult["resolvedEntityKey"] = resolvedObject.Key?.ToString();
+                        patternResult["resolvedType"] = resolvedObject.TypeDescriptor?.Name;
                         if (resolvedObject.Guid != obj.Guid)
-                            patternResult["resolvedType"] = resolvedObject.TypeDescriptor?.Name;
+                            patternResult["resolvedParentGuid"] = obj.Guid.ToString("D");
                         var resolvedPattern = _patternAnalysisService?.MatchInstancePattern(resolvedObject);
                         if (resolvedPattern != null)
                         {
@@ -4705,17 +4751,24 @@ namespace GxMcp.Worker.Services
 
                 if (part == null)
                 {
+                    result["code"] = "PartNotFound";
                     result["error"] = $"Part '{partName}' not found in {obj.Name}";
+                    result["objectName"] = obj.Name;
+                    result["objectType"] = obj.TypeDescriptor?.Name;
                     try
                     {
                         var avail = GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj);
                         if (avail != null && avail.Length > 0)
                         {
                             result["availableParts"] = new JArray(avail);
-                            result["hint"] = $"Valid parts for {obj.TypeDescriptor?.Name ?? "object"}: {string.Join(", ", avail)}.";
                         }
                     }
                     catch { }
+                    string typeName = obj.TypeDescriptor?.Name ?? "object";
+                    string available = result["availableParts"] is JArray parts && parts.Count > 0
+                        ? $" Valid parts for {typeName}: {string.Join(", ", parts.Values<string>())}."
+                        : string.Empty;
+                    result["hint"] = available + " For parameters or signatures, use genexus_inspect include=[\"signature\"].";
                     return result.ToString();
                 }
 
@@ -4885,7 +4938,7 @@ namespace GxMcp.Worker.Services
                 normalizedClient + (minimize ? "|1" : "|0"));
         }
 
-        private static bool TryGetReadCache(string key, out string payload)
+        internal static bool TryGetReadCache(string key, out string payload)
         {
             payload = string.Empty;
             if (string.IsNullOrWhiteSpace(key))
@@ -5060,6 +5113,12 @@ namespace GxMcp.Worker.Services
 
             string guid = objectGuid.ToString();
             SearchIndex.IndexEntry entry = index.FindByGuid(guid);
+            SourceStoreService.Instance.Put(
+                guid,
+                NormalizeRawSourcePart(partName),
+                source,
+                entry != null && entry.LastUpdate > DateTime.MinValue ? (DateTime?)entry.LastUpdate : null,
+                null);
             return entry != null
                 && string.Equals(NormalizeRawSourcePart(partName), ResolveSearchPartName(entry.Type), StringComparison.OrdinalIgnoreCase)
                 && indexCache.PromoteSourceForSearch(entry, source);

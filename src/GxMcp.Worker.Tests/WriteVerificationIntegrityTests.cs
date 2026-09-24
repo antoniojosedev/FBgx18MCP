@@ -35,6 +35,65 @@ namespace GxMcp.Worker.Tests
             Assert.True(result.Matches);
         }
 
+        [Theory]
+        [InlineData("Variables")]
+        [InlineData("Structure")]
+        [InlineData("Source")]
+        [InlineData("Events")]
+        public void DefaultVerification_AcceptsRenderedPartLineEndingNormalization(string partName)
+        {
+            var tolerant = WriteService.EvaluatePersistedVerification(
+                "alpha\r\nbeta", "alpha\nbeta", readTruncated: false, readFailure: null,
+                verifyMode: null, partName: partName);
+            var exact = WriteService.EvaluatePersistedVerification(
+                "alpha\r\nbeta", "alpha\nbeta", readTruncated: false, readFailure: null,
+                verifyMode: "exact", partName: partName);
+
+            Assert.True(tolerant.Matches);
+            Assert.Equal("normalization", tolerant.Reason);
+            Assert.False(exact.Matches);
+            Assert.Equal("lineEndings", exact.Reason);
+        }
+
+        [Theory]
+        [InlineData("Variables")]
+        [InlineData("Structure")]
+        [InlineData("Source")]
+        [InlineData("Events")]
+        public void FacadeBoundary_PreservesPartAndExactVerification(string partName)
+        {
+            var args = JObject.Parse($"{{\"part\":\"{partName}\",\"verifyMode\":\"exact\"}}");
+            var normalized = WriteService.NormalizeFacadeArgs(args);
+            var result = WriteService.EvaluatePersistedVerification(
+                "alpha\r\nbeta", "alpha\nbeta", readTruncated: false, readFailure: null,
+                verifyMode: normalized.VerifyMode, partName: normalized.PartName);
+
+            Assert.Equal(partName, normalized.PartName);
+            Assert.Equal("exact", normalized.VerifyMode);
+            Assert.False(result.Matches);
+            Assert.Equal("lineEndings", result.Reason);
+        }
+
+        [Fact]
+        public void DefaultVariablesVerification_AcceptsSdkTypeCasingNormalization()
+        {
+            const string requested = "&GridState : CustomerSdt, General\r\n&PlainLength : Character(25)";
+            const string persisted = "&GridState : CustomerSdt, General\r\n&PlainLength : CHARACTER(25)";
+
+            var tolerant = WriteService.EvaluatePersistedVerification(
+                requested, persisted, readTruncated: false, readFailure: null,
+                verifyMode: null, partName: "Variables");
+            var strict = WriteService.EvaluatePersistedVerification(
+                requested, persisted, readTruncated: false, readFailure: null,
+                verifyMode: "exact", partName: "Variables");
+
+            Assert.True(tolerant.Matches);
+            Assert.Equal("verified", tolerant.State);
+            Assert.Equal("normalization", tolerant.Reason);
+            Assert.False(strict.Matches);
+            Assert.Equal("mismatch", strict.State);
+        }
+
         [Fact]
         public void XmlAttributeOrder_IsReportedAsNormalization()
         {
