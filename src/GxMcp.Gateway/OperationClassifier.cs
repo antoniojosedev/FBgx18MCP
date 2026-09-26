@@ -117,7 +117,7 @@ namespace GxMcp.Gateway
                     mutating: new[] { "add_external_method", "add_external_property", "add_menu_option", "add_condition" }),
                 ["genexus_layout"] = Contract(
                     readOnly: new[] { "get_tree", "find_controls", "inspect_surface", "get_preview", "scan_mutators", "list_controls", "design_system" },
-                    mutating: new[] { "set_property", "set_properties", "rename_printblock", "add_printblock", "delete_printblock" }),
+                    mutating: new[] { "set_property", "set_properties", "rename_printblock", "add_printblock", "delete_printblock", "add_report_control", "move_report_control", "remove_report_control" }),
                 ["genexus_doc"] = Contract(
                     readOnly: new[] { "health" },
                     mutating: new[] { "wiki", "visualize" }),
@@ -185,6 +185,7 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "list", "settings_templates", "settings_read" },
                     mutating: new[] { "add_action", "add_user_action", "update_action", "move_action", "remove_action",
                         "add_tab", "move_tab", "remove_tab", "set_table_type", "add_grid_attribute",
+                        "move_grid_column", "add_grid_variable",
                         "replace_web_component_with_user_action", "settings_edit" }),
                 ["genexus_sandbox"] = Contract(
                     readOnly: Array.Empty<string>(),
@@ -198,6 +199,8 @@ namespace GxMcp.Gateway
         // dryRun=true. An arbitrary dryRun flag must not hide a write.
         private static readonly HashSet<string> DryRunCapableActions = new HashSet<string>(StringComparer.Ordinal)
         {
+            "genexus_module:install",
+            "genexus_module:install_builtin",
             "genexus_connection_recover:journal_repair",
             "genexus_data_view:create",
             "genexus_data_view:update",
@@ -239,6 +242,9 @@ namespace GxMcp.Gateway
             "genexus_variable:add",
             "genexus_variable:delete",
             "genexus_variable:modify",
+            "genexus_layout:add_report_control",
+            "genexus_layout:move_report_control",
+            "genexus_layout:remove_report_control",
             "genexus_create:object",
             "genexus_create:object_atomic",
             "genexus_create:popup",
@@ -263,6 +269,8 @@ namespace GxMcp.Gateway
             "genexus_wwp:remove_tab",
             "genexus_wwp:set_table_type",
             "genexus_wwp:add_grid_attribute",
+            "genexus_wwp:move_grid_column",
+            "genexus_wwp:add_grid_variable",
             "genexus_wwp:replace_web_component_with_user_action",
             "genexus_generator_reference:add",
             "genexus_generator_reference:remove"
@@ -526,7 +534,9 @@ namespace GxMcp.Gateway
                 Kind = kind,
                 Effects = EffectsFor(canonical, kind),
                 Execution = ExecutionFor(canonical, kind),
-                Retry = kind == OperationKind.ReadOnly ? "safe" : kind == OperationKind.Mutating ? "operation_key" : "never",
+                Retry = kind == OperationKind.ReadOnly ? "safe"
+                    : canonical == "genexus_module" && (effectiveArgs["action"]?.ToString() == "install" || effectiveArgs["action"]?.ToString() == "install_builtin") ? "reconcile_inventory"
+                    : kind == OperationKind.Mutating ? "operation_key" : "never",
                 Cache = kind == OperationKind.ReadOnly ? "semantic" : "never",
                 Invalidation = InvalidationFor(canonical, kind),
                 PreviewSupported = IsActionPreviewSupported(canonical, effectiveArgs)

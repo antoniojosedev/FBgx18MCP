@@ -33,8 +33,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="WindowsBase" />
     <Reference Include="Artech.Architecture.Common">
       <HintPath>$(GX_PATH)\Artech.Architecture.Common.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Artech.Genexus.Common">
+      <HintPath>$(GX_PATH)\Artech.Genexus.Common.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System.IO.Compression" />

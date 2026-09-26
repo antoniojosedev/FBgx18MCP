@@ -17,12 +17,24 @@ disposable.
 
 Live probes must use bounded asynchronous stdio reads and must not treat a
 response carrying `operationId` or `job_id` as final evidence. Disposable probes
-must also clean up Gateway/Worker processes on terminating errors.
+must also clean up Gateway/Worker processes on terminating errors. The structured
+summary records diagnostic error lines; an actual Worker/Gateway error, missing
+diagnostic evidence, explicit-KB open failure, missing process-exit confirmation,
+or failed cleanup is `unavailable`, never a pass.
 When an indexed read returns `IndexNotReady`, use
 `genexus_lifecycle action=status wait=10` before retrying the read; repeated
 `genexus_whoami` calls are health checks, not an index-readiness barrier.
 
 ## Provisioning prerequisite
+
+The `LiveDesignSystemRead` regression requires `GXMCP_TEST_KB` and
+`GXMCP_DSO_NAME` naming an existing DesignSystem with nonempty Tokens and Styles.
+Run only `FullyQualifiedName~DesignSystemFreshReadLiveTests` for this read-only
+scenario: it materializes both parts, previews identical full and patch edits,
+then checks unchanged source and version tokens. It neither creates a fixture
+nor saves, selects a KB version or invokes lifecycle. Confirm the authorized
+active version before running; destination pins still apply to previews. A
+skipped live test does not establish SDK behavior or safe persistence.
 
 Create a synthetic KB through GeneXus or import a verified synthetic XPZ into a
 new KB. Independently verify both the Knowledge Base database and generated

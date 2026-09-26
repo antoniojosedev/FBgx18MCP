@@ -164,6 +164,56 @@ isolation before being treated as regressions:
 - `EdgeCaseRegressionTests.Dispatcher_PatchApply_ValidateOnly_MapsToDryRun_ViaConvention`
 - `PatternApplyServiceTests.*`
 
+### A test failure that contradicts your change
+
+A build that fails leaves stale outputs behind, and the next test run then reports
+results from the **previous** binary. The symptom is a failure that should be
+impossible given the code you just wrote, or a fix that "does not work" with an
+unchanged error.
+
+Force the rebuild before investigating:
+
+```powershell
+dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj -c Release -t:Rebuild
+```
+
+Confirm the binaries agree before trusting a result:
+
+```powershell
+Get-FileHash publish\worker\GxMcp.Worker.exe -Algorithm SHA256
+Get-FileHash src\GxMcp.Worker\bin\Release\GxMcp.Worker.exe -Algorithm SHA256
+```
+
+Identical hashes mean the published Worker is the tested Worker, which is also
+what the release certificate requires. A divergence here is a build-ordering
+problem, not a product one.
+
+### `Nexus IDE checks` blocked by a VS Code update
+
+If the `Nexus IDE checks` preflight phase fails with `Code is currently being
+updated`, the Electron test runtime refused to start because a VS Code update is
+holding the Inno Setup mutex on this host. This is host state, not a repository
+regression: finish the update (close every VS Code window and let the installer
+complete) and re-run, passing `-ResumeSummaryPath <previous summary>` to reuse
+the phases that already passed.
+
+The phase is classified in `scripts/release-preflight.ps1` from its own captured
+output and records the cause and remediation on the phase record
+(`details.code = 'vscode-update-in-progress'`, `details.remediation`, and
+`details.mutexConfirmed`). It stays `failed` on purpose: the preflight aggregate
+accepts `unavailable` as an approved terminal status, so downgrading the phase
+would certify a release that ran no Electron test at all. A consumer may read
+the label, never treat it as an outcome.
+
+The confirmation probe is Windows-only and resolves the mutex from the same
+runtime the test launches, following `src/nexus-ide/src/test/runTest.ts`:
+`NEXUS_IDE_VSCODE_VERSION` (default `1.111.0`), cache
+`src/nexus-ide/.vscode-test`, and the **top-level** `win32MutexName` of
+`resources/app/product.json` in `vscode-win32-x64-archive-<version>\<hash>\`.
+The key also appears inside the `embedded` object for the Sessions sub-product
+and is deliberately ignored. When the runtime cannot be resolved the probe
+reports unconfirmed rather than guessing.
+
 ## Live tool playbook
 
 The authoritative schemas remain in `src/GxMcp.Gateway/tool_definitions.json`.

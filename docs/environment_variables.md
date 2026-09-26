@@ -39,9 +39,21 @@ The effective path remains in every successful response: wiki returns `result.fi
 
 Worker-owned state, diagnostics, build logs, and temporary output stay outside the executable/package directory. Managed Workers receive an opaque operational-state key from the Gateway so separate KB generations do not share default runtime folders. Build responses keep the same `fullLogPath` contract; only the destination root changes.
 
+### STA scheduler busy handling
+
+The GeneXus model is single-threaded: only one SDK operation runs at a time on the Worker's STA thread. The scheduler answers `WorkerBusy` instead of blocking indefinitely, and these two variables control that behavior.
+
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `GXMCP_STATE_DIR` | Optional Worker state root (for example preview configuration and soft-reload path hints). The Gateway still persists job snapshots under its own scoped state directory. | `%LOCALAPPDATA%\GenexusMCP\state\<operational-key-hash>` |
+| `GXMCP_BUSY_WAIT_MS` | Maximum queue age tolerated for an SDK command. Evaluated when the command is dequeued on the STA thread: an item that waited longer than this is rejected with `WorkerBusy` rather than executed late. Raise it for long builds, lower it to fail fast in interactive use. Per-command tuning (`busyWaitMs`) still wins over this environment value. | `15000` ms |
+| `GXMCP_BUSY_REJECT_MS` | Immediate-rejection window for low-priority commands that arrive while a long operation is already running: they are rejected with `WorkerBusy` without entering the queue once the in-flight operation has run for at least this long. `0` or a negative value disables the rejection and always queues instead. | `3000` ms |
+
+Both are read per request, so changing them affects the next command without restarting the Worker. See the `WorkerBusy` hints returned by the affected tools for the actionable value.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GXMCP_STATE_DIR` | Optional Worker state root (for example preview configuration and source-store files). | `%LOCALAPPDATA%\GenexusMCP\state\<operational-key-hash>` |
+| `GXMCP_JOBS_DIR` | Optional exact directory containing the soft-reload `jobs.json`; managed Gateways set this to the same scoped jobs directory they persist. | `GXMCP_STATE_DIR` |
 | `GXMCP_LOG_DIR` | Optional Worker log root; the Gateway sets a per-operational-state directory for managed Workers. The Gateway's own debug log also honors this variable. | `%LOCALAPPDATA%\GenexusMCP\logs\<operational-key-hash>` |
 
 Temporary Worker diagnostics use `%LOCALAPPDATA%\GenexusMCP\tmp\<operational-key-hash>`. Preview configuration/baselines use the state root; build output and rotated Worker logs use the log root. `GXMCP_BUILD_LOG_RETAIN_COUNT` still controls retention there.
@@ -87,7 +99,17 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_TEAMDEV_PENDING_NAME` | Name of a pre-seeded object with an IDE-created Team Development pending change for the opt-in Gateway regression test. | unset (IDE-origin regression skipped) |
 | `GXMCP_REQUIRE_LIVE_BUILD_ALL` | Set to `1` to require the native Build All evidence gate during release preflight. Missing fixtures or an unavailable GeneXus cloud `User` fail the required gate. | off |
 
-## Timeouts / budgets
+## Source-store backfill
+
+| Setting | Purpose | Default |
+|----------|---------|---------|
+| `Server.SourceStoreBackfill` | `auto` starts bounded P2 slices that populate the compressed source store and refresh stale parts; `off` keeps population lazy. | `auto` |
+| `GXMCP_SOURCE_STORE_BACKFILL` | Worker override for `Server.SourceStoreBackfill` (`off`, `false`, or `0` disables it). | inherited config / `auto` |
+| `Server.SourceStoreMaxMB` | Maximum compressed source-store size in MB. | `512` |
+| `GXMCP_SOURCE_STORE_MAX_MB` | Worker override for `Server.SourceStoreMaxMB`. | inherited config / `512` |
+
+Backfill progress is exposed under `index.sourceStore` (and lifecycle status) as stored/stale/total counts, cursor state and ETA. Each SDK slice is bounded to roughly 50 objects or 250 ms; the Worker never holds the STA while waiting for the next slice.
+
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
