@@ -61,6 +61,24 @@ function Get-GxMcpReleaseTempRoot {
     return [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
 }
 
+# Issue #322: compares a path-shaped preflight/summary field across two sides
+# that may carry equivalent but differently spelled forms of the same directory
+# (8.3 short name vs long name, dot segments, trailing separator). Only rooted
+# paths are normalized: a relative value has no stable base, so it is returned
+# verbatim and stays a strict comparison.
+function Get-GxMcpReleaseComparablePath {
+    param([AllowNull()][object]$Value)
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $text }
+    try {
+        if (-not [IO.Path]::IsPathRooted($text)) { return $text }
+        return (ConvertTo-GxMcpReleasePath -Path $text)
+    } catch {
+        return $text
+    }
+}
+
 function Get-GxMcpPreflightTrxTestCount {
     param([Parameter(Mandatory = $true)][string]$ResultsDirectory)
 
@@ -132,13 +150,30 @@ function Get-GxMcpReleaseRequiredAssetNames {
     return @('publish.zip', 'publish.zip.sha256', "nexus-ide-$versionValue.vsix")
 }
 
-function Protect-GxMcpReleaseMessage {
+# Issue #323: redaction with no length cap, for artifacts that must keep the
+# whole log. This is the union of every pattern the repository already applies to
+# diagnostics: the release-contract literal token prefixes, the release-contract
+# key/value credential pairs, and the integration-preflight credential words.
+# Protect-GxMcpReleaseMessage is this function plus the 1200-character cap; the
+# cap has to stay in the shared place because release-doctor and release-status
+# rely on it to bound their reports, but the union belongs here so a persisted
+# phase log cannot leak a secret that the console tail would have masked.
+function Protect-GxMcpReleaseText {
     param([AllowNull()][object]$Value)
 
     $text = [string]$Value
-    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($text)) { return '' }
     $text = $text -replace '(?i)(ghp_|github_pat_|npm_)[A-Za-z0-9_]+', '$1[REDACTED]'
     $text = $text -replace '(?i)(token|password|pwd|secret|api[_-]?key|authorization|connection\s*string)(\s*[:=]\s*)[^\s,;]+', '$1$2[REDACTED]'
+    $text = [regex]::Replace($text, '(?i)\b(user\s*id|userid)(\s*[:=]\s*)[^\s;,\r\n]+', '$1$2<redacted>')
+    return $text
+}
+
+function Protect-GxMcpReleaseMessage {
+    param([AllowNull()][object]$Value)
+
+    $text = Protect-GxMcpReleaseText $Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
     if ($text.Length -gt 1200) { $text = $text.Substring(0, 1200) + '…' }
     return $text
 }
@@ -362,13 +397,13 @@ function Test-GxMcpReleasePreflightCompatibility {
     $summaryMap = @($Summary.liveGxPathMap | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
     $expectedMap = @($Expected.liveGxPathMap | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ } | Sort-Object -Unique)
 
-    return [string]$Summary.root -eq [string]$Expected.root -and
+    return (Get-GxMcpReleaseComparablePath $Summary.root) -eq (Get-GxMcpReleaseComparablePath $Expected.root) -and
         [string]$Summary.version -eq [string]$Expected.version -and
         [string]$Summary.sourceCommit -eq [string]$Expected.sourceCommit -and
-        [string]$Summary.gxPath -eq [string]$Expected.gxPath -and
-        [string]$Summary.liveKbPath -eq [string]$Expected.liveKbPath -and
+        (Get-GxMcpReleaseComparablePath $Summary.gxPath) -eq (Get-GxMcpReleaseComparablePath $Expected.gxPath) -and
+        (Get-GxMcpReleaseComparablePath $Summary.liveKbPath) -eq (Get-GxMcpReleaseComparablePath $Expected.liveKbPath) -and
         [string]$Summary.liveKbSource -eq [string]$Expected.liveKbSource -and
-        [string]$Summary.liveFixtureManifest -eq [string]$Expected.liveFixtureManifest -and
+        (Get-GxMcpReleaseComparablePath $Summary.liveFixtureManifest) -eq (Get-GxMcpReleaseComparablePath $Expected.liveFixtureManifest) -and
         [string]$Summary.liveFixtureSource -eq [string]$Expected.liveFixtureSource -and
         [string]$Summary.liveMode -eq [string]$Expected.liveMode -and
         ($summaryMajors -join "`n") -ceq ($expectedMajors -join "`n") -and
@@ -454,8 +489,11 @@ function Test-GxMcpReleasePreflightCertificate {
     $resultsPath = [string]$Summary.processSmokeResultsPath
     if ([string]::IsNullOrWhiteSpace($resultsPath)) { return $false }
     try {
-        $fullResultsPath = [IO.Path]::GetFullPath($resultsPath)
-        $tempRoot = Get-GxMcpReleaseTempRoot
+        # Issue #322: normalize both sides through the same helper so a short
+        # (8.3) form of the temp root is not rejected against its long form.
+        $fullResultsPath = Get-GxMcpReleaseComparablePath $resultsPath
+        $tempRoot = Get-GxMcpReleaseComparablePath (Get-GxMcpReleaseTempRoot)
+        if (-not [IO.Path]::IsPathRooted($fullResultsPath)) { return $false }
         if (-not $fullResultsPath.StartsWith($tempRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return $false }
         if ((Get-GxMcpPreflightTrxTestCount -ResultsDirectory $fullResultsPath) -ne $testCount) { return $false }
     } catch { return $false }
