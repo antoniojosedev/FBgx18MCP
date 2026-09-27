@@ -259,6 +259,14 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   `git fetch origin` then
   `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson`.
   This script is **fork-local** (not upstream); it never runs `git push`.
+  Every phase that produced output writes its output, with recognized secrets
+  redacted, to a per-run log directory under `%TEMP%` (`gxmcp-pre-push-<guid>`),
+  exposed as `outputPath` per phase and printed by the text summary when run
+  without `-AsJson`; a failing release-preflight summary is retained
+  as `details.summaryPath` and each failed phase's `reason`/`exitCode`/`command`
+  travels in `details.failedPhaseDetails`. So a red run leaves evidence on disk
+  even when the console tail (last 60 lines per phase) drops the cause. Artifacts
+  older than 7 days are pruned on the next run (`-ArtifactRetentionDays`).
   `pushReadiness=readyLocal` means only the mechanical gates and checkout state
   are ready — semantic review, real-KB/IDE behavior, remote CI, and publication
   remain separate. Follow with the semantic coherence search required by the

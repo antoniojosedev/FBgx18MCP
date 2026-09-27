@@ -2,15 +2,26 @@
 param(
     [string]$BaseRef = 'origin/main',
 
+    [int]$ArtifactRetentionDays = 7,
+
     [switch]$AsJson
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Get-PrePushTempRoot {
+    param([AllowNull()][string]$Temp)
+
+    if ([string]::IsNullOrWhiteSpace($Temp)) { return [IO.Path]::GetTempPath() }
+    return $Temp
+}
+
 $root = Split-Path -Parent $PSScriptRoot
 $selfPath = [System.IO.Path]::GetFullPath($PSCommandPath)
 $startedAtUtc = [DateTime]::UtcNow
+$tempRoot = Get-PrePushTempRoot -Temp $env:TEMP
+$logRoot = Join-Path $tempRoot ('gxmcp-pre-push-' + [guid]::NewGuid().ToString('N'))
 
 function New-Phase {
     param(
@@ -25,6 +36,7 @@ function New-Phase {
         exitCode = $null
         durationSeconds = 0
         outputTail = @()
+        outputPath = $null
         reason = $null
     }
 }
@@ -73,12 +85,74 @@ function Format-Command {
     return ($parts -join ' ')
 }
 
+function Redact-PrePushLogLine {
+    param([AllowNull()][string]$Line)
+
+    if ([string]::IsNullOrEmpty($Line)) { return '' }
+    $redacted = $Line -replace '(?i)(ghp_|github_pat_|npm_)[A-Za-z0-9_]+', '$1[REDACTED]'
+    $redacted = $redacted -replace '(?i)(token|password|pwd|secret|user\s*id|userid|api[_-]?key|authorization|connection\s*string)(\s*[:=]\s*)[^\s,;]+', '$1$2[REDACTED]'
+    return $redacted
+}
+
+function Write-PhaseLog {
+    param(
+        [Parameter(Mandatory = $true)][object]$Phase,
+        [AllowEmptyCollection()][object[]]$Lines = @(),
+        [string]$LogRoot
+    )
+
+    $cleanLines = @($Lines | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) })
+    if ($cleanLines.Count -eq 0 -or [string]::IsNullOrWhiteSpace($LogRoot)) {
+        return $null
+    }
+    if (-not (Test-Path -LiteralPath $LogRoot -PathType Container)) {
+        New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
+    }
+    $slug = ([string]$Phase.name) -replace '[^A-Za-z0-9_.-]', '-'
+    $path = Join-Path $LogRoot "$slug.log"
+    $suffix = 2
+    while (Test-Path -LiteralPath $path -PathType Leaf) {
+        $path = Join-Path $LogRoot "$slug-$suffix.log"
+        $suffix++
+    }
+    [IO.File]::WriteAllText($path, (($cleanLines -join [Environment]::NewLine) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+    $Phase.outputPath = $path
+    return $path
+}
+
+function Remove-StalePrePushArtifacts {
+    param(
+        [string]$LogRoot = $env:TEMP,
+        [int]$RetentionDays = 7
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LogRoot) -or $RetentionDays -lt 0) { return @() }
+    if (-not (Test-Path -LiteralPath $LogRoot -PathType Container)) { return @() }
+    $cutoff = [DateTime]::UtcNow.AddDays(-1 * $RetentionDays)
+    $removed = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @(Get-ChildItem -LiteralPath $LogRoot -Filter 'gxmcp-pre-push-*' -Force -ErrorAction SilentlyContinue)) {
+        if ($item.LastWriteTimeUtc -ge $cutoff) { continue }
+        try {
+            Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+            [void]$removed.Add($item.FullName)
+        } catch { }
+    }
+    return @($removed)
+}
+
+function Test-ReleasePhaseStatusUnexpected {
+    param([AllowNull()][string]$Status)
+
+    return ($Status -notin @('passed', 'failed', 'unavailable'))
+}
+
 function Invoke-NativePhase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Executable,
         [string[]]$Arguments = @(),
-        [string]$WorkingDirectory = $root
+        [string]$WorkingDirectory = $root,
+        [string]$LogRoot
     )
 
     $phase = New-Phase -Name $Name -Command (Format-Command -Executable $Executable -Arguments $Arguments)
@@ -86,6 +160,7 @@ function Invoke-NativePhase {
     $phase.exitCode = $result.exitCode
     $phase.durationSeconds = $result.durationSeconds
     $phase.outputTail = @($result.output | Select-Object -Last 60)
+    [void](Write-PhaseLog -Phase $phase -Lines $result.output -LogRoot $LogRoot)
     if ($null -ne $result.error) {
         $phase.reason = $result.error
         $phase.status = 'failed'
@@ -138,6 +213,8 @@ function Get-TrackedPowerShellPaths {
 }
 
 function Invoke-PowerShellParsePhase {
+    param([string]$LogRoot)
+
     $phase = New-Phase -Name 'PowerShell AST parse' -Command 'Parser::ParseFile for quality scripts plus this checker'
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $errorsFound = New-Object System.Collections.Generic.List[string]
@@ -153,6 +230,7 @@ function Invoke-PowerShellParsePhase {
         $phase.exitCode = if ($errorsFound.Count -eq 0) { 0 } else { 1 }
         $phase.status = if ($errorsFound.Count -eq 0) { 'passed' } else { 'failed' }
         $phase.outputTail = @($errorsFound | Select-Object -Last 60)
+        [void](Write-PhaseLog -Phase $phase -Lines $errorsFound -LogRoot $LogRoot)
         if ($errorsFound.Count -gt 0) {
             $phase.reason = "PowerShell parse errors: $($errorsFound.Count)."
         }
@@ -209,8 +287,56 @@ function Write-TextSummary {
     if (@($Summary.reasons).Count -gt 0) {
         foreach ($reason in @($Summary.reasons)) { Write-Host "  reason: $reason" -ForegroundColor Yellow }
     }
-    foreach ($phase in @($Summary.phases)) {
-        Write-Host ("  [{0}] {1}" -f $phase.status, $phase.name)
+    foreach ($phase in $Summary.phases) {
+        $suffix = if ($phase.outputPath) { " (log: $($phase.outputPath))" } else { '' }
+        Write-Host ("  [{0}] {1}{2}" -f $phase.status, $phase.name, $suffix)
+    }
+}
+
+function Read-ReleasePhaseDetails {
+    param(
+        [Parameter(Mandatory = $true)][string]$SummaryPath,
+        [AllowNull()][string]$PhaseStatus
+    )
+
+    $details = [ordered]@{
+        status = $null
+        failedPhases = @()
+        failedPhaseDetails = @()
+        skippedPhases = @()
+        summaryPath = $null
+    }
+    $parseError = $null
+    if (Test-Path -LiteralPath $SummaryPath -PathType Leaf) {
+        try {
+            $releaseSummary = Get-Content -LiteralPath $SummaryPath -Raw | ConvertFrom-Json
+            $details.status = $releaseSummary.status
+            $details.failedPhases = @($releaseSummary.phases | Where-Object status -eq 'failed' | ForEach-Object name)
+            $details.failedPhaseDetails = @($releaseSummary.phases | Where-Object status -eq 'failed' | ForEach-Object {
+                    [ordered]@{
+                        name = $_.name
+                        command = $_.command
+                        exitCode = $_.exitCode
+                        durationSeconds = $_.durationSeconds
+                        reason = $_.reason
+                    }
+                })
+            $details.skippedPhases = @($releaseSummary.phases | Where-Object status -eq 'skipped' | ForEach-Object name)
+        } catch {
+            $parseError = $_.Exception.Message
+        }
+    }
+    $effectiveStatus = $PhaseStatus
+    if ($null -ne $parseError) { $effectiveStatus = 'failed' }
+    $keepSummary = $false
+    if ($effectiveStatus -ne 'passed' -and (Test-Path -LiteralPath $SummaryPath -PathType Leaf)) {
+        $details.summaryPath = $SummaryPath
+        $keepSummary = $true
+    }
+    return [pscustomobject]@{
+        details = $details
+        parseError = $parseError
+        keepSummary = $keepSummary
     }
 }
 
@@ -253,6 +379,8 @@ $commitsBehind = 0
 $workingTreeDirty = $false
 
 try {
+    [void](Remove-StalePrePushArtifacts -LogRoot $tempRoot -RetentionDays $ArtifactRetentionDays)
+
     $headResult = Get-GitLines -Arguments @('rev-parse', 'HEAD')
     if ($headResult.exitCode -eq 0 -and $headResult.lines.Count -gt 0) {
         $summary.headCommit = $headResult.lines[0]
@@ -316,48 +444,48 @@ try {
     }
 
     if ($baseAvailable) {
-        $rangeDiffPhase = Invoke-NativePhase -Name 'git diff check (base..HEAD)' -Executable 'git' -Arguments @('-C', $root, 'diff', '--check', ("{0}..HEAD" -f $BaseRef))
+        $rangeDiffPhase = Invoke-NativePhase -Name 'git diff check (base..HEAD)' -Executable 'git' -Arguments @('-C', $root, 'diff', '--check', ("{0}..HEAD" -f $BaseRef)) -LogRoot $logRoot
         [void]$summary.phases.Add($rangeDiffPhase)
         if ($rangeDiffPhase.status -ne 'passed') { $mechanicalFailed = $true }
     }
 
-    $workingDiffPhase = Invoke-NativePhase -Name 'git diff check (working tree)' -Executable 'git' -Arguments @('-C', $root, 'diff', '--check')
+    $workingDiffPhase = Invoke-NativePhase -Name 'git diff check (working tree)' -Executable 'git' -Arguments @('-C', $root, 'diff', '--check') -LogRoot $logRoot
     [void]$summary.phases.Add($workingDiffPhase)
     if ($workingDiffPhase.status -ne 'passed') { $mechanicalFailed = $true }
 
-    $parsePhase = Invoke-PowerShellParsePhase
+    $parsePhase = Invoke-PowerShellParsePhase -LogRoot $logRoot
     [void]$summary.phases.Add($parsePhase)
     if ($parsePhase.status -ne 'passed') { $mechanicalFailed = $true }
 
-    $releaseSummaryPath = Join-Path $env:TEMP ('gxmcp-pre-push-release-' + [guid]::NewGuid().ToString('N') + '.json')
+    $releaseSummaryPath = Join-Path $tempRoot ('gxmcp-pre-push-release-' + [guid]::NewGuid().ToString('N') + '.json')
+    $keepReleaseSummary = $false
     try {
         $releasePhase = Invoke-NativePhase `
             -Name 'release preflight (without live KB)' `
             -Executable 'pwsh' `
-            -Arguments @('-NoProfile', '-File', (Join-Path $root 'scripts/release-preflight.ps1'), '-SkipLive', '-SummaryPath', $releaseSummaryPath)
-        if (Test-Path -LiteralPath $releaseSummaryPath -PathType Leaf) {
-            try {
-                $releaseSummary = Get-Content -LiteralPath $releaseSummaryPath -Raw | ConvertFrom-Json
-                $releasePhase.details = [ordered]@{
-                    status = $releaseSummary.status
-                    failedPhases = @($releaseSummary.phases | Where-Object status -eq 'failed' | ForEach-Object name)
-                    skippedPhases = @($releaseSummary.phases | Where-Object status -eq 'skipped' | ForEach-Object name)
-                }
-            } catch {
-                $releasePhase.reason = "Unable to parse release preflight summary: $($_.Exception.Message)"
-                $releasePhase.status = 'failed'
-            }
+            -Arguments @('-NoProfile', '-File', (Join-Path $root 'scripts/release-preflight.ps1'), '-SkipLive', '-SummaryPath', $releaseSummaryPath) `
+            -LogRoot $logRoot
+        $releaseOutcome = Read-ReleasePhaseDetails -SummaryPath $releaseSummaryPath -PhaseStatus $releasePhase.status
+        if ($null -ne $releaseOutcome.parseError) {
+            $releasePhase.reason = "Unable to parse release preflight summary: $($releaseOutcome.parseError)"
+            $releasePhase.status = 'failed'
         }
         if ($releasePhase.status -eq 'failed' -and
             (@($releasePhase.outputTail) -join "`n") -match '(?i)(not recognized as an internal or external command|não é reconhecido como um comando|command not found|enoent)') {
             $releasePhase.status = 'unavailable'
             $releasePhase.reason = 'Release preflight could not run because a local tool or dependency was unavailable.'
         }
+        if (Test-ReleasePhaseStatusUnexpected -Status $releasePhase.status) {
+            $releasePhase.reason = "Release preflight phase ended with an unexpected status '$($releasePhase.status)'; treating it as failed."
+            $releasePhase.status = 'failed'
+        }
+        $releasePhase.details = $releaseOutcome.details
+        $keepReleaseSummary = $releaseOutcome.keepSummary
         [void]$summary.phases.Add($releasePhase)
         if ($releasePhase.status -eq 'failed') { $mechanicalFailed = $true }
         if ($releasePhase.status -eq 'unavailable') { $mechanicalUnavailable = $true }
     } finally {
-        if (Test-Path -LiteralPath $releaseSummaryPath -PathType Leaf) {
+        if (-not $keepReleaseSummary -and (Test-Path -LiteralPath $releaseSummaryPath -PathType Leaf)) {
             Remove-Item -LiteralPath $releaseSummaryPath -Force -ErrorAction SilentlyContinue
         }
     }
