@@ -65,6 +65,72 @@ foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 
     . ([scriptblock]::Create($functionDefinition.Extent.Text))
 }
 
+. (Join-Path $root 'scripts\release-contract.ps1')
+
+$corpus = @(
+    'user id=John,Doe;', 'userid=John,Doe', 'superuserid=leaked', 'user id=jdoe',
+    'token=abc123', 'npm_A1b2C3d4', 'ghp_ABCDEF123456', 'authorization:BearerT9',
+    'connection string=Server=x;Password=y'
+)
+foreach ($case in $corpus) {
+    if ((Redact-PrePushLogLine -Line $case) -cne (Protect-GxMcpReleaseText $case)) {
+        throw "Redact-PrePushLogLine diverged from the shared contract for: $case"
+    }
+}
+
+$wrapperNode = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Redact-PrePushLogLine'
+    }, $true)
+if (-not $wrapperNode) { throw 'Missing production function: Redact-PrePushLogLine' }
+$wrapperBody = $wrapperNode.Extent.Text -replace '(?s)<#.*?#>', ''
+$wrapperBody = (($wrapperBody -split "`n") | Where-Object { $_.TrimStart() -notmatch '^#' }) -join "`n"
+if ($wrapperBody -notmatch 'Protect-GxMcpReleaseText\s+\$Line') {
+    throw 'Redact-PrePushLogLine must call the shared contract function with $Line.'
+}
+if ($wrapperBody -match '-replace|\[regex\]::Replace') {
+    throw 'Redact-PrePushLogLine must not re-inline redaction patterns; delegate to the shared contract.'
+}
+
+if ((Redact-PrePushLogLine -Line '   ') -ne '') {
+    throw 'Redact-PrePushLogLine must normalize a whitespace-only line to empty.'
+}
+
+$topLevelTries = @($ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
+if ($topLevelTries.Count -ne 1) { throw "Expected exactly one top-level try statement; found $($topLevelTries.Count)." }
+$topLevelTry = $topLevelTries[0]
+
+$dotContracts = @($ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot -and
+            $node.Extent.Text -match 'release-contract\.ps1'
+        }, $true))
+if ($dotContracts.Count -ne 1) { throw "Expected exactly one release-contract dot-source; found $($dotContracts.Count)." }
+$dotContract = $dotContracts[0]
+
+if ($dotContract.Extent.StartOffset -lt $topLevelTry.Body.Extent.StartOffset -or
+    $dotContract.Extent.EndOffset -gt $topLevelTry.Body.Extent.EndOffset) {
+    throw 'The contract dot-source must live inside the top-level try block, so a broken contract still emits the summary.'
+}
+
+if ($source -match '\[regex\]::Replace') {
+    throw 'The checker must not re-implement the shared regex-replacement pattern.'
+}
+# Reuse the checker AST parsed above (F3); do not reparse.
+$checkerAst = $ast
+foreach ($op in $checkerAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.BinaryExpressionAst] -and
+            $node.Operator -in [System.Management.Automation.Language.TokenKind]::Ireplace, [System.Management.Automation.Language.TokenKind]::Creplace
+        }, $true)) {
+    # $op.Right covers both pattern and replacement (ArrayLiteralAst); the markers live in the replacement.
+    if ($op.Right.Extent.Text -match 'ghp_|github_pat_|api[_-]?key|connection\s*string|token|password|pwd|secret|authorization|\[REDACTED\]|<redacted>') {
+        throw 'The checker must not re-inline a credential redaction pattern outside the shared contract.'
+    }
+}
+
 $fixturePath = Join-Path $env:TEMP ('gxmcp-prepush-noise-' + [guid]::NewGuid().ToString('N') + '.ps1')
 $fixtureBody = @'
 Write-Output 'SENTINELA-AQUI'
@@ -287,6 +353,24 @@ if ([string]::IsNullOrWhiteSpace((Get-PrePushTempRoot -Temp $null))) {
     throw 'Get-PrePushTempRoot must fall back to the system temp path when TEMP is null.'
 }
 
+$sentinelRoot = Join-Path $env:TEMP ('gxmcp-prepush-sentinel-' + [guid]::NewGuid().ToString('N'))
+$sentinelScripts = Join-Path $sentinelRoot 'scripts'
+try {
+    New-Item -ItemType Directory -Path $sentinelScripts -Force | Out-Null
+    Copy-Item -LiteralPath $scriptPath -Destination (Join-Path $sentinelScripts 'Invoke-PrePushMechanicalChecks.ps1')
+    [IO.File]::WriteAllText(
+        (Join-Path $sentinelScripts 'release-contract.ps1'),
+        "throw 'GXMCP_PREPUSH_CONTRACT_SENTINEL'" + [Environment]::NewLine,
+        [Text.UTF8Encoding]::new($false))
+    $out = & pwsh -NoProfile -File (Join-Path $sentinelScripts 'Invoke-PrePushMechanicalChecks.ps1') -AsJson 2>$null
+    $sentinelSummary = $out | ConvertFrom-Json
+    if ($sentinelSummary.reasons -notcontains 'GXMCP_PREPUSH_CONTRACT_SENTINEL') { throw 'A broken contract must surface its error in the summary reasons.' }
+    if ($sentinelSummary.exitCode -ne 1) { throw 'A broken contract must exit 1.' }
+    if (@($sentinelSummary.phases).Count -ne 0) { throw 'A broken contract must abort before any phase runs.' }
+} finally {
+    Remove-Item -LiteralPath $sentinelRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 if ($source -match '(?im)^\s*(?:&\s*)?git\s+push\b') {
     throw 'The mechanical checker must never call git push.'
 }
@@ -301,6 +385,8 @@ foreach ($marker in @(
         'outputPath',
         'failedPhaseDetails',
         'Redact-PrePushLogLine',
+        'Protect-GxMcpReleaseText',
+        'release-contract.ps1',
         'Remove-StalePrePushArtifacts',
         'Test-ReleasePhaseStatusUnexpected',
         'gxmcp-pre-push-'

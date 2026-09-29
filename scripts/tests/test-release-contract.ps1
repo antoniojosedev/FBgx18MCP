@@ -7,6 +7,46 @@ if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
 }
 . $contractPath
 
+# --- Protect-GxMcpReleaseText redaction pins (2c) ---------------------------
+# Self-contained block: measured values, case-sensitive. Deltas accepted from the
+# fork-local checker delegation are pinned here (over-masking loss on superuserid=,
+# marker swap on userid=) plus the shared canonical gap on 'token=user id=secret'.
+$redactionProbe = [ordered]@{
+    'ghp_ABCDEF123456'                      = 'ghp_[REDACTED]'
+    'npm_A1b2C3d4'                          = 'npm_[REDACTED]'
+    'github_pat_11AAAA'                     = 'github_pat_[REDACTED]'
+    'password=hunter2'                      = 'password=[REDACTED]'
+    'pwd:s3cr3t'                            = 'pwd:[REDACTED]'
+    'secret=abc'                            = 'secret=[REDACTED]'
+    'api_key=k-9'                           = 'api_key=[REDACTED]'
+    'authorization:BearerT9'                = 'authorization:[REDACTED]'
+    'connection string=Server=x;Password=y' = 'connection string=[REDACTED];Password=[REDACTED]'
+    'user id=jdoe'                          = 'user id=<redacted>'
+    'userid=x'                              = 'userid=<redacted>'          # delta 2
+    'superuserid=leaked'                    = 'superuserid=leaked'          # delta 1
+    'token=user id=secret'                  = 'token=[REDACTED] id=secret'  # shared gap; NOT a success
+}
+foreach ($case in $redactionProbe.Keys) {
+    if ((Protect-GxMcpReleaseText $case) -cne $redactionProbe[$case]) {
+        throw "Protect-GxMcpReleaseText regression for: $case"
+    }
+}
+
+# --- release-contract.ps1 dot-source invariant (2e) -------------------------
+# A dot-source must not consume arguments and must not execute top-level code in
+# the caller's scope, so the module stays a pure function library.
+$tokens = $null; $parseErrors = $null
+$contractAst = [System.Management.Automation.Language.Parser]::ParseFile($contractPath, [ref]$tokens, [ref]$parseErrors)
+if ($parseErrors.Count -gt 0) { throw "release-contract.ps1 has parse errors: $($parseErrors -join '; ')" }
+if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.ProcessBlock) {
+    throw 'release-contract.ps1 must not declare param/begin/process blocks; the dot-source must not consume arguments.'
+}
+foreach ($stmt in $contractAst.EndBlock.Statements) {
+    if ($stmt -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
+        throw "release-contract.ps1 must define only functions at top level; found: $($stmt.GetType().Name)"
+    }
+}
+
 $temp = Join-Path $env:TEMP ('gxmcp-release-contract-' + [guid]::NewGuid().ToString('N'))
 $artifactRoot = Join-Path $temp 'repo'
 $publish = Join-Path $artifactRoot 'publish'

@@ -89,9 +89,7 @@ function Redact-PrePushLogLine {
     param([AllowNull()][string]$Line)
 
     if ([string]::IsNullOrEmpty($Line)) { return '' }
-    $redacted = $Line -replace '(?i)(ghp_|github_pat_|npm_)[A-Za-z0-9_]+', '$1[REDACTED]'
-    $redacted = $redacted -replace '(?i)(token|password|pwd|secret|user\s*id|userid|api[_-]?key|authorization|connection\s*string)(\s*[:=]\s*)[^\s,;]+', '$1$2[REDACTED]'
-    return $redacted
+    return (Protect-GxMcpReleaseText $Line)
 }
 
 function Write-PhaseLog {
@@ -379,6 +377,7 @@ $commitsBehind = 0
 $workingTreeDirty = $false
 
 try {
+    . (Join-Path $root 'scripts\release-contract.ps1')
     [void](Remove-StalePrePushArtifacts -LogRoot $tempRoot -RetentionDays $ArtifactRetentionDays)
 
     $headResult = Get-GitLines -Arguments @('rev-parse', 'HEAD')

@@ -260,7 +260,9 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson`.
   This script is **fork-local** (not upstream); it never runs `git push`.
   Every phase that produced output writes its output, with recognized secrets
-  redacted, to a per-run log directory under `%TEMP%` (`gxmcp-pre-push-<guid>`),
+  redacted (the set is defined once in `scripts/release-contract.ps1`,
+  `Protect-GxMcpReleaseText`; the checker delegates to it), to a per-run log
+  directory under `%TEMP%` (`gxmcp-pre-push-<guid>`),
   exposed as `outputPath` per phase and printed by the text summary when run
   without `-AsJson`; a failing release-preflight summary is retained
   as `details.summaryPath` and each failed phase's `reason`/`exitCode`/`command`
