@@ -67,6 +67,42 @@ foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 
 
 . (Join-Path $root 'scripts\release-contract.ps1')
 
+# --- Fork-local pre-push redaction pins -------------------------------------
+# The pre-push checker delegates to Protect-GxMcpReleaseText, so the fork does not
+# own the canonical redaction cases (the upstream test-release-contract.ps1 pins
+# those for #326). These two guarantees are the fork's own and are pinned here:
+# the canonical single marker survives the delegation, and a credential word
+# embedded as a suffix (superuserid) is not over-masked by a word-boundary
+# regression. Keeping them in the fork-owned test is what stops the fork from
+# carrying an absolute copy of upstream's canonical that drifts on every sync.
+foreach ($pin in @(
+        [ordered]@{ input = 'user id=jdoe'; output = 'user id=[REDACTED]' },
+        [ordered]@{ input = 'userid=x'; output = 'userid=[REDACTED]' },
+        [ordered]@{ input = 'superuserid=leaked'; output = 'superuserid=leaked' })) {
+    $actual = Protect-GxMcpReleaseText $pin.input
+    if ([string]$actual -cne [string]$pin.output) {
+        throw "Fork pre-push redaction pin regressed for '$($pin.input)': got '$actual'."
+    }
+}
+
+# --- release-contract.ps1 dot-source invariant ------------------------------
+# A dot-source must not consume arguments and must not execute top-level code in
+# the caller's scope, so the module stays a pure function library. The pre-push
+# checker dot-sources the contract, so this fork-local guard lives with the
+# checker rather than in the upstream test-release-contract.ps1.
+$contractPath = Join-Path $root 'scripts\release-contract.ps1'
+$contractTokens = $null; $contractParseErrors = $null
+$contractAst = [System.Management.Automation.Language.Parser]::ParseFile($contractPath, [ref]$contractTokens, [ref]$contractParseErrors)
+if ($contractParseErrors.Count -gt 0) { throw "release-contract.ps1 has parse errors: $($contractParseErrors -join '; ')" }
+if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.ProcessBlock) {
+    throw 'release-contract.ps1 must not declare param/begin/process blocks; the dot-source must not consume arguments.'
+}
+foreach ($stmt in $contractAst.EndBlock.Statements) {
+    if ($stmt -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
+        throw "release-contract.ps1 must define only functions at top level; found: $($stmt.GetType().Name)"
+    }
+}
+
 $corpus = @(
     'user id=John,Doe;', 'userid=John,Doe', 'superuserid=leaked', 'user id=jdoe',
     'token=abc123', 'npm_A1b2C3d4', 'ghp_ABCDEF123456', 'authorization:BearerT9',
