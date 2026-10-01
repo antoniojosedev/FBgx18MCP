@@ -291,6 +291,14 @@ function Write-TextSummary {
     }
 }
 
+function Get-ReleasePhaseField {
+    param($Phase, [Parameter(Mandatory = $true)][string]$Field)
+    if ($null -eq $Phase) { return $null }
+    $property = $Phase.PSObject.Properties[$Field]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
 function Read-ReleasePhaseDetails {
     param(
         [Parameter(Mandatory = $true)][string]$SummaryPath,
@@ -318,18 +326,26 @@ function Read-ReleasePhaseDetails {
             # retained detail. The checker never runs the preflight with -DryRun,
             # so 'dry-run' cannot appear, but it stays in the allowed set to match
             # the producer.
+            #
+            # Every field is read through Get-ReleasePhaseField: under
+            # Set-StrictMode -Version Latest, touching a property the summary does
+            # not carry throws, and the catch below would discard the whole
+            # failedPhaseDetails set and report "unable to parse" instead. An
+            # absent field now reads as $null, so a phase without 'status' is
+            # classified as a failure and keeps its name - fail-closed, and the
+            # detail survives instead of being lost.
             $nonFailurePhaseStatuses = @('passed', 'skipped', 'unavailable', 'dry-run')
-            $details.failedPhases = @($releaseSummary.phases | Where-Object { [string]$_.status -notin $nonFailurePhaseStatuses } | ForEach-Object name)
-            $details.failedPhaseDetails = @($releaseSummary.phases | Where-Object { [string]$_.status -notin $nonFailurePhaseStatuses } | ForEach-Object {
+            $details.failedPhases = @($releaseSummary.phases | Where-Object { (Get-ReleasePhaseField -Phase $_ -Field 'status') -notin $nonFailurePhaseStatuses } | ForEach-Object { Get-ReleasePhaseField -Phase $_ -Field 'name' })
+            $details.failedPhaseDetails = @($releaseSummary.phases | Where-Object { (Get-ReleasePhaseField -Phase $_ -Field 'status') -notin $nonFailurePhaseStatuses } | ForEach-Object {
                     [ordered]@{
-                        name = $_.name
-                        command = $_.command
-                        exitCode = $_.exitCode
-                        durationSeconds = $_.durationSeconds
-                        reason = $_.reason
+                        name = Get-ReleasePhaseField -Phase $_ -Field 'name'
+                        command = Get-ReleasePhaseField -Phase $_ -Field 'command'
+                        exitCode = Get-ReleasePhaseField -Phase $_ -Field 'exitCode'
+                        durationSeconds = Get-ReleasePhaseField -Phase $_ -Field 'durationSeconds'
+                        reason = Get-ReleasePhaseField -Phase $_ -Field 'reason'
                     }
                 })
-            $details.skippedPhases = @($releaseSummary.phases | Where-Object status -eq 'skipped' | ForEach-Object name)
+            $details.skippedPhases = @($releaseSummary.phases | Where-Object { (Get-ReleasePhaseField -Phase $_ -Field 'status') -eq 'skipped' } | ForEach-Object { Get-ReleasePhaseField -Phase $_ -Field 'name' })
         } catch {
             $parseError = $_.Exception.Message
         }
