@@ -368,6 +368,69 @@ namespace GxMcp.Worker.Services
         public TextMirrorService GetTextMirrorService() { return _textMirrorService; }
 
         /// <summary>
+        /// The refusal a tool gets when the action is not one it serves.
+        ///
+        /// Every handler ends on this shape, and it was written out at each of them:
+        /// the same code, the same next step, the same two sentences with the tool's
+        /// name dropped in. Only the name varies, and for all of them the tool name
+        /// in the hint is this same string with a <c>genexus_</c> prefix - which is
+        /// what lets one argument carry both.
+        ///
+        /// It is shared because a refusal that is not recognisable as a refusal is
+        /// the one failure an agent cannot recover from: it is the tool telling the
+        /// caller that nothing was written and where to look instead, so a sixth
+        /// handler that forgot the next step, or spelled it differently, would strand
+        /// the caller rather than misdirect it.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="tool"/> produces <em>both</em> strings - the message says
+        /// <c>Unsupported {tool} action</c> and the hint says <c>Call genexus_{tool}
+        /// </c> - so it must be the short name of a tool that is actually advertised
+        /// as <c>genexus_</c> plus that name. A handler whose advertised name does not
+        /// follow that shape cannot use this; it has to pass the advertised name, and
+        /// the two sentences will then disagree, which is the lesser evil compared to
+        /// naming a tool that is not there.
+        /// </remarks>
+        /// <param name="tool">
+        /// The tool's short name - <c>security</c>, not <c>genexus_security</c>.
+        /// </param>
+        /// <param name="action">The action that was asked for, quoted back verbatim.</param>
+        /// <param name="target">The target the call was made against, if it named one.</param>
+        internal static string UnsupportedAction(string tool, string action, string target)
+        {
+            return Models.McpResponse.Err(
+                code: "UnknownAction",
+                message: $"Unsupported {tool} action '{action}'.",
+                hint: $"Call genexus_{tool} with no action to see the supported list.",
+                nextSteps: OrientWelcomeNextSteps(),
+                target: target);
+        }
+
+        /// <summary>
+        /// The next step offered by every "you asked for something this tool does
+        /// not do" refusal: the welcome card.
+        ///
+        /// Shared between <see cref="UnsupportedAction"/> and the dispatcher's own
+        /// unknown-combination refusal, which is a different condition - the pair
+        /// named neither a known tool nor a known action - but reaches for the same
+        /// place, because in both cases the caller's next useful move is to find out
+        /// what exists.
+        ///
+        /// Built fresh on each call rather than held in a static field: a
+        /// <see cref="JArray"/> is mutable and is attached to the response object,
+        /// so a shared instance would let one envelope's next step be edited by
+        /// whoever happened to hold the response next.
+        /// </summary>
+        private static JArray OrientWelcomeNextSteps()
+        {
+            return new JArray(
+                Models.McpResponse.NextStep(
+                    tool: "genexus_orient",
+                    args: new JObject(),
+                    why: "Welcome card: KB info, recent edits, and top gotchas."));
+        }
+
+        /// <summary>
         /// GXPublic exposes its own metadata catalogue and does not populate the
         /// native SearchIndexService. Mark the gateway-facing index state usable
         /// after a successful provider open so query/list reach the GXPublic
@@ -515,6 +578,32 @@ namespace GxMcp.Worker.Services
                 if (method == "doctor")
                     return true;
                 if (method == "build" && (action == "Status" || action == "Result"))
+                    return true;
+
+                // issue #342: ReadLogs is the diagnostic route an agent reaches for when
+                // something has already gone wrong - a blocked SDK lane being the usual
+                // reason. It read the log file and returned, touching no KBObject, no COM
+                // object and no SDK type, yet it was dispatched through the very lane that
+                // might be blocked, so the one request that could explain the blockage
+                // waited behind the blockage. It is pure file I/O plus in-process
+                // filtering, so it belongs on the parallel path with the other
+                // diagnostic reads above.
+                //
+                // This is the audit the issue asks for, stated explicitly: ReadLogs
+                // reaches only Logger.LogDirectory, the log file itself,
+                // CommandDispatcher.EscapeJsonString and SourceSearchService.RegexMatchTimeout.
+                // None of those is SDK-owned. Anything that later makes ReadLogs consult
+                // the KB must remove this whitelist entry in the same change - a stale
+                // whitelist here would be a COM access violation, not a slowdown.
+                if (method == "object" && action == "ReadLogs")
+                    return true;
+
+                // issue #342: the SDK-lane liveness probe must answer *while* the SDK lane
+                // is blocked - that is the only moment it has anything to report. Routing
+                // it through the STA would make it wait behind the blockage it exists to
+                // detect, and the gateway would read the timeout as "unknown" forever.
+                // Reads volatile fields and a lock-guarded counter; touches no SDK object.
+                if (method == "system" && action == "GetSdkBusyStatus")
                     return true;
 
                 
@@ -789,11 +878,7 @@ namespace GxMcp.Worker.Services
                         code: "UnknownMethodOrAction",
                         message: string.Format("Unsupported dispatch combination. Method='{0}', Action='{1}'.", method ?? "", action ?? ""),
                         hint: "Call genexus_help action=route goal=<intent> for the right tool, or genexus_orient for an overview.",
-                        nextSteps: new JArray(
-                            Models.McpResponse.NextStep(
-                                tool: "genexus_orient",
-                                args: new JObject(),
-                                why: "Welcome card: KB info, recent edits, and top gotchas.")),
+                        nextSteps: OrientWelcomeNextSteps(),
                         target: target);
                 } // end using ProgressContext
             }
@@ -813,6 +898,7 @@ namespace GxMcp.Worker.Services
             return new Dictionary<string, CommandHandler>(StringComparer.OrdinalIgnoreCase)
             {
                 ["ping"] = Handle_Ping,
+                ["system"] = Handle_System,
                 ["control"] = Handle_Control,
                 ["kb"] = Handle_Kb,
                 ["batch"] = Handle_Batch,
@@ -918,6 +1004,44 @@ namespace GxMcp.Worker.Services
         private string Handle_Ping(JObject request, string method, string action, string target, string payload, JObject args)
         {
             return Models.McpResponse.Ok(code: "Pong", result: new JObject { ["message"] = "pong" });
+        }
+
+        /// <summary>
+        /// Reports the state of the SDK lane. Issue #342: <c>Ping</c> answers on the
+        /// transport/MTA path, so a Worker whose SDK lane is deadlocked still replies
+        /// and the gateway concluded "Healthy". This action is the second, independent
+        /// probe: it is serviced by the SDK path, so a wedged lane shows up as a timeout
+        /// rather than a reply.
+        ///
+        /// <para>
+        /// It reports <c>active</c> and <c>elapsedMs</c> alongside
+        /// <c>sawProgress</c>/<c>lastProgressMs</c>, because "busy" alone cannot tell a
+        /// slow build from a deadlocked call - and treating every busy lane as a fault
+        /// recycles legitimate long operations. The progress tick is written by
+        /// <see cref="GxMcp.Worker.Helpers.ProgressEmitter"/>, the single point every
+        /// progress emission passes through.
+        /// </para>
+        ///
+        /// <para>
+        /// Pure in-memory reads of volatile fields and a lock-guarded counter: no SDK
+        /// object is touched, which is what lets this action answer even while the SDK
+        /// lane is blocked. Whitelisted for the parallel path in
+        /// <see cref="IsThreadSafe(JObject)"/> for the same reason.
+        /// </para>
+        /// </summary>
+        private string Handle_System(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            if (!string.Equals(action, "GetSdkBusyStatus", StringComparison.OrdinalIgnoreCase))
+            {
+                return Models.McpResponse.Err(
+                    code: "UnknownSystemAction",
+                    message: "Unsupported system action '" + action + "'.",
+                    hint: "The only system action is GetSdkBusyStatus.");
+            }
+
+            return Models.McpResponse.Ok(
+                code: "SdkBusyStatus",
+                result: Program.GetSdkBusyStatus());
         }
 
         private string Handle_Control(JObject request, string method, string action, string target, string payload, JObject args)
@@ -1694,8 +1818,12 @@ namespace GxMcp.Worker.Services
             if (action == "ExtractSource")
             {
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
+                // Issue #357: a conditional read is requested explicitly. Leaving
+                // `conditional` null keeps the plain, unconditional read path —
+                // byte-identical to before the feature existed.
+                ConditionalReadService.Request conditional = BuildConditionalReadRequest(args);
                 string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter,
-                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), conditional);
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
                 // cache (which stores the pre-attach payload) and (b) doesn't burn
@@ -1727,6 +1855,29 @@ namespace GxMcp.Worker.Services
             if (action == "GetVariables") return _analyzeService.GetVariables(target);
             if (action == "GetAttribute") return _analyzeService.GetAttributeMetadata(target);
             return null;
+        }
+
+        /// <summary>
+        /// Issue #357 — turns the routed read arguments into a conditional-read
+        /// request, or <c>null</c> for an ordinary read.
+        /// <para>
+        /// <c>requireAuthoritativeRead</c> is internal transport metadata set by the
+        /// Gateway when an earlier write on this target/part has an unresolved
+        /// outcome. Only a body can reconcile that, so the conditional token is
+        /// honoured-but-overridden rather than silently dropped — the caller is
+        /// told why in <c>conditional.reason</c>.
+        /// </para>
+        /// </summary>
+        private static ConditionalReadService.Request BuildConditionalReadRequest(JObject args)
+        {
+            string token = args?["ifUnchangedSince"]?.ToString();
+            bool authoritative = args?["requireAuthoritativeRead"]?.ToObject<bool?>() == true;
+            if (string.IsNullOrWhiteSpace(token) && !authoritative) return null;
+            return new ConditionalReadService.Request
+            {
+                Token = token,
+                RequireAuthoritativeRead = authoritative
+            };
         }
 
         private string Handle_AtomicCreate(JObject request, string method, string action, string target, string payload, JObject args)
@@ -2572,16 +2723,7 @@ namespace GxMcp.Worker.Services
                 return _securityAuditService.ScanSecrets();
             if (string.Equals(action, "scan_native", StringComparison.OrdinalIgnoreCase))
                 return _securityScanService.Run(args ?? new JObject());
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported security action '{action}'.",
-                hint: "Call genexus_security with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("security", action, target);
                     // Item 65 — genexus_orient welcome card
         }
 
@@ -2589,22 +2731,20 @@ namespace GxMcp.Worker.Services
         {
             if (string.Equals(action, "Welcome", StringComparison.OrdinalIgnoreCase))
                 return _orientService.Welcome();
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported orient action '{action}'.",
-                hint: "Call genexus_orient with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("orient", action, target);
         }
 
         private string Handle_Property(JObject request, string method, string action, string target, string payload, JObject args)
         {
             var propType = args?["type"]?.ToString();
-            if (args?["targets"] != null)
+
+            // An explicit `"targets": null` is an absent argument, not a supplied one:
+            // a caller that serialises every schema property leaves the ones it is not
+            // using as nulls, and testing the token against null cannot tell that from
+            // an absent property. Taken as supplied it reached the batch guard with
+            // name set, which refused the call with a message about a `targets` the
+            // caller never sent - see issue #331.
+            if (Helpers.JsonUtil.IsSupplied(args?["targets"]))
             {
                 if (!string.Equals(action, "Get", StringComparison.OrdinalIgnoreCase) ||
                     !string.IsNullOrWhiteSpace(args?["name"]?.ToString()) ||
@@ -3270,16 +3410,7 @@ namespace GxMcp.Worker.Services
                 string locName = target ?? args?["name"]?.ToString();
                 return _kbExplorerService.Locate(locName);
             }
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported kbexplorer action '{action}'.",
-                hint: "Call genexus_kbexplorer with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("kbexplorer", action, target);
         }
 
         private string Handle_Navigation(JObject request, string method, string action, string target, string payload, JObject args)
@@ -3290,16 +3421,7 @@ namespace GxMcp.Worker.Services
                 bool latest = args?["latest"]?.ToObject<bool?>() ?? false;
                 return _navigationViewService.View(navName, latest);
             }
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported navigation action '{action}'.",
-                hint: "Call genexus_navigation with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("navigation", action, target);
         }
 
         private string Handle_Blame(JObject request, string method, string action, string target, string payload, JObject args)
@@ -3316,16 +3438,7 @@ namespace GxMcp.Worker.Services
                 };
                 return _blameService.Blame(blameReq);
             }
-            return Models.McpResponse.Err(
-                code: "UnknownAction",
-                message: $"Unsupported blame action '{action}'.",
-                hint: "Call genexus_blame with no action to see the supported list.",
-                nextSteps: new JArray(
-                    Models.McpResponse.NextStep(
-                        tool: "genexus_orient",
-                        args: new JObject(),
-                        why: "Welcome card: KB info, recent edits, and top gotchas.")),
-                target: target);
+            return UnsupportedAction("blame", action, target);
         }
 
         private string Handle_BrowserCapture(JObject request, string method, string action, string target, string payload, JObject args)

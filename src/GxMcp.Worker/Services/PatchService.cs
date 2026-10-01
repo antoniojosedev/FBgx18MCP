@@ -26,9 +26,13 @@ namespace GxMcp.Worker.Services
             public KBObject Object { get; set; }
         }
 
+        // The source cache is currently written and invalidated but never read: the
+        // reader that consumed it was removed with the rest of the unused members.
+        // It is kept because the invalidation entry points (InvalidateAllSourceCaches
+        // and the per-key removals) are part of the service's published contract, but
+        // nothing serves a hit from it today.
         private static readonly ConcurrentDictionary<string, SourceCacheEntry> _sourceCache =
             new ConcurrentDictionary<string, SourceCacheEntry>(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan SourceCacheTtl = TimeSpan.FromSeconds(20);
 
         private readonly ObjectService _objectService;
         private readonly WriteService _writeService;
@@ -77,68 +81,16 @@ namespace GxMcp.Worker.Services
         //       by checking GetParent() up to 3 levels, looking for a WWP-typed ancestor.
         private JArray BuildPatternShadowWarningsIfAny(string target, string partName, string typeFilter)
         {
-            try
-            {
-                if (_patternAnalysisService == null || _objectService == null) return null;
-                if (!GxMcp.Worker.Helpers.WebFormXmlHelper.IsVisualPart(partName)) return null;
+            if (_patternAnalysisService == null || _objectService == null) return null;
 
-                var obj = _objectService.FindObject(target, typeFilter);
-                if (obj == null) return null;
+            var obj = _objectService.FindObject(target, typeFilter);
+            if (obj == null) return null;
 
-                var resolved = _patternAnalysisService.ResolveWWPInstance(obj);
-
-                // Fallback for generated WW family (WW<Trn>, View<Trn>, etc.): WWP host
-                // for `WWX` is named `WorkWithPlusX`. We try a few common prefixes; the
-                // ResolveWWPInstance also walks Children, so a hit here closes the gap
-                // for the generated WebPanel case that motivated F6.
-                if (resolved == null && !string.IsNullOrEmpty(obj.Name))
-                {
-                    string[] candidatePrefixes = { "WW", "View", "ViewWW", "Prompt" };
-                    foreach (var pre in candidatePrefixes)
-                    {
-                        if (!obj.Name.StartsWith(pre, StringComparison.Ordinal)) continue;
-                        string baseName = obj.Name.Substring(pre.Length);
-                        if (string.IsNullOrEmpty(baseName)) continue;
-                        var hostName = "WorkWithPlus" + baseName;
-                        try
-                        {
-                            var host = _objectService.FindObject(hostName);
-                            if (host != null && string.Equals(host.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
-                            {
-                                resolved = host;
-                                break;
-                            }
-                        }
-                        catch { /* lookup best-effort */ }
-                    }
-                }
-
-                if (resolved == null) return null;
-
-                var part = _patternAnalysisService.FindPatternPart(resolved, "PatternInstance");
-                if (part == null) return null;
-
-                return new JArray
-                {
-                    new JObject
-                    {
-                        ["code"] = "EditingWebFormUnderPattern",
-                        ["severity"] = "warning",
-                        ["message"] =
-                            "This object is covered by a WorkWithPlus PatternInstance ('" + resolved.Name +
-                            "'). Hand edits to " + partName + " can be overwritten on the next pattern apply/save. " +
-                            "Consider editing part=PatternInstance on '" + resolved.Name + "' instead. " +
-                            "Toggle SDPlus_Editor_Apply_On_Save=False on " + resolved.Name +
-                            " if you must keep a hard override on the visual part.",
-                        ["patternInstance"] = resolved.Name
-                    }
-                };
-            }
-            catch (Exception ex)
-            {
-                Logger.Debug("[PatchService] PatternShadow warning probe skipped: " + ex.Message);
-                return null;
-            }
+            // The probe itself moved to PatternAnalysisService.BuildPatternShadowWarning,
+            // shared with WriteService.WriteVisualPart. This path used to phrase the
+            // same advice differently - "edit part=PatternInstance on 'X'" without
+            // naming the tool call - behind an identical warning code.
+            return _patternAnalysisService.BuildPatternShadowWarning(obj, partName);
         }
 
         private static string AttachWarningsToJson(string json, JArray warnings)
@@ -586,11 +538,78 @@ namespace GxMcp.Worker.Services
                 // unchanged. Preserve its exact bytes instead of normalizing again.
                 if (noContentChange) updatedSource = workSource;
 
-                // Reject K2BTools designer-owned/protected changes at the patch
-                // boundary, before dry-run reporting or either Events/visual save
-                // path can be reached. This complements the canonical writer
-                // guard and keeps requireObjectSave from bypassing it.
-                KBObject patchObject = _objectService.FindObject(target, typeFilter);
+                // Resolved once: both the K2B designer guard and the PatternInstance
+                // structural preflight below need it, and resolving twice would let
+                // them disagree about which object is being written.
+                KBObject patchObjectForTarget = _objectService.FindObject(target, typeFilter);
+                Helpers.PatternXmlEditPlan patchPlanEvidence = null;
+
+                // Issue #350: a PatternInstance patch dry run reported Applied for
+                // payloads the write path's structural preflight refuses. The patch
+                // branch returned its dry-run envelope before reaching the plan, so
+                // `mode=patch` previewed success for an edit that `mode=full` on the
+                // same bytes rejects as PatternStructureChangeUnsupported - the agent
+                // got a green preview and a red save for one logical change.
+                //
+                // Run the same preflight the write path uses, on the same current XML
+                // and the same ToSdkLineEndings normalization the write would produce,
+                // so the preview cannot approve something the write will refuse. Only
+                // PatternInstance is gated: PatternVirtual keeps its structural
+                // authoring contract, and the grid/WebComponent exceptions the plan
+                // already encodes are unchanged.
+                if (string.Equals(partName, "PatternInstance", StringComparison.OrdinalIgnoreCase)
+                    && _patternAnalysisService != null
+                    && patchObjectForTarget != null)
+                {
+                    string patternCurrentXml;
+                    try
+                    {
+                        patternCurrentXml = _patternAnalysisService.ReadPatternPartXml(
+                            patchObjectForTarget, partName, null, out _, out _, out JObject patternDiagnostic);
+                        if (patternDiagnostic != null)
+                            return AttachTimings(
+                                Models.McpResponse.Err(
+                                    code: patternDiagnostic["code"]?.ToString() ?? "PatternInstanceResolutionFailed",
+                                    message: patternDiagnostic["message"]?.ToString() ?? "The PatternInstance could not be resolved for this target.",
+                                    target: target),
+                                readMs, patchMs, 0, sourceFromCache);
+                    }
+                    catch (Exception ex)
+                    {
+                        return AttachTimings(
+                            Models.McpResponse.Err(
+                                code: "PatternReadFailed",
+                                message: "Pattern precheck failed: " + ex.Message,
+                                target: target),
+                            readMs, patchMs, 0, sourceFromCache);
+                    }
+
+                    var patchPlan = Helpers.PatternXmlEditPlan.Create(
+                        patternCurrentXml, WriteService.ToSdkPatternLineEndings(updatedSource),
+                        allowGridStructure: false);
+                    if (patchPlan.ErrorCode != null)
+                        return AttachTimings(
+                            Models.McpResponse.Err(
+                                code: patchPlan.ErrorCode,
+                                message: "Pattern edit rejected: " + patchPlan.Error
+                                    + " Use the appropriate SDK pattern authoring action for structural edits; this does not certify save isolation.",
+                                hint: "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes.",
+                                target: target,
+                                extra: new JObject
+                                {
+                                    ["part"] = partName,
+                                    ["operation"] = normalizedOperation,
+                                    ["matchCount"] = matchCount,
+                                    ["saved"] = false,
+                                    ["persisted"] = false,
+                                    ["verified"] = false,
+                                    ["structuralPreflight"] = "PatternXmlEditPlan"
+                                }),
+                            readMs, patchMs, 0, sourceFromCache);
+                    patchPlanEvidence = patchPlan;
+                }
+
+                KBObject patchObject = patchObjectForTarget;
                 if (patchObject != null
                     && K2bWebPanelDesignerService.TryBuildEditRejection(
                         patchObject, partName, updatedSource, out string k2bDesignerRejection))
@@ -708,6 +727,15 @@ namespace GxMcp.Worker.Services
                             dryRunBody["matchedCount"] = matchCount;
                         }
                         dryRunBody["implicitOperations"] = new JArray();
+                        // Issue #350: say which preflight ran. Without this the preview
+                        // is indistinguishable from a textual-only check, which is the
+                        // ambiguity that let a structural payload read as Approved.
+                        if (patchPlanEvidence != null)
+                        {
+                            dryRunBody["structuralPreflight"] = "PatternXmlEditPlan";
+                            dryRunBody["structuralChanges"] = patchPlanEvidence.Changes;
+                            dryRunBody["metadataPreserved"] = true;
+                        }
                         if (scopeEvidence != null) dryRunBody["scope"] = scopeEvidence;
                         if (indentationEvidence != null) dryRunBody["indentation"] = indentationEvidence;
                         if (!string.IsNullOrWhiteSpace(snapshotVersion)) dryRunBody["versionToken"] = snapshotVersion;
@@ -1783,19 +1811,6 @@ namespace GxMcp.Worker.Services
             string normalizedPart = string.IsNullOrWhiteSpace(partName) ? "Source" : partName.Trim();
             string normalizedType = typeFilter?.Trim() ?? string.Empty;
             return normalizedType + "|" + normalizedTarget + "|" + normalizedPart;
-        }
-
-        private static string TryGetCachedSource(string cacheKey)
-        {
-            if (string.IsNullOrWhiteSpace(cacheKey)) return null;
-            if (!_sourceCache.TryGetValue(cacheKey, out var entry) || entry == null) return null;
-            if (DateTime.UtcNow - entry.UpdatedUtc > SourceCacheTtl)
-            {
-                _sourceCache.TryRemove(cacheKey, out _);
-                return null;
-            }
-
-            return entry.Source;
         }
 
         private static void UpdateCachedSource(string cacheKey, string source, string versionToken = null)

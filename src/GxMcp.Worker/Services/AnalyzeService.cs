@@ -924,6 +924,18 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// Wall-clock budget for the parallel inspect sections. Issue #334: previously
+        /// an inline literal, and the result of the bounded wait was discarded - so the
+        /// budget existed only to stop <c>inspect</c> blocking, while a section that
+        /// overran it was neither reported nor waited for.
+        /// </summary>
+        internal static readonly TimeSpan InspectSectionBudget = TimeSpan.FromSeconds(5);
+
+        /// <summary>Pairs a section name with its task, so a late one is reportable by name.</summary>
+        private static KeyValuePair<string, Task> NewSection(string section, Task task) =>
+            new KeyValuePair<string, Task>(section, task);
+
         public string GetConversionContext(string name, JArray include = null, string typeFilter = null, string projection = "standard",
             string guid = null, string entityKey = null, string path = null)
         {
@@ -1100,13 +1112,18 @@ namespace GxMcp.Worker.Services
                 bool includeAll = (include == null || include.Count == 0);
                 HashSet<string> requested = includeAll ? new HashSet<string>() : new HashSet<string>(include.Select(i => i.ToString().ToLower()));
 
-                // PERFORMANCE: Parallel execution of metadata extraction
-                var tasks = new List<Task>();
+                // PERFORMANCE: Parallel execution of metadata extraction.
+                //
+                // issue #334: each entry is tracked with its section name, because the
+                // completion budget is enforced below and a task that misses it has to be
+                // reported by name. A bare List<Task> could only be reported by position,
+                // which means nothing to a caller reading the envelope.
+                var tasks = new List<KeyValuePair<string, Task>>();
 
                 // 1. Signature (Parameters)
                 if (includeAll || requested.Contains("signature"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("signature", Task.Run(() => {
                         try {
                             var (parmRule, parms) = _objectService.GetParametersInternal(obj);
                             lock (result) {
@@ -1116,13 +1133,13 @@ namespace GxMcp.Worker.Services
                                 result["parameters"] = parameters;
                             }
                         } catch {}
-                    }));
+                    })));
                 }
 
                 // 2. Variables
                 if (includeAll || requested.Contains("variables"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("variables", Task.Run(() => {
                         try {
                             var variablesOnObject = GxMcp.Worker.Structure.PartAccessor.GetVariableObjects(obj).ToList();
                             if (variablesOnObject.Count > 0) {
@@ -1264,13 +1281,13 @@ namespace GxMcp.Worker.Services
                             }
                             catch { /* best-effort */ }
                         } catch {}
-                    }));
+                    })));
                 }
 
                 // 3. Structure (Rules/Events)
                 if (includeAll || requested.Contains("structure"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("structure", Task.Run(() => {
                         try {
                             // issue #25 follow-up (P1): cap each part source so a default
                             // inspect (no `include` filter) can't dump tens of KB of
@@ -1292,13 +1309,13 @@ namespace GxMcp.Worker.Services
                                 ? "Inspect source parts are capped at 8000 chars; use genexus_read part=Rules|Conditions|Events (paginated) for the full text."
                                 : "Lean inspect: source parts capped at 1200 chars. Pass verbose=true for the 8000-char heads, or genexus_read part=Rules|Conditions|Events for full paginated text.";
                         } catch {}
-                    }));
+                    })));
                 }
 
                 // 4. Domains & Enums
                 if (includeAll || requested.Contains("metadata") || requested.Contains("variables"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("domainsAndEnums", Task.Run(() => {
                         try {
                             var domains = new JArray();
                             var processedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1316,7 +1333,7 @@ namespace GxMcp.Worker.Services
                             }
                             if (domains.Count > 0) lock (result) result["domains"] = domains;
                         } catch {}
-                    }));
+                    })));
                 }
 
                 // 5. Callers (incoming references) — surfaces top-N callers so the agent can
@@ -1324,7 +1341,7 @@ namespace GxMcp.Worker.Services
                 // include=["callers"] or default (when no include filter is provided).
                 if (includeAll || requested.Contains("callers"))
                 {
-                    tasks.Add(Task.Run(() => {
+                    tasks.Add(NewSection("callers", Task.Run(() => {
                         try {
                             var kb = _kbService.GetKB();
                             var callers = new JArray();
@@ -1349,11 +1366,35 @@ namespace GxMcp.Worker.Services
                                 result["callersTruncated"] = callers.Count >= maxCallers;
                             }
                         } catch {}
-                    }));
+                    })));
                 }
 
-                // Wait for all metadata tasks to complete (with timeout for safety)
-                Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(5));
+                // issue #334: `Task.WaitAll(tasks, timeout)` returns a bool that was
+                // discarded. A section that missed the budget therefore left its task
+                // running against the SDK and against `result` - a live SDK object read
+                // on a thread pool thread, mutating an envelope this method had already
+                // published and could cache. The return value is now inspected, and a
+                // section that did not finish is named in the response so its absence
+                // cannot be read as "no callers" or "no variables".
+                var pending = tasks.Select(t => t.Value).ToArray();
+                if (pending.Length > 0 && !Task.WaitAll(pending, InspectSectionBudget))
+                {
+                    var unfinished = tasks.Where(t => !t.Value.IsCompleted)
+                                         .Select(t => t.Key).ToList();
+                    Logger.Warn("[Analyze] inspect section budget elapsed with "
+                        + unfinished.Count + " of " + pending.Length
+                        + " sections unfinished: " + string.Join(", ", unfinished));
+
+                    // Every writer locks `result`, so a late writer either lands before
+                    // this and counts as complete, or finds its section already listed.
+                    lock (result)
+                    {
+                        result["sectionsComplete"] = false;
+                        var incomplete = new JArray();
+                        foreach (string section in unfinished) incomplete.Add(section);
+                        result["incompleteSections"] = incomplete;
+                    }
+                }
 
                 // 5. UI Structure (Sync because it's usually fast or has its own internal logic)
                 if (_uiService != null && (includeAll || requested.Contains("structure"))) {
@@ -2457,7 +2498,17 @@ namespace GxMcp.Worker.Services
             return _objectService?.ReadObjectSource(callerName, partName);
         }
 
-        public string FindCallerSites(string targetName)
+        /// <summary>
+        /// Per-call-site detail for every recorded caller of <paramref name="targetName"/>.
+        /// </summary>
+        /// <param name="targetName">The called object.</param>
+        /// <param name="cursor">
+        /// Resume offset into the caller list, as returned by a previous truncated
+        /// response's <c>nextCursor</c>. Issue #343.
+        /// </param>
+        /// <param name="maxCallers">Caller budget for this page; the default applies when non-positive.</param>
+        /// <param name="maxSourceBytes">Source-byte budget for this page.</param>
+        public string FindCallerSites(string targetName, int cursor = 0, int maxCallers = 0, long maxSourceBytes = 0)
         {
             try
             {
@@ -2481,10 +2532,37 @@ namespace GxMcp.Worker.Services
                 var callers = new JArray();
                 const int ctx = 3;
 
-                foreach (var callerName in callerNames)
+                // Issue #343: bound the work. This loop previously walked every recorded
+                // caller, read three full source parts each and parsed all of it with no
+                // page boundary and no cancellation point, so a high-fan-in target could
+                // hold the SDK lane past a client deadline with nothing resumable behind
+                // it. The budget is charged *before* each unit of work, so the scan stops
+                // between callers and the stop point is exactly resumable.
+                //
+                // Callers are de-duplicated here because the index can list the same
+                // caller twice (an edge recorded from both modules); without this the same
+                // call site would be reported twice and a page boundary could split the
+                // duplicates across two responses.
+                var distinctCallers = callerNames
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var budget = new GxMcp.Worker.Helpers.CallerScanBudget(
+                    maxCallers: maxCallers > 0 ? maxCallers : GxMcp.Worker.Helpers.CallerScanBudget.DefaultMaxCallers,
+                    maxSourceBytes: maxSourceBytes > 0 ? maxSourceBytes : GxMcp.Worker.Helpers.CallerScanBudget.DefaultMaxSourceBytes);
+                budget.Start();
+
+                int resumeFrom = cursor > 0 ? Math.Min(cursor, distinctCallers.Count) : 0;
+                for (int callerIndex = resumeFrom; callerIndex < distinctCallers.Count; callerIndex++)
                 {
+                    if (!budget.TryBeginCaller()) break;
+
+                    var callerName = distinctCallers[callerIndex];
+
                     // Read each source part that might contain calls
                     string[] partsToCheck = { "Source", "Events", "Rules" };
+                    bool callerFullyScanned = true;
                     foreach (var partName in partsToCheck)
                     {
                         string src = null;
@@ -2516,10 +2594,26 @@ namespace GxMcp.Worker.Services
                         catch { }
                         if (string.IsNullOrEmpty(src)) continue;
 
+                        // Issue #343: bound the retained work. A source's size is only
+                        // knowable after reading it, so the charge lands here; what it
+                        // guarantees is that a source which does not fit contributes
+                        // nothing. Half a source would silently omit call sites, which is
+                        // worse than stopping: the answer would look complete and be wrong.
+                        if (!budget.TryChargeBytes(System.Text.Encoding.UTF8.GetByteCount(src)))
+                        {
+                            callerFullyScanned = false;
+                            break;
+                        }
+
                         var lines = src.Split('\n');
                         foreach (var call in SourceParser.ParseCalls(src, false))
                         {
                             if (!CallSiteMatcher.Matches(call, canonicalName, moduleQualifiedName)) continue;
+                            if (!budget.TryChargeResult())
+                            {
+                                callerFullyScanned = false;
+                                break;
+                            }
 
                             int idx = call.LineNumber - 1;
                             string lineText = idx >= 0 && idx < lines.Length ? lines[idx] : "";
@@ -2540,7 +2634,39 @@ namespace GxMcp.Worker.Services
                                 ["args"] = new JArray(call.Args.ToArray<object>())
                             });
                         }
+                        if (!callerFullyScanned) break;
                     }
+
+                    // The resume offset only advances past a caller that was fully
+                    // scanned. Advancing past a partially scanned one would skip its
+                    // remaining parts on the next page - a silent hole in the answer.
+                    if (!callerFullyScanned) break;
+                    budget.CompleteCaller();
+                }
+
+                // Issue #343: the scan's completeness, and where to resume. An incomplete
+                // scan must never be presented as a whole answer, and - critically - must
+                // not reach the "confirmed zero" path below, which would turn "I stopped
+                // looking" into "there are none".
+                bool scanComplete = budget.IsComplete && resumeFrom + budget.CallersScanned >= distinctCallers.Count;
+                int nextCursor = resumeFrom + budget.CallersScanned;
+                var scanMeta = new JObject
+                {
+                    ["complete"] = scanComplete,
+                    ["callersTotal"] = distinctCallers.Count,
+                    ["callersScanned"] = budget.CallersScanned,
+                    ["sourceBytesRead"] = budget.SourceBytesRead,
+                    ["results"] = budget.Results,
+                    ["elapsedMs"] = budget.ElapsedMs,
+                    ["maxCallers"] = budget.MaxCallers,
+                    ["maxSourceBytes"] = budget.MaxSourceBytes
+                };
+                if (!scanComplete)
+                {
+                    scanMeta["stopReason"] = budget.StopReason ?? "caller_list_exhausted";
+                    scanMeta["nextCursor"] = nextCursor;
+                    scanMeta["hint"] = "Scan stopped before covering every caller. Resume with cursor="
+                        + nextCursor + "; this result is partial and must not be read as the full set of call sites.";
                 }
 
                 // issue #25 follow-up (P0): a zero result here is dangerous — the
@@ -2551,12 +2677,32 @@ namespace GxMcp.Worker.Services
                 // cross-checking the live SDK reference graph (same source impact uses).
                 if (callers.Count == 0)
                 {
+                    // Issue #343: a truncated scan that found nothing has NOT established a
+                    // zero. Reaching the cross-check below on a partial scan would let a
+                    // budget stop masquerade as a definitive answer - and the whole point
+                    // of the guarded-zero machinery below is that a zero here is unsafe to
+                    // act on. So an incomplete scan reports its own incompleteness and
+                    // stops, leaving the cross-check for a scan that actually finished.
+                    if (!scanComplete)
+                    {
+                        return McpResponse.Ok(target: canonicalName, code: "CallerSitesPartial", result: new JObject
+                        {
+                            ["callSiteCount"] = 0,
+                            ["callers"] = callers,
+                            ["indexEdgesMissing"] = true,
+                            ["verifiedZero"] = false,
+                            ["scan"] = scanMeta,
+                            ["hint"] = "The scan stopped at its work budget before covering every caller, and found no call sites in the part it did cover. This is NOT a confirmed 'no callers'. Resume with cursor=" + nextCursor + "."
+                        });
+                    }
+
                     var sdk = TrySdkReferenceCrossCheck(canonicalName);
                     var zeroResult = new JObject
                     {
                         ["callSiteCount"] = 0,
                         ["callers"] = callers,
-                        ["indexEdgesMissing"] = true
+                        ["indexEdgesMissing"] = true,
+                        ["scan"] = scanMeta
                     };
                     if (sdk == null)
                     {
@@ -2591,11 +2737,12 @@ namespace GxMcp.Worker.Services
 
                 return McpResponse.Ok(
                     target: canonicalName,
-                    code: "CallerSitesFound",
+                    code: scanComplete ? "CallerSitesFound" : "CallerSitesPartial",
                     result: new JObject
                     {
                         ["callSiteCount"] = callers.Count,
-                        ["callers"] = callers
+                        ["callers"] = callers,
+                        ["scan"] = scanMeta
                     });
             }
             catch (Exception ex)

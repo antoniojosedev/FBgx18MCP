@@ -129,6 +129,7 @@ namespace GxMcp.Worker.Services
 
         private readonly KbService _kbService;
         private readonly BuildService _buildService;
+        private readonly ConditionalReadService _conditionalRead;
         private DataInsightService _dataInsightService;
         private UIService _uiService;
         private PatternAnalysisService _patternAnalysisService;
@@ -140,6 +141,10 @@ namespace GxMcp.Worker.Services
         {
             _kbService = kbService;
             _buildService = buildService;
+            // Issue #357. Constructed here rather than injected: it owns no state
+            // beyond the KB identity accessors and would otherwise widen the
+            // constructor every other caller of ObjectService has to satisfy.
+            _conditionalRead = new ConditionalReadService(kbService, this);
         }
 
         public void SetDataInsightService(DataInsightService ds) { _dataInsightService = ds; }
@@ -686,14 +691,25 @@ namespace GxMcp.Worker.Services
                     return "{\"status\":\"Error\", \"error\":\"Log file not found at " + CommandDispatcher.EscapeJsonString(logPath) + "\"}";
                 }
 
-                // Stream-read tail
-                var allLines = new List<string>();
-                using (var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                using (var sr = new StreamReader(fs))
-                {
-                    string ln;
-                    while ((ln = sr.ReadLine()) != null) allLines.Add(ln);
-                }
+                // Issue #342: bounded tail read.
+                //
+                // This used to open the log, read every line into a List, filter that
+                // list, and only then take the last N - so asking for the last ten
+                // lines of a large log allocated the whole log, on the diagnostic route
+                // that runs precisely when something has gone wrong and memory is least
+                // welcome. LogTailReader retains at most the requested window plus the
+                // context the crash search needs, and still counts the whole file so
+                // `totalLines` keeps meaning what it always meant.
+                //
+                // The honest consequence is that a filter can no longer reach lines
+                // before the retained window. That is surfaced in the response rather
+                // than hidden, because a caller asking "since yesterday" and receiving
+                // only the tail must be able to tell that it got a tail.
+                int retainContext = 0;
+                if (string.Equals(sinceMode, "crash", StringComparison.OrdinalIgnoreCase))
+                    retainContext = LogTailReader.MaxRetainedLines - lines; // search the whole window
+                var tailRead = GxMcp.Worker.Helpers.LogTailReader.Read(logPath, lines, retainContext);
+                var allLines = tailRead.Lines;
 
                 IEnumerable<string> filtered = allLines;
 
@@ -797,8 +813,29 @@ namespace GxMcp.Worker.Services
                     result["crashLineIndex"] = crashIndex;
                     if (crashIndex < 0)
                     {
-                        result["hint"] = "No ERROR/CRITICAL markers found in the log — worker has not crashed (or the log has rotated).";
+                        // Issue #342: "not in the window we read" and "not in the log" are
+                        // different answers. With a bounded read the first is now possible,
+                        // and claiming the second would assert the worker did not crash
+                        // when the marker may simply be further back than the window.
+                        result["hint"] = tailRead.Truncated
+                            ? "No ERROR/CRITICAL marker in the last " + tailRead.Lines.Count
+                              + " lines of a " + tailRead.TotalLines + "-line log. The marker may be older than the retained window; raise `lines` or grep for it directly."
+                            : "No ERROR/CRITICAL markers found in the log — worker has not crashed (or the log has rotated).";
                     }
+                }
+
+                // Issue #342: state the read's bounds. Every filter above ran over the
+                // retained window only, so a caller must be able to tell a complete
+                // answer from a tail.
+                result["retainedLines"] = tailRead.Lines.Count;
+                result["truncatedFromStart"] = tailRead.TruncatedFromStart;
+                result["bounded"] = true;
+                if (tailRead.Truncated)
+                {
+                    result["hint"] = (result["hint"]?.ToString() ?? string.Empty)
+                        + " Read the last " + tailRead.Lines.Count + " of " + tailRead.TotalLines
+                        + " lines; filters above applied only to those. Raise `lines` (max "
+                        + LogTailReader.MaxRetainedLines + ") to widen the window.";
                 }
                 return McpResponse.Ok(code: "LogsRead", result: result);
             }
@@ -918,7 +955,7 @@ namespace GxMcp.Worker.Services
                 if (kb == null)
                     return Models.McpResponse.Err(code: "KbNotOpen", message: "No KB open.",
                         hint: "Open a KB first with genexus_kb action=open.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Open the target KB before deleting.")));
+                        nextSteps: new JArray(KbOpenNextStep.Step("Open the target KB before deleting.")));
 
                 if (!dryRun && !confirm)
                 {
@@ -3524,13 +3561,74 @@ namespace GxMcp.Worker.Services
         }
 
         public string ReadObjectSource(string target, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null)
+            string guid = null, string entityKey = null, string path = null, ConditionalReadService.Request conditional = null)
         {
             target = ResolveTargetForIdentity(target, guid, entityKey, path);
             var obj = FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 
             string resolvedPart = ResolvePartName(obj, partName);
+
+            // Issue #357: the revision is observed here, BEFORE any body is read,
+            // because a token must describe the bytes it was issued with — not the
+            // bytes that exist after a concurrent edit. Everything about the
+            // conditional decision is delegated so the unconditional path below
+            // stays exactly as it was.
+            if (conditional != null)
+                return ReadObjectSourceConditional(obj, resolvedPart, offset, limit, client, minimize, conditional);
+
+            return ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize);
+        }
+
+        /// <summary>
+        /// A body is omitted only when unchanged can be proven. Every other branch
+        /// — token unreadable, token bound to a different KB/model/Worker/object/
+        /// part/window, revision unavailable, or an authoritative read forced by an
+        /// outstanding write fence — returns the complete body plus a
+        /// machine-readable <c>conditional.reason</c>. There is no
+        /// "probably unchanged" branch.
+        /// </summary>
+        private string ReadObjectSourceConditional(
+            KBObject obj, string resolvedPart, int? offset, int? limit,
+            string client, bool minimize, ConditionalReadService.Request conditional)
+        {
+            var observed = _conditionalRead.BuildState(
+                obj, resolvedPart, offset, limit, TryComputeRevisionStamp(obj));
+
+            string reason;
+            ConditionalReadToken.State tokenState = null;
+            if (string.IsNullOrWhiteSpace(conditional.Token))
+            {
+                reason = ConditionalReadToken.ReasonAbsent;
+            }
+            else if (conditional.RequireAuthoritativeRead)
+            {
+                reason = ConditionalReadToken.ReasonAuthoritativeRequired;
+            }
+            else if (!ConditionalReadToken.TryParse(conditional.Token, out tokenState, out _))
+            {
+                reason = ConditionalReadToken.ReasonMalformed;
+            }
+            else
+            {
+                reason = ConditionalReadToken.Compare(tokenState, observed);
+            }
+
+            if (string.Equals(reason, ConditionalReadToken.ReasonMatched, StringComparison.Ordinal))
+                return _conditionalRead.BuildNotModified(obj, tokenState);
+
+            string body = ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize);
+            return _conditionalRead.Decorate(body, observed, reason);
+        }
+
+        private static string TryComputeRevisionStamp(KBObject obj)
+        {
+            try { return WriteService.ComputeVersionToken(obj); }
+            catch { return null; }
+        }
+
+        private string ReadObjectSourceResolved(KBObject obj, string resolvedPart, int? offset, int? limit, string client, bool minimize)
+        {
             if (!(obj is Artech.Packages.Patterns.Objects.PatternSettings) && ShouldUseReadCache(client, minimize))
             {
                 string cacheKey = BuildReadCacheKey(obj.Guid, resolvedPart, offset, limit, client, minimize);
@@ -3764,6 +3862,56 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
+        /// The <c>extra</c> block both "this part is not readable" errors attach.
+        ///
+        /// Two different failures - a visual part whose XML could not be read, and a
+        /// pattern part whose instance could not be resolved - carried the same block
+        /// written out, and the <c>availableParts</c> list inside it is the thing the
+        /// client is told to recover with: pick a part this object actually exposes.
+        /// A drift between the two copies would leave one error advertising a way out
+        /// that the other does not, behind the same field name.
+        ///
+        /// The available-parts lookup is an SDK call, so evaluating it in one place
+        /// also means one evaluation per error rather than two independent reads of
+        /// the same object.
+        /// </summary>
+        private static JObject PartUnavailableExtra(KBObject obj, string partName)
+        {
+            return new JObject
+            {
+                ["part"] = partName,
+                ["objectName"] = obj.Name,
+                ["objectType"] = obj.TypeDescriptor?.Name,
+                ["availableParts"] = new JArray(GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj))
+            };
+        }
+
+        /// <summary>
+        /// Stores one authored part under <paramref name="key"/> and, unless the
+        /// caller says the part is metadata rather than code, appends it to the
+        /// combined source returned alongside <c>parts</c>.
+        ///
+        /// The chain below dispatches on object type, and every branch was repeating
+        /// the same six lines with a different part name - twelve times, in two
+        /// shapes. The distinction between them is the point of
+        /// <paramref name="isCode"/>: a Transaction or SDT's <c>Structure</c> part is
+        /// a DSL description of the object, not authored code, so it is reported but
+        /// deliberately kept out of <c>combinedCode</c>. Written out by hand that
+        /// decision was the <em>absence</em> of a line, which is the kind of
+        /// distinction a reader has to reconstruct rather than read.
+        ///
+        /// The combined source keeps its leading separator: parts are joined with
+        /// "\n" in the order they are read, and the first part therefore contributes
+        /// a leading newline. That is the existing output and is not changed here.
+        /// </summary>
+        private static void AddReadPart(JObject parts, ref string combinedCode, string key, string text, bool isCode = true)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            parts[key] = text;
+            if (isCode) combinedCode += "\n" + text;
+        }
+
+        /// <summary>
         /// SOTA 1-roundtrip object read: delivers all authored parts, rules, variables,
         /// and called signatures tailored to the target object type in a single fast call.
         /// Eliminates the multi-roundtrip exploration loop.
@@ -3803,26 +3951,9 @@ namespace GxMcp.Worker.Services
 
             if (typeName.Equals("Procedure", StringComparison.OrdinalIgnoreCase))
             {
-                string rules = ReadPartTextSafe(obj, "Rules");
-                if (!string.IsNullOrWhiteSpace(rules))
-                {
-                    parts["rules"] = rules;
-                    combinedCode += "\n" + rules;
-                }
-
-                string source = ReadPartTextSafe(obj, "Source");
-                if (!string.IsNullOrWhiteSpace(source))
-                {
-                    parts["source"] = source;
-                    combinedCode += "\n" + source;
-                }
-
-                string conditions = ReadPartTextSafe(obj, "Conditions");
-                if (!string.IsNullOrWhiteSpace(conditions))
-                {
-                    parts["conditions"] = conditions;
-                    combinedCode += "\n" + conditions;
-                }
+                AddReadPart(parts, ref combinedCode, "rules", ReadPartTextSafe(obj, "Rules"));
+                AddReadPart(parts, ref combinedCode, "source", ReadPartTextSafe(obj, "Source"));
+                AddReadPart(parts, ref combinedCode, "conditions", ReadPartTextSafe(obj, "Conditions"));
             }
             else if (typeName.Equals("WebPanel", StringComparison.OrdinalIgnoreCase) ||
                      typeName.Equals("WebComponent", StringComparison.OrdinalIgnoreCase) ||
@@ -3830,27 +3961,14 @@ namespace GxMcp.Worker.Services
                      typeName.Equals("Dashboard", StringComparison.OrdinalIgnoreCase) ||
                      typeName.Equals("Prompt", StringComparison.OrdinalIgnoreCase))
             {
-                string rules = ReadPartTextSafe(obj, "Rules");
-                if (!string.IsNullOrWhiteSpace(rules))
-                {
-                    parts["rules"] = rules;
-                    combinedCode += "\n" + rules;
-                }
+                AddReadPart(parts, ref combinedCode, "rules", ReadPartTextSafe(obj, "Rules"));
 
+                // SDEEvents is the fallback spelling, and only for these types.
                 string events = ReadPartTextSafe(obj, "Events");
                 if (string.IsNullOrWhiteSpace(events)) events = ReadPartTextSafe(obj, "SDEEvents");
-                if (!string.IsNullOrWhiteSpace(events))
-                {
-                    parts["events"] = events;
-                    combinedCode += "\n" + events;
-                }
+                AddReadPart(parts, ref combinedCode, "events", events);
 
-                string conditions = ReadPartTextSafe(obj, "Conditions");
-                if (!string.IsNullOrWhiteSpace(conditions))
-                {
-                    parts["conditions"] = conditions;
-                    combinedCode += "\n" + conditions;
-                }
+                AddReadPart(parts, ref combinedCode, "conditions", ReadPartTextSafe(obj, "Conditions"));
 
                 try
                 {
@@ -3864,22 +3982,9 @@ namespace GxMcp.Worker.Services
             }
             else if (typeName.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
             {
-                string structDsl = ReadPartTextSafe(obj, "Structure");
-                if (!string.IsNullOrWhiteSpace(structDsl)) parts["structure"] = structDsl;
-
-                string rules = ReadPartTextSafe(obj, "Rules");
-                if (!string.IsNullOrWhiteSpace(rules))
-                {
-                    parts["rules"] = rules;
-                    combinedCode += "\n" + rules;
-                }
-
-                string events = ReadPartTextSafe(obj, "Events");
-                if (!string.IsNullOrWhiteSpace(events))
-                {
-                    parts["events"] = events;
-                    combinedCode += "\n" + events;
-                }
+                AddReadPart(parts, ref combinedCode, "structure", ReadPartTextSafe(obj, "Structure"), isCode: false);
+                AddReadPart(parts, ref combinedCode, "rules", ReadPartTextSafe(obj, "Rules"));
+                AddReadPart(parts, ref combinedCode, "events", ReadPartTextSafe(obj, "Events"));
 
                 try
                 {
@@ -3890,13 +3995,11 @@ namespace GxMcp.Worker.Services
             }
             else if (typeName.Equals("Table", StringComparison.OrdinalIgnoreCase))
             {
-                string structDsl = ReadPartTextSafe(obj, "Structure");
-                if (!string.IsNullOrWhiteSpace(structDsl)) parts["structure"] = structDsl;
+                AddReadPart(parts, ref combinedCode, "structure", ReadPartTextSafe(obj, "Structure"), isCode: false);
             }
             else if (typeName.Equals("SDT", StringComparison.OrdinalIgnoreCase))
             {
-                string structDsl = ReadPartTextSafe(obj, "Structure");
-                if (!string.IsNullOrWhiteSpace(structDsl)) parts["structure"] = structDsl;
+                AddReadPart(parts, ref combinedCode, "structure", ReadPartTextSafe(obj, "Structure"), isCode: false);
 
                 try
                 {
@@ -3913,24 +4016,14 @@ namespace GxMcp.Worker.Services
             }
             else if (typeName.Equals("API", StringComparison.OrdinalIgnoreCase))
             {
-                string methods = ReadPartTextSafe(obj, "Methods");
-                if (!string.IsNullOrWhiteSpace(methods))
-                {
-                    parts["methods"] = methods;
-                    combinedCode += "\n" + methods;
-                }
+                AddReadPart(parts, ref combinedCode, "methods", ReadPartTextSafe(obj, "Methods"));
 
                 // Keep the API's existing metadata/variables parts in the full
                 // read; Methods is an additional native part, not a replacement.
                 foreach (var p in GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj))
                 {
                     if (string.Equals(p, "Methods", StringComparison.OrdinalIgnoreCase)) continue;
-                    string src = ReadPartTextSafe(obj, p);
-                    if (!string.IsNullOrWhiteSpace(src))
-                    {
-                        parts[p] = src;
-                        combinedCode += "\n" + src;
-                    }
+                    AddReadPart(parts, ref combinedCode, p, ReadPartTextSafe(obj, p));
                 }
             }
             else
@@ -3938,12 +4031,7 @@ namespace GxMcp.Worker.Services
                 var availParts = GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj);
                 foreach (var p in availParts)
                 {
-                    string src = ReadPartTextSafe(obj, p);
-                    if (!string.IsNullOrWhiteSpace(src))
-                    {
-                        parts[p] = src;
-                        combinedCode += "\n" + src;
-                    }
+                    AddReadPart(parts, ref combinedCode, p, ReadPartTextSafe(obj, p));
                 }
             }
 
@@ -4753,13 +4841,7 @@ namespace GxMcp.Worker.Services
                                 args: new JObject { ["name"] = targetName },
                                 why: "Use the availableParts list to pick a part this object actually exposes.")),
                             target: targetName,
-                            extra: new JObject
-                            {
-                                ["part"] = partName,
-                                ["objectName"] = obj.Name,
-                                ["objectType"] = obj.TypeDescriptor?.Name,
-                                ["availableParts"] = new JArray(GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj))
-                            });
+                            extra: PartUnavailableExtra(obj, partName));
                     }
 
                     var visualResult = new JObject
@@ -4857,13 +4939,7 @@ namespace GxMcp.Worker.Services
                                     args: new JObject { ["name"] = targetName },
                                     why: "Confirms whether a pattern instance is attached and which parts are exposed.")),
                                 target: targetName,
-                                extra: new JObject
-                                {
-                                    ["part"] = partName,
-                                    ["objectName"] = obj.Name,
-                                    ["objectType"] = obj.TypeDescriptor?.Name,
-                                    ["availableParts"] = new JArray(GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj))
-                                });
+                                extra: PartUnavailableExtra(obj, partName));
                     }
 
                     var patternResult = new JObject

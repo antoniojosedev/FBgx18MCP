@@ -272,6 +272,49 @@ namespace GxMcp.Gateway
             BroadcastResourcesListChanged("worker_restarted");
         }
 
+        /// <summary>
+        /// Invalidates cached reads for the KB a resource-updated notification names,
+        /// and returns the revision a subsequent read must be told about.
+        ///
+        /// <para>
+        /// Issue #336. The notification is evidence that the object changed outside this
+        /// Gateway's own write path, so the KB's cached reads are stale. Advancing here
+        /// rather than in the broadcast means: an entry cached before the change is
+        /// unusable afterwards; the broadcast carries the post-invalidation number, so a
+        /// subscriber comparing it against the one it last saw learns something moved
+        /// (before, it received the unchanged value and learned nothing); and a read
+        /// already in flight captured the old revision and cannot refill a new generation
+        /// with content fetched under the old one.
+        /// </para>
+        ///
+        /// <para>
+        /// The object name is invalidated by target as well, so derived entries -
+        /// listings, analyses - that do not name the mutated object in their arguments
+        /// cannot survive it. An unknown or blank alias falls back to the empty scope,
+        /// the store's whole-KB invalidation, because a change we cannot attribute to a
+        /// KB is not safe to attribute to a narrower one.
+        /// </para>
+        /// </summary>
+        internal static long InvalidateCacheScopeForResourceUpdate(string? kbAlias, string? objectName)
+        {
+            string scope = string.IsNullOrWhiteSpace(kbAlias) ? string.Empty : kbAlias!.Trim();
+            long revision = _semanticCache.InvalidateScope(scope, out int removed);
+
+            if (!string.IsNullOrWhiteSpace(scope) && !string.IsNullOrWhiteSpace(objectName))
+            {
+                // InvalidateScope already cleared this KB's direct reads. This pass
+                // exists for the derived entries that survive a scoped clear.
+                int derived = _semanticCache.RemoveByTarget(scope, objectName!);
+                Log($"[Gateway] resource-updated '{objectName}' invalidated KB scope '{scope}': {removed} direct + {derived} derived entries, revision -> {revision}.");
+            }
+            else
+            {
+                Log($"[Gateway] resource-updated '{objectName}' invalidated scope '{scope}': {removed} entries, revision -> {revision}.");
+            }
+
+            return revision;
+        }
+
         internal static JObject RewriteProgressTokenForClient(JObject workerEnvelope, JToken clientProgressToken)
         {
             if (workerEnvelope == null) throw new ArgumentNullException(nameof(workerEnvelope));
@@ -368,13 +411,27 @@ namespace GxMcp.Gateway
                         var p = val["params"];
                         string name = p?["name"]?.ToString() ?? "unknown";
                         Log($"[Gateway] Notification from Worker: Resource {name} updated externally.");
+
+                        // Issue #336: this handler read the KB's current revision and
+                        // broadcast it without ever advancing it. The notification says
+                        // the object changed - through another client, or through the IDE
+                        // - so the KB's cached reads were stale, yet they stayed eligible
+                        // and the broadcast carried the pre-change revision, which told
+                        // subscribers nothing had moved. Invalidate and advance the
+                        // affected scope FIRST, then broadcast the revision it produced,
+                        // so a subsequent read cannot be served from the old entry and a
+                        // subscriber comparing revisions learns something changed.
+                        //
+                        // Scope is per-KB on purpose: wiping the whole store would also
+                        // discard unrelated KBs, which is both a performance regression
+                        // and a way for one KB's edit to hide another's cached state.
+                        long updatedRevision = InvalidateCacheScopeForResourceUpdate(workerAlias, name);
+
                         BroadcastResourceUpdated(
                             $"genexus://objects/{name}",
                             "external_kb_change",
                             workerAlias,
-                            string.IsNullOrWhiteSpace(workerAlias)
-                                ? (long?)null
-                                : _semanticCache.GetRevision(workerAlias!));
+                            string.IsNullOrWhiteSpace(workerAlias) ? (long?)null : updatedRevision);
                     }
                     else if (method == "notifications/progress" || method == "notifications/message")
                     {
@@ -469,7 +526,12 @@ namespace GxMcp.Gateway
         // Records end-to-end tool latency (from just before the worker send to the response)
         // into ToolLatencyStats and emits one [TOOL-LATENCY] log line. Cold-start is already
         // awaited before CreatedAtUtc is stamped, so this measures real tool cost, not boot.
-        private static void RecordToolLatency(
+        // internal, not private: the bug this mapping had was invisible to the suite
+        // precisely because every test fed phase numbers straight into
+        // ToolLatencyStats.Record, so nothing ever checked which phase was mapped to
+        // which field. Reaching this method is how a test can assert that a Worker's
+        // reported queue delay surfaces as queue delay - see QueuePhaseMappingTests.
+        internal static void RecordToolLatency(
             string toolName,
             DateTime createdAtUtc,
             DateTime requestStartedAtUtc,
@@ -483,31 +545,43 @@ namespace GxMcp.Gateway
             try
             {
                 double ms = (DateTime.UtcNow - createdAtUtc).TotalMilliseconds;
-                long queueWaitMs = Math.Max(0, (long)(createdAtUtc - requestStartedAtUtc).TotalMilliseconds);
-                string resultClass;
-                if (resultClassOverride != null)
-                    resultClass = resultClassOverride;
-                else
-                    resultClass = response?["error"] != null ? "error" : "success";
                 JObject? telemetry = response?["result"]?["_meta"]?["telemetry"] as JObject
                     ?? response?["_meta"]?["telemetry"] as JObject;
                 long sdkMs = telemetry?["sdkMs"]?.ToObject<long?>() ?? 0;
                 long workerTransformMs = telemetry?["transformMs"]?.ToObject<long?>() ?? 0;
                 long serializeMs = telemetry?["serializeMs"]?.ToObject<long?>() ?? 0;
+                // The Worker's own queue measurement, which is what "queue" was always
+                // assumed to mean. Null when the response carried no telemetry at all,
+                // which is not the same as a Worker that never queued - see
+                // ToolLatencyStats.Record. This was previously never read: sdkMs,
+                // transformMs and serializeMs all came from the same object and were.
+                long? workerQueueWaitMs = telemetry?["queueWaitMs"]?.ToObject<long?>();
+                // And the Gateway's own pre-send interval, which is a different phase:
+                // admission, Worker acquisition and cold-start waiting. It used to be
+                // reported AS the queue, so a Worker that had no queue delay at all read
+                // as 7000 ms of queue while a cold start read as queue time too. Kept,
+                // but named for what it measures.
+                long admissionMs = Math.Max(0, (long)(createdAtUtc - requestStartedAtUtc).TotalMilliseconds);
+                string resultClass;
+                if (resultClassOverride != null)
+                    resultClass = resultClassOverride;
+                else
+                    resultClass = response?["error"] != null ? "error" : "success";
                 ToolLatencyStats.Record(
                     toolName,
                     ms,
                     resultClass,
-                    queueWaitMs,
+                    workerQueueWaitMs,
                     Math.Max(0, responseBytes),
                     startupMs,
                     sdkMs,
                     Math.Max(workerTransformMs, transformMs),
                     serializeMs,
-                    cacheOutcome);
-                // PERF: per-request instrumentation line — gated so high-throughput
+                    cacheOutcome,
+                    admissionMs);
+                // PERF: per-request instrumentation line - gated so high-throughput
                 // pipelines can drop the DateTime formatting + lock + disk write per call.
-                if (_verboseRequestLogs) Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms} queueWaitMs={queueWaitMs} startupMs={startupMs} sdkMs={sdkMs} transformMs={Math.Max(workerTransformMs, transformMs)} serializeMs={serializeMs} result={resultClass} cache={cacheOutcome ?? "unknown"} responseBytes={responseBytes}");
+                if (_verboseRequestLogs) Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms} queueWaitMs={workerQueueWaitMs?.ToString() ?? "unreported"} admissionMs={admissionMs} startupMs={startupMs} sdkMs={sdkMs} transformMs={Math.Max(workerTransformMs, transformMs)} serializeMs={serializeMs} result={resultClass} cache={cacheOutcome ?? "unknown"} responseBytes={responseBytes}");
             }
             catch { /* instrumentation must never break the call */ }
         }
@@ -664,8 +738,15 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrWhiteSpace(effectiveSessionId))
                     effectiveSessionId = _currentSessionContext.Value?.OwnerScopeId;
                 var workerRequest = BuildWorkerRpcRequest(workerCommand, attemptRequestId, operationId, effectiveSessionId);
-                var worker = await GetActiveWorkerAsync();
-
+                // issue #333: the acquired Worker carries a pool reservation that makes
+                // this entry ineligible for capacity eviction. It is released when this
+                // attempt finishes - the finally at the end of the loop body - so a
+                // retry re-reserves against the current entry rather than holding a
+                // claim on a Worker that may since have been replaced.
+                var acquired = await GetActiveWorkerAsync();
+                var worker = acquired.Worker;
+                try
+                {
                 // Don't bill worker cold-start against the per-tool timeout. If the worker is
                 // still initializing (SDK init ~50s on a large KB), wait for its sdk_ready signal
                 // FIRST — emitting progress heartbeats so the client stays alive — and only then
@@ -812,6 +893,18 @@ namespace GxMcp.Gateway
                     return transformed;
                 }
                 break; // timeout — fall through to the timeout handling below
+                }
+                finally
+                {
+                    // issue #333: release the eviction reservation for this attempt, so
+                    // a command that is not on the wire cannot make the entry
+                    // permanently ineligible. The Worker may still be executing after a
+                    // client-side timeout; that work is not counted here, which is the
+                    // honest limit of a Gateway-side counter - the Worker keeps its own
+                    // pending-request record, and the next acquire for this KB
+                    // re-reserves.
+                    acquired.Release();
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(operationId))

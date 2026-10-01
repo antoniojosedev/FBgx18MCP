@@ -83,6 +83,92 @@ namespace GxMcp.Worker.Services
         private bool _isCatalogDirty;
         private volatile bool _initialized;
 
+        // Issue #338. Storage accounting.
+        //
+        // EnforceStorageBudget used to sum FileBytes across every catalog record to
+        // decide whether the budget was exceeded, so it walked the whole catalog on
+        // every single insert. Populating a KB with S stored sources cost O(S^2)
+        // accounting iterations below the budget - quadratic work whose only purpose
+        // is to read a total it already knows.
+        //
+        // _trackedBytes holds that total, and _accountingTrusted says whether it can be
+        // believed. A replace applies only the delta, eviction subtracts, and the
+        // counter stops being trusted the moment an update path could have desynced it
+        // (a failed write, a concurrent mutation). The next enforcement then rebuilds
+        // it with one pass and carries on incrementally, so the invariant is
+        // "reconcile at most once per desync", not "assume the counter is always
+        // right" and not "rescan on every insert".
+        private long _trackedBytes;
+        private bool _accountingTrusted;
+        private long _accountingScans;
+
+        // Issue #344. Trigram posting reclamation.
+        //
+        // Put added memberships for the new source and nothing else, so replacing a
+        // source with one whose trigrams barely overlap left the old trigrams still
+        // pointing at that record key - stale derived state that grows with every
+        // source churn. Disk-budget eviction dropped the catalog record and the file
+        // but not the postings, so evicted records stayed reachable through the index.
+        //
+        // Each record's current trigram set is remembered so the previous one can be
+        // subtracted on replacement, and postings are removed on eviction as well. An
+        // empty posting set is dropped from the index rather than kept, since a set with
+        // no members answers nothing and only retains the key strings.
+        //
+        // Concurrency: a query that is mid-scan may still observe a key that is being
+        // removed. That is the safe direction - a candidate whose record is gone is
+        // re-checked against the record dictionary before it is used, so a stale
+        // posting costs a miss, never a wrong result. The reverse (removing a posting
+        // that a concurrent write just added) is prevented by removing under the same
+        // per-set lock the writer uses.
+        private readonly ConcurrentDictionary<string, HashSet<string>> _trigramsByRecord =
+            new ConcurrentDictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Record keys currently reachable through at least one trigram posting.</summary>
+        internal int TrigramIndexedRecordCount => _trigramsByRecord.Count;
+
+        /// <summary>Trigram keys currently held in the index, including any that became empty.</summary>
+        internal int TrigramKeyCount => _trigramIndex.Count;
+
+        /// <summary>The trigrams currently indexed for a record. Diagnostics and tests.</summary>
+        internal HashSet<string> TrigramsForRecordForTest(string guid, string partName)
+        {
+            string key = MakeKey(guid, partName);
+            return _trigramsByRecord.TryGetValue(key, out var set)
+                ? new HashSet<string>(set, StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// A snapshot of every trigram posting set. Issue #344: the index is only
+        /// reclaimable if a posting naming a dead record is observable, and the only
+        /// honest way to assert that is to look at the postings themselves rather than
+        /// at a counter that could agree with a leak. The sets are copied so a caller
+        /// cannot mutate live index state.
+        /// </summary>
+        internal IDictionary<string, HashSet<string>> TrigramIndexForTest()
+        {
+            var snapshot = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kvp in _trigramIndex)
+            {
+                var set = kvp.Value;
+                lock (set)
+                    snapshot[kvp.Key] = new HashSet<string>(set, StringComparer.OrdinalIgnoreCase);
+            }
+            return snapshot;
+        }
+
+        /// <summary>
+        /// Whether a posting key still names a live catalog record. A posting that does
+        /// not is stale: the query path scans it and then discards it, so every one is
+        /// wasted work plus retained memory.
+        /// </summary>
+        internal bool RecordExistsForTest(string recordKey)
+        {
+            if (recordKey == null) return false;
+            return _records.ContainsKey(recordKey);
+        }
+
         public SourceStoreService()
         {
             _storeDirectory = Path.Combine(RuntimePaths.StateRoot, "source-store");
@@ -102,7 +188,17 @@ namespace GxMcp.Worker.Services
                 _storeDirectory = dir;
                 _records.Clear();
                 _trigramIndex.Clear();
+                // Issue #344: the per-record trigram sets describe the index that was
+                // just cleared. Leaving them behind would make the next Put believe the
+                // new content's trigrams were the previous content's, and subtract the
+                // wrong postings instead of removing the right ones.
+                _trigramsByRecord.Clear();
                 _initialized = false;
+                // Issue #338: clearing the catalog invalidates the incremental total.
+                // Without this the next Put would add its delta to a counter still
+                // describing the previous record set, and the total would be wrong for
+                // the rest of the instance's life.
+                MarkAccountingUntrusted();
                 Initialize();
             }
         }
@@ -375,9 +471,14 @@ namespace GxMcp.Worker.Services
                     StoredAtUtc = DateTime.UtcNow
                 };
 
-                // Update trigram postings
+                // Issue #344: update trigram postings, replacing rather than accumulating.
+                // The previous set for this key is removed first, so a source replaced by
+                // one with a disjoint trigram set does not leave the old trigrams still
+                // pointing at it.
                 var trigrams = TrigramExtractor.ExtractTrigrams(source);
-                foreach (var t in trigrams)
+                var currentTrigrams = new HashSet<string>(trigrams, StringComparer.OrdinalIgnoreCase);
+                RemoveTrigramPostings(key);
+                foreach (var t in currentTrigrams)
                 {
                     var set = _trigramIndex.GetOrAdd(t, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
                     lock (set)
@@ -385,8 +486,17 @@ namespace GxMcp.Worker.Services
                         set.Add(key);
                     }
                 }
+                _trigramsByRecord[key] = currentTrigrams;
 
+                // Issue #338: apply the size delta for this record instead of making the
+                // next budget check rescan the catalog. A replacement must subtract the
+                // previous record's bytes first, or the total grows by both versions.
+                RecordSummary previous;
+                bool replaced = _records.TryGetValue(key, out previous);
+                if (replaced)
+                    ApplyAccountingDelta(-previous.FileBytes);
                 _records[key] = summary;
+                ApplyAccountingDelta(fileBytes);
                 MarkCatalogDirty();
                 EnforceStorageBudget();
                 return true;
@@ -793,6 +903,10 @@ namespace GxMcp.Worker.Services
             string catalogPath = Path.Combine(_storeDirectory, "catalog.json.gz");
             _records.Clear();
             _trigramIndex.Clear();
+            // Issue #344: rebuilt from scratch below, so the previous map must not
+            // survive into it. A leftover entry would make the first replacement of a
+            // loaded record subtract the wrong postings.
+            _trigramsByRecord.Clear();
             if (!File.Exists(catalogPath)) return;
 
             try
@@ -846,6 +960,11 @@ namespace GxMcp.Worker.Services
                                 StoredAtUtc = s
                             };
                             _records[canonicalKey] = summary;
+                            // Issue #338: the catalog load rebuilt the record set, so
+                            // the incremental total describes the previous set. Force
+                            // one reconciliation pass rather than trying to patch a
+                            // counter across a bulk replace.
+                            MarkAccountingUntrusted();
                         }
                     }
 
@@ -855,7 +974,13 @@ namespace GxMcp.Worker.Services
                         if (TryGet(kvp.Value.Guid, kvp.Value.PartName, out string src) && !string.IsNullOrEmpty(src))
                         {
                             var trigrams = TrigramExtractor.ExtractTrigrams(src);
-                            foreach (var t in trigrams)
+                            // Issue #344: a loaded record must record its own trigram
+                            // set. Without this, the first replacement of a record that
+                            // came from disk had nothing to subtract, so its original
+                            // postings stayed live and the stale set was never
+                            // reclaimable - which is exactly the churn case this fixes.
+                            var indexed = new HashSet<string>(trigrams, StringComparer.OrdinalIgnoreCase);
+                            foreach (var t in indexed)
                             {
                                 var set = _trigramIndex.GetOrAdd(t, _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase));
                                 lock (set)
@@ -863,6 +988,7 @@ namespace GxMcp.Worker.Services
                                     set.Add(kvp.Key);
                                 }
                             }
+                            _trigramsByRecord[kvp.Key] = indexed;
                         }
                     });
                 }
@@ -876,8 +1002,7 @@ namespace GxMcp.Worker.Services
         private void EnforceStorageBudget()
         {
             long maxBytes = Configuration.SourceStoreMaxMB * 1024L * 1024L;
-            long currentBytes = 0;
-            foreach (var r in _records.Values) currentBytes += r.FileBytes;
+            long currentBytes = CurrentStorageBytes();
 
             if (currentBytes <= maxBytes) return;
 
@@ -891,17 +1016,115 @@ namespace GxMcp.Worker.Services
                 string key = MakeKey(rec.Guid, rec.PartName);
                 if (_records.TryRemove(key, out _))
                 {
+                    // Issue #344: eviction dropped the catalog record and the file but
+                    // left the trigram postings, so an evicted record stayed reachable
+                    // through the index and the stale keys accumulated across evictions.
+                    RemoveTrigramPostings(key);
                     try
                     {
                         string fullPath = Path.Combine(_storeDirectory, rec.RelativeFilePath);
                         if (File.Exists(fullPath)) File.Delete(fullPath);
                         currentBytes -= rec.FileBytes;
                     }
-                    catch { }
+                    catch
+                    {
+                        // The file could not be deleted, so the bytes are still on disk
+                        // even though the catalog no longer tracks them. Record the
+                        // removal for accounting, then give up on the counter rather
+                        // than let it drift away from the catalog.
+                        ApplyAccountingDelta(-rec.FileBytes);
+                        MarkAccountingUntrusted();
+                    }
                 }
             }
             MarkCatalogDirty();
         }
+
+        /// <summary>
+        /// Total tracked storage in bytes, reconciling the incremental counter with one
+        /// catalog pass whenever it is not trusted.
+        /// </summary>
+        private long CurrentStorageBytes()
+        {
+            if (_accountingTrusted) return Interlocked.Read(ref _trackedBytes);
+
+            long total = SumRecordBytes();
+            Interlocked.Exchange(ref _trackedBytes, total);
+            Volatile.Write(ref _accountingTrusted, true);
+            return total;
+        }
+
+        /// <summary>
+        /// Applies a byte delta to the tracked total. When the counter is untrusted the
+        /// delta is dropped on purpose: the next <see cref="CurrentStorageBytes"/> pass
+        /// rebuilds the exact total, and folding one unverified delta into a rebuilt
+        /// value is how a counter drifts.
+        /// </summary>
+        private void ApplyAccountingDelta(long deltaBytes)
+        {
+            if (!_accountingTrusted) return;
+            Interlocked.Add(ref _trackedBytes, deltaBytes);
+        }
+
+        /// <summary>
+        /// Marks the incremental total as untrusted, so the next enforcement reconciles
+        /// it with a single pass. Called from any path that could have changed
+        /// <see cref="_records"/> without going through the accounting helpers.
+        /// </summary>
+        private void MarkAccountingUntrusted() => Volatile.Write(ref _accountingTrusted, false);
+
+        /// <summary>
+        /// Removes a record's trigram postings and forgets the record's trigram set.
+        /// Issue #344. Each posting is removed under the same per-set lock the writer
+        /// uses, so a concurrent write that re-adds the key is not undone, and a set
+        /// left empty is dropped from the index - it answers nothing and only retains
+        /// the key strings.
+        /// </summary>
+        private void RemoveTrigramPostings(string key)
+        {
+            if (!_trigramsByRecord.TryRemove(key, out var previous)) return;
+            foreach (var t in previous)
+            {
+                if (!_trigramIndex.TryGetValue(t, out var set)) continue;
+                lock (set)
+                {
+                    set.Remove(key);
+                    if (set.Count == 0) _trigramIndex.TryRemove(t, out _);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Number of catalog records walked by <see cref="SumRecordBytes"/>. An
+        /// in-process counter alone cannot catch a full-catalog sum reintroduced at a
+        /// different call site, so this counts visits at the one place any such sum has
+        /// to go through; <c>SourceStoreBudgetAccountingTests</c> pairs it with a
+        /// source-shape guard on <see cref="EnforceStorageBudget"/>.
+        /// </summary>
+        internal long CatalogRecordVisits => Interlocked.Read(ref _accountingScans);
+
+        /// <summary>
+        /// The one place a full-catalog byte sum is allowed to happen.
+        /// </summary>
+        private long SumRecordBytes()
+        {
+            long total = 0;
+            foreach (var r in _records.Values)
+            {
+                Interlocked.Increment(ref _accountingScans);
+                total += r.FileBytes;
+            }
+            return total;
+        }
+
+        /// <summary>
+        /// Total tracked storage, reconciled on demand. Exposed so a budget assertion
+        /// can check the counter against the catalog it is supposed to describe.
+        /// </summary>
+        internal long TrackedStorageBytes() => CurrentStorageBytes();
+
+        /// <summary>Catalog records whose bytes the counter currently accounts for.</summary>
+        internal int RecordCount => _records.Count;
 
         private static string ComputeHash(string text)
         {

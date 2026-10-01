@@ -115,6 +115,25 @@ namespace GxMcp.Worker
         private static volatile string _sdkBusyOperationId; // gateway operationId from _meta.progressToken
         private static readonly int _busyRejectThresholdMs = ResolveBusyRejectThresholdMs();
 
+        // Issue #342: last time the in-flight SDK operation reported movement. Written
+        // from ProgressEmitter, which every progress emission passes through, so it is
+        // a genuine liveness signal rather than a guess derived from elapsed time.
+        // Reset when a command starts, so a new operation cannot inherit the previous
+        // one's last tick and look alive while it is already wedged.
+        private static long _sdkLastProgressTicks;
+
+        /// <summary>
+        /// Records that the SDK operation currently running has made progress.
+        /// Called from <see cref="GxMcp.Worker.Helpers.ProgressEmitter"/>; deliberately
+        /// does nothing when no command is in flight, so a stray emission cannot make a
+        /// later, wedged command look healthy.
+        /// </summary>
+        internal static void NoteSdkProgress()
+        {
+            if (_sdkBusy != 1) return;
+            Interlocked.Exchange(ref _sdkLastProgressTicks, DateTime.UtcNow.Ticks);
+        }
+
         internal static JObject GetSdkBusyStatus(DateTime? nowUtc = null)
         {
             bool active = _sdkBusy == 1;
@@ -138,6 +157,19 @@ namespace GxMcp.Worker
             {
                 var since = new DateTime(sinceTicks, DateTimeKind.Utc);
                 status["elapsedMs"] = Math.Max(0L, (long)((nowUtc ?? DateTime.UtcNow) - since).TotalMilliseconds);
+            }
+
+            // Issue #342: report liveness alongside busyness. "Active" alone cannot tell a
+            // long build from a deadlocked call, and a health check that cannot tell them
+            // apart must not call either of them healthy or unhealthy.
+            long progressTicks = Interlocked.Read(ref _sdkLastProgressTicks);
+            bool sawProgress = active && progressTicks > 0;
+            status["sawProgress"] = sawProgress;
+            status["lastProgressMs"] = 0;
+            if (sawProgress)
+            {
+                var last = new DateTime(progressTicks, DateTimeKind.Utc);
+                status["lastProgressMs"] = Math.Max(0L, (long)((nowUtc ?? DateTime.UtcNow) - last).TotalMilliseconds);
             }
             return status;
         }
@@ -636,7 +668,20 @@ namespace GxMcp.Worker
                 Action = action
             };
 
-            GxMcp.Worker.Services.StaScheduler.Instance.Enqueue(item);
+            // Issue #341: admission is bounded, and a refusal is returned to the caller
+            // as an actionable error BEFORE the command is queued. That ordering is the
+            // whole point: a command reported as rejected must never execute later, and
+            // a caller told "accepted" must have a bounded wait ahead of it.
+            var scheduler = GxMcp.Worker.Services.StaScheduler.Instance;
+            if (!scheduler.TryEnqueue(item))
+            {
+                string reason = scheduler.LastAdmissionError ?? "queue_full";
+                int depth0 = scheduler.QueuedCount;
+                Logger.Warn($"[STA] rejected {method}/{action} from client '{clientId}': {reason} (queued={depth0}).");
+                WriteAdmissionRejected(obj, line, reason, depth0, scheduler.QueuedBytes);
+                return false;
+            }
+
             try
             {
                 if (_bridgeForm != null && _bridgeForm.IsHandleCreated)
@@ -649,6 +694,39 @@ namespace GxMcp.Worker
         }
 
         private static bool EnqueueSdkCommand(string line) => EnqueueSdkCommand(null, line);
+
+        /// <summary>
+        /// Answers a refused command with a retryable envelope. Issue #341: the refusal
+        /// has to reach the caller as an answer, not as a dropped connection, and it has
+        /// to be honest that nothing was queued - a command that is silently dropped
+        /// leaves the caller waiting for a response that will never arrive.
+        ///
+        /// <para>
+        /// Reuses the existing <c>SendQueueBusy</c> shape and <c>SendResponse</c>
+        /// transport: a saturated admission is the same class of condition as a full
+        /// ingress queue, and a second wire format for it would be one more thing for a
+        /// client to special-case.
+        /// </para>
+        /// </summary>
+        private static void WriteAdmissionRejected(JObject obj, string line, string reason, int queued, long queuedBytes)
+        {
+            string idJson = obj?["id"]?.ToString() ?? "null";
+            string saturated = GxMcp.Worker.Models.McpResponse.Err(
+                code: "WorkerQueueSaturated",
+                message: "The Worker SDK lane is at its admission budget; this command was refused and was NOT queued.",
+                hint: "Retry once the queue drains, or cancel the running operation. A refused command never executes later.",
+                retryAfterMs: 250,
+                errorExtra: new JObject
+                {
+                    ["reason"] = reason,
+                    ["accepted"] = false,
+                    ["queuedCommands"] = queued,
+                    ["queuedBytes"] = queuedBytes,
+                    ["maxQueuedCommands"] = GxMcp.Worker.Services.StaScheduler.MaxQueuedCommands,
+                    ["maxQueuedBytes"] = GxMcp.Worker.Services.StaScheduler.MaxQueuedBytes
+                });
+            SendResponse(saturated, idJson);
+        }
 
         internal static void ProcessScheduledCommand(GxMcp.Worker.Services.ScheduledCommandItem item)
         {
@@ -704,6 +782,7 @@ namespace GxMcp.Worker
                 }
 
                 Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
+                Interlocked.Exchange(ref _sdkLastProgressTicks, 0);
                 _sdkBusyOp = DescribeCommand(item.Obj, item.RawLine);
                 _sdkBusyOperationId = ExtractOperationId(item.Obj, item.RawLine);
                 _sdkBusy = 1;
@@ -718,6 +797,7 @@ namespace GxMcp.Worker
             while (SdkCommandQueue.TryTake(out SdkCommandItem legacyItem))
             {
                 Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
+                Interlocked.Exchange(ref _sdkLastProgressTicks, 0);
                 _sdkBusyOp = DescribeCommand(legacyItem.Obj, legacyItem.RawLine);
                 _sdkBusyOperationId = ExtractOperationId(legacyItem.Obj, legacyItem.RawLine);
                 _sdkBusy = 1;

@@ -43,10 +43,19 @@ namespace GxMcp.Gateway
                 "- `axiCompact: true` — pass `false` to get the full payload.\n" +
                 "- `limit: 50`, `offset: 0`.\n" +
                 "- `exactMatch: true` restricts results to the exact object name after the query is normalized.\n\n" +
+                "## Federated discovery (issue #356)\n" +
+                "- `kbs: ['KbAlpha','KbBeta']` runs the same read-only search over an explicit KB set in one call. Same-named objects in different KBs keep their own GUID, path and KB attribution; a flat name across KBs means nothing, so there is no top-level `count`.\n" +
+                "- **Read `coverage` first.** `coverage.complete` is true only when every requested KB was searched to completion. `coverage.searched` lists the KBs that actually ran; `coverage.incomplete` lists the ones that did not finish. An entry with `status != 'ok'` or `complete: false` is **not** evidence of zero matches.\n" +
+                "- Per-KB `status`: `ok`, `notOpen` (declared but no open Worker), `unknownAlias`, `warming` (Worker still starting), `error`, `timeout`, `budgetExceeded`, `canceled`.\n" +
+                "- It **never opens a KB**. The Worker pool has finite capacity and opening one can evict the KB you are working in, so a `notOpen` KB is reported with the command that opens it (`genexus_kb action=open`) rather than silently started. Same for `warming`: repeat once `genexus_whoami` reports it ready.\n" +
+                "- Bounds: max 16 aliases; `maxConcurrency` (default 4, max 8); `perKbTimeoutMs` (default 30000, max 120000); `maxTotalResults` across all KBs (default 500, max 5000). A budget cut marks that KB `budgetExceeded` with `complete: false` and leaves its `nextCursor` intact, so the answer is short rather than silently truncated.\n" +
+                "- Continue per KB with `cursors: { KbAlpha: '<nextCursor>' }`. A cursor for an alias outside `kbs` is rejected (`MultiKbCursorInvalid`), never dropped - a silently discarded cursor is how a resumed page repeats its first page. Mutually exclusive with `kb`; `kbs` bypasses session selection entirely.\n" +
+                "- No second search engine: each KB runs the same `Search -> Query` route, so a match means the same thing federated as alone. This does not imply a cross-KB call graph.\n\n" +
                 "## Examples\n" +
                 "- `{ query: 'type:Procedure', limit: 20 }`\n" +
                 "- `{ query: 'usedby:InvoiceProc' }`\n" +
-                "- `{ query: 'OrderTrn', fields: 'name,type,path,description' }`\n",
+                "- `{ query: 'OrderTrn', fields: 'name,type,path,description' }`\n" +
+                "- `{ query: 'name:\"Customer\"', kbs: ['KbAlpha','KbBeta'] }`\n",
 
             ["genexus_lifecycle"] =
                 "# genexus_lifecycle\n\n" +
@@ -142,10 +151,18 @@ namespace GxMcp.Gateway
                 "Run `genexus_list_objects --typeFilter ThemeClass --nameFilter <Button|TextBlock|Title|...>` to discover the actual class names in this KB (they vary per design system). Common patterns: `themeClass=\"BigTitle\"`, `themeClass=\"LinkText\"`, `groupThemeClass=\"GroupTelaResp\"`, `cellThemeClass=\"TableTitleCell\"`. Buttons use `buttonClass=\"btn <ColorClass>\"` (e.g. `btn ButtonGreen`, `btn ButtonRed`).\n\n" +
                 "### \"Apply this pattern on save\" override\n" +
                 "When that checkbox is on (the default), WorkWithPlus recomputes some attributes after every save — notably `title` on top-level groups. Toggle it via `genexus_properties --action set --name WorkWithPlus<Object> --propertyName SDPlus_Editor_Apply_On_Save --value False` to keep hard overrides.\n\n" +
+                // Issue #352: both examples below were structural raw-XML edits
+                // (insert a userAction, wrap attributes in a group) presented as
+                // supported, while the preflight two paragraphs above says the same
+                // route rejects structure changes. They now name the published typed
+                // action for WorkWithPlus, and the one raw-XML example is a supported
+                // property change.
                 "### Pattern examples\n" +
-                "- Add a custom button: `{ name: 'WorkWithPlusAcao', part: 'PatternInstance', mode: 'patch', operation: 'Insert_After', context: '<existing Trn_Delete standardAction line>', content: '<userAction caption=\"Auditar\" name=\"Auditar\" buttonClass=\"btn ButtonCinza\" confirm=\"False\" />' }`\n" +
-                "- Wrap attributes in a styled group (full rewrite): `{ name: 'WorkWithPlusAcao', part: 'PatternInstance', mode: 'full', content: '<full <instance> XML with <table isGroup=\"True\" title=\"Identificação\" groupThemeClass=\"GroupTelaResp\">...>' }`\n" +
-                "- Add a Selection ordering through the typed WorkWithPlus action or an SDK pattern operation; raw PatternInstance edits do not rebuild `childrenOrderedList`.\n",
+                "- Change an existing property: `{ name: 'WorkWithPlusAcao', part: 'PatternInstance', mode: 'patch', operation: 'Replace', context: '<existing line>', content: '<same line with one supported property value changed>', dryRun: true }`\n" +
+                "- Add a custom button (structural): use `genexus_wwp { action: 'add_user_action', name: 'WorkWithPlusAcao', containerName: 'TableActions', actionName: 'Auditar', caption: 'Auditar' }`. Raw `PatternInstance` XML cannot add a node — it is rejected as `PatternStructureChangeUnsupported`.\n" +
+                "- Wrap attributes in a styled group (structural): no `genexus_wwp` action exists for inserting a `<table isGroup=\"True\">` group, and raw `PatternInstance` edits reject it. Do it in the GeneXus IDE.\n" +
+                "- Add a Selection ordering through the typed WorkWithPlus action or an SDK pattern operation. `childrenOrderedList` is SDK-owned metadata: raw PatternInstance edits do not rebuild it, and changing it by hand is rejected as `PatternMetadataChangeUnsupported`.\n" +
+                "- Saving a `PatternInstance` does not regenerate the pattern's generated objects. Apply the pattern in the GeneXus IDE for that.\n",
 
             ["genexus_analyze"] =
                 "# genexus_analyze\n\n" +
@@ -211,11 +228,19 @@ namespace GxMcp.Gateway
                 "## Pagination\n" +
                 "- `offset` and `limit` apply to the **source** part for large objects.\n" +
                 "- `_meta.partial: true` and `_meta.nextOffset` signal more content available.\n\n" +
+                "## Conditional reads (issue #357)\n" +
+                "- A single-part read (one object, one `part`, one `offset`/`limit` window) returns a `contentToken`. Echo it back as `ifUnchangedSince` on the next read of the same object/part/window.\n" +
+                "- Unchanged: the response is `notModified: true` with `identity`, `versionToken` and `conditional.reason: 'matched'`, and **no `source`**. The `versionToken` stays usable as a write's `baseVersion` because the revision that gated the suppression has not advanced.\n" +
+                "- Changed, or the token no longer applies: the full body returns, with a fresh `contentToken` and `conditional.reason` naming the failed check (`revisionAdvanced`, `objectReplaced`, `partChanged`, `paginationChanged`, `kbChanged`, `modelChanged`, `workerRestarted`, `revisionUnknown`, `tokenMalformed`, `authoritativeReadRequired`).\n" +
+                "- `ifUnchangedSince` is rejected with `ConditionalReadUnsupportedForm` on `targets[]`, `parts[]` and full-object reads — those have no single representation to bind. Omitting it preserves the unconditional behavior exactly.\n" +
+                "- Freshness is an SDK object revision stamp observed before the body is read, not a TTL and not a cache hit. A missed signal degrades to a full read; it never returns `notModified`. An outstanding post-write recovery fence forces an authoritative read (`authoritativeReadRequired`).\n" +
+                "- This is a transfer/context saving, not a verification shortcut: it is never a substitute for the mandatory post-write or post-timeout re-read, which always returns a body.\n\n" +
                 "## Examples\n" +
                 "- `{ name: 'InvoiceProc', parts: ['Source', 'Variables'] }`\n" +
                 "- `{ name: 'OrderTrn', parts: ['Rules'], offset: 0, limit: 200 }`\n" +
                 "- `{ name: 'OrderFilter', type: 'DataSelector', parts: ['parameters', 'conditions', 'orders', 'definedBy', 'baseTable'] }`\n" +
-                "- `{ targets: [{ name: 'A' }, { name: 'B' }], parts: ['Source'] }`\n",
+                "- `{ targets: [{ name: 'A' }, { name: 'B' }], parts: ['Source'] }`\n" +
+                "- `{ name: 'OrderTrn', part: 'Source', limit: 0, ifUnchangedSince: '<contentToken>' }`\n",
 
             ["genexus_apply_pattern"] =
                 "# genexus_apply_pattern\n\n" +
@@ -251,6 +276,7 @@ namespace GxMcp.Gateway
                 "// → InvoiceQueryPanel.WebForm now contains the template-derived layout\n" +
                 "```\n\n" +
                 "**Auto-project on edit:** subsequent `genexus_edit name=WorkWithPlus<X> part=PatternInstance` calls automatically run UpdateParentObject too — every PatternInstance edit lands on the parent object's WebForm in the same call. The response's `projection.status` field reports the outcome.\n\n" +
+                "**Fail-closed:** the engine's `ApplyPattern` is a no-op on these target types, so this is the only route. Every stage of it can fail, and the response names which one: `failureStage` is one of `wwpAssembly`, `packageInterface`, `createOverload`, `template`, `projection`, `hostConflict`, `validateAndSave`, `attachVerification`, `environment`, and `failureCode` is a stable code for it. A stage that creates the host and then fails (`validateAndSave`, `projection`, `attachVerification`) removes the host again and reports `removedOrphanHost` — a host that is never projected renders but never reaches the server, so it must not be left behind. `hostConflict` means a `WorkWithPlus<X>` already existed that this call did not create; it is reported, not adopted. Run `mode: \"diagnose\"` first: it runs the identical preflight and returns `status: \"blocked\"` with a `critical` finding per blocking stage instead of `All pre-apply checks passed`.\n\n" +
                 "## Typed PatternInstance actions\n" +
                 "Use `mode: 'actions'` for structural WWP edits. `action: 'add_user_action'` inserts a form-level UserAction directly under `containerName` (normally `TableActions`) and derives the event as `Do<actionName>`. Example: `{ name: 'WorkWithPlusImpressaoConfiguracao', pattern: 'WorkWithPlus', mode: 'actions', action: 'add_user_action', containerName: 'TableActions', actionName: 'BaixarConfiguracao', caption: 'Baixar Configuração', dryRun: true }`. The typed path persists and re-reads the PatternInstance when `dryRun` is false, verifies the projected state, attempts rollback when `rollbackOnFailure` is true, and never runs Specify, Generate, Build, Rebuild, compilation, publication, execution, or tests.\n\n" +
                 "## Response\n" +

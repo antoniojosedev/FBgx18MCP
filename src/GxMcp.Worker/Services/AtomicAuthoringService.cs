@@ -328,16 +328,6 @@ namespace GxMcp.Worker.Services
         {
             ["part"] = part, ["mode"] = "full", ["content"] = content, ["validate"] = true
         });
-        private static void ApplyAndRecord(string phase, string raw, JArray phases)
-        {
-            JObject response = JObject.Parse(raw); phases.Add(new JObject { ["phase"] = phase, ["response"] = response });
-            EnsureSuccess(response, phase);
-        }
-        private static void EnsureSuccess(JObject response, string phase)
-        {
-            if (!IsSuccess(response)) throw new AtomicFailure(phase,
-                response["error"]?["message"]?.ToString() ?? response["message"]?.ToString() ?? phase + " failed.", response);
-        }
         private static bool IsSuccess(JObject response)
         {
             string s = response?["status"]?.ToString();
@@ -353,7 +343,11 @@ namespace GxMcp.Worker.Services
             ["operation"] = existing ? "update" : "create",
             ["type"] = args?["type"]?.ToString(), ["name"] = args?["name"]?.ToString(),
             ["variables"] = (args?["variables"] as JArray)?.Count ?? 0,
-            ["rules"] = args?["rules"] != null, ["source"] = args?["source"] != null,
+            // IsSupplied, not != null: an explicit `"rules": null` read back as a live
+            // JValue of type Null, so the plan reported a rule set the caller never
+            // sent, and reported it to whoever reads the plan back.
+            ["rules"] = Helpers.JsonUtil.IsSupplied(args?["rules"]),
+            ["source"] = Helpers.JsonUtil.IsSupplied(args?["source"]),
             ["properties"] = (args?["properties"] as JObject)?.Count ?? 0,
             ["validate"] = args?["validate"]?.ToObject<bool?>() ?? false,
             ["validationMode"] = args?["validationMode"]?.ToString() ?? "specify"
