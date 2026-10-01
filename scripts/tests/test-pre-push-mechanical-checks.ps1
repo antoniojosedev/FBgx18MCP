@@ -245,6 +245,7 @@ $releaseFixtureBody = [ordered]@{
         [ordered]@{ name = 'CLI tests'; status = 'failed'; command = 'npm test'; exitCode = 1; durationSeconds = 12.5; reason = 'Command exited with code 1.' }
         [ordered]@{ name = 'live KB gate'; status = 'skipped'; command = 'pwsh -File scripts/test-live.ps1 -SkipBuild'; exitCode = 0; durationSeconds = 0; reason = $null }
         [ordered]@{ name = 'CLI lint'; status = 'passed'; command = 'npm run lint'; exitCode = 0; durationSeconds = 9.1; reason = $null }
+        [ordered]@{ name = 'live SDK probe'; status = 'timeout'; command = 'pwsh -File scripts/test-live.ps1'; exitCode = 124; durationSeconds = 1200; reason = 'Phase exceeded 1200s and was terminated.' }
     )
 }
 [IO.File]::WriteAllText($releaseSummaryFixture, ($releaseFixtureBody | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
@@ -257,17 +258,25 @@ try {
         throw 'A non-passing release phase must retain the preflight summary path.'
     }
     if ($failedOutcome.details.status -ne 'failed') { throw 'Parsed details must carry the summary status.' }
-    if (@($failedOutcome.details.failedPhases).Count -ne 1 -or $failedOutcome.details.failedPhases[0] -ne 'CLI tests') {
-        throw 'Parsed details must list failed phase names.'
+    if (@($failedOutcome.details.failedPhases).Count -ne 2 -or
+        $failedOutcome.details.failedPhases -notcontains 'CLI tests' -or
+        $failedOutcome.details.failedPhases -notcontains 'live SDK probe') {
+        throw 'Parsed details must list failed phase names, including a timed-out phase.'
     }
     if (@($failedOutcome.details.skippedPhases).Count -ne 1 -or $failedOutcome.details.skippedPhases[0] -ne 'live KB gate') {
         throw 'Parsed details must list skipped phase names.'
     }
-    $failedDetail = @($failedOutcome.details.failedPhaseDetails)[0]
-    if ($failedDetail.name -ne 'CLI tests' -or $failedDetail.command -ne 'npm test' -or
+    $failedDetail = @($failedOutcome.details.failedPhaseDetails | Where-Object name -eq 'CLI tests')[0]
+    if ($failedDetail.command -ne 'npm test' -or
         [int]$failedDetail.exitCode -ne 1 -or [double]$failedDetail.durationSeconds -ne 12.5 -or
         $failedDetail.reason -ne 'Command exited with code 1.') {
         throw 'failedPhaseDetails must carry name, command, exitCode, durationSeconds and reason.'
+    }
+    $timeoutDetail = @($failedOutcome.details.failedPhaseDetails | Where-Object name -eq 'live SDK probe')[0]
+    if ($timeoutDetail.command -ne 'pwsh -File scripts/test-live.ps1' -or
+        [int]$timeoutDetail.exitCode -ne 124 -or [double]$timeoutDetail.durationSeconds -ne 1200 -or
+        $timeoutDetail.reason -ne 'Phase exceeded 1200s and was terminated.') {
+        throw 'A timed-out phase must travel in failedPhaseDetails with its reason, exit code and command.'
     }
 
     $passedOutcome = Read-ReleasePhaseDetails -SummaryPath $releaseSummaryFixture -PhaseStatus 'passed'

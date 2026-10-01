@@ -309,8 +309,12 @@ function Read-ReleasePhaseDetails {
         try {
             $releaseSummary = Get-Content -LiteralPath $SummaryPath -Raw | ConvertFrom-Json
             $details.status = $releaseSummary.status
-            $details.failedPhases = @($releaseSummary.phases | Where-Object status -eq 'failed' | ForEach-Object name)
-            $details.failedPhaseDetails = @($releaseSummary.phases | Where-Object status -eq 'failed' | ForEach-Object {
+            # release-preflight.ps1 treats 'timeout' as a terminal failure (it is
+            # outside its allowed terminal statuses), so the fork checker must
+            # report a timed-out phase in the failure set, not only 'failed'.
+            $failedPhaseStatuses = @('failed', 'timeout')
+            $details.failedPhases = @($releaseSummary.phases | Where-Object { [string]$_.status -in $failedPhaseStatuses } | ForEach-Object name)
+            $details.failedPhaseDetails = @($releaseSummary.phases | Where-Object { [string]$_.status -in $failedPhaseStatuses } | ForEach-Object {
                     [ordered]@{
                         name = $_.name
                         command = $_.command
