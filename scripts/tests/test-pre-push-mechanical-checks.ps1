@@ -246,6 +246,8 @@ $releaseFixtureBody = [ordered]@{
         [ordered]@{ name = 'live KB gate'; status = 'skipped'; command = 'pwsh -File scripts/test-live.ps1 -SkipBuild'; exitCode = 0; durationSeconds = 0; reason = $null }
         [ordered]@{ name = 'CLI lint'; status = 'passed'; command = 'npm run lint'; exitCode = 0; durationSeconds = 9.1; reason = $null }
         [ordered]@{ name = 'live SDK probe'; status = 'timeout'; command = 'pwsh -File scripts/test-live.ps1'; exitCode = 124; durationSeconds = 1200; reason = 'Phase exceeded 1200s and was terminated.' }
+        [ordered]@{ name = 'live gate unavailable'; status = 'unavailable'; command = 'pwsh -File scripts/test-live.ps1'; exitCode = 2; durationSeconds = 1; reason = 'Command reported unavailable with exit code 2.' }
+        [ordered]@{ name = 'live SDK probe [in progress]'; status = 'running'; command = 'pwsh -File scripts/test-live.ps1'; exitCode = $null; durationSeconds = 0; reason = $null }
     )
 }
 [IO.File]::WriteAllText($releaseSummaryFixture, ($releaseFixtureBody | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
@@ -258,10 +260,12 @@ try {
         throw 'A non-passing release phase must retain the preflight summary path.'
     }
     if ($failedOutcome.details.status -ne 'failed') { throw 'Parsed details must carry the summary status.' }
-    if (@($failedOutcome.details.failedPhases).Count -ne 2 -or
+    if (@($failedOutcome.details.failedPhases).Count -ne 3 -or
         $failedOutcome.details.failedPhases -notcontains 'CLI tests' -or
-        $failedOutcome.details.failedPhases -notcontains 'live SDK probe') {
-        throw 'Parsed details must list failed phase names, including a timed-out phase.'
+        $failedOutcome.details.failedPhases -notcontains 'live SDK probe' -or
+        $failedOutcome.details.failedPhases -notcontains 'live SDK probe [in progress]' -or
+        $failedOutcome.details.failedPhases -contains 'live gate unavailable') {
+        throw 'failedPhases must list every non-terminal phase by negation (failed, timeout, running) and exclude a terminal-ok phase (unavailable).'
     }
     if (@($failedOutcome.details.skippedPhases).Count -ne 1 -or $failedOutcome.details.skippedPhases[0] -ne 'live KB gate') {
         throw 'Parsed details must list skipped phase names.'
@@ -277,6 +281,11 @@ try {
         [int]$timeoutDetail.exitCode -ne 124 -or [double]$timeoutDetail.durationSeconds -ne 1200 -or
         $timeoutDetail.reason -ne 'Phase exceeded 1200s and was terminated.') {
         throw 'A timed-out phase must travel in failedPhaseDetails with its reason, exit code and command.'
+    }
+    $runningDetail = @($failedOutcome.details.failedPhaseDetails | Where-Object name -eq 'live SDK probe [in progress]')[0]
+    if ($null -ne $runningDetail.exitCode -or $null -ne $runningDetail.reason -or
+        @($failedOutcome.details.failedPhaseDetails | Where-Object name -eq 'live gate unavailable').Count -ne 0) {
+        throw 'A running phase (null exit code/reason) must travel in failedPhaseDetails, and an unavailable phase must not.'
     }
 
     $passedOutcome = Read-ReleasePhaseDetails -SummaryPath $releaseSummaryFixture -PhaseStatus 'passed'

@@ -309,12 +309,18 @@ function Read-ReleasePhaseDetails {
         try {
             $releaseSummary = Get-Content -LiteralPath $SummaryPath -Raw | ConvertFrom-Json
             $details.status = $releaseSummary.status
-            # release-preflight.ps1 treats 'timeout' as a terminal failure (it is
-            # outside its allowed terminal statuses), so the fork checker must
-            # report a timed-out phase in the failure set, not only 'failed'.
-            $failedPhaseStatuses = @('failed', 'timeout')
-            $details.failedPhases = @($releaseSummary.phases | Where-Object { [string]$_.status -in $failedPhaseStatuses } | ForEach-Object name)
-            $details.failedPhaseDetails = @($releaseSummary.phases | Where-Object { [string]$_.status -in $failedPhaseStatuses } | ForEach-Object {
+            # release-preflight.ps1 decides failure by negation: any per-phase
+            # status outside its allowed terminal set is a failure (see
+            # $allowedTerminalStatuses there). Mirror that rule instead of
+            # enumerating failure statuses in positive, which left 'running' - a
+            # phase the preflight persists before it completes, so a preflight
+            # killed mid-run retains it - and any future status out of the
+            # retained detail. The checker never runs the preflight with -DryRun,
+            # so 'dry-run' cannot appear, but it stays in the allowed set to match
+            # the producer.
+            $nonFailurePhaseStatuses = @('passed', 'skipped', 'unavailable', 'dry-run')
+            $details.failedPhases = @($releaseSummary.phases | Where-Object { [string]$_.status -notin $nonFailurePhaseStatuses } | ForEach-Object name)
+            $details.failedPhaseDetails = @($releaseSummary.phases | Where-Object { [string]$_.status -notin $nonFailurePhaseStatuses } | ForEach-Object {
                     [ordered]@{
                         name = $_.name
                         command = $_.command
