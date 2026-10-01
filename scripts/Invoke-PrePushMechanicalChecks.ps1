@@ -291,14 +291,6 @@ function Write-TextSummary {
     }
 }
 
-function Get-ReleasePhaseField {
-    param($Phase, [Parameter(Mandatory = $true)][string]$Field)
-    if ($null -eq $Phase) { return $null }
-    $property = $Phase.PSObject.Properties[$Field]
-    if ($null -eq $property) { return $null }
-    return $property.Value
-}
-
 function Read-ReleasePhaseDetails {
     param(
         [Parameter(Mandatory = $true)][string]$SummaryPath,
@@ -316,7 +308,17 @@ function Read-ReleasePhaseDetails {
     if (Test-Path -LiteralPath $SummaryPath -PathType Leaf) {
         try {
             $releaseSummary = Get-Content -LiteralPath $SummaryPath -Raw | ConvertFrom-Json
-            $details.status = $releaseSummary.status
+            # Every read below goes through Get-GxMcpReleaseFieldValue, envelope
+            # included. Under Set-StrictMode -Version Latest, touching a property
+            # the summary does not carry throws, and the catch would then discard
+            # EVERY already-recoverable failedPhaseDetails entry and report
+            # "unable to parse" instead - the evidence disappears exactly in the
+            # scenario this function exists to make legible. A missing key reads
+            # as $null, so a phase without 'status' is classified as a failure
+            # with its name kept, and a summary without 'phases' yields an empty
+            # set rather than nothing at all. release-doctor.ps1 carries the same
+            # guard for the same reason (issue #348); this file must not diverge.
+            $details.status = Get-GxMcpReleaseFieldValue -Object $releaseSummary -Name 'status'
             # release-preflight.ps1 decides failure by negation: any per-phase
             # status outside its allowed terminal set is a failure (see
             # $allowedTerminalStatuses there). Mirror that rule instead of
@@ -327,25 +329,28 @@ function Read-ReleasePhaseDetails {
             # so 'dry-run' cannot appear, but it stays in the allowed set to match
             # the producer.
             #
-            # Every field is read through Get-ReleasePhaseField: under
-            # Set-StrictMode -Version Latest, touching a property the summary does
-            # not carry throws, and the catch below would discard the whole
-            # failedPhaseDetails set and report "unable to parse" instead. An
-            # absent field now reads as $null, so a phase without 'status' is
-            # classified as a failure and keeps its name - fail-closed, and the
-            # detail survives instead of being lost.
+            # A 'running' phase in a COMPLETED run is impossible: both the parallel
+            # and the serial wave drive every phase to a terminal status before the
+            # preflight aggregates (Invoke-PreflightParallel completes all states
+            # before evaluating blocking). So mapping 'running' to failure carries
+            # no false positive - 'running' in a summary means the preflight died.
             $nonFailurePhaseStatuses = @('passed', 'skipped', 'unavailable', 'dry-run')
-            $details.failedPhases = @($releaseSummary.phases | Where-Object { (Get-ReleasePhaseField -Phase $_ -Field 'status') -notin $nonFailurePhaseStatuses } | ForEach-Object { Get-ReleasePhaseField -Phase $_ -Field 'name' })
-            $details.failedPhaseDetails = @($releaseSummary.phases | Where-Object { (Get-ReleasePhaseField -Phase $_ -Field 'status') -notin $nonFailurePhaseStatuses } | ForEach-Object {
+            # A null element is not a phase; `@($null).Count` is 1, so without this
+            # filter a single null would be reported as a failed phase with an
+            # all-null detail - inventing evidence. release-doctor.ps1 filters the
+            # same way (issue #348).
+            $preflightPhases = @(Get-GxMcpReleaseFieldValue -Object $releaseSummary -Name 'phases' | Where-Object { $null -ne $_ })
+            $details.failedPhases = @($preflightPhases | Where-Object { (Get-GxMcpReleaseFieldValue -Object $_ -Name 'status') -notin $nonFailurePhaseStatuses } | ForEach-Object { Get-GxMcpReleaseFieldValue -Object $_ -Name 'name' })
+            $details.failedPhaseDetails = @($preflightPhases | Where-Object { (Get-GxMcpReleaseFieldValue -Object $_ -Name 'status') -notin $nonFailurePhaseStatuses } | ForEach-Object {
                     [ordered]@{
-                        name = Get-ReleasePhaseField -Phase $_ -Field 'name'
-                        command = Get-ReleasePhaseField -Phase $_ -Field 'command'
-                        exitCode = Get-ReleasePhaseField -Phase $_ -Field 'exitCode'
-                        durationSeconds = Get-ReleasePhaseField -Phase $_ -Field 'durationSeconds'
-                        reason = Get-ReleasePhaseField -Phase $_ -Field 'reason'
+                        name = Get-GxMcpReleaseFieldValue -Object $_ -Name 'name'
+                        command = Get-GxMcpReleaseFieldValue -Object $_ -Name 'command'
+                        exitCode = Get-GxMcpReleaseFieldValue -Object $_ -Name 'exitCode'
+                        durationSeconds = Get-GxMcpReleaseFieldValue -Object $_ -Name 'durationSeconds'
+                        reason = Get-GxMcpReleaseFieldValue -Object $_ -Name 'reason'
                     }
                 })
-            $details.skippedPhases = @($releaseSummary.phases | Where-Object { (Get-ReleasePhaseField -Phase $_ -Field 'status') -eq 'skipped' } | ForEach-Object { Get-ReleasePhaseField -Phase $_ -Field 'name' })
+            $details.skippedPhases = @($preflightPhases | Where-Object { (Get-GxMcpReleaseFieldValue -Object $_ -Name 'status') -eq 'skipped' } | ForEach-Object { Get-GxMcpReleaseFieldValue -Object $_ -Name 'name' })
         } catch {
             $parseError = $_.Exception.Message
         }

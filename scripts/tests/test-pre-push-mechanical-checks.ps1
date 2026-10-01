@@ -55,7 +55,7 @@ if ($unavailable.status -ne 'incomplete' -or
     throw 'An unavailable local dependency must be incomplete and block push readiness.'
 }
 
-foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Get-ReleasePhaseField', 'Read-ReleasePhaseDetails')) {
+foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails')) {
     $functionDefinition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -250,10 +250,19 @@ $releaseFixtureBody = [ordered]@{
         [ordered]@{ name = 'dry-run phase (never produced by this caller)'; status = 'dry-run'; command = 'pwsh -File scripts/release-preflight.ps1 -DryRun'; exitCode = 0; durationSeconds = 0; reason = 'Dry-run requested.' }
         [ordered]@{ name = 'live SDK probe [in progress]'; status = 'running'; command = 'pwsh -File scripts/test-live.ps1'; exitCode = $null; durationSeconds = 0; reason = $null }
         [ordered]@{ name = 'phase with no status label'; command = 'pwsh -File scripts/test-live.ps1'; exitCode = $null; durationSeconds = 0; reason = $null }
+        [ordered]@{ name = 'phase carrying only a name' }
+        $null
     )
 }
 [IO.File]::WriteAllText($releaseSummaryFixture, ($releaseFixtureBody | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText($corruptSummaryFixture, '{ not json', [Text.UTF8Encoding]::new($false))
+# A summary that parses but does not carry 'phases'. Under StrictMode a bare
+# '$releaseSummary.phases' read throws, the catch discards every recoverable
+# failedPhaseDetails entry, and the caller reports "unable to parse" - the
+# evidence loss this guard exists to prevent. The same class release-doctor.ps1
+# fixed under issue #348.
+$phaselessSummaryFixture = Join-Path $env:TEMP ('gxmcp-prepush-release-phaseless-' + [guid]::NewGuid().ToString('N') + '.json')
+[IO.File]::WriteAllText($phaselessSummaryFixture, ([ordered]@{ schemaVersion = 'gxmcp-release-preflight/1'; status = 'failed' } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 
 try {
     $failedOutcome = Read-ReleasePhaseDetails -SummaryPath $releaseSummaryFixture -PhaseStatus 'failed'
@@ -262,14 +271,16 @@ try {
         throw 'A non-passing release phase must retain the preflight summary path.'
     }
     if ($failedOutcome.details.status -ne 'failed') { throw 'Parsed details must carry the summary status.' }
-    if (@($failedOutcome.details.failedPhases).Count -ne 4 -or
+    if (@($failedOutcome.details.failedPhases).Count -ne 5 -or
         $failedOutcome.details.failedPhases -notcontains 'CLI tests' -or
         $failedOutcome.details.failedPhases -notcontains 'live SDK probe' -or
         $failedOutcome.details.failedPhases -notcontains 'live SDK probe [in progress]' -or
         $failedOutcome.details.failedPhases -notcontains 'phase with no status label' -or
+        $failedOutcome.details.failedPhases -notcontains 'phase carrying only a name' -or
+        $failedOutcome.details.failedPhases -contains $null -or
         $failedOutcome.details.failedPhases -contains 'live gate unavailable' -or
         $failedOutcome.details.failedPhases -contains 'dry-run phase (never produced by this caller)') {
-        throw 'failedPhases must list every non-terminal phase by negation (failed, timeout, running, missing status) and exclude every allowed terminal status (unavailable, dry-run).'
+        throw 'failedPhases must list every non-terminal phase by negation (failed, timeout, running, missing status, name-only), exclude every allowed terminal status (unavailable, dry-run), and never report a null element as a phase.'
     }
     if (@($failedOutcome.details.skippedPhases).Count -ne 1 -or $failedOutcome.details.skippedPhases[0] -ne 'live KB gate') {
         throw 'Parsed details must list skipped phase names.'
@@ -295,6 +306,50 @@ try {
     $unlabelledDetail = @($failedOutcome.details.failedPhaseDetails | Where-Object name -eq 'phase with no status label')[0]
     if ($null -eq $unlabelledDetail -or $unlabelledDetail.command -ne 'pwsh -File scripts/test-live.ps1') {
         throw 'A phase without a status label must be reported as a failure with its name preserved: under StrictMode a bare property read throws and discards every failedPhaseDetails entry.'
+    }
+    $nameOnlyDetail = @($failedOutcome.details.failedPhaseDetails | Where-Object name -eq 'phase carrying only a name')[0]
+    if ($null -eq $nameOnlyDetail -or $null -ne $nameOnlyDetail.command -or
+        $null -ne $nameOnlyDetail.exitCode -or $null -ne $nameOnlyDetail.durationSeconds -or $null -ne $nameOnlyDetail.reason) {
+        throw 'A phase carrying only a name must be reported as a failure with every absent detail field reading as $null, not dropped by a StrictMode property access.'
+    }
+    if (@($failedOutcome.details.failedPhaseDetails | Where-Object { $null -eq $_.name }).Count -ne 0) {
+        throw 'A null element of phases must be filtered out rather than reported as an all-null failed phase.'
+    }
+
+    # --- Fork-local mirror is pinned to the producer's failure rule ---------
+    # The whole value of the negation filter is that it MIRRORS the producer, and
+    # the mirror is a hand-copied literal. A fixture pins the fork's own behaviour,
+    # but nothing here would turn red if upstream changed $allowedTerminalStatuses:
+    # the fork would keep accepting a status the producer now treats as failure,
+    # which is precisely the silent divergence this change exists to remove. So
+    # parse the producer's literal and require the checker's set to equal it.
+    # Note this pins the AGGREGATE rule ($allowedTerminalStatuses, line 698) and
+    # not the positive hint block below it or Test-PreflightPhaseStatus, which
+    # are different rules with different callers.
+    $preflightSource = Get-Content -LiteralPath (Join-Path $root 'scripts\release-preflight.ps1') -Raw
+    $producerLiteral = [regex]::Match($preflightSource, '\$allowedTerminalStatuses\s*=\s*@\(([^)]*)\)')
+    if (-not $producerLiteral.Success) {
+        throw 'The producer no longer declares $allowedTerminalStatuses; the fork checker mirrors that rule and the pin has lost its anchor.'
+    }
+    $producerSet = @([regex]::Matches($producerLiteral.Groups[1].Value, "'([^']*)'") | ForEach-Object { $_.Groups[1].Value })
+    if ($preflightSource -notmatch '\+=\s*''dry-run''') {
+        throw 'The producer no longer adds dry-run to the allowed terminal statuses; update $nonFailurePhaseStatuses in the checker in lockstep.'
+    }
+    $producerSet = @($producerSet + 'dry-run' | Sort-Object)
+    $checkerSource = Get-Content -LiteralPath (Join-Path $root 'scripts\Invoke-PrePushMechanicalChecks.ps1') -Raw
+    $checkerNonFailure = [regex]::Match($checkerSource, '\$nonFailurePhaseStatuses\s*=\s*@\(([^)]*)\)')
+    if (-not $checkerNonFailure.Success) { throw 'The fork checker no longer declares $nonFailurePhaseStatuses; the mirror pin has lost its anchor.' }
+    $checkerSet = @([regex]::Matches($checkerNonFailure.Groups[1].Value, "'([^']*)'") | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+    if (($checkerSet -join ',') -ne ($producerSet -join ',')) {
+        throw "The fork checker's non-failure status set '$($checkerSet -join ',')' has drifted from the producer's allowed terminal statuses '$($producerSet -join ',')'."
+    }
+
+    $phaselessOutcome = Read-ReleasePhaseDetails -SummaryPath $phaselessSummaryFixture -PhaseStatus 'failed'
+    if ($null -ne $phaselessOutcome.parseError -or $phaselessOutcome.details.status -ne 'failed' -or
+        @($phaselessOutcome.details.failedPhases).Count -ne 0 -or
+        @($phaselessOutcome.details.failedPhaseDetails).Count -ne 0 -or
+        @($phaselessOutcome.details.skippedPhases).Count -ne 0 -or -not $phaselessOutcome.keepSummary) {
+        throw 'A summary without a phases key must read as an empty phase set with its own status and retention intact, not as an unparsable summary that discards the evidence.'
     }
 
     $passedOutcome = Read-ReleasePhaseDetails -SummaryPath $releaseSummaryFixture -PhaseStatus 'passed'
