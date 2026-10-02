@@ -508,9 +508,57 @@ namespace GxMcp.Worker.Services
             //   an existing instance only re-saves the instance while every generated object
             //   keeps its previous version. Reporting that as applied would be a false
             //   success, so reapply stays unsupported until a regenerating route exists.
+            //
+            // SCOPE OF THAT EVIDENCE (issue #353). The measurement covers those TWO
+            // overloads on that ONE combination. It is not a statement that the pattern
+            // engine cannot regenerate - and the reason string below used to read exactly
+            // that way, which made the diagnostic look like a dead end rather than two
+            // exhausted entry points. A third entry point exists and is untested:
+            //
+            //   Artech.Packages.Patterns.PatternEngine.GenerateInstanceObjects(
+            //       IPatternBuildProcess, PatternModel, PatternInstance,
+            //       InstanceObjects, ApplySettings, ApplyResults) -> bool
+            //
+            // an internal static that this build never calls, reached by reflection like
+            // the WorkWithPlus projection. All six arguments are obtainable from the
+            // installed SDK - for standard WorkWith the build process comes from
+            // Artech.Patterns.WorkWith.WorkWithPattern, which is public with a
+            // parameterless constructor. Whether it works is UNKNOWN, and the strongest
+            // argument against it is that it may be the very path that already throws.
+            // It is recorded, not adopted: the switch below stays off until an
+            // experiment on a disposable KB says otherwise, and no such fixture exists on
+            // the machine this was written on. Evidence and member list:
+            // docs/sdk-probe/workwith-regeneration-candidate.md
             // ---------------------------------------------------------------------------
             internal static bool GenericFirstApplySupported = true;
             internal static bool GenericReapplySupported = false;
+
+            /// <summary>
+            /// The regenerating entry point found by reading in #353, and never called.
+            ///
+            /// <para>
+            /// Reported in the capability envelope as an <b>unverified lead</b>, not as a
+            /// capability. The distinction is the whole point: a caller who sees this must
+            /// be able to tell "no route exists" from "a route exists that nobody has run
+            /// yet", because the two call for different next moves and only the first is
+            /// a dead end.
+            /// </para>
+            /// </summary>
+            internal const string UntestedRegenerationEntryPoint =
+                "Artech.Packages.Patterns.PatternEngine.GenerateInstanceObjects";
+
+            /// <summary>
+            /// Whether the rejection reason should name the untested candidate.
+            ///
+            /// <para>
+            /// True for the generic route only. WorkWithPlus returns supported before
+            /// reaching here, so it keeps its own reason-free answer, and a first-apply
+            /// rejection is about a different thing entirely and must not advertise a
+            /// regeneration route.
+            /// </para>
+            /// </summary>
+            internal static bool ShouldNameUntestedCandidate(PatternRoute route) =>
+                route == PatternRoute.Reapply && !GenericReapplySupported;
 
             /// <summary>
             /// Whether a successful reapply regenerates the pattern's derived objects,
@@ -567,10 +615,34 @@ namespace GxMcp.Worker.Services
                 reason = null;
                 if (pattern != null && pattern.IsWorkWithPlus) return true;
                 bool supported = route == PatternRoute.FirstApply ? GenericFirstApplySupported : GenericReapplySupported;
-                if (!supported)
-                    reason = (route == PatternRoute.FirstApply ? "First apply" : "Reapply") + " of " + (pattern?.Name ?? "this pattern") +
-                             " through the pattern engine is not supported by this MCP build: headless reapply does not regenerate the pattern's objects. Apply the pattern in the GeneXus IDE to regenerate them.";
-                return supported;
+                if (supported) return true;
+
+                // Issue #353. The claim is narrowed to what was measured - two named
+                // overloads, on one recorded combination - and the untested third entry
+                // point is named as a lead rather than folded into a blanket "the engine
+                // cannot regenerate". A caller has to be able to tell two exhausted
+                // options from an unmeasured one, because only the second is still worth
+                // someone else's experiment.
+                string what = (route == PatternRoute.FirstApply ? "First apply" : "Reapply")
+                    + " of " + (pattern?.Name ?? "this pattern")
+                    + " through the pattern engine's ApplyPattern overloads is not supported by this MCP build: "
+                    + (route == PatternRoute.FirstApply
+                        ? "first apply is disabled in this build"
+                        : "measured on GX17 U4 + K2BTools 13.1, ApplyPattern(PatternInstance, ApplySettings) throws "
+                          + "NullReferenceException headless and ApplyPattern(KBObject, PatternDefinition) re-saves the "
+                          + "instance while every generated object keeps its previous version")
+                    + ". Apply the pattern in the GeneXus IDE to regenerate the objects.";
+
+                reason = what + (ShouldNameUntestedCandidate(route)
+                    ? " This is a statement about those two overloads, not about the engine: " + UntestedRegenerationEntryPoint
+                      + " is an entry point that this build does not call, and its effect on derived objects is unverified."
+                      + " Re-measured on GX18 18.0.10.184260 without K2BTools: reapply still leaves every derived object at "
+                      + "its previous version, so this refusal is confirmed rather than inherited. The NullReferenceException "
+                      + "the no-settings path throws is this build's own null-ApplySettings artifact - supplying settings "
+                      + "removes the throw but not the non-regeneration, which is why the route stays refused instead of "
+                      + "being fixed."
+                    : "");
+                return false;
             }
 
             internal static JObject ToJson(PatternManifest pattern)
@@ -579,7 +651,18 @@ namespace GxMcp.Worker.Services
                 {
                     bool ok = IsSupported(pattern, route, out string reason);
                     var e = new JObject { ["supported"] = ok };
-                    if (!ok) e["reason"] = reason;
+                    if (!ok)
+                    {
+                        e["reason"] = reason;
+                        // Reported beside the verdict rather than folded into it, so a
+                        // client branching on `supported` is unaffected and a client
+                        // reading further sees that the absence is scoped, not absolute.
+                        if (ShouldNameUntestedCandidate(route))
+                        {
+                            e["unverifiedRegenerationCandidate"] = UntestedRegenerationEntryPoint;
+                            e["candidateStatus"] = "found by reading the installed SDK; never called, effect on derived objects unmeasured";
+                        }
+                    }
                     return e;
                 }
                 return new JObject { ["firstApply"] = Entry(PatternRoute.FirstApply), ["reapply"] = Entry(PatternRoute.Reapply) };
@@ -875,14 +958,55 @@ namespace GxMcp.Worker.Services
                 string errName = objectNameForResponse ?? obj?.Name ?? "";
                 Logger.Error("PatternEngine apply failed for '" + errName + "': " + ex);
                 var errExtra = new JObject { ["patternKey"] = patternKey };
+
+                // Issue #353 follow-up. A NullReferenceException here is not a missing or
+                // unlicensed package. Measured on GX18 18.0.10.184260: reapply with no
+                // settings object throws NRE from inside
+                // PatternEngine.ApplyPattern(PatternInstance, ApplySettings), because this
+                // path passes `null` for ApplySettings; supplying a real one
+                // (IsFullGeneration + ForceSave) makes the same call return success. So the
+                // NRE is this adapter's own null-settings artifact, and telling a caller to
+                // go check licensing sends them after the wrong thing.
+                //
+                // What that success is worth is a separate, worse problem, and it is why the
+                // route stays refused rather than "fixed": with settings supplied, the same
+                // reapply returned PatternApplied while every derived object kept its
+                // previous version, verified against a known pending difference and with an
+                // instance-save control in the same run proving the measurement worked.
+                // Removing the NRE would therefore trade a loud refusal for a silent no-op.
+                bool nullSettingsNre = reapply && ex is NullReferenceException;
+                if (nullSettingsNre)
+                {
+                    errExtra["cause"] = "nullApplySettings";
+                    errExtra["note"] = "The SDK threw while this path passed a null ApplySettings. This is not a "
+                        + "package or licensing problem. Supplying settings avoids the throw, but the call still does "
+                        + "not regenerate the derived objects - so the reapply route stays refused. See "
+                        + "docs/sdk-probe/workwith-regeneration-candidate.md";
+                }
+
                 return McpResponse.Err(
                     code: "PatternEngineApplyFailed",
                     message: ex.Message,
-                    hint: "Verify the pattern package is installed and the KB is open.",
-                    nextSteps: new JArray(McpResponse.NextStep(
-                        tool: "genexus_apply_pattern",
-                        args: new JObject { ["name"] = errName, ["pattern"] = patternKey },
-                        why: "Retry after verifying the pattern package and KB state.")),
+                    hint: nullSettingsNre
+                        ? "This NullReferenceException comes from reapply being called without a settings object, not "
+                          + "from the pattern package: the same call with settings supplied does not throw, but it also "
+                          + "does not regenerate the pattern's objects. Headless reapply of a non-WorkWithPlus pattern "
+                          + "remains unsupported - apply the pattern in the GeneXus IDE to regenerate."
+                        : "Verify the pattern package is installed and the KB is open.",
+                    nextSteps: new JArray(nullSettingsNre
+                        ? McpResponse.NextStep(
+                            tool: "genexus_edit",
+                            args: new JObject
+                            {
+                                ["name"] = errName,
+                                ["part"] = "PatternInstance",
+                                ["mode"] = "full"
+                            },
+                            why: "Saving the instance is the route measured to regenerate the derived objects on GX18.")
+                        : McpResponse.NextStep(
+                            tool: "genexus_apply_pattern",
+                            args: new JObject { ["name"] = errName, ["pattern"] = patternKey },
+                            why: "Retry after verifying the pattern package and KB state.")),
                     target: errName,
                     extra: errExtra);
             }
@@ -1049,6 +1173,37 @@ namespace GxMcp.Worker.Services
                 ["generatedObjects"] = new JArray(generated),
                 ["errors"] = new JArray(result?.Errors ?? Enumerable.Empty<string>())
             };
+
+            // Issue #359: say which expected family members were not observed.
+            //
+            // The reporter's ask was "generate the objects, or fail instead of
+            // reporting PatternApplied". Failing hard is the wrong half of that
+            // alternative here, and the reason is in the SDK comment above this
+            // lookup: the generator registers new objects asynchronously after Invoke
+            // returns, so a member missing at this instant may be seconds from
+            // existing. Turning that race into a hard failure would reject applies
+            // that succeed.
+            //
+            // What is not acceptable is a bare success that silently omits part of its
+            // own result, because that reads identically whether the family was
+            // generated, still pending, or never generated - and the first two are the
+            // common cases while the third is the one worth surfacing. So the names go
+            // in the response and the caller decides; nothing here is a verdict.
+            var missingFamily = BuildMissingWwpFamily(obj?.Name, generated);
+            if (missingFamily.Count > 0)
+            {
+                patternResult["expectedFamilyObjects"] =
+                    new JArray(WwpFamilyNaming.ExpectedFamilyNames(obj?.Name));
+                patternResult["familyMissing"] = new JArray(missingFamily);
+                patternResult["familyComplete"] = false;
+                patternResult["familyNote"] =
+                    "The PatternInstance was attached, but these generated objects were not "
+                    + "visible when the apply returned. WorkWithPlus registers them "
+                    + "asynchronously, so this can mean 'still being generated' rather than "
+                    + "'not generated'. Re-check with genexus_query on the name; if it is still "
+                    + "absent after genexus_lifecycle action=index, the generator did not run and "
+                    + "the IDE's Apply Pattern is the working route.";
+            }
             JArray patternWarnings = null;
             if (patternValidationIssues != null)
             {
@@ -2888,6 +3043,50 @@ namespace GxMcp.Worker.Services
         // selection panel, `View<X>` detail, `ExportWW<X>`/`ExportReportWW<X>` exports,
         // `Prompt<X>` prompt. WebPanel targets don't generate siblings — they get the
         // host attached directly.
+        /// <summary>
+        /// Expected family members that were not among <paramref name="generated"/>.
+        ///
+        /// <para>
+        /// Compares by name rather than by count: a caller that got four of the expected
+        /// objects plus an unrelated one from the adapter must not read as complete, and
+        /// a caller that got the right four under a different case must not read as
+        /// incomplete.
+        /// </para>
+        /// </summary>
+        private static List<string> BuildMissingWwpFamily(string baseName, List<string> generated)
+        {
+            var missing = new List<string>();
+            if (string.IsNullOrEmpty(baseName) || generated == null) return missing;
+
+            var present = new HashSet<string>(generated, StringComparer.OrdinalIgnoreCase);
+            foreach (var expected in WwpFamilyNaming.ExpectedFamilyNames(baseName))
+            {
+                if (!present.Contains(expected)) missing.Add(expected);
+            }
+            return missing;
+        }
+
+        /// <summary>
+        /// The generated WorkWithPlus family for <paramref name="parent"/>, by name.
+        ///
+        /// <para>
+        /// Issue #359. This used to probe a hand-written <em>prefix</em> list -
+        /// <c>WW&lt;Trn&gt;</c>, <c>View&lt;Trn&gt;</c>, <c>ExportWW&lt;Trn&gt;</c> - and
+        /// WorkWithPlus generates a <em>suffix</em> family: <c>&lt;Trn&gt;WW</c>,
+        /// <c>&lt;Trn&gt;WWDS</c>, <c>&lt;Trn&gt;WWExport</c>,
+        /// <c>&lt;Trn&gt;WWGetFilterData</c>. Every family probe therefore missed, and
+        /// because this same list drives the search-index registration just below, the
+        /// generated objects were neither reported nor indexed: the apply returned
+        /// <c>generatedObjects: ["WorkWithPlus&lt;Trn&gt;"]</c> and the four siblings
+        /// read back as <c>ObjectNotFound</c> until something else reindexed the KB.
+        /// </para>
+        ///
+        /// <para>
+        /// The apply had in fact worked. Only the report - and the index - were wrong,
+        /// which is why the failure looked like a generation gap and survived a reapply
+        /// and a targeted build.
+        /// </para>
+        /// </summary>
         private List<string> LookupWwpFamilyByConvention(KBObject parent)
         {
             var found = new List<string>();
@@ -2895,22 +3094,15 @@ namespace GxMcp.Worker.Services
             string baseName = parent.Name;
             if (string.IsNullOrEmpty(baseName)) return found;
 
-            string[] candidates = new[]
-            {
-                "WorkWithPlus" + baseName,
-                "WW" + baseName,
-                "View" + baseName,
-                "ExportWW" + baseName,
-                "ExportReportWW" + baseName,
-                "Prompt" + baseName
-            };
-
-            foreach (var name in candidates)
+            // Host first, then the suffix family, then the legacy prefix shapes. See
+            // WwpFamilyNaming for the observed object names behind this order.
+            foreach (var name in WwpFamilyNaming.FamilyCandidates(baseName))
             {
                 try
                 {
                     var o = _objectService.FindObject(name);
-                    if (o != null && !string.IsNullOrEmpty(o.Name))
+                    if (o != null && !string.IsNullOrEmpty(o.Name)
+                        && !found.Contains(o.Name, StringComparer.OrdinalIgnoreCase))
                     {
                         found.Add(o.Name);
                     }
