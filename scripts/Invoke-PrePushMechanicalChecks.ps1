@@ -340,16 +340,25 @@ function Read-ReleasePhaseDetails {
             # all-null detail - inventing evidence. release-doctor.ps1 filters the
             # same way (issue #348).
             $preflightPhases = @(Get-GxMcpReleaseFieldValue -Object $releaseSummary -Name 'phases' | Where-Object { $null -ne $_ })
-            $details.failedPhases = @($preflightPhases | Where-Object { (Get-GxMcpReleaseFieldValue -Object $_ -Name 'status') -notin $nonFailurePhaseStatuses } | ForEach-Object { Get-GxMcpReleaseFieldValue -Object $_ -Name 'name' })
-            $details.failedPhaseDetails = @($preflightPhases | Where-Object { (Get-GxMcpReleaseFieldValue -Object $_ -Name 'status') -notin $nonFailurePhaseStatuses } | ForEach-Object {
+            $failedEntries = @($preflightPhases | Where-Object { (Get-GxMcpReleaseFieldValue -Object $_ -Name 'status') -notin $nonFailurePhaseStatuses })
+            # The detail is built once and failedPhases is projected from it, so the
+            # two can never disagree about which phases failed. An entry with no
+            # usable name - a phase whose 'name' key is absent, or a non-object
+            # element such as a bare string that carries no keys at all - is
+            # labelled rather than emitted as a $null, which would inflate the
+            # count and read as no phase in the list.
+            $details.failedPhaseDetails = @($failedEntries | ForEach-Object {
+                    $phaseName = [string](Get-GxMcpReleaseFieldValue -Object $_ -Name 'name')
+                    if ([string]::IsNullOrEmpty($phaseName)) { $phaseName = '(unnamed phase)' }
                     [ordered]@{
-                        name = Get-GxMcpReleaseFieldValue -Object $_ -Name 'name'
+                        name = $phaseName
                         command = Get-GxMcpReleaseFieldValue -Object $_ -Name 'command'
                         exitCode = Get-GxMcpReleaseFieldValue -Object $_ -Name 'exitCode'
                         durationSeconds = Get-GxMcpReleaseFieldValue -Object $_ -Name 'durationSeconds'
                         reason = Get-GxMcpReleaseFieldValue -Object $_ -Name 'reason'
                     }
                 })
+            $details.failedPhases = @($details.failedPhaseDetails | ForEach-Object { $_.name })
             $details.skippedPhases = @($preflightPhases | Where-Object { (Get-GxMcpReleaseFieldValue -Object $_ -Name 'status') -eq 'skipped' } | ForEach-Object { Get-GxMcpReleaseFieldValue -Object $_ -Name 'name' })
         } catch {
             $parseError = $_.Exception.Message

@@ -251,6 +251,8 @@ $releaseFixtureBody = [ordered]@{
         [ordered]@{ name = 'live SDK probe [in progress]'; status = 'running'; command = 'pwsh -File scripts/test-live.ps1'; exitCode = $null; durationSeconds = 0; reason = $null }
         [ordered]@{ name = 'phase with no status label'; command = 'pwsh -File scripts/test-live.ps1'; exitCode = $null; durationSeconds = 0; reason = $null }
         [ordered]@{ name = 'phase carrying only a name' }
+        [ordered]@{ status = 'failed'; command = 'npm run test:one'; exitCode = 2; durationSeconds = 3; reason = 'Unnamed failing phase.' }
+        'not-a-phase'
         $null
     )
 }
@@ -276,16 +278,20 @@ try {
         throw 'A non-passing release phase must retain the preflight summary path.'
     }
     if ($failedOutcome.details.status -ne 'failed') { throw 'Parsed details must carry the summary status.' }
-    if (@($failedOutcome.details.failedPhases).Count -ne 5 -or
+    if (@($failedOutcome.details.failedPhases).Count -ne 7 -or
         $failedOutcome.details.failedPhases -notcontains 'CLI tests' -or
         $failedOutcome.details.failedPhases -notcontains 'live SDK probe' -or
         $failedOutcome.details.failedPhases -notcontains 'live SDK probe [in progress]' -or
         $failedOutcome.details.failedPhases -notcontains 'phase with no status label' -or
         $failedOutcome.details.failedPhases -notcontains 'phase carrying only a name' -or
+        $failedOutcome.details.failedPhases -notcontains '(unnamed phase)' -or
         $failedOutcome.details.failedPhases -contains $null -or
         $failedOutcome.details.failedPhases -contains 'live gate unavailable' -or
         $failedOutcome.details.failedPhases -contains 'dry-run phase (never produced by this caller)') {
-        throw 'failedPhases must list every non-terminal phase by negation (failed, timeout, running, missing status, name-only), exclude every allowed terminal status (unavailable, dry-run), and never report a null element as a phase.'
+        throw 'failedPhases must list every non-terminal phase by negation (failed, timeout, running, missing status, name-only, unnamed, non-object), exclude every allowed terminal status (unavailable, dry-run), and never report a null entry.'
+    }
+    if (@($failedOutcome.details.failedPhaseDetails).Count -ne @($failedOutcome.details.failedPhases).Count) {
+        throw 'failedPhases and failedPhaseDetails must describe the same set: they are projected from one another and their counts may not drift.'
     }
     if (@($failedOutcome.details.skippedPhases).Count -ne 1 -or $failedOutcome.details.skippedPhases[0] -ne 'live KB gate') {
         throw 'Parsed details must list skipped phase names.'
@@ -319,6 +325,14 @@ try {
     }
     if (@($failedOutcome.details.failedPhaseDetails | Where-Object { $null -eq $_.name }).Count -ne 0) {
         throw 'A null element of phases must be filtered out rather than reported as an all-null failed phase.'
+    }
+    $unnamedDetail = @($failedOutcome.details.failedPhaseDetails | Where-Object command -eq 'npm run test:one')[0]
+    if ($null -eq $unnamedDetail -or $unnamedDetail.name -ne '(unnamed phase)' -or
+        [int]$unnamedDetail.exitCode -ne 2 -or $unnamedDetail.reason -ne 'Unnamed failing phase.') {
+        throw 'A failing phase with no name must be reported under a placeholder name with its other fields intact, not emitted as a null entry.'
+    }
+    if (@($failedOutcome.details.failedPhaseDetails | Where-Object name -eq '(unnamed phase)').Count -ne 2) {
+        throw 'Both a name-less phase object and a non-object phases element must be labelled with the placeholder name.'
     }
 
     # --- Fork-local mirror is pinned to the producer's failure rule ---------
