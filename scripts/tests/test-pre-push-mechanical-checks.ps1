@@ -263,6 +263,11 @@ $releaseFixtureBody = [ordered]@{
 # fixed under issue #348.
 $phaselessSummaryFixture = Join-Path $env:TEMP ('gxmcp-prepush-release-phaseless-' + [guid]::NewGuid().ToString('N') + '.json')
 [IO.File]::WriteAllText($phaselessSummaryFixture, ([ordered]@{ schemaVersion = 'gxmcp-release-preflight/1'; status = 'failed' } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+# A summary that parses but does not carry 'status'. The envelope read must be as
+# defensive as the per-phase read, or the missing aggregate key throws under
+# StrictMode and the catch takes every failedPhaseDetails entry with it.
+$statuslessSummaryFixture = Join-Path $env:TEMP ('gxmcp-prepush-release-statusless-' + [guid]::NewGuid().ToString('N') + '.json')
+[IO.File]::WriteAllText($statuslessSummaryFixture, ([ordered]@{ schemaVersion = 'gxmcp-release-preflight/1'; phases = @([ordered]@{ name = 'CLI tests'; status = 'failed'; command = 'npm test'; exitCode = 1; durationSeconds = 1.5; reason = 'Command exited with code 1.' }) } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 
 try {
     $failedOutcome = Read-ReleasePhaseDetails -SummaryPath $releaseSummaryFixture -PhaseStatus 'failed'
@@ -323,9 +328,10 @@ try {
     # the fork would keep accepting a status the producer now treats as failure,
     # which is precisely the silent divergence this change exists to remove. So
     # parse the producer's literal and require the checker's set to equal it.
-    # Note this pins the AGGREGATE rule ($allowedTerminalStatuses, line 698) and
-    # not the positive hint block below it or Test-PreflightPhaseStatus, which
-    # are different rules with different callers.
+    # Note this pins the literal declaration of the aggregate rule
+    # ($allowedTerminalStatuses, line 698), not the positive hint block below it
+    # or Test-PreflightPhaseStatus (different rules with different callers), and
+    # not a later re-derivation of the same variable.
     $preflightSource = Get-Content -LiteralPath (Join-Path $root 'scripts\release-preflight.ps1') -Raw
     $producerLiteral = [regex]::Match($preflightSource, '\$allowedTerminalStatuses\s*=\s*@\(([^)]*)\)')
     if (-not $producerLiteral.Success) {
@@ -350,6 +356,13 @@ try {
         @($phaselessOutcome.details.failedPhaseDetails).Count -ne 0 -or
         @($phaselessOutcome.details.skippedPhases).Count -ne 0 -or -not $phaselessOutcome.keepSummary) {
         throw 'A summary without a phases key must read as an empty phase set with its own status and retention intact, not as an unparsable summary that discards the evidence.'
+    }
+
+    $statuslessOutcome = Read-ReleasePhaseDetails -SummaryPath $statuslessSummaryFixture -PhaseStatus 'failed'
+    if ($null -ne $statuslessOutcome.parseError -or $null -ne $statuslessOutcome.details.status -or
+        @($statuslessOutcome.details.failedPhases).Count -ne 1 -or
+        $statuslessOutcome.details.failedPhases[0] -ne 'CLI tests' -or -not $statuslessOutcome.keepSummary) {
+        throw 'A summary without a status key must read that field as $null and still list its phases, not throw under StrictMode and discard the evidence.'
     }
 
     $passedOutcome = Read-ReleasePhaseDetails -SummaryPath $releaseSummaryFixture -PhaseStatus 'passed'
