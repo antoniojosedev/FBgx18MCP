@@ -6514,4 +6514,3 @@ Friction-fix release. Closes all 10 items from a real debug session report (`doc
 - Packaging hygiene:
   - Added `.npmignore` to exclude runtime logs/transient cache
   - Build now removes transient logs/cache from `publish` output
-
