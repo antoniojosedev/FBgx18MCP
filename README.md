@@ -66,7 +66,9 @@ recognized. Classic DAT KB roots are identified from their legacy markers
 
 `init` also reads the KB `.gxw` major and the selected `GeneXus.exe` metadata.
 It aborts before writing `config.json` when the majors conflict or an automatic
-selection cannot be verified. `genexus-mcp doctor` exposes the same result as
+selection cannot be verified. When several installs share the KB major, the
+automatic selection prefers the one whose update matches the `.gxw` version
+(e.g. U7 for an `18.0.7.x` KB) over the newest one. `genexus-mcp doctor` exposes the same result as
 the `kb_sdk_compatibility` check. For a disposable fixture, the
 [live-KB harness](docs/live-kb-test-harness.md) includes a catalog-driven matrix
 that checks every supported major against one published artifact.
@@ -455,6 +457,15 @@ declared indexes are reported only when they can be resolved without Specify.
 typed public SDK elements and never exposes the internal collection type names
 produced by `DataSelectorStructurePart.ToString()` on U16.
 
+To change a Data Selector's conditions use `genexus_edit type=DataSelector part=Conditions
+mode=full` with one condition per line (`genexus_read parts=["conditions"]` also returns
+that text as `source`). The list is replaced as a whole, parameters/orders/Defined By are
+left untouched, and the saved conditions are re-read and verified. A Data Selector whose
+conditions sit inside a nested AND/OR group is refused with
+`DataSelectorConditionsNestedGroupsUnsupported` and nothing is saved: the one-per-line form
+carries no grouping, so replacing the list would silently flatten it. Flatten those levels
+in GeneXus first.
+
 **Editing**
 - `genexus_edit` — edit any object part; modes `full` / `patch` / `ops`
 - `genexus_edit_and_build` — edit + optional specification + rebuild callers in one call, with compensating rollback on validation failure
@@ -480,6 +491,9 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 
 **Analysis, docs & API**
 - `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, `kb_stats` = KB activity/freshness, `table_relations` = table↔transaction relations + redundant attrs, …). `mode=explain` is compatibility-only: it preserves the legacy response envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` instead.
+- `genexus_dfd` - read-only ER diagram of a Transaction/Table (`extends`/`subordinates` edges + Mermaid `erDiagram`) built only from the SDK table relations
+- `genexus_impact` - read-only affected set of an object over the caller graph: counts by type, a dependencies-first rebuild `order`, cycles and the cap that truncated it (no risk score)
+- `genexus_object_context` - read-only identity + callers/callees (with coverage) + data model of one object; a name shared by several objects is refused with their guids and paths
 - `genexus_doc` — generate wiki / dependency graphs / health reports
 - `genexus_api` — introspect REST endpoints exposed by HTTP procedures
 - `genexus_security` — audit KB security: `audit_gam` (env/GAM props), `scan_secrets` (regex over Source), `scan_native` (the SDK's own Security Scanner, `ISecurityScannerService`)
@@ -500,7 +514,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 - `genexus_kb_version` — model version/branch management (Create/Activate/Revert)
 - `genexus_versioning` — versioning umbrella (git-style history over the KB)
 - `genexus_gxserver` — GXserver / Team Development sync, incl. `pipeline_*` (CI pipelines via `IContinuousIntegrationService`)
-- `genexus_transfer` — real XPZ export/import (`IKnowledgeManagerService`, dependency-aware): `export` / `inspect` / `import`
+- `genexus_transfer` — real XPZ export/import (`IKnowledgeManagerService`, dependency-aware): `export` / `inspect` / `import` (`import` previews by default: pass `dryRun:false` and `confirm:true` to actually import)
 - `genexus_memory` — per-KB fact store for the agent
 
 **Security provisioning, IO & meta**

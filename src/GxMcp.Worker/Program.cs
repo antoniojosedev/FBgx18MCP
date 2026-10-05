@@ -657,7 +657,15 @@ namespace GxMcp.Worker
 
             var item = new GxMcp.Worker.Services.ScheduledCommandItem
             {
-                Obj = obj,
+                // issue #369: Obj is deliberately NOT retained on the queued item. The
+                // item already holds RawLine, which is the same content, so retaining both
+                // doubled the backlog's memory on exactly the path the admission byte
+                // budget exists to bound - and EstimateBytes charges the retained text
+                // once, so the budget was ~2x optimistic. Every field the scheduler needs
+                // (priority, busyWait, clientId, id, method, action, cancelToken) is
+                // resolved from obj here, before queuing; dequeue re-parses RawLine, which
+                // ProcessCommand(string) already does and which is the same parse-then-
+                // dispatch the obj overload performed.
                 RawLine = line,
                 Priority = priority,
                 ClientId = clientId,
@@ -665,7 +673,11 @@ namespace GxMcp.Worker
                 BusyWaitMs = busyWaitMs,
                 IdJson = idJson,
                 Method = method,
-                Action = action
+                Action = action,
+                // Issue #369: so a cancel that lands while the command is still queued can
+                // drop it from the queue, instead of it sitting charged until it reaches
+                // the head and starting with an already-cancelled token.
+                CancelToken = obj?["params"]?["cancelToken"]?.ToString()
             };
 
             // Issue #341: admission is bounded, and a refusal is returned to the caller
@@ -1510,7 +1522,9 @@ namespace GxMcp.Worker
                     meta["telemetry"] = telemetryPlaceholder;
                 }
 
-                var response = new { jsonrpc = "2.0", result = resultObj, id = id };
+                // id before result: the shared broker answers an over-ceiling response from its
+                // bounded prefix, which only works while the id is the first payload-free property.
+                var response = new { jsonrpc = "2.0", id = id, result = resultObj };
                 var serializeSw = Stopwatch.StartNew();
                 string serialized = JsonConvert.SerializeObject(response, Formatting.None);
                 serializeSw.Stop();
@@ -1523,8 +1537,23 @@ namespace GxMcp.Worker
                     telemetry["responseBytes"] = System.Text.Encoding.UTF8.GetByteCount(serialized);
                     serialized = SpliceTelemetry(serialized, telemetryPlaceholder, telemetry);
                 }
+                if (string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_CHILD"), "1", StringComparison.Ordinal))
+                    serialized = LimitSharedFrame(serialized, id);
                 WriteLine(serialized);
             } catch (Exception ex) { Logger.Error("SendResponse Error: " + ex.Message); }
+        }
+
+        // issue #375: a shared child's response above the transport frame bound would cross the pipe
+        // only to be refused by the broker, so the child answers the request itself with the same
+        // bounded error, carrying the measured size, before the large frame is written at all.
+        internal static string LimitSharedFrame(string serialized, string id)
+        {
+            // Every UTF-8 byte is at least one char: a frame this short cannot exceed the bound.
+            if (serialized == null || serialized.Length * 3L <= SharedWorkerHostProtocol.MaxFrameBytes) return serialized;
+            long bytes = System.Text.Encoding.UTF8.GetByteCount(serialized);
+            if (bytes <= SharedWorkerHostProtocol.MaxFrameBytes) return serialized;
+            Logger.Warn("SendResponse: " + bytes + " byte response for id=" + id + " exceeds the shared frame bound; sending a size error.");
+            return SharedWorkerHostProtocol.BuildOversizedResponse(id, bytes, SharedWorkerHostProtocol.MaxFrameBytes).ToString(Formatting.None);
         }
 
         // Replaces the reserved placeholder with the final telemetry object. The search is

@@ -284,6 +284,50 @@ namespace GxMcp.Worker.Services
             @"^>S(?<name>[A-Za-z][A-Za-z0-9 _]*?)(?:[: ]|$)", RegexOptions.Compiled);
         private static readonly Regex _rxSectionFail = new Regex(
             @"^>E0(?<name>[A-Za-z][A-Za-z0-9 _]*?)(?:[: ]|$)", RegexOptions.Compiled);
+        // The same in-process protocol carries specifier/generator diagnostics as
+        //   >O1<code>: <message>|<SourcePosition type>;<SourcePosition xml>   (error)
+        //   >O2<code>: <message>|...                                        (warning)
+        // with no "error"/"warning" word, so _rxError/_rxWarning never matched them and
+        // a build whose Specification section failed reported 0 errors.
+        private static readonly Regex _rxInProcessDiagnostic = new Regex(
+            @"^>O(?<sev>[12])(?<code>[A-Za-z]{2,4}\d+)\s*:\s*(?<msg>[^|]*)(?:\|(?<pos>.*))?$",
+            RegexOptions.Compiled | RegexOptions.Singleline);
+        private static readonly Regex _rxSourcePositionLine = new Regex(@"<Line>(?<line>\d+)</Line>", RegexOptions.Compiled);
+        private static readonly Regex _rxSourcePositionObject = new Regex(
+            @"<FullName>[^<']*'(?<obj>[^']+)'[^<]*</FullName>", RegexOptions.Compiled);
+
+        // Rewrites an in-process ">O1"/">O2" diagnostic into the "error <code>: ..." /
+        // "warning <code>: ..." text the MSBuild.exe path produces, so both paths share
+        // the same counting, classification and SpecificationDiagnostics parsing.
+        // Returns null for any other line.
+        internal static string NormalizeInProcessDiagnostic(string line, out string objectName)
+        {
+            objectName = null;
+            if (line == null) return null;
+            var m = _rxInProcessDiagnostic.Match(line.TrimEnd('\r', '\n'));
+            if (!m.Success) return null;
+
+            string text = (m.Groups["sev"].Value == "1" ? "error " : "warning ")
+                + m.Groups["code"].Value + ": " + m.Groups["msg"].Value.Trim();
+            string pos = m.Groups["pos"].Value;
+            if (!string.IsNullOrEmpty(pos))
+            {
+                var obj = _rxSourcePositionObject.Match(pos);
+                if (obj.Success) objectName = obj.Groups["obj"].Value;
+                var ln = _rxSourcePositionLine.Match(pos);
+                int lineNo = 0;
+                if (ln.Success) int.TryParse(ln.Groups["line"].Value, out lineNo);
+                if (objectName != null || lineNo > 0)
+                {
+                    text += " ["
+                        + (objectName ?? string.Empty)
+                        + (objectName != null && lineNo > 0 ? ", " : string.Empty)
+                        + (lineNo > 0 ? "line " + lineNo : string.Empty)
+                        + "]";
+                }
+            }
+            return text;
+        }
 
         // Map a GeneXus build section name to a lifecycle phase. Unknown sections
         // (and the outer "Build" wrapper) return null so we don't churn the phase.
@@ -437,8 +481,12 @@ namespace GxMcp.Worker.Services
 
         internal static InProcessBuildOutcome FailedNativeBuild(BuildTaskStatus status)
         {
+            // The batch route now forwards the SDK output, so only claim missing
+            // diagnostics when none were itemized.
             RecordVerificationFailure(status, "NativeBuildFailed",
-                "The native SDK build failed; compiler diagnostics were not captured on this route. No automatic retry was performed.", "native");
+                status.ErrorCount > 0
+                    ? "The native SDK build failed; see the diagnostics above. No automatic retry was performed."
+                    : "The native SDK build failed; compiler diagnostics were not captured on this route. No automatic retry was performed.", "native");
             return InProcessBuildOutcome.FailedWithDiagnostics;
         }
 
@@ -581,6 +629,17 @@ namespace GxMcp.Worker.Services
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxSpecError = new Regex(
             @"\berror\s+(spc|gen|src|qry)\d+\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // issue #409: a GeneXus spec/gen diagnostic can reach us as a plain build *message*
+        // with no "error " prefix at all. The in-process engine routes every message through
+        // LogMessageEvent, which passes isError: false and cannot tell a diagnostic from
+        // progress chatter, so the severity the BL engine knows is discarded on the way in.
+        // Both _rxError and _rxSpecError require that literal "error", so such a diagnostic
+        // was pushed into TailLines and never counted: `specify` returned errorCount 0 for a
+        // run that had in fact failed, and the caller saw only TailLines. Anchored at the
+        // start of a line so ordinary prose containing a bare token cannot match.
+        private static readonly Regex _rxBareGxDiagnostic = new Regex(
+            @"^\s*(?!spc0217\b)(?<code>spc|gen|src|qry)\d{4}\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         internal static string ClassifyErrorCategory(string line)
@@ -3360,6 +3419,23 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // issue #411: a callee outside this build keeps its old generated .cs, so the caller
+            // would run stale code. Advice only: reported in warnings, never in errorCount.
+            var staleCallees = new JArray();
+            if (_callerGraphService != null && _indexCacheService != null)
+            {
+                var builtSet = new HashSet<string>(checkList.Select(BareName), StringComparer.OrdinalIgnoreCase);
+                var callees = new List<string>();
+                foreach (var t in checkList)
+                {
+                    try { callees.AddRange(_callerGraphService.GetCallees(BareName(t)) ?? new List<string>()); } catch { }
+                }
+                staleCallees = FindStaleCallees(
+                    callees.Select(BareName).Where(c => !string.IsNullOrEmpty(c) && !builtSet.Contains(c)).Distinct(StringComparer.OrdinalIgnoreCase),
+                    c => _indexCacheService.TryGetEntryByName(c)?.LastUpdate,
+                    c => GeneratedDiffService.ProbeGeneratedFreshness(kbPath, c, DateTime.MinValue, null, activeEnvironmentWebPath));
+            }
+
             var degradedUserControls = new JArray();
             try
             {
@@ -3442,6 +3518,18 @@ namespace GxMcp.Worker.Services
                             + "Regenerate the object from the IDE and compare the setProp list against a known-good build.";
                 }
             }
+            if (staleCallees.Count > 0)
+            {
+                evidence["staleCallees"] = staleCallees;
+                lock (status._lock)
+                {
+                    if (status.Warnings.Count < 50)
+                        status.Warnings.Add("[stale-callee] Generated .cs is older than the last edit of callee(s) outside this build: "
+                            + string.Join(", ", staleCallees.Select(x => (string)x["object"]))
+                            + ". The caller may run old code; build the callee too. See generateEvidence.staleCallees.");
+                    status.WarningCount++;
+                }
+            }
             if (upToDate.Count > 0)
                 evidence["upToDate"] = upToDate;
             if (unreachable.Count > 0)
@@ -3485,6 +3573,31 @@ namespace GxMcp.Worker.Services
             Logger.Info("[GENERATE-EVIDENCE] complete action=" + action + " objects=" + checkList.Count
                 + " emitted=" + emittedCount + " stale=" + staleOrMissing.Count
                 + " webRoot=" + (activeEnvironmentWebPath ?? "<none>"));
+        }
+
+        // issue #411: callees whose generated .cs exists but predates the object's last edit. A callee
+        // with no generated file is not reported here — that is the [generate-gap] evidence.
+        internal static JArray FindStaleCallees(
+            IEnumerable<string> callees,
+            Func<string, DateTime?> objectLastUpdateUtc,
+            Func<string, GeneratedDiffService.GeneratedFileEvidence> probeGenerated)
+        {
+            var stale = new JArray();
+            foreach (var callee in callees)
+            {
+                DateTime? edited = objectLastUpdateUtc(callee);
+                GeneratedDiffService.GeneratedFileEvidence ev;
+                try { ev = probeGenerated(callee); } catch { continue; }
+                if (edited == null || !ev.Found || ev.FreshestWriteUtc == null || ev.FreshestWriteUtc >= edited) continue;
+                stale.Add(new JObject
+                {
+                    ["object"] = callee,
+                    ["path"] = ev.FreshestPath,
+                    ["generatedUtc"] = ev.FreshestWriteUtc.Value.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                    ["lastUpdateUtc"] = edited.Value.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                });
+            }
+            return stale;
         }
 
         // Parse a build log for spc0217 ("Object is unreachable") diagnostics and return
@@ -4291,6 +4404,13 @@ namespace GxMcp.Worker.Services
                 status.LastLine = line;
                 status.FullOutput.AppendLine(line);
 
+                string normalizedDiagnostic = NormalizeInProcessDiagnostic(line, out string diagnosticObject);
+                if (normalizedDiagnostic != null)
+                {
+                    line = normalizedDiagnostic;
+                    if (!string.IsNullOrEmpty(diagnosticObject)) status.CurrentObject = diagnosticObject;
+                }
+
                 if (line.IndexOf("[GXMCP-BUILD-ALL] KB opened", StringComparison.OrdinalIgnoreCase) >= 0)
                     status.KbOpened = true;
                 if (line.IndexOf("[GXMCP-BUILD-ALL] BuildAll completed", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -4355,7 +4475,11 @@ namespace GxMcp.Worker.Services
                     return;
                 }
 
-                if (_rxError.IsMatch(line))
+                // issue #409: count a bare GeneXus diagnostic as an error too, not only text that
+                    // spells out "error". Without this the engine's severity signal is
+                    // thrown away, because the in-process engine delivers spec/gen
+                    // diagnostics as plain messages, and a failed run reports errorCount 0.
+                    if (_rxError.IsMatch(line) || _rxBareGxDiagnostic.IsMatch(line))
                 {
                     // v2.6.6 Stream E (FR#9): CS2001 for "<obj>_bc.cs" where the
                     // underlying Transaction has BC disabled (or doesn't exist) is

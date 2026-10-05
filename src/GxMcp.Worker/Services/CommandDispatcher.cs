@@ -124,6 +124,9 @@ namespace GxMcp.Worker.Services
         private readonly KbStatsService _kbStatsService;
         // genexus_security action=scan_native — native Security Scanner over ISecurityScannerService.
         private readonly SecurityScanService _securityScanService;
+        private readonly SecurityObjectAuditService _securityObjectAuditService;
+        // genexus_dfd / genexus_impact / genexus_object_context — read-only views over the table relations and the caller graph.
+        private readonly GraphToolsService _graphToolsService;
         // genexus_gxserver action=pipeline_* — CI pipelines over IContinuousIntegrationService.
         private readonly CiPipelineService _ciPipelineService;
         // genexus_analyze mode=table_relations — table↔transaction relations over ITablesService.
@@ -200,6 +203,7 @@ namespace GxMcp.Worker.Services
             var callerGraphService = new CallerGraphService(_indexCacheService, _objectService);
             _analyzeService = new AnalyzeService(_kbService, _objectService, _indexCacheService, _navigationService, _uiService, callerGraphService);
             _buildService.SetCallerGraphService(callerGraphService);
+            _graphToolsService = new GraphToolsService(_kbService, _objectService, _indexCacheService, callerGraphService);
             _summarizeService = new SummarizeService(_kbService, _objectService);
             _injectionService = new InjectionService(_kbService, _objectService, _analyzeService);
             _patternAnalysisService = new PatternAnalysisService(_objectService);
@@ -276,6 +280,7 @@ namespace GxMcp.Worker.Services
             _dbDriftService.SetReorgImpact(_reorgImpactService);
             _kbStatsService = new KbStatsService(_kbService);
             _securityScanService = new SecurityScanService(_kbService);
+            _securityObjectAuditService = new SecurityObjectAuditService(_objectService);
             _ciPipelineService = new CiPipelineService(_kbService);
             _tableRelationsService = new TableRelationsService(_kbService, _objectService);
             _themeClassCatalogService = new ThemeClassCatalogService(_objectService);
@@ -970,6 +975,9 @@ namespace GxMcp.Worker.Services
                 ["reorgimpact"] = Handle_ReorgImpact,
                 ["kbstats"] = Handle_KbStats,
                 ["tablerelations"] = Handle_TableRelations,
+                ["dfd"] = (request, method, action, target, payload, args) => _graphToolsService.Dfd(args ?? new JObject()),
+                ["impact"] = (request, method, action, target, payload, args) => _graphToolsService.Impact(args ?? new JObject()),
+                ["objectcontext"] = (request, method, action, target, payload, args) => _graphToolsService.ObjectContext(args ?? new JObject()),
                 ["themeclasses"] = Handle_ThemeClasses,
                 ["usercontrols"] = Handle_UserControls,
                 ["wwpaction"] = Handle_WwpAction,
@@ -2125,7 +2133,8 @@ namespace GxMcp.Worker.Services
                         args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
                         args?["collection"]?.ToObject<bool?>(),
                        args?["dimensions"]?.ToObject<int?>(),
-                       args?["dimensionSizes"] as JArray);
+                       args?["dimensionSizes"] as JArray,
+                       args?["description"]?.ToObject<string>());
                 }
                 var modResp = _writeService.ModifyVariable(
                     target,
@@ -2140,7 +2149,8 @@ namespace GxMcp.Worker.Services
                     args?["collection"]?.ToObject<bool?>(),
                     args?["basedOnAttribute"]?.ToObject<string>(),
                     args?["dimensions"]?.ToObject<int?>(),
-                    args?["dimensionSizes"] as JArray);
+                    args?["dimensionSizes"] as JArray,
+                    args?["description"]?.ToObject<string>());
                  return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(modResp, target, args, "Variables");
             }
             if (action == "ValidatePayload")
@@ -2357,7 +2367,16 @@ namespace GxMcp.Worker.Services
             // Wave-3 SOTA: mode=cross_platform_impact — Web vs SmartDevices divergence.
             if (action == "CrossPlatformImpact") return _analyzeService.CrossPlatformImpact(target);
             // Item 24: mode=callers — per-call-site detail with line + context.
-            if (action == "FindCallerSites") return _analyzeService.FindCallerSites(target);
+            //
+            // Issue #366: the cursor and the scan budgets are forwarded, so the resume
+            // hint the response gives is actually reachable from the public tool.
+            if (action == "FindCallerSites")
+            {
+                int callerCursor = args?["cursor"]?.ToObject<int?>() ?? 0;
+                int callerMax = args?["maxCallers"]?.ToObject<int?>() ?? 0;
+                long callerBytes = args?["maxSourceBytes"]?.ToObject<long?>() ?? 0L;
+                return _analyzeService.FindCallerSites(target, callerCursor, callerMax, callerBytes);
+            }
             if (action == "GetEventFlow") return _analyzeService.GetEventFlow(target, analyzeType);
             // Wave-3 item 87: KB-wide dependency heat rankings.
             if (action == "DependencyHeatmap")
@@ -2723,6 +2742,8 @@ namespace GxMcp.Worker.Services
                 return _securityAuditService.ScanSecrets();
             if (string.Equals(action, "scan_native", StringComparison.OrdinalIgnoreCase))
                 return _securityScanService.Run(args ?? new JObject());
+            if (string.Equals(action, "audit_object", StringComparison.OrdinalIgnoreCase))
+                return _securityObjectAuditService.Run(args ?? new JObject());
             return UnsupportedAction("security", action, target);
                     // Item 65 — genexus_orient welcome card
         }

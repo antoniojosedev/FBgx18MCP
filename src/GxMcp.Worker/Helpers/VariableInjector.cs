@@ -610,6 +610,7 @@ namespace GxMcp.Worker.Helpers
                     {
                         v.Type = dbType;
                         v.Length = length;
+                        v.Decimals = decimals; // always assigned so NUMERIC(19) clears a previous ,2 (#417)
                         v.DomainBasedOn = null;
                         try { DomainPropertyApplier.ClearAttributeBasedOn((object)v); } catch { }
                         v.SetPropertyValue("DataType", null); // Reset user type if it was set
@@ -1065,6 +1066,31 @@ namespace GxMcp.Worker.Helpers
                 return true;
             }
             catch (Exception ex) { Logger.Warn("[TryBindGenexusDataType] " + ex.Message); return false; }
+        }
+
+        /// <summary>
+        /// Whether <paramref name="typeName"/> names a built-in GeneXus data type, without
+        /// binding anything to a variable.
+        ///
+        /// <para>
+        /// issue #405: a caller has to decide whether a type name is resolvable *before* it
+        /// has a variable to bind onto, so <see cref="TryBindGenexusDataType"/> - which
+        /// mutates - cannot serve as that probe. The lookup and the Domain refusal are
+        /// mirrored exactly, so this probe can never claim a type the binder would reject.
+        /// </para>
+        /// </summary>
+        public static bool IsGenexusDataType(global::Artech.Architecture.Common.Objects.KBModel model, string typeName)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(typeName)) return false;
+            try
+            {
+                var provider = Artech.Genexus.Common.Types.DataTypeProvider.GetProvider(model);
+                if (provider == null) return false;
+                var att = provider.GetTypeByName(typeName.Trim(), model);
+                return att != null
+                    && att.DataType != (int)global::Artech.Genexus.Common.eDBType.GX_DOM_REF;
+            }
+            catch { return false; }
         }
 
         // Bind a variable to an SDT ITEM / level type such as "Messages.Message" — a single element

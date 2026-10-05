@@ -318,12 +318,38 @@ namespace GxMcp.Gateway
             }
         }
 
+        /// <summary>
+        /// The running jobs of a Worker scope that already hold a Worker task id: the only
+        /// ones whose real state can be asked of the Worker before admitting a new one (#418).
+        /// Queued jobs, other scopes and jobs without a task id yet are not candidates.
+        /// </summary>
+        internal List<JobEntry> GetReconciliationCandidates(string? workerScope, OwnershipFence? ownership = null)
+        {
+            string scope = NormalizeQueueScope(workerScope, ownership ?? new OwnershipFence(string.Empty, string.Empty, 0));
+            lock (_lifecycleQueueLock)
+            {
+                return _jobs.Values.Where(j =>
+                    string.Equals(j.Status, "running", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrEmpty(j.WorkerTaskId)
+                    && string.Equals(j.QueueScope, scope, StringComparison.OrdinalIgnoreCase)).ToList();
+            }
+        }
+
         private static string NormalizeQueueScope(string? workerScope, OwnershipFence ownership)
         {
             if (!string.IsNullOrWhiteSpace(workerScope)) return workerScope.Trim();
             if (!string.IsNullOrWhiteSpace(ownership.KbId)) return ownership.KbId.Trim();
             return "__default-worker__";
         }
+
+        /// <summary>
+        /// Whether a queued or running job belongs to the Worker (issue #367). Stalled jobs are
+        /// not live, so a job that never reports a terminal state does not pin the Worker forever.
+        /// </summary>
+        internal bool HasLiveJobOnWorker(string workerAlias)
+            => _jobs.Values.Any(j => IsLiveJob(j)
+                && (string.Equals(j.WorkerAlias, workerAlias, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(j.QueueScope, workerAlias, StringComparison.OrdinalIgnoreCase)));
 
         private static bool IsLiveJob(JobEntry? job)
             => job != null && !string.Equals(job.Status, "succeeded", StringComparison.OrdinalIgnoreCase)

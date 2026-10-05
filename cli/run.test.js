@@ -917,6 +917,94 @@ test('classic gxi identity does not invent a GX8/GX9 mismatch before provider op
     }
 });
 
+test('init prefers the GeneXus install of the KB update over a newer same-major one', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-update-'));
+    const kbDir = path.join(tempRoot, 'kb');
+    const newerGx = path.join(tempRoot, 'GeneXus18_u14');
+    const kbGx = path.join(tempRoot, 'GeneXus18_u7');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(kbDir, 'KnowledgeBase.gxw'),
+        '<KnowledgeBase><VersionNumber>18.0.7.179127</VersionNumber></KnowledgeBase>'
+    );
+    for (const [dir, version] of [[newerGx, '18.0.14.187794'], [kbGx, '18.0.7.179127']]) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'GeneXus.exe'), 'not-a-real-executable');
+        fs.writeFileSync(path.join(dir, 'version.txt'), version);
+    }
+
+    try {
+        // Empty Program Files roots: the install scan walks them, so without this the
+        // assertion depends on what the host happens to have installed under a matching
+        // update. GENEXUS_HOME stands in for the registry, which points at the newest update.
+        const emptyPf86 = path.join(tempRoot, 'empty-pf86');
+        const emptyPf = path.join(tempRoot, 'empty-pf');
+        fs.mkdirSync(emptyPf86, { recursive: true });
+        fs.mkdirSync(emptyPf, { recursive: true });
+        const result = runCli(
+            ['init', '--kb', kbDir, '--no-smoke', '--no-write-clients', '--format', 'json'],
+            {
+                env: {
+                    ...testGatewayEnv,
+                    GENEXUS_HOME: newerGx,
+                    'ProgramFiles(x86)': emptyPf86,
+                    ProgramFiles: emptyPf
+                }
+            }
+        );
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.ok.resolved.gx.path, kbGx);
+        const written = JSON.parse(fs.readFileSync(path.join(kbDir, 'config.json'), 'utf8'));
+        assert.equal(written.GeneXus.InstallationPath, kbGx);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('init keeps the same-major install when no GeneXus matches the KB update', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-kb-update-nomatch-'));
+    const kbDir = path.join(tempRoot, 'kb');
+    const newerGx = path.join(tempRoot, 'GeneXus18_u14');
+    fs.mkdirSync(kbDir, { recursive: true });
+    // The KB names an update that is installed nowhere.
+    fs.writeFileSync(
+        path.join(kbDir, 'KnowledgeBase.gxw'),
+        '<KnowledgeBase><VersionNumber>18.0.3.111111</VersionNumber></KnowledgeBase>'
+    );
+    fs.mkdirSync(newerGx, { recursive: true });
+    fs.writeFileSync(path.join(newerGx, 'GeneXus.exe'), 'not-a-real-executable');
+    fs.writeFileSync(path.join(newerGx, 'version.txt'), '18.0.14.187794');
+
+    try {
+        const emptyPf86 = path.join(tempRoot, 'empty-pf86');
+        const emptyPf = path.join(tempRoot, 'empty-pf');
+        fs.mkdirSync(emptyPf86, { recursive: true });
+        fs.mkdirSync(emptyPf, { recursive: true });
+        const result = runCli(
+            ['init', '--kb', kbDir, '--no-smoke', '--no-write-clients', '--format', 'json'],
+            {
+                env: {
+                    ...testGatewayEnv,
+                    GENEXUS_HOME: newerGx,
+                    'ProgramFiles(x86)': emptyPf86,
+                    ProgramFiles: emptyPf
+                }
+            }
+        );
+        assert.equal(result.status, 0, result.stdout + result.stderr);
+        const parsed = JSON.parse(result.stdout);
+        // No exact match anywhere: the same-major install is kept rather than resolving
+        // to nothing. This is the branch that decides what happens to a KB whose update
+        // is genuinely missing, so the choice is pinned instead of implied.
+        assert.equal(parsed.ok.resolved.gx.path, newerGx);
+        const written = JSON.parse(fs.readFileSync(path.join(kbDir, 'config.json'), 'utf8'));
+        assert.equal(written.GeneXus.InstallationPath, newerGx);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('init rejects a known KB and SDK major mismatch before writing config', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-mismatch-'));
     const kbDir = path.join(tempRoot, 'kb17');
@@ -1382,6 +1470,86 @@ test('doctor fails closed when GX_CONFIG_PATH points at a missing file', () => {
         assert.equal(probeCheck.status, 'not_applicable');
         assert.ok(smokeCheck);
         assert.equal(smokeCheck.status, 'not_applicable');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('doctor resolves the neutral user config outside a KB folder, like the Gateway', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-user-config-'));
+    try {
+        const home = path.join(tempRoot, 'home');
+        const cwd = path.join(tempRoot, 'project');
+        const userConfig = path.join(home, '.genexus-mcp', 'config.json');
+        fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+        fs.mkdirSync(cwd, { recursive: true });
+        fs.writeFileSync(userConfig, JSON.stringify({ Environment: { ResolutionPolicy: 'strict' } }));
+
+        const result = runCli(['doctor', '--format', 'json'], {
+            cwd,
+            env: { ...sandboxHomeEnv(home), GENEXUS_MCP_GATEWAY_EXE: process.execPath }
+        });
+        assert.equal(result.status, 0);
+        const configCheck = JSON.parse(result.stdout).ok.checks.find((c) => c.id === 'config_file');
+        assert.ok(configCheck);
+        assert.equal(configCheck.status, 'pass', configCheck.detail);
+        assert.ok(configCheck.detail.includes(userConfig), configCheck.detail);
+        assert.ok(configCheck.detail.includes('(source: neutral)'), configCheck.detail);
+        const envCheck = JSON.parse(result.stdout).ok.checks.find((c) => c.id === 'gx_env');
+        assert.ok(envCheck);
+        assert.match(envCheck.detail, /from the user profile/);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+// The diagnostics fall back to the shared user profile, but the commands that WRITE to
+// the resolved path must not: `clients add` patches it in place and `config migrate`
+// reads it as `--from`. Without the opt-in, both would silently rewrite
+// `~/.genexus-mcp/config.json` when run from any folder that is not a KB.
+test('clients add refuses to fall back to the shared user profile config', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-clients-add-user-cfg-'));
+    try {
+        const home = path.join(tempRoot, 'home');
+        const cwd = path.join(tempRoot, 'project');
+        const userConfig = path.join(home, '.genexus-mcp', 'config.json');
+        fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+        fs.mkdirSync(cwd, { recursive: true });
+        const original = JSON.stringify({ Environment: { ResolutionPolicy: 'strict' } }, null, 2);
+        fs.writeFileSync(userConfig, original);
+
+        const result = runCli(['clients', 'add', '--clients', 'opencode', '--format', 'json'], {
+            cwd,
+            env: { ...sandboxHomeEnv(home), GENEXUS_MCP_GATEWAY_EXE: process.execPath }
+        });
+
+        assert.notEqual(result.status, 0, result.stdout + result.stderr);
+        // The shared config is untouched.
+        assert.equal(fs.readFileSync(userConfig, 'utf8'), original);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('config migrate requires an explicit source instead of defaulting to the user profile', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gxmcp-config-migrate-user-cfg-'));
+    try {
+        const home = path.join(tempRoot, 'home');
+        const cwd = path.join(tempRoot, 'project');
+        const userConfig = path.join(home, '.genexus-mcp', 'config.json');
+        fs.mkdirSync(path.dirname(userConfig), { recursive: true });
+        fs.mkdirSync(cwd, { recursive: true });
+        fs.writeFileSync(userConfig, JSON.stringify({ Environment: { KBPath: 'C:/KBs/One' } }));
+
+        const result = runCli(['config', 'migrate', '--output', path.join(tempRoot, 'out.json')], {
+            cwd,
+            env: { ...sandboxHomeEnv(home) }
+        });
+
+        assert.notEqual(result.status, 0, result.stdout + result.stderr);
+        // No neutral config was written next to the user profile.
+        assert.equal(fs.existsSync(`${userConfig}.neutral.json`), false);
+        assert.equal(fs.existsSync(path.join(tempRoot, 'out.json')), false);
     } finally {
         removeTempPath(tempRoot, { recursive: true, force: true });
     }

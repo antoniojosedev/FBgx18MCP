@@ -109,6 +109,7 @@ namespace GxMcp.Gateway
                 "## Required\n" +
                 "- Either `name` (single object) **or** `targets` (array) — never both.\n" +
                 "- `mode`: `full` (replace whole part) or `patch` (Replace/Insert_After/Append over a context anchor).\n" +
+                "- Sending `patch` or `operation` without `mode` implies `mode=patch`; combining them with `mode=full` is a `usage_error`. A full write without `content` is rejected with `ContentRequired` (`content=\"\"` clears the part on purpose).\n" +
                 "- `mode: 'ops'` applies semantic operations; for modular objects pass `module` to select the Transaction module.\n" +
                 "- `dryRun: true` first for either mode. A preview is synchronous, never calls Save, and never starts a lifecycle action.\n" +
                 "- `patch={find,replace}` is the abbreviated textual replace form; it is also the only form that accepts the two opt-in protections below. Combining either protection with `operation`, `mode=ops`, `targets[]`, `parts[]`, `Insert_After` or `Append` is rejected before anything is normalized (`ScopeUnsupportedPatchForm` / `IndentationUnsupportedPatchForm`) — a protection is never silently ignored.\n\n" +
@@ -177,7 +178,8 @@ namespace GxMcp.Gateway
                 "- `naming` — naming-convention audit.\n" +
                 "- `summary` — LLM-oriented summary of the object.\n" +
                 "- `theme_classes` — the KB's theme classes, so you can pick one by name instead of guessing. Returns `name` + `objectGuid`, sorted, with `truncated` marking a cut; `limit` caps the result (default 200).\n" +
-                "- `explain` — legacy compatibility route; returns a typed NotImplemented envelope instead of inventing an explanation.\n\n" +
+                "- `explain` - legacy compatibility route; returns a typed NotImplemented envelope instead of inventing an explanation.\n" +
+                "- `callers` - per-call-site detail for every recorded caller of `target`, with line text and surrounding context.\n\n" +
                 "## When to use what\n" +
                 "- Raw source: `genexus_read`.\n" +
                 "- Single-object metadata: `genexus_inspect`.\n" +
@@ -185,6 +187,7 @@ namespace GxMcp.Gateway
                 "## Notes\n" +
                 "- `impact` waits up to 30s for the index to be ready unless `waitForIndex: false`; set `waitTimeoutMs` to override that wait bound.\n" +
                 "- Returns `callersTruncated: true` and `_meta.partial` when the graph is incomplete.\n" +
+                "- `callers` is budgeted: `maxCallers` (default 50) and `maxSourceBytes` (default 4194304) bound one page. When a page stops early, `scan.nextCursor` is the resume offset - send it back as `cursor` (an integer for this mode) and the scan continues where it left off. A caller whose source alone exceeds `maxSourceBytes` is listed in `scan.skippedCallers` with a reason rather than silently dropped, so a skipped caller is never confused with one that has no call sites. A page always makes progress: it either advances `nextCursor` or reports `scan.complete: true`. A partial scan never reports a verified zero.\n" +
                 "- `theme_classes` returns `objectGuid`, which is the class KB object's GUID and is **not** the value a layout `class` attribute takes — a measured layout class attribute (`<guid>-<suffix>`) matched none of the KB's class GUIDs. There is no `class=<name>` shorthand, and authoring a layout class stays on the layout-document path. A wrong class value silently loses styling. `controlTypesAvailable` is false because the index does not carry it. A KB whose index has no ThemeClass objects answers `ThemeClassesUnavailable` with a reason rather than a partial list.\n\n" +
                 "## Examples\n" +
                 "- `{ mode: 'impact', target: 'InvoiceProc' }`\n" +
@@ -197,12 +200,13 @@ namespace GxMcp.Gateway
                 "- `action` — `add`, `delete`, or `modify`\n" +
                 "- `name` — object that owns the variable\n" +
                 "- `varName` — variable name, including `&` when that is how the KB stores it\n" +
-                "- `typeName` or `newTypeName` — replacement type for `add`/`modify` (`dataType` is also accepted as a legacy alias)\n\n" +
+                "- `typeName` or `newTypeName` — type for `add`; replacement type for `modify` (`dataType` is also accepted as a legacy alias). Optional on `modify` when `description` is passed.\n\n" +
                 "## Optional\n" +
                 "- `basedOn` — domain name for compatible typed variables (`Attribute:<name>` also binds an attribute)\n" +
                 "- `basedOnAttribute` — attribute name (or `Attribute:<name>`) binding the variable by native SDK identity, preserving picture/semantics (e.g. `9999999999` vs `ZZZZZZZZZ9`)\n" +
                 "- `typeName: 'Attribute:<name>'` — same attribute binding via the type slot; `variables[]` items accept `basedOn`/`basedOnAttribute` too\n" +
                 "- `dimensions: 1|2` plus `dimensionSizes: [size]` or `[rows, columns]` declares a fixed-size vector/matrix; the SDK persists the native ATT dimension properties. `collection=true` and dimensions are mutually exclusive.\n" +
+                "- `description` — `modify` only: new variable Description (empty string clears it). Without a type the variable keeps its current type and only the description changes; `modify` with neither a type nor `description` returns `MissingParameter`.\n" +
                 "- `async: true` returns immediately with `operationId` / `job_id`; poll `genexus_lifecycle action=status|result target=op:<id>` for completion.\n\n" +
                 "## Notes\n" +
                 "- GAM / WWP+ framework-managed variables are protected and return a refusal instead of mutating them.\n" +
@@ -212,6 +216,7 @@ namespace GxMcp.Gateway
                 "## Examples\n" +
                 "- `{ action: 'add', name: 'InvoiceProc', varName: '&Total', typeName: 'Numeric(10.2)' }`\n" +
                 "- `{ action: 'modify', name: 'InvoiceProc', varName: '&State', newTypeName: 'Character(20)', async: true }`\n" +
+                "- `{ action: 'modify', name: 'InvoiceProc', varName: '&State', description: 'Customer state' }`\n" +
                 "- `{ action: 'delete', name: 'InvoiceProc', varName: '&ScratchFlag' }`\n",
 
             ["genexus_read"] =
@@ -219,6 +224,7 @@ namespace GxMcp.Gateway
                 "Read source or metadata parts of one or more GeneXus objects.\n\n" +
                 "## Required\n" +
                 "- Either `name` (single) **or** `targets` (array). Never both.\n" +
+                "- `objectName` is accepted as an alias of `name`; `name` wins when both are present. A call that supplies no object identity at all (`name`/`objectName`/`targets`/`guid`/`entityKey`/`path`) is rejected as a `usage_error` and performs no lookup.\n" +
                 "- `parts`: array of part names. Common: `Source`, `Variables`, `Rules`, `Events`, `Structure`, `Layout`. Omitting `parts` returns the canonical default set for the object type.\n\n" +
                 "## Data Selectors\n" +
                 "- Use `type: 'DataSelector'` with `parameters`, `conditions`, `orders`, `definedBy`, `baseTransaction`, `baseTable`, or `structure`. The SDK order and complete expressions are preserved.\n" +
@@ -372,7 +378,7 @@ namespace GxMcp.Gateway
                 "Read or write the structure/data-model of GeneXus objects.\n\n" +
                 "## Actions\n" +
                 "- `get_visual` — returns logical hierarchy of Transaction levels/attributes or SDT structure. Use `type` (e.g. `Transaction`) to disambiguate name collisions.\n" +
-                "- `update_visual` — replace complete logical structure of a Transaction or SDT. Atomic snapshot, verification, and rollback on divergence.\n" +
+                "- `update_visual` — replace complete logical structure of a Transaction or SDT. Atomic snapshot, verification, and rollback on divergence. A Transaction attribute item carries `showInDefaultForms` (boolean: the row's \"Show in Default Forms\"); `get_visual` reports it and `update_visual` changes it only when it differs.\n" +
                 "- `move_attribute` — reorder an attribute within a Transaction level using `before`, `after`, or `position`. Nested levels supported via `levelPath`.\n" +
                 "- `remove_attribute` — remove an attribute from a Transaction level by name.\n" +
                 "- `get_indexes` / `create_index` / `drop_index` — inspect and manage indexes on physical tables or transactions.\n" +
@@ -530,6 +536,23 @@ namespace GxMcp.Gateway
                 "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection (set_default with persist: false acts like select).\n\n" +
                 "Use an explicit `kb` alias when a call must target a different open KB; do not rely on shared server-side selection between independent clients. In strict mode, `open`/`close` without the caller's lease fail with `KB_NOT_OWNED`; `select` is session-only and sessionless HTTP returns `KB_SESSION_UNAVAILABLE`.\n",
 
+            ["genexus_dfd"] =
+                "# genexus_dfd\n\n" +
+                "Read-only entity-relationship diagram of a Transaction or Table.\n\n" +
+                "`name`, optional `maxDepth` (1-6, default 3). Returns `tables`, `edges` (`from`, `to`, `kind` extends|subordinates, `joinOn`), a Mermaid `mermaid` erDiagram and `stats.truncated`/`truncatedBy` (maxDepth, maxTables).\n" +
+                "Built only from the relations the SDK reports; no relation is inferred and normalization is not judged. A Transaction without an associated table gets `NoAssociatedTable`, not an empty diagram.\n",
+
+            ["genexus_impact"] =
+                "# genexus_impact\n\n" +
+                "Read-only affected set of an object over the caller/callee graph.\n\n" +
+                "Select the object with `name` (optionally `type`), `guid`, `entityKey` or `path`; a bare name shared by several objects is refused with each guid/path. `direction` up (callers, default) | down | both; `maxDepth` 1-6 (2); `maxNodes` 1-2000 (200); `typeFilter` narrows the report without changing the traversal.\n" +
+                "Returns `affected` (with depth), `countsByType`, `order` (a topological sort: an object comes after everything it calls), `hasCycle`/`cycleNodes`, `stats.truncated`/`truncatedBy` naming the cap hit, and `fieldTrust`: callers/callees come from index enrichment, so `partial:<pct>` means part of the graph was not read - an empty set is then not a confirmed zero. No risk score.\n",
+
+            ["genexus_object_context"] =
+                "# genexus_object_context\n\n" +
+                "Read-only context of one object in one call.\n\n" +
+                "Selectors as `genexus_impact`. Returns `object` (identity from the index, no SDK open), `references.callers`/`callees` (depth 1, 100 nodes by default; `fieldTrust` partial with an empty list means not read, `read:false`), and `dataModel` (the ER diagram for a Transaction/Table, the index tables otherwise) or the reason it was omitted in `suppressed[]` with the call that unlocks it.\n",
+
             ["genexus_data_view"] =
                 "# genexus_data_view\n\n" +
                 "Author a root-only Business Component Transaction mapped through a native Data View.\n\n" +
@@ -591,7 +614,8 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `audit_gam` — inspect GAM and environment security configuration.\n" +
                 "- `scan_secrets` — scan source for credential-like values.\n" +
-                "- `scan_native` — invoke the installed native GeneXus Security Scanner when available.\n\n" +
+                "- `scan_native` — invoke the installed native GeneXus Security Scanner when available.\n" +
+                "- `audit_object` \u2014 fast in-memory audit of one object (`name`, optional `type`/`guid`/`entityKey`/`path`) against the IDE rules it knows (#100 URL parameter encryption, #108 native code); `rulesNotEvaluated` lists the IDE rules it does not run. Complements `scan_native`, does not replace it.\n\n" +
                 "All actions are read-only audits. Findings may contain sensitive locations or snippets; keep them in the current response and do not copy secrets into logs or commits.\n",
 
             ["genexus_edit_form"] =
@@ -650,7 +674,9 @@ namespace GxMcp.Gateway
                 "Inspect MCP execution telemetry and maintain the explicit friction log.\n\n" +
                 "## Actions\n" +
                 "`executions`, `watch_event`, `friction_tail`, `learning_report`, `logs`, `profile_analyze`, `profile_hotspots`, and `profile_correlate` read telemetry or profiling data.\n\n" +
-                "`friction_append` writes a new observation to the per-KB friction log. Keep the append payload concise and free of credentials or personal data.\n",
+                "`friction_append` writes a new observation to the per-KB friction log. Keep the append payload concise and free of credentials or personal data.\n\n" +
+                "## `action=logs` reading\n" +
+                "`grep`, `filterCorrelation`, `objectFilter` and `since` are applied to each line as the log is read backwards from its end, so a match anywhere in the scanned range is found and retained memory stays bounded by the number of matches returned - they are not restricted to the last `lines` lines. The scan itself is bounded (`GXMCP_LOG_SCAN_MAX_MB`): when that budget stops it the response carries `scanComplete:false` with `scannedBytes` and a hint, and an empty `matched` is NOT evidence that no matching line exists further back. `totalLines` is the file's line count.\n",
 
             ["genexus_memory"] =
                 "# genexus_memory\n\n" +
@@ -668,7 +694,7 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `export` — create an XPZ export, optionally including dependency closure.\n" +
                 "- `inspect` — inspect an XPZ manifest without importing it.\n" +
-                "- `import` — import the package into the active KB after validating its manifest.\n\n" +
+                "- `import` — import the package into the active KB after validating its manifest. `dryRun` defaults to true (preview only, nothing imported); to actually import pass `dryRun:false` AND `confirm:true` - `confirm:true` alone only previews.\n\n" +
                 "`export` writes the requested XPZ artifact, `inspect` is read-only, and `import` mutates the KB. Review the output path and conflicts, and use a disposable or explicitly selected target KB for untrusted packages.\n",
 
             ["genexus_deploy"] =
@@ -715,6 +741,9 @@ namespace GxMcp.Gateway
                 "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children; pass the PatternInstance `baseVersion` even for dryRun.\n" +
                 "- `move_grid_column` — move an existing attribute/variable column by verified identity, with optional `before`, position, caption and `baseVersion` (required even for dryRun).\n" +
                 "- `add_grid_variable` — add a presentation variable with a verified `variableReference` (`GUID-Name`), caption, Character/VarChar length and optional placement; unrelated bindings and metadata are preserved.\n\n" +
+                "- `add_grid` — add a grid over an SDT collection variable: `collection` (`&Lines`), `sdt`, `containerName` (a table), `columns` (item names or `{item, description}`), optional `deleteAction`. Every column is a `gridVariable` bound to an SDT item; the written grid is re-read and projected, and rolls back if a column, the SDT reference or the delete action is lost.\n" +
+                "- `add_user_action` — with `callObject` (`Name` or `Type:Name`), optional `popup` and ordered `parameters`, the form button that opens another object; it has no derived `Do<actionName>` event and cannot be combined with `procedure`. `containerName` may be a path of named ancestors (`General/Table/Actions`) when a bare name repeats across tabs.\n" +
+                "- `list_tabs` / `tab_schema` — read-only: the instance's tabs (kind, position, key attributes, and the attributes all tabs of a kind share) and the pattern's own schema for `kind` grid|tabular|webcomponent; a missing pattern definition is a typed error, never an empty schema.\n" +
                 "- `replace_web_component_with_user_action` — use the U16 Patterns SDK to replace one existing form-level WebComponent with a UserAction DropDownComponent at an explicit path. The operation preserves the referenced Gxobject, snapshots the complete PatternInstance and parent projection, saves through the native element commands, re-reads, and rolls back on divergence.\n\n" +
                 "- `settings_templates` includes embedded Settings templates and separate WorkWithPlus for Web Template objects linked to Settings/Main. `guid` identifies Settings; `template=wwp:<guid>` selects a separate template. Use returned paths, offset/limit, and the same baseVersion on subsequent pages.\n" +
                 "- `settings_read` returns separate templates' stored XML attributes; offset=0, limit=0 also includes the exact XML. WWP default resolvers are not invoked. Embedded templates retain the SDK property projection.\n" +

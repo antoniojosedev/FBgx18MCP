@@ -92,6 +92,7 @@ namespace GxMcp.Gateway.Routers
                         dataType = args?["dataType"]?.Type == JTokenType.Null ? null : args?["dataType"]?.ToString(),
                         basedOn = args?["basedOn"]?.Type == JTokenType.Null ? null : args?["basedOn"]?.ToString(),
                         basedOnAttribute = args?["basedOnAttribute"]?.ToString(),
+                        description = args?["description"]?.Type == JTokenType.Null ? null : args?["description"]?.ToString(),
                         objectType = args?["objectType"]?.ToString(),
                         objectName = args?["objectName"]?.ToString(),
                         objectModule = args?["module"]?.ToString(),
@@ -141,7 +142,7 @@ namespace GxMcp.Gateway.Routers
                     // Item 45: mode=diagnose routes to read-only Diagnose action; default → Apply.
                     // Item 21 (friction 2026-05-22): dryRun=true is an alias for mode=diagnose
                     // — both return the same read-only findings without mutating the KB.
-                    string apPatMode = args?["mode"]?.ToString();
+                    string? apPatMode =args?["mode"]?.ToString();
                     bool isDiagnose = string.Equals(apPatMode, "diagnose", System.StringComparison.OrdinalIgnoreCase);
                     bool isActions = string.Equals(apPatMode, "actions", System.StringComparison.OrdinalIgnoreCase);
                     bool isDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
@@ -155,7 +156,7 @@ namespace GxMcp.Gateway.Routers
                 }
 
                 case "genexus_sdk_probe":
-                    string sdkProbeMode = args?["mode"]?.ToString();
+                    string? sdkProbeMode =args?["mode"]?.ToString();
                     return new
                     {
                         module = "SdkProbe",
@@ -179,14 +180,19 @@ namespace GxMcp.Gateway.Routers
                     return new
                     {
                         module = "Security",
-                        action = args?["action"]?.ToString() ?? "audit_gam"
+                        action = args?["action"]?.ToString() ?? "audit_gam",
+                        target = args?["name"]?.ToString(),
+                        type = args?["type"]?.ToString(),
+                        guid = args?["guid"]?.ToString(),
+                        entityKey = args?["entityKey"]?.ToString(),
+                        path = args?["path"]?.ToString()
                     };
 
                 // Database umbrella: drift_check|drift_report|optimize_*|sql_*|sample_data|types_*.
                 // Replaces genexus_db_drift, _db_optimize, _sql, _generate_sample_data, _types, _translations.
                 case "genexus_edit_form":
                 {
-                    string editAction = args?["action"]?.ToString();
+                    string? editAction =args?["action"]?.ToString();
                     string normalised = string.IsNullOrEmpty(editAction)
                         ? string.Empty
                         : editAction.Trim();
@@ -475,6 +481,14 @@ namespace GxMcp.Gateway.Routers
                         target = args?["name"]?.ToString(),
                         @params = args
                     };
+
+                // Read-only graph views (#422-#424): every selector travels in @params.
+                case "genexus_dfd":
+                    return new { module = "Dfd", action = "Run", target = args?["name"]?.ToString(), @params = args };
+                case "genexus_impact":
+                    return new { module = "Impact", action = "Run", target = args?["name"]?.ToString(), @params = args };
+                case "genexus_object_context":
+                    return new { module = "ObjectContext", action = "Run", target = args?["name"]?.ToString(), @params = args };
 
                 // genexus_types — Domain/SDT introspection + value validation.
                 default:

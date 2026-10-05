@@ -160,6 +160,131 @@ namespace GxMcp.Worker
         private SharedWorkerHostRegistryRecord _record;
         private int _disposed;
 
+        // Issue #362. The child's SDK-lane snapshot, captured by the broker from the child
+        // rather than read out of this process.
+        //
+        // The broker is not the Worker: it starts a separate child process and relays
+        // frames to it. `Program.GetSdkBusyStatus()` reads process statics, so calling it
+        // here described the broker's own (always empty, always idle) scheduler while
+        // reporting it next to the child's PID. Every attachment therefore saw
+        // sdkBusy=false and a zero queue depth even with the child deadlocked.
+        private readonly object _childStatusGate = new object();
+        private JObject _childStatus;
+        private DateTime _childStatusCapturedAtUtc;
+
+        /// <summary>
+        /// How old a child snapshot may be before the acknowledgement says it has no
+        /// fresh evidence rather than passing the stale figures off as current.
+        /// </summary>
+        internal static readonly TimeSpan ChildStatusMaxAge = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// Supplies the child's SDK-lane status. The production implementation asks the
+        /// child; the seam exists so a guard can drive the decision logic - and the recycle
+        /// election that depends on it - without a wedged or real SDK.
+        /// </summary>
+        internal Func<JObject> ChildStatusProvider { get; set; }
+
+        /// <summary>Managed heap over which a recycling policy is evaluated, in bytes.</summary>
+        internal long ChildManagedHeapBudgetBytes = 512L * 1024 * 1024;
+
+        /// <summary>How many heartbeats have been served, for the no-collect guard.</summary>
+        internal long HeartbeatsServed => Interlocked.Read(ref _heartbeatsServed);
+
+        private long _heartbeatsServed;
+
+        /// <summary>Records the child's SDK-lane status and its capture time. Anything that observes
+        /// it later can therefore judge how old it is.
+        /// </summary>
+        internal void RecordChildStatus(JObject status)
+        {
+            lock (_childStatusGate)
+            {
+                _childStatus = status;
+                _childStatusCapturedAtUtc = DateTime.UtcNow;
+            }
+        }
+
+        /// <summary>
+        /// The cached child snapshot, or null with a reason. Never idle defaults: an
+        /// absent or stale snapshot is reported as unavailable so a caller cannot mistake
+        /// "we did not look" for "nothing is happening".
+        /// </summary>
+        private bool TryGetFreshChildStatus(out JObject status, out string unavailableReason)
+        {
+            lock (_childStatusGate)
+            {
+                status = _childStatus;
+                if (status == null)
+                {
+                    unavailableReason = "No child status has been captured yet.";
+                    return false;
+                }
+                double ageMs = (DateTime.UtcNow - _childStatusCapturedAtUtc).TotalMilliseconds;
+                if (ageMs > ChildStatusMaxAge.TotalMilliseconds)
+                {
+                    unavailableReason = "The last child status is " + (int)ageMs + "ms old (limit "
+                        + (int)ChildStatusMaxAge.TotalMilliseconds + "ms).";
+                    return false;
+                }
+            }
+            unavailableReason = null;
+            return true;
+        }
+
+        /// <summary>
+        // ---- Issue #362 test seams: the decision logic is exercised without a wedged SDK. ----
+
+        /// <summary>The election decision, as a heartbeat would reach it.</summary>
+        internal bool EvaluateRecycleElectionForTest()
+        {
+            if (!TryGetFreshChildStatus(out var status, out _)) return false;
+            return ShouldElectRecycle(status, 0);
+        }
+
+        /// <summary>The snapshot freshness decision, so "unavailable" is assertable.</summary>
+        internal bool TryGetFreshChildStatusForTest(out JObject status, out string reason)
+            => TryGetFreshChildStatus(out status, out reason);
+
+        /// <summary>
+        /// Issue #362: the recycle election, which could never be raised before.
+        /// <c>_recycleElected</c> was only ever written with 0, and the Gateway acts on a
+        /// shared Worker solely when the acknowledgement reports <c>recycleElected</c>, so
+        /// heap-pressure and stall recovery for shared Workers could not happen at all.
+        ///
+        /// <para>
+        /// The policy is evaluated here, in the broker, because the broker owns the child.
+        /// CompareExchange makes it single-shot per generation, so exactly one attachment
+        /// ever sees it true. Progressing work and a non-empty queue block recovery: a
+        /// legitimate long build must not be recycled.
+        /// </para>
+        /// </summary>
+        private bool ShouldElectRecycle(JObject status, long privateBytes)
+        {
+            // Optimization, not the guarantee: the CompareExchange below is what makes the
+            // election single-shot. This just avoids re-deriving the policy on every
+            // heartbeat once it has already been raised for this generation.
+            if (Volatile.Read(ref _recycleElected) != 0) return false;
+
+            string sdkState = status["sdkState"]?.ToString();
+            long queueTotal = status["queueTotal"]?.ToObject<long?>() ?? 0;
+            if (queueTotal > 0) return false;
+            if (string.Equals(sdkState, "busy-progressing", StringComparison.Ordinal)) return false;
+
+            long managedHeap = status["childManagedHeapBytes"]?.ToObject<long?>() ?? 0;
+            bool idleOverHeap = string.Equals(sdkState, "idle", StringComparison.Ordinal)
+                && managedHeap > ChildManagedHeapBudgetBytes;
+            bool stalled = string.Equals(sdkState, "busy-stalled", StringComparison.Ordinal)
+                || string.Equals(sdkState, "busy-stalled-unproven", StringComparison.Ordinal);
+
+            if (!idleOverHeap && !stalled) return false;
+
+            // The write is the election. Whoever loses the exchange does not re-run the
+            // sweep, so the flag is raised once per generation however many attachments
+            // heartbeat concurrently.
+            return Interlocked.CompareExchange(ref _recycleElected, 1, 0) == 0;
+        }
+
         internal SharedWorkerHostRuntime(SharedWorkerHostOptions options)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -532,9 +657,12 @@ namespace GxMcp.Worker
             try
             {
                 string line;
-                while (!_stop.IsCancellationRequested && (line = child.StandardOutput.ReadLine()) != null)
+                long frameBytes;
+                // Bounded read (issue #375): a line past the ceiling is never buffered whole.
+                while (!_stop.IsCancellationRequested
+                    && (line = SharedWorkerHostProtocol.ReadBoundedLine(
+                        child.StandardOutput, SharedWorkerHostProtocol.HardFrameCeilingBytes, out frameBytes)) != null)
                 {
-                    long frameBytes = Encoding.UTF8.GetByteCount(line);
                     if (frameBytes > SharedWorkerHostProtocol.MaxFrameBytes)
                     {
                         // Issue #347. This used to broadcast a host error and cancel the
@@ -699,6 +827,26 @@ namespace GxMcp.Worker
         internal const int SdkStallAfterMs = 90_000;
 
         /// <summary>
+        /// Issue #371. The grace period for a busy lane that has never reported progress,
+        /// matching the Gateway's window so the two cannot disagree about the same child.
+        /// Only operations that emit progress notifications prove they can move; a single
+        /// object read, a save, or a COM call blocked behind a modal dialog emits none and
+        /// would otherwise read as busy-unproven forever.
+        /// </summary>
+        internal const int NoProgressStallAfterMsDefault = 600_000;
+
+        internal static readonly int NoProgressStallAfterMs = ResolveNoProgressStallAfterMs();
+
+        private const string NoProgressStallEnvVar = "GXMCP_SDK_NO_PROGRESS_STALL_MS";
+
+        private static int ResolveNoProgressStallAfterMs()
+        {
+            var raw = Environment.GetEnvironmentVariable(NoProgressStallEnvVar);
+            if (int.TryParse(raw, out int configured) && configured > 0) return configured;
+            return NoProgressStallAfterMsDefault;
+        }
+
+        /// <summary>
         /// Classifies the SDK lane. Issue #335.
         ///
         /// <para>
@@ -713,15 +861,23 @@ namespace GxMcp.Worker
         /// A busy lane with no observed progress is <c>busy-unproven</c>, not
         /// <c>busy-stalled</c>: one sample cannot tell a healthy short call from a
         /// deadlocked one, and guessing "stalled" would kill a Worker three seconds into
-        /// ordinary work.
+        /// ordinary work. Past <see cref="NoProgressStallAfterMs"/> of unproven progress it
+        /// becomes <c>busy-stalled-unproven</c>, a recovery candidate - issue #371.
         /// </para>
         /// </summary>
-        internal static string ClassifySdkState(bool active, bool sawProgress, long lastProgressMs)
+        internal static string ClassifySdkState(bool active, bool sawProgress, long lastProgressMs, long elapsedMs = 0)
         {
             if (!active) return "idle";
-            if (!sawProgress || lastProgressMs < 0) return "busy-unproven";
+            if (!sawProgress || lastProgressMs < 0)
+                return elapsedMs >= NoProgressStallAfterMs ? "busy-stalled-unproven" : "busy-unproven";
             return lastProgressMs >= SdkStallAfterMs ? "busy-stalled" : "busy-progressing";
         }
+
+        /// <summary>Why <see cref="ClassifySdkState"/> reached its verdict, or null.</summary>
+        internal static string SdkStallReason(string sdkState)
+            => sdkState == "busy-stalled-unproven" ? "no-progress-ceiling"
+                : sdkState == "busy-stalled" ? "progress-stopped"
+                : null;
 
         /// <summary>
         /// Builds the heartbeat acknowledgement, including the broker's view of the child.
@@ -752,7 +908,7 @@ namespace GxMcp.Worker
             {
                 var child = _child;
                 var pid = child?.Id ?? 0;
-                long workingSet = 0, privateBytes = 0, availableBefore = 0, availableAfter = 0;
+                long workingSet = 0, privateBytes = 0;
 
                 if (child != null && !child.HasExited)
                 {
@@ -767,47 +923,52 @@ namespace GxMcp.Worker
                         // A process that exited between the check and the read. Reported
                         // as zero rather than guessed; the exit itself is what matters.
                     }
-                    try
-                    {
-                        availableBefore = GC.GetTotalMemory(false);
-                        GC.Collect();
-                        GC.WaitForPendingFinalizers();
-                        GC.Collect();
-                        availableAfter = GC.GetTotalMemory(false);
-                    }
-                    catch { }
                 }
 
-                // The SDK-lane section reuses the worker's own status projection rather than
-                // duplicating the busy/progress bookkeeping here - it is the same
-                // distinction the connection-recover path uses, so a shared Worker and an
-                // isolated one report "progressing" and "stalled" identically.
-                var sdk = Program.GetSdkBusyStatus();
-                bool sdkActive = sdk["active"]?.ToObject<bool?>() ?? false;
-                bool sawProgress = sdk["sawProgress"]?.ToObject<bool?>() ?? false;
-                long lastProgressMs = sdk["lastProgressMs"]?.ToObject<long?>() ?? -1;
-                var q = sdk["queueDepths"] as JObject;
+                // Issue #362. The SDK-lane section reads the child's own status, captured
+                // by the broker from the child, not this process's statics.
+                bool fresh = TryGetFreshChildStatus(out var sdk, out string unavailableReason);
+                bool sdkActive = fresh && (sdk["sdkBusy"]?.ToObject<bool?>() ?? false);
+                bool sawProgress = fresh && (sdk["sdkSawProgress"]?.ToObject<bool?>() ?? false);
+                long lastProgressMs = fresh ? (sdk["sdkLastProgressMs"]?.ToObject<long?>() ?? -1) : -1;
+                long sdkElapsedMs = fresh ? (sdk["sdkElapsedMs"]?.ToObject<long?>() ?? 0) : 0;
+                string sdkState = fresh ? (sdk["sdkState"]?.ToString() ?? "unknown") : "unknown";
+                long queueTotal = fresh ? (sdk["queueTotal"]?.ToObject<long?>() ?? 0) : 0;
+
+                // Issue #362: no GC.Collect on the heartbeat path. Two forced blocking gen-2
+                // collections per acknowledgement, per attachment, on the process that routes
+                // every client's traffic is a latency spike in the routing path to obtain a
+                // figure that described the broker rather than the child anyway.
+                bool elected = fresh && ShouldElectRecycle(sdk, privateBytes);
+                Interlocked.Increment(ref _heartbeatsServed);
 
                 ack["supervision"] = new JObject
                 {
-                    ["available"] = true,
+                    // Issue #362: false when the child has not reported, or its last report
+                    // is too old. Idle defaults were indistinguishable from a healthy child.
+                    ["available"] = fresh,
+                    ["unavailableReason"] = unavailableReason,
                     // Identity the Gateway cannot otherwise obtain.
                     ["childPid"] = pid,
                     ["childAlive"] = child != null && !child.HasExited,
                     ["attachments"] = _attachments.Count,
-                    // Memory, in the same units the isolated path reports.
+                    // Memory, in the same units the isolated path reports. Both are process
+                    // figures for the child; the managed heap is the child's own report.
                     ["workingSetBytes"] = workingSet,
                     ["privateBytes"] = privateBytes,
-                    ["managedHeapBeforeBytes"] = availableBefore,
-                    ["managedHeapAfterBytes"] = availableAfter,
-                    // Queue and SDK activity.
-                    ["queueTotal"] = q?["total"]?.ToObject<int?>() ?? 0,
-                    ["queueP0"] = q?["p0"]?.ToObject<int?>() ?? 0,
-                    ["queueP1"] = q?["p1"]?.ToObject<int?>() ?? 0,
-                    ["queueP2"] = q?["p2"]?.ToObject<int?>() ?? 0,
+                    // Issue #362: the broker cannot measure the child's managed heap - it is
+                    // a different process - so it forwards what the child reported rather
+                    // than its own GC figure wearing the child's PID.
+                    ["childManagedHeapBytes"] = fresh ? (sdk["childManagedHeapBytes"]?.ToObject<long?>() ?? 0) : 0,
+                    ["childManagedHeapSource"] = fresh ? "child" : "unavailable",
+                    // Queue and SDK activity, all from the child.
+                    ["queueTotal"] = queueTotal,
+                    ["queueP0"] = fresh ? (sdk["queueP0"]?.ToObject<long?>() ?? 0) : 0,
+                    ["queueP1"] = fresh ? (sdk["queueP1"]?.ToObject<long?>() ?? 0) : 0,
+                    ["queueP2"] = fresh ? (sdk["queueP2"]?.ToObject<long?>() ?? 0) : 0,
                     ["sdkBusy"] = sdkActive,
-                    ["sdkOperation"] = sdk["operation"]?.ToString(),
-                    ["sdkElapsedMs"] = sdk["elapsedMs"]?.ToObject<long?>() ?? 0,
+                    ["sdkOperation"] = fresh ? sdk["sdkOperation"]?.ToString() : null,
+                    ["sdkElapsedMs"] = sdkElapsedMs,
                     ["sdkSawProgress"] = sawProgress,
                     // -1 means "no progress has ever been observed for this operation",
                     // which is a different answer from 0 ("progress just now").
@@ -815,7 +976,12 @@ namespace GxMcp.Worker
                     // The classification, computed where the evidence is. A Gateway
                     // receiving this does not have to reimplement the distinction, and
                     // cannot disagree with the broker about which child it describes.
-                    ["sdkState"] = ClassifySdkState(sdkActive, sawProgress, lastProgressMs),
+                    // Issue #371: elapsed time is part of the input, so a lane that never
+                    // emits progress can still be recognised as stuck.
+                    ["sdkState"] = sdkState,
+                    ["sdkStallReason"] = SdkStallReason(sdkState),
+                    ["sdkNoProgressStallAfterMs"] = NoProgressStallAfterMs,
+                    ["childStatusCapturedAtUtc"] = fresh ? _childStatusCapturedAtUtc.ToString("O") : null,
                     // Generation, so every attachment can tell it is looking at the same
                     // child. A Gateway must never unilaterally recycle another's child;
                     // this is the value they compare before acting.
@@ -823,7 +989,7 @@ namespace GxMcp.Worker
                     // The broker decides recycling. A Gateway may *ask*; only this flag
                     // says the broker has already elected a victim, and only one
                     // attachment ever sees it true for a given sweep.
-                    ["recycleElected"] = Volatile.Read(ref _recycleElected) != 0,
+                    ["recycleElected"] = elected,
                     ["capturedAtUtc"] = DateTime.UtcNow.ToString("O")
                 };
             }

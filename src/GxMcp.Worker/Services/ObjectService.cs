@@ -109,6 +109,75 @@ namespace GxMcp.Worker.Services
         private static string RecentDeletionKey(string type, string name) =>
             ((type ?? "") + ":" + (name ?? "")).ToLowerInvariant();
 
+        // KnowledgeBase.ObjectManager is typed as the event-less IKBObjectManager (and the
+        // reference facade may not expose it), so read it reflectively. Null = capture inactive.
+        private static object GetObjectManager(object kb)
+        {
+            try
+            {
+                return kb?.GetType().GetProperty("ObjectManager", BindingFlags.Public | BindingFlags.Instance)?.GetValue(kb, null);
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("DeleteObject: ObjectManager unavailable: " + ex.Message);
+                return null;
+            }
+        }
+
+        // Guids of the indexes of a Table about to be deleted (empty for anything else).
+        private static IEnumerable<Guid> TableIndexGuids(object obj)
+        {
+            var tbl = obj as Artech.Genexus.Common.Objects.Table;
+            if (tbl == null) return new Guid[0];
+            var list = new List<Guid>();
+            foreach (var ti in tbl.TableIndexes.Indexes)
+            {
+                var idxObj = ti == null ? null : ti.Index;
+                if (idxObj != null && idxObj.Guid != Guid.Empty) list.Add(idxObj.Guid);
+            }
+            return list;
+        }
+
+        // Drops the objects the SDK removed in cascade (all captured guids except the target)
+        // from the search index and records them like the target. Returns {name,type,guid}
+        // for those that were indexed.
+        // The SDK deletes a Table's Indexes without raising an event for them, so those guids come
+        // from BeforeDeleteKBObject as candidates and are dropped only when isAbsent confirms them.
+        internal static JArray RemoveCascadedEntries(IndexCacheService idx, IEnumerable<Guid> captured, Guid target,
+            IEnumerable<Guid> candidates = null, Func<Guid, bool> isAbsent = null)
+        {
+            var also = new JArray();
+            if (idx == null || captured == null) return also;
+            var all = captured.ToList();
+            if (candidates != null && isAbsent != null)
+            {
+                foreach (var c in candidates.Distinct())
+                {
+                    if (c == Guid.Empty || all.Contains(c)) continue;
+                    bool absent = false;
+                    try { absent = isAbsent(c); } catch (Exception ex) { Logger.Error("DeleteObject: candidate check failed for " + c + ": " + ex.Message); }
+                    if (absent) all.Add(c);
+                }
+            }
+            foreach (var guid in all.Distinct())
+            {
+                if (guid == Guid.Empty || guid == target) continue;
+                string g = guid.ToString();
+                try
+                {
+                    var entry = idx.GetIndex()?.FindByGuid(g);
+                    if (entry != null)
+                    {
+                        _recentDeletions[RecentDeletionKey(entry.Type, entry.Name)] = DateTime.UtcNow;
+                        also.Add(new JObject { ["name"] = entry.Name, ["type"] = entry.Type, ["guid"] = g });
+                    }
+                    idx.RemoveEntryByGuid(g);
+                }
+                catch (Exception ex) { Logger.Error("DeleteObject: cascaded index RemoveEntry failed for " + g + ": " + ex.Message); }
+            }
+            return also;
+        }
+
         // v2.6.8 (review C8): crash-line detector. Anchored markers only —
         // bare "critical" inside a log message (e.g., "critical section",
         // "no critical errors") must NOT trip the matcher.
@@ -697,104 +766,93 @@ namespace GxMcp.Worker.Services
                 // list, and only then take the last N - so asking for the last ten
                 // lines of a large log allocated the whole log, on the diagnostic route
                 // that runs precisely when something has gone wrong and memory is least
-                // welcome. LogTailReader retains at most the requested window plus the
-                // context the crash search needs, and still counts the whole file so
-                // `totalLines` keeps meaning what it always meant.
+                // welcome. LogTailReader retains at most the requested window and still
+                // counts the whole file so `totalLines` keeps meaning what it always meant.
                 //
-                // The honest consequence is that a filter can no longer reach lines
-                // before the retained window. That is surfaced in the response rather
-                // than hidden, because a caller asking "since yesterday" and receiving
-                // only the tail must be able to tell that it got a tail.
-                int retainContext = 0;
-                if (string.Equals(sinceMode, "crash", StringComparison.OrdinalIgnoreCase))
-                    retainContext = LogTailReader.MaxRetainedLines - lines; // search the whole window
-                var tailRead = GxMcp.Worker.Helpers.LogTailReader.Read(logPath, lines, retainContext);
-                var allLines = tailRead.Lines;
-
-                IEnumerable<string> filtered = allLines;
-
-                // v2.6.8: since=crash slices the log starting at the most recent
-                // [ERROR]/[CRITICAL] line — the agent (and the user reporting a
-                // crash) gets the stack + immediate context without having to
-                // hunt for it manually.
+                // Issue #370: that bounded read also changed what the filters mean. The
+                // retained window was filtered *afterwards*, so grep/correlation/object/
+                // since could only ever match inside it - `lines=10, grep="X"` became
+                // "the last 10 lines that contain X" instead of "the last 10 matching
+                // lines from anywhere in the log", and a diagnostic search for a
+                // correlation id from a few minutes ago came back empty. The predicates are
+                // now applied to each line as it is decoded while scanning backwards, so a
+                // match anywhere in the scanned range is found and retained memory stays
+                // bounded by the number of matches returned.
                 bool sliceFromCrash = string.Equals(sinceMode, "crash", StringComparison.OrdinalIgnoreCase);
+
+                // The per-line predicate, in the same order the old LINQ chain applied.
+                var matchers = new List<Func<string, bool>>();
+                if (!string.IsNullOrWhiteSpace(objectFilter))
+                    matchers.Add(l => l.IndexOf(objectFilter, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (!string.IsNullOrWhiteSpace(filterCorrelation))
+                    matchers.Add(l => l.IndexOf(filterCorrelation, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (!string.IsNullOrWhiteSpace(grepPattern))
+                    matchers.Add(BuildGrepMatcher(grepPattern));
+
+                DateTime? sinceUtc = null;
+                if (!sliceFromCrash && !string.IsNullOrWhiteSpace(sinceMode)
+                    && DateTime.TryParse(sinceMode, null, System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AllowWhiteSpaces, out DateTime sinceDt))
+                {
+                    // Normalize to UTC so a client-supplied "...Z" timestamp compares
+                    // correctly against log-line timestamps (the worker writes local time).
+                    sinceUtc = sinceDt.Kind == DateTimeKind.Utc ? sinceDt : sinceDt.ToUniversalTime();
+                }
+
+                Func<string, bool> isMatch = matchers.Count == 0
+                    ? null
+                    : (l => matchers.TrueForAll(m => m(l)));
+
+                // Scanning backwards, a line older than the cutoff means every earlier line
+                // is too, so the scan can stop instead of reading the whole history.
+                Func<string, bool> isOutOfScope = sinceUtc.HasValue
+                    ? l => TryParseLogTimestamp(l, out DateTime lineTs) && lineTs < sinceUtc.Value
+                    : null;
+
+                GxMcp.Worker.Helpers.LogTailReader tailRead;
                 int crashIndex = -1;
+                List<string> tail;
                 if (sliceFromCrash)
                 {
-                    for (int i = allLines.Count - 1; i >= 0; i--)
+                    // since=crash: keep the newest `lines` plus 5 lines of context, walking
+                    // back until the marker is met. `isMatch` keeps everything and the
+                    // marker ends the scan, which is what makes a crash older than the old
+                    // 2000-line window findable.
+                    int window = Math.Min(LogTailReader.MaxRetainedLines, lines + 5);
+                    tailRead = GxMcp.Worker.Helpers.LogTailReader.ReadFiltered(
+                        logPath, window, _ => true, l => _crashLinePattern.IsMatch(l),
+                        keepOutOfScopeLine: true);
+                    var windowLines = tailRead.Lines;
+                    int marker = -1;
+                    for (int i = windowLines.Count - 1; i >= 0; i--)
                     {
-                        string ln = allLines[i];
-                        if (_crashLinePattern.IsMatch(ln))
-                        {
-                            crashIndex = i;
-                            break;
-                        }
+                        if (!_crashLinePattern.IsMatch(windowLines[i])) continue;
+                        marker = i;
+                        break;
                     }
-                    if (crashIndex >= 0)
+                    if (marker >= 0)
                     {
                         // Take 5 lines of context before + everything after.
-                        int start = Math.Max(0, crashIndex - 5);
-                        filtered = allLines.Skip(start);
+                        int start = Math.Max(0, marker - 5);
+                        tail = windowLines.Skip(start).ToList();
+                        crashIndex = marker - start;
+                    }
+                    else
+                    {
+                        tail = windowLines.ToList();
                     }
                 }
-                else if (!string.IsNullOrWhiteSpace(sinceMode))
+                else if (isMatch != null || isOutOfScope != null)
                 {
-                    // Item 32: since=<ISO timestamp> — skip lines whose leading timestamp
-                    // is before the requested cutoff. Log format: [yyyy-MM-dd HH:mm:ss.fff]
-                    // Lines that don't carry a parseable timestamp are kept (defensive).
-                    if (DateTime.TryParse(sinceMode, null, System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AllowWhiteSpaces, out DateTime sinceDt))
-                    {
-                        // Normalize to UTC so a client-supplied "...Z" timestamp compares correctly
-                        // against log-line timestamps (the worker writes them in local time).
-                        DateTime sinceUtc = sinceDt.Kind == DateTimeKind.Utc ? sinceDt : sinceDt.ToUniversalTime();
-                        filtered = allLines.Where(l =>
-                        {
-                            // Try to parse the leading [yyyy-MM-dd HH:mm:ss.fff] prefix.
-                            if (l.Length > 2 && l[0] == '[')
-                            {
-                                int close = l.IndexOf(']');
-                                if (close > 0)
-                                {
-                                    string ts = l.Substring(1, close - 1);
-                                    if (DateTime.TryParse(ts, null, System.Globalization.DateTimeStyles.AssumeLocal, out DateTime lineTs))
-                                        return lineTs.ToUniversalTime() >= sinceUtc;
-                                }
-                            }
-                            return true; // unparseable timestamp — keep line
-                        });
-                    }
+                    tailRead = GxMcp.Worker.Helpers.LogTailReader.ReadFiltered(
+                        logPath, lines, isMatch, isOutOfScope, ResolveLogScanBudgetBytes());
+                    tail = tailRead.Lines.ToList();
                 }
-
-                // Item 32: object-name filter — only lines mentioning the object.
-                if (!string.IsNullOrWhiteSpace(objectFilter))
-                    filtered = filtered.Where(l => l.IndexOf(objectFilter, StringComparison.OrdinalIgnoreCase) >= 0);
-
-                if (!string.IsNullOrWhiteSpace(filterCorrelation))
-                    filtered = filtered.Where(l => l.IndexOf(filterCorrelation, StringComparison.OrdinalIgnoreCase) >= 0);
-                if (!string.IsNullOrWhiteSpace(grepPattern))
+                else
                 {
-                    try
-                    {
-                        var rx = new System.Text.RegularExpressions.Regex(grepPattern,
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase,
-                            GxMcp.Worker.Services.SourceSearchService.RegexMatchTimeout);
-                        // Materialize INSIDE the try: Where() is deferred, so a match-timeout
-                        // thrown by rx.IsMatch would otherwise surface at the later ToList()
-                        // (outside this catch) as a generic error instead of the fallback.
-                        filtered = filtered.Where(l => rx.IsMatch(l)).ToList();
-                    }
-                    catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
-                    {
-                        // A valid-but-pathological pattern must not hang the STA thread; degrade
-                        // to the same substring fallback an invalid pattern gets.
-                        filtered = filtered.Where(l => l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0);
-                    }
-                    catch { /* invalid regex falls back to substring */ filtered = filtered.Where(l => l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0); }
+                    tailRead = GxMcp.Worker.Helpers.LogTailReader.Read(logPath, lines);
+                    tail = tailRead.Lines.ToList();
                 }
 
-                var matchList = filtered.ToList();
-                int skip = Math.Max(0, matchList.Count - lines);
-                var tail = matchList.Skip(skip).ToList();
                 var result = new JObject
                 {
                     // Item 32: surface the log path so the agent can read adjacent logs
@@ -803,7 +861,8 @@ namespace GxMcp.Worker.Services
                     // Back-compat alias: prior shape exposed the file location as "path".
                     ["path"] = logPath,
                     ["logDir"] = GxMcp.Worker.Helpers.Logger.LogDirectory,
-                    ["totalLines"] = allLines.Count,
+                    // The file's line count, not the size of the window that was read.
+                    ["totalLines"] = tailRead.TotalLines,
                     ["matched"] = tail.Count,
                     ["lines"] = string.Join("\n", tail)
                 };
@@ -817,31 +876,90 @@ namespace GxMcp.Worker.Services
                         // different answers. With a bounded read the first is now possible,
                         // and claiming the second would assert the worker did not crash
                         // when the marker may simply be further back than the window.
-                        result["hint"] = tailRead.Truncated
+                        result["hint"] = !tailRead.ScanComplete
+                            ? "No ERROR/CRITICAL marker found in the " + tailRead.ScannedBytes
+                              + " bytes scanned at the end of a " + tailRead.TotalLines + "-line log. "
+                              + "The scan stopped on its byte budget; grep for the marker directly to cover the rest."
+                            : tailRead.Truncated
                             ? "No ERROR/CRITICAL marker in the last " + tailRead.Lines.Count
                               + " lines of a " + tailRead.TotalLines + "-line log. The marker may be older than the retained window; raise `lines` or grep for it directly."
                             : "No ERROR/CRITICAL markers found in the log — worker has not crashed (or the log has rotated).";
                     }
                 }
 
-                // Issue #342: state the read's bounds. Every filter above ran over the
-                // retained window only, so a caller must be able to tell a complete
-                // answer from a tail.
+                // Issue #342/#370: state the read's bounds. Every filter above ran over the
+                // lines the scan actually read, and a scan stopped by the byte budget is
+                // not a complete answer - it must never read as "not found".
                 result["retainedLines"] = tailRead.Lines.Count;
                 result["truncatedFromStart"] = tailRead.TruncatedFromStart;
                 result["bounded"] = true;
-                if (tailRead.Truncated)
+                result["scanComplete"] = tailRead.ScanComplete;
+                result["scannedBytes"] = tailRead.ScannedBytes;
+                if (!tailRead.ScanComplete)
                 {
                     result["hint"] = (result["hint"]?.ToString() ?? string.Empty)
-                        + " Read the last " + tailRead.Lines.Count + " of " + tailRead.TotalLines
-                        + " lines; filters above applied only to those. Raise `lines` (max "
-                        + LogTailReader.MaxRetainedLines + ") to widen the window.";
+                        + " Scanned " + tailRead.ScannedBytes + " bytes from the end of the log and stopped on the scan budget; "
+                        + "lines further back were not examined, so this is NOT evidence of no matches there.";
                 }
                 return McpResponse.Ok(code: "LogsRead", result: result);
             }
             catch (Exception ex)
             {
                 return "{\"status\":\"Error\", \"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+            }
+        }
+
+        private static long ResolveLogScanBudgetBytes()
+        {
+            var raw = Environment.GetEnvironmentVariable("GXMCP_LOG_SCAN_MAX_MB");
+            if (long.TryParse(raw, out long mb) && mb > 0) return mb * 1024L * 1024L;
+            return GxMcp.Worker.Helpers.LogTailReader.DefaultMaxScanBytes;
+        }
+
+        /// <summary>
+        /// The leading <c>[yyyy-MM-dd HH:mm:ss.fff]</c> prefix, compared in UTC. Returns
+        /// false for a line without a parseable timestamp, which is why such a line is
+        /// never treated as out of scope: an unparseable line must not end the scan.
+        /// </summary>
+        private static bool TryParseLogTimestamp(string line, out DateTime utc)
+        {
+            utc = default;
+            if (string.IsNullOrEmpty(line) || line[0] != '[') return false;
+            int close = line.IndexOf(']');
+            if (close <= 0) return false;
+            if (!DateTime.TryParse(line.Substring(1, close - 1), null,
+                    System.Globalization.DateTimeStyles.AssumeLocal, out DateTime lineTs))
+                return false;
+            utc = lineTs.ToUniversalTime();
+            return true;
+        }
+
+        /// <summary>
+        /// A regex when the pattern compiles, otherwise the substring fallback - an
+        /// invalid one must not fail the read. The bounded match timeout is honoured at
+        /// match time too: a valid-but-pathological pattern must not hang the STA thread,
+        /// and the old implementation degraded to substring for the whole chain rather
+        /// than surfacing a generic error.
+        /// </summary>
+        private static Func<string, bool> BuildGrepMatcher(string grepPattern)
+        {
+            try
+            {
+                var rx = new System.Text.RegularExpressions.Regex(grepPattern,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+                    GxMcp.Worker.Services.SourceSearchService.RegexMatchTimeout);
+                return l =>
+                {
+                    try { return rx.IsMatch(l); }
+                    catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+                    {
+                        return l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+                };
+            }
+            catch
+            {
+                return l => l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0;
             }
         }
 
@@ -949,6 +1067,8 @@ namespace GxMcp.Worker.Services
             string objType = typeFilter;
             bool deleteStarted = false;
             bool transactionCommitted = false;
+            IReadOnlyList<Guid> cascadedGuids = new Guid[0];
+            IReadOnlyList<Guid> candidateGuids = new Guid[0];
             try
             {
                 var kb = _kbService.GetKB();
@@ -1128,7 +1248,15 @@ namespace GxMcp.Worker.Services
 
                         references = CollectIncomingReferences(current, kb, out referencesTruncated);
                         deleteStarted = true;
-                        current.Delete();
+                        // Delete() cascades inside the SDK (Transaction -> Table -> Index/attributes).
+                        // Capture the whole set so the search index can drop it too; otherwise the
+                        // cascaded objects stay listed and every read fails with IndexedObjectUnavailable.
+                        using (var capture = new DeletedObjectCapture(GetObjectManager(kb), (Func<object, IEnumerable<Guid>>)TableIndexGuids))
+                        {
+                            current.Delete();
+                            cascadedGuids = capture.Guids;
+                            candidateGuids = capture.Candidates;
+                        }
 
                         var afterDelete = ResolveByNativeIdentity(kb, objGuid, objType);
                         if (afterDelete.Status == NativeResolutionStatus.Failed)
@@ -1214,6 +1342,10 @@ namespace GxMcp.Worker.Services
                 }
                 catch (Exception ex) { Logger.Error("DeleteObject: index RemoveEntry failed for " + objName + ": " + ex.Message); }
 
+                // Committed: mirror the SDK cascade in the index (never reached on rollback).
+                var alsoDeleted = RemoveCascadedEntries(_kbService?.GetIndexCache(), cascadedGuids, objGuid,
+                    candidateGuids, g => ResolveByNativeIdentity((KnowledgeBase)kb, g, null).Status == NativeResolutionStatus.Absent);
+
                 return McpResponse.Ok(target: objName, code: "ObjectDeleted", result: new JObject
                 {
                     ["deleted"] = objName,
@@ -1229,7 +1361,8 @@ namespace GxMcp.Worker.Services
                     ["rereadConfirmed"] = true,
                     ["versionBefore"] = versionBefore,
                     ["versionAfter"] = JValue.CreateNull(),
-                    ["implicitLifecycleActions"] = new JArray()
+                    ["implicitLifecycleActions"] = new JArray(),
+                    ["alsoDeleted"] = alsoDeleted
                 });
             }
             catch (Exception ex)
@@ -1514,6 +1647,74 @@ namespace GxMcp.Worker.Services
             {
                 Logger.Error("CloneSdtStructurePart failed for " + targetName + ": " + (ex.InnerException?.Message ?? ex.Message));
                 return null; // fall back to the text path
+            }
+        }
+
+        // issue #406: a report Procedure's Layout is a ReportPart, not a WebForm. The textual/visual
+        // write path applies WebForm-only validation (SaveAsPartFailed) and, where it does not fail,
+        // only updates controls the target already has, so new controls are dropped silently. Copy the
+        // part natively instead and accept the copy only when its layout projection equals the
+        // source's. Returns null when the source Layout is not a report part; a copy that is not
+        // faithful is an error, never a silent partial clone.
+        public string CloneReportLayoutPart(string sourceName, string targetName, string typeFilter = null)
+        {
+            try
+            {
+                var srcObj = FindObject(sourceName, typeFilter);
+                var tgtObj = FindObject(targetName);
+                if (srcObj == null || tgtObj == null) return null;
+
+                var srcPart = WebFormXmlHelper.GetWebFormPart(srcObj);
+                var tgtPart = WebFormXmlHelper.GetWebFormPart(tgtObj);
+                if (srcPart == null || tgtPart == null) return null;
+                if (ReportLayoutHelper.IsReportPart(srcPart) == null || ReportLayoutHelper.IsReportPart(tgtPart) == null) return null;
+
+                string expected = ReportLayoutHelper.ReadLayout(srcPart);
+                string via = null;
+
+                byte[] data = ObjectMoveSnapshot.CaptureEntity(srcPart);
+                if (data != null)
+                {
+                    try { ObjectMoveSnapshot.RestoreEntity(tgtPart, data); via = "binary"; }
+                    catch (Exception ex) { Logger.Warn("CloneReportLayoutPart: binary restore failed: " + (ex.InnerException?.Message ?? ex.Message)); }
+                }
+                if (via == null || ReportLayoutHelper.ReadLayout(tgtPart) != expected)
+                {
+                    try { tgtPart.DeserializeFromXml(srcPart.SerializeToXml()); via = "xml"; }
+                    catch (Exception ex) { Logger.Warn("CloneReportLayoutPart: xml restore failed: " + (ex.InnerException?.Message ?? ex.Message)); }
+                }
+
+                string actual = ReportLayoutHelper.ReadLayout(tgtPart);
+                Logger.Info("CloneReportLayoutPart: " + sourceName + " -> " + targetName + " via=" + (via ?? "none") + " faithful=" + (actual == expected));
+                if (via == null || actual != expected)
+                {
+                    Logger.Warn("CloneReportLayoutPart: copy via " + (via ?? "none") + " did not reproduce the source layout");
+                    return McpResponse.Err(
+                        code: "LayoutCloneNotFaithful",
+                        message: "The report Layout of '" + sourceName + "' could not be copied faithfully to '" + targetName + "'.",
+                        hint: "Recreate the layout on the target with genexus_layout / genexus_io import_part; nothing was saved for this part.",
+                        target: targetName);
+                }
+
+                // The part must be saved itself: a restore does not mark it dirty, so saving only
+                // the object leaves the restored layout unpersisted (same order as ReportLayoutHelper).
+                ReportLayoutHelper.MarkLayoutDirty(tgtPart);
+                tgtPart.Save();
+                tgtObj.Save();
+
+                try { var idx = _kbService?.GetIndexCache(); if (idx != null) idx.UpdateEntry(tgtObj); }
+                catch (Exception ex) { Logger.Error("CloneReportLayoutPart: index UpdateEntry failed for " + targetName + ": " + ex.Message); }
+
+                return McpResponse.Ok(target: targetName, code: "Success",
+                    result: new JObject { ["part"] = "Layout", ["clonedVia"] = via });
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("CloneReportLayoutPart failed for " + targetName + ": " + (ex.InnerException?.Message ?? ex.Message));
+                return McpResponse.Err(
+                    code: "LayoutCloneFailed",
+                    message: "Cloning the report Layout failed: " + (ex.InnerException?.Message ?? ex.Message),
+                    target: targetName);
             }
         }
 
@@ -4101,8 +4302,20 @@ namespace GxMcp.Worker.Services
             // reported changed:false / WriteNoChange even though the diff and disk showed
             // the change. Resolve the part name the same way ReadObjectSource does.
             string resolvedPart = string.IsNullOrWhiteSpace(partName) ? null : ResolvePartName(obj, partName);
+            RemoveReadCacheEntries(obj.Guid, resolvedPart);
+
+            // SDK object cache invalidation is expensive; do it only after writes.
+            InvalidateCache(obj);
+        }
+
+        /// <summary>
+        /// Drops the managed read-cache entries of one object. A null
+        /// <paramref name="resolvedPart"/> drops every part of the object.
+        /// </summary>
+        internal static void RemoveReadCacheEntries(Guid objectGuid, string resolvedPart)
+        {
             string normalizedPart = string.IsNullOrWhiteSpace(resolvedPart) ? null : resolvedPart.Trim().ToLowerInvariant();
-            string objectPrefix = obj.Guid.ToString("N") + "|";
+            string objectPrefix = objectGuid.ToString("N") + "|";
             foreach (var kvp in _readCache)
             {
                 string key = kvp.Key;
@@ -4140,9 +4353,6 @@ namespace GxMcp.Worker.Services
                     continue;
                 _emptyRawSourceCache.TryRemove(key, out _);
             }
-
-            // SDK object cache invalidation is expensive; do it only after writes.
-            InvalidateCache(obj);
         }
 
         // PERFORMANCE (perf round 1): raw part-source getter used by SourceSearchService's
@@ -5124,6 +5334,11 @@ namespace GxMcp.Worker.Services
                         ProcessSourceContent(obj, content, offset, limit, result, client);
                         Logger.Info("ReadSource (Reflection) SUCCESS");
                     }
+                    else if (QueryStructureText.IsQueryStructurePart(part))
+                    {
+                        ProcessSourceContent(obj, QueryStructureText.Render(part), offset, limit, result, client);
+                        Logger.Info("ReadSource (QueryStructure) SUCCESS");
+                    }
                     else
                     {
                         string xml = part.SerializeToXml();
@@ -5175,6 +5390,8 @@ namespace GxMcp.Worker.Services
             // Data Selectors have no ISource part. Keep the generic alias so the
             // typed read path can return their complete persisted definition.
             if (DataSelectorReadService.IsDataSelector(obj)) return "Source";
+            // issue #404: a Query's content is its structure part, not the first part listed.
+            if (QueryStructureText.FindPart(obj) != null) return "QueryStructure";
 
             // issue #31.5: SDTs (and other objects without a Source part) previously errored
             // "Part 'Source' not found". Fall back to the object's primary part instead:

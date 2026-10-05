@@ -14,9 +14,13 @@ namespace GxMcp.Worker.Helpers
         public static KBObjectPart IsReportPart(KBObjectPart part)
         {
             if (part == null) return null;
-            var name = part.GetType().FullName;
-            if (name.Contains("ReportPart") || name.Contains("LayoutPart")) return part;
-            return null;
+            return IsReportPartTypeName(part.GetType().FullName) ? part : null;
+        }
+
+        public static bool IsReportPartTypeName(string partClassFullName)
+        {
+            if (partClassFullName == null) return false;
+            return partClassFullName.Contains("ReportPart") || partClassFullName.Contains("LayoutPart");
         }
 
         public static string ReadLayout(KBObjectPart part)
@@ -207,6 +211,7 @@ namespace GxMcp.Worker.Helpers
         {
             if (part == null || string.IsNullOrWhiteSpace(xml)) return false;
 
+            _layoutOwner = part.KBObject;
             try
             {
                 var visualDoc = XDocument.Parse(xml);
@@ -389,13 +394,18 @@ namespace GxMcp.Worker.Helpers
                         if (string.IsNullOrEmpty(elName)) continue;
 
                         bool alreadyExists = false;
+                        // issue #361: a control bound to an attribute or variable is named after that
+                        // reference, so the requested reference identifies the existing control too.
+                        string requestedReference = ReferenceIdentity(elXml);
                         foreach (var item in items)
                         {
                             var iType = item.GetType();
                             var currentName = iType.GetProperty("Name", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(item, null)?.ToString();
                             var currentControlName = iType.GetProperty("ControlName", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(item, null)?.ToString();
                             if (string.Equals(currentName, elName, StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(currentControlName, elName, StringComparison.OrdinalIgnoreCase))
+                                string.Equals(currentControlName, elName, StringComparison.OrdinalIgnoreCase) ||
+                                (requestedReference != null && (string.Equals(currentName, requestedReference, StringComparison.OrdinalIgnoreCase) ||
+                                                                string.Equals(currentControlName, requestedReference, StringComparison.OrdinalIgnoreCase))))
                             {
                                 alreadyExists = true;
                                 break;
@@ -489,7 +499,7 @@ namespace GxMcp.Worker.Helpers
 
                         var requestedNames = new HashSet<string>(
                             requestedBlock.Elements("Control")
-                                .Select(c => GetXmlIdentity(c, "ControlName", "Name"))
+                                .SelectMany(c => new[] { GetXmlIdentity(c, "ControlName", "Name"), ReferenceIdentity(c) })
                                 .Where(n => !string.IsNullOrWhiteSpace(n)),
                             StringComparer.OrdinalIgnoreCase);
                         var bandObj = bandsList.FirstOrDefault(b => IsMatchingReportBand(b, baselineBlockName));
@@ -518,6 +528,20 @@ namespace GxMcp.Worker.Helpers
                             b.Attribute("ControlName")?.Value ?? b.Attribute("Name")?.Value,
                             blockName, StringComparison.OrdinalIgnoreCase));
                     if (requestedBlock == null) continue;
+
+                    // issue #361: the print block's own Height was never written back, so a
+                    // geometry-only import kept every block at its old height.
+                    string requestedHeight = requestedBlock.Attribute("Height")?.Value;
+                    if (!string.IsNullOrWhiteSpace(requestedHeight)
+                        && HasBlockHeightChanged(requestedBlock, baselineDoc)
+                        && TryReadProperty(bandObj, bandObj.GetType(), "Height", out string currentHeight)
+                        && !string.Equals(currentHeight, requestedHeight, StringComparison.Ordinal)
+                        && TrySetProperty(bandObj, bandObj.GetType(), "Height", requestedHeight))
+                    {
+                        anyChange = true;
+                        appliedAssignments++;
+                    }
+
                     var items = GetCollection(bandObj, "Items", "Elements", "Controls", "Components");
                     if (items == null) continue;
                     if (ApplyRequestedControlOrder(items, requestedBlock))
@@ -580,6 +604,29 @@ namespace GxMcp.Worker.Helpers
                 Logger.Error("ReportLayoutHelper.WriteLayout Error: " + ex.Message);
                 return false;
             }
+            finally
+            {
+                _layoutOwner = null;
+            }
+        }
+
+        // The reference a bound control shows ("&var" or an attribute name); "(none)" means unbound.
+        private static string ReferenceIdentity(XElement control)
+        {
+            string reference = control.Attribute("AttributeReference")?.Value;
+            return string.IsNullOrWhiteSpace(reference) || reference == "(none)" ? null : reference;
+        }
+
+        // With a baseline only a block whose Height the caller actually changed is written back, as
+        // for controls; the projection is lossy, so reapplying every block would reset untouched ones.
+        private static bool HasBlockHeightChanged(XElement requestedBlock, XDocument baselineDoc)
+        {
+            if (baselineDoc == null) return true;
+            string identity = GetXmlIdentity(requestedBlock, "ControlName", "Name");
+            var baselineBlock = baselineDoc.Descendants("PrintBlock")
+                .FirstOrDefault(b => string.Equals(GetXmlIdentity(b, "ControlName", "Name"), identity, StringComparison.OrdinalIgnoreCase));
+            return baselineBlock == null
+                || !string.Equals(baselineBlock.Attribute("Height")?.Value, requestedBlock.Attribute("Height")?.Value, StringComparison.Ordinal);
         }
 
         public static bool RenamePrintBlock(KBObjectPart part, string currentName, string newName, bool persist = true)
@@ -1109,11 +1156,45 @@ namespace GxMcp.Worker.Helpers
             return n.IndexOf("Reference", StringComparison.OrdinalIgnoreCase) >= 0 && !propertyType.IsEnum;
         }
 
+        // issue #361: the owning object of the layout being written, so an AttributeReference can be
+        // resolved to its Variable or Attribute. The string constructor of the SDK reference does not
+        // resolve names, which left every new variable-bound control as "(none)".
+        [ThreadStatic] private static KBObject _layoutOwner;
+
+        private static object BuildTypedReference(string value, Type propertyType)
+        {
+            var owner = _layoutOwner;
+            if (owner == null || !string.Equals(propertyType.Name, "AttributeVariableReference", StringComparison.Ordinal)) return null;
+
+            object typed;
+            if (value.StartsWith("&", StringComparison.Ordinal))
+            {
+                string name = value.Substring(1);
+                var variables = owner.Parts.Get<global::Artech.Genexus.Common.Parts.VariablesPart>();
+                typed = variables?.Variables.FirstOrDefault(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                typed = global::Artech.Genexus.Common.Objects.Attribute.Get(owner.Model, value);
+            }
+            if (typed == null) return null;
+
+            var ctor = propertyType.GetConstructors().FirstOrDefault(c =>
+            {
+                var pars = c.GetParameters();
+                return pars.Length == 1 && pars[0].ParameterType.IsInstanceOfType(typed);
+            });
+            return ctor?.Invoke(new[] { typed });
+        }
+
         private static object BuildReferenceValue(string value, Type propertyType)
         {
             if (string.IsNullOrWhiteSpace(value) || propertyType == null) return null;
             try
             {
+                object typedReference = BuildTypedReference(value, propertyType);
+                if (typedReference != null) return typedReference;
+
                 object instance = null;
                 foreach (var ctor in propertyType.GetConstructors())
                 {
@@ -1830,6 +1911,19 @@ namespace GxMcp.Worker.Helpers
                 if (p != null) return p.GetValue(target, null) as System.Collections.IEnumerable;
             }
             return null;
+        }
+
+        /// <summary>
+        /// Marks a report part's layout dirty after the part was restored wholesale (save-as, issue
+        /// #406), so the next save persists it. Mutations through this helper already do this.
+        /// </summary>
+        internal static void MarkLayoutDirty(KBObjectPart part)
+        {
+            if (part == null) return;
+            var partType = part.GetType();
+            var layoutProp = partType.GetProperty("MyLayout", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)
+                          ?? partType.GetProperty("Layout", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            TryMarkLayoutDirty(part, layoutProp?.GetValue(part, null));
         }
 
         private static void TryMarkLayoutDirty(KBObjectPart part, object layout)

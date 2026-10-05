@@ -1,241 +1,13 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.10.0",
-  "tag": "v3.10.0",
-  "collectedAtUtc": "2026-10-02T16:11:29.5251327Z",
+  "version": "3.11.1",
+  "tag": "v3.11.1",
+  "collectedAtUtc": "2026-10-05T03:57:23.4204760Z",
   "issues": [
     {
-      "number": 331,
-      "title": "[Bug] genexus_properties action=get with a single name always fails with InvalidBatchTargets (3.9.4)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/331",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 332,
-      "title": "[Bug] genexus_wwp action=list throws NullReferenceException when name is the WebPanel instead of the WorkWithPlus host (follow-up to #330)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/332",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 333,
-      "title": "[Bug] Worker pool eviction can select a busy Worker when opening another KB",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/333",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 334,
-      "title": "[Bug] inspect reads live SDK objects on Task.Run and ignores section timeout completion",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/334",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 335,
-      "title": "[Reliability] Shared WorkerHost needs broker-owned memory and SDK-stall supervision",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/335",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 336,
-      "title": "[Bug] Resource update notifications do not advance Gateway semantic cache revisions",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/336",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 337,
-      "title": "[Perf] Lite indexing performs a growing-list duplicate scan for every object",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/337",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 338,
-      "title": "[Perf] Source inserts repeatedly recompute full-catalog storage and FullSource budgets",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/338",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 339,
-      "title": "[Perf] Source coverage checks and warm load repeatedly read and decompress stored content",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/339",
-      "state": "open",
-      "labels": [
-        "enhancement",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 340,
-      "title": "[Perf] First-touch warmup is claimed process-wide and runs an unscoped source search",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/340",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 341,
-      "title": "[Reliability] Bound effective command queues and prevent cross-priority starvation",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/341",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 342,
-      "title": "[Reliability] Read logs off the SDK STA and distinguish transport liveness from SDK health",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/342",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 343,
-      "title": "[Perf] Detailed caller-site analysis has no bounded scan or continuation contract",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/343",
-      "state": "open",
-      "labels": [
-        "enhancement",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 344,
-      "title": "[Perf] Reclaim stale trigram postings and add Worker memory budgets for large KBs",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/344",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 345,
-      "title": "[Perf] Incremental snapshot publication copies clean shards and rewrites accumulated checkpoints",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/345",
-      "state": "open",
-      "labels": [
-        "enhancement",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 346,
-      "title": "[Perf] Cursor and deep-offset listings sort the complete candidate set for every page",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/346",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 347,
-      "title": "[Reliability] A valid oversized shared Worker response stops the broker for all clients",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/347",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 348,
-      "title": "[Bug] release-preflight.ps1: o motivo da fase que falhou não chega ao release-status.json",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/348",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 349,
-      "title": "[Feature] WorkWithPlus PatternInstance: support structural edits (add / move / remove layout elements) via genexus_wwp",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/349",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 350,
-      "title": "[Bug] PatternInstance: prévia de patch aprova texto que full dryRun recusa no preflight estrutural",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/350",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 352,
-      "title": "[Docs/DX] Corrigir receita e exemplos de PatternInstance e evitar recomendação de reapply bloqueado",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/352",
-      "state": "open",
-      "labels": [
-        "bug",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 353,
-      "title": "[Discussão] Há uma rota candidata de regeneração headless do WorkWith padrão no GeneXus 18?",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/353",
+      "number": 351,
+      "title": "[Feature] Há caminho SDK para acrescentar filtros de seleção ao WorkWith padrão no GeneXus 18?",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/351",
       "state": "open",
       "labels": [
         "question",
@@ -244,9 +16,71 @@
       "milestone": null
     },
     {
-      "number": 354,
-      "title": "[Bug] kb_diff reports success for missing inventories and misses same-metadata content changes",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/354",
+      "number": 361,
+      "title": "[Bug] Report (Procedure) Layout: import_part leaves variable-bound controls \"(none)\", re-import duplicates them, PrintBlock Height is ignored; add_report_control / set_property cannot fix it",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/361",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 367,
+      "title": "[Bug] Capacity eviction can still stop a Worker running an async build or a timed-out command",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/367",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 372,
+      "title": "[Perf] Worker memory budgets for large KBs are still missing (second half of #344)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/372",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 375,
+      "title": "[Reliability] A valid shared Worker response above 16 MiB still stops the broker for every client (deferred part of #347)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/375",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 385,
+      "title": "[Feature/Bug] Lacunas que obrigaram trabalho manual na IDE: Query, coleção, save_as, modo texto de relatório, WWP, diagnósticos de build",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/385",
+      "state": "open",
+      "labels": [
+        "duplicate",
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 404,
+      "title": "[Feature] A Query object's structure cannot be read or written (parameters/query elements/output formats)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/404",
+      "state": "open",
+      "labels": [
+        "enhancement",
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 406,
+      "title": "[Bug] save_as fails cloning part 'Layout' for a report Procedure (regression from the #118 hardening)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/406",
       "state": "open",
       "labels": [
         "bug",
@@ -255,19 +89,9 @@
       "milestone": null
     },
     {
-      "number": 355,
-      "title": "[Bug] Gateway queue metrics discard Worker queue time and include startup waiting",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/355",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 356,
-      "title": "[Feature] Bounded read-only discovery across an explicit set of KBs",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/356",
+      "number": 408,
+      "title": "[Feature] WorkWithPlus/PatternInstance: a new control element (combo, query viewer) cannot be added via import_part",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/408",
       "state": "open",
       "labels": [
         "enhancement",
@@ -276,9 +100,9 @@
       "milestone": null
     },
     {
-      "number": 357,
-      "title": "[Feature] Conditional object-part reads to avoid retransmitting unchanged source",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/357",
+      "number": 411,
+      "title": "[Enhancement] A build does not warn that an internal callee's generated .cs is stale (deferred item from #409)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/411",
       "state": "open",
       "labels": [
         "enhancement",
@@ -287,20 +111,9 @@
       "milestone": null
     },
     {
-      "number": 358,
-      "title": "[Perf/Test] Add a reproducible synthetic multi-KB scale regression lane",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/358",
-      "state": "open",
-      "labels": [
-        "enhancement",
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 359,
-      "title": "[Bug] apply_pattern: primeiro apply em Transaction retorna PatternApplied mas não gera os objetos WW (directAttach / InvoiceStyle1); worker recarregado gera WW com user controls não resolvidos",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/359",
+      "number": 414,
+      "title": "[Bug] User action gxobject is written as <object GUID>-<bare name>; the IDE stores <type GUID>-<qualified name>",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/414",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -308,12 +121,131 @@
       "milestone": null
     },
     {
-      "number": 360,
-      "title": "[Bug] WebForm control properties can't be set via MCP on a plain WebPanel (e.g. TextBlock Format = Raw HTML)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/360",
+      "number": 415,
+      "title": "[Bug] add_user_action only finds TableActions or a table that already holds an action, and TableActions is always ambiguous on a transaction WWP",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/415",
       "state": "open",
       "labels": [
-        "bug",
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 416,
+      "title": "[Bug] genexus_versioning undo reports UndoFailed for a part it restored",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/416",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 417,
+      "title": "[Bug] Variables DSL drops decimals: NUMERIC(19,2) is written as NUMERIC(19)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/417",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 418,
+      "title": "[Bug] A build the Worker already finished can keep the lifecycle FIFO blocked; later builds stay queued indefinitely",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/418",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 419,
+      "title": "[Bug] A failed native WorkWithPlus write reports only \"Exception has been thrown by the target of an invocation\"",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/419",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 420,
+      "title": "[Feature] genexus_wwp: add a grid over an SDT collection to a WorkWithPlus instance (with the typed attributes it needs)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/420",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 421,
+      "title": "[Feature] genexus_wwp add_user_action: a button that opens an object (callObject, popup, parameters)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/421",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 422,
+      "title": "[Feature] genexus_dfd: entity-relationship diagram of a Transaction/Table from the SDK's own table relations",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/422",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 423,
+      "title": "[Feature] genexus_impact: affected set with a dependencies-first rebuild order and cycle detection, instead of a heuristic risk score",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/423",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 424,
+      "title": "[Feature] genexus_object_context: one object's identity, references and data model in a single call",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/424",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 425,
+      "title": "[Feature] genexus_structure: read and set \"Show in Default Forms\" per Transaction attribute",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/425",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 426,
+      "title": "[Feature] genexus_wwp list_tabs / tab_schema: what a WWP instance has and what the pattern allows, before add_tab",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/426",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 427,
+      "title": "[Feature] genexus_security audit_object: fast, in-memory OWASP surface audit of a single object",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/427",
+      "state": "open",
+      "labels": [
         "fixed-pending-release"
       ],
       "milestone": null
