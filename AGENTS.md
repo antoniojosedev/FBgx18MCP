@@ -298,6 +298,23 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   remain separate. Follow with the semantic coherence search required by the
   global pre-push rules; do not treat mechanical `exit 0` as authorization to
   push.
+- **Fork policy — report, do not patch (this fork):** A pre-push finding,
+  mechanical or semantic, that points at upstream-authored code is reported and
+  filed as an issue in `lennix1337/Genexus18MCP` (prefer `pt-BR`, per the issue
+  rules above); the local tree is left untouched and the routine ends at
+  diagnosis, reproduction evidence and a proposed change. Writing anything is a
+  separate, explicitly approved step. The class this fork does fix locally is
+  what the fork itself introduced or owns by construction:
+  `scripts/Invoke-PrePushMechanicalChecks.ps1` and its `scripts/tests/`
+  coverage, the `LOCAL POLICY` block below, and fork-local regressions.
+  Attribute before acting. `git log upstream/main..HEAD -- <file>` counts the
+  fork's own commits on a path; `git show upstream/main:<file>` shows whether
+  the offending bytes already exist upstream. A `git diff --check
+  origin/main..HEAD` report mixes both cases, because content that arrived
+  through a merge is measured against this fork's older `origin/main` and reads
+  as local. Fixing an upstream defect here is not a resolution — it only hides
+  it from the maintainer. `pushReadiness=blocked` caused by an upstream defect
+  is then a correct terminal state, not a backlog item.
 - Inspect the actual input/request/route/function/query/response path before
   fixing behavior. Add a regression test when technically viable.
 - Edit tracked text with the file-editing tool, not by piping it through a shell:

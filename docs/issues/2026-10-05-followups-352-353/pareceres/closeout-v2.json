@@ -1,0 +1,114 @@
+{
+  "closeoutReady": true,
+  "blockingReasons": [],
+  "requiresPreferredOffer": false,
+  "hadPreferredReviewers": true,
+  "manualReviewerSelection": false,
+  "preferredReviewersOfferState": "not_applicable",
+  "roundId": "followups-352-353-v2",
+  "diversityState": "panelReady",
+  "vNextState": "resubmitted",
+  "resubmissionDeclinedBy": "",
+  "resubmissionDeclineReason": "",
+  "selectedReviewers": [
+    "opencode -> commandcode/deepseek/deepseek-v4.1-flash",
+    "opencode -> commandcode/stealth/space-bunny-alpha",
+    "codex -> openai/gpt-6.1-sol",
+    "claude-code -> anthropic/claude-opus-5-5",
+    "opencode -> commandcode/meta/muse-spark-1.3-contributor"
+  ],
+  "expectedPreferredReviewerStates": [
+    {
+      "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+      "backend": "opencode",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "opencode|commandcode/deepseek/deepseek-v4.1-flash|primary|"
+    },
+    {
+      "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+      "backend": "opencode",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "opencode|commandcode/stealth/space-bunny-alpha|primary|"
+    },
+    {
+      "targetModelKey": "openai/gpt-6.1-sol",
+      "backend": "codex",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "codex|openai/gpt-6.1-sol|primary|"
+    },
+    {
+      "targetModelKey": "anthropic/claude-opus-5-5",
+      "backend": "claude-code",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "claude-code|anthropic/claude-opus-5-5|primary|"
+    },
+    {
+      "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+      "backend": "opencode",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "opencode|commandcode/meta/muse-spark-1.3-contributor|primary|"
+    }
+  ],
+  "preferredReviewerStates": [
+    {
+      "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+      "backend": "opencode",
+      "family": "deepseek",
+      "state": "responded",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": true,
+      "effortApplied": "unset"
+    },
+    {
+      "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+      "backend": "opencode",
+      "family": "stealth",
+      "state": "error",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": false,
+      "effortApplied": "unset"
+    },
+    {
+      "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+      "backend": "opencode",
+      "family": "meta",
+      "state": "responded",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": true,
+      "effortApplied": "unset"
+    },
+    {
+      "targetModelKey": "openai/gpt-6.1-sol",
+      "backend": "codex",
+      "family": "",
+      "state": "skippedByHumanDecision",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": false,
+      "effortApplied": "unsupported"
+    },
+    {
+      "targetModelKey": "anthropic/claude-opus-5-5",
+      "backend": "claude-code",
+      "family": "",
+      "state": "skippedByHumanDecision",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": false,
+      "effortApplied": "unsupported"
+    }
+  ],
+  "effectivePreferredPath": "C:\\Users\\ANTONIOJOSE\\AppData\\Local\\xpz-llm-delegate\\preferred-reviewers.codex.json",
+  "preferenceSource": "orchestrator",
+  "requiredUserPrompt": null,
+  "receiptAddendum": "Curadoria de revisores preferidos: not_applicable; motivo=lista preferida ja resolvida no inicio da rodada Estados dos revisores preferidos: registrados=5. Estado da vN+1: vNextState=resubmitted. preferenceSource=orchestrator; effectivePreferredPath=C:\\Users\\ANTONIOJOSE\\AppData\\Local\\xpz-llm-delegate\\preferred-reviewers.codex.json.",
+  "note": "Fechamento consultivo/deterministico da revisao por pares; nao grava preferencia, nao decide autorizacao e nao recalcula diversidade. Se closeoutReady=false, nao encerrar a rodada nem emitir recibo final sem antes apresentar requiredUserPrompt."
+}

@@ -1,0 +1,45 @@
+{
+  "floor": 2,
+  "panelReady": true,
+  "state": "panelReady",
+  "distinctFamiliesAllow": [
+    "deepseek",
+    "openai",
+    "meta"
+  ],
+  "distinctFamiliesPotential": [
+    "deepseek",
+    "openai",
+    "meta"
+  ],
+  "dispatchable": [
+    {
+      "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+      "family": "deepseek",
+      "backend": "opencode"
+    },
+    {
+      "targetModelKey": "openai/gpt-6.1-sol",
+      "family": "openai",
+      "backend": "codex"
+    },
+    {
+      "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+      "family": "meta",
+      "backend": "opencode"
+    }
+  ],
+  "askToAuthorize": [],
+  "authorFamily": "openai",
+  "authorFamilyInPanel": true,
+  "fallbackLabel": null,
+  "droppedUnknownFamilies": [
+    {
+      "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+      "resolvedFamily": "stealth",
+      "backend": "opencode"
+    }
+  ],
+  "unknownFamiliesPresent": true,
+  "note": "Consultivo; NAO e autorizacao. Familia = Criador do Modelo via Get-LlmDelegateTargetFamily(targetModelKey); so criadores em Test-LlmDelegateFamilyKnown contam no piso. family de entrada e eco. hasFallbackEvidence exige despacho efetivo no elo de cadeia."
+}
