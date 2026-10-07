@@ -23,6 +23,35 @@ namespace GxMcp.Worker.Helpers
             return partClassFullName.Contains("ReportPart") || partClassFullName.Contains("LayoutPart");
         }
 
+        internal const string TextModeProperty = "RPT_TEXT_MODE";
+
+        internal static bool IsTextModeProperty(string name)
+            => string.Equals(name?.Trim(), TextModeProperty, StringComparison.OrdinalIgnoreCase);
+
+        internal static object GetTextModeContainer(object part)
+        {
+            var layout = ReflectionHelper.TryGetMember(part, "MyLayout") ?? ReflectionHelper.TryGetMember(part, "Layout");
+            if (ReflectionHelper.TryGetPropertyBagValue(layout, TextModeProperty) != null) return layout;
+            return ReflectionHelper.TryGetPropertyBagValue(part, TextModeProperty) != null ? part : null;
+        }
+
+        internal static void AppendTextModeProjection(XElement root, object container)
+        {
+            var value = ReflectionHelper.TryGetPropertyBagValue(container, TextModeProperty);
+            if (value != null) root.SetAttributeValue(TextModeProperty, value.ToString());
+        }
+
+        internal static void SetTextMode(object container, string value)
+        {
+            if (!bool.TryParse(value, out bool requested))
+                throw new InvalidOperationException("RPT_TEXT_MODE requires True or False.");
+            if (container == null || ReflectionHelper.TryGetPropertyBagValue(container, TextModeProperty) == null
+                || !ReflectionHelper.TrySetPropertyBagValue(container, TextModeProperty, requested)
+                || !bool.TryParse(ReflectionHelper.TryGetPropertyBagValue(container, TextModeProperty)?.ToString(), out bool actual)
+                || actual != requested)
+                throw new InvalidOperationException("RPT_TEXT_MODE could not be applied and read back.");
+        }
+
         public static string ReadLayout(KBObjectPart part)
         {
             try
@@ -41,7 +70,9 @@ namespace GxMcp.Worker.Helpers
                 var bands = bandsProp.GetValue(layout, null) as System.Collections.IEnumerable;
                 if (bands == null) return null;
 
-                return GenerateVisualXmlFromBands(bands, layout);
+                var root = XElement.Parse(GenerateVisualXmlFromBands(bands, layout));
+                AppendTextModeProjection(root, GetTextModeContainer(part));
+                return root.ToString();
             }
             catch (Exception ex)
             {
@@ -195,6 +226,15 @@ namespace GxMcp.Worker.Helpers
                             }
                         }
 
+                        // The SDK exposes the font as a single Font object; project its parts so
+                        // callers can read and write them as FontName/FontSize.
+                        if (iType.GetProperty("Font", BindingFlags.Public | BindingFlags.Instance)?.GetValue(item, null) is System.Drawing.Font sdkFont)
+                        {
+                            el.SetAttributeValue("Font", FontHelper.Project(sdkFont));
+                            el.SetAttributeValue("FontName", sdkFont.Name);
+                            el.SetAttributeValue("FontSize", sdkFont.Size.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                        }
+
                         var currentName = AttributeTypeApplier.GetPropertyUnambiguous(iType, "Name")?.GetValue(item, null)?.ToString();
                         var ctrlName = (AttributeTypeApplier.GetPropertyUnambiguous(iType, "ControlName")?.GetValue(item, null) ?? currentName)?.ToString();
                         if (!string.IsNullOrEmpty(ctrlName)) el.SetAttributeValue("ControlName", ctrlName);
@@ -251,6 +291,13 @@ namespace GxMcp.Worker.Helpers
                 var rootXml = visualDoc.Root;
                 if (rootXml != null && string.Equals(rootXml.Name.LocalName, "Report", StringComparison.OrdinalIgnoreCase))
                 {
+                    var textMode = rootXml.Attribute(TextModeProperty);
+                    if (textMode != null && HasRootAttributeChanged(rootXml, baselineDoc, TextModeProperty))
+                    {
+                        SetTextMode(GetTextModeContainer(part), textMode.Value);
+                        appliedAssignments++;
+                        anyChange = true;
+                    }
                     foreach (var entry in PageSetupProperties)
                     {
                         var attr = rootXml.Attribute(entry.Key);
@@ -1070,6 +1117,12 @@ namespace GxMcp.Worker.Helpers
                 }
             }
 
+            if (targetType == typeof(System.Drawing.Font))
+            {
+                // Accepts the get_tree "[Font: Name=..., Size=...]" projection and the FontConverter form.
+                return FontHelper.TryParse(value, out var fontSpec) ? FontHelper.ToFont(fontSpec) : null;
+            }
+
             if (targetType == typeof(System.Drawing.Color))
             {
                 try
@@ -1227,12 +1280,26 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
+        // Both public report mutation paths share validation and preservation of unspecified parts.
+        internal static System.Drawing.Font ComposeFont(System.Drawing.Font current, string propertyName, string rawValue)
+            => FontHelper.Compose(current, propertyName, rawValue);
+
         private static bool TrySetProperty(object instance, Type instanceType, string sdkPropertyName, string rawValue)
         {
             if (instance == null || instanceType == null || string.IsNullOrWhiteSpace(sdkPropertyName))
             {
                 return false;
             }
+            var fontProp = instanceType.GetProperty("Font", BindingFlags.Public | BindingFlags.Instance);
+            if (fontProp != null && fontProp.CanWrite && fontProp.PropertyType == typeof(System.Drawing.Font)
+                && FontHelper.IsFontProperty(sdkPropertyName))
+            {
+                var composed = ComposeFont(fontProp.GetValue(instance, null) as System.Drawing.Font, sdkPropertyName, rawValue);
+                if (composed == null) return false; // Invalid font requests must not reach dynamic setters.
+                fontProp.SetValue(instance, composed);
+                return true;
+            }
+
             string normalizedForSdk = ColorHelper.IsColorAttributeName(sdkPropertyName)
                 ? ColorHelper.NormalizeColorTokenForSdkWrite(rawValue)
                 : rawValue;
@@ -1324,6 +1391,21 @@ namespace GxMcp.Worker.Helpers
                             break;
                         }
                     }
+                }
+            }
+
+            // The requested type must win over "any control in the band": cloning a
+            // different type silently produced a ReportLabel for a requested ReportAttribute.
+            if (template == null && !string.IsNullOrWhiteSpace(typeName))
+            {
+                try
+                {
+                    var exactType = FindSdkControlType(typeName);
+                    if (exactType != null) return Activator.CreateInstance(exactType);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"ReportLayoutHelper.CreateBandControlClone: direct construction of '{typeName}' failed: {ex.Message}");
                 }
             }
 
@@ -1478,6 +1560,9 @@ namespace GxMcp.Worker.Helpers
         {
             if (currentValue == null && rawValue == null) return true;
             if (currentValue == null || rawValue == null) return false;
+
+            // The ToString() projection of a Font drops its style, so a string match can hide a style change.
+            if (FontHelper.IsFontAttributeName(aName) || FontHelper.IsFontAttributeName(sdkPropName)) return false;
 
             if (string.Equals(currentValue, rawValue, StringComparison.Ordinal)) return true;
 

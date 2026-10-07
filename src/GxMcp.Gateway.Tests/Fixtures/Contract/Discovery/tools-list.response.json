@@ -2703,6 +2703,10 @@
             "description": "Optional report text alignment.",
             "type": "string"
           },
+          "appendPrintToSource": {
+            "description": "add_printblock: also insert `print…",
+            "type": "boolean"
+          },
           "baseVersion": {
             "description": "Version token from get_tree; required…",
             "type": "string"
@@ -2831,7 +2835,7 @@
           },
           "rollbackOnFailure": {
             "default": true,
-            "description": "Restore the pre-write report layout…",
+            "description": "Request rollback on verification…",
             "type": "boolean"
           },
           "top": {
@@ -3771,6 +3775,11 @@
           "path": {
             "description": "Module/folder-qualified object path…",
             "type": "string"
+          },
+          "refresh": {
+            "default": false,
+            "description": "Bypass response caches, invalidate the…",
+            "type": "boolean"
           },
           "targets": {
             "items": {
