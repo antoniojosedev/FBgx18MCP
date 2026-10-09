@@ -329,8 +329,14 @@ namespace GxMcp.Worker.Services
                 ?? invalidRuleHint
                 ?? (string.IsNullOrWhiteSpace(detailText) ? null : detailText);
 
-            var nextSteps = new JArray(
-                McpResponse.NextStep(
+            bool copyModelLock = WritePolicy.IsCopyModelWriteLock(enrichedError)
+                || WritePolicy.IsCopyModelWriteLock(sdkMessages);
+            var nextSteps = copyModelLock
+                ? new JArray(McpResponse.NextStep(
+                    tool: "genexus_read",
+                    args: target != null ? new JObject { ["name"] = target, ["part"] = partName } : null,
+                    why: "Read the persisted state before retrying after the CopyModel lock is released."))
+                : new JArray(McpResponse.NextStep(
                     tool: "genexus_build",
                     args: target != null ? new JObject { ["target"] = target } : null,
                     why: "Building surfaces full SDK diagnostics including the exact line/column of the error."));
@@ -342,15 +348,16 @@ namespace GxMcp.Worker.Services
             if (!string.IsNullOrWhiteSpace(detailText)) extra["details"] = detailText;
             if (!string.IsNullOrWhiteSpace(sdkMessages)) extra["sdkMessages"] = sdkMessages;
             if (undeclaredVarsArr != null) extra["undeclaredVariables"] = undeclaredVarsArr;
+            if (copyModelLock) extra["conflictType"] = "CopyModel";
             extra["stackTrace"] = ex.StackTrace;
             if (issues != null) extra["issues"] = issues;
             if (!string.Equals(enrichedError, (ex.Message ?? string.Empty).Trim(), System.StringComparison.Ordinal))
                 extra["originalError"] = ex.Message;
 
             string errJson = McpResponse.Err(
-                code: "TransactionFailed",
+                code: copyModelLock ? "KbWriteLocked" : "TransactionFailed",
                 message: enrichedError,
-                hint: hint,
+                hint: copyModelLock ? "GeneXus holds a CopyModel write lock. Read the persisted object and retry only after that lock is released." : hint,
                 nextSteps: nextSteps,
                 target: target,
                 extra: extra);
@@ -1002,9 +1009,12 @@ namespace GxMcp.Worker.Services
                 // genexus_read this edit is based on. When present, the write is
                 // refused if the object changed since (StaleObject) — see the guard
                 // in the facade. Accept a couple of aliases for ergonomics.
-                BaseVersion = args["baseVersion"]?.ToString()
-                    ?? args["expectedVersion"]?.ToString()
-                    ?? args["versionToken"]?.ToString(),
+                BaseVersion = new[]
+                {
+                    args["baseVersion"]?.ToString(),
+                    args["expectedVersion"]?.ToString(),
+                    args["versionToken"]?.ToString()
+                }.FirstOrDefault(token => !string.IsNullOrWhiteSpace(token)),
                 AutoInjectVariables = args["autoDeclareVariables"]?.ToObject<bool?>()
                     ?? args["autoInjectVariables"]?.ToObject<bool?>()
                     ?? false,
@@ -1149,7 +1159,7 @@ namespace GxMcp.Worker.Services
                 // canonical per-target lock so in-process writers cannot pass an old token into
                 // WriteObjectInternal. External IDE writes still rely on the SDK transaction's
                 // locking semantics and the post-save evidence below.
-                if (!dryRun && !string.IsNullOrWhiteSpace(baseVersion))
+                if (!string.IsNullOrWhiteSpace(baseVersion))
                 {
                     string staleErr = CheckStaleVersion(target, partName, typeFilter, baseVersion);
                     if (staleErr != null)
@@ -1601,6 +1611,18 @@ namespace GxMcp.Worker.Services
                         rollbackOnFailure: rollbackOnFailure);
                 }
 
+                if (VariablesTextReceipt.Applies(partName)
+                    && GxMcp.Worker.Structure.PartAccessor.GetPart(obj, partName) is global::Artech.Genexus.Common.Parts.VariablesPart validationVariables)
+                {
+                    try { VariableInjector.ValidateVariablesText(validationVariables, decodedCode); }
+                    catch (ArgumentException ex)
+                    {
+                        return Models.McpResponse.Err(code: "VariablesDeclarationInvalid", message: ex.Message,
+                            target: target, extra: new JObject { ["savePathExercised"] = false,
+                                ["validationScope"] = "variables-dsl-types", ["persisted"] = false });
+                    }
+                }
+
                 if (dryRun)
                 {
                     var requestedPart = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, partName);
@@ -1642,17 +1664,34 @@ namespace GxMcp.Worker.Services
                             });
                     }
 
-                    return Models.McpResponse.Ok(
-                        target: target,
-                        code: "WriteDryRun",
-                        result: new JObject
+                    var preview = new JObject
+                    {
+                        ["part"] = partName,
+                        ["resolvedObject"] = obj.Name,
+                        ["resolvedType"] = obj.TypeDescriptor?.Name,
+                        ["versionToken"] = ComputeVersionToken(obj),
+                        ["details"] = "Part exists and pure syntax was checked; SDK save skipped.",
+                        ["verified"] = new JArray("inputReceived", "partExists", "pureSyntax"),
+                        ["validationScope"] = "pure",
+                        ["savePathExercised"] = false,
+                        ["persisted"] = false,
+                        ["implicitLifecycleActions"] = new JArray()
+                    };
+                    if (partName.Equals("Variables", StringComparison.OrdinalIgnoreCase)
+                        && requestedPart is global::Artech.Genexus.Common.Parts.VariablesPart variablesPart)
+                    {
+                        preview["validationScope"] = "variables-dsl-types";
+                        preview["details"] = "Variables declarations and type references were validated; SDK save and metadata verification were not exercised.";
+                        preview["verified"] = new JArray("inputReceived", "partExists", "variablesDsl", "typeReferences");
+                        string before = VariableInjector.GetVariablesAsText(variablesPart);
+                        preview["proposedChanges"] = new JObject
                         {
-                            ["part"] = partName,
-                            ["details"] = "Dry-run for non-pattern/visual parts: part exists and pure syntax was checked; SDK save skipped.",
-                            ["verified"] = new JArray("inputReceived", "partExists", "pureSyntax"),
-                            ["validationScope"] = "pure",
-                            ["savePathExercised"] = false
-                        });
+                            ["before"] = before,
+                            ["requested"] = decodedCode,
+                            ["inputDiffersFromCurrent"] = !string.Equals(before.Trim(), (decodedCode ?? string.Empty).Trim(), StringComparison.Ordinal)
+                        };
+                    }
+                    return Models.McpResponse.Ok(target: target, code: "WriteDryRun", result: preview);
                 }
 
                 // ... (rest of the log)
@@ -1862,6 +1901,11 @@ namespace GxMcp.Worker.Services
                     );
                 }
 
+                if (part is global::Artech.Genexus.Common.Parts.EXOStructurePart)
+                    return Models.McpResponse.Err(code: "ExternalObjectTypedAuthoringRequired",
+                        message: "Generic part deserialization does not import External Object member collections.",
+                        hint: "Use genexus_authoring action=add_external_method and verify with genexus_read part=EXOStructure or an official XPZ export.", target: target);
+
                 // Issue #24 — skip the no-change short-circuit when a prior write to this
                 // part persisted empty. The in-memory Source still holds the content the
                 // SDK dropped, so it would falsely compare equal to the incoming code and
@@ -1875,6 +1919,14 @@ namespace GxMcp.Worker.Services
                         target: target,
                         code: "WriteNoChange",
                         result: new JObject { ["details"] = "No change" });
+                }
+
+                if (part is global::Artech.Genexus.Common.Parts.VariablesPart unchangedVariables)
+                {
+                    if (VariablesDeclarationSetEquals(VariableInjector.GetVariablesAsText(unchangedVariables), decodedCode))
+                        return Models.McpResponse.Ok(target: target, code: "WriteNoChange",
+                            result: new JObject { ["details"] = "Variables DSL is unchanged; no setters or Save were executed.",
+                                ["savePathExercised"] = false, ["verificationScope"] = "variables-dsl", ["metadataVerified"] = false });
                 }
 
                 // Nirvana v19.4: Auto-Healing (Pre-save validation)

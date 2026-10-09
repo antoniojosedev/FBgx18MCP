@@ -232,7 +232,9 @@ namespace GxMcp.Gateway.Tests
             //   add_user_action callObject/popup/parameters inputs, and genexus_security
             //   audit_object. The alternative was leaving those capabilities to free-text
             //   arguments that clients cannot validate. Measured ~35685 tokens; ~315 headroom.
-            Assert.True(approxTokens < 36000, $"tool_definitions.json is ~{approxTokens} tokens; budget 36000.");
+            // PRs #320/#443-#446 add an opt-in K2B tool and typed concurrency/SDT/WWP/EXO contracts.
+            // Combined schema measures ~36759 tokens; existing guidance remains available.
+            Assert.True(approxTokens < 37000, $"tool_definitions.json is ~{approxTokens} tokens; budget 37000.");
         }
 
         [Theory]
@@ -248,10 +250,12 @@ namespace GxMcp.Gateway.Tests
         // 83000 -> 86500 for issues #420-#427 (see the token budget above: three read-only
         // tools, the genexus_wwp add_grid/list_tabs/tab_schema/callObject inputs and
         // genexus_security audit_object). Measured 86107 bytes.
-        [InlineData("all", 86500)]
+        // 86500 -> 86700 for property timeout reconciliation and optimistic set fields.
+        // Combined K2B/SDT/WWP/EXO/property contracts: all=88148, authoring=61238 bytes.
+        [InlineData("all", 89000)]
         [InlineData("core", 25000)]
         [InlineData("standard", 60000)]
-        [InlineData("authoring", 60000)]
+        [InlineData("authoring", 62500)]
         [InlineData("devops", 50000)]
         [InlineData("ui", 50000)]
         [InlineData("db", 40000)]

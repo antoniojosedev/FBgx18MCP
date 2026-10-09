@@ -382,7 +382,7 @@ namespace GxMcp.Gateway
                 "Read or write the structure/data-model of GeneXus objects.\n\n" +
                 "## Actions\n" +
                 "- `get_visual` — returns logical hierarchy of Transaction levels/attributes or SDT structure. Use `type` (e.g. `Transaction`) to disambiguate name collisions.\n" +
-                "- `update_visual` — replace complete logical structure of a Transaction or SDT. Atomic snapshot, verification, and rollback on divergence. A Transaction attribute item carries `showInDefaultForms` (boolean: the row's \"Show in Default Forms\"); `get_visual` reports it and `update_visual` changes it only when it differs.\n" +
+                "- `update_visual` — replace a Transaction structure, or update an SDT with `payload.mode=replace|add`. For SDTs, `expectedVersion` is required, replace previews all omitted-member removals and requires `allowRemoval=true` to apply them, while add preserves existing SDK items. Saves are re-read and verified; failures trigger rollback from the matching native revision. A Transaction attribute item carries `showInDefaultForms` (boolean: the row's \"Show in Default Forms\"); `get_visual` reports it and `update_visual` changes it only when it differs.\n" +
                 "- `move_attribute` — reorder an attribute within a Transaction level using `before`, `after`, or `position`. Nested levels supported via `levelPath`.\n" +
                 "- `remove_attribute` — remove an attribute from a Transaction level by name.\n" +
                 "- `get_indexes` / `create_index` / `drop_index` — inspect and manage indexes on physical tables or transactions.\n" +
@@ -416,10 +416,10 @@ namespace GxMcp.Gateway
                 "# genexus_versioning\n\n" +
                 "KB version history, git integration, and rollback umbrella.\n\n" +
                 "## Actions\n" +
-                "- `history_list` — list SDK versions plus KB-scoped edit snapshots; legacy shared `.history` files are visible but marked non-restorable. Pass `part` (or legacy alias `partName`) to scope a part.\n" +
-                "- `history_get` — retrieve source of a specific historic `versionId` and requested part; unsupported parts are rejected explicitly.\n" +
+                "- `history_list` — list SDK versions plus KB-scoped edit snapshots; legacy shared `.history` files are visible but marked non-restorable. Omit `part` to list SDK revisions; passing it lists snapshots of that part.\n" +
+                "- `history_get` — retrieve source of a specific historic `versionId` and requested part. `part=SDTStructure` returns the typed structure of an SDT revision.\n" +
                 "- `history_save` — explicitly snapshot the current part under the active KB's isolated snapshot root.\n" +
-                "- `history_restore` — restore a prior KB-scoped snapshot or the explicit SDK `versionId`; pass `discard: true` for IDE 'Discard changes' parity. Legacy shared snapshots are reported but never selected automatically.\n" +
+                "- `history_restore` — restore a prior KB-scoped snapshot or explicit SDK `versionId`. For `part=SDTStructure`, supply `versionId`, `expectedVersion` from `get_visual`, and preview with `dryRun=true`; the native revision is copied and verified after save. Pass `discard: true` for IDE 'Discard changes' parity. Legacy shared snapshots are never selected automatically.\n" +
                 "- `undo` — revert the last N edits performed via MCP.\n" +
                 "- `time_travel` — recover object bytes from past git commits (`at: '<sha/ISO>'`).\n" +
                 "- `blame` — git blame annotations for object parts or files.\n" +
@@ -584,7 +584,8 @@ namespace GxMcp.Gateway
                 "- `get` — read current property values and version information. Filter with `propertyName` (name, comma-separated list, or * wildcard), `propertyNames[]`, `query` (search filter), or `projection` (minimal, standard, full; default full). `targets: [{name, type?}]` reads up to 100 objects in input order; each result has its own status/error.\n" +
                 "- `set` — assign one or more named properties and verify the saved values.\n" +
                 "- `move` — move an object to another module or folder.\n\n" +
-                "`get` is read-only. `set` and `move` mutate the KB; use the version token when a concurrent IDE edit must not be overwritten.\n",
+                "After a timed-out `set`, call `get` with `reconcileTimedOutWrite: true` and all affected `propertyNames`. It reads persisted values by native identity, returns `versionToken`, and clears the write fence only after confirming every affected property. On a WebPanel, `MainProgram` reads and writes the SDK's `IsMain` property; the read reports `nativeName`. If neither property is exposed, the response explains the limitation and leaves the fence in place.\n\n" +
+                "`set` accepts `dryRun`, `expectedVersion`, and `rollbackOnFailure: true`; batch writes save once, verify every property and preserve the complete object snapshot on failure. No lifecycle operation or test runs implicitly.\n",
 
             ["genexus_authoring"] =
                 "# genexus_authoring\n\n" +
@@ -633,6 +634,16 @@ namespace GxMcp.Gateway
                 "- `wrap_in_fieldset` — wrap selected controls in a fieldset container.\n\n" +
                 "Every action mutates the layout. Prefer a read of the authoritative WebForm/PatternInstance first and verify the persisted tree after the write. Pass `baseVersion` and `rollbackOnFailure` for guarded persistence; a read-back mismatch is reported as persisted-but-unverified rather than silently restored. `dryRun` returns a bounded changed-fragment diff and the same descriptor transformation preview used by the real save.\n" +
                 "  The PatternInstance part is a property-edit route only. It never infers a layout reordering: the childrenOrderedList attribute and the other child-order metadata are owned by the pattern, and XML document order is not a reliable description of it, so changing them — or adding, removing or renaming nodes — is rejected as PatternMetadataChangeUnsupported / PatternStructureChangeUnsupported. Use the SDK pattern authoring actions for structural work.\n",
+
+            ["genexus_k2b_designer"] =
+                "# genexus_k2b_designer\n\n" +
+                "Read and edit an already-active K2B WebPanel Designer in the open GeneXus IDE. " +
+                "The IDE extension and MCP Worker must share GXMCP_K2B_IDE_PIPE, and the IDE must be started with GXMCP_K2B_IDE_KB set to the same KB.\n\n" +
+                "Use inspect or tree to obtain node paths and a version. Use preview with operation, path, and the fields required by that operation to validate a change. " +
+                "Then pass expectedVersion for set_property, add_node, move_node, or remove_node. Removal also requires confirm=true.\n\n" +
+                "The target WebPanel must be open with Designer active and free of unsaved changes. " +
+                "This tool cannot activate an inactive Designer or convert a legacy HW. " +
+                "After a native IDE save, reread the Designer to confirm persistence.\n",
 
             ["genexus_module"] =
                 "# genexus_module\n\n" +
@@ -740,13 +751,13 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `list` — read the current action groups and ordered actions.\n" +
                 "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n" +
-                "- `add_user_action` — add a form-level UserAction directly under a named form container (usually `TableActions`). The event is derived deterministically as `Do<actionName>`; do not pass a Procedure.\n" +
+                "- `add_user_action` — add a form-level UserAction under a named container. A missing `TableActions` is created under the unique `TableMain` (Empty WebPanel); other missing/ambiguous containers are errors. The event is `Do<actionName>`; do not pass a Procedure.\n" +
                 "- `add_tab`, `move_tab`, and `remove_tab` — edit WebPanel tabs and typed nested controls.\n" +
                 "- `set_table_type` — change only an existing WWP table's native `type` (`Regular` or `Responsive`) by path, preserving child identity and metadata with reread/rollback guards.\n" +
                 "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children; pass the PatternInstance `baseVersion` even for dryRun.\n" +
                 "- `move_grid_column` — move an existing attribute/variable column by verified identity, with optional `before`, position, caption and `baseVersion` (required even for dryRun).\n" +
                 "- `add_grid_variable` — add a presentation variable with a verified `variableReference` (`GUID-Name`), caption, Character/VarChar length and optional placement; unrelated bindings and metadata are preserved.\n\n" +
-                "- `add_grid` — add a grid over an SDT collection variable: `collection` (`&Lines`), `sdt`, `containerName` (a table), `columns` (item names or `{item, description}`), optional `deleteAction`. Every column is a `gridVariable` bound to an SDT item; the written grid is re-read and projected, and rolls back if a column, the SDT reference or the delete action is lost.\n" +
+                "- `add_grid` — add an SDT grid with `collection` (`&Lines`), `sdt`, `containerName`, `columns` (items or `{item, description}`), optional `deleteAction`. Omit collection/sdt for a variable grid: `gridName` defaults to Grid, `columns` are `{variable, basicType, length, decimals, description, readOnly}`. Numeric/string types require length; readOnly defaults true. Load rows in Grid.Load with Load. Preview, reread, projection and rollback guards apply to both modes.\n" +
                 "- `add_user_action` — with `callObject` (`Name` or `Type:Name`), optional `popup` and ordered `parameters`, the form button that opens another object; it has no derived `Do<actionName>` event and cannot be combined with `procedure`. `containerName` may be a path of named ancestors (`General/Table/Actions`) when a bare name repeats across tabs.\n" +
                 "- `list_tabs` / `tab_schema` — read-only: the instance's tabs (kind, position, key attributes, and the attributes all tabs of a kind share) and the pattern's own schema for `kind` grid|tabular|webcomponent; a missing pattern definition is a typed error, never an empty schema.\n" +
                 "- `replace_web_component_with_user_action` — use the U16 Patterns SDK to replace one existing form-level WebComponent with a UserAction DropDownComponent at an explicit path. The operation preserves the referenced Gxobject, snapshots the complete PatternInstance and parent projection, saves through the native element commands, re-reads, and rolls back on divergence.\n\n" +

@@ -103,12 +103,14 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_sandbox` | — | `create`, `remove` |
 | `genexus_worker_pool` | — | `warm_spares` |
 | `genexus_edit_form` | — | `add_textblock`, `add_button`, `set_visibility`, `remove_control`, `wrap_in_fieldset` |
+| `genexus_k2b_designer` | `inspect`, `tree`, `preview` | `set_property`, `add_node`, `move_node`, `remove_node` |
 | `genexus_module` | `list` (SDK identity/path-aware, deterministic), `list_modules_servers`, `search_modules_in_servers` | `install`, `install_builtin` (dryRun=true plans local dependencies/objects/exact versions; application verifies inventory, with no implicit lifecycle or automatic rollback), `update`, `package`, `publish`, `restore`, `add_modules_server` |
 | `genexus_gxserver` | `status`, `pending`, `ignored`, `conflicts`, `history`, `pipeline_list`, `pipeline_runs`, `pipeline_output` | `commit`, `update`, `lock`, `resolve`, `pipeline_run`, `pipeline_abort` |
 | `genexus_kb_version` | `list`, `changed_objects` (Design vs frozen, paginated, read-only) | `freeze`, `branch`, `set_active`, `revert` |
 | `genexus_browser` | `smoke`, `a11y`, `wcag`, `capture`, `cross`, `preview` | — |
 | `genexus_db` | `drift_check`, `drift_report`, `optimize_analyze`, `optimize_suggest`, `optimize_report`, `sql_ddl`, `sql_navigation`, `records_query`, `types_list`, `types_describe`, `types_validate`, `reorg_impact`, `reorg_preview` | `sample_data`, `records_insert`, `records_update`, `translations_import` |
 | `genexus_versioning` | `history_list`, `history_get`, `time_travel`, `blame`, `diff`, `diff_generated` | `history_save`, `history_restore`, `undo` |
+
 | `genexus_io` | `asset_find`, `asset_read`, `read_blob`, `ocr`, `validate_kb_text_files`, `validate_text_in_memory`, `list_text_files`, `text_mirror_status` | `asset_write`, `export_part`, `import_part`, `export_kb_to_text`, `import_text_to_kb`, `text_mirror_start`, `text_mirror_stop`, `text_mirror_catchup`, `text_mirror_set_references`, `delete_kb_objects`, `export_unified`, `screenshot_publish` |
 | `genexus_variable` | — | `add`, `delete`, `modify` (add/modify accept `dimensions=1|2` with positive `dimensionSizes`; reads expose the persisted fixed-size metadata) |
 | `genexus_telemetry` | `executions`, `watch_event`, `friction_tail`, `learning_report`, `logs`, `profile_analyze`, `profile_hotspots`, `profile_correlate` | `friction_append` |
@@ -118,6 +120,10 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_deploy` | `list_targets` | `deploy` |
 | `genexus_generator_reference` | `list`, `dry_run_add`, `dry_run_remove` | `add`, `remove` |
 | `genexus_wwp` | `list`, `settings_templates`, `settings_read`, `list_tabs`, `tab_schema` | `add_action`, `add_user_action`, `update_action`, `move_action`, `remove_action`, `add_tab`, `move_tab`, `remove_tab`, `set_table_type`, `add_grid_attribute`, `move_grid_column`, `add_grid_variable`, `add_grid`, `replace_web_component_with_user_action`, `settings_edit` |
+
+For SDTs, `genexus_structure update_visual` accepts `payload.mode=add|replace` and requires `expectedVersion`; replacement previews omitted-member removals and requires `allowRemoval=true` to apply them. `genexus_versioning history_get` reads a revision's `SDTStructure`, and `history_restore` previews or restores it with `versionId`, `expectedVersion`, native rollback, and post-save verification.
+
+`genexus_wwp add_grid` supports both SDT collections and basic-typed variable grids without a collection. Variable columns use `{variable, basicType, length, decimals, description, readOnly}`; `gridName` defaults to `Grid`. `add_user_action` creates a missing `TableActions` under exactly one `TableMain`, including Empty-template WebPanels. Both operations retain dry-run, optimistic version, native snapshots, independent reread, projection and rollback guards; neither runs KB lifecycle operations.
 
 Real-KB validation gate: `genexus_structure action=get_visual` with a homonymous
 target must be exercised against a KB that contains the relevant Transaction/Table
@@ -162,15 +168,17 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure | CheckSubtypes`; supports `type` disambiguation, `remove_attribute`, `move_attribute` |
 | `genexus_refactor` | active | `Refactor -> RenameObject | RenameAttribute | RenameVariable | ExtractProcedure | ExtractSubroutine | WWPSetCondition` |
 | `genexus_format` | active | `Formatting -> Format` |
-| `genexus_properties` | active | `Property -> Get | Set | Move`; `Get` accepts `targets: [{name, type?}]` for up to 100 ordered reads with per-target errors; move accepts `destination`/`folder`/`module`/`targetModule` and tolerates Folder-destination placement property echoes (issue #238) |
+| `genexus_properties` | active | `Property -> Get | Set | Move`; `Get` accepts `targets: [{name, type?}]` for up to 100 ordered reads with per-target errors, and `propertyNames` plus `reconcileTimedOutWrite` for an authoritative typed read with a version token after a timed-out set; `Set` accepts `dryRun` and `expectedVersion`, verifies persisted values after save, and rolls back partial writes; move accepts `destination`/`folder`/`module`/`targetModule` and tolerates Folder-destination placement property echoes (issue #238) |
 | `genexus_versioning` | active | Versioning umbrella: `History -> List | Get_Source | Save | Restore`, `Undo`, `TimeTravel`, `Blame`, `Diff` |
 | `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, Object Text batch `ExportKbToText | ImportTextToKb | ValidateKbTextFiles | ValidateTextInMemory | ListTextInMemory | DeleteKbObjects`, native SDK tree `src/`/`ref/` with incremental modes and sectioned `part=all`/`parts[]` documents, installed reference modules/packages routed to `ref/`, module metadata (`module.toml`) and optional official packages (`.opc`) and Transaction table projections (`#tables`), filesystem controls (`listOnly | skip | stopOnError | includeChildren | ignore | forceSave | rollbackOnFailure`), manifest/hash validation, watermark mirror (`Start | Stop | Status | Catchup | SetReferences`), `Object -> ExportText | ImportText` (`import_part` accepts `includePersistedText=true` for full response text), `Export -> Unified`, `ScreenshotPublish` |
 | `genexus_db` | active | Database umbrella: `DbDrift`, `DbOptimize`, `Analyze -> GetSQL / GetSqlForNavigation / GenerateSampleData`, typed Transaction records (`QueryRecords / InsertRecord / UpdateRecord`), `Types`, `ReorgImpact` |
 | `genexus_layout` | active | WebForm control tree, layout properties, printblock and report-control management; report fonts validate installed families and preserve unspecified components; report verification failures return recovery evidence without unsafe automatic restore |
 | `genexus_edit_form` | active | Semantic WebForm element manipulation |
+| `genexus_k2b_designer` | requires IDE bridge | Native editing of already-active K2B WebPanel Designers in the open GeneXus IDE; requires matching KB and pipe, an open clean document, and an expected version for writes |
 | `genexus_apply_pattern` | active | Pattern application for any installed pattern (registry discovered from `Packages\Patterns`), diagnose, and reapply on WorkWithPlus instances only (with no implicit WorkWithPlus fallback when `pattern` is omitted - headless reapply of any other pattern is refused as `PatternRouteUnsupported`), and WorkWithPlus action-group/form-action configuration |
 | `genexus_wwp` | active | Typed WorkWithPlus grid/form actions, tabs, nested controls, native table-type changes, grid attributes/variables, and native WebComponent-to-DropDownComponent replacement with preview, physical KB identity, parent/PatternInstance projection checks, concurrency checks, verification, and conditional rollback; an existing object without a WorkWithPlus instance returns `WWPInstanceNotFound` with `detectedPatterns` |
 | `genexus_security` | active | `Security -> audit_gam | scan_secrets | scan_native | audit_object` (native SDK scanner; in-memory single-object audit) |
+
 | `genexus_kb` | active | Multi-KB pool management, startup object, and environment switching |
 | `genexus_kb_version` | active | SDK `KBVersionHelper` model version tree and branch management; `changed_objects` provides a read-only Design-vs-frozen NEW/CHANGED inventory or stable `ChangedObjectsNotSupported` when the SDK surface is unavailable |
 | `genexus_gam` | active | SDK `IIntegratedSecurityService` GAM provisioning and deploy |

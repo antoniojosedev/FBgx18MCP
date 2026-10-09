@@ -395,7 +395,7 @@
             "type": "string"
           },
           "payload": {
-            "description": "add_external_method:{name,returnType?,p…",
+            "description": "add_external_method:{name,externalName?…",
             "type": "object"
           }
         },
@@ -2407,6 +2407,90 @@
     },
     {
       "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Full guidance: genexus://kb/tool-help/genexus_k2b_designer",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "default": "inspect",
+            "description": "Inspect the active Designer, read its…",
+            "enum": [
+              "inspect",
+              "tree",
+              "preview",
+              "set_property",
+              "add_node",
+              "move_node",
+              "remove_node"
+            ],
+            "type": "string"
+          },
+          "confirm": {
+            "description": "Required for remove_node.",
+            "type": "boolean"
+          },
+          "destination": {
+            "description": "Parent node path for move_node.",
+            "type": "string"
+          },
+          "expectedVersion": {
+            "description": "Version from inspect, tree, or preview;…",
+            "type": "string"
+          },
+          "index": {
+            "description": "Optional destination child index for…",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kb": {
+            "description": "Explicit KB alias.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Name of an open WebPanel with an active…",
+            "type": "string"
+          },
+          "nodeType": {
+            "description": "SDK node type offered by the Designer…",
+            "type": "string"
+          },
+          "operation": {
+            "description": "Mutation to validate when…",
+            "enum": [
+              "set_property",
+              "add_node",
+              "move_node",
+              "remove_node"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "Designer node path returned by tree;…",
+            "type": "string"
+          },
+          "property": {
+            "description": "Exact SDK property name for…",
+            "type": "string"
+          },
+          "value": {
+            "description": "Property value in the K2B SDK string…",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_k2b_designer"
+    },
+    {
+      "annotations": {
         "destructiveHint": false,
         "idempotentHint": false,
         "openWorldHint": false,
@@ -3518,7 +3602,7 @@
             "type": "string"
           },
           "baseVersion": {
-            "description": "move: opaque optimistic concurrency…",
+            "description": "set/move: opaque optimistic concurrency…",
             "type": "string"
           },
           "control": {
@@ -3538,8 +3622,12 @@
             "type": "string"
           },
           "dryRun": {
-            "description": "move: preview from/to and preserved…",
+            "description": "set/move: preview without persisting.",
             "type": "boolean"
+          },
+          "expectedVersion": {
+            "description": "set: versionToken from an authoritative…",
+            "type": "string"
           },
           "folder": {
             "description": "move: destination alias with Folder…",
@@ -3584,8 +3672,12 @@
             "description": "get: substring or * wildcard filter for…",
             "type": "string"
           },
+          "reconcileTimedOutWrite": {
+            "description": "get: fresh typed read; clear timeout…",
+            "type": "boolean"
+          },
           "rollbackOnFailure": {
-            "description": "move: attempt compensating snapshot…",
+            "description": "set: required true; restore and verify…",
             "type": "boolean"
           },
           "targetModule": {
@@ -4237,7 +4329,7 @@
             "type": "boolean"
           },
           "expectedVersion": {
-            "description": "Alias of baseVersion for update_visual.",
+            "description": "Alias of baseVersion for update_visual;…",
             "type": "string"
           },
           "kb": {
@@ -4260,7 +4352,7 @@
             "type": "string"
           },
           "name": {
-            "description": "Object name.…",
+            "description": "Object name. update_visual: Transaction…",
             "type": "string"
           },
           "payload": {
@@ -4731,6 +4823,10 @@
             "description": "async=true: expected duration used as…",
             "type": "integer"
           },
+          "expectedVersion": {
+            "description": "Required for history_restore of an…",
+            "type": "string"
+          },
           "filePath": {
             "description": "blame: absolute or KB-relative file…",
             "type": "string"
@@ -5020,9 +5116,9 @@
             "type": "string"
           },
           "columns": {
-            "description": "add_grid: SDT items shown, in order; a…",
+            "description": "add_grid: SDT items as strings or…",
             "items": {
-              "description": "An SDT item name, or {item,…"
+              "description": "SDT item or variable-column object."
             },
             "type": "array"
           },
@@ -5070,6 +5166,10 @@
           },
           "fromGroup": {
             "description": "move_action: source group (optional;…",
+            "type": "string"
+          },
+          "gridName": {
+            "description": "add_grid without collection/sdt:…",
             "type": "string"
           },
           "gridPath": {

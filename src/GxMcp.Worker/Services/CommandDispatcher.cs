@@ -64,6 +64,7 @@ namespace GxMcp.Worker.Services
         private readonly SelfTestService _selfTestService;
         private readonly PatternAnalysisService _patternAnalysisService;
         private readonly WwpActionService _wwpActionService;
+        private readonly K2bIdeBridgeService _k2bIdeBridgeService;
         private readonly AtomicAuthoringService _atomicAuthoringService;
         private readonly DataInsightService _dataInsightService;
         private readonly DatabaseInfoService _databaseInfoService;
@@ -217,6 +218,7 @@ namespace GxMcp.Worker.Services
             _writeService = new WriteService(_objectService);
             _variableService = new VariableService(_objectService, _writeService);
             _wwpActionService = new WwpActionService(_objectService, _patternAnalysisService, _writeService);
+            _k2bIdeBridgeService = new K2bIdeBridgeService(_kbService);
             _refactorService = new RefactorService(_kbService, _objectService, _indexCacheService, _writeService, _patternAnalysisService);
             _patchService = new PatchService(_objectService, _writeService, _patternAnalysisService);
             _batchService = new BatchService(_kbService, _writeService, _patchService, _objectService);
@@ -359,6 +361,7 @@ namespace GxMcp.Worker.Services
             registry.RegisterTool("genexus_data_view", ctx => Handle_DataView(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
             registry.RegisterTool("genexus_generator_reference", ctx => Handle_GeneratorReference(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
             registry.RegisterTool("genexus_wwp", ctx => Handle_WwpAction(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_k2b_designer", ctx => _k2bIdeBridgeService.Run(ctx.Target ?? ctx.ArgStr("name"), ctx.Args));
 
             return registry;
         }
@@ -981,6 +984,7 @@ namespace GxMcp.Worker.Services
                 ["themeclasses"] = Handle_ThemeClasses,
                 ["usercontrols"] = Handle_UserControls,
                 ["wwpaction"] = Handle_WwpAction,
+                ["k2bdesigner"] = (request, method, action, target, payload, args) => _k2bIdeBridgeService.Run(target, args),
                 ["curlproc"] = Handle_CurlProc,
                 ["designsystem"] = Handle_DesignSystem,
                 ["sdpanel"] = Handle_SdPanel,
@@ -1474,7 +1478,7 @@ namespace GxMcp.Worker.Services
                 args?["part"]?.ToString() ?? "Source",
                 args?["parts"] as JArray,
                 args?["refresh"]?.ToObject<bool?>() ?? false);
-            if (action == "BatchEdit") return _batchService.BatchEdit(target, args?["changes"] as JArray);
+            if (action == "BatchEdit") return _batchService.BatchEdit(target, args?["changes"] as JArray, args?["dryRun"]?.ToObject<bool?>() ?? false);
             if (action == "MultiEdit")
             {
                 var items = args?["items"] as JArray;
@@ -2729,7 +2733,8 @@ namespace GxMcp.Worker.Services
                 // Item 21 (friction 2026-05-22): dryRun=true returns the
                 // would-be diff without writing.
                 bool historyDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
-                return _historyService.Execute(target, action, verId, partName, snapshotToken, discard, historyDryRun);
+                return _historyService.Execute(target, action, verId, partName, snapshotToken, discard, historyDryRun,
+                    args?["expectedVersion"]?.ToString());
             }
                     // Item 16 — genexus_undo last=N
         }
@@ -2847,8 +2852,29 @@ namespace GxMcp.Worker.Services
                         target,
                         propsObj,
                         args?["control"]?.ToString(),
-                        propType);
-                    return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(propResp, target, args);
+                        propType,
+                        args?["expectedVersion"]?.ToString(),
+                        args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true);
+                    return args?["dryRun"]?.ToObject<bool?>() == true
+                        ? propResp : _saveSpecifyOrchestrator.MaybeValidateAfterWrite(propResp, target, args);
+                }
+
+                if (args?["dryRun"]?.ToObject<bool?>() == true
+                    || !string.IsNullOrWhiteSpace(args?["expectedVersion"]?.ToString()))
+                {
+                    string propertyName = args?["propertyName"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(propertyName))
+                        return Models.McpResponse.Err(code: "MissingPropertyName", target: target,
+                            message: "propertyName is required for a single-property write.");
+                    var safeSingle = _propertyService.SetProperties(target,
+                        new JObject { [propertyName] = args?["value"]?.ToString() ?? string.Empty },
+                        args?["control"]?.ToString(), propType,
+                        args?["expectedVersion"]?.ToString(),
+                        args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true);
+                    return args?["dryRun"]?.ToObject<bool?>() == true
+                        ? safeSingle : _saveSpecifyOrchestrator.MaybeValidateAfterWrite(safeSingle, target, args);
                 }
 
                 var singleResp = _propertyService.SetProperty(
@@ -2893,7 +2919,8 @@ namespace GxMcp.Worker.Services
                 propName,
                 propNames,
                 projection,
-                query);
+                query,
+                args?["reconcileTimedOutWrite"]?.ToObject<bool?>() ?? false);
         }
 
         private string Handle_Asset(JObject request, string method, string action, string target, string payload, JObject args)
@@ -3261,7 +3288,7 @@ namespace GxMcp.Worker.Services
         private string Handle_WwpAction(JObject request, string method, string action, string target, string payload, JObject args)
         {
             // genexus_wwp — WorkWithPlus Action Group / grid-action editing (issue #58).
-            // list|add_action|add_user_action|update_action|move_action|remove_action over the host's
+            // list|add_action|add_user_action|add_grid (SDT or variables)|update_action|move_action|remove_action over the host's
             // PatternInstance XML; dryRun supported; no Security permissions created.
             return _wwpActionService.Run(target, args ?? new JObject());
         }
