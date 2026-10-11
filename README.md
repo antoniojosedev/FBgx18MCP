@@ -176,11 +176,12 @@ the measured two-client smoke and backpressure results.
 
 ## What you can do with it
 
-A quick map of what the agent can do against your real KB through the **50 tools** (details in [Tool Surface](#tool-surface)):
+A quick map of what the agent can do against your real KB through the **60 tools** (details in [Tool Surface](#tool-surface)):
 
 | Area | What the agent can do |
 |---|---|
 | 🔎 **Explore** | Search & list objects, read any part (source, rules, events, structure, docs, pattern XML), inspect metadata & callers, regex-search source, view the navigation report |
+| 🧭 **Orient & trace** | Rank the objects a task touches, list direct and transitive callers, trace the shortest call path between two objects, check blast radius and safe-delete, follow one variable's data flow. Runs on exported sources through `genexus_wire` (read-only, token-budgeted) |
 | ✏️ **Edit code** | Edit any object part (`full`/`patch`/`ops` modes), variables CRUD, format, create & delete objects, scaffold a Procedure from a **curl command**, edit + rebuild callers in one shot |
 | 🗄️ **Author the data model** | Transaction structure (DSL), **unique/non-unique indexes** (create & drop), **attribute formulas & subtypes**, level Description/Image attributes, **Domain enum values**, folders & modules, table↔transaction relations & redundant-attribute detection |
 | 🧩 **Author other objects** | External Object methods & properties, Menu options, REST API objects, WorkWithPlus / WorkWith patterns, typed .NET generator references |
@@ -351,6 +352,12 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Remove the Export action from the Selection grid of WorkWithPlusReport."*
 - *"Read the Documentation part of the transaction Customer and rewrite it in markdown."*
 
+**Architecture, call graph & impact** (`genexus_wire`)
+- *"Before I change CliSaldo, what is the blast radius? Which procedures write it?"*
+- *"Who calls PValidaCreditoLive, directly and through other procedures?"*
+- *"Show me the call path from PEmiteFaturaLive to PValidaCreditoLive."*
+- *"I need to change the invoice interest calculation. Where should I start?"*
+
 **Analysis**
 - *"Explain what the procedure ProcessShipment does."* — `genexus_analyze mode=explain` is a compatibility-only envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` for supported analysis and source.
 - *"What SQL does the query in WebPanel CustomerList generate?"*
@@ -360,7 +367,7 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Build the KB and report any errors."*
 - *"Run the unit tests and show me which failed."*
 
-The agent picks the right tool from the **50 tools** the MCP exposes (read, edit, refactor, analyze, build, data-model authoring, layout automation, DB/DDL, versioning, security, SQL preview, etc.). The full tool list is in [Tool Surface](#tool-surface) below.
+The agent picks the right tool from the **60 tools** the MCP exposes (read, edit, refactor, analyze, build, data-model authoring, layout automation, DB/DDL, versioning, security, SQL preview, etc.). The full tool list is in [Tool Surface](#tool-surface) below.
 
 ---
 
@@ -430,13 +437,18 @@ Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) 
 
 ## Tool Surface
 
-The worker exposes **50 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json). Feature guides such as the [K2B Designer bridge](docs/k2b-ide-bridge.md), [WorkWithPlus on Empty WebPanels](docs/wwp-empty-webpanel.md), [textual Variables edits](docs/variables-text-integrity.md) and [External Object methods](docs/external-object-method-authoring.md) are listed in the [documentation index](docs/README.md).
+The worker exposes **60 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json). Feature guides such as the [K2B Designer bridge](docs/k2b-ide-bridge.md), [WorkWithPlus on Empty WebPanels](docs/wwp-empty-webpanel.md), [textual Variables edits](docs/variables-text-integrity.md) and [External Object methods](docs/external-object-method-authoring.md) are listed in the [documentation index](docs/README.md).
 
 **Orientation & health**
 - `genexus_whoami` — KB context, version, worker/index/database health, self-update check, next-step hints
 - `genexus_doctor` — connection + install + cache health check
 - `genexus_recipe` — named playbooks / self-extending macros
 - `genexus_telemetry` — observability (metrics, latency, errors)
+
+**Architecture discovery & call graph**
+- `genexus_wire` — read-only, token-budgeted call-graph engine (bundled `gxwire.exe`). Actions: `pack_task` (default; one-shot orientation bundle for a task), `for` (intent ranking with domain synonyms such as `fat` → `faturamento`), `status` (graph size and top hubs), `callers` (direct and transitive), `impact` (blast radius, writers, readers), `path` (shortest call path from `from` to `to`), `slice` (definitions and uses of one variable, `target` = `Object:Variable`), `safe_delete` (blockers before deleting a symbol), `index` (rebuild the cache), `doctor` (engine and cache diagnostics)
+
+`genexus_wire` does not go through the Worker or the GeneXus SDK. The Gateway runs `gxwire.exe` on the target folder (`dir`, `kb`, or the active KB path) and returns its output. It reads exported source text (`.prc`, `.trn`, `.wp`, `.sdp`, `.xml`, `.txt`, `.gx`, `.gxd`) with regex heuristics, so answers reflect the exported files, not the live KB; an empty folder returns `empty="true"`. Use it to decide where to look and what a change touches. Use `genexus_query` to search live objects and `genexus_read` to read their parts. Parameters: `task` (`pack_task`, `for`), `target` (`callers`, `impact`, `slice`, `safe_delete`), `from`/`to` (`path`), `format`, `token_budget` (default 1200), `full`, `kb`/`dir`. `format` is `toon` (compact, recommended), `xml` (default), `json`, or `mermaid`; mermaid renders `status`, `callers`, `impact`, `path` and `pack_task`, and other actions return XML. The only file it writes is `.gxwire_cache.bin` in the target folder, on `index` and when the cache is stale.
 
 **Search & discovery**
 - `genexus_query` — object search (prefixes `name:`, `type:`, `usedby:`, `parent:`, …)
@@ -487,6 +499,7 @@ in GeneXus first.
 - `genexus_refactor` — rename, extract procedure, WWP condition set
 - `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …); `mode=actions` manages typed WorkWithPlus grid actions and Action Groups
 - `genexus_wwp` — typed WorkWithPlus editing: Action Groups, atomic native `add_grid_attribute`, plus `add_tab`, `move_tab`, and `remove_tab` for WebPanel tabs and typed children
+- `genexus_workwith` — typed authoring of standard WorkWith (WorkWith for Web) pattern actions on tabs (`General`, etc.), procedure calls, conditions, and parameters
 - `genexus_compare` — IDE "Compare Objects" parity (`IComparerService`)
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
 
@@ -614,6 +627,15 @@ genexus-mcp layout status        # native layout automation state
 
 Global flags: `--format toon|json|text` · `--fields f1,f2,...` · `--limit N` · `--query <text>` · `--quiet` · `--no-color`.
 
+`genexus-mcp wire` is the exception: it forwards its arguments unchanged to the bundled `gxwire.exe` (exit code included), so its `--format` is GxWire's:
+
+```bash
+genexus-mcp wire --dir ./exports/KBTeste --pack-task "invoice interest" --format toon
+genexus-mcp wire --dir ./exports/KBTeste --callers PValidaCreditoLive
+genexus-mcp wire --dir ./exports/KBTeste --path PEmiteFaturaLive:PValidaCreditoLive
+genexus-mcp wire --help
+```
+
 Full contract: [`docs/axi_cli_contract.md`](docs/axi_cli_contract.md). Best-practices playbook: [`docs/llm_cli_mcp_playbook.md`](docs/llm_cli_mcp_playbook.md).
 
 ---
@@ -722,6 +744,7 @@ Want to contribute or run a local dev build?
 1. Clone this repo on Windows.
 2. Run `.\build.ps1` to restore and build the C# components and package the local artifacts. The script checks for the required .NET SDK and GeneXus 18 installation.
 3. If GeneXus is installed outside the default path, set `$env:GX_PATH` to its installation folder before running the build. A Knowledge Base is only needed for runtime testing.
+4. GxWire (needed for `genexus_wire` and `genexus-mcp wire`) is a Rust engine in `src/gxwire`. Install the Rust toolchain (`cargo`). `build.ps1` builds it in release mode and copies `gxwire.exe` into `publish/`. Without `cargo` that step is skipped without a message, and the tool returns `GxwireNotFound`. The Gateway looks for `gxwire.exe` next to itself, in `publish/`, in `src/gxwire/target/release/`, and on `PATH`. The CLI also honours `GENEXUS_MCP_GXWIRE_EXE`.
 
 ### Bundled AI skills (`.gemini/skills/`)
 
