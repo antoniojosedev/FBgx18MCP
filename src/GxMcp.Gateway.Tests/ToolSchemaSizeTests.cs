@@ -234,7 +234,8 @@ namespace GxMcp.Gateway.Tests
             //   arguments that clients cannot validate. Measured ~35685 tokens; ~315 headroom.
             // PRs #320/#443-#446 add an opt-in K2B tool and typed concurrency/SDT/WWP/EXO contracts.
             // Combined schema measures ~36759 tokens; existing guidance remains available.
-            Assert.True(approxTokens < 37000, $"tool_definitions.json is ~{approxTokens} tokens; budget 37000.");
+            // PR #459 introduces GxWire native architectural discovery tool (genexus_wire). Measured ~37302 tokens.
+            Assert.True(approxTokens < 38000, $"tool_definitions.json is ~{approxTokens} tokens; budget 38000.");
         }
 
         [Theory]
@@ -256,12 +257,13 @@ namespace GxMcp.Gateway.Tests
         // 50000 -> 51000: each published tool description is a bounded purpose summary
         // (ToolProfileFilter.MaxToolSummaryLength) instead of only the tool-help URI,
         // because clients choose a tool from that text before reading any resource.
-        // Measured all=98056, core=25220, authoring=66957, devops=50608 bytes.
-        [InlineData("all", 98500)]
-        [InlineData("core", 25500)]
-        [InlineData("standard", 60000)]
-        [InlineData("authoring", 67500)]
-        [InlineData("devops", 51000)]
+        // With genexus_wire added to core/standard/authoring/devops/all and purpose summaries from origin/main:
+        // Measured all ~99400, core=26678, standard ~60500, authoring ~68000, devops=52066 bytes.
+        [InlineData("all", 100000)]
+        [InlineData("core", 27000)]
+        [InlineData("standard", 61000)]
+        [InlineData("authoring", 68500)]
+        [InlineData("devops", 52500)]
         [InlineData("ui", 50000)]
         [InlineData("db", 40000)]
         public void PublishedToolProfileStaysWithinItsByteBudget(string profile, int maxBytes)
