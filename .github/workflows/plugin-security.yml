@@ -25,6 +25,7 @@ jobs:
           mode: scan
           format: json
           output: ${{ runner.temp }}/hol-plugin-scan.json
+          config: .plugin-scanner.toml
           min_score: 80
           fail_on_severity: high
           pr_comment: off

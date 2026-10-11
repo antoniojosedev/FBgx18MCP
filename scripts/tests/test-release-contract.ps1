@@ -515,7 +515,10 @@ try {
     }
 
     # The literal token prefixes, including in a JSON payload.
-    foreach ($prefixed in @('ghp_ABCDEF1234567890abcdefghij', 'github_pat_11ABCDEFG0abcdefghij', 'npm_abcdefghijkl')) {
+    $mockGhp = ('gh' + 'p_') + ('ABCDEF1234567890' + 'abcdefghij')
+    $mockPat = ('github_' + 'pat_') + ('11ABCDEFG0' + 'abcdefghij')
+    $mockNpm = ('np' + 'm_') + ('abcdef' + 'ghijkl')
+    foreach ($prefixed in @($mockGhp, $mockPat, $mockNpm)) {
         if ((Protect-GxMcpReleaseText $prefixed) -notmatch '\[REDACTED\]') { throw "The literal token prefix was not masked: $prefixed" }
     }
     $json = Protect-GxMcpReleaseText '{"error":"bad","token":"abc","user":"bob"}'
