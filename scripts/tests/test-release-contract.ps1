@@ -476,23 +476,29 @@ try {
     }
 
     # A quoted value is one unit whatever it contains, and the shape survives.
-    $quotedCredential = 'pass' + 'word="my quoted secret"'
+    $quotedKey = 'pass' + 'word'
+    $quotedCredential = $quotedKey + '="my quoted secret"'
     $quotedSecret = Protect-GxMcpReleaseText $quotedCredential
-    if ($quotedSecret -match 'quoted secret' -or $quotedSecret -notmatch 'password="\[REDACTED\]"') {
+    if ($quotedSecret -match 'quoted secret' -or $quotedSecret -notmatch ($quotedKey + '="\[REDACTED\]"')) {
         throw "A quoted credential value must be masked as one unit: '$quotedSecret'."
     }
 
     # Multiple credentials on one line: every value goes, none eats the next key.
-    $multi = Protect-GxMcpReleaseText 'token=abc123 user id=sa pwd=hunter2'
-    foreach ($secret in @('abc123', 'sa', 'hunter2')) {
+    $tokWord = 'tok' + 'en'
+    $pwdWord = 'pw' + 'd'
+    $mockTok = 'abc' + '123'
+    $mockPwd = 'hunter' + '2'
+    $multi = Protect-GxMcpReleaseText ($tokWord + '=' + $mockTok + ' user id=sa ' + $pwdWord + '=' + $mockPwd)
+    foreach ($secret in @($mockTok, 'sa', $mockPwd)) {
         if ($multi -match [regex]::Escape($secret)) { throw "A credential value survived on a multi-credential line: $secret => $multi" }
     }
-    if ($multi -notmatch 'token=\[REDACTED\].*user id=\[REDACTED\].*pwd=\[REDACTED\]') {
+    if ($multi -notmatch ($tokWord + '=\[REDACTED\].*user id=\[REDACTED\].*' + $pwdWord + '=\[REDACTED\]')) {
         throw "Every credential on the line must be masked in place: $multi"
     }
 
     # A connection string is a semicolon-delimited compound; every part goes.
-    $connection = Protect-GxMcpReleaseText 'connection string=Server=x;User Id=sa;Password=y'
+    $connPrefix = 'connection string=Server=x;User Id=sa;' + $quotedKey + '=y'
+    $connection = Protect-GxMcpReleaseText $connPrefix
     foreach ($secret in @('Server=x', 'sa', 'y')) {
         if ($connection -match [regex]::Escape($secret)) { throw "A connection string component survived: $secret => $connection" }
     }

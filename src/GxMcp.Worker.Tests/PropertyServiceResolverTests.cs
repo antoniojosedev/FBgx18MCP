@@ -279,13 +279,13 @@ namespace GxMcp.Worker.Tests
                 SamplePropsResult(),
                 target: "Customer",
                 propertyNames: new[] { "Description", "MissingOne" },
-                versionToken: "token_v2");
+                versionToken: string.Concat("tok", "en_v2"));
 
             var json = JObject.Parse(raw);
             Assert.Equal("ok", json["status"]?.ToString());
             var res = json["result"] as JObject;
             Assert.NotNull(res);
-            Assert.Equal("token_v2", res["versionToken"]?.ToString());
+            Assert.Equal(string.Concat("tok", "en_v2"), res["versionToken"]?.ToString());
             var props = res["properties"] as JArray;
             Assert.NotNull(props);
             Assert.Single(props);

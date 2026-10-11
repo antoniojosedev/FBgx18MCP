@@ -38,7 +38,12 @@ namespace GxMcp.Worker.Services
 
             KBObject targetObj = _objects.FindObject(name);
             if (targetObj == null)
-                return McpResponse.Err(code: "ObjectNotFound", message: $"Target object '{name}' was not found in the Knowledge Base.", target: name);
+                return McpResponse.Err(code: "ObjectNotFound",
+                    message: $"Target object '{name}' was not found in the Knowledge Base.",
+                    nextSteps: new JArray(McpResponse.NextStep("genexus_query",
+                        new JObject { ["query"] = name },
+                        $"Search for objects matching '{name}'.")),
+                    target: name);
 
             var matches = _patterns.FindPatternInstances(targetObj);
             var wwMatch = matches.FirstOrDefault(m => m.Pattern != null && m.Pattern.IsWorkWith);
@@ -80,6 +85,9 @@ namespace GxMcp.Worker.Services
                 default:
                     return McpResponse.Err(code: "UnknownAction",
                         message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action.",
+                        nextSteps: new JArray(McpResponse.NextStep("genexus_workwith",
+                            new JObject { ["action"] = "list_actions", ["name"] = name },
+                            "List actions on the target WorkWith object.")),
                         target: name);
             }
         }

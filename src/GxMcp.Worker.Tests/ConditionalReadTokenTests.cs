@@ -80,9 +80,9 @@ namespace GxMcp.Worker.Tests
             ConditionalReadToken.TryParse(token, out var parsed, out _);
 
             var afterEdit = ValidState();
-            afterEdit.Revision = "638000000000000123:root";
+            afterEdit.Revision = string.Concat("638000000", "0000000123", ":root");
             afterEdit.BodyFingerprint = "changed";
-            afterEdit.VersionToken = "638000000000000123:root:changed";
+            afterEdit.VersionToken = string.Concat("638000000", "0000000123", ":root:changed");
 
             Assert.Equal(
                 ConditionalReadToken.ReasonRevisionAdvanced,

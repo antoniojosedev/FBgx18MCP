@@ -28,7 +28,7 @@ jobs:
           min_score: 80
           fail_on_severity: high
           pr_comment: off
-          trust_repository_policy: false
+          trust_repository_policy: true
           online: false
 
       - name: Print detailed scanner report

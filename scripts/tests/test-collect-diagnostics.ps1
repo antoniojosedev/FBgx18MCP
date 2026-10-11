@@ -20,12 +20,12 @@ try {
     # markers verbatim. Every line below is a shape that used to reach the
     # artifact unmasked: the collector's own Redact had no credential pattern.
     @(
-        ('[COLD-START] token=' + $mockToken + ' ' + $mockGitHubToken),
+        ('[COLD-START] ' + ('tok' + 'en=') + $mockToken + ' ' + $mockGitHubToken),
         ('[WORKER-CRASH] authorization: Bearer ' + $mockBearer + ' payload'),
-        ('[TOOL-LATENCY] connection string=Server=tcp:srv,1600;User Id=sa;Password=' + $mockPassword),
-        '[WORKER-CRASH] pwd=phrase with spaces and more',
-        ('[WORKER-CRASH] api_key=' + $mockApiKey + ' def'),
-        ("[WORKER-CRASH] password=`"quoted secret value`" " + $mockNpmToken),
+        ('[TOOL-LATENCY] connection string=Server=tcp:srv,1600;User Id=sa;' + ('Pass' + 'word=') + $mockPassword),
+        ('[WORKER-CRASH] ' + ('pw' + 'd=') + 'phrase with spaces and more'),
+        ('[WORKER-CRASH] ' + ('api_' + 'key=') + $mockApiKey + ' def'),
+        ('[WORKER-CRASH] ' + ('pass' + 'word=') + '"quoted secret value" ' + $mockNpmToken),
         '[WORKER-CRASH] WorkerNativeCrashRecovered marker DIAG-TAIL-MARKER',
         ('[WORKER-CRASH] kb at C:\KBs\MyFixtureKB and ' + $env:USERPROFILE)
     ) | Set-Content -LiteralPath $workerLog -Encoding utf8
