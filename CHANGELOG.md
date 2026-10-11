@@ -7,24 +7,27 @@
 
 ### Added
 
-- **GxWire native architectural discovery, call graph, and impact engine in Rust**:
-  - Standalone, lightweight binary optimized to 1.12 MB (`publish/gxwire.exe`), with zero-allocation 4GL lexing, CSR graph indexing, and sub-10ms graph traversals.
-  - Shortest-path BFS call and dependency tracing (`action=path` / `--path` / `--from` and `--to`) traversing CSR forward callees and reconstructing hops with line numbers.
-  - GeneXus Domain Synonym Dictionary for natural language task search (`action=for` / `--for`), expanding Portuguese and GeneXus abbreviations (`fat`, `ped`, `cli`, `forn`, `nf`, `tit`, `rec`, `pag`, `prc`, `trn`, `wp`, `prod`, `est`, `ven`, `com`, `cta`, `mov`, `imp`, `bco`, `usu`, `val`, `calc`, `ger`, `int`).
-  - Complete data dependency extraction with `ReadsAttr` for `Where Attr = &Var` and assignments `&Var = Attr`, plus expanded file extension coverage (`.prc`, `.trn`, `.wp`, `.sdp`, `.xml` with root-tag entity detection).
-  - Incremental cache freshness tracking file modified timestamps (`mtime`) with millisecond precision in `.gxwire_cache.bin` to automatically detect edits and rebuild cache without manual intervention.
-  - Native Mermaid visualizer (`--format mermaid`) producing render-ready `graph LR` / `graph TD` diagrams for paths, callers, impact, and hubs for Markdown artifacts.
-  - 100% compliance with the 10 AXI (Agent eXperience Interface) Design Principles:
-    - Native TOON (Tabular Object-Oriented Notation) format (`--format toon`) yielding ~40% token savings over JSON.
-    - Content-First default (`gxwire` with 0 args or `action=status` immediately returns live KB status and PageRank architectural hubs without help prompts).
-    - Content truncation with size hints and a `--full` escape hatch to bypass token budget clipping.
-    - Pre-computed aggregates (`can_delete`, `blast_radius`, `est_tokens`, `points_count`).
-    - Definitive empty states (`empty="true"` and `empty: true`) eliminating LLM query re-try loops.
-    - Contextual next-step disclosure on all outputs guiding subsequent actions.
-    - Idempotent and non-blocking execution with structured errors in XML, JSON, TOON, and Mermaid.
-  - Exposed as a first-class Gateway MCP tool `genexus_wire` (`pack_task`, `status`, `for`, `callers`, `impact`, `path`, `slice`, `safe_delete`, `index`, `doctor`) with proactive discovery guidance in `genexus_read` and `genexus_query`.
-  - Added CLI forwarder via `genexus-mcp wire` for terminal usage.
-  - 24 comprehensive tests covering scale benchmarks (50,000 synthetic nodes), edge cases (cycles, case-insensitivity, token-budget pruning), AXI principles, shortest-path BFS, domain synonyms, data dependency extraction, incremental mtime freshness, and real GeneXus 18 KB integration.
+- **GxWire: Native Rust Architectural Discovery, Call Graph & Impact Analysis Engine (Headline Feature)**:
+  - High-performance, zero-allocation native Rust engine (`publish/gxwire.exe`, 1.12 MB) purpose-built for AI coding agents to navigate large GeneXus Knowledge Bases in sub-10ms without consuming excessive context tokens or serializing on the COM SDK thread.
+  - **Core Capabilities for AI Agents & Developers:**
+    - **Context-Budgeted Task Packing (`action=pack_task`)**: Proactively discovers symbols, dependencies, and blast radius for a given task, ranking relevant objects and trimming payloads to fit model token budgets.
+    - **Shortest-Path BFS Call Tracing (`action=path` / `--from` and `--to`)**: Traces forward call chains between any two objects across Compressed Sparse Row (CSR) indices, reconstructing intermediate hops with exact source line numbers.
+    - **Natural Language Search with Domain Synonym Expansion (`action=for`)**: Expands conversational intents and standard Portuguese/GeneXus business abbreviations (`fat` → Faturamento, `ped` → Pedido, `cli` → Cliente, `forn` → Fornecedor, `nf` → NotaFiscal, `tit` → Titulo, `rec` → Receber, `pag` → Pagar, `prc` → Procedure, `trn` → Transaction, `wp` → WebPanel, `prod` → Produto, `est` → Estoque, etc.).
+    - **Data Dependency & Attribute Extraction**: Extracts `ReadsAttr` relationships from `Where Attr = &Var` clauses and assignments (`&Var = Attr`), indexing tables, transactions, web panels, SDPanels, and procedures.
+    - **Incremental Freshness Cache (`.gxwire_cache.bin`)**: High-speed binary disk cache with millisecond-precision file modification timestamp (`mtime`) checks, detecting edits automatically without manual re-indexing.
+    - **Visual Architecture Flowcharts (`--format mermaid`)**: Generates render-ready `graph LR` / `graph TD` diagrams for paths, callers, impact trees, and architectural hubs, rendering directly in Markdown artifacts.
+    - **Safe Deletion & Blast Radius Analysis (`action=safe_delete` / `action=impact`)**: Evaluates transitive callers and dependencies to verify if an object can be safely removed or refactored without breaking downstream consumers.
+    - **Full Compliance with the 10 AXI (Agent eXperience Interface) Principles**:
+      - Native **TOON (Tabular Object-Oriented Notation)** format (`--format toon`) yielding ~40% token savings over JSON.
+      - Content-First execution (running with no arguments or `action=status` returns live KB health and PageRank hubs without diagnostic friction).
+      - Budget-aware truncation hints (`--full` flag available for exhaustive listings).
+      - Pre-computed decision metrics (`can_delete`, `blast_radius`, `est_tokens`).
+      - Definitive empty states (`empty="true"` / `empty: true`) preventing agent retry loops.
+      - Next-step disclosures on every output guiding subsequent MCP calls.
+  - **Surface & Transport Availability**:
+    - First-class Gateway MCP tool `genexus_wire` (actions: `pack_task`, `status`, `for`, `callers`, `impact`, `path`, `slice`, `safe_delete`, `index`, `doctor`) with cross-tool discovery guidance in `genexus_read` and `genexus_query`.
+    - Integrated CLI forwarder via `genexus-mcp wire` and standalone binary launcher `gxwire`.
+    - Comprehensive test suite (24 tests) validating 50,000-node scale benchmarks, cyclic call handling, token pruning, and GeneXus 18 live KB parity.
 
 - The Gateway can now ask the human directly through MCP elicitation (`elicitation/create`, MCP 2025-06-18). When a KB-bound call fails with `KB_AMBIGUOUS` or `KB_CONTEXT_REQUIRED`, clients that support elicitation show a KB picker; the choice is selected for the session and the call is replayed. Irreversible calls made without `confirm=true` (`genexus_delete_object`, `genexus_data_view action=delete`, `genexus_transfer action=import dryRun=false`, `genexus_deploy action=deploy`) ask the human for approval instead of failing, and a refusal returns `HUMAN_DECLINED` without reaching the Worker. `GXMCP_ELICITATION=strict` also asks when the agent passed `confirm=true`; `off` disables it. Clients without the capability are unaffected. See `docs/elicitation.md`.
 
