@@ -58,6 +58,10 @@
 
 ### Internal
 
+- Bumped GitHub Actions workflows and Nexus IDE development dependencies:
+  - Updated `actions/checkout` (v7.0.1), `actions/setup-node` (v7.1.0), `actions/setup-dotnet` (v6.0.0), `actions/upload-artifact` (v7.0.2), and `ai-plugin-scanner-action` (v1.2.777) across CI, release, live-smoke, and scanner workflows ([#461](https://github.com/lennix1337/Genexus18MCP/pull/461), [#462](https://github.com/lennix1337/Genexus18MCP/pull/462), [#463](https://github.com/lennix1337/Genexus18MCP/pull/463), [#464](https://github.com/lennix1337/Genexus18MCP/pull/464), [#465](https://github.com/lennix1337/Genexus18MCP/pull/465)).
+  - Bumped Nexus IDE devDependencies: `@vscode/test-electron` to 3.1.0, `mermaid` to 12.1.0, `@vscode/vsce` to 4.0.0, and `mocha` to 12.0.3 ([#468](https://github.com/lennix1337/Genexus18MCP/pull/468), [#470](https://github.com/lennix1337/Genexus18MCP/pull/470), [#471](https://github.com/lennix1337/Genexus18MCP/pull/471), [#472](https://github.com/lennix1337/Genexus18MCP/pull/472)).
+
 ## v3.13.0 - 2026-10-09
 
 
