@@ -1,0 +1,31 @@
+{
+  "floor": 2,
+  "panelReady": false,
+  "state": "insufficientDiversity",
+  "distinctFamiliesAllow": [
+    "openai"
+  ],
+  "distinctFamiliesPotential": [
+    "openai"
+  ],
+  "dispatchable": [
+    {
+      "targetModelKey": "openai/gpt-6.1-sol",
+      "family": "openai",
+      "backend": "codex"
+    }
+  ],
+  "askToAuthorize": [],
+  "authorFamily": "openai",
+  "authorFamilyInPanel": true,
+  "fallbackLabel": "segunda opiniao (1)",
+  "droppedUnknownFamilies": [
+    {
+      "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+      "resolvedFamily": "stealth",
+      "backend": "opencode"
+    }
+  ],
+  "unknownFamiliesPresent": true,
+  "note": "Consultivo; NAO e autorizacao. Familia = Criador do Modelo via Get-LlmDelegateTargetFamily(targetModelKey); so criadores em Test-LlmDelegateFamilyKnown contam no piso. family de entrada e eco. hasFallbackEvidence exige despacho efetivo no elo de cadeia."
+}

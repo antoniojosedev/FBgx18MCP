@@ -1,0 +1,52 @@
+[
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+    "family": "deepseek",
+    "state": "timeout",
+    "reason": "Adaptador: excedeu 240s e foi encerrado.",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": false
+  },
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+    "family": "stealth",
+    "state": "error",
+    "reason": "Exit 1; stderr do filho vazio; causa não observada.",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": false
+  },
+  {
+    "backend": "codex",
+    "targetModelKey": "openai/gpt-6.1-sol",
+    "family": "openai",
+    "state": "skippedByHumanDecision",
+    "reason": "Rodada limitada aos modelos OpenCode por pedido do usuário; Opus excluído.",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": false
+  },
+  {
+    "backend": "claude-code",
+    "targetModelKey": "anthropic/claude-opus-5-5",
+    "family": "anthropic",
+    "state": "skippedByHumanDecision",
+    "reason": "Rodada limitada aos modelos OpenCode por pedido do usuário; Opus excluído.",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": false
+  },
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+    "family": "meta",
+    "state": "responded",
+    "reason": "REVISAR; parecer limitado ao manuscrito.",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": true
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+    "verdict": "allow",
+    "family": "deepseek",
+    "countsForDiversity": true
+  },
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+    "verdict": "allow",
+    "family": "stealth",
+    "countsForDiversity": true
+  },
+  {
+    "backend": "codex",
+    "targetModelKey": "openai/gpt-6.1-sol",
+    "verdict": "allow",
+    "family": "openai",
+    "countsForDiversity": true
+  },
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+    "verdict": "allow",
+    "family": "meta",
+    "countsForDiversity": true
+  }
+]

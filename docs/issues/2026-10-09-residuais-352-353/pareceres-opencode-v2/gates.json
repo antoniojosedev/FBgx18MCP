@@ -1,0 +1,23 @@
+[
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+    "family": "deepseek",
+    "verdict": "allow",
+    "countsForDiversity": true
+  },
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+    "family": "stealth",
+    "verdict": "allow",
+    "countsForDiversity": true
+  },
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+    "family": "meta",
+    "verdict": "allow",
+    "countsForDiversity": true
+  }
+]

@@ -1,0 +1,169 @@
+{
+  "migratedFrom": null,
+  "schemaVersion": 3,
+  "orchestrator": "codex",
+  "cascadeMachinePath": "C:\\Users\\ANTONIOJOSE\\AppData\\Local\\xpz-llm-delegate\\preferred-reviewers.json",
+  "effectivePreferredPath": "C:\\Users\\ANTONIOJOSE\\AppData\\Local\\xpz-llm-delegate\\preferred-reviewers.codex.json",
+  "fallbackPolicy": {
+    "mode": "ordered-chain",
+    "defaultActivateOn": [
+      "quota",
+      "timeout",
+      "error",
+      "unavailable"
+    ],
+    "gateAskBehavior": "ask-human",
+    "gateDenyBehavior": "stop-or-suggest-manual-alternative"
+  },
+  "hasPreferences": true,
+  "calibratedBy": null,
+  "reason": null,
+  "note": "Sugestao de composicao; NAO e autorizacao. O gate Resolve-LlmDelegateAuthorization.ps1 reavalia destino+sensibilidade POR REVISOR no envio. availableInManifest e best-effort: o manifesto pode nao enumerar opencode (config minima).",
+  "cascadeOrchestratorExists": true,
+  "cascadeOrchestratorPath": "C:\\Users\\ANTONIOJOSE\\AppData\\Local\\xpz-llm-delegate\\preferred-reviewers.codex.json",
+  "preferenceSource": "orchestrator",
+  "cascadeMachineExists": true,
+  "reviewers": [
+    {
+      "backend": "opencode",
+      "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+      "invokeArgs": {
+        "backend": "opencode",
+        "model": "commandcode/deepseek/deepseek-v4.1-flash"
+      },
+      "family": "deepseek",
+      "rank": 1,
+      "fallbackChain": [],
+      "availableInManifest": true,
+      "capability": {
+        "backend": "opencode",
+        "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+        "canonicalModel": "commandcode/deepseek/deepseek-v4.1-flash",
+        "provider": "commandcode",
+        "family": "deepseek",
+        "sourceKind": "configured",
+        "sourceConfidence": "strong",
+        "availableInManifest": true,
+        "locality": "external",
+        "reasonCode": "external",
+        "hardVeto": false,
+        "diagnostics": []
+      },
+      "diagnostics": [],
+      "type": "delegation-cli",
+      "harnessModelId": null,
+      "reasoningEffort": "unset"
+    },
+    {
+      "backend": "opencode",
+      "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+      "invokeArgs": {
+        "backend": "opencode",
+        "model": "commandcode/stealth/space-bunny-alpha"
+      },
+      "family": "stealth",
+      "rank": 2,
+      "fallbackChain": [],
+      "availableInManifest": true,
+      "capability": {
+        "backend": "opencode",
+        "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+        "canonicalModel": "commandcode/stealth/space-bunny-alpha",
+        "provider": "commandcode",
+        "family": "stealth",
+        "sourceKind": "configured",
+        "sourceConfidence": "strong",
+        "availableInManifest": true,
+        "locality": "external",
+        "reasonCode": "external",
+        "hardVeto": false,
+        "diagnostics": []
+      },
+      "diagnostics": [],
+      "type": "delegation-cli",
+      "harnessModelId": null,
+      "reasoningEffort": "unset"
+    },
+    {
+      "backend": "codex",
+      "targetModelKey": "openai/gpt-6.1-sol",
+      "invokeArgs": {
+        "backend": "codex",
+        "model": "gpt-6.1-sol"
+      },
+      "family": "openai",
+      "rank": 3,
+      "fallbackChain": [],
+      "availableInManifest": true,
+      "capability": {
+        "backend": "codex",
+        "targetModelKey": "openai/gpt-6.1-sol",
+        "canonicalModel": "openai/gpt-6.1-sol",
+        "provider": "openai",
+        "family": "openai",
+        "sourceKind": "configured",
+        "sourceConfidence": "strong",
+        "availableInManifest": true,
+        "locality": "external",
+        "reasonCode": "external",
+        "hardVeto": false,
+        "diagnostics": []
+      },
+      "diagnostics": [],
+      "type": "delegation-cli",
+      "harnessModelId": null,
+      "reasoningEffort": "medium"
+    },
+    {
+      "backend": "claude-code",
+      "targetModelKey": "anthropic/claude-opus-5-5",
+      "invokeArgs": {
+        "backend": "claude-code",
+        "model": "claude-opus-5-5"
+      },
+      "family": "anthropic",
+      "rank": 4,
+      "fallbackChain": [],
+      "availableInManifest": false,
+      "capability": null,
+      "diagnostics": [
+        "availableInManifest=false; diagnostico, nao bloqueio do gate"
+      ],
+      "type": "delegation-cli",
+      "harnessModelId": null,
+      "reasoningEffort": "medium"
+    },
+    {
+      "backend": "opencode",
+      "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+      "invokeArgs": {
+        "backend": "opencode",
+        "model": "commandcode/meta/muse-spark-1.3-contributor"
+      },
+      "family": "meta",
+      "rank": 5,
+      "fallbackChain": [],
+      "availableInManifest": true,
+      "capability": {
+        "backend": "opencode",
+        "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+        "canonicalModel": "commandcode/meta/muse-spark-1.3-contributor",
+        "provider": "commandcode",
+        "family": "meta",
+        "sourceKind": "configured",
+        "sourceConfidence": "strong",
+        "availableInManifest": true,
+        "locality": "external",
+        "reasonCode": "external",
+        "hardVeto": false,
+        "diagnostics": []
+      },
+      "diagnostics": [],
+      "type": "delegation-cli",
+      "harnessModelId": null,
+      "reasoningEffort": "unset"
+    }
+  ],
+  "diagnostics": [],
+  "updatedAt": "2026-10-02T11:12:32Z"
+}

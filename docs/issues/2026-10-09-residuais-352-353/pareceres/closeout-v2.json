@@ -1,0 +1,116 @@
+{
+  "closeoutReady": false,
+  "blockingReasons": [
+    "vnext-pending-resubmission"
+  ],
+  "requiresPreferredOffer": false,
+  "hadPreferredReviewers": true,
+  "manualReviewerSelection": false,
+  "preferredReviewersOfferState": "not_applicable",
+  "roundId": "v2",
+  "diversityState": "insufficientDiversity",
+  "vNextState": "pendingResubmission",
+  "resubmissionDeclinedBy": "",
+  "resubmissionDeclineReason": "",
+  "selectedReviewers": [
+    "opencode -> commandcode/deepseek/deepseek-v4.1-flash",
+    "opencode -> commandcode/stealth/space-bunny-alpha",
+    "codex -> openai/gpt-6.1-sol",
+    "claude-code -> anthropic/claude-opus-5-5",
+    "opencode -> commandcode/meta/muse-spark-1.3-contributor"
+  ],
+  "expectedPreferredReviewerStates": [
+    {
+      "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+      "backend": "opencode",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "opencode|commandcode/deepseek/deepseek-v4.1-flash|primary|"
+    },
+    {
+      "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+      "backend": "opencode",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "opencode|commandcode/stealth/space-bunny-alpha|primary|"
+    },
+    {
+      "targetModelKey": "openai/gpt-6.1-sol",
+      "backend": "codex",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "codex|openai/gpt-6.1-sol|primary|"
+    },
+    {
+      "targetModelKey": "anthropic/claude-opus-5-5",
+      "backend": "claude-code",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "claude-code|anthropic/claude-opus-5-5|primary|"
+    },
+    {
+      "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+      "backend": "opencode",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "key": "opencode|commandcode/meta/muse-spark-1.3-contributor|primary|"
+    }
+  ],
+  "preferredReviewerStates": [
+    {
+      "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+      "backend": "opencode",
+      "family": "deepseek",
+      "state": "error",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": false,
+      "effortApplied": "unset"
+    },
+    {
+      "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+      "backend": "opencode",
+      "family": "stealth",
+      "state": "error",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": false,
+      "effortApplied": "unset"
+    },
+    {
+      "targetModelKey": "openai/gpt-6.1-sol",
+      "backend": "codex",
+      "family": "openai",
+      "state": "responded",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": true,
+      "effortApplied": "applied"
+    },
+    {
+      "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+      "backend": "opencode",
+      "family": "meta",
+      "state": "error",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": false,
+      "effortApplied": "unset"
+    },
+    {
+      "targetModelKey": "anthropic/claude-opus-5-5",
+      "backend": "claude-code",
+      "family": "anthropic",
+      "state": "skippedByHumanDecision",
+      "attemptRole": "primary",
+      "fallbackOf": "",
+      "countsForDiversity": false,
+      "effortApplied": "unsupported"
+    }
+  ],
+  "effectivePreferredPath": "C:\\Users\\ANTONIOJOSE\\AppData\\Local\\xpz-llm-delegate\\preferred-reviewers.codex.json",
+  "preferenceSource": "orchestrator",
+  "requiredUserPrompt": "Antes de encerrar a revisão por pares: há uma vN+1 autorada e ainda não re-submetida (da rodada 'v2'). Pela opção 1 (D2), ofereça a 2ª rodada ao painel e, após re-submeter, re-rode este closeout com -VNextState resubmitted; se o humano cientemente declinar a re-submissão, re-rode com -VNextState resubmissionDeclinedByHuman + -ResubmissionDeclinedBy, -ResubmissionDeclineReason e -RoundId.",
+  "receiptAddendum": "Curadoria de revisores preferidos: not_applicable; motivo=lista preferida ja resolvida no inicio da rodada Estados dos revisores preferidos: registrados=5. Estado da vN+1: vNextState=pendingResubmission. preferenceSource=orchestrator; effectivePreferredPath=C:\\Users\\ANTONIOJOSE\\AppData\\Local\\xpz-llm-delegate\\preferred-reviewers.codex.json.",
+  "note": "Fechamento consultivo/deterministico da revisao por pares; nao grava preferencia, nao decide autorizacao e nao recalcula diversidade. Se closeoutReady=false, nao encerrar a rodada nem emitir recibo final sem antes apresentar requiredUserPrompt."
+}

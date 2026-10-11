@@ -1,0 +1,52 @@
+[
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/deepseek/deepseek-v4.1-flash",
+    "family": "deepseek",
+    "state": "skippedByHumanDecision",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": false,
+    "reason": "Consulta desta rodada explicitamente limitada ao Opus pelo usuário."
+  },
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/stealth/space-bunny-alpha",
+    "family": "stealth",
+    "state": "skippedByHumanDecision",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": false,
+    "reason": "Consulta desta rodada explicitamente limitada ao Opus pelo usuário."
+  },
+  {
+    "backend": "codex",
+    "targetModelKey": "openai/gpt-6.1-sol",
+    "family": "openai",
+    "state": "skippedByHumanDecision",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": false,
+    "reason": "Consulta desta rodada explicitamente limitada ao Opus pelo usuário."
+  },
+  {
+    "backend": "claude-code",
+    "targetModelKey": "anthropic/claude-opus-5-5",
+    "family": "anthropic",
+    "state": "responded",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": true,
+    "reason": "Consulta desta rodada explicitamente limitada ao Opus pelo usuário."
+  },
+  {
+    "backend": "opencode",
+    "targetModelKey": "commandcode/meta/muse-spark-1.3-contributor",
+    "family": "meta",
+    "state": "skippedByHumanDecision",
+    "attemptRole": "primary",
+    "fallbackOf": null,
+    "countsForDiversity": false,
+    "reason": "Consulta desta rodada explicitamente limitada ao Opus pelo usuário."
+  }
+]
