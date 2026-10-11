@@ -54,6 +54,8 @@
   - Delimited recorded regeneration provenance between GeneXus builds (GX18 U10 regenerated derived objects, whereas on GX18 U15 and GX17 U4 headless instance saves persist without updating derived panels), advising IDE apply when derived objects do not follow.
   - `PatchService` now unpacks `writePayload["result"]` into `resultObj` so that `derivedObjectRegeneration`, `warning`, `resolvedObject`, `resolvedType`, and related diagnostic evidence are delivered directly at the top level of the MCP patch response.
 
+- Remediated AI plugin scanner false positive findings and configured repository trust policy in the HOL Plugin Scanner workflow ([#451](https://github.com/lennix1337/Genexus18MCP/pull/451)).
+
 ### Internal
 
 ## v3.13.0 - 2026-10-09
