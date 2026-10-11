@@ -96,7 +96,10 @@ namespace GxMcp.Gateway
             return _sessionKbContexts.TryGetSnapshot(sessionId, out snapshot);
         }
 
-        internal static IDisposable ConfigureRouteStateForTest(Configuration config, string configPath)
+        internal static IDisposable ConfigureRouteStateForTest(
+            Configuration config,
+            string configPath,
+            Func<KbHandle, WorkerProcess>? spawnFactory = null)
         {
             var previousConfig = _activeConfig;
             var previousResolver = _kbResolver;
@@ -106,7 +109,10 @@ namespace GxMcp.Gateway
 
             _activeConfig = config;
             _kbResolver = new KbResolver(config);
-            _workerPool = new WorkerPool(config);
+            _workerPool = new WorkerPool(config)
+            {
+                SpawnFactoryForTest = spawnFactory
+            };
             Configuration.SetCurrentConfigPathForTest(configPath);
 
             return new RouteStateRestore(

@@ -1,0 +1,45 @@
+name: HOL Plugin Scanner
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run HOL Plugin Scanner
+        id: scanner
+        uses: hashgraph-online/ai-plugin-scanner-action@6f088dedc8f1f035eddd1597de8eacd8262a3862 # v1.2.777
+        with:
+          plugin_dir: .
+          mode: scan
+          format: json
+          output: ${{ runner.temp }}/hol-plugin-scan.json
+          config: .plugin-scanner.toml
+          min_score: 80
+          fail_on_severity: high
+          pr_comment: off
+          trust_repository_policy: true
+          online: false
+
+      - name: Print detailed scanner report
+        if: always()
+        run: cat "${{ runner.temp }}/hol-plugin-scan.json"
+
+      - name: Upload detailed scanner report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hol-plugin-scan-report
+          path: ${{ runner.temp }}/hol-plugin-scan.json
+          if-no-files-found: warn

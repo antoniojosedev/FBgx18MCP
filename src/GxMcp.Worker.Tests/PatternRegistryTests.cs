@@ -144,7 +144,7 @@ namespace GxMcp.Worker.Tests
 
                 Assert.Equal(new[] { "K2BEntityServices", "K2BMenu" }, discovered.Select(m => m.Name).OrderBy(n => n).ToArray());
                 var registry = new PatternRegistry(discovered);
-                Assert.Equal(3, registry.All.Count); // + WorkWithPlus
+                Assert.Equal(4, registry.All.Count); // + WorkWithPlus + WorkWith
             }
             finally
             {

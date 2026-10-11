@@ -27,6 +27,7 @@ namespace GxMcp.Worker.Services
         public IReadOnlyList<string> Aliases { get; set; } = new string[0];
 
         public bool IsWorkWithPlus => Id == PatternRegistry.WorkWithPlusPatternId;
+        public bool IsWorkWith => Id == PatternRegistry.WorkWithPatternId || string.Equals(Name, "WorkWith", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>True when the manifest declares no parent object (e.g. K2BMenu), so it cannot be applied to an object.</summary>
         public bool IsParentless => ParentObjectTypes.Count == 0;
@@ -69,6 +70,7 @@ namespace GxMcp.Worker.Services
     public sealed class PatternRegistry
     {
         public static readonly Guid WorkWithPlusPatternId = new Guid("07135890-56fc-489b-b408-063722fa9f7d");
+        public static readonly Guid WorkWithPatternId = new Guid("78cecefe-be7d-4980-86ce-8d6e91fba04b");
 
         private static readonly ConcurrentDictionary<string, PatternRegistry> Cache =
             new ConcurrentDictionary<string, PatternRegistry>(StringComparer.OrdinalIgnoreCase);
@@ -99,6 +101,21 @@ namespace GxMcp.Worker.Services
                 _patterns.Add(wwp);
             }
             wwp.Aliases = new[] { "WWP" };
+
+            var ww = _patterns.FirstOrDefault(p => p.Id == WorkWithPatternId || string.Equals(p.Name, "WorkWith", StringComparison.OrdinalIgnoreCase));
+            if (ww == null)
+            {
+                ww = new PatternManifest
+                {
+                    Id = WorkWithPatternId,
+                    Name = "WorkWith",
+                    Publisher = "GeneXus",
+                    InstanceNameTemplate = "WorkWithWeb{0}",
+                    ParentObjectTypes = new[] { "Transaction" }
+                };
+                _patterns.Add(ww);
+            }
+            ww.Aliases = new[] { "WorkWith", "WorkWithForWeb" };
         }
 
         public IReadOnlyList<PatternManifest> All => _patterns;
@@ -217,7 +234,7 @@ namespace GxMcp.Worker.Services
             // A known type GUID that differs from the pattern Id means a native type that
             // only shares the pattern's name (e.g. a Dashboard object vs the Dashboard
             // pattern). WorkWithPlus keeps its historical name-based match.
-            if (byName != null && typeGuid != Guid.Empty && !byName.IsWorkWithPlus) return null;
+            if (byName != null && typeGuid != Guid.Empty && !byName.IsWorkWithPlus && !byName.IsWorkWith) return null;
             return byName;
         }
 

@@ -1,3 +1,4 @@
+using System;
 using System.Reflection;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
@@ -64,6 +65,19 @@ namespace GxMcp.Worker.Tests
             var jo = Parse("{");
             Assert.Equal("Error", (string)jo["_internalStatus"]);
             Assert.Equal("{", (string)jo["message"]);
+        }
+
+        [Fact]
+        public void PatchService_UnpacksWritePayloadResult_ToExposeDerivedObjectRegeneration()
+        {
+            // Issue #453: PatchService must unpack writePayload["result"] so fields like
+            // derivedObjectRegeneration, warning, resolvedObject are surfaced directly on resultObj
+            // rather than being nested under result.result or dropped.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "PatchService.cs");
+
+            Assert.Contains("writePayload[\"result\"] is JObject innerWriteResult", source, StringComparison.Ordinal);
+            Assert.Contains("resultObj[innerProp.Name] = innerProp.Value", source, StringComparison.Ordinal);
         }
     }
 }

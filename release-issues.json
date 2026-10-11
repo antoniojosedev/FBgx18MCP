@@ -1,13 +1,13 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.13.0",
-  "tag": "v3.13.0",
-  "collectedAtUtc": "2026-10-09T03:07:09.3900163Z",
+  "version": "3.14.0",
+  "tag": "v3.14.0",
+  "collectedAtUtc": "2026-10-11T15:45:25.1622045Z",
   "issues": [
     {
-      "number": 441,
-      "title": "[Feature] WorkWithPlus on WebPanel: no way to add buttons (userAction / actionGroup / table) to an Empty-template instance",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/441",
+      "number": 450,
+      "title": "[Melhoria] Adicionar índice de docs/ (ou referenciar os docs de capacidade a partir do README/AGENTS)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/450",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -15,9 +15,9 @@
       "milestone": null
     },
     {
-      "number": 442,
-      "title": "[Feature] WorkWithPlus on WebPanel: no way to add a variable grid (add_grid needs an SDT collection; grid leaf rejected)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/442",
+      "number": 452,
+      "title": "[Investigação][Follow-up #353] Save do WorkWith padrão persiste a instância, mas não propaga a descrição ao painel no GX18 U15",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/452",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -25,9 +25,9 @@
       "milestone": null
     },
     {
-      "number": 447,
-      "title": "[Integridade] Escrita textual de Variables reprocessa declarações fora do delta solicitado",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/447",
+      "number": 453,
+      "title": "[Docs/DX][Follow-up #352] Pontos residuais: exemplo de ordenação, orientação de regeneração e recibo de PatternInstance",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/453",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -35,9 +35,9 @@
       "milestone": null
     },
     {
-      "number": 448,
-      "title": "[Integridade] Recibos de Variables podem confundir confirmação textual com ausência de mutação ou restauração integral",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/448",
+      "number": 454,
+      "title": "[Bug][Follow-up #453/#260] Diagnóstico encaminha WorkWith padrão a WWP; listagem aceita alvo incompatível",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/454",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -45,9 +45,9 @@
       "milestone": null
     },
     {
-      "number": 449,
-      "title": "[Integridade] genexus_edit com parts[] perde dryRun no encaminhamento para BatchEdit",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/449",
+      "number": 455,
+      "title": "[Feature] Autoria tipada de actions no General do WorkWith padrão",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/455",
       "state": "open",
       "labels": [
         "fixed-pending-release"

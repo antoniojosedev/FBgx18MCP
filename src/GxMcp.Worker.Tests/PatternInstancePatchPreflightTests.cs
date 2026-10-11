@@ -188,5 +188,22 @@ namespace GxMcp.Worker.Tests
             Assert.Null(plan.ErrorCode);
             Assert.True(plan.IsNoChange);
         }
+
+        [Fact]
+        public void StructuralRejection_RejectionHint_DistinguishesWorkWithFromWorkWithPlus()
+        {
+            // Issue #454: structural edits on non-WWP patterns (e.g. standard WorkWith)
+            // must not direct the caller to genexus_wwp action=add_user_action.
+            string patchSource = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "PatchService.cs");
+            string writeSource = GxMcp.TestSupport.RepoSource.WithoutComments(
+                "src", "GxMcp.Worker", "Services", "WriteService.PatternWrite.cs");
+
+            foreach (string src in new[] { patchSource, writeSource })
+            {
+                Assert.Contains("structural pattern edits require the GeneXus IDE", src, StringComparison.Ordinal);
+                Assert.Contains("IsWorkWithPlus", src, StringComparison.Ordinal);
+            }
+        }
     }
 }

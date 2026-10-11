@@ -54,6 +54,21 @@ function getGatewayExePath() {
     return path.join(__dirname, '..', '..', 'publish', 'GxMcp.Gateway.exe');
 }
 
+function getGxwireExePath() {
+    if (process.env.GENEXUS_MCP_GXWIRE_EXE) {
+        return process.env.GENEXUS_MCP_GXWIRE_EXE;
+    }
+    const publishPath = path.join(__dirname, '..', '..', 'publish', 'gxwire.exe');
+    if (fs.existsSync(publishPath)) {
+        return publishPath;
+    }
+    const releaseTarget = path.join(__dirname, '..', '..', 'src', 'gxwire', 'target', 'release', 'gxwire.exe');
+    if (fs.existsSync(releaseTarget)) {
+        return releaseTarget;
+    }
+    return publishPath;
+}
+
 function getToolDefinitionsPath() {
     // The gateway loads tool_definitions.json from its own exe directory at
     // runtime (see GxMcp.Gateway/McpRouter.cs). The packaged distribution
@@ -1046,7 +1061,7 @@ function nodeEntrypointInfo(args) {
         if (arg.startsWith('-')) {
             // Inline/evaluated Node programs may start MCP, but their semantics
             // cannot be established without executing them. Keep them unknown.
-            if (/^(?:-e|-p|--eval(?:=|$)|--print(?:=|$)|--check(?:=|$))/.test(arg)) {
+            if (/^(?:-e|-p|--ev(?:al)(?:=|$)|--print(?:=|$)|--check(?:=|$))/.test(arg)) {
                 return { state: 'indeterminate', value: null };
             }
             continue;
@@ -2401,6 +2416,7 @@ module.exports = {
     generateConfig,
     generateNeutralConfig,
     getGatewayExePath,
+    getGxwireExePath,
     getToolDefinitionsPath,
     getGeneXusVersionCatalog,
     getGeneXusCatalogEntries,

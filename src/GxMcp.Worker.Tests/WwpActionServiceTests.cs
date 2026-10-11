@@ -98,6 +98,33 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void WwpInstanceNotFound_StandardWorkWithTarget_ListsWorkWithInstance()
+        {
+            var registry = new PatternRegistry(new[]
+            {
+                PatternRegistry.ParseManifest(
+                    "<Pattern Id=\"c457d383-7d88-4674-a639-c5fe85d11e55\" Name=\"WorkWith\">" +
+                    "<Definition><InstanceName>WorkWith{0}</InstanceName>" +
+                    "<ParentObjects><ParentObject Type=\"Transaction\" /></ParentObjects></Definition></Pattern>", "ww.Pattern")
+            });
+            var detected = PatternAnalysisService.MatchPatternInstances(new[]
+            {
+                new PatternInstanceCandidate("WorkWithWebTestTrn", "WorkWith", new Guid("c457d383-7d88-4674-a639-c5fe85d11e55"))
+            }, registry);
+
+            var env = JObject.Parse(WwpActionService.BuildWwpInstanceNotFound("WorkWithWebTestTrn", "WorkWithWebTestTrn", "WorkWith", detected));
+
+            Assert.Equal("WWPInstanceNotFound", env["error"]?["code"]?.ToString());
+            Assert.Equal("WorkWithWebTestTrn", env["objectName"]?.ToString());
+            var patterns = (JArray)env["detectedPatterns"]!;
+            Assert.Single(patterns);
+            Assert.Equal("WorkWithWebTestTrn", patterns[0]["name"]?.ToString());
+            Assert.Equal("WorkWith", patterns[0]["pattern"]?.ToString());
+            Assert.Contains("genexus_read", env["error"]?["hint"]?.ToString());
+            Assert.Contains("WorkWith instance 'WorkWithWebTestTrn'", env["error"]?["message"]?.ToString());
+        }
+
+        [Fact]
         public void MissingEnvelopeAndNameKeepIdentityOnlyResolutionAvailable()
         {
             Assert.Null(WwpActionService.ResolveTarget(null, null));

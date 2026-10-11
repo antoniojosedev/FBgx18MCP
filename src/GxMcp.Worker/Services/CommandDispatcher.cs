@@ -64,6 +64,7 @@ namespace GxMcp.Worker.Services
         private readonly SelfTestService _selfTestService;
         private readonly PatternAnalysisService _patternAnalysisService;
         private readonly WwpActionService _wwpActionService;
+        private readonly WorkWithService _workWithService;
         private readonly K2bIdeBridgeService _k2bIdeBridgeService;
         private readonly AtomicAuthoringService _atomicAuthoringService;
         private readonly DataInsightService _dataInsightService;
@@ -218,6 +219,7 @@ namespace GxMcp.Worker.Services
             _writeService = new WriteService(_objectService);
             _variableService = new VariableService(_objectService, _writeService);
             _wwpActionService = new WwpActionService(_objectService, _patternAnalysisService, _writeService);
+            _workWithService = new WorkWithService(_objectService, _patternAnalysisService, _writeService);
             _k2bIdeBridgeService = new K2bIdeBridgeService(_kbService);
             _refactorService = new RefactorService(_kbService, _objectService, _indexCacheService, _writeService, _patternAnalysisService);
             _patchService = new PatchService(_objectService, _writeService, _patternAnalysisService);
@@ -361,6 +363,7 @@ namespace GxMcp.Worker.Services
             registry.RegisterTool("genexus_data_view", ctx => Handle_DataView(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
             registry.RegisterTool("genexus_generator_reference", ctx => Handle_GeneratorReference(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
             registry.RegisterTool("genexus_wwp", ctx => Handle_WwpAction(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_workwith", ctx => Handle_WorkWith(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
             registry.RegisterTool("genexus_k2b_designer", ctx => _k2bIdeBridgeService.Run(ctx.Target ?? ctx.ArgStr("name"), ctx.Args));
 
             return registry;
@@ -984,6 +987,7 @@ namespace GxMcp.Worker.Services
                 ["themeclasses"] = Handle_ThemeClasses,
                 ["usercontrols"] = Handle_UserControls,
                 ["wwpaction"] = Handle_WwpAction,
+                ["workwith"] = Handle_WorkWith,
                 ["k2bdesigner"] = (request, method, action, target, payload, args) => _k2bIdeBridgeService.Run(target, args),
                 ["curlproc"] = Handle_CurlProc,
                 ["designsystem"] = Handle_DesignSystem,
@@ -3291,6 +3295,13 @@ namespace GxMcp.Worker.Services
             // list|add_action|add_user_action|add_grid (SDT or variables)|update_action|move_action|remove_action over the host's
             // PatternInstance XML; dryRun supported; no Security permissions created.
             return _wwpActionService.Run(target, args ?? new JObject());
+        }
+
+        private string Handle_WorkWith(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_workwith — Standard WorkWith (WorkWith for Web) typed action authoring (issue #455).
+            // list_actions|add_action over the standard WorkWith PatternInstance; dryRun supported.
+            return _workWithService.Run(target, args ?? new JObject());
         }
 
         private string Handle_GeneratorReference(JObject request, string method, string action, string target, string payload, JObject args)

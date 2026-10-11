@@ -234,7 +234,9 @@ namespace GxMcp.Gateway.Tests
             //   arguments that clients cannot validate. Measured ~35685 tokens; ~315 headroom.
             // PRs #320/#443-#446 add an opt-in K2B tool and typed concurrency/SDT/WWP/EXO contracts.
             // Combined schema measures ~36759 tokens; existing guidance remains available.
-            Assert.True(approxTokens < 37000, $"tool_definitions.json is ~{approxTokens} tokens; budget 37000.");
+            // PR #459 introduces GxWire native architectural discovery tool (genexus_wire). Measured ~37302 tokens.
+            // Issue #455 introduces standard WorkWith tool (genexus_workwith). Measured ~38041 tokens.
+            Assert.True(approxTokens < 38500, $"tool_definitions.json is ~{approxTokens} tokens; budget 38500.");
         }
 
         [Theory]
@@ -252,11 +254,18 @@ namespace GxMcp.Gateway.Tests
         // genexus_security audit_object). Measured 86107 bytes.
         // 86500 -> 86700 for property timeout reconciliation and optimistic set fields.
         // Combined K2B/SDT/WWP/EXO/property contracts: all=88148, authoring=61238 bytes.
-        [InlineData("all", 89000)]
-        [InlineData("core", 25000)]
-        [InlineData("standard", 60000)]
-        [InlineData("authoring", 62500)]
-        [InlineData("devops", 50000)]
+        // all 89000 -> 98500, core 25000 -> 25500, authoring 62500 -> 67500, devops
+        // 50000 -> 51000: each published tool description is a bounded purpose summary
+        // (ToolProfileFilter.MaxToolSummaryLength) instead of only the tool-help URI,
+        // because clients choose a tool from that text before reading any resource.
+        // With genexus_wire added to core/standard/authoring/devops/all and purpose summaries from origin/main:
+        // Measured all ~99400, core=26678, standard ~60500, authoring ~68000, devops=52066 bytes.
+        // Issue #455 adds genexus_workwith: all measured 100907, authoring measured 69808.
+        [InlineData("all", 102000)]
+        [InlineData("core", 27000)]
+        [InlineData("standard", 61000)]
+        [InlineData("authoring", 70500)]
+        [InlineData("devops", 52500)]
         [InlineData("ui", 50000)]
         [InlineData("db", 40000)]
         public void PublishedToolProfileStaysWithinItsByteBudget(string profile, int maxBytes)

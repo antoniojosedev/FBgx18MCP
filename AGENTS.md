@@ -439,7 +439,8 @@ Keep the npx matrix rows for operators who **do not** run from a local
 
 ## Task-specific references
 
-Read only the relevant reference:
+Read only the relevant reference; [`docs/README.md`](docs/README.md) indexes every
+document under `docs/` by area:
 
 - SDK tools, authoring order, placement, SDPanels, live validation, and Windows
   gotchas: [`docs/agent_playbook.md`](docs/agent_playbook.md).

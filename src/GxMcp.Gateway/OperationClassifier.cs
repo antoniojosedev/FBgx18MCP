@@ -91,6 +91,9 @@ namespace GxMcp.Gateway
         private static readonly Dictionary<string, ActionContract> ActionContracts =
             new Dictionary<string, ActionContract>(StringComparer.OrdinalIgnoreCase)
             {
+                ["genexus_wire"] = Contract(
+                    readOnly: new[] { "pack_task", "status", "for", "callers", "impact", "path", "slice", "safe_delete", "index", "doctor" },
+                    mutating: Array.Empty<string>()),
                 ["genexus_connection_recover"] = Contract(
                     readOnly: new[] { "journal_status" },
                     mutating: new[] { "recover", "journal_repair" }),
@@ -193,6 +196,9 @@ namespace GxMcp.Gateway
                         "add_tab", "move_tab", "remove_tab", "set_table_type", "add_grid_attribute",
                         "move_grid_column", "add_grid_variable", "add_grid",
                         "replace_web_component_with_user_action", "settings_edit" }),
+                ["genexus_workwith"] = Contract(
+                    readOnly: new[] { "list_actions" },
+                    mutating: new[] { "add_action" }),
                 ["genexus_sandbox"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "create", "remove" }),
@@ -280,6 +286,7 @@ namespace GxMcp.Gateway
             "genexus_wwp:add_grid_variable",
             "genexus_wwp:add_grid",
             "genexus_wwp:replace_web_component_with_user_action",
+            "genexus_workwith:add_action",
             "genexus_generator_reference:add",
             "genexus_generator_reference:remove"
         };

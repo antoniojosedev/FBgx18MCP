@@ -13,15 +13,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
 
       - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: 24
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v5
         with:
           dotnet-version: 10.0.x
 
@@ -123,6 +123,14 @@ jobs:
         working-directory: src/nexus-ide
         run: npm test
 
+      - name: Build and test gxwire engine
+        shell: pwsh
+        run: |
+          cargo test --manifest-path src/gxwire/Cargo.toml
+          cargo build --release --manifest-path src/gxwire/Cargo.toml
+          New-Item -ItemType Directory -Path publish -Force | Out-Null
+          Copy-Item src/gxwire/target/release/gxwire.exe -Destination publish/gxwire.exe -Force
+
       - name: Gateway and Worker coverage
         shell: pwsh
         run: |
@@ -131,7 +139,7 @@ jobs:
 
       - name: Upload coverage artifacts
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gateway-worker-coverage
           path: ${{ runner.temp }}\gx-coverage-artifacts
@@ -164,10 +172,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v5
         with:
           dotnet-version: 10.0.x
 
@@ -188,7 +196,7 @@ jobs:
 
       - name: Upload SDK validation artifacts
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gxmcp-sdk-validation
           path: ${{ runner.temp }}\gxmcp-sdk-validation
