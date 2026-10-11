@@ -7,6 +7,29 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Internal
+
+## v3.14.0 - 2026-10-11
+
+
+### Tracked issues
+
+- [#450](https://github.com/lennix1337/Genexus18MCP/issues/450) — [Melhoria] Adicionar índice de docs/ (ou referenciar os docs de capacidade a partir do README/AGENTS)
+- [#452](https://github.com/lennix1337/Genexus18MCP/issues/452) — [Investigação][Follow-up #353] Save do WorkWith padrão persiste a instância, mas não propaga a descrição ao painel no GX18 U15
+- [#453](https://github.com/lennix1337/Genexus18MCP/issues/453) — [Docs/DX][Follow-up #352] Pontos residuais: exemplo de ordenação, orientação de regeneração e recibo de PatternInstance
+- [#454](https://github.com/lennix1337/Genexus18MCP/issues/454) — [Bug][Follow-up #453/#260] Diagnóstico encaminha WorkWith padrão a WWP; listagem aceita alvo incompatível
+- [#455](https://github.com/lennix1337/Genexus18MCP/issues/455) — [Feature] Autoria tipada de actions no General do WorkWith padrão
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
 - **GxWire: Native Rust Architectural Discovery, Call Graph & Impact Analysis Engine (Headline Feature)**:
   - High-performance, zero-allocation native Rust engine (`publish/gxwire.exe`, 1.12 MB) purpose-built for AI coding agents to navigate large GeneXus Knowledge Bases in sub-10ms without consuming excessive context tokens or serializing on the COM SDK thread.
   - **Core Capabilities for AI Agents & Developers:**
