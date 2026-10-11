@@ -562,10 +562,11 @@ namespace GxMcp.Worker.Services
                     && patchObjectForTarget != null)
                 {
                     string patternCurrentXml;
+                    KBObject resolvedPatternObject = null;
                     try
                     {
                         patternCurrentXml = _patternAnalysisService.ReadPatternPartXml(
-                            patchObjectForTarget, partName, null, out _, out _, out JObject patternDiagnostic);
+                            patchObjectForTarget, partName, null, out resolvedPatternObject, out _, out JObject patternDiagnostic);
                         if (patternDiagnostic != null)
                             return AttachTimings(
                                 Models.McpResponse.Err(
@@ -588,12 +589,18 @@ namespace GxMcp.Worker.Services
                         patternCurrentXml, WriteService.ToSdkPatternLineEndings(updatedSource),
                         allowGridStructure: false);
                     if (patchPlan.ErrorCode != null)
+                    {
+                        var matchedPattern = _patternAnalysisService?.MatchInstancePattern(resolvedPatternObject ?? patchObjectForTarget);
+                        string rejectionHint = matchedPattern == null || matchedPattern.IsWorkWithPlus
+                            ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
+                            : $"{matchedPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
+
                         return AttachTimings(
                             Models.McpResponse.Err(
                                 code: patchPlan.ErrorCode,
                                 message: "Pattern edit rejected: " + patchPlan.Error
                                     + " Use the appropriate SDK pattern authoring action for structural edits; this does not certify save isolation.",
-                                hint: "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes.",
+                                hint: rejectionHint,
                                 target: target,
                                 extra: new JObject
                                 {
@@ -606,6 +613,7 @@ namespace GxMcp.Worker.Services
                                     ["structuralPreflight"] = "PatternXmlEditPlan"
                                 }),
                             readMs, patchMs, 0, sourceFromCache);
+                    }
                     patchPlanEvidence = patchPlan;
                 }
 
@@ -1226,11 +1234,21 @@ namespace GxMcp.Worker.Services
                         ["usedSourceCache"] = sourceFromCache
                     }
                 };
-                // Carry through WriteService diagnostic fields into result.
+                // Unpack WriteService result payload so fields like derivedObjectRegeneration,
+                // warning, resolvedObject, etc. are surfaced directly on resultObj.
+                if (writePayload["result"] is JObject innerWriteResult)
+                {
+                    foreach (var innerProp in innerWriteResult.Properties())
+                    {
+                        if (resultObj[innerProp.Name] == null)
+                            resultObj[innerProp.Name] = innerProp.Value;
+                    }
+                }
+                // Carry through remaining top-level WriteService diagnostic fields into result.
                 foreach (var prop in writePayload.Properties())
                 {
                     string pn = prop.Name;
-                    if (pn == "status" || pn == "action" || pn == "target") continue;
+                    if (pn == "status" || pn == "action" || pn == "target" || pn == "result") continue;
                     if (resultObj[pn] == null) resultObj[pn] = prop.Value;
                 }
                 // Issues #205/#206: keep the scope/indentation evidence on the write envelope too,

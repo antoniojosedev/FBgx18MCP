@@ -38,6 +38,16 @@
 
 ### Fixed
 
+- **Pattern diagnostic and authoring boundary for WorkWith targets** ([#454](https://github.com/lennix1337/Genexus18MCP/issues/454)):
+  - `PatternAnalysisService.ReadPatternPartXml` now verifies that a direct `PatternInstance` part matches the caller's requested `patternId` before extracting XML, returning a `PatternMismatch` diagnostic instead of exposing standard WorkWith instances to WorkWithPlus-specific callers.
+  - `genexus_wwp` and `genexus_apply_pattern(mode=actions)` now reject standard WorkWith instances with `WWPInstanceNotFound` and actionable diagnostics (`detectedPatterns: [{"name": ..., "pattern": "WorkWith"}]`) instead of returning `WwpActionsRead` with an empty catalog or misleading `FormActionContainerNotFound` errors.
+  - `PatchService` and `WritePatternPart` now emit pattern-aware hints when rejecting structural pattern edits (`PatternStructureChangeUnsupported`), clarifying that non-WWP patterns require the GeneXus IDE or a pattern-specific typed authoring action, rather than pointing to `genexus_wwp action=add_user_action`.
+
+- **Pattern help accuracy, environment regeneration notes, and patch receipt delivery** ([#453](https://github.com/lennix1337/Genexus18MCP/issues/453), [#452](https://github.com/lennix1337/Genexus18MCP/issues/452)):
+  - Updated `ToolHelpCatalog` to clarify that Selection ordering is not exposed as a typed MCP action and that raw `PatternInstance` edits reject `childrenOrderedList` as `PatternMetadataChangeUnsupported`, advising agents to configure Selection ordering in the GeneXus IDE.
+  - Delimited recorded regeneration provenance between GeneXus builds (GX18 U10 regenerated derived objects, whereas on GX18 U15 and GX17 U4 headless instance saves persist without updating derived panels), advising IDE apply when derived objects do not follow.
+  - `PatchService` now unpacks `writePayload["result"]` into `resultObj` so that `derivedObjectRegeneration`, `warning`, `resolvedObject`, `resolvedType`, and related diagnostic evidence are delivered directly at the top level of the MCP patch response.
+
 ### Internal
 
 ## v3.13.0 - 2026-10-09

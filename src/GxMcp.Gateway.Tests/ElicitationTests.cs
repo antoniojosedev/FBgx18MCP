@@ -248,7 +248,11 @@ namespace GxMcp.Gateway.Tests
                     }
                 };
                 string session = "elicit-" + Guid.NewGuid().ToString("N");
-                var fixture = new ElicitationFixture(directory, session, Program.ConfigureRouteStateForTest(config, configPath), answer);
+                var fixture = new ElicitationFixture(
+                    directory,
+                    session,
+                    Program.ConfigureRouteStateForTest(config, configPath, _ => throw new FileNotFoundException("No Worker binary exists in this test fixture.")),
+                    answer);
                 var capabilities = new JObject();
                 if (clientSupportsElicitation) capabilities["elicitation"] = new JObject();
                 ElicitationBroker.ObserveInitialize(new JObject

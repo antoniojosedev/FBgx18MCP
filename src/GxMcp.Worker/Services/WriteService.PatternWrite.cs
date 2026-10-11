@@ -59,9 +59,15 @@ namespace GxMcp.Worker.Services
                 // the write" true for both routes.
                 var plan = PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure);
                 if (plan.ErrorCode != null)
+                {
+                    string rejectionHint = currentPattern == null || currentPattern.IsWorkWithPlus
+                        ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
+                        : $"{currentPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
+
                     return CreateWriteError("Pattern edit rejected", target, partName,
                         plan.Error + " Use the appropriate SDK pattern authoring action for structural edits; this does not certify save isolation.",
-                        obj, code: plan.ErrorCode);
+                        obj, code: plan.ErrorCode, customHint: rejectionHint);
+                }
                 if (plan.IsNoChange)
                     return Models.McpResponse.Ok(target: target, code: "WriteNoChange", result: new JObject
                     {
