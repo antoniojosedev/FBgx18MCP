@@ -7,9 +7,52 @@
 
 ### Added
 
+- **GxWire native architectural discovery, call graph, and impact engine in Rust**:
+  - Standalone, lightweight binary optimized to 1.12 MB (`publish/gxwire.exe`), with zero-allocation 4GL lexing, CSR graph indexing, and sub-10ms graph traversals.
+  - Shortest-path BFS call and dependency tracing (`action=path` / `--path` / `--from` and `--to`) traversing CSR forward callees and reconstructing hops with line numbers.
+  - GeneXus Domain Synonym Dictionary for natural language task search (`action=for` / `--for`), expanding Portuguese and GeneXus abbreviations (`fat`, `ped`, `cli`, `forn`, `nf`, `tit`, `rec`, `pag`, `prc`, `trn`, `wp`, `prod`, `est`, `ven`, `com`, `cta`, `mov`, `imp`, `bco`, `usu`, `val`, `calc`, `ger`, `int`).
+  - Complete data dependency extraction with `ReadsAttr` for `Where Attr = &Var` and assignments `&Var = Attr`, plus expanded file extension coverage (`.prc`, `.trn`, `.wp`, `.sdp`, `.xml` with root-tag entity detection).
+  - Incremental cache freshness tracking file modified timestamps (`mtime`) with millisecond precision in `.gxwire_cache.bin` to automatically detect edits and rebuild cache without manual intervention.
+  - Native Mermaid visualizer (`--format mermaid`) producing render-ready `graph LR` / `graph TD` diagrams for paths, callers, impact, and hubs for Markdown artifacts.
+  - 100% compliance with the 10 AXI (Agent eXperience Interface) Design Principles:
+    - Native TOON (Tabular Object-Oriented Notation) format (`--format toon`) yielding ~40% token savings over JSON.
+    - Content-First default (`gxwire` with 0 args or `action=status` immediately returns live KB status and PageRank architectural hubs without help prompts).
+    - Content truncation with size hints and a `--full` escape hatch to bypass token budget clipping.
+    - Pre-computed aggregates (`can_delete`, `blast_radius`, `est_tokens`, `points_count`).
+    - Definitive empty states (`empty="true"` and `empty: true`) eliminating LLM query re-try loops.
+    - Contextual next-step disclosure on all outputs guiding subsequent actions.
+    - Idempotent and non-blocking execution with structured errors in XML, JSON, TOON, and Mermaid.
+  - Exposed as a first-class Gateway MCP tool `genexus_wire` (`pack_task`, `status`, `for`, `callers`, `impact`, `path`, `slice`, `safe_delete`, `index`, `doctor`) with proactive discovery guidance in `genexus_read` and `genexus_query`.
+  - Added CLI forwarder via `genexus-mcp wire` for terminal usage.
+  - 24 comprehensive tests covering scale benchmarks (50,000 synthetic nodes), edge cases (cycles, case-insensitivity, token-budget pruning), AXI principles, shortest-path BFS, domain synonyms, data dependency extraction, incremental mtime freshness, and real GeneXus 18 KB integration.
+
+- The Gateway can now ask the human directly through MCP elicitation (`elicitation/create`, MCP 2025-06-18). When a KB-bound call fails with `KB_AMBIGUOUS` or `KB_CONTEXT_REQUIRED`, clients that support elicitation show a KB picker; the choice is selected for the session and the call is replayed. Irreversible calls made without `confirm=true` (`genexus_delete_object`, `genexus_data_view action=delete`, `genexus_transfer action=import dryRun=false`, `genexus_deploy action=deploy`) ask the human for approval instead of failing, and a refusal returns `HUMAN_DECLINED` without reaching the Worker. `GXMCP_ELICITATION=strict` also asks when the agent passed `confirm=true`; `off` disables it. Clients without the capability are unaffected. See `docs/elicitation.md`.
+
+- Agents can now choose the right tool before reading any resource. `tools/list` published every tool's description as only `Full guidance: genexus://kb/tool-help/<name>`, so MCP clients that do not read resources up front (most of them) picked among 58 tools by name alone. Each published description is now a sentence-aware purpose summary of the source description, bounded by `ToolProfileFilter.MaxToolSummaryLength` (200 characters), followed by the same tool-help pointer; the complete description and examples stay in the tool-help resource. `initialize` also returns MCP `instructions` for the first time (only `server/discover` carried a single generic sentence): a short intent-to-tool routing guide (`genexus_whoami` first, `genexus_query`/`genexus_search_source` to find, `genexus_kb action=open` before `select`, `genexus_read` of the edited part for its `versionToken`, `genexus_analyze mode=context`/`genexus_impact` before changing, `genexus_edit` with `dryRun` first, `genexus_lifecycle` polling with `target=op:<id>`). Each route is emitted only when the active tool profile exposes its tools, so the guide never points at a tool the client cannot call.
+
+- `docs/README.md` indexes every document under `docs/` by area and is linked from the README and `AGENTS.md`, so feature guides such as the K2B Designer bridge and WorkWithPlus on Empty WebPanels are discoverable without reading the changelog. A CLI docs test fails when a new document is not listed or an index link is broken ([#450](https://github.com/lennix1337/Genexus18MCP/issues/450)).
+
+- **Typed authoring for standard WorkWith pattern actions** ([#455](https://github.com/lennix1337/Genexus18MCP/issues/455)):
+  - Exposes dedicated tool `genexus_workwith` (actions: `list_actions`, `add_action`), strictly isolated from WorkWithPlus (`genexus_wwp`), to inspect tabs and author actions with procedure calls, conditions, and parameters on standard WorkWith instances.
+  - Native reflection adapter `WorkWithSdkAdapter` using `Artech.Patterns.WorkWith.WorkWithInstance` when hosted on the GeneXus STA thread, with robust XML parsing/mutation fallback for headless or test environments.
+  - Fail-closed validation for missing targets, invalid action names, non-existent or non-Procedure targets, tab not found, duplicate action names, and pattern mismatches (with structured hints pointing to `genexus_wwp`).
+
 ### Changed
 
+- Bumped MCP tool schema token budget (38,000 -> 38,500; measured 38,041), 'all' tool profile byte budget (100,000 -> 102,000; measured 100,907 bytes), and 'authoring' tool profile byte budget (68,500 -> 70,500; measured 69,808 bytes) to accommodate the new `genexus_workwith` tool definition and its actions ([#455](https://github.com/lennix1337/Genexus18MCP/issues/455)).
+- Bumped MCP tool schema token budget (37,000 -> 38,000; measured 37,302), 'all' tool profile byte budget (89,000 -> 90,500; measured 89,144 bytes), and 'authoring' tool profile byte budget (62,500 -> 63,000; measured 62,520 bytes) to accommodate the new `genexus_wire` tool definition, its 10 actions, and cross-tool discovery guidance.
+
 ### Fixed
+
+- **Pattern diagnostic and authoring boundary for WorkWith targets** ([#454](https://github.com/lennix1337/Genexus18MCP/issues/454)):
+  - `PatternAnalysisService.ReadPatternPartXml` now verifies that a direct `PatternInstance` part matches the caller's requested `patternId` before extracting XML, returning a `PatternMismatch` diagnostic instead of exposing standard WorkWith instances to WorkWithPlus-specific callers.
+  - `genexus_wwp` and `genexus_apply_pattern(mode=actions)` now reject standard WorkWith instances with `WWPInstanceNotFound` and actionable diagnostics (`detectedPatterns: [{"name": ..., "pattern": "WorkWith"}]`) instead of returning `WwpActionsRead` with an empty catalog or misleading `FormActionContainerNotFound` errors.
+  - `PatchService` and `WritePatternPart` now emit pattern-aware hints when rejecting structural pattern edits (`PatternStructureChangeUnsupported`), clarifying that non-WWP patterns require the GeneXus IDE or a pattern-specific typed authoring action, rather than pointing to `genexus_wwp action=add_user_action`.
+
+- **Pattern help accuracy, environment regeneration notes, and patch receipt delivery** ([#453](https://github.com/lennix1337/Genexus18MCP/issues/453), [#452](https://github.com/lennix1337/Genexus18MCP/issues/452)):
+  - Updated `ToolHelpCatalog` to clarify that Selection ordering is not exposed as a typed MCP action and that raw `PatternInstance` edits reject `childrenOrderedList` as `PatternMetadataChangeUnsupported`, advising agents to configure Selection ordering in the GeneXus IDE.
+  - Delimited recorded regeneration provenance between GeneXus builds (GX18 U10 regenerated derived objects, whereas on GX18 U15 and GX17 U4 headless instance saves persist without updating derived panels), advising IDE apply when derived objects do not follow.
+  - `PatchService` now unpacks `writePayload["result"]` into `resultObj` so that `derivedObjectRegeneration`, `warning`, `resolvedObject`, `resolvedType`, and related diagnostic evidence are delivered directly at the top level of the MCP patch response.
 
 ### Internal
 

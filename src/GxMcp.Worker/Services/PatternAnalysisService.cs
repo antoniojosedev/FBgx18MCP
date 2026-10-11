@@ -692,6 +692,19 @@ namespace GxMcp.Worker.Services
             var directPart = FindPatternPart(obj, partName);
             if (directPart != null)
             {
+                if (patternId.HasValue)
+                {
+                    var matchedPattern = MatchInstancePattern(obj);
+                    if (matchedPattern != null && matchedPattern.Id != patternId.Value)
+                    {
+                        var wanted = Registry.FindById(patternId.Value) ?? new PatternManifest { Id = patternId.Value, Name = patternId.Value.ToString() };
+                        diagnostic = PatternInstanceSelection.Mismatch(new PatternInstanceMatch(ToCandidate(obj), matchedPattern), wanted).ToDiagnostic(obj.Name);
+                        resolvedObject = null;
+                        resolvedPartName = null;
+                        return null;
+                    }
+                }
+
                 string directXml = ExtractEditablePatternXml(directPart, obj);
                 if (!string.IsNullOrEmpty(directXml))
                 {

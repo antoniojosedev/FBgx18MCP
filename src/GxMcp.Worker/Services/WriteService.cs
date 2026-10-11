@@ -2371,7 +2371,8 @@ namespace GxMcp.Worker.Services
             string details,
             global::Artech.Architecture.Common.Objects.KBObject obj = null,
             GxMcp.Worker.Helpers.XmlEquivalenceDiff structuredDiff = null,
-            string code = null)
+            string code = null,
+            string customHint = null)
         {
             // Build verifyDiff for extra block when a structured diff is available.
             JObject verifyDiffObj = null;
@@ -2389,7 +2390,7 @@ namespace GxMcp.Worker.Services
             }
 
             // Build hint from suggestion and nextSteps from availableParts.
-            string hint = BuildSuggestion(error, partName);
+            string hint = customHint ?? BuildSuggestion(error, partName);
 
             // C17: enrich Events-part SDK failures (src0208 auto-stub collision;
             // src0233/src0216 control-not-yet-projected) with the actionable cause.

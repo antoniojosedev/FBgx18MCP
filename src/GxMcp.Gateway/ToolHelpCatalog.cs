@@ -17,6 +17,33 @@ namespace GxMcp.Gateway
 
         private static readonly Dictionary<string, string> _helpTexts = new(System.StringComparer.OrdinalIgnoreCase)
         {
+            ["genexus_wire"] =
+                "# genexus_wire\n\n" +
+                "High-performance native Rust architectural discovery, call graph, and impact engine (sub-10ms).\n" +
+                "Call this FIRST before reading large objects or modifying the KB.\n\n" +
+                "## Actions\n" +
+                "- `pack_task` (default): Complete orientation bundle for a task description (ranked symbols, callers, signatures, variables) bounded under token_budget (default 1200).\n" +
+                "- `status`: Live KB graph status, node/edge counts, and top PageRank-central architectural hubs (content first).\n" +
+                "- `for`: Intent-based ranking of GeneXus symbols for a natural language task with domain synonym expansion (e.g. fat->faturamento, ped->pedido, cli->cliente).\n" +
+                "- `callers`: 1-hop and transitive callers of a symbol.\n" +
+                "- `impact`: Blast radius calculation and downstream dependencies of an object or attribute.\n" +
+                "- `path`: Shortest call and data dependency chain between two symbols (requires `from` and `to`).\n" +
+                "- `slice`: Intra-object data-flow definition-use chain for a variable (e.g. `ProcName:VarName`).\n" +
+                "- `safe_delete`: Verifies if a symbol can be deleted without breaking callers or schemas.\n" +
+                "- `index`: Pre-indexes source files for instant subsequent queries.\n" +
+                "- `doctor`: Diagnostic check of the gxwire binary, index cache, and CPU threads.\n\n" +
+                "## Formats\n" +
+                "- `xml` (default): Compact, token-efficient XML structured specifically for LLMs.\n" +
+                "- `toon`: Tabular Object-Oriented Notation (~40% token savings over JSON, structured tables with clean schema).\n" +
+                "- `mermaid`: Generates ready-to-render Mermaid diagram (graph LR / graph TD) for markdown artifacts.\n" +
+                "- `json`: Standard JSON payload.\n\n" +
+                "## Flags\n" +
+                "- `full`: Set to true to bypass token budget clipping and output exhaustive graph results.\n\n" +
+                "## Performance\n" +
+                "- Zero-allocation lexing and CSR compressed graph traversal in sub-10ms.\n" +
+                "- Incremental cache freshness: automatically checks file mtimes and selectively rebuilds on changes.\n" +
+                "- Independent of the GeneXus STA thread / worker pool.\n",
+
             ["genexus_compare"] =
                 "# genexus_compare\n\n" +
                 "Read-only comparison of objectA and objectB. The SDK remains authoritative for equal and differences (SDK part descriptor names); mode=properties is unchanged.\n\n" +
@@ -131,7 +158,7 @@ namespace GxMcp.Gateway
                 "- `{ name: 'InvoiceProc', part: 'Source', mode: 'patch', operation: 'Replace', context: '<old block>', content: '<new block>', dryRun: true }`\n" +
                 "- `{ name: 'OrderTrn', part: 'Rules', mode: 'full', content: '<rules text>' }`\n\n" +
                 "## Editing pattern parts (PatternInstance / PatternVirtual)\n" +
-                "Any installed pattern's instance can be edited (WorkWithPlus, K2BTools `K2BEntityServices<Trn>`, ...). Name the instance object, or its parent: a parent resolves to its WorkWithPlus instance when it has one (historical behaviour), otherwise to its single pattern instance; a parent with several non-WorkWithPlus instances returns `PatternInstanceAmbiguous` with `candidates`. Editing a non-WorkWithPlus instance does **not** report whether the generated objects were regenerated - the result carries `derivedObjectRegeneration` with the recorded evidence and its provenance instead of a verdict, because the write path does not measure it. Measured separately, a standard WorkWith instance save on GX18 *does* regenerate the derived objects; on GX17 U4 + K2BTools 13.1 it did not. If your objects did not follow, apply the pattern in the GeneXus IDE. The WorkWithPlus-specific notes below (apply-on-save, projection, typed actions) apply only to WorkWithPlus.\n\n" +
+                "Any installed pattern's instance can be edited (WorkWithPlus, K2BTools `K2BEntityServices<Trn>`, ...). Name the instance object, or its parent: a parent resolves to its WorkWithPlus instance when it has one (historical behaviour), otherwise to its single pattern instance; a parent with several non-WorkWithPlus instances returns `PatternInstanceAmbiguous` with `candidates`. Editing a non-WorkWithPlus instance does **not** report whether the generated objects were regenerated - the result carries `derivedObjectRegeneration` with the recorded evidence and its provenance instead of a verdict, because the write path does not measure it. Measured separately, a standard WorkWith instance save on GX18 U10 regenerated the derived objects; on GX18 U15 and GX17 U4 + K2BTools 13.1 headless saves persisted without updating derived panels. If your objects did not follow, apply the pattern in the GeneXus IDE. The WorkWithPlus-specific notes below (apply-on-save, projection, typed actions) apply only to WorkWithPlus.\n\n" +
                 "Pattern XML is the IDE's structural model — containers, controls, actions, grids, orders, filters all live there. `PatternVirtual` continues to support structural full/patch edits through the SDK. Raw `PatternInstance` XML edits are limited to existing property changes; identity, defaults, templates, ordering metadata and structure are rejected explicitly. Use the typed WorkWithPlus actions or SDK pattern operations for structural changes.\n\n" +
                 "### Element kinds (XML node → IDE control)\n" +
                 "- `<textBlock controlName=\"...\" caption=\"...\" themeClass=\"BigTitle|LinkText|...\" format=\"HTML\" />`\n" +
@@ -162,8 +189,8 @@ namespace GxMcp.Gateway
                 "- Change an existing property: `{ name: 'WorkWithPlusAcao', part: 'PatternInstance', mode: 'patch', operation: 'Replace', context: '<existing line>', content: '<same line with one supported property value changed>', dryRun: true }`\n" +
                 "- Add a custom button (structural): use `genexus_wwp { action: 'add_user_action', name: 'WorkWithPlusAcao', containerName: 'TableActions', actionName: 'Auditar', caption: 'Auditar' }`. Raw `PatternInstance` XML cannot add a node — it is rejected as `PatternStructureChangeUnsupported`.\n" +
                 "- Wrap attributes in a styled group (structural): no `genexus_wwp` action exists for inserting a `<table isGroup=\"True\">` group, and raw `PatternInstance` edits reject it. Do it in the GeneXus IDE.\n" +
-                "- Add a Selection ordering through the typed WorkWithPlus action or an SDK pattern operation. `childrenOrderedList` is SDK-owned metadata: raw PatternInstance edits do not rebuild it, and changing it by hand is rejected as `PatternMetadataChangeUnsupported`.\n" +
-                "- Saving a `PatternInstance` reports `derivedObjectRegeneration` rather than a verdict: the write path does not measure whether the generated objects followed, and the recorded evidence disagrees by environment (GX18 regenerates, GX17 U4 + K2BTools 13.1 does not). If they did not follow, apply the pattern in the GeneXus IDE.\n",
+                "- Add a Selection ordering: no typed MCP action currently exposes Selection ordering, and raw PatternInstance edits cannot modify it — `childrenOrderedList` is SDK-owned metadata that raw edits reject as `PatternMetadataChangeUnsupported`. Configure Selection orders in the GeneXus IDE.\n" +
+                "- Saving a `PatternInstance` reports `derivedObjectRegeneration` rather than a verdict: the write path does not measure whether the generated objects followed, and the recorded evidence varies by environment (GX18 U10 regenerated, while on GX18 U15 and GX17 U4 headless saves persist without updating derived panels). If they did not follow, apply the pattern in the GeneXus IDE.\n",
 
             ["genexus_analyze"] =
                 "# genexus_analyze\n\n" +
@@ -765,7 +792,19 @@ namespace GxMcp.Gateway
                 "- `settings_read` returns separate templates' stored XML attributes; offset=0, limit=0 also includes the exact XML. WWP default resolvers are not invoked. Embedded templates retain the SDK property projection.\n" +
                 "- `settings_edit` with dryRun=true previews one property without mutation. Separate templates support an existing table themeClass only; textEdit preserves every character outside that attribute value. Metadata is protected. Real saves remain refused with SettingsIsolationUnverified.\n" +
                 "For instance writes, preview with `dryRun`, pass the returned token as `baseVersion`, `expectedVersion`, or `versionToken`, and persist only after reviewing the typed diff. Instance writes require exact snapshots, re-read the PatternInstance, verify the parent WebForm projection, and roll back on divergence when `rollbackOnFailure` is true. No Specify, Generate, Build, Rebuild, compilation, reorganization, publication, execution, or tests are implicit.\n" +
-                "Example: `{ action: 'add_user_action', name: 'WorkWithPlusImpressaoConfiguracao', containerName: 'TableActions', actionName: 'BaixarConfiguracao', caption: 'Baixar Configuração', dryRun: true }`. Run again with `dryRun: false` to persist after reviewing the diff; the response includes the re-read form container and derived event.\n"
+                "Example: `{ action: 'add_user_action', name: 'WorkWithPlusImpressaoConfiguracao', containerName: 'TableActions', actionName: 'BaixarConfiguracao', caption: 'Baixar Configuração', dryRun: true }`. Run again with `dryRun: false` to persist after reviewing the diff; the response includes the re-read form container and derived event.\n",
+            ["genexus_workwith"] =
+                "# genexus_workwith\n\n" +
+                "Typed authoring of actions and action parameters for standard WorkWith (WorkWith for Web) pattern instances. Preserves strict boundary with WorkWithPlus (genexus_wwp).\n\n" +
+                "## Actions\n" +
+                "- `list_actions` — read the current tabs and ordered actions (name, caption, procedure, parameters, condition) on the standard WorkWith instance.\n" +
+                "- `add_action` — author a typed action with Procedure call, ordered parameters, condition expression, and caption on a target tab (default `General`).\n\n" +
+                "## Safety and Regeneration Rules\n" +
+                "- `dryRun: true` previews the planned action without persisting changes to the KB.\n" +
+                "- Action name must be a valid identifier and unique within the target tab.\n" +
+                "- Target Procedure must exist in the Knowledge Base and be of type Procedure.\n" +
+                "- Derived WebComponent regeneration: persisting an action updates the WorkWith instance definition; on GeneXus 18/17, derived WebComponents (e.g. `<Trn>General`) may require IDE Apply or build to re-project the new action control into the WebForm.\n\n" +
+                "Example: `{ action: 'add_action', name: 'Customer', tab: 'General', actionName: 'PrintStatement', caption: 'Print Statement', procedure: 'procPrintCustomer', parameters: ['CustomerId', '\"PDF\"'], condition: '&CustomerActive', dryRun: true }`.\n"
         };
 
         internal static string? Get(string toolName)
