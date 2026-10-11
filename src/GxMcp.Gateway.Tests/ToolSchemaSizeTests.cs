@@ -235,7 +235,8 @@ namespace GxMcp.Gateway.Tests
             // PRs #320/#443-#446 add an opt-in K2B tool and typed concurrency/SDT/WWP/EXO contracts.
             // Combined schema measures ~36759 tokens; existing guidance remains available.
             // PR #459 introduces GxWire native architectural discovery tool (genexus_wire). Measured ~37302 tokens.
-            Assert.True(approxTokens < 38000, $"tool_definitions.json is ~{approxTokens} tokens; budget 38000.");
+            // Issue #455 introduces standard WorkWith tool (genexus_workwith). Measured ~38041 tokens.
+            Assert.True(approxTokens < 38500, $"tool_definitions.json is ~{approxTokens} tokens; budget 38500.");
         }
 
         [Theory]
@@ -259,10 +260,11 @@ namespace GxMcp.Gateway.Tests
         // because clients choose a tool from that text before reading any resource.
         // With genexus_wire added to core/standard/authoring/devops/all and purpose summaries from origin/main:
         // Measured all ~99400, core=26678, standard ~60500, authoring ~68000, devops=52066 bytes.
-        [InlineData("all", 100000)]
+        // Issue #455 adds genexus_workwith: all measured 100907, authoring measured 69808.
+        [InlineData("all", 102000)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
-        [InlineData("authoring", 68500)]
+        [InlineData("authoring", 70500)]
         [InlineData("devops", 52500)]
         [InlineData("ui", 50000)]
         [InlineData("db", 40000)]

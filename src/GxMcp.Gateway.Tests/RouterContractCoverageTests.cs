@@ -61,6 +61,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_orient", "{}", "Orient", "Welcome")]
         [InlineData("genexus_api", "{}", "Api", "list")]
         [InlineData("genexus_wwp", "{}", "WwpAction", "Run")]
+        [InlineData("genexus_workwith", "{}", "WorkWith", "Run")]
         [InlineData("genexus_generator_reference", "{}", "GeneratorReference", "Run")]
         public void Operations_direct_routes_match_contract(string tool, string json, string module, string action)
         {

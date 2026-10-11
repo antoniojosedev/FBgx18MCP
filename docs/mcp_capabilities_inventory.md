@@ -121,6 +121,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_deploy` | `list_targets` | `deploy` |
 | `genexus_generator_reference` | `list`, `dry_run_add`, `dry_run_remove` | `add`, `remove` |
 | `genexus_wwp` | `list`, `settings_templates`, `settings_read`, `list_tabs`, `tab_schema` | `add_action`, `add_user_action`, `update_action`, `move_action`, `remove_action`, `add_tab`, `move_tab`, `remove_tab`, `set_table_type`, `add_grid_attribute`, `move_grid_column`, `add_grid_variable`, `add_grid`, `replace_web_component_with_user_action`, `settings_edit` |
+| `genexus_workwith` | `list_actions` | `add_action` |
 
 For SDTs, `genexus_structure update_visual` accepts `payload.mode=add|replace` and requires `expectedVersion`; replacement previews omitted-member removals and requires `allowRemoval=true` to apply them. `genexus_versioning history_get` reads a revision's `SDTStructure`, and `history_restore` previews or restores it with `versionId`, `expectedVersion`, native rollback, and post-save verification.
 
@@ -178,6 +179,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_k2b_designer` | requires IDE bridge | Native editing of already-active K2B WebPanel Designers in the open GeneXus IDE; requires matching KB and pipe, an open clean document, and an expected version for writes |
 | `genexus_apply_pattern` | active | Pattern application for any installed pattern (registry discovered from `Packages\Patterns`), diagnose, and reapply on WorkWithPlus instances only (with no implicit WorkWithPlus fallback when `pattern` is omitted - headless reapply of any other pattern is refused as `PatternRouteUnsupported`), and WorkWithPlus action-group/form-action configuration |
 | `genexus_wwp` | active | Typed WorkWithPlus grid/form actions, tabs, nested controls, native table-type changes, grid attributes/variables, and native WebComponent-to-DropDownComponent replacement with preview, physical KB identity, parent/PatternInstance projection checks, concurrency checks, verification, and conditional rollback; an existing object without a WorkWithPlus instance returns `WWPInstanceNotFound` with `detectedPatterns` |
+| `genexus_workwith` | active | Typed authoring of actions and parameters for standard WorkWith (WorkWith for Web) pattern instances through the native SDK; preserves strict boundary with WorkWithPlus (genexus_wwp) |
 | `genexus_security` | active | `Security -> audit_gam | scan_secrets | scan_native | audit_object` (native SDK scanner; in-memory single-object audit) |
 
 | `genexus_kb` | active | Multi-KB pool management, startup object, and environment switching |

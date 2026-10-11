@@ -5056,6 +5056,74 @@
     },
     {
       "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Typed authoring of actions and action parameters for standard WorkWith (WorkWith for Web) pattern instances. action=list_actions|add_action. Preserves strict boundary with WorkWithPlus (genexus_wwp). Full guidance: genexus://kb/tool-help/genexus_workwith",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "default": "list_actions",
+            "description": "Operation to perform: list_actions…",
+            "enum": [
+              "list_actions",
+              "add_action"
+            ],
+            "type": "string"
+          },
+          "actionName": {
+            "description": "Unique name for the action (required…",
+            "type": "string"
+          },
+          "caption": {
+            "description": "Display caption for the button…",
+            "type": "string"
+          },
+          "condition": {
+            "description": "Optional condition expression to…",
+            "type": "string"
+          },
+          "dryRun": {
+            "default": false,
+            "description": "When true, returns the execution plan…",
+            "type": "boolean"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Target Transaction or standard WorkWith…",
+            "type": "string"
+          },
+          "parameters": {
+            "description": "Ordered parameters passed to the…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "procedure": {
+            "description": "Target Procedure name or GUID to invoke…",
+            "type": "string"
+          },
+          "tab": {
+            "default": "General",
+            "description": "Target tab code on the View (default…",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_workwith"
+    },
+    {
+      "annotations": {
         "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": false,

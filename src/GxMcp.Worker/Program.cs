@@ -347,9 +347,19 @@ namespace GxMcp.Worker
 
                 AppDomain.CurrentDomain.AssemblyResolve += (sender, resolveArgs) => {
                     try {
-                        string assemblyName = new AssemblyName(resolveArgs.Name).Name + ".dll";
+                        string rawName = resolveArgs.Name;
+                        int comma = rawName.IndexOf(',');
+                        string simpleName = comma > 0 ? rawName.Substring(0, comma).Trim() : rawName.Trim();
+                        string assemblyName = simpleName + ".dll";
+
                         string assemblyPath = Path.Combine(gxPath, assemblyName);
                         if (File.Exists(assemblyPath)) return Assembly.LoadFrom(assemblyPath);
+
+                        string pkgPath = Path.Combine(gxPath, "Packages", assemblyName);
+                        if (File.Exists(pkgPath)) return Assembly.LoadFrom(pkgPath);
+
+                        string wwPath = Path.Combine(gxPath, "Packages", "Patterns", "WorkWith", assemblyName);
+                        if (File.Exists(wwPath)) return Assembly.LoadFrom(wwPath);
                     } catch { }
                     return null;
                 };

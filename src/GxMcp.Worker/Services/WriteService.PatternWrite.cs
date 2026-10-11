@@ -62,6 +62,8 @@ namespace GxMcp.Worker.Services
                 {
                     string rejectionHint = currentPattern == null || currentPattern.IsWorkWithPlus
                         ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
+                        : currentPattern.IsWorkWith
+                        ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; raw PatternInstance XML is limited to existing property changes."
                         : $"{currentPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
 
                     return CreateWriteError("Pattern edit rejected", target, partName,

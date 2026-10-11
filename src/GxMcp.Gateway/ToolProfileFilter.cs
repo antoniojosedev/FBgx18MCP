@@ -46,6 +46,7 @@ namespace GxMcp.Gateway
             "genexus_edit_form",
             "genexus_k2b_designer",
             "genexus_wwp",
+            "genexus_workwith",
             "genexus_apply_pattern",
             "genexus_edit_and_build"
         };

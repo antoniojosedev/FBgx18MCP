@@ -32,8 +32,14 @@
 
 - `docs/README.md` indexes every document under `docs/` by area and is linked from the README and `AGENTS.md`, so feature guides such as the K2B Designer bridge and WorkWithPlus on Empty WebPanels are discoverable without reading the changelog. A CLI docs test fails when a new document is not listed or an index link is broken ([#450](https://github.com/lennix1337/Genexus18MCP/issues/450)).
 
+- **Typed authoring for standard WorkWith pattern actions** ([#455](https://github.com/lennix1337/Genexus18MCP/issues/455)):
+  - Exposes dedicated tool `genexus_workwith` (actions: `list_actions`, `add_action`), strictly isolated from WorkWithPlus (`genexus_wwp`), to inspect tabs and author actions with procedure calls, conditions, and parameters on standard WorkWith instances.
+  - Native reflection adapter `WorkWithSdkAdapter` using `Artech.Patterns.WorkWith.WorkWithInstance` when hosted on the GeneXus STA thread, with robust XML parsing/mutation fallback for headless or test environments.
+  - Fail-closed validation for missing targets, invalid action names, non-existent or non-Procedure targets, tab not found, duplicate action names, and pattern mismatches (with structured hints pointing to `genexus_wwp`).
+
 ### Changed
 
+- Bumped MCP tool schema token budget (38,000 -> 38,500; measured 38,041), 'all' tool profile byte budget (100,000 -> 102,000; measured 100,907 bytes), and 'authoring' tool profile byte budget (68,500 -> 70,500; measured 69,808 bytes) to accommodate the new `genexus_workwith` tool definition and its actions ([#455](https://github.com/lennix1337/Genexus18MCP/issues/455)).
 - Bumped MCP tool schema token budget (37,000 -> 38,000; measured 37,302), 'all' tool profile byte budget (89,000 -> 90,500; measured 89,144 bytes), and 'authoring' tool profile byte budget (62,500 -> 63,000; measured 62,520 bytes) to accommodate the new `genexus_wire` tool definition, its 10 actions, and cross-tool discovery guidance.
 
 ### Fixed

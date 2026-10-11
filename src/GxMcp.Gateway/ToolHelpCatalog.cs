@@ -792,7 +792,19 @@ namespace GxMcp.Gateway
                 "- `settings_read` returns separate templates' stored XML attributes; offset=0, limit=0 also includes the exact XML. WWP default resolvers are not invoked. Embedded templates retain the SDK property projection.\n" +
                 "- `settings_edit` with dryRun=true previews one property without mutation. Separate templates support an existing table themeClass only; textEdit preserves every character outside that attribute value. Metadata is protected. Real saves remain refused with SettingsIsolationUnverified.\n" +
                 "For instance writes, preview with `dryRun`, pass the returned token as `baseVersion`, `expectedVersion`, or `versionToken`, and persist only after reviewing the typed diff. Instance writes require exact snapshots, re-read the PatternInstance, verify the parent WebForm projection, and roll back on divergence when `rollbackOnFailure` is true. No Specify, Generate, Build, Rebuild, compilation, reorganization, publication, execution, or tests are implicit.\n" +
-                "Example: `{ action: 'add_user_action', name: 'WorkWithPlusImpressaoConfiguracao', containerName: 'TableActions', actionName: 'BaixarConfiguracao', caption: 'Baixar Configuração', dryRun: true }`. Run again with `dryRun: false` to persist after reviewing the diff; the response includes the re-read form container and derived event.\n"
+                "Example: `{ action: 'add_user_action', name: 'WorkWithPlusImpressaoConfiguracao', containerName: 'TableActions', actionName: 'BaixarConfiguracao', caption: 'Baixar Configuração', dryRun: true }`. Run again with `dryRun: false` to persist after reviewing the diff; the response includes the re-read form container and derived event.\n",
+            ["genexus_workwith"] =
+                "# genexus_workwith\n\n" +
+                "Typed authoring of actions and action parameters for standard WorkWith (WorkWith for Web) pattern instances. Preserves strict boundary with WorkWithPlus (genexus_wwp).\n\n" +
+                "## Actions\n" +
+                "- `list_actions` — read the current tabs and ordered actions (name, caption, procedure, parameters, condition) on the standard WorkWith instance.\n" +
+                "- `add_action` — author a typed action with Procedure call, ordered parameters, condition expression, and caption on a target tab (default `General`).\n\n" +
+                "## Safety and Regeneration Rules\n" +
+                "- `dryRun: true` previews the planned action without persisting changes to the KB.\n" +
+                "- Action name must be a valid identifier and unique within the target tab.\n" +
+                "- Target Procedure must exist in the Knowledge Base and be of type Procedure.\n" +
+                "- Derived WebComponent regeneration: persisting an action updates the WorkWith instance definition; on GeneXus 18/17, derived WebComponents (e.g. `<Trn>General`) may require IDE Apply or build to re-project the new action control into the WebForm.\n\n" +
+                "Example: `{ action: 'add_action', name: 'Customer', tab: 'General', actionName: 'PrintStatement', caption: 'Print Statement', procedure: 'procPrintCustomer', parameters: ['CustomerId', '\"PDF\"'], condition: '&CustomerActive', dryRun: true }`.\n"
         };
 
         internal static string? Get(string toolName)

@@ -492,6 +492,15 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                case "genexus_workwith":
+                    return new
+                    {
+                        module = "WorkWith",
+                        action = "Run",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
                 // Read-only graph views (#422-#424): every selector travels in @params.
                 case "genexus_dfd":
                     return new { module = "Dfd", action = "Run", target = args?["name"]?.ToString(), @params = args };
