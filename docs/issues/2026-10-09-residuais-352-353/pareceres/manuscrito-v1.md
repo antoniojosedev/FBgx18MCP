@@ -306,4 +306,3 @@ Executados com `dotnet test -c Release --no-build --no-restore`, filtros FullyQu
 Sem instrumentação de hooks/manifest; sem teste atual de Save direto em I ou mode=full; sem espera prolongada por eventual geração assíncrona; sem comparação WebForm/metadata; sem build, XLS ou execução web. O baseline frozen anterior existia; a restauração desta rodada usou patch inverso com versão atualizada e read-back, não reversão de versão.
 
 Nenhuma publicação foi feita nesta rodada. Não houve patch no código do MCP. Não alegamos restauração de timestamps ou histórico da KB.
-
