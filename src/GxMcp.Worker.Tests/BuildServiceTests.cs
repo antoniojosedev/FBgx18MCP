@@ -706,6 +706,90 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("watchdog failure at phase 'Generating'", status.Error);
         }
 
+        [Fact]
+        public void WatchdogFailure_Issue475_SetsExplicitDiagnosticsAndNullableExitCode()
+        {
+            var status = new BuildService.BuildTaskStatus
+            {
+                TaskId = "test475a",
+                Status = "Running",
+                Phase = "Finishing",
+                ErrorCount = 0,
+                StartedAt = DateTime.UtcNow.AddSeconds(-185)
+            };
+
+            Assert.True(BuildService.TrySetWatchdogFailure(status,
+                phase => "Build made no observable progress for 180s at phase '" + phase + "' and was terminated (no-progress watchdog).",
+                watchdogType: "no-progress"));
+
+            Assert.Equal("Failed", status.Status);
+            Assert.Equal("Finishing", status.Phase);
+            Assert.Null(status.ExitCode);
+            Assert.True(status.WatchdogTriggered);
+            Assert.Equal("no-progress", status.WatchdogType);
+            Assert.Equal("watchdog", status.FailureOrigin);
+            Assert.Equal("unknown", status.ChildProcessState);
+        }
+
+        [Fact]
+        public void WatchdogFailure_Issue475_WithRecordedErrors_SetsFailureOriginWatchdogWithErrors()
+        {
+            var status = new BuildService.BuildTaskStatus
+            {
+                TaskId = "test475b",
+                Status = "Running",
+                Phase = "Finishing",
+                ErrorCount = 7,
+                WarningCount = 1,
+                StartedAt = DateTime.UtcNow.AddSeconds(-185)
+            };
+
+            Assert.True(BuildService.TrySetWatchdogFailure(status,
+                phase => "Build made no observable progress for 180s at phase '" + phase + "' and was terminated (no-progress watchdog).",
+                watchdogType: "no-progress"));
+
+            Assert.Equal("Failed", status.Status);
+            Assert.Equal("Finishing", status.Phase);
+            Assert.Null(status.ExitCode);
+            Assert.True(status.WatchdogTriggered);
+            Assert.Equal("no-progress", status.WatchdogType);
+            Assert.Equal("watchdog_with_errors", status.FailureOrigin);
+            Assert.Equal("unknown", status.ChildProcessState);
+        }
+
+        [Fact]
+        public void WatchdogFailure_Issue475_FlushesFullOutputLogToDiskImmediately()
+        {
+            var status = new BuildService.BuildTaskStatus
+            {
+                TaskId = "test475c",
+                Status = "Running",
+                Phase = "Finishing",
+                StartedAt = DateTime.UtcNow.AddSeconds(-185)
+            };
+            status.FullOutput.AppendLine("DeveloperMenu Compilation");
+            status.FullOutput.AppendLine("dotnet publish -nologo -c Release /v:q");
+
+            Assert.True(BuildService.TrySetWatchdogFailure(status,
+                phase => "no progress watchdog",
+                watchdogType: "no-progress"));
+
+            Assert.NotNull(status.FullLogPath);
+            Assert.True(System.IO.File.Exists(status.FullLogPath));
+            Assert.NotNull(status.Output);
+        }
+
+        [Fact]
+        public void ConfirmedStages_TracksCompletedStagesInOrder()
+        {
+            var status = new BuildService.BuildTaskStatus();
+            BuildService.RecordStagesUpTo(status, "Finishing");
+            Assert.Equal(new[] { "OpeningKB", "Specifying", "Generating", "Compiling" }, status.ConfirmedStages);
+
+            BuildService.RecordStagesUpTo(status, "Done");
+            Assert.Equal(new[] { "OpeningKB", "Specifying", "Generating", "Compiling", "Finishing" }, status.ConfirmedStages);
+        }
+
         // ── issue #42: no-progress watchdog env parsing ─────────────────────
 
         [Fact]

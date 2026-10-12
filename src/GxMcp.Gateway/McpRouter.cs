@@ -2489,11 +2489,13 @@ namespace GxMcp.Gateway
             bool success = outcome == LifecycleResponseShaper.BuildOutcome.Success
                         || outcome == LifecycleResponseShaper.BuildOutcome.PartialSuccess;
             int errs = workerStatus["errorCount"]?.ToObject<int?>() ?? workerStatus["ErrorCount"]?.ToObject<int?>() ?? 0;
-            int warns = workerStatus["warningCount"]?.ToObject<int?>() ?? workerStatus["WarningCount"]?.ToObject<int?>() ?? 0;
+            string? failureOrigin = workerStatus["failureOrigin"]?.ToString() ?? workerStatus["FailureOrigin"]?.ToString();
+            bool isWatchdog = string.Equals(failureOrigin, "watchdog_with_errors", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(failureOrigin, "watchdog", StringComparison.OrdinalIgnoreCase);
             string summary = string.Equals(s, "ReorgRequired", StringComparison.OrdinalIgnoreCase)
                 ? "Build All stopped because the KB requires reorganization; run action=reorg explicitly and retry."
                 : outcome == LifecycleResponseShaper.BuildOutcome.Error
-                ? $"Build {s}: {errs} errors, {warns} warnings"
+                ? (isWatchdog ? $"Build {s} (watchdog): {errs} errors, {warns} warnings" : $"Build {s}: {errs} errors, {warns} warnings")
                 : success
                 ? $"Build succeeded: {warns} warnings, {errs} errors"
                 : $"Build {s}: {errs} errors, {warns} warnings";

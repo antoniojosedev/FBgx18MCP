@@ -430,7 +430,8 @@ namespace GxMcp.Gateway
             {
                 "newWarnings", "warningCount", "warningTotal", "warningCursor",
                 "warningsAggregated", "_meta", "phase", "Phase", "errorCount",
-                "ErrorCount", "warningCount", "WarningCount", "exitCode", "ExitCode"
+                "ErrorCount", "warningCount", "WarningCount", "exitCode", "ExitCode",
+                "failureOrigin", "watchdogTriggered", "watchdogType", "childProcessState", "confirmedStages"
             })
             {
                 if (result[propertyName] != null)

@@ -155,6 +155,17 @@ namespace GxMcp.Gateway
             if (obj["Environment"] != null)
                 compactObj["Environment"] = obj["Environment"];
 
+            if (obj["failureOrigin"] != null || obj["FailureOrigin"] != null)
+                compactObj["failureOrigin"] = obj["failureOrigin"] ?? obj["FailureOrigin"];
+            if (obj["watchdogTriggered"] != null || obj["WatchdogTriggered"] != null)
+                compactObj["watchdogTriggered"] = obj["watchdogTriggered"] ?? obj["WatchdogTriggered"];
+            if (obj["watchdogType"] != null || obj["WatchdogType"] != null)
+                compactObj["watchdogType"] = obj["watchdogType"] ?? obj["WatchdogType"];
+            if (obj["childProcessState"] != null || obj["ChildProcessState"] != null)
+                compactObj["childProcessState"] = obj["childProcessState"] ?? obj["ChildProcessState"];
+            if (obj["confirmedStages"] != null || obj["ConfirmedStages"] != null)
+                compactObj["confirmedStages"] = obj["confirmedStages"] ?? obj["ConfirmedStages"];
+
             // compile_check metadata is attached to the raw BuildTaskStatus with
             // PascalCase property names. Preserve it in the compact polling/result
             // shape; otherwise async status silently loses caller-cap evidence.
