@@ -12,6 +12,37 @@ namespace GxMcp.Worker.Tests
     {
         private static JObject observedArgs;
 
+        [Theory]
+        [InlineData("SetAttributeProperties", false)]
+        [InlineData("SetLevelProperties", false)]
+        [InlineData("SetDomainProperties", false)]
+        [InlineData("UpdateGroupStructure", false)]
+        [InlineData("SetAttributeProperties", true)]
+        [InlineData("SetLevelProperties", true)]
+        [InlineData("SetDomainProperties", true)]
+        [InlineData("UpdateGroupStructure", true)]
+        public void UnsupportedStructureDryRunRejectsBeforeAccessingWriteServices(string action, bool nested)
+        {
+            // No StructureService is installed: entering any writer would fail.
+            var dispatcher = (CommandDispatcher)FormatterServices.GetUninitializedObject(typeof(CommandDispatcher));
+            var tableField = typeof(CommandDispatcher).GetField("_commandTable", BindingFlags.NonPublic | BindingFlags.Instance);
+            var table = (IDictionary)Activator.CreateInstance(tableField.FieldType);
+            var handlerType = tableField.FieldType.GetGenericArguments()[1];
+            table.Add("structure", Delegate.CreateDelegate(handlerType, dispatcher,
+                typeof(CommandDispatcher).GetMethod("Handle_Structure", BindingFlags.NonPublic | BindingFlags.Instance)));
+            tableField.SetValue(dispatcher, table);
+            var args = new JObject { ["dryRun"] = true };
+            var request = new JObject
+            {
+                ["method"] = "structure", ["action"] = action, ["target"] = "TestAttribute",
+                ["payload"] = "{\"formula\":\"Value * 2\"}",
+                ["params"] = nested ? new JObject { ["params"] = args } : args
+            };
+            var response = JObject.Parse(dispatcher.Dispatch(request.ToString()));
+            Assert.Equal("error", response["status"]?.ToString());
+            Assert.Equal("StructureDryRunUnsupported", response["error"]?["code"]?.ToString());
+        }
+
         [Fact]
         public void Nested_tool_args_do_not_receive_worker_routing_module_action_or_target()
         {

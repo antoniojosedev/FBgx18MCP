@@ -6,6 +6,21 @@ namespace GxMcp.Gateway.Tests
 {
     public class OperationClassifierTests
     {
+        [Theory]
+        [InlineData("set_attribute")]
+        [InlineData("set_level")]
+        [InlineData("set_domain")]
+        [InlineData("update_group")]
+        public void UnsupportedStructurePreviewsRemainMutating(string action)
+        {
+            var args = new JObject { ["action"] = action, ["dryRun"] = true };
+            var described = OperationClassifier.Describe("genexus_structure", args);
+            Assert.False(described.PreviewSupported);
+            Assert.Equal(OperationClassifier.OperationKind.Mutating, described.Kind);
+            Assert.False(OperationClassifier.IsReadOnly("genexus_structure", args));
+            Assert.True(OperationClassifier.IsMutationCandidate("genexus_structure", args));
+        }
+
         [Fact]
         public void DescribePublishesOneConservativePolicyForCacheAndRetry()
         {

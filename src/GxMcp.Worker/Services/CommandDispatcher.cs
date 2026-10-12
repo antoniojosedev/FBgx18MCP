@@ -2666,6 +2666,17 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Structure(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            // These property writers have no side-effect-free preview. Reject before
+            // resolving SDK objects rather than silently applying a requested dry run.
+            if ((args?["dryRun"]?.ToObject<bool?>() ?? false) &&
+                (action == "SetAttributeProperties" || action == "SetLevelProperties" ||
+                 action == "SetDomainProperties" || action == "UpdateGroupStructure"))
+                return GxMcp.Worker.Models.McpResponse.Err(
+                    code: "StructureDryRunUnsupported",
+                    message: "This action has no safe preview; nothing was dispatched or changed.",
+                    hint: "Read the current state first. Submit dryRun: false only when a write is intended.",
+                    target: target);
+
             if (action == "GetVisualStructure")
             {
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();

@@ -1137,7 +1137,7 @@
             "dependents",
             "collections"
           ],
-          "previewSupported": true
+          "previewSupported": false
         },
         {
           "action": "set_level",
@@ -1151,7 +1151,7 @@
             "dependents",
             "collections"
           ],
-          "previewSupported": true
+          "previewSupported": false
         },
         {
           "action": "set_domain",
@@ -1165,7 +1165,7 @@
             "dependents",
             "collections"
           ],
-          "previewSupported": true
+          "previewSupported": false
         },
         {
           "action": "get_logic",
@@ -1189,7 +1189,7 @@
             "dependents",
             "collections"
           ],
-          "previewSupported": true
+          "previewSupported": false
         },
         {
           "action": "move_attribute",
