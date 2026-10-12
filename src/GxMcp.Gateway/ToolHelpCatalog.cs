@@ -420,7 +420,8 @@ namespace GxMcp.Gateway
                 "- `update_group` — manage subtype group members and relationships.\n" +
                 "- `check_subtypes` — validate subtype consistency and detect circular or misconfigured subtype relations.\n\n" +
                 "## Concurrency & Safety\n" +
-                "All mutating operations support `dryRun: true`, `baseVersion` / `expectedVersion` optimistic locking, and `rollbackOnFailure: true`.\n",
+                "`set_attribute`, `set_level`, `set_domain`, and `update_group` do not support safe previews: `dryRun: true` returns `StructureDryRunUnsupported` without dispatching a write. Read current state before intentionally applying these actions.\n" +
+                "`update_visual` supports `dryRun: true`, `baseVersion` / `expectedVersion` optimistic locking, and `rollbackOnFailure: true`. Other actions have action-specific safety contracts; do not assume preview, locking, or rollback support.\n",
 
             ["genexus_layout"] =
                 "# genexus_layout\n\n" +
