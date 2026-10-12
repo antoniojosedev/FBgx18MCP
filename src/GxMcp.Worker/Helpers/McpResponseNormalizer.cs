@@ -97,6 +97,8 @@ namespace GxMcp.Worker.Helpers
                 if (normalizedError[property.Name] == null)
                     normalizedError[property.Name] = property.Value;
             }
+            if (payload["correlationId"] != null && normalizedError["correlationId"] == null)
+                normalizedError["correlationId"] = payload["correlationId"];
             if (legacyStatus && !string.Equals(status, "error", StringComparison.Ordinal))
                 normalizedError["legacyStatus"] = status;
 
