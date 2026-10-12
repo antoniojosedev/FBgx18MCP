@@ -99,6 +99,8 @@ namespace GxMcp.Worker.Helpers
             }
             if (payload["correlationId"] != null && normalizedError["correlationId"] == null)
                 normalizedError["correlationId"] = payload["correlationId"];
+            if (payload["failedStage"] != null && normalizedError["failedStage"] == null)
+                normalizedError["failedStage"] = payload["failedStage"];
             if (legacyStatus && !string.Equals(status, "error", StringComparison.Ordinal))
                 normalizedError["legacyStatus"] = status;
 
