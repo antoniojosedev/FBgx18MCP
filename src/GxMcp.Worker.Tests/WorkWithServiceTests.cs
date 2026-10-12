@@ -37,6 +37,32 @@ namespace GxMcp.Worker.Tests
   </level>
 </WorkWithInstance>";
 
+        private const string SampleWorkWithXmlWithDefaultsAndNeighbors = @"<?xml version=""1.0"" encoding=""utf-8""?>
+<WorkWithInstance xmlns=""http://schemas.genexus.com/Patterns/WorkWith/v1.0"">
+  <level>
+    <selection page=""&lt;default&gt;"">
+      <actions>
+        <action name=""Export"" caption=""Export"" />
+      </actions>
+    </selection>
+    <view>
+      <tabs>
+        <tab code=""General"" name=""General"" type=""Tabular"">
+          <actions>
+            <action name=""Update"" caption=""Update"" />
+            <action name=""Delete"" caption=""Delete"" />
+          </actions>
+        </tab>
+        <tab code=""Orders"" name=""Orders"" type=""Grid"" page=""&lt;default&gt;"">
+          <actions>
+            <action name=""ViewOrder"" caption=""View Order"" />
+          </actions>
+        </tab>
+      </tabs>
+    </view>
+  </level>
+</WorkWithInstance>";
+
         [Fact]
         public void TryAddActionToXml_AddsActionWithProcedureConditionAndParameters_Success()
         {
@@ -179,6 +205,75 @@ namespace GxMcp.Worker.Tests
             };
             Assert.True(wwpManifest.IsWorkWithPlus);
             Assert.False(wwManifest.IsWorkWithPlus);
+        }
+
+        [Fact]
+        public void TryAddActionToXml_ControlledFixtureWithDefaultsAndNeighborTabs_PreservesDefaultsAndNeighborStructure()
+        {
+            var parameters = new List<string> { "TestTrnId" };
+            bool added = WorkWithSdkAdapter.TryAddActionToXml(
+                SampleWorkWithXmlWithDefaultsAndNeighbors,
+                tabCode: "General",
+                actionName: "ExecutaTeste",
+                caption: "Executa Teste",
+                procObj: null,
+                condition: "False",
+                parameters: parameters,
+                out string newXml,
+                out string errorCode,
+                out string errorMessage);
+
+            Assert.True(added, errorMessage);
+            Assert.Null(errorCode);
+            Assert.NotNull(newXml);
+
+            // Verify defaults are preserved verbatim on Selection and neighbor tab (not materialized to concrete 10)
+            Assert.Contains("&lt;default&gt;", newXml);
+            Assert.DoesNotContain("page=\"10\"", newXml);
+
+            // Verify neighbor tab Orders and its action are preserved
+            Assert.Contains(@"code=""Orders""", newXml);
+            Assert.Contains(@"name=""ViewOrder""", newXml);
+
+            // Verify list actions accurately parses both tabs
+            bool listed = WorkWithSdkAdapter.TryListActionsFromXml(newXml, out JArray tabs, out string listError);
+            Assert.True(listed, listError);
+            Assert.Equal(2, tabs.Count);
+
+            var generalTab = tabs.FirstOrDefault(t => string.Equals(t["code"]?.ToString(), "General")) as JObject;
+            Assert.NotNull(generalTab);
+            var generalActions = (JArray)generalTab["actions"];
+            Assert.Equal(3, generalActions.Count);
+            Assert.NotNull(generalActions.FirstOrDefault(a => string.Equals(a["name"]?.ToString(), "ExecutaTeste")));
+
+            var ordersTab = tabs.FirstOrDefault(t => string.Equals(t["code"]?.ToString(), "Orders")) as JObject;
+            Assert.NotNull(ordersTab);
+            var ordersActions = (JArray)ordersTab["actions"];
+            Assert.Single(ordersActions);
+            Assert.Equal("ViewOrder", ordersActions[0]["name"]?.ToString());
+        }
+
+        [Fact]
+        public void TryAddActionToXml_PreservesRawWhitespaceWithoutReformattingUnmutatedElements()
+        {
+            bool added = WorkWithSdkAdapter.TryAddActionToXml(
+                SampleWorkWithXml,
+                tabCode: "General",
+                actionName: "CustomAction",
+                caption: "Custom",
+                procObj: null,
+                condition: null,
+                parameters: null,
+                out string newXml,
+                out string errorCode,
+                out string errorMessage);
+
+            Assert.True(added, errorMessage);
+            Assert.Null(errorCode);
+
+            // Existing tab element and original actions formatting are preserved without line collapsing
+            Assert.Contains(@"<tab code=""General"" name=""General"" type=""Tabular"">", newXml);
+            Assert.Contains(@"<action name=""Update"" caption=""Update"" />", newXml);
         }
     }
 }

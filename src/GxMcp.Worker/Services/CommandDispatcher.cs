@@ -655,6 +655,15 @@ namespace GxMcp.Worker.Services
             // Assigned up front so the idempotency-replay early return below still satisfies
             // definite assignment; a replay is a string the caller will parse as before.
             parsedResponse = null;
+
+            string correlationId = request["correlationId"]?.ToString()
+                ?? request["params"]?["correlationId"]?.ToString()
+                ?? (request["params"]?["params"] as JObject)?["correlationId"]?.ToString()
+                ?? (request["params"]?["args"] as JObject)?["correlationId"]?.ToString()
+                ?? (request["params"]?["args"] as JObject)?["_meta"]?["correlationId"]?.ToString()
+                ?? request["id"]?.ToString();
+            ReadDiagnosticContext.CurrentCorrelationId = correlationId;
+
             // v2.8.0 — idempotency. When the caller threads a `clientRequestId`
             // through the RPC params, this dispatcher serves a cached response
             // for the same id within a 5-minute TTL. Lets LLM clients retry
@@ -1782,6 +1791,11 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Read(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            string correlationId = args?["correlationId"]?.ToString()
+                ?? request?["correlationId"]?.ToString()
+                ?? (request?["params"] as JObject)?["correlationId"]?.ToString()
+                ?? ReadDiagnosticContext.CurrentCorrelationId;
+
             if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
             {
                 string unsupportedRefresh = ObjectService.FreshReadUnsupportedResponse(
@@ -1821,7 +1835,7 @@ namespace GxMcp.Worker.Services
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
                 string fullJson = _objectService.ReadFullObject(target, typeFilter,
                     args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(),
-                    args?["refresh"]?.ToObject<bool?>() ?? false);
+                    args?["refresh"]?.ToObject<bool?>() ?? false, correlationId);
                 fullJson = ObjectService.DescribeReadFreshness(fullJson, args?["refresh"]?.ToObject<bool?>() ?? false);
                 try
                 {
@@ -1847,7 +1861,7 @@ namespace GxMcp.Worker.Services
                 ConditionalReadService.Request conditional = BuildConditionalReadRequest(args);
                 string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter,
                     args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), conditional,
-                    args?["refresh"]?.ToObject<bool?>() ?? false);
+                    args?["refresh"]?.ToObject<bool?>() ?? false, correlationId);
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
                 // cache (which stores the pre-attach payload) and (b) doesn't burn
@@ -1875,7 +1889,7 @@ namespace GxMcp.Worker.Services
                 var requestedParts = partsTok?.Select(p => p.ToString()) ?? Enumerable.Empty<string>();
                 bool refresh = args?["refresh"]?.ToObject<bool?>() ?? false;
                 return ObjectService.DescribeReadFreshness(_objectService.ReadObjectSourceParts(target, requestedParts, args?["type"]?.ToString(),
-                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), refresh), refresh);
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), refresh, correlationId), refresh);
             }
             if (action == "GetVariables") return _analyzeService.GetVariables(target);
             if (action == "GetAttribute") return _analyzeService.GetAttributeMetadata(target);
@@ -1920,7 +1934,12 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Object(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString(), args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
+            string correlationId = args?["correlationId"]?.ToString()
+                ?? request?["correlationId"]?.ToString()
+                ?? (request?["params"] as JObject)?["correlationId"]?.ToString()
+                ?? ReadDiagnosticContext.CurrentCorrelationId;
+
+            if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString(), args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), correlationId);
             if (action == "Create")
             {
                 // Item 21 (friction 2026-05-22): dryRun=true returns the planned
