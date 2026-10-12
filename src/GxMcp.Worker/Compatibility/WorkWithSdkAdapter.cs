@@ -290,20 +290,11 @@ namespace GxMcp.Worker.Compatibility
             // Step 2: Handle dryRun
             if (dryRun)
             {
-                result = new JObject
-                {
-                    ["instance"] = instanceObj.Name,
-                    ["tab"] = tabCode,
-                    ["actionName"] = actionName,
-                    ["caption"] = caption ?? actionName,
-                    ["procedure"] = procObj?.Name ?? "",
-                    ["parameters"] = new JArray(parameters ?? Array.Empty<string>()),
-                    ["condition"] = condition ?? "",
-                    ["route"] = IsNativeSdkAvailable ? "native-sdk" : "xml-fallback",
-                    ["defaultNormalization"] = IsNativeSdkAvailable
-                        ? "Native WorkWith SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save; functional behavior and pattern bindings are preserved."
-                        : "XML fallback preserves existing pattern XML defaults verbatim without normalization."
-                };
+                result = BuildActionPlan(instanceObj.Name, tabCode, actionName, caption, procObj?.Name, condition, parameters, procObj);
+                result["route"] = IsNativeSdkAvailable ? "native-sdk" : "xml-fallback";
+                result["defaultNormalization"] = IsNativeSdkAvailable
+                    ? "Native WorkWith SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save; functional behavior and pattern bindings are preserved."
+                    : "XML fallback preserves existing pattern XML defaults verbatim without normalization.";
                 return true;
             }
 
@@ -423,7 +414,7 @@ namespace GxMcp.Worker.Compatibility
                 string.Equals(t["code"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(t["name"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)) as JObject;
             var verifiedActions = verifiedTab?["actions"] as JArray;
-            var verifiedAct = verifiedActions?.FirstOrDefault(a => string.Equals(a["name"]?.ToString(), actionName, StringComparison.OrdinalIgnoreCase));
+            var verifiedAct = verifiedActions?.FirstOrDefault(a => string.Equals(a["name"]?.ToString(), actionName, StringComparison.OrdinalIgnoreCase)) as JObject;
 
             if (verifiedAct == null)
             {
@@ -432,21 +423,41 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
+            string expectedCaption = caption ?? actionName;
+            string expectedProcedure = procObj?.Name ?? "";
+            string expectedCondition = condition ?? "";
+            var expectedParams = (parameters ?? Array.Empty<string>()).ToList();
+
+            if (!VerifyActionMatches(verifiedAct, actionName, caption, procObj?.Name, condition, parameters, out string mismatchDetail))
+            {
+                errorCode = "VerificationMismatch";
+                errorMessage = $"Action '{actionName}' was persisted, but post-save verification failed: {mismatchDetail}";
+                return false;
+            }
+
             result = new JObject
             {
                 ["instance"] = instanceObj.Name,
                 ["tab"] = tabCode,
-                ["action"] = new JObject
+                ["action"] = verifiedAct.DeepClone(),
+                ["requestedAction"] = new JObject
                 {
                     ["name"] = actionName,
-                    ["caption"] = caption ?? actionName,
-                    ["procedure"] = procObj?.Name ?? "",
-                    ["condition"] = condition ?? "",
-                    ["parameters"] = new JArray(parameters ?? Array.Empty<string>())
+                    ["caption"] = expectedCaption,
+                    ["procedure"] = expectedProcedure,
+                    ["condition"] = expectedCondition,
+                    ["parameters"] = new JArray(expectedParams)
                 },
                 ["saved"] = true,
                 ["persisted"] = true,
                 ["verified"] = true,
+                ["verification"] = new JObject
+                {
+                    ["scope"] = "tab_action_reread",
+                    ["fieldsCompared"] = new JArray("name", "caption", "procedure", "condition", "parameters"),
+                    ["allFieldsMatched"] = true,
+                    ["observedSource"] = "in_memory_instance_reread"
+                },
                 ["route"] = nativeSucceeded ? "native-sdk" : "xml-fallback",
                 ["verificationScope"] = "action definition, target tab actions collection, neighbor tabs integrity, and post-write instance re-read",
                 ["defaultNormalization"] = nativeSucceeded
@@ -454,6 +465,167 @@ namespace GxMcp.Worker.Compatibility
                     : "XML fallback preserves existing pattern XML defaults verbatim without normalization.",
                 ["derivedObjectRegeneration"] = "WorkWith instance definition persisted. Note: On GeneXus 18/17, derived WebComponents (e.g. <Trn>General) may require IDE Apply or build to re-project the new action control."
             };
+            return true;
+        }
+
+        internal static JObject BuildActionPlan(
+            string instanceName,
+            string tabCode,
+            string actionName,
+            string caption,
+            string procName,
+            string condition,
+            IReadOnlyList<string> parameters,
+            KBObject procObj = null)
+        {
+            var validations = new JObject
+            {
+                ["targetObjectResolved"] = true,
+                ["workWithInstanceResolved"] = true,
+                ["tabExists"] = true,
+                ["actionNameFormatValid"] = true,
+                ["actionNameUniqueOnTab"] = true,
+                ["procedureResolved"] = !string.IsNullOrEmpty(procName),
+                ["procedureTypeValid"] = true
+            };
+
+            var validationLimits = new JObject
+            {
+                ["signatureAndTypes"] = "Procedure parameter types and signature binding against parm() rule are not validated or compiled.",
+                ["conditionExpression"] = "Condition expression syntax and semantics are not compiled or evaluated.",
+                ["parameterExpressions"] = "Parameter expressions syntax and semantics are not compiled or evaluated."
+            };
+
+            var plan = new JObject
+            {
+                ["instance"] = instanceName,
+                ["tab"] = tabCode,
+                ["actionName"] = actionName,
+                ["caption"] = caption ?? actionName,
+                ["procedure"] = procName ?? "",
+                ["parameters"] = new JArray(parameters ?? Array.Empty<string>()),
+                ["condition"] = condition ?? "",
+                ["validations"] = validations,
+                ["validationLimits"] = validationLimits
+            };
+
+            var sigAdvisory = TryInspectSignatureAdvisory(procObj, parameters);
+            if (sigAdvisory != null)
+            {
+                plan["signatureAdvisory"] = sigAdvisory;
+            }
+
+            return plan;
+        }
+
+        internal static JObject TryInspectSignatureAdvisory(KBObject procObj, IReadOnlyList<string> parameters)
+        {
+            if (procObj == null) return null;
+            try
+            {
+                var parts = procObj.Parts;
+                if (parts == null) return null;
+
+                KBObjectPart rulesPart = null;
+                foreach (KBObjectPart p in parts)
+                {
+                    if (p != null && (string.Equals(p.TypeDescriptor?.Name, "Rules", StringComparison.OrdinalIgnoreCase)
+                        || p.GetType().Name.IndexOf("RulesPart", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        rulesPart = p;
+                        break;
+                    }
+                }
+
+                if (rulesPart == null) return null;
+
+                string rulesSrc = rulesPart.GetType().GetProperty("Source")?.GetValue(rulesPart, null) as string;
+                if (!string.IsNullOrWhiteSpace(rulesSrc))
+                {
+                    var sig = GeneXusSignatureParser.Parse(rulesSrc);
+                    if (sig != null && !string.IsNullOrEmpty(sig.ParmRule))
+                    {
+                        int expectedCount = sig.Parameters != null ? sig.Parameters.Count : 0;
+                        int suppliedCount = parameters != null ? parameters.Count : 0;
+                        var advisory = new JObject
+                        {
+                            ["parmRule"] = sig.ParmRule,
+                            ["expectedParameterCount"] = expectedCount,
+                            ["suppliedParameterCount"] = suppliedCount,
+                            ["arityMatches"] = (expectedCount == suppliedCount)
+                        };
+                        if (expectedCount != suppliedCount)
+                        {
+                            advisory["warning"] = $"Target Procedure '{procObj.Name}' declares {expectedCount} parameter(s) in its parm() rule, but {suppliedCount} parameter(s) were supplied in add_action.";
+                        }
+                        return advisory;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[WorkWithSdkAdapter] Signature advisory inspection failed: " + ex.Message);
+            }
+            return null;
+        }
+
+        internal static bool VerifyActionMatches(
+            JObject verifiedAct,
+            string actionName,
+            string caption,
+            string procName,
+            string condition,
+            IReadOnlyList<string> parameters,
+            out string mismatchDetail)
+        {
+            mismatchDetail = null;
+            if (verifiedAct == null)
+            {
+                mismatchDetail = "Action not found in verified state.";
+                return false;
+            }
+
+            string expectedCaption = caption ?? actionName;
+            string expectedProcedure = procName ?? "";
+            string expectedCondition = condition ?? "";
+            var expectedParams = (parameters ?? Array.Empty<string>()).ToList();
+
+            string observedName = verifiedAct["name"]?.ToString() ?? "";
+            string observedCaption = verifiedAct["caption"]?.ToString() ?? "";
+            string observedProcedure = verifiedAct["procedure"]?.ToString() ?? "";
+            string observedCondition = verifiedAct["condition"]?.ToString() ?? "";
+            var observedParams = (verifiedAct["parameters"] as JArray)?.Select(p => p.ToString()).ToList() ?? new List<string>();
+
+            if (!string.Equals(observedName, actionName, StringComparison.OrdinalIgnoreCase))
+            {
+                mismatchDetail = $"Action name mismatch: expected '{actionName}', observed '{observedName}'.";
+                return false;
+            }
+
+            if (!string.Equals(observedCaption, expectedCaption, StringComparison.Ordinal))
+            {
+                mismatchDetail = $"Caption mismatch: expected '{expectedCaption}', observed '{observedCaption}'.";
+                return false;
+            }
+
+            if (!string.Equals(observedProcedure, expectedProcedure, StringComparison.OrdinalIgnoreCase))
+            {
+                mismatchDetail = $"Procedure mismatch: expected '{expectedProcedure}', observed '{observedProcedure}'.";
+                return false;
+            }
+
+            if (!string.Equals(observedCondition, expectedCondition, StringComparison.Ordinal))
+            {
+                mismatchDetail = $"Condition mismatch: expected '{expectedCondition}', observed '{observedCondition}'.";
+                return false;
+            }
+
+            if (!observedParams.SequenceEqual(expectedParams, StringComparer.Ordinal))
+            {
+                mismatchDetail = $"Parameters mismatch: expected [{string.Join(", ", expectedParams)}], observed [{string.Join(", ", observedParams)}].";
+                return false;
+            }
+
             return true;
         }
 
