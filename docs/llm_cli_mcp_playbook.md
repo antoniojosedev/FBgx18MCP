@@ -111,13 +111,13 @@ New neutral configs created by `genexus-mcp init` or client registration use
 
 | Profile | Tools | Use |
 |---|---:|---|
-| `standard` | 16 | Recommended default for Cursor, Codex, OpenCode, Antigravity, Claude Desktop, and other clients that eagerly load every schema. Includes core read/search/lifecycle, create, structure, variable, properties, and IO tools. |
-| `core` | 11 | Read, search, inspect, edit, and lifecycle essentials. |
-| `authoring` | 29 | Core plus the full object-authoring and refactoring surface. |
-| `devops` | 33 | Core plus build, versioning, deployment, diagnostics, and worker operations. |
-| `ui` | 18 | Core plus layout, form, browser, and WorkWithPlus tools. |
-| `db` | 15 | Core plus database and data-view tools. |
-| `all` | 54 | Every canonical tool; use when an agent needs an unrestricted surface. |
+| `standard` | 20 | Recommended default for Cursor, Codex, OpenCode, Antigravity, Claude Desktop, and other clients that eagerly load every schema. Includes core read/search/lifecycle, create, structure, variable, properties, and IO tools. |
+| `core` | 15 | Read, search, inspect, edit, and lifecycle essentials. |
+| `authoring` | 35 | Core plus the full object-authoring and refactoring surface. |
+| `devops` | 37 | Core plus build, versioning, deployment, diagnostics, and worker operations. |
+| `ui` | 23 | Core plus layout, form, browser, and WorkWithPlus tools. |
+| `db` | 19 | Core plus database and data-view tools. |
+| `all` | 60 | Every canonical tool; use when an agent needs an unrestricted surface. |
 
 Profiles can be combined with `+`, for example `standard+db`. Set
 `Server.ToolProfile` in config or `GXMCP_PROFILE` in the process environment.
