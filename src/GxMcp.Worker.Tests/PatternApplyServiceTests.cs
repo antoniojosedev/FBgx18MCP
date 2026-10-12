@@ -336,6 +336,7 @@ namespace GxMcp.Worker.Tests
                 var route = ((JArray)obj["findings"]!).First(f =>f["reason"]?.ToString() == "routeUnsupported");
                 Assert.Equal("critical", route["severity"]?.ToString());
                 Assert.Equal("reapply", route["route"]?.ToString());
+                Assert.Equal(PatternApplyService.RouteUnsupportedGuidance, route["remediation"]?.ToString());
                 Assert.DoesNotContain("should apply cleanly", obj.ToString());
                 Assert.DoesNotContain("WorkWithPlus", obj.ToString());
             });

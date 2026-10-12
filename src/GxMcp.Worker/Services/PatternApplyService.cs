@@ -671,17 +671,31 @@ namespace GxMcp.Worker.Services
 
         internal static string RouteName(PatternRoute route) => route == PatternRoute.FirstApply ? "firstApply" : "reapply";
 
+        /// <summary>
+        /// Guidance emitted when a pattern route (such as generic reapply) is unsupported.
+        /// Qualifies that reapply remains unsupported on this route, existing property edits
+        /// can persist the instance (structural authoring requires typed actions), but
+        /// whether derived objects update is not measured by the edit call and recorded
+        /// results vary by environment. If derived objects do not follow, applies via the IDE.
+        /// </summary>
+        internal const string RouteUnsupportedGuidance =
+            "Reapply remains unsupported on this route. Read the existing instance with genexus_read part=PatternInstance. "
+            + "Editing existing supported properties through genexus_edit part=PatternInstance is possible; structural authoring "
+            + "needs the pattern's typed action. Whether derived objects update is not measured by the edit call and recorded "
+            + "results vary by environment; if they do not follow, apply the pattern in the GeneXus IDE.";
+
         internal static string TryBuildRouteUnsupportedRejection(string target, PatternManifest pattern, PatternRoute route)
         {
             if (PatternRouteCapabilities.IsSupported(pattern, route, out string reason)) return null;
             return McpResponse.Err(
                 code: "PatternRouteUnsupported",
                 message: reason,
-                // Issue #352: qualify the permitted edit. Reading/editing existing
-                // supported properties of the definition is available, but that is not
-                // structural authoring and it does not regenerate derived objects, so
-                // the hint must not read as a way to get the generated objects updated.
-                hint: "Read the existing instance with genexus_read part=PatternInstance. Editing existing supported properties through genexus_edit part=PatternInstance is possible; structural authoring needs the pattern's typed action, and the pattern's generated objects are not regenerated either way.",
+                // Issues #352, #478: distinguish reapply refusal from property editing.
+                // Reapply remains unsupported. Editing existing supported properties can
+                // persist the instance (structural authoring requires typed actions); whether
+                // derived objects update is not measured by the edit call and recorded results
+                // vary by environment. If derived objects do not follow, apply in the IDE.
+                hint: RouteUnsupportedGuidance,
                 nextSteps: new JArray(McpResponse.NextStep(
                     tool: "genexus_read",
                     args: new JObject { ["name"] = target, ["part"] = "PatternInstance" },
@@ -3354,12 +3368,13 @@ namespace GxMcp.Worker.Services
                 // apply and then failing on an unsupported path.
                 if (!PatternRouteCapabilities.IsSupported(pattern, route, out string routeReason))
                 {
-                    // Qualify the permitted edit: reading and editing existing
-                    // properties of the definition is not structural authoring and does
-                    // not regenerate the derived objects.
+                    // Issues #352, #478: qualify the permitted edit and distinguish reapply
+                    // refusal from property editing; derived-object update is not measured
+                    // by the edit call and recorded results vary by environment. If derived
+                    // objects do not follow, apply in the GeneXus IDE.
                     var routeFinding = Finding("routeUnsupported", "critical",
                         routeReason,
-                        "Read the existing instance with genexus_read part=PatternInstance. Editing existing supported properties through genexus_edit part=PatternInstance is possible; structural authoring needs the pattern's typed action, and the pattern's generated objects are not regenerated either way.");
+                        RouteUnsupportedGuidance);
                     routeFinding["route"] = RouteName(route);
                     routeFinding["regeneratesDerivedObjects"] = false;
                     findings.Add(routeFinding);
