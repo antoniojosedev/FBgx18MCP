@@ -3,7 +3,13 @@ name: HOL Plugin Scanner
 on:
   pull_request:
   push:
+    branches: [main]
   workflow_dispatch:
+
+# PR branches are scanned by pull_request, not again by push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

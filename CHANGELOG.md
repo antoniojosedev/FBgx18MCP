@@ -9,6 +9,8 @@
 
 ### Changed
 
+- CI validates PR updates once instead of duplicating branch-push runs, cancels superseded PR runs, and caches npm, NuGet, and toolchain-keyed gxwire build dependencies. The plugin scanner still runs on main pushes; all validation steps and required check names remain unchanged.
+
 ### Fixed
 
 - **Build Watchdog and Termination Diagnostics**: Clarified failure origin (`failureOrigin: "watchdog"` / `"watchdog_with_errors"` / `"errors"` / `"process_exit"`), made `ExitCode` nullable (`null` instead of misleading `0` when child process exit code was not obtained), reported child process state (`childProcessState: "terminated" | "exited" | "running" | "unknown" | "none"`), tracked confirmed stages (`confirmedStages`), and ensured build logs are flushed immediately to disk (`fullLogPath`) on watchdog termination so consumers can reconcile results without re-running Build All ([#475](https://github.com/lennix1337/Genexus18MCP/issues/475)).
