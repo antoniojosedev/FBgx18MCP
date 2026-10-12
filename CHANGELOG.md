@@ -12,6 +12,15 @@
 ### Fixed
 
 - Reconciled `genexus_workwith` contract and verification: removed inaccurate optimistic concurrency claim from schema and documented target-scoped locking; made `dryRun` plan declare performed validations along with explicit limits on procedure parameter arity/types and expression syntax/semantics (with advisory signature arity inspection when available); and made post-save verification compare all promised fields (name, caption, procedure, condition, ordered parameters) against reread instance state rather than echoing request parameters ([#476](https://github.com/lennix1337/Genexus18MCP/issues/476)).
+- **WorkWith pattern default materialization investigation and receipt contract** ([#477](https://github.com/lennix1337/Genexus18MCP/issues/477)):
+  - Investigated and documented GeneXus Pattern SDK default materialization (`page="<default>"` → `10` and default action expansion) occurring during standard WorkWith instance serialization (`docs/workwith-default-materialization.md`).
+  - `WorkWithSdkAdapter.AddAction` now exposes `route` (`native-sdk` | `xml-fallback`), `verificationScope`, and `defaultNormalization` in both `dryRun` plan and write receipts.
+  - Hardened post-write verification to fail closed if neighbor tabs are truncated after save (`verifyTabs.Count >= tabs.Count`).
+  - `TryAddActionToXml` now outputs with `SaveOptions.DisableFormatting`, preserving unmutated elements, whitespace, and literal `<default>` attributes without reformatting.
+  - Added unit test fixtures in `WorkWithServiceTests` verifying defaults preservation on Selection and neighbor tabs across XML fallback authoring.
+
+- Qualified `routeUnsupported` diagnostic finding remediation and `PatternRouteUnsupported` rejection hint to distinguish reapply refusal from property editing: reapply remains unsupported on the generic route, existing property edits are permitted but whether derived objects update is not measured by the edit call and recorded results vary by environment, and callers are advised to apply the pattern in the GeneXus IDE if derived objects do not follow ([#478](https://github.com/lennix1337/Genexus18MCP/issues/478)).
+- Preserved sanitized diagnostic records and failing stage attribution (`resolve_object`, `refresh_object`, `access_part`, `query_variables`, `extract_content`) across the object read path instead of swallowing exceptions or degrading to generic `LegacyWorkerError`, exposing ambient correlation ID, UTC timestamps, execution duration, bounded stack traces, and non-blocking KB state snapshots without leaking sensitive credentials or variable values ([#479](https://github.com/lennix1337/Genexus18MCP/issues/479)).
 - Updated tool profile counts across documentation (`docs/llm_cli_mcp_playbook.md` and `docs/environment_variables.md`) to match `ToolProfileFilter` allowlists and canonical `tool_definitions.json` (standard 20, core 15, authoring 35, devops 37, ui 23, db 19, all 60), included `standard` in the `GXMCP_PROFILE` enumeration, and introduced regression guard tests in `ToolProfileTests` to prevent doc/code drift ([#480](https://github.com/lennix1337/Genexus18MCP/issues/480)).
 
 ### Internal

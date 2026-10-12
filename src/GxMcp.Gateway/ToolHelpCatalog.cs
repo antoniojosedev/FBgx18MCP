@@ -806,7 +806,8 @@ namespace GxMcp.Gateway
                 "- Validation limits: pre-validation verifies tab existence, action name uniqueness, and Procedure existence/type. Parameter counts/types against the Procedure `parm()` rule and condition/parameter expressions are not compiled or type-checked.\n" +
                 "- Concurrency: operations use target-scoped mutex locking and do not accept or check optimistic concurrency version tokens.\n" +
                 "- Verification: on save, the receipt rereads the tab actions from the in-memory instance and compares all fields (name, caption, procedure, condition, ordered parameters) to distinguish requested inputs from observed state.\n" +
-                "- Derived WebComponent regeneration: persisting an action updates the WorkWith instance definition; on GeneXus 18/17, derived WebComponents (e.g. `<Trn>General`) may require IDE Apply or build to re-project the new action control into the WebForm.\n\n" +
+                "- Derived WebComponent regeneration: persisting an action updates the WorkWith instance definition; on GeneXus 18/17, derived WebComponents (e.g. `<Trn>General`) may require IDE Apply or build to re-project the new action control into the WebForm.\n" +
+                "- Route and default normalization: receipts report `route` (`native-sdk` or `xml-fallback`) and `verificationScope`. Native SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save while preserving functional behavior and pattern bindings; the XML fallback preserves existing XML defaults verbatim.\n\n" +
                 "Example: `{ action: 'add_action', name: 'Customer', tab: 'General', actionName: 'PrintStatement', caption: 'Print Statement', procedure: 'procPrintCustomer', parameters: ['CustomerId', '\"PDF\"'], condition: '&CustomerActive', dryRun: true }`.\n"
         };
 

@@ -291,6 +291,10 @@ namespace GxMcp.Worker.Compatibility
             if (dryRun)
             {
                 result = BuildActionPlan(instanceObj.Name, tabCode, actionName, caption, procObj?.Name, condition, parameters, procObj);
+                result["route"] = IsNativeSdkAvailable ? "native-sdk" : "xml-fallback";
+                result["defaultNormalization"] = IsNativeSdkAvailable
+                    ? "Native WorkWith SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save; functional behavior and pattern bindings are preserved."
+                    : "XML fallback preserves existing pattern XML defaults verbatim without normalization.";
                 return true;
             }
 
@@ -399,6 +403,13 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
+            if (verifyTabs.Count < tabs.Count)
+            {
+                errorCode = "VerificationFailed";
+                errorMessage = $"Instance tabs were truncated after write: expected at least {tabs.Count} tabs, found {verifyTabs.Count}.";
+                return false;
+            }
+
             var verifiedTab = verifyTabs.FirstOrDefault(t =>
                 string.Equals(t["code"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(t["name"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)) as JObject;
@@ -447,6 +458,11 @@ namespace GxMcp.Worker.Compatibility
                     ["allFieldsMatched"] = true,
                     ["observedSource"] = "in_memory_instance_reread"
                 },
+                ["route"] = nativeSucceeded ? "native-sdk" : "xml-fallback",
+                ["verificationScope"] = "action definition, target tab actions collection, neighbor tabs integrity, and post-write instance re-read",
+                ["defaultNormalization"] = nativeSucceeded
+                    ? "Native WorkWith SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save; functional behavior and pattern bindings are preserved."
+                    : "XML fallback preserves existing pattern XML defaults verbatim without normalization.",
                 ["derivedObjectRegeneration"] = "WorkWith instance definition persisted. Note: On GeneXus 18/17, derived WebComponents (e.g. <Trn>General) may require IDE Apply or build to re-project the new action control."
             };
             return true;
@@ -681,7 +697,7 @@ namespace GxMcp.Worker.Compatibility
                 }
 
                 actionsElem.Add(newAct);
-                newXml = doc.ToString();
+                newXml = doc.ToString(SaveOptions.DisableFormatting);
                 return true;
             }
             catch (Exception ex)
