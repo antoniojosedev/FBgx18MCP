@@ -610,7 +610,7 @@ namespace GxMcp.Gateway
                 "Read or change object-level GeneXus properties without editing the object source.\n\n" +
                 "## Actions\n" +
                 "- `get` — read current property values and version information. Filter with `propertyName` (name, comma-separated list, or * wildcard), `propertyNames[]`, `query` (search filter), or `projection` (minimal, standard, full; default full). `targets: [{name, type?}]` reads up to 100 objects in input order; each result has its own status/error.\n" +
-                "- `set` — assign one or more named properties and verify the saved values.\n" +
+                "- `set` — assign one or more named properties and verify the saved values. Object-level `Formula` is not scalar-writable: both writes and previews are rejected. For Attribute formulas use `genexus_structure action=set_attribute payload={formula: <text>}` (no dryRun support).\n" +
                 "- `move` — move an object to another module or folder.\n\n" +
                 "After a timed-out `set`, call `get` with `reconcileTimedOutWrite: true` and all affected `propertyNames`. It reads persisted values by native identity, returns `versionToken`, and clears the write fence only after confirming every affected property. On a WebPanel, `MainProgram` reads and writes the SDK's `IsMain` property; the read reports `nativeName`. If neither property is exposed, the response explains the limitation and leaves the fence in place.\n\n" +
                 "`set` accepts `dryRun`, `expectedVersion`, and `rollbackOnFailure: true`; batch writes save once, verify every property and preserve the complete object snapshot on failure. No lifecycle operation or test runs implicitly.\n",
