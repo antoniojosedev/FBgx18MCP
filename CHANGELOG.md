@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Reconciled `genexus_workwith` contract and verification: removed inaccurate optimistic concurrency claim from schema and documented target-scoped locking; made `dryRun` plan declare performed validations along with explicit limits on procedure parameter arity/types and expression syntax/semantics (with advisory signature arity inspection when available); and made post-save verification compare all promised fields (name, caption, procedure, condition, ordered parameters) against reread instance state rather than echoing request parameters ([#476](https://github.com/lennix1337/Genexus18MCP/issues/476)).
 - **WorkWith pattern default materialization investigation and receipt contract** ([#477](https://github.com/lennix1337/Genexus18MCP/issues/477)):
   - Investigated and documented GeneXus Pattern SDK default materialization (`page="<default>"` → `10` and default action expansion) occurring during standard WorkWith instance serialization (`docs/workwith-default-materialization.md`).
   - `WorkWithSdkAdapter.AddAction` now exposes `route` (`native-sdk` | `xml-fallback`), `verificationScope`, and `defaultNormalization` in both `dryRun` plan and write receipts.

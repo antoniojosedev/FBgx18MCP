@@ -208,6 +208,155 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void BuildActionPlan_IncludesValidationsAndExplicitValidationLimits()
+        {
+            var parameters = new List<string> { "procUrlTeste(\"General\")", "TestTrnEmpresaId" };
+            var plan = WorkWithSdkAdapter.BuildActionPlan(
+                instanceName: "WorkWithWebTestTrn",
+                tabCode: "General",
+                actionName: "ExecutaTeste",
+                caption: "Executa Teste",
+                procName: "procExecutaTeste",
+                condition: "TestTrnPropria",
+                parameters: parameters);
+
+            Assert.NotNull(plan);
+            Assert.Equal("WorkWithWebTestTrn", plan["instance"]?.ToString());
+            Assert.Equal("General", plan["tab"]?.ToString());
+            Assert.Equal("ExecutaTeste", plan["actionName"]?.ToString());
+            Assert.Equal("Executa Teste", plan["caption"]?.ToString());
+            Assert.Equal("procExecutaTeste", plan["procedure"]?.ToString());
+            Assert.Equal("TestTrnPropria", plan["condition"]?.ToString());
+
+            var planParams = plan["parameters"] as JArray;
+            Assert.NotNull(planParams);
+            Assert.Equal(2, planParams.Count);
+            Assert.Equal("procUrlTeste(\"General\")", planParams[0].ToString());
+            Assert.Equal("TestTrnEmpresaId", planParams[1].ToString());
+
+            // Issue #476: Plan must declare validations performed
+            var validations = plan["validations"] as JObject;
+            Assert.NotNull(validations);
+            Assert.True(validations["targetObjectResolved"]?.ToObject<bool>());
+            Assert.True(validations["workWithInstanceResolved"]?.ToObject<bool>());
+            Assert.True(validations["tabExists"]?.ToObject<bool>());
+            Assert.True(validations["actionNameFormatValid"]?.ToObject<bool>());
+            Assert.True(validations["actionNameUniqueOnTab"]?.ToObject<bool>());
+            Assert.True(validations["procedureResolved"]?.ToObject<bool>());
+            Assert.True(validations["procedureTypeValid"]?.ToObject<bool>());
+
+            // Issue #476: Plan must explicitly report validation limits (signature arity/types, expressions)
+            var limits = plan["validationLimits"] as JObject;
+            Assert.NotNull(limits);
+            Assert.Contains("parm() rule", limits["signatureAndTypes"]?.ToString());
+            Assert.Contains("not compiled", limits["conditionExpression"]?.ToString());
+            Assert.Contains("not compiled", limits["parameterExpressions"]?.ToString());
+        }
+
+        [Fact]
+        public void VerifyActionMatches_AllFieldsMatch_ReturnsTrue()
+        {
+            var observed = new JObject
+            {
+                ["name"] = "ExecutaTeste",
+                ["caption"] = "Executa Teste",
+                ["procedure"] = "procExecutaTeste",
+                ["condition"] = "TestTrnPropria",
+                ["parameters"] = new JArray("procUrlTeste(\"General\")", "TestTrnEmpresaId")
+            };
+
+            bool matches = WorkWithSdkAdapter.VerifyActionMatches(
+                observed,
+                actionName: "ExecutaTeste",
+                caption: "Executa Teste",
+                procName: "procExecutaTeste",
+                condition: "TestTrnPropria",
+                parameters: new[] { "procUrlTeste(\"General\")", "TestTrnEmpresaId" },
+                out string mismatchDetail);
+
+            Assert.True(matches, mismatchDetail);
+            Assert.Null(mismatchDetail);
+        }
+
+        [Fact]
+        public void VerifyActionMatches_CaptionMismatch_ReturnsFalseWithDetail()
+        {
+            var observed = new JObject
+            {
+                ["name"] = "ExecutaTeste",
+                ["caption"] = "Outro Caption",
+                ["procedure"] = "procExecutaTeste",
+                ["condition"] = "",
+                ["parameters"] = new JArray()
+            };
+
+            bool matches = WorkWithSdkAdapter.VerifyActionMatches(
+                observed,
+                actionName: "ExecutaTeste",
+                caption: "Executa Teste",
+                procName: "procExecutaTeste",
+                condition: "",
+                parameters: Array.Empty<string>(),
+                out string mismatchDetail);
+
+            Assert.False(matches);
+            Assert.NotNull(mismatchDetail);
+            Assert.Contains("Caption mismatch", mismatchDetail);
+        }
+
+        [Fact]
+        public void VerifyActionMatches_ParameterOrderOrCountMismatch_ReturnsFalseWithDetail()
+        {
+            var observed = new JObject
+            {
+                ["name"] = "ExecutaTeste",
+                ["caption"] = "Executa Teste",
+                ["procedure"] = "procExecutaTeste",
+                ["condition"] = "",
+                ["parameters"] = new JArray("ParamB", "ParamA") // Swapped order
+            };
+
+            bool matches = WorkWithSdkAdapter.VerifyActionMatches(
+                observed,
+                actionName: "ExecutaTeste",
+                caption: "Executa Teste",
+                procName: "procExecutaTeste",
+                condition: "",
+                parameters: new[] { "ParamA", "ParamB" },
+                out string mismatchDetail);
+
+            Assert.False(matches);
+            Assert.NotNull(mismatchDetail);
+            Assert.Contains("Parameters mismatch", mismatchDetail);
+        }
+
+        [Fact]
+        public void VerifyActionMatches_ConditionMismatch_ReturnsFalseWithDetail()
+        {
+            var observed = new JObject
+            {
+                ["name"] = "ExecutaTeste",
+                ["caption"] = "Executa Teste",
+                ["procedure"] = "procExecutaTeste",
+                ["condition"] = "&IsAdmin",
+                ["parameters"] = new JArray()
+            };
+
+            bool matches = WorkWithSdkAdapter.VerifyActionMatches(
+                observed,
+                actionName: "ExecutaTeste",
+                caption: "Executa Teste",
+                procName: "procExecutaTeste",
+                condition: "&IsOwner",
+                parameters: Array.Empty<string>(),
+                out string mismatchDetail);
+
+            Assert.False(matches);
+            Assert.NotNull(mismatchDetail);
+            Assert.Contains("Condition mismatch", mismatchDetail);
+        }
+
+        [Fact]
         public void TryAddActionToXml_ControlledFixtureWithDefaultsAndNeighborTabs_PreservesDefaultsAndNeighborStructure()
         {
             var parameters = new List<string> { "TestTrnId" };
