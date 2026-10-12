@@ -98,6 +98,7 @@ also read [`AGENTS.md`](../AGENTS.md).
 ## Investigations and historical records
 
 - [WWP PatternInstance investigation](wwp_pattern_investigation.md).
+- [WorkWith PatternInstance default materialization investigation](workwith-default-materialization.md).
 - [Pattern Settings SDK save audit](pattern-settings-sdk-audit.md) and
   [Pattern Settings templates (3.2.2 record)](pattern-settings-templates.md).
 - [Team Development ignored objects](teamdev_commit_ignore_505.md).
