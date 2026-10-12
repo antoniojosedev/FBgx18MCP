@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Reconciled `genexus_workwith` contract and verification: removed inaccurate optimistic concurrency claim from schema and documented target-scoped locking; made `dryRun` plan declare performed validations along with explicit limits on procedure parameter arity/types and expression syntax/semantics (with advisory signature arity inspection when available); and made post-save verification compare all promised fields (name, caption, procedure, condition, ordered parameters) against reread instance state rather than echoing request parameters ([#476](https://github.com/lennix1337/Genexus18MCP/issues/476)).
 - Updated tool profile counts across documentation (`docs/llm_cli_mcp_playbook.md` and `docs/environment_variables.md`) to match `ToolProfileFilter` allowlists and canonical `tool_definitions.json` (standard 20, core 15, authoring 35, devops 37, ui 23, db 19, all 60), included `standard` in the `GXMCP_PROFILE` enumeration, and introduced regression guard tests in `ToolProfileTests` to prevent doc/code drift ([#480](https://github.com/lennix1337/Genexus18MCP/issues/480)).
 
 ### Internal

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Xunit;
 
 namespace GxMcp.Gateway.Tests
@@ -103,6 +104,28 @@ namespace GxMcp.Gateway.Tests
             // hand-editing it is rejected as SDK-owned metadata.
             Assert.Contains("PatternMetadataChangeUnsupported", help, StringComparison.Ordinal);
             Assert.Contains("SDK-owned metadata", help, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Issue #476: genexus_workwith contract must not promise optimistic concurrency
+        /// when it is not supported, and must document validation limits.
+        /// </summary>
+        [Fact]
+        public void WorkWith_HelpAndSchema_AgreeOnNoOptimisticConcurrency()
+        {
+            string? help = ToolHelpCatalog.Get("genexus_workwith");
+            Assert.NotNull(help);
+            Assert.Contains("Validation limits", help);
+            Assert.Contains("target-scoped mutex locking", help);
+            Assert.Contains("do not accept or check optimistic concurrency version tokens", help);
+            Assert.DoesNotContain("Supports optimistic concurrency", help, StringComparison.OrdinalIgnoreCase);
+
+            var tools = Newtonsoft.Json.Linq.JArray.Parse(GxMcp.TestSupport.RepoSource.Read("src", "GxMcp.Gateway", "tool_definitions.json"));
+            var workWithTool = tools.FirstOrDefault(t => string.Equals(t["name"]?.ToString(), "genexus_workwith", StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(workWithTool);
+            string desc = workWithTool["description"]?.ToString() ?? string.Empty;
+            Assert.DoesNotContain("optimistic concurrency", desc, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Supports dryRun", desc);
         }
     }
 }
