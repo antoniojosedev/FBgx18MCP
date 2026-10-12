@@ -245,8 +245,10 @@ namespace GxMcp.Worker.Services
         /// The actual SDK reads run in SourceStoreBackfillService STA slices; this
         /// method only snapshots the in-memory catalogue and schedules the first one.
         /// </summary>
-        private static IReadOnlyList<string> GetSourceStoreRequiredParts(string type)
+        internal static IReadOnlyList<string> GetSourceStoreRequiredParts(string type, IEnumerable<string> availableParts)
         {
+            if (availableParts == null) throw new ArgumentNullException(nameof(availableParts));
+            var available = new HashSet<string>(availableParts, StringComparer.OrdinalIgnoreCase);
             var requested = new List<string> { "Source", "Rules", "Conditions" };
             if (string.Equals(type, "WebPanel", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(type, "Transaction", StringComparison.OrdinalIgnoreCase))
@@ -257,10 +259,17 @@ namespace GxMcp.Worker.Services
 
             return requested
                 .Select(part => ResolveSearchPartName(type, part))
-                .Where(part => !string.IsNullOrWhiteSpace(part))
+                .Where(part => !string.IsNullOrWhiteSpace(part) && available.Contains(part))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList()
                 .AsReadOnly();
+        }
+
+        private IReadOnlyList<string> GetSourceStoreRequiredParts(SearchIndex.IndexEntry entry)
+        {
+            KBObject obj = FindObject(entry);
+            if (obj == null) throw new InvalidOperationException("The SDK object could not be resolved: " + entry.Guid);
+            return GetSourceStoreRequiredParts(entry.Type, GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj));
         }
 
         private void StartSourceStoreBackfillIfReady(SearchIndex index)
@@ -302,12 +311,12 @@ namespace GxMcp.Worker.Services
                 var result = new List<SourceStoreBackfillPart>();
                 if (entry == null) return null;
 
-                var actualParts = GetSourceStoreRequiredParts(entry.Type);
+                var actualParts = GetSourceStoreRequiredParts(entry);
                 var staleParts = actualParts
                     .Where(p => !store.IsStoredAndFresh(entry, new List<string> { p }))
                     .ToList();
-                // Do not resolve an SDK object for a fully fresh record. Warm-start
-                // refresh must pay SDK cost only for the stale delta.
+                // Discover supported parts before certifying coverage, but only read
+                // source content for stale parts.
                 if (staleParts.Count == 0) return result;
 
                 KBObject obj = FindObject(entry);
@@ -345,7 +354,7 @@ namespace GxMcp.Worker.Services
                 return result;
             });
             var requiredPartProvider = new Func<SearchIndex.IndexEntry, IReadOnlyList<string>>(
-                entry => entry == null ? null : GetSourceStoreRequiredParts(entry.Type));
+                entry => entry == null ? null : GetSourceStoreRequiredParts(entry));
 
             bool started = SourceStoreBackfillService.Instance.Start(
                 entryProvider,
@@ -4800,6 +4809,16 @@ namespace GxMcp.Worker.Services
                 }
                 if (normalizedPart == "conditions")
                 {
+                    if (obj is DataSelector selector)
+                    {
+                        var structure = selector.DataSelectorStructure ?? selector.Parts.Get<DataSelectorStructurePart>();
+                        if (structure == null)
+                        {
+                            readError = "The Data Selector Conditions structure is unavailable.";
+                            return null;
+                        }
+                        return DataSelectorConditionsEditor.Join(DataSelectorConditionsEditor.ReadExpressions(structure));
+                    }
                     try { return ((dynamic)obj).Conditions?.Source ?? ""; }
                     catch (Exception ex) { readError = ex.Message; return null; }
                 }
