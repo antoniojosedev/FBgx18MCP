@@ -46,7 +46,7 @@ read-preview-save workflow.
 | `GXMCP_NO_STRUCTURED_CONTENT` | Set to `1` (or `true`) to omit the MCP `structuredContent` field from tool results — it duplicates the whole payload already present in `content[0].text`, adding ~45% to each response's byte size. Equivalent config: `Server.EmitStructuredContent: false`. Env wins over config. `genexus_lifecycle` is the deliberate exception because it advertises `outputSchema`; successful lifecycle results keep `structuredContent` to satisfy strict MCP clients. | unset (structuredContent emitted) |
 | `GXMCP_EMIT_STRUCTURED_CONTENT` | Set to `0` (or `false`) to disable `structuredContent` emission, or `1`/`true` to force it on. Complement to `GXMCP_NO_STRUCTURED_CONTENT`. | unset |
 | `GXMCP_TERSE` | Set to `1` (or `true`) for terse responses: omits `next_legal_actions` and the `_meta.tokens` block from tool results, keeping only the payload plus error hints. Equivalent config: `Server.TerseResponses: true`. Env wins over config. | unset (full UX sugar emitted) |
-| `GXMCP_PROFILE` | Tool profile for `tools/list` surface (`core`, `authoring`, `devops`, `ui`, `db`, `all`). Lean profiles like `core` (11 tools) or `authoring` (29 tools) drastically reduce initial system prompt tokens vs the full 52-tool surface. | `all` |
+| `GXMCP_PROFILE` | Tool profile for `tools/list` surface (`standard`, `core`, `authoring`, `devops`, `ui`, `db`, `all`). Lean profiles like `core` (15 tools) or `authoring` (35 tools) drastically reduce initial system prompt tokens vs the full 60-tool surface. | `all` |
 
 ## Generated documentation artifacts (`genexus_doc`)
 

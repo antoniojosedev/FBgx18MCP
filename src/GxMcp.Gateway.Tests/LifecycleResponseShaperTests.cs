@@ -560,5 +560,38 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(stale);
             Assert.Equal(2, stale!.Count);
         }
+
+        [Fact]
+        public void Compact_Issue475_PreservesWatchdogAndStageDiagnostics()
+        {
+            var rawObj = new JObject
+            {
+                ["Status"] = "Failed",
+                ["Phase"] = "Finishing",
+                ["ExitCode"] = JValue.CreateNull(),
+                ["ErrorCount"] = 7,
+                ["WarningCount"] = 1,
+                ["failureOrigin"] = "watchdog_with_errors",
+                ["watchdogTriggered"] = true,
+                ["watchdogType"] = "no-progress",
+                ["childProcessState"] = "unknown",
+                ["confirmedStages"] = new JArray { "OpeningKB", "Specifying", "Generating", "Compiling" },
+                ["fullLogPath"] = @"C:\logs\task123.log"
+            };
+
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+
+            Assert.Equal("Failed", obj["Status"]?.ToString());
+            Assert.Equal("Finishing", obj["Phase"]?.ToString());
+            Assert.Equal(JTokenType.Null, obj["ExitCode"]?.Type);
+            Assert.Equal("watchdog_with_errors", obj["failureOrigin"]?.ToString());
+            Assert.True(obj["watchdogTriggered"]?.Value<bool>());
+            Assert.Equal("no-progress", obj["watchdogType"]?.ToString());
+            Assert.Equal("unknown", obj["childProcessState"]?.ToString());
+            var stages = obj["confirmedStages"] as JArray;
+            Assert.NotNull(stages);
+            Assert.Equal(4, stages!.Count);
+            Assert.Equal(@"C:\logs\task123.log", obj["fullLogPath"]?.ToString());
+        }
     }
 }

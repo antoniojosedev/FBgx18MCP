@@ -1,7 +1,9 @@
 using System;
-using System.IO;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
+using GxMcp.TestSupport;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -265,7 +267,7 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void PublishedToolDescriptionsSayWhatEachToolIsFor()
         {
-            var tools = JArray.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "tool_definitions.json")));
+            var tools = LoadCanonicalToolDefinitions();
 
             foreach (JObject tool in ToolProfileFilter.Filter(tools, "all").OfType<JObject>())
             {
@@ -310,6 +312,144 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("db", error["error"]?["availableProfiles"]?.ToObject<string[]>() ?? System.Array.Empty<string>());
             Assert.Contains("Server.ToolProfile", error["error"]?["hint"]?.ToString());
             Assert.Contains("GXMCP_PROFILE", error["error"]?["hint"]?.ToString());
+        }
+
+        private static readonly string[] DocumentedProfiles = new[]
+        {
+            "standard",
+            "core",
+            "authoring",
+            "devops",
+            "ui",
+            "db",
+            "all"
+        };
+
+        private static JArray LoadCanonicalToolDefinitions()
+        {
+            string beside = Path.Combine(AppContext.BaseDirectory, "tool_definitions.json");
+            if (File.Exists(beside))
+            {
+                return JArray.Parse(File.ReadAllText(beside));
+            }
+
+            return JArray.Parse(RepoSource.Read("src", "GxMcp.Gateway", "tool_definitions.json"));
+        }
+
+        [Fact]
+        public void PlaybookToolProfilesTable_MatchesCodeAllowlists()
+        {
+            var tools = LoadCanonicalToolDefinitions();
+            string playbook = RepoSource.Read("docs", "llm_cli_mcp_playbook.md");
+
+            const string sectionHeading = "### Tool profiles and schema budgets";
+            int sectionIndex = playbook.IndexOf(sectionHeading, StringComparison.Ordinal);
+            Assert.True(sectionIndex >= 0, $"Section '{sectionHeading}' was not found in docs/llm_cli_mcp_playbook.md.");
+
+            string sectionText = playbook.Substring(sectionIndex + sectionHeading.Length);
+            var nextHeadingMatch = Regex.Match(sectionText, @"\n#{1,3}\s+");
+            if (nextHeadingMatch.Success)
+            {
+                sectionText = sectionText.Substring(0, nextHeadingMatch.Index);
+            }
+
+            string[] lines = sectionText.Replace("\r\n", "\n").Split('\n');
+            var parsedRows = new List<(string Profile, int Count)>();
+
+            foreach (string rawLine in lines)
+            {
+                string line = rawLine.Trim();
+                if (!line.StartsWith("|", StringComparison.Ordinal)) continue;
+
+                // Skip markdown table header and divider lines
+                if (line.StartsWith("| Profile", StringComparison.OrdinalIgnoreCase) ||
+                    line.StartsWith("|---", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var match = Regex.Match(line, @"^\|\s*`([^`]+)`\s*\|\s*(\d+)\s*\|");
+                Assert.True(match.Success, $"Unrecognized table row format in tool profiles section: '{line}'");
+
+                string profile = match.Groups[1].Value;
+                int count = int.Parse(match.Groups[2].Value);
+                parsedRows.Add((profile, count));
+            }
+
+            Assert.True(
+                parsedRows.Count == DocumentedProfiles.Length,
+                $"Expected exactly {DocumentedProfiles.Length} tool profile rows in playbook, found {parsedRows.Count}.");
+
+            for (int i = 0; i < DocumentedProfiles.Length; i++)
+            {
+                Assert.True(
+                    string.Equals(DocumentedProfiles[i], parsedRows[i].Profile, StringComparison.OrdinalIgnoreCase),
+                    $"Expected row {i + 1} to be profile '{DocumentedProfiles[i]}', but found '{parsedRows[i].Profile}'.");
+            }
+
+            foreach (var (profile, publishedCount) in parsedRows)
+            {
+                int actualCount = ToolProfileFilter.Filter(tools, profile).Count;
+                Assert.True(
+                    publishedCount == actualCount,
+                    $"Tool count for profile '{profile}' in playbook is {publishedCount}, but code allowlist yields {actualCount}.");
+            }
+        }
+
+        [Fact]
+        public void EnvironmentVariables_ProfileDescription_MatchesCodeAllowlists()
+        {
+            var tools = LoadCanonicalToolDefinitions();
+            string envDoc = RepoSource.Read("docs", "environment_variables.md");
+
+            string[] lines = envDoc.Replace("\r\n", "\n").Split('\n');
+            string? profileLine = lines.FirstOrDefault(l => l.Contains("| `GXMCP_PROFILE` |"));
+            Assert.True(profileLine != null, "Row for `GXMCP_PROFILE` not found in docs/environment_variables.md.");
+
+            // Verify the 7-profile enumeration: (`standard`, `core`, `authoring`, `devops`, `ui`, `db`, `all`)
+            var enumMatch = Regex.Match(profileLine!, @"surface\s*\(([^)]+)\)");
+            Assert.True(enumMatch.Success, $"Could not find profile enumeration '( ... )' in GXMCP_PROFILE row: '{profileLine}'");
+
+            var enumProfiles = Regex.Matches(enumMatch.Groups[1].Value, @"`([a-z_]+)`")
+                .Cast<Match>()
+                .Select(m => m.Groups[1].Value)
+                .ToList();
+
+            Assert.True(
+                enumProfiles.Count == DocumentedProfiles.Length,
+                $"Expected {DocumentedProfiles.Length} profiles in GXMCP_PROFILE enumeration, found {enumProfiles.Count}: [{string.Join(", ", enumProfiles)}]");
+
+            var missingProfiles = DocumentedProfiles.Except(enumProfiles, StringComparer.OrdinalIgnoreCase).ToList();
+            Assert.True(
+                missingProfiles.Count == 0,
+                $"GXMCP_PROFILE enumeration is missing profile(s): [{string.Join(", ", missingProfiles)}]");
+
+            // Verify core tools count: `core` (15 tools)
+            var coreMatch = Regex.Match(profileLine!, @"`core`\s*\((\d+)\s+tools\)");
+            Assert.True(coreMatch.Success, $"Could not find '`core` (N tools)' pattern in GXMCP_PROFILE row: '{profileLine}'");
+            int publishedCoreCount = int.Parse(coreMatch.Groups[1].Value);
+            int actualCoreCount = ToolProfileFilter.Filter(tools, "core").Count;
+            Assert.True(
+                publishedCoreCount == actualCoreCount,
+                $"`core` count in environment_variables.md is {publishedCoreCount}, but code allowlist yields {actualCoreCount}.");
+
+            // Verify authoring tools count: `authoring` (35 tools)
+            var authMatch = Regex.Match(profileLine!, @"`authoring`\s*\((\d+)\s+tools\)");
+            Assert.True(authMatch.Success, $"Could not find '`authoring` (N tools)' pattern in GXMCP_PROFILE row: '{profileLine}'");
+            int publishedAuthCount = int.Parse(authMatch.Groups[1].Value);
+            int actualAuthCount = ToolProfileFilter.Filter(tools, "authoring").Count;
+            Assert.True(
+                publishedAuthCount == actualAuthCount,
+                $"`authoring` count in environment_variables.md is {publishedAuthCount}, but code allowlist yields {actualAuthCount}.");
+
+            // Verify all / full surface count: full 60-tool surface
+            var allMatch = Regex.Match(profileLine!, @"full\s+(\d+)-tool\s+surface");
+            Assert.True(allMatch.Success, $"Could not find 'full N-tool surface' pattern in GXMCP_PROFILE row: '{profileLine}'");
+            int publishedAllCount = int.Parse(allMatch.Groups[1].Value);
+            int actualAllCount = ToolProfileFilter.Filter(tools, "all").Count;
+            Assert.True(
+                publishedAllCount == actualAllCount,
+                $"Full surface tool count in environment_variables.md is {publishedAllCount}, but code allowlist yields {actualAllCount}.");
         }
     }
 }

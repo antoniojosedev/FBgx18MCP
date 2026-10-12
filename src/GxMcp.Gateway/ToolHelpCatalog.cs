@@ -799,11 +799,15 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `list_actions` — read the current tabs and ordered actions (name, caption, procedure, parameters, condition) on the standard WorkWith instance.\n" +
                 "- `add_action` — author a typed action with Procedure call, ordered parameters, condition expression, and caption on a target tab (default `General`).\n\n" +
-                "## Safety and Regeneration Rules\n" +
-                "- `dryRun: true` previews the planned action without persisting changes to the KB.\n" +
+                "## Safety, Concurrency, and Validation Rules\n" +
+                "- `dryRun: true` previews the planned action and reports explicit validation limits without persisting changes to the KB.\n" +
                 "- Action name must be a valid identifier and unique within the target tab.\n" +
                 "- Target Procedure must exist in the Knowledge Base and be of type Procedure.\n" +
-                "- Derived WebComponent regeneration: persisting an action updates the WorkWith instance definition; on GeneXus 18/17, derived WebComponents (e.g. `<Trn>General`) may require IDE Apply or build to re-project the new action control into the WebForm.\n\n" +
+                "- Validation limits: pre-validation verifies tab existence, action name uniqueness, and Procedure existence/type. Parameter counts/types against the Procedure `parm()` rule and condition/parameter expressions are not compiled or type-checked.\n" +
+                "- Concurrency: operations use target-scoped mutex locking and do not accept or check optimistic concurrency version tokens.\n" +
+                "- Verification: on save, the receipt rereads the tab actions from the in-memory instance and compares all fields (name, caption, procedure, condition, ordered parameters) to distinguish requested inputs from observed state.\n" +
+                "- Derived WebComponent regeneration: persisting an action updates the WorkWith instance definition; on GeneXus 18/17, derived WebComponents (e.g. `<Trn>General`) may require IDE Apply or build to re-project the new action control into the WebForm.\n" +
+                "- Route and default normalization: receipts report `route` (`native-sdk` or `xml-fallback`) and `verificationScope`. Native SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save while preserving functional behavior and pattern bindings; the XML fallback preserves existing XML defaults verbatim.\n\n" +
                 "Example: `{ action: 'add_action', name: 'Customer', tab: 'General', actionName: 'PrintStatement', caption: 'Print Statement', procedure: 'procPrintCustomer', parameters: ['CustomerId', '\"PDF\"'], condition: '&CustomerActive', dryRun: true }`.\n"
         };
 
