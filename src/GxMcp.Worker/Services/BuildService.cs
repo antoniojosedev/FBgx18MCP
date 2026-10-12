@@ -463,6 +463,7 @@ namespace GxMcp.Worker.Services
             {
                 status.Status = "Failed";
                 status.ExitCode = 1; // Overall operation result, not the compiler/process exit code.
+                status.FailureOrigin = "verification_failure";
                 status.PartialSuccess = false;
                 status.ErrorCount++;
                 if (status.Errors.Count < 50) status.Errors.Add("[" + code + "] " + message);
@@ -527,15 +528,25 @@ namespace GxMcp.Worker.Services
             status.ReorgRequired = status.ReorgRequired == true || DetectBuildAllReorgRequired(output);
             status.MsBuildExitCode = status.BuildPath == "inproc" ? (int?)null : status.ExitCode;
 
+            if (status.KbOpened == true)
+                RecordStageConfirmed(status, "OpeningKB");
+            if (DidGenerationAndCompilationSucceed(output))
+                RecordStagesUpTo(status, "Finishing");
+            if (status.BuildAllDone == true)
+                RecordStagesUpTo(status, "Done");
+
             if (status.ReorgRequired == true)
             {
                 status.Status = "ReorgRequired";
+                status.FailureOrigin = "reorg_required";
                 status.Error = "Build All stopped because the selected Knowledge Base requires reorganization. Run genexus_lifecycle action=reorg explicitly, then retry action=build_all.";
                 status.Hint = "FailIfReorg=true prevented a silent schema change. Run genexus_lifecycle action=reorg, then retry action=build_all.";
             }
             else if (status.BuildAllDone != true)
             {
                 status.Status = "Failed";
+                if (status.FailureOrigin == null)
+                    status.FailureOrigin = (status.ErrorCount > 0) ? "errors" : "missing_completion_evidence";
                 status.Error = "Build All did not emit completion evidence; an exit code of 0 alone is not sufficient to confirm that Build All ran.";
                 status.Hint = "Inspect fullLogPath and retry after confirming the SDK/MSBuild task completed.";
             }
@@ -798,7 +809,18 @@ namespace GxMcp.Worker.Services
             public string StartTime { get; set; }
             public string EndTime { get; set; }
             public double? ElapsedSeconds { get; set; }
-            public int ExitCode { get; set; }
+            [JsonProperty("ExitCode", NullValueHandling = NullValueHandling.Include)]
+            public int? ExitCode { get; set; }
+            [JsonProperty("failureOrigin", NullValueHandling = NullValueHandling.Ignore)]
+            public string FailureOrigin { get; set; }
+            [JsonProperty("watchdogTriggered", NullValueHandling = NullValueHandling.Ignore)]
+            public bool? WatchdogTriggered { get; set; }
+            [JsonProperty("watchdogType", NullValueHandling = NullValueHandling.Ignore)]
+            public string WatchdogType { get; set; }
+            [JsonProperty("childProcessState", NullValueHandling = NullValueHandling.Ignore)]
+            public string ChildProcessState { get; set; }
+            [JsonProperty("confirmedStages", NullValueHandling = NullValueHandling.Ignore)]
+            public List<string> ConfirmedStages { get; set; } = new List<string>();
             public string Error { get; set; }
             // v2.6.6 Stream D: "inproc" when GeneXus MSBuild tasks ran inside the
             // worker against the open KB, "msbuild-exe" when we fell back to the
@@ -927,12 +949,57 @@ namespace GxMcp.Worker.Services
         private static bool IsTerminalStatus(string s)
             => !string.IsNullOrEmpty(s) && _terminalStatuses.Contains(s);
 
+        internal static readonly string[] KnownBuildStages = new[]
+        {
+            "OpeningKB",
+            "Specifying",
+            "Generating",
+            "Compiling",
+            "Finishing"
+        };
+
+        internal static void RecordStageConfirmed(BuildTaskStatus status, string stage)
+        {
+            if (status == null || string.IsNullOrWhiteSpace(stage)) return;
+            lock (status._lock)
+            {
+                if (status.ConfirmedStages == null) status.ConfirmedStages = new List<string>();
+                if (!status.ConfirmedStages.Contains(stage, StringComparer.OrdinalIgnoreCase))
+                    status.ConfirmedStages.Add(stage);
+            }
+        }
+
+        internal static void RecordStagesUpTo(BuildTaskStatus status, string currentStage)
+        {
+            if (status == null || string.IsNullOrWhiteSpace(currentStage)) return;
+            foreach (var stage in KnownBuildStages)
+            {
+                if (string.Equals(stage, currentStage, StringComparison.OrdinalIgnoreCase))
+                    break;
+                RecordStageConfirmed(status, stage);
+            }
+        }
+
+        internal static string ResolveChildProcessState(Process process, bool watchdogKilled = false)
+        {
+            if (process == null) return "unknown";
+            try
+            {
+                if (process.HasExited) return watchdogKilled ? "terminated" : "exited";
+                return watchdogKilled ? "terminated" : "running";
+            }
+            catch
+            {
+                return watchdogKilled ? "terminated" : "unknown";
+            }
+        }
+
         /// <summary>
         /// Terminalizes a watchdog failure without replacing the diagnostic phase with the
         /// normal successful-build terminal phase (Done). The phase captured under the same
         /// lock is passed to the caller's message factory, so the envelope and text agree.
         /// </summary>
-        internal static bool TrySetWatchdogFailure(BuildTaskStatus status, Func<string, string> errorFactory)
+        internal static bool TrySetWatchdogFailure(BuildTaskStatus status, Func<string, string> errorFactory, string failureOrigin = null, string watchdogType = null)
         {
             if (status == null || errorFactory == null) return false;
             lock (status._lock)
@@ -943,6 +1010,28 @@ namespace GxMcp.Worker.Services
                 status.Error = errorFactory(phase);
                 status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                status.WatchdogTriggered = true;
+                string inferredWatchdogType = watchdogType ?? (errorFactory(phase).IndexOf("no-progress", StringComparison.OrdinalIgnoreCase) >= 0 ? "no-progress" : "wall-clock");
+                status.WatchdogType = inferredWatchdogType;
+                status.FailureOrigin = failureOrigin ?? ((status.ErrorCount > 0) ? "watchdog_with_errors" : "watchdog");
+                status.ExitCode = null; // Exit code was not obtained from child process
+                status.ChildProcessState = ResolveChildProcessState(status.Process, watchdogKilled: true);
+
+                // Write available output log immediately so reconciliation doesn't depend on a finished build.
+                try
+                {
+                    string fullText = status.FullOutput?.ToString() ?? "";
+                    if (!string.IsNullOrEmpty(fullText) && string.IsNullOrEmpty(status.FullLogPath))
+                    {
+                        if (BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out string fullLogPath))
+                        {
+                            status.FullLogPath = fullLogPath;
+                            status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
+                        }
+                    }
+                }
+                catch { }
+
                 return true;
             }
         }
@@ -3997,49 +4086,73 @@ namespace GxMcp.Worker.Services
                 }
                 catch { }
 
-                bool failed = outcome == InProcessBuildOutcome.FailedWithDiagnostics
-                              || status.ErrorCount > 0;
-                status.Status = failed ? "Failed" : "Succeeded";
-                status.ExitCode = failed ? 1 : 0;
-                status.MsBuildExitCode = null; // No MSBuild process ran on this path.
-                FinalizeBuildAllStatus(status, fullText);
-                // A1 (parity with the MSBuild.exe branch below): when the
-                // in-process pipeline reports failure but emitted zero code
-                // errors AND the captured output shows Generation + Compilation
-                // both succeeded, the failure is a downstream/late step
-                // (WebAppConfig, a standalone-module deploy like GAMUser) —
-                // the target's .cs/.dll are already written. Flag it as a
-                // partial success so the gateway renders effective_status=
-                // PartialSuccess (isError=false) instead of a contradictory
-                // "Failed with 0 errors".
-                if (failed && status.ErrorCount == 0
-                    && DidGenerationAndCompilationSucceed(fullText))
+                lock (status._lock)
                 {
-                    status.PartialSuccess = true;
-                }
-                status.Phase = "Done";
-                EmitPhaseProgress(status.Phase);
+                    if (!IsTerminalStatus(status.Status))
+                    {
+                        bool failed = outcome == InProcessBuildOutcome.FailedWithDiagnostics
+                                       || status.ErrorCount > 0;
+                        status.Status = failed ? "Failed" : "Succeeded";
+                        status.ExitCode = failed ? 1 : 0;
+                        status.FailureOrigin = failed ? ((status.ErrorCount > 0) ? "errors" : (status.PhaseFailure != null ? "phase_failure" : "inproc_failure")) : null;
+                        status.ChildProcessState = "none";
+                        status.MsBuildExitCode = null; // No MSBuild process ran on this path.
+                        FinalizeBuildAllStatus(status, fullText);
+                        // A1 (parity with the MSBuild.exe branch below): when the
+                        // in-process pipeline reports failure but emitted zero code
+                        // errors AND the captured output shows Generation + Compilation
+                        // both succeeded, the failure is a downstream/late step
+                        // (WebAppConfig, a standalone-module deploy like GAMUser) —
+                        // the target's .cs/.dll are already written. Flag it as a
+                        // partial success so the gateway renders effective_status=
+                        // PartialSuccess (isError=false) instead of a contradictory
+                        // "Failed with 0 errors".
+                        if (failed && status.ErrorCount == 0
+                            && DidGenerationAndCompilationSucceed(fullText))
+                        {
+                            status.PartialSuccess = true;
+                        }
+                        status.Phase = "Done";
+                        RecordStagesUpTo(status, "Done");
+                        EmitPhaseProgress(status.Phase);
 
-                // When the pipeline reported failure but emitted no itemized
-                // error line (the build-all IdeWebBuildAndDeploy case — the SDK
-                // signals failure through >E0 section markers, not "error CS####:"
-                // text), leave the agent something actionable: the failed section
-                // and a pointer to the per-object spec check that DOES itemize.
-                if (outcome == InProcessBuildOutcome.FailedWithDiagnostics && status.ErrorCount == 0)
-                {
-                    if (status.PhaseFailure == null)
-                        status.PhaseFailure = ExtractPhaseFailure(fullText)
-                            ?? new PhaseFailureInfo
+                        // When the pipeline reported failure but emitted no itemized
+                        // error line (the build-all IdeWebBuildAndDeploy case — the SDK
+                        // signals failure through >E0 section markers, not "error CS####:"
+                        // text), leave the agent something actionable: the failed section
+                        // and a pointer to the per-object spec check that DOES itemize.
+                        if (outcome == InProcessBuildOutcome.FailedWithDiagnostics && status.ErrorCount == 0)
+                        {
+                            if (status.PhaseFailure == null)
+                                status.PhaseFailure = ExtractPhaseFailure(fullText)
+                                    ?? new PhaseFailureInfo
+                                    {
+                                        Name = status.Phase ?? "Build",
+                                        Message = "The in-process GeneXus build reported failure without an itemized error line."
+                                    };
+                            status.Hint = "Build failed in-process with no itemized error list (the SDK signalled failure at the section level). "
+                                + "Run genexus_lifecycle action=specify target=<object> for spc*/gen* diagnostics on a specific object, or open the KB in the IDE to see the full build output.";
+                        }
+
+                        status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                        status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                    }
+                    else
+                    {
+                        if (string.IsNullOrEmpty(status.FullLogPath) && !string.IsNullOrEmpty(fullText))
+                        {
+                            try
                             {
-                                Name = status.Phase ?? "Build",
-                                Message = "The in-process GeneXus build reported failure without an itemized error line."
-                            };
-                    status.Hint = "Build failed in-process with no itemized error list (the SDK signalled failure at the section level). "
-                        + "Run genexus_lifecycle action=specify target=<object> for spc*/gen* diagnostics on a specific object, or open the KB in the IDE to see the full build output.";
+                                if (BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out string fullLogPath))
+                                {
+                                    status.FullLogPath = fullLogPath;
+                                    status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
+                                }
+                            }
+                            catch { }
+                        }
+                    }
                 }
-
-                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
                 // Attach the evidence before publishing the terminal signal. The
                 // gateway's async poller stops at the first Succeeded status; if the
                 // signal fires first, it can persist a terminal result without the
@@ -4063,8 +4176,11 @@ namespace GxMcp.Worker.Services
             {
                 status.Status = "Failed";
                 status.ExitCode = 1;
+                status.FailureOrigin = "spec_unavailable";
+                status.ChildProcessState = "none";
                 status.MsBuildExitCode = null;
                 status.Phase = "Done";
+                RecordStagesUpTo(status, "Done");
                 EmitPhaseProgress(status.Phase);
                 status.Error = "Spec-check (specifyOnly) could not run in-process (GeneXus MSBuild tasks unavailable in this worker). Not falling back to a full build. Run a normal build to see diagnostics.";
                 status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
@@ -4150,7 +4266,6 @@ namespace GxMcp.Worker.Services
                     try { process.WaitForExit(5000); } catch { }
                 }
 
-                status.ExitCode = process.HasExited ? process.ExitCode : -1;
                 status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
 
@@ -4162,16 +4277,28 @@ namespace GxMcp.Worker.Services
                 status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
 
                 status.Phase = "Done";
+                RecordStagesUpTo(status, "Done");
                 Helpers.Logger.CurrentPhase = "Done";
                 EmitPhaseProgress(status.Phase);
 
                 // Don't clobber a terminal state the watchdog already set on timeout.
-                if (!IsTerminalStatus(status.Status))
+                lock (status._lock)
                 {
-                    if (status.ExitCode == 0 && status.ErrorCount == 0)
-                        status.Status = "Succeeded";
-                    else
-                        status.Status = "Failed";
+                    if (!IsTerminalStatus(status.Status))
+                    {
+                        status.ExitCode = process.HasExited ? (int?)process.ExitCode : null;
+                        if (status.ExitCode == 0 && status.ErrorCount == 0)
+                        {
+                            status.Status = "Succeeded";
+                            status.FailureOrigin = null;
+                        }
+                        else
+                        {
+                            status.Status = "Failed";
+                            status.FailureOrigin = (status.ErrorCount > 0) ? "errors" : (status.ExitCode.HasValue && status.ExitCode.Value != 0 ? "process_exit" : "failed");
+                        }
+                        status.ChildProcessState = process.HasExited ? "exited" : "terminated";
+                    }
                 }
                 FinalizeBuildAllStatus(status, fullText);
 
@@ -4180,7 +4307,7 @@ namespace GxMcp.Worker.Services
                 // file-missing) that doesn't emit a proper "error <code>:" line.
                 // Parse the raw output for >RO/>E0 markers so the agent gets a
                 // named phase_failure instead of "Failed: 0 errors, 0 warnings".
-                if (status.ErrorCount == 0 && status.ExitCode != 0)
+                if (status.ErrorCount == 0 && status.ExitCode.HasValue && status.ExitCode.Value != 0)
                 {
                     status.PhaseFailure = ExtractPhaseFailure(fullText);
                     if (DidGenerationAndCompilationSucceed(fullText))
@@ -4496,11 +4623,11 @@ namespace GxMcp.Worker.Services
                     return;
                 }
 
-                if (_rxOpenKb.IsMatch(line))      { status.Phase = "OpeningKB"; EmitPhaseProgress(status.Phase); return; }
-                var m = _rxSpecifying.Match(line); if (m.Success) { status.Phase = "Specifying"; EmitPhaseProgress(status.Phase); status.CurrentObject = m.Groups["obj"].Value.Trim(); return; }
-                m = _rxGenerating.Match(line);     if (m.Success) { status.Phase = "Generating"; EmitPhaseProgress(status.Phase); status.CurrentObject = m.Groups["obj"].Value.Trim(); return; }
-                if (_rxCompiling.IsMatch(line))   { status.Phase = "Compiling"; EmitPhaseProgress(status.Phase); return; }
-                if (_rxBuildDone.IsMatch(line))   { status.Phase = "Finishing"; EmitPhaseProgress(status.Phase); }
+                if (_rxOpenKb.IsMatch(line))      { status.Phase = "OpeningKB"; RecordStagesUpTo(status, "OpeningKB"); EmitPhaseProgress(status.Phase); return; }
+                var m = _rxSpecifying.Match(line); if (m.Success) { status.Phase = "Specifying"; RecordStagesUpTo(status, "Specifying"); EmitPhaseProgress(status.Phase); status.CurrentObject = m.Groups["obj"].Value.Trim(); return; }
+                m = _rxGenerating.Match(line);     if (m.Success) { status.Phase = "Generating"; RecordStagesUpTo(status, "Generating"); EmitPhaseProgress(status.Phase); status.CurrentObject = m.Groups["obj"].Value.Trim(); return; }
+                if (_rxCompiling.IsMatch(line))   { status.Phase = "Compiling"; RecordStagesUpTo(status, "Compiling"); EmitPhaseProgress(status.Phase); return; }
+                if (_rxBuildDone.IsMatch(line))   { status.Phase = "Finishing"; RecordStagesUpTo(status, "Finishing"); EmitPhaseProgress(status.Phase); }
                 if (_rxBuildOneEnd.IsMatch(line) && status.TargetsTotal.HasValue)
                 {
                     status.TargetsDone = (status.TargetsDone ?? 0) + 1;
@@ -4645,6 +4772,10 @@ namespace GxMcp.Worker.Services
         {
             status.Status = "Error";
             status.Phase = "Done";
+            status.ExitCode = 1;
+            status.FailureOrigin = "error";
+            status.ChildProcessState = "none";
+            RecordStagesUpTo(status, "Done");
             EmitPhaseProgress(status.Phase);
             status.Error = error;
             status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");

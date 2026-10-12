@@ -50,6 +50,23 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void Failed_WithWatchdogOrigin_IncludesWatchdogInSummary()
+        {
+            var ws = new JObject
+            {
+                ["Status"] = "Failed",
+                ["ErrorCount"] = 7,
+                ["WarningCount"] = 1,
+                ["failureOrigin"] = "watchdog_with_errors"
+            };
+            var v = McpRouter.ClassifyWorkerBuildStatus(ws);
+            Assert.NotNull(v);
+            Assert.False(v!.Value.success);
+            Assert.Contains("watchdog", v.Value.summary);
+            Assert.Contains("7 errors", v.Value.summary);
+        }
+
+        [Fact]
         public void ReorgRequired_IsTerminalFailureWithExplicitRecoverySummary()
         {
             var ws = new JObject
