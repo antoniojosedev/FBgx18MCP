@@ -268,6 +268,7 @@ Backfill progress is exposed under `index.sourceStore` (and lifecycle status) as
 
 | Variable | Purpose |
 |----------|---------|
+| `GXMCP_WORKER_GENERATION` | Worker generation identifier read by diagnostic envelopes to distinguish Worker instances. Optional; diagnostics omit it when unset. |
 | `GXMCP_SERVER_VERSION` | The gateway injects the server version into the worker's environment on spawn. Reading it in worker code is fine; setting it externally has no effect. |
 | `GXMCP_DRIVER` | Gateway-selected Worker driver (`native-sdk`, `dotnet-reflection`, or `com-gxpublic`), injected when it launches a Worker or shared Worker host. Do not set by hand. |
 | `GXMCP_TARGET_MAJOR` | Gateway-selected GeneXus major injected with the Worker driver; the Worker uses it for version-specific compatibility/provider behavior. Do not set by hand. |

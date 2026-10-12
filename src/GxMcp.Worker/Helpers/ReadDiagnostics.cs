@@ -204,7 +204,12 @@ namespace GxMcp.Worker.Helpers
             {
                 if (currentDepth < MaxExceptionDepth)
                 {
-                    result["innerException"] = SanitizeException(ex.InnerException, currentDepth + 1);
+                    var innerException = SanitizeException(ex.InnerException, currentDepth + 1);
+                    result["innerException"] = innerException;
+                    if (innerException["truncationReasons"] is JArray innerReasons)
+                    {
+                        reasons.AddRange(innerReasons.Select(reason => reason.ToString()));
+                    }
                 }
                 else
                 {
@@ -320,8 +325,8 @@ namespace GxMcp.Worker.Helpers
                     snapshot["sourceStore"] = new JObject
                     {
                         ["state"] = backfillState.State ?? "unknown",
-                        ["processedCount"] = backfillState.ProcessedCount,
-                        ["totalCount"] = backfillState.TotalCount,
+                        ["processedCount"] = backfillState.ProcessedObjects,
+                        ["totalCount"] = backfillState.TotalObjects,
                         ["retryCount"] = backfillState.RetryCount,
                         ["lastError"] = backfillState.LastError != null
                             ? LogRedaction.Redact(backfillState.LastError)

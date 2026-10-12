@@ -3710,7 +3710,7 @@ namespace GxMcp.Worker.Services
 
                 foreach (var pName in partsToFetch)
                 {
-                    string partJson = ReadObjectSourceInternal(obj, pName, null, null, client, diagContext);
+                    string partJson = ReadObjectSourceInternal(obj, pName, null, null, client, diagContext: diagContext);
                     try {
                         var pObj = JObject.Parse(partJson);
                         if (obj is Artech.Packages.Patterns.Objects.PatternSettings || pObj["source"] != null)
