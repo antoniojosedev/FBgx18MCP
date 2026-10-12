@@ -12,7 +12,6 @@
 ### Fixed
 
 - Qualified `routeUnsupported` diagnostic finding remediation and `PatternRouteUnsupported` rejection hint to distinguish reapply refusal from property editing: reapply remains unsupported on the generic route, existing property edits are permitted but whether derived objects update is not measured by the edit call and recorded results vary by environment, and callers are advised to apply the pattern in the GeneXus IDE if derived objects do not follow ([#478](https://github.com/lennix1337/Genexus18MCP/issues/478)).
-=======
 - Preserved sanitized diagnostic records and failing stage attribution (`resolve_object`, `refresh_object`, `access_part`, `query_variables`, `extract_content`) across the object read path instead of swallowing exceptions or degrading to generic `LegacyWorkerError`, exposing ambient correlation ID, UTC timestamps, execution duration, bounded stack traces, and non-blocking KB state snapshots without leaking sensitive credentials or variable values ([#479](https://github.com/lennix1337/Genexus18MCP/issues/479)).
 - Updated tool profile counts across documentation (`docs/llm_cli_mcp_playbook.md` and `docs/environment_variables.md`) to match `ToolProfileFilter` allowlists and canonical `tool_definitions.json` (standard 20, core 15, authoring 35, devops 37, ui 23, db 19, all 60), included `standard` in the `GXMCP_PROFILE` enumeration, and introduced regression guard tests in `ToolProfileTests` to prevent doc/code drift ([#480](https://github.com/lennix1337/Genexus18MCP/issues/480)).
 
