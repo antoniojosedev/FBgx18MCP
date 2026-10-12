@@ -135,11 +135,41 @@ namespace GxMcp.Worker.Tests
             Assert.DoesNotContain("are regenerated", hint.ToLowerInvariant());
             Assert.DoesNotContain("regenerates the", hint.ToLowerInvariant());
             Assert.DoesNotContain("structural authoring is possible", hint.ToLowerInvariant());
-            // The denial must actually be stated, or the qualification is absent.
-            Assert.Contains("not regenerated", hint.ToLowerInvariant());
+            // Issue #478: the hint must not make the blanket claim that derived objects
+            // are unconditionally not regenerated either way across all environments.
+            Assert.DoesNotContain("are not regenerated either way", hint.ToLowerInvariant());
+            // Reapply refusal must be stated explicitly.
+            Assert.Contains("reapply remains unsupported", hint.ToLowerInvariant());
             // The permitted, qualified action must still be discoverable.
             Assert.Contains("genexus_read", hint, StringComparison.Ordinal);
             Assert.Contains("genexus_edit", hint, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void RouteUnsupported_Guidance_Distinguishes_Reapply_Refusal_From_Property_Edits_And_Directs_To_Ide()
+        {
+            var rejection = PatternApplyService.TryBuildRouteUnsupportedRejection(
+                "SyntheticObject", NonWwp(), PatternApplyService.PatternRoute.Reapply);
+            Assert.NotNull(rejection);
+
+            var payload = JObject.Parse(rejection);
+            string hint = (string)(payload["error"]?["hint"] ?? payload["hint"]);
+
+            // Issue #478 acceptance criteria:
+            // 1. Reapply of this route remains unsupported.
+            Assert.Contains("reapply remains unsupported", hint, StringComparison.OrdinalIgnoreCase);
+
+            // 2. Existing property edits may persist the instance, but derived-object
+            // update is not measured by the edit call and results vary by environment.
+            Assert.Contains("genexus_edit part=PatternInstance is possible", hint, StringComparison.Ordinal);
+            Assert.Contains("not measured by the edit call", hint, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("vary by environment", hint, StringComparison.OrdinalIgnoreCase);
+
+            // 3. If derived objects do not follow, apply via GeneXus IDE.
+            Assert.Contains("apply the pattern in the genexus ide", hint, StringComparison.OrdinalIgnoreCase);
+
+            // Shared guidance constant equality check across rejection and diagnostic.
+            Assert.Equal(PatternApplyService.RouteUnsupportedGuidance, hint);
         }
 
         [Fact]

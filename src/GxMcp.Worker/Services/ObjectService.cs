@@ -3670,14 +3670,34 @@ namespace GxMcp.Worker.Services
         }
 
         public string ExtractAllParts(string target, string client = "ide", string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null)
+            string guid = null, string entityKey = null, string path = null, string correlationId = null)
         {
+            var diagContext = new ReadDiagnosticContext
+            {
+                CorrelationId = !string.IsNullOrWhiteSpace(correlationId) ? correlationId : (ReadDiagnosticContext.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")),
+                Target = target,
+                PartName = "all",
+                Refresh = false,
+                RequestedSelector = new JObject
+                {
+                    ["target"] = target,
+                    ["typeFilter"] = typeFilter,
+                    ["guid"] = guid,
+                    ["entityKey"] = entityKey,
+                    ["path"] = path
+                }
+            };
             var sw = Stopwatch.StartNew();
             try
             {
+                diagContext.CurrentStage = ReadDiagnosticStages.ResolveObject;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
+
                 target = ResolveTargetForIdentity(target, guid, entityKey, path);
                 var obj = FindObject(target, typeFilter, guid, entityKey, path);
                 if (obj == null) return FormatReadNotFound(target);
+
+                diagContext.ResolvedObject = obj;
 
                 var result = new JObject
                 {
@@ -3690,7 +3710,7 @@ namespace GxMcp.Worker.Services
 
                 foreach (var pName in partsToFetch)
                 {
-                    string partJson = ReadObjectSourceInternal(obj, pName, null, null, client);
+                    string partJson = ReadObjectSourceInternal(obj, pName, null, null, client, diagContext);
                     try {
                         var pObj = JObject.Parse(partJson);
                         if (obj is Artech.Packages.Patterns.Objects.PatternSettings || pObj["source"] != null)
@@ -3705,88 +3725,161 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return ReadDiagnosticHelper.CreateFailureEnvelope(diagContext, ex, _kbService);
             }
         }
 
         public string ReadObject(string target, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null)
+            string guid = null, string entityKey = null, string path = null, string correlationId = null)
         {
-            target = ResolveTargetForIdentity(target, guid, entityKey, path);
-            var obj = FindObject(target, typeFilter, guid, entityKey, path);
-            if (obj == null) return FormatReadNotFound(target);
-
-            var parts = new JArray();
-            foreach (KBObjectPart p in obj.Parts)
+            var diagContext = new ReadDiagnosticContext
             {
-                parts.Add(new JObject {
-                    ["name"] = p.TypeDescriptor?.Name ?? p.Type.ToString(),
-                    ["guid"] = p.Type.ToString()
-                });
-            }
-            if (string.Equals(obj.TypeDescriptor?.Name, "API", StringComparison.OrdinalIgnoreCase))
-            {
-                var sgs = (obj as dynamic)?.ServiceGroupSource;
-                if (sgs != null && !parts.OfType<JObject>().Any(p => string.Equals(p["name"]?.ToString(), "Methods", StringComparison.OrdinalIgnoreCase)))
+                CorrelationId = !string.IsNullOrWhiteSpace(correlationId) ? correlationId : (ReadDiagnosticContext.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")),
+                Target = target,
+                PartName = "metadata",
+                Refresh = false,
+                RequestedSelector = new JObject
                 {
-                    parts.Add(new JObject
-                    {
-                        ["name"] = "Methods",
-                        ["guid"] = sgs.Type.ToString()
+                    ["target"] = target,
+                    ["typeFilter"] = typeFilter,
+                    ["guid"] = guid,
+                    ["entityKey"] = entityKey,
+                    ["path"] = path
+                }
+            };
+
+            try
+            {
+                diagContext.CurrentStage = ReadDiagnosticStages.ResolveObject;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
+
+                target = ResolveTargetForIdentity(target, guid, entityKey, path);
+                var obj = FindObject(target, typeFilter, guid, entityKey, path);
+                if (obj == null) return FormatReadNotFound(target);
+
+                diagContext.ResolvedObject = obj;
+                diagContext.CurrentStage = ReadDiagnosticStages.AccessPart;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
+
+                var parts = new JArray();
+                foreach (KBObjectPart p in obj.Parts)
+                {
+                    parts.Add(new JObject {
+                        ["name"] = p.TypeDescriptor?.Name ?? p.Type.ToString(),
+                        ["guid"] = p.Type.ToString()
                     });
                 }
-            }
-
-            string parentName = null;
-            string moduleName = null;
-
-            try { parentName = obj.Parent?.Name; } catch { }
-            try { moduleName = obj.Module?.Name; } catch { }
-
-            // v2.8.0 — availableParts proactive on success. LLMs no longer
-            // need to hit a PartNotFound error to learn the object's shape;
-            // the part list is already on the first read. Mirrors the same
-            // field name the error envelope carries so a dumb LLM uses one
-            // accessor regardless of outcome.
-            var availableParts = GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj);
-
-            return Models.McpResponse.Ok(
-                target: obj.Name,
-                code: "ObjectRead",
-                result: new JObject
+                if (string.Equals(obj.TypeDescriptor?.Name, "API", StringComparison.OrdinalIgnoreCase))
                 {
-                    ["name"] = obj.Name,
-                    ["type"] = obj.TypeDescriptor?.Name,
-                    ["identity"] = BuildObjectIdentity(obj),
-                    ["parent"] = parentName,
-                    ["module"] = moduleName,
-                    ["parts"] = parts,
-                    ["availableParts"] = new JArray(availableParts)
-                });
+                    var sgs = (obj as dynamic)?.ServiceGroupSource;
+                    if (sgs != null && !parts.OfType<JObject>().Any(p => string.Equals(p["name"]?.ToString(), "Methods", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        parts.Add(new JObject
+                        {
+                            ["name"] = "Methods",
+                            ["guid"] = sgs.Type.ToString()
+                        });
+                    }
+                }
+
+                string parentName = null;
+                string moduleName = null;
+
+                try { parentName = obj.Parent?.Name; } catch { }
+                try { moduleName = obj.Module?.Name; } catch { }
+
+                // v2.8.0 — availableParts proactive on success. LLMs no longer
+                // need to hit a PartNotFound error to learn the object's shape;
+                // the part list is already on the first read. Mirrors the same
+                // field name the error envelope carries so a dumb LLM uses one
+                // accessor regardless of outcome.
+                var availableParts = GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj);
+
+                return Models.McpResponse.Ok(
+                    target: obj.Name,
+                    code: "ObjectRead",
+                    result: new JObject
+                    {
+                        ["name"] = obj.Name,
+                        ["type"] = obj.TypeDescriptor?.Name,
+                        ["identity"] = BuildObjectIdentity(obj),
+                        ["parent"] = parentName,
+                        ["module"] = moduleName,
+                        ["parts"] = parts,
+                        ["availableParts"] = new JArray(availableParts)
+                    });
+            }
+            catch (Exception ex)
+            {
+                return ReadDiagnosticHelper.CreateFailureEnvelope(diagContext, ex, _kbService);
+            }
         }
 
         public string ReadObjectSource(string target, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null, ConditionalReadService.Request conditional = null, bool refresh = false)
+            string guid = null, string entityKey = null, string path = null, ConditionalReadService.Request conditional = null, bool refresh = false, string correlationId = null)
         {
-            target = ResolveTargetForIdentity(target, guid, entityKey, path);
-            var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
-            if (obj == null) return FormatReadNotFound(target);
-
-            string resolvedPart = ResolvePartName(obj, partName);
-
-            // Issue #357: the revision is observed here, BEFORE any body is read,
-            // because a token must describe the bytes it was issued with — not the
-            // bytes that exist after a concurrent edit. Everything about the
-            // conditional decision is delegated so the unconditional path below
-            // stays exactly as it was.
-            if (conditional != null)
+            var diagContext = new ReadDiagnosticContext
             {
-                string body = ReadObjectSourceConditional(obj, resolvedPart, offset, limit, client, minimize, conditional);
-                return refresh ? DescribeReadFreshness(body, true) : body;
-            }
+                CorrelationId = !string.IsNullOrWhiteSpace(correlationId) ? correlationId : (ReadDiagnosticContext.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")),
+                Target = target,
+                PartName = partName,
+                Refresh = refresh,
+                RequestedSelector = new JObject
+                {
+                    ["target"] = target,
+                    ["part"] = partName,
+                    ["typeFilter"] = typeFilter,
+                    ["guid"] = guid,
+                    ["entityKey"] = entityKey,
+                    ["path"] = path,
+                    ["refresh"] = refresh
+                }
+            };
 
-            return refresh ? DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize), true)
-                : ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize);
+            try
+            {
+                diagContext.CurrentStage = refresh ? ReadDiagnosticStages.RefreshObject : ReadDiagnosticStages.ResolveObject;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
+
+                target = ResolveTargetForIdentity(target, guid, entityKey, path);
+                var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
+                if (obj == null)
+                {
+                    var diag = GetLastResolutionDiagnostic();
+                    if (string.Equals(diag?["code"]?.ToString(), "FreshReadUnavailable", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return McpResponse.Err(
+                            code: "FreshReadUnavailable",
+                            message: diag["message"]?.ToString(),
+                            hint: diag["hint"]?.ToString(),
+                            target: target,
+                            errorExtra: diag);
+                    }
+                    return FormatReadNotFound(target);
+                }
+
+                diagContext.ResolvedObject = obj;
+                string resolvedPart = ResolvePartName(obj, partName);
+                diagContext.PartName = resolvedPart;
+
+                // Issue #357: the revision is observed here, BEFORE any body is read,
+                // because a token must describe the bytes it was issued with — not the
+                // bytes that exist after a concurrent edit. Everything about the
+                // conditional decision is delegated so the unconditional path below
+                // stays exactly as it was.
+                if (conditional != null)
+                {
+                    string body = ReadObjectSourceConditional(obj, resolvedPart, offset, limit, client, minimize, conditional, diagContext);
+                    return refresh ? DescribeReadFreshness(body, true) : body;
+                }
+
+                return refresh ? DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize, diagContext), true)
+                    : ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize, diagContext);
+            }
+            catch (Exception ex)
+            {
+                return ReadDiagnosticHelper.CreateFailureEnvelope(diagContext, ex, _kbService);
+            }
         }
 
         /// <summary>
@@ -3799,7 +3892,8 @@ namespace GxMcp.Worker.Services
         /// </summary>
         private string ReadObjectSourceConditional(
             KBObject obj, string resolvedPart, int? offset, int? limit,
-            string client, bool minimize, ConditionalReadService.Request conditional)
+            string client, bool minimize, ConditionalReadService.Request conditional,
+            ReadDiagnosticContext diagContext = null)
         {
             var observed = _conditionalRead.BuildState(
                 obj, resolvedPart, offset, limit, TryComputeRevisionStamp(obj));
@@ -3826,7 +3920,7 @@ namespace GxMcp.Worker.Services
             if (string.Equals(reason, ConditionalReadToken.ReasonMatched, StringComparison.Ordinal))
                 return _conditionalRead.BuildNotModified(obj, tokenState);
 
-            string body = ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize);
+            string body = ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize, diagContext);
             return _conditionalRead.Decorate(body, observed, reason);
         }
 
@@ -3836,7 +3930,8 @@ namespace GxMcp.Worker.Services
             catch { return null; }
         }
 
-        private string ReadObjectSourceResolved(KBObject obj, string resolvedPart, int? offset, int? limit, string client, bool minimize)
+        private string ReadObjectSourceResolved(KBObject obj, string resolvedPart, int? offset, int? limit, string client, bool minimize,
+            ReadDiagnosticContext diagContext = null)
         {
             if (!(obj is Artech.Packages.Patterns.Objects.PatternSettings) && ShouldUseReadCache(client, minimize))
             {
@@ -3846,7 +3941,7 @@ namespace GxMcp.Worker.Services
                     return DescribeReadFreshness(cachedPayload, false, "worker-object-service-cache");
                 }
 
-                string payload = DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize), false, "sdk-object-state");
+                string payload = DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize, diagContext), false, "sdk-object-state");
                 if (TryGetCacheablePayload(payload, out JObject parsedPayload))
                 {
                     SetReadCache(cacheKey, payload);
@@ -3869,7 +3964,7 @@ namespace GxMcp.Worker.Services
                 return payload;
             }
 
-            return DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize), false, "sdk-object-state");
+            return DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize, diagContext), false, "sdk-object-state");
         }
 
         internal static string DescribeReadFreshness(string json, bool refreshed, string origin = null)
@@ -3975,50 +4070,89 @@ namespace GxMcp.Worker.Services
         /// When requestedParts is null/empty the full default set is returned (backward-compatible).
         /// </summary>
         public string ReadObjectSourceParts(string target, IEnumerable<string> requestedParts, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null, bool refresh = false)
+            string guid = null, string entityKey = null, string path = null, bool refresh = false, string correlationId = null)
         {
-            target = ResolveTargetForIdentity(target, guid, entityKey, path);
-            var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
-            if (obj == null) return FormatReadNotFound(target);
-
-            if (DataSelectorReadService.IsDataSelector(obj))
+            var diagContext = new ReadDiagnosticContext
             {
-                return DataSelectorReadService.Read((DataSelector)obj, requestedParts);
-            }
-
-            string[] partsToFetch = (requestedParts != null && requestedParts.Any())
-                ? requestedParts.Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p)).ToArray()
-                : obj is Artech.Packages.Patterns.Objects.PatternSettings ? new[] { "PatternSettings" } : DefaultPartsToFetch;
-
-            var partsObj = new JObject();
-            JArray variablesProjection = null;
-            foreach (var pName in partsToFetch)
-            {
-                try
+                CorrelationId = !string.IsNullOrWhiteSpace(correlationId) ? correlationId : (ReadDiagnosticContext.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")),
+                Target = target,
+                PartName = requestedParts != null ? string.Join(",", requestedParts) : "all",
+                Refresh = refresh,
+                RequestedSelector = new JObject
                 {
-                    string partJson = ReadObjectSourceInternal(obj, pName, null, null, "mcp", false);
-                    var pObj = JObject.Parse(partJson);
-                    if (pName.IndexOf("Variables", StringComparison.OrdinalIgnoreCase) >= 0
-                        && pObj["variables"] is JArray variableRows)
-                        variablesProjection = variableRows;
-                    if (obj is Artech.Packages.Patterns.Objects.PatternSettings || pObj["source"] != null)
-                        partsObj[pName] = obj is Artech.Packages.Patterns.Objects.PatternSettings ? pObj : pObj["source"];
-                    else if (pObj["error"] == null)
-                        // For XML/binary parts, include the raw response
-                        partsObj[pName] = pObj;
+                    ["target"] = target,
+                    ["parts"] = requestedParts != null ? new JArray(requestedParts) : new JArray(),
+                    ["typeFilter"] = typeFilter,
+                    ["guid"] = guid,
+                    ["entityKey"] = entityKey,
+                    ["path"] = path,
+                    ["refresh"] = refresh
                 }
-                catch { /* skip parts that error */ }
-            }
-
-            var result = new JObject
-            {
-                ["name"] = obj.Name,
-                ["type"] = obj.TypeDescriptor?.Name,
-                ["identity"] = BuildObjectIdentity(obj),
-                ["parts"] = partsObj
             };
-            if (variablesProjection != null) result["variables"] = variablesProjection;
-            return result.ToString();
+
+            try
+            {
+                diagContext.CurrentStage = refresh ? ReadDiagnosticStages.RefreshObject : ReadDiagnosticStages.ResolveObject;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
+
+                target = ResolveTargetForIdentity(target, guid, entityKey, path);
+                var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
+                if (obj == null) return FormatReadNotFound(target);
+
+                diagContext.ResolvedObject = obj;
+
+                if (DataSelectorReadService.IsDataSelector(obj))
+                {
+                    return DataSelectorReadService.Read((DataSelector)obj, requestedParts);
+                }
+
+                string[] partsToFetch = (requestedParts != null && requestedParts.Any())
+                    ? requestedParts.Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p)).ToArray()
+                    : obj is Artech.Packages.Patterns.Objects.PatternSettings ? new[] { "PatternSettings" } : DefaultPartsToFetch;
+
+                var partsObj = new JObject();
+                JArray variablesProjection = null;
+                foreach (var pName in partsToFetch)
+                {
+                    try
+                    {
+                        var partContext = new ReadDiagnosticContext
+                        {
+                            CorrelationId = diagContext.CorrelationId,
+                            Target = obj.Name,
+                            PartName = pName,
+                            Refresh = refresh,
+                            ResolvedObject = obj,
+                            RequestedSelector = diagContext.RequestedSelector
+                        };
+                        string partJson = ReadObjectSourceInternal(obj, pName, null, null, "mcp", false, partContext);
+                        var pObj = JObject.Parse(partJson);
+                        if (pName.IndexOf("Variables", StringComparison.OrdinalIgnoreCase) >= 0
+                            && pObj["variables"] is JArray variableRows)
+                            variablesProjection = variableRows;
+                        if (obj is Artech.Packages.Patterns.Objects.PatternSettings || pObj["source"] != null)
+                            partsObj[pName] = obj is Artech.Packages.Patterns.Objects.PatternSettings ? pObj : pObj["source"];
+                        else if (pObj["error"] == null)
+                            // For XML/binary parts, include the raw response
+                            partsObj[pName] = pObj;
+                    }
+                    catch { /* skip parts that error */ }
+                }
+
+                var result = new JObject
+                {
+                    ["name"] = obj.Name,
+                    ["type"] = obj.TypeDescriptor?.Name,
+                    ["identity"] = BuildObjectIdentity(obj),
+                    ["parts"] = partsObj
+                };
+                if (variablesProjection != null) result["variables"] = variablesProjection;
+                return result.ToString();
+            }
+            catch (Exception ex)
+            {
+                return ReadDiagnosticHelper.CreateFailureEnvelope(diagContext, ex, _kbService);
+            }
         }
 
         private string ReadPartTextSafe(KBObject obj, string partName)
@@ -4172,11 +4306,36 @@ namespace GxMcp.Worker.Services
         /// Eliminates the multi-roundtrip exploration loop.
         /// </summary>
         public string ReadFullObject(string target, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null, bool refresh = false)
+            string guid = null, string entityKey = null, string path = null, bool refresh = false, string correlationId = null)
         {
-            target = ResolveTargetForIdentity(target, guid, entityKey, path);
-            var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
-            if (obj == null) return FormatReadNotFound(target);
+            var diagContext = new ReadDiagnosticContext
+            {
+                CorrelationId = !string.IsNullOrWhiteSpace(correlationId) ? correlationId : (ReadDiagnosticContext.CurrentCorrelationId ?? Guid.NewGuid().ToString("N")),
+                Target = target,
+                PartName = "all",
+                Refresh = refresh,
+                RequestedSelector = new JObject
+                {
+                    ["target"] = target,
+                    ["part"] = "all",
+                    ["typeFilter"] = typeFilter,
+                    ["guid"] = guid,
+                    ["entityKey"] = entityKey,
+                    ["path"] = path,
+                    ["refresh"] = refresh
+                }
+            };
+
+            try
+            {
+                diagContext.CurrentStage = refresh ? ReadDiagnosticStages.RefreshObject : ReadDiagnosticStages.ResolveObject;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
+
+                target = ResolveTargetForIdentity(target, guid, entityKey, path);
+                var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
+                if (obj == null) return FormatReadNotFound(target);
+
+                diagContext.ResolvedObject = obj;
 
             if (obj is Artech.Packages.Patterns.Objects.PatternSettings)
                 return new JObject
@@ -4342,6 +4501,11 @@ namespace GxMcp.Worker.Services
             catch { }
 
             return Models.McpResponse.Ok(target: obj.Name, code: "FullObjectRead", result: result);
+            }
+            catch (Exception ex)
+            {
+                return ReadDiagnosticHelper.CreateFailureEnvelope(diagContext, ex, _kbService);
+            }
         }
 
         // Managed cache only: safe even when an interrupted SDK save poisoned the
@@ -5049,14 +5213,36 @@ namespace GxMcp.Worker.Services
                 || t.Equals("<Properties></Properties>", StringComparison.OrdinalIgnoreCase);
         }
 
-        private string ReadObjectSourceInternal(KBObject obj, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false)
+        private string ReadObjectSourceInternal(KBObject obj, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false, ReadDiagnosticContext diagContext = null)
         {
+            if (diagContext == null)
+            {
+                diagContext = new ReadDiagnosticContext
+                {
+                    CorrelationId = ReadDiagnosticContext.CurrentCorrelationId ?? Guid.NewGuid().ToString("N"),
+                    Target = obj?.Name,
+                    PartName = partName,
+                    ResolvedObject = obj,
+                    RequestedSelector = new JObject
+                    {
+                        ["target"] = obj?.Name,
+                        ["part"] = partName
+                    }
+                };
+            }
+            else if (diagContext.ResolvedObject == null)
+            {
+                diagContext.ResolvedObject = obj;
+            }
+
             if (obj is Artech.Packages.Patterns.Objects.PatternSettings settings
                 && (string.IsNullOrWhiteSpace(partName) || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
                     || partName.Equals("PatternSettings", StringComparison.OrdinalIgnoreCase)))
             {
                 try
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     string xml = PatternSettingsService.Serialize(settings);
                     var page = ReadPagination.ApplyDefault(xml, offset, limit, client);
                     return new JObject
@@ -5082,6 +5268,8 @@ namespace GxMcp.Worker.Services
                     || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
                     || DataSelectorReadService.IsVirtualPart(partName)))
             {
+                diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                 IEnumerable<string> requested = string.IsNullOrWhiteSpace(partName)
                     || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
                         ? null
@@ -5090,6 +5278,7 @@ namespace GxMcp.Worker.Services
             }
 
             partName = ResolvePartName(obj, partName);
+            diagContext.PartName = partName;
 
             Logger.Info($"ReadObjectSourceInternal: {obj.Name} (Part: {partName}, Client: {client})");
             var sw = Stopwatch.StartNew();
@@ -5099,6 +5288,8 @@ namespace GxMcp.Worker.Services
 
                 if (WebFormXmlHelper.IsVisualPart(partName))
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.AccessPart;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     string xml = WebFormXmlHelper.ReadEditableXml(obj);
                     if (string.IsNullOrEmpty(xml))
                     {
@@ -5119,6 +5310,8 @@ namespace GxMcp.Worker.Services
                             extra: PartUnavailableExtra(obj, partName));
                     }
 
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     var visualResult = new JObject
                     {
                         ["part"] = partName,
@@ -5131,6 +5324,8 @@ namespace GxMcp.Worker.Services
 
                 if (PatternAnalysisService.IsPatternPart(partName))
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.AccessPart;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     global::Artech.Architecture.Common.Objects.KBObject resolvedObject = null;
                     string resolvedPartName = partName;
                     JObject patternDiagnostic = null;
@@ -5246,6 +5441,8 @@ namespace GxMcp.Worker.Services
                         patternResult["warning"] = "The pattern instance XML could not be resolved; this is only the part's <Properties> bag, not the instance definition. Do not edit it as the instance.";
                     }
 
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     ProcessSourceContent(resolvedObject ?? obj, patternXml, offset, limit, patternResult, client);
                     try
                     {
@@ -5256,6 +5453,8 @@ namespace GxMcp.Worker.Services
                     return patternResult.ToString();
                 }
 
+                diagContext.CurrentStage = ReadDiagnosticStages.AccessPart;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                 Guid partGuid = GxMcp.Worker.Structure.PartAccessor.GetPartGuid(obj.TypeDescriptor.Name, partName);
                 
                 KBObjectPart part = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, partName);
@@ -5267,6 +5466,8 @@ namespace GxMcp.Worker.Services
                     || partName.Equals("Structure", StringComparison.OrdinalIgnoreCase)
                     || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)))
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     var externalPart = obj.Parts.OfType<EXOStructurePart>().First();
                     var contract = ExternalObjectContract.Read(externalPart);
                     ProcessSourceContent(obj, contract.ToString(), offset, limit, result, client);
@@ -5285,6 +5486,8 @@ namespace GxMcp.Worker.Services
                     && (partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
                         || partName.Equals("Code", StringComparison.OrdinalIgnoreCase)))
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     var tp = GxMcp.Worker.Structure.PartAccessor.GetDesignSystemPart(obj, styles: false) as ISource;
                     var sp = GxMcp.Worker.Structure.PartAccessor.GetDesignSystemPart(obj, styles: true) as ISource;
                     string tsrc = tp?.Source ?? "";
@@ -5314,6 +5517,8 @@ namespace GxMcp.Worker.Services
                     || string.Equals(obj.TypeDescriptor?.Name, "SDT", StringComparison.OrdinalIgnoreCase);
                 if (isStructurePartAlias && isStructurableObject)
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     string structureText = StructureParser.SerializeToText(obj);
                     ProcessTextResponse(structureText, result, client);
                     Logger.Info("ReadSource (Structure DSL) SUCCESS");
@@ -5348,6 +5553,8 @@ namespace GxMcp.Worker.Services
                 // their real CSS/source instead of the opaque <Properties /> XML
                 // fallback so reads, snapshots and write verification all observe
                 // the same content that the IDE edits.
+                diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                 string styleText = ThemeStyleEditHelper.ReadText(part);
                 string concretePartName = part.GetType()?.Name ?? string.Empty;
                 if (styleText != null
@@ -5367,6 +5574,8 @@ namespace GxMcp.Worker.Services
                 // versions expose a kind-specific variables part that is not derived
                 // from VariablesPart; use the structural accessor so inspect/read do
                 // not silently omit those declarations.
+                diagContext.CurrentStage = ReadDiagnosticStages.QueryVariables;
+                ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                 var varPartObject = GxMcp.Worker.Structure.PartAccessor.GetVariablesLikePart(obj);
                 var varPart = varPartObject as global::Artech.Genexus.Common.Parts.VariablesPart;
                 bool isVariablesPart = varPartObject != null
@@ -5375,6 +5584,8 @@ namespace GxMcp.Worker.Services
                         || partName.Equals("Variables", StringComparison.OrdinalIgnoreCase));
                 if (isVariablesPart)
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     string varText = varPart != null
                         ? VariableInjector.GetVariablesAsText(varPart)
                         : string.Join("\r\n", GxMcp.Worker.Structure.PartAccessor.GetVariableObjects(obj).Select(v => v.ToString()));
@@ -5388,6 +5599,8 @@ namespace GxMcp.Worker.Services
                 }
                 else if (part is ISource sourcePart)
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     string content = sourcePart.Source ?? "";
                     if (minimize && content.Length > 5000)
                     {
@@ -5398,6 +5611,8 @@ namespace GxMcp.Worker.Services
                 }
                 else
                 {
+                    diagContext.CurrentStage = ReadDiagnosticStages.ExtractContent;
+                    ReadDiagnosticFaultInjector.MaybeThrow(diagContext.CurrentStage);
                     // Reflection Fallback for Data Providers and other parts that encapsulate a Source string but don't implement ISource natively.
                     var contentProp = part.GetType().GetProperty("Source", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
                                    ?? part.GetType().GetProperty("Content", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
@@ -5458,7 +5673,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return ReadDiagnosticHelper.CreateFailureEnvelope(diagContext, ex, _kbService);
             }
         }
 
