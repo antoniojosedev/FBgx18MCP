@@ -122,6 +122,26 @@ jobs:
         working-directory: src/nexus-ide
         run: npm test
 
+      # The .vsix is a required release asset, but nothing in CI ran `vsce
+      # package`, so a dependency bump could break packaging and land green
+      # (issue #482: @types/vscode ^1.140.0 against engines.vscode ^1.93.0
+      # compiles fine and only fails at package time). Packaging is validated
+      # here, and the artifact is asserted rather than uploaded, so the release
+      # stays the only place a .vsix is produced.
+      - name: Nexus IDE package
+        working-directory: src/nexus-ide
+        run: npm run package
+
+      - name: Verify Nexus IDE VSIX was produced
+        shell: pwsh
+        run: |
+          $expected = (Get-Content -LiteralPath src/nexus-ide/package.json -Raw | ConvertFrom-Json).version
+          $vsix = @(Get-ChildItem -LiteralPath src/nexus-ide -Filter '*.vsix' -File)
+          if ($vsix.Count -ne 1) { throw "Expected exactly one .vsix, found $($vsix.Count): $($vsix.Name -join ', ')" }
+          if ($vsix[0].Name -ne "nexus-ide-$expected.vsix") {
+            throw "Packaged '$($vsix[0].Name)' but package.json version is '$expected'."
+          }
+
       - name: Build and test gxwire engine
         shell: pwsh
         run: |
