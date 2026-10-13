@@ -237,14 +237,34 @@ pub fn build_graph_from_directory(dir: &Path) -> Result<CsrGraph, Box<dyn std::e
                 nodes[i].complexity = parsed.complexity;
                 nodes[i].parm_rule = parsed.parm_rule;
 
-                for ref_sym in parsed.references {
+                // An attribute's formula is a dependency of whoever reads the
+                // attribute, so the calls it makes become DefinesFormula edges
+                // from the attribute itself. That is what lets `impact` on a
+                // Procedure report the attributes whose formula calls it,
+                // instead of returning `formulas: []` (#501).
+                // Gated on the `[Formula:` marker itself, not on
+                // `kind == Attribute`. A `.txt` attribute declaration has no
+                // distinctive extension or name prefix, so the kind resolver
+                // reports `Unknown` for it and a kind-based gate silently
+                // skipped every formula in a text tree export.
+                let formula_refs = crate::parser::formula_references(&content);
+
+                let mut edges: Vec<(crate::parser::lexer::ParsedSymbolRef, crate::model::EdgeKind)> =
+                    parsed.references.iter().map(|r| (r.clone(), r.kind.clone())).collect();
+                edges.extend(
+                    formula_refs
+                        .into_iter()
+                        .map(|r| (r, crate::model::EdgeKind::DefinesFormula)),
+                );
+
+                for (ref_sym, edge_kind) in edges {
                     let target_id = if let Some(&id) = name_to_id.get(&ref_sym.target_name.to_ascii_lowercase()) {
                         id
                     } else {
                         // Create phantom node for external reference
                         let new_id = nodes.len() as u32;
                         name_to_id.insert(ref_sym.target_name.to_ascii_lowercase(), new_id);
-                        let kind = match ref_sym.kind {
+                        let kind = match edge_kind {
                             crate::model::EdgeKind::WritesAttr(_) | crate::model::EdgeKind::ReadsAttr => EntityKind::Attribute,
                             _ => EntityKind::Unknown,
                         };
@@ -265,7 +285,7 @@ pub fn build_graph_from_directory(dir: &Path) -> Result<CsrGraph, Box<dyn std::e
                     raw_edges.push(RawEdge {
                         from: i as u32,
                         to: target_id,
-                        kind: ref_sym.kind,
+                        kind: edge_kind,
                         line: ref_sym.line,
                     });
                 }

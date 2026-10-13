@@ -9,6 +9,8 @@
 
 ### Changed
 
+- `genexus_wire impact` now reports Procedures reached through an attribute formula, which it previously omitted entirely ([#501](https://github.com/lennix1337/Genexus18MCP/issues/501)). A Procedure called from `[Formula: ...]` affects every object reading that attribute, but `formulas` came back empty because the lexer had no rule for a formula at all. Formula bodies are parsed across physical lines (GeneXus allows them to wrap) and nested Procedure calls are all reported, while built-ins and plain attribute references inside the formula are excluded so the guard does not invent relationships that would overstate a blast radius.
+
 - GxWire no longer infers an object kind from a single leading letter. A name-based guess could not tell a Procedure from a Transaction named after a person, so `PessoaDadosFiscaisAdicionais` was reported as `kind: "Proc"` and `callers` answered about the wrong object type; unambiguous two-letter prefixes are now checked first and an ambiguous name reports `Unknown` rather than guessing wrong ([#500](https://github.com/lennix1337/Genexus18MCP/issues/500)). Content detection remains authoritative for XML exports, where the element name states the real kind.
 
 ### Fixed

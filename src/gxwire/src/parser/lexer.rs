@@ -6,6 +6,14 @@ static RE_PARM: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bparm\s*\(([^)]*)\)").unwrap()
 });
 
+/// An attribute's formula body: everything between `[Formula:` and its closing
+/// bracket. GeneXus writes it inline in the attribute declaration and allows it
+/// to span several physical lines, so the match is taken over the whole source
+/// rather than line by line (#501).
+static RE_FORMULA: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)\[\s*Formula\s*:(.*?)\]").unwrap()
+});
+
 static RE_CALL_FUNC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bcall\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
 });
@@ -387,6 +395,47 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
 
     result.complexity = complexity;
     result
+}
+
+/// Calls made from an attribute's `[Formula: ...]`.
+///
+/// A formula can span several physical lines and can nest built-in calls, so the
+/// body is scanned whole and every non-keyword invocation is reported with the
+/// line it starts on. The caller turns these into `DefinesFormula` edges from the
+/// attribute, which is what lets `impact` on a Procedure report the attributes
+/// whose formula calls it (#501).
+pub fn formula_references(source: &str) -> Vec<ParsedSymbolRef> {
+    let mut out = Vec::new();
+
+    for caps in RE_FORMULA.captures_iter(source) {
+        let Some(body) = caps.get(1) else { continue };
+        let formula = body.as_str();
+
+        // Line the formula body starts on, so reported lines point at the
+        // declaration instead of always line 1.
+        let offset = caps.get(0).map(|m| m.start()).unwrap_or(0);
+        let base_line = source[..offset].lines().count() as u32 + 1;
+
+        for caps in RE_FUNCTION_CALL.captures_iter(formula) {
+            let Some(name) = caps.get(1) else { continue };
+            let callee = name.as_str();
+            if is_call_keyword_or_builtin(callee) {
+                continue;
+            }
+
+            let within = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            let consumed = formula[..within].lines().count() as u32;
+            let line = base_line + consumed - u32::from(within == 0);
+
+            out.push(ParsedSymbolRef {
+                target_name: callee.to_string(),
+                kind: EdgeKind::Calls(CallMode::Static),
+                line,
+            });
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
