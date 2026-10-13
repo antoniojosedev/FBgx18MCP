@@ -133,11 +133,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(index_dir_opt) = args.index {
         let target_dir = index_dir_opt.unwrap_or(root.clone());
         eprintln!("[gxwire] Building index from: {}", target_dir.display());
-        let g = cache::build_graph_from_directory(&target_dir)?;
-        cache::save_cache(&g, &root)?;
+        // Records the per-file parse entries alongside the graph so a later
+        // single-object edit only has to reparse that one file.
+        let (g, parses) = cache::build_index(&target_dir)?;
+        let node_count = g.nodes.len();
+        cache::save_index(&g, &parses, &root)?;
         eprintln!(
             "[gxwire] Index built successfully! Nodes: {}, Cache: {}",
-            g.nodes.len(),
+            node_count,
             cache::get_cache_path(&root).display()
         );
         return Ok(());

@@ -1,5 +1,6 @@
 use crate::model::{CallMode, EdgeKind, WriteMode};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 static RE_PARM: LazyLock<Regex> = LazyLock::new(|| {
@@ -80,14 +81,16 @@ fn is_gx_keyword(s: &str) -> bool {
     )
 }
 
-#[derive(Debug, Clone)]
+/// Serialized into the on-disk index so an unchanged file never has to be
+/// lexed again. Keep this a faithful record of `parse_genexus_source`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedSymbolRef {
     pub target_name: String,
     pub kind: EdgeKind,
     pub line: u32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParseResult {
     pub parm_rule: Option<String>,
     pub references: Vec<ParsedSymbolRef>,
