@@ -39,26 +39,181 @@ namespace GxMcp.Worker.Parsers
             }
         }
 
+        /// <summary>
+        /// Splits DSL text into physical lines, folding multiline attribute
+        /// declarations back into a single line first.
+        ///
+        /// GeneXus allows an attribute formula to wrap across physical lines, so
+        /// a formula continued onto the next line arrived here as its own node:
+        /// the truncated first line failed validation, or the continuation was
+        /// read as a level name - and in one observed case as an attribute to
+        /// create, leaving a stray global behind (issue #492). Rejoining the
+        /// continuation before parsing keeps the attribute entry atomic, so
+        /// insertion also lands after the complete entry.
+        ///
+        /// A fold continues only while the line carries an unbalanced opening
+        /// bracket inside the formula marker. Levels and attributes stay one per
+        /// line. The marker text itself is assembled at runtime so this file does
+        /// not re-state the rendering rules that
+        /// <see cref="Helpers.AttributeDeclaration"/> owns; the single-source
+        /// guard in <c>SharedHelperSingleSourceTests</c> enforces that.
+        /// </summary>
+        internal static List<string> SplitDslLines(string text)
+        {
+            var raw = (text ?? string.Empty)
+                .Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None)
+                .ToList();
+
+            var lines = new List<string>(raw.Count);
+            var pending = new StringBuilder();
+            int depth = 0;
+
+            foreach (var line in raw)
+            {
+                if (depth > 0)
+                {
+                    pending.Append(' ').Append(line.Trim());
+                }
+                else
+                {
+                    pending.Clear();
+                    pending.Append(line);
+                }
+
+                depth = FormulaBracketDepth(pending.ToString());
+
+                if (depth <= 0)
+                {
+                    depth = 0;
+                    var joined = pending.ToString();
+                    pending.Clear();
+                    if (!string.IsNullOrWhiteSpace(joined))
+                        lines.Add(joined.Trim());
+                }
+            }
+
+            // Unterminated formula: emit what we have so validation reports the
+            // real syntax error instead of the text silently vanishing.
+            if (pending.Length > 0 && !string.IsNullOrWhiteSpace(pending.ToString()))
+            {
+                var joined = pending.ToString().Trim();
+                if (!string.IsNullOrWhiteSpace(joined)) lines.Add(joined);
+            }
+
+            return lines;
+        }
+
+        /// <summary>
+        /// The opening part of the formula marker, built from the shared
+        /// renderer so this parser never restates the rendering rules.
+        /// </summary>
+        private static string FormulaMarkerPrefix()
+            => Helpers.AttributeDeclaration.FormulaMarkerPrefix;
+
+        /// <summary>
+        /// Net bracket depth of the formula region only. Square brackets inside
+        /// a quoted description must not affect it.
+        /// </summary>
+        internal static int FormulaBracketDepth(string line)
+        {
+            // Assembled, not written literally: the marker belongs to
+            // AttributeDeclaration's rendering rules. The search is
+            // case-insensitive because GeneXus writes it as `formula` in some
+            // exports and `Formula` in others.
+            var marker = FormulaMarkerPrefix().ToLowerInvariant();
+            int start = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (start < 0) return 0;
+
+            int depth = 0;
+            bool inQuote = false;
+            // Start at the marker itself: its opening bracket is at `start`, and
+            // anything before it is a quoted description we must not count.
+            for (int i = start; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (c == '"') inQuote = !inQuote;
+                if (inQuote) continue;
+                if (c == '[') depth++;
+                else if (c == ']') depth--;
+            }
+            // A closed formula nets to zero; anything negative is a stray closer,
+            // which is not a reason to keep folding.
+            return depth > 0 ? depth : 0;
+        }
+
+        /// <summary>
+        /// DSL text to parsed nodes: fold wrapped attribute declarations, then
+        /// parse.
+        ///
+        /// Extracted from <see cref="Parse"/> so the fold can be asserted
+        /// without a Knowledge Base. Both halves are pure, which is what makes
+        /// the reported failure testable here at all.
+        /// </summary>
+        internal static List<DslParserUtils.ParsedNode> ParseNodes(string text)
+            => DslParserUtils.ParseLinesIntoNodes(SplitDslLines(text));
+
+        /// <summary>
+        /// Unwraps the synthetic root node produced when the whole DSL is one
+        /// compound block, so callers see the level's own children.
+        /// </summary>
+        internal static List<DslParserUtils.ParsedNode> FlattenRoot(List<DslParserUtils.ParsedNode> parsedNodes)
+        {
+            if (parsedNodes != null && parsedNodes.Count == 1 && parsedNodes[0].IsCompound)
+                return parsedNodes[0].Children;
+            return parsedNodes ?? new List<DslParserUtils.ParsedNode>();
+        }
+
         public void Parse(KBObject obj, string text)
         {
             if (obj is Transaction trn)
             {
-                var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                                .Where(l => !string.IsNullOrWhiteSpace(l))
-                                .ToList();
-                var parsedNodes = DslParserUtils.ParseLinesIntoNodes(lines);
-                
-                var targetNodes = parsedNodes;
-                if (parsedNodes.Count == 1 && parsedNodes[0].IsCompound)
+                var targetNodes = FlattenRoot(ParseNodes(text));
+
+                // Track globals created by this parse so a failed save can undo
+                // them. Static only because the SDK objects are not shareable;
+                // it is cleared immediately after use and the parser is used
+                // single-threaded on the Worker's STA thread.
+                CreatedGlobals.Clear();
+                try
                 {
-                    targetNodes = parsedNodes[0].Children;
+                    SyncTransactionNodes(trn.Structure.Root, targetNodes, obj.Model);
+
+                    if (_removalFailures.Count > 0)
+                        throw new StructureRemovalException(_removalFailures.AsReadOnly());
                 }
-
-                SyncTransactionNodes(trn.Structure.Root, targetNodes, obj.Model);
-
-                if (_removalFailures.Count > 0)
-                    throw new StructureRemovalException(_removalFailures.AsReadOnly());
+                catch
+                {
+                    UndoCreatedGlobals();
+                    throw;
+                }
+                finally
+                {
+                    CreatedGlobals.Clear();
+                }
             }
+        }
+
+        /// <summary>
+        /// Deletes the global Attributes created by the current parse.
+        ///
+        /// Best effort: a global that cannot be deleted is logged rather than
+        /// allowed to mask the original failure the caller is already reporting.
+        /// </summary>
+        internal static void UndoCreatedGlobals()
+        {
+            foreach (var created in CreatedGlobals)
+            {
+                try
+                {
+                    created.Attribute?.Delete();
+                    Logger.Warn("[TransactionDslParser] removed orphaned global Attribute '" + created.Name + "' after the Transaction write failed.");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("[TransactionDslParser] failed to remove orphaned global Attribute '" + created.Name + "': " + (ex.InnerException?.Message ?? ex.Message));
+                }
+            }
+            CreatedGlobals.Clear();
         }
 
         private void SerializeLevel(dynamic level, StringBuilder sb, int indent)
@@ -119,6 +274,29 @@ namespace GxMcp.Worker.Parsers
             }
 
             if (indent > 0) sb.AppendLine($"{indentStr}}}");
+        }
+
+        /// <summary>
+        /// Global Attributes created during this sync, with the DSL text that
+        /// produced each one.
+        ///
+        /// A new attribute needs its global <c>Attribute</c> object saved before
+        /// the Transaction can reference it, but that save is not part of the
+        /// Transaction's own transaction. When the Transaction save was then
+        /// rejected, the global survived as an orphan: the write reported failure
+        /// and the Knowledge Base still carried a stray attribute nobody asked
+        /// for (issue #492, same family as #217).
+        ///
+        /// Recording what was created lets the caller undo it when the
+        /// Transaction is not persisted.
+        /// </summary>
+        internal static readonly List<CreatedGlobalAttribute> CreatedGlobals =
+            new List<CreatedGlobalAttribute>();
+
+        internal sealed class CreatedGlobalAttribute
+        {
+            internal string Name;
+            internal Artech.Genexus.Common.Objects.Attribute Attribute;
         }
 
         private void SyncTransactionNodes(dynamic sdkLevel, List<DslParserUtils.ParsedNode> parsedNodes, KBModel model)
@@ -186,6 +364,11 @@ namespace GxMcp.Worker.Parsers
                                         ApplyMetadataFromDsl(globalAttr, pNode);
                                         newAttr.Save();
                                         createdGlobal = true;
+                                        CreatedGlobals.Add(new CreatedGlobalAttribute
+                                        {
+                                            Name = pNode.Name,
+                                            Attribute = globalAttr
+                                        });
                                     }
                                 }
                                 catch (Exception ex)
