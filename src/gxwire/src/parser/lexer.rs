@@ -11,7 +11,31 @@ static RE_CALL_FUNC: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_CALL_METHOD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:^|[\s,;(=])([&]?[a-zA-Z0-9_#]+)\s*\.\s*call\s*\(").unwrap()
+    // `.Popup(` opens a Transaction in a popup and is a real call form in
+    // Events/Rules, not decoration. It was absent, so every popup invocation
+    // looked like an object with no callers (#500).
+    Regex::new(r"(?i)(?:^|[\s,;(=])([&]?[a-zA-Z0-9_#]+)\s*\.\s*(?:call|popup)\s*\(").unwrap()
+});
+
+/// GeneXus lets a Procedure be invoked as a function: `procName(args)`. There
+/// was no rule for it, so the most common call shape in a Knowledge Base was
+/// invisible to the graph: 36 textual occurrences collapsed to one caller
+/// (#500). Deliberately narrow - a bare `identifier(` is only a call when the
+/// identifier is not a keyword or a built-in function, because matching
+/// everything would invent edges to phantom nodes for every built-in.
+/// GeneXus lets a Procedure be invoked as a function: `procName(args)`. There
+/// was no rule for it, so the most common call shape in a Knowledge Base was
+/// invisible to the graph: 36 textual occurrences collapsed to one caller
+/// (#500). Deliberately narrow - a bare `identifier(` is only a call when the
+/// identifier is not a keyword or a built-in function, because matching
+/// everything would invent edges to phantom nodes for every built-in.
+///
+/// Scans every occurrence rather than the first: a call nested inside a
+/// built-in's argument list (`Str(procTotal(&a))`) has no leading boundary
+/// character before it, so a single-match scan stopped at the built-in and
+/// lost the real callee.
+static RE_FUNCTION_CALL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b([a-z_][a-zA-Z0-9_#]*)\s*\(").unwrap()
 });
 
 static RE_UDP: LazyLock<Regex> = LazyLock::new(|| {
@@ -46,6 +70,13 @@ static RE_ASSIGN_READ: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*&[a-zA-Z0-9_#]+\s*=\s*([a-zA-Z0-9_#]+)").unwrap()
 });
 
+/// Same left-hand side, but the right-hand token is immediately called: the
+/// assignment's value comes from a Procedure invocation, so the token is a
+/// callee, not an attribute being read (#500).
+static RE_ASSIGN_CALL_RHS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*&[a-zA-Z0-9_#]+\s*=\s*([a-zA-Z0-9_#]+)\s*\(").unwrap()
+});
+
 static RE_WHERE_ATTR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bwhere\s+([a-zA-Z0-9_#]+)").unwrap()
 });
@@ -77,6 +108,37 @@ fn is_gx_keyword(s: &str) -> bool {
         "true" | "false" | "null" | "serverdate" | "systime" | "nullvalue"
             | "val" | "trim" | "str" | "round" | "udp" | "call" | "new"
             | "not" | "empty" | "none" | "y" | "n"
+    )
+}
+
+/// Control words and built-in functions that can appear immediately before `(`.
+/// Without this list the function-call rule would turn `Str(...)`, `Now()` and
+/// `If(...)` into edges to phantom nodes, which would inflate every blast
+/// radius it touched (#500).
+fn is_call_keyword_or_builtin(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        // control words
+        "if" | "then" | "else" | "elseif" | "do" | "while" | "for" | "each"
+            | "endfor" | "endwhile" | "new" | "endnew" | "delete" | "insert"
+            | "update" | "read" | "write" | "return" | "exit" | "break"
+            | "continue" | "and" | "or" | "not" | "in" | "where" | "with"
+            | "rules" | "events" | "source" | "form" | "sub" | "end" | "begin"
+            | "define" | "parm" | "parms" | "for-each" | "error"
+            | "message" | "validate" | "withoutput" | "default" | "values"
+            // call-shaped keywords already handled by their own rules
+            | "call" | "udp" | "submit" | "link" | "popup" | "save" | "load"
+            // built-in functions and casts
+        | "str" | "trim" | "ltrim" | "rtrim" | "val" | "round" | "abs" | "int"
+            | "integer" | "numeric" | "decimal" | "char" | "character" | "varchar"
+            | "date" | "datetime" | "time" | "now" | "today" | "year" | "month"
+            | "day" | "hour" | "minute" | "second" | "dbdatetime" | "dbtime"
+            | "serial" | "att" | "formattime" | "converttodatetime"
+            | "converttonumber" | "converttotext" | "length" | "len" | "substring"
+            | "substr" | "concat" | "upper" | "uppercase" | "lower" | "lowercase"
+            | "nullvalue" | "empty" | "isempty" | "isnull" | "notempty"
+            | "nulls" | "count" | "sum" | "avg" | "min" | "max" | "genexus"
+            | "error_handler" | "guid" | "uuid" | "random" | "space"
     )
 }
 
@@ -239,6 +301,25 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
             }
         }
 
+        // 7. Procedure invoked as a function: `procName(args)`.
+        //
+        // Placed after the keyword rules so `Call(`, `Udp(` and friends keep
+        // their own classification, and skipped when the token is a control
+        // word or a built-in, which would otherwise become phantom callees and
+        // inflate every blast radius they touched (#500).
+        for caps in RE_FUNCTION_CALL.captures_iter(line) {
+            if let Some(name) = caps.get(1) {
+                let callee = name.as_str();
+                if !is_call_keyword_or_builtin(callee) {
+                    result.references.push(ParsedSymbolRef {
+                        target_name: callee.to_string(),
+                        kind: EdgeKind::Calls(CallMode::Static),
+                        line: line_num,
+                    });
+                }
+            }
+        }
+
         // Attribute mutations
         if let Some(caps) = RE_ASSIGN.captures(line) {
             if let Some(lhs) = caps.get(1) {
@@ -262,10 +343,16 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
         }
 
         // Attribute reads (&Var = Attr)
+        //
+        // `&x = procName(...)` assigns the result of a Procedure invocation, so
+        // the right-hand token is a callee and not an attribute being read. It
+        // was recorded as `reads_att`, which reported a Transaction as an
+        // attribute consumer and hid the real call edge (#500).
         if let Some(caps) = RE_ASSIGN_READ.captures(line) {
             if let Some(rhs) = caps.get(1) {
                 let rhs_str = rhs.as_str();
-                if !rhs_str.starts_with('&') && !is_gx_keyword(rhs_str) {
+                let rhs_is_call = RE_ASSIGN_CALL_RHS.is_match(line);
+                if !rhs_is_call && !rhs_str.starts_with('&') && !is_gx_keyword(rhs_str) {
                     result.references.push(ParsedSymbolRef {
                         target_name: rhs_str.to_string(),
                         kind: EdgeKind::ReadsAttr,
