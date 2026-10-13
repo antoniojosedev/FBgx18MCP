@@ -7,9 +7,16 @@
 
 ### Added
 
+- `GXMCP_GXWIRE_TIMEOUT_SECONDS` sets the wall-clock budget for one `gxwire.exe` invocation, overriding the per-action defaults.
+
 ### Changed
 
 ### Fixed
+
+- `genexus_wire` no longer leaves an ownerless `gxwire.exe` behind and no longer deadlocks on a chatty child. Three defects in the invocation path, reported against 3.14.0 on a 15,170-file export ([#498](https://github.com/lennix1337/Genexus18MCP/issues/498)):
+  - **Orphaned process.** The 30 s budget expired, the gateway returned `GxwireException`, and the child kept indexing for roughly two more minutes with nobody holding it. The process tree is now killed before the timeout is reported, and the caller's `finally` kills it again for cancellations that arrive from outside.
+  - **Pipe deadlock.** stdout was read to end before stderr was touched. A child that fills the stderr buffer blocks writing while the gateway blocks reading stdout, so both wait until the budget expires. gxwire is chatty on stderr, so this was the normal case. Both pipes are now drained concurrently.
+  - **`action=index` always failed.** Index is the only action that parses the whole Knowledge Base and takes minutes, yet it shared the 30 s query budget. It now gets 900 s, and an expired budget returns a distinct `GxwireTimeout` that names the budget and points at `GXMCP_GXWIRE_TIMEOUT_SECONDS`, instead of a generic exception.
 
 - **Build Watchdog and Termination Diagnostics**: Clarified failure origin (`failureOrigin: "watchdog"` / `"watchdog_with_errors"` / `"errors"` / `"process_exit"`), made `ExitCode` nullable (`null` instead of misleading `0` when child process exit code was not obtained), reported child process state (`childProcessState: "terminated" | "exited" | "running" | "unknown" | "none"`), tracked confirmed stages (`confirmedStages`), and ensured build logs are flushed immediately to disk (`fullLogPath`) on watchdog termination so consumers can reconcile results without re-running Build All ([#475](https://github.com/lennix1337/Genexus18MCP/issues/475)).
 - Reconciled `genexus_workwith` contract and verification: removed inaccurate optimistic concurrency claim from schema and documented target-scoped locking; made `dryRun` plan declare performed validations along with explicit limits on procedure parameter arity/types and expression syntax/semantics (with advisory signature arity inspection when available); and made post-save verification compare all promised fields (name, caption, procedure, condition, ordered parameters) against reread instance state rather than echoing request parameters ([#476](https://github.com/lennix1337/Genexus18MCP/issues/476)).

@@ -1290,11 +1290,35 @@ namespace GxMcp.Gateway
                     };
                 }
 
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                string stdout = await proc.StandardOutput.ReadToEndAsync(cts.Token);
-                string stderr = await proc.StandardError.ReadToEndAsync(cts.Token);
-                await proc.WaitForExitAsync(cts.Token);
+                GxwireProcessRun run;
+                try
+                {
+                    run = await GxwireProcessRunner.RunAsync(proc, GxwireProcessRunner.ResolveTimeoutSeconds(action));
+                }
+                finally
+                {
+                    // The runner kills on timeout, but a cancellation can also
+                    // arrive from outside (client disconnect, shutdown). Either
+                    // way the child must not outlive the gateway, otherwise it
+                    // keeps indexing with no owner (issue #498).
+                    GxwireProcessRunner.TryKillProcessTree(proc);
+                }
 
+                if (run.TimedOut)
+                {
+                    return new JObject
+                    {
+                        ["status"] = "error",
+                        ["error"] = "GxwireTimeout",
+                        ["message"] = $"gxwire exceeded its {run.TimeoutSeconds}s budget and was terminated. The partial index on disk is reused on the next call.",
+                        ["action"] = action,
+                        ["timeoutSeconds"] = run.TimeoutSeconds,
+                        ["next"] = "Retry with a larger GXMCP_GXWIRE_TIMEOUT_SECONDS for action=index, or run the index in smaller directories."
+                    };
+                }
+
+                string stdout = run.StandardOutput;
+                string stderr = run.StandardError;
                 if (proc.ExitCode != 0)
                 {
                     return new JObject
