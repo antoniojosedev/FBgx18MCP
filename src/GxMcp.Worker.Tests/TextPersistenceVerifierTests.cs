@@ -70,10 +70,38 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void Exact_NonSourcePartStillRejectsEolDifference()
+        public void Exact_StructureToleratesEolDifferenceToo()
         {
+            // Was `Assert.False` here, on the assumption that only code parts
+            // are re-read with different line endings. That assumption was wrong:
+            // a Structure is authored from one layer and re-read from another, so
+            // a CRLF request against an LF SDK read failed `exact` and reported
+            // `WriteNotPersisted` for a write that had landed. Live reproduction
+            // on GeneXus 18.0.10: the receipt reported `contentMismatch` naming
+            // line 1 with `expectedLineEnding: "LF"` against
+            // `readLineEnding: "CRLF"`, while every attribute was present.
+            //
+            // Line endings carry no content in any part, so tolerating them
+            // cannot hide a real difference - and the guard below pins that a
+            // genuine content difference still fails.
             var result = TextPersistenceVerifier.Evaluate("A\r\nB", "A\nB", "exact", "Structure");
-            Assert.False(result.Matches);
+
+            Assert.True(result.Matches);
+            Assert.NotEqual(result.RequestedHash, result.PersistedHash);
+        }
+
+        [Fact]
+        public void Exact_StructureStillRejectsRealContentDifferences()
+        {
+            // The counterpart to the tolerance above: normalizing line endings
+            // must not turn a real mismatch into a pass.
+            Assert.False(TextPersistenceVerifier
+                .Evaluate("A : NUMERIC(6)\r\nB : NUMERIC(6)", "A : NUMERIC(6)\nB : NUMERIC(8)", "exact", "Structure")
+                .Matches);
+
+            Assert.False(TextPersistenceVerifier
+                .Evaluate("A : NUMERIC(6)\r\nB : NUMERIC(6)", "A : NUMERIC(6)", "exact", "Structure")
+                .Matches);
         }
 
         [Fact]

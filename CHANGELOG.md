@@ -9,7 +9,10 @@
 
 ### Changed
 
+- `TextPersistenceVerifier` canonicalizes line endings for every part under `exact`, not only for the code parts. A Structure is authored by one layer and re-read by another, so a CRLF request against an LF post-save read differed on line endings alone. Line endings carry no content in any part, so this cannot hide a real difference, and a guard pins that a genuine content difference still fails.
+
 ### Fixed
+
 
 - **Build Watchdog and Termination Diagnostics**: Clarified failure origin (`failureOrigin: "watchdog"` / `"watchdog_with_errors"` / `"errors"` / `"process_exit"`), made `ExitCode` nullable (`null` instead of misleading `0` when child process exit code was not obtained), reported child process state (`childProcessState: "terminated" | "exited" | "running" | "unknown" | "none"`), tracked confirmed stages (`confirmedStages`), and ensured build logs are flushed immediately to disk (`fullLogPath`) on watchdog termination so consumers can reconcile results without re-running Build All ([#475](https://github.com/lennix1337/Genexus18MCP/issues/475)).
 - Reconciled `genexus_workwith` contract and verification: removed inaccurate optimistic concurrency claim from schema and documented target-scoped locking; made `dryRun` plan declare performed validations along with explicit limits on procedure parameter arity/types and expression syntax/semantics (with advisory signature arity inspection when available); and made post-save verification compare all promised fields (name, caption, procedure, condition, ordered parameters) against reread instance state rather than echoing request parameters ([#476](https://github.com/lennix1337/Genexus18MCP/issues/476)).
