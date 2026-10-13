@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using Artech.Architecture.Common.Objects;
@@ -2558,12 +2559,25 @@ namespace GxMcp.Worker.Services
             {
                 foreach (var partName in new[] { "Source", "Events", "Rules" })
                 {
-                    string source = null;
-                    try { source = ReadCallerSource(callerName, partName); } catch { }
-                    if (string.IsNullOrWhiteSpace(source)) continue;
-                    var trimmed = source.TrimStart();
-                    if (trimmed.StartsWith("{") && trimmed.IndexOf("\"error\"", StringComparison.OrdinalIgnoreCase) >= 0)
-                        continue;
+                    string payload = null;
+                    try { payload = ReadCallerSource(callerName, partName); } catch { }
+                    if (string.IsNullOrWhiteSpace(payload)) continue;
+
+                    // `ReadObjectSource` answers with an MCP envelope, not the
+                    // part's text. The caller scan used to hand that JSON straight
+                    // to the call parser, so it searched `{"part":"Source",
+                    // "source":"...","readFreshness":{...}}` for call syntax and
+                    // never found any - every target answered
+                    // `CallerSitesUnconfirmed` with `callSiteCount: 0` while
+                    // `sdkCallers` was fully populated (#491, follow-up to #287,
+                    // which fixed the recognition but not what was being scanned).
+                    //
+                    // The failure is silent because the envelope is not an error
+                    // envelope: it parses, and the earlier guard below only
+                    // skipped payloads containing an `"error"` key.
+                    string source = ExtractReadEnvelopeSource(payload);
+                    if (source == null) continue;
+
                     var lines = source.Split('\n');
                     foreach (var call in SourceParser.ParseCalls(source, false))
                     {
@@ -2581,6 +2595,94 @@ namespace GxMcp.Worker.Services
                 }
             }
             return sites;
+        }
+
+        /// <summary>
+        /// Unwraps the source text from a read payload.
+        ///
+        /// <c>ReadObjectSource</c> answers with a JSON envelope whose
+        /// <c>source</c> field carries the part, and this caller reads with the
+        /// default <c>client: "ide"</c>. <see cref="ObjectService"/> only returns
+        /// plain text for <c>client == "mcp"</c>; for every other client
+        /// <c>ProcessTextResponse</c> base64-encodes the body. So the payload is
+        /// an envelope wrapping an encoded blob, and both layers have to come off
+        /// before the call syntax is reachable.
+        ///
+        /// That is the whole of #491: the scan handed
+        /// <c>{"part":"Source","isBase64":true,"source":"Q2FsbCgp..."}</c> to the
+        /// call parser, which searched JSON punctuation and base64 for call
+        /// syntax, found none, and every target answered
+        /// <c>CallerSitesUnconfirmed</c> with <c>callSiteCount: 0</c> while
+        /// <c>sdkCallers</c> was fully populated. #287 fixed the call syntax;
+        /// the scan never reached it.
+        ///
+        /// The failure is silent because a base64 envelope is not an error
+        /// envelope: it parses, and the earlier guard only skipped payloads
+        /// containing an <c>"error"</c> key.
+        ///
+        /// A bare part text - what a caller-source reader injected for tests
+        /// returns - is passed through unchanged, so that keeps working.
+        ///
+        /// Returns <c>null</c> when the payload carries nothing scannable: an
+        /// error envelope, an absent or empty source, or a body that is not valid
+        /// base64. Callers must treat <c>null</c> as "nothing to scan" rather than
+        /// scanning whatever the payload happens to contain.
+        /// </summary>
+        internal static string ExtractReadEnvelopeSource(string payload)
+        {
+            if (string.IsNullOrWhiteSpace(payload)) return null;
+
+            var trimmed = payload.TrimStart();
+            if (trimmed.Length == 0 || trimmed[0] != '{') return payload;
+
+            JObject envelope;
+            try { envelope = JObject.Parse(trimmed); }
+            catch { return null; }
+
+            if (envelope["error"] != null) return null;
+            if (string.Equals(envelope["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase)) return null;
+
+            var sourceToken = envelope["source"];
+            if (sourceToken == null || sourceToken.Type == JTokenType.Null) return null;
+
+            string source = sourceToken.Type == JTokenType.String
+                ? sourceToken.Value<string>()
+                : sourceToken.ToString();
+
+            if (envelope["isBase64"]?.Value<bool>() == true)
+            {
+                source = TryDecodeBase64(source);
+                if (source == null) return null;
+            }
+
+            return string.IsNullOrWhiteSpace(source) ? null : source;
+        }
+
+        /// <summary>
+        /// Decodes a base64 part body, or returns <c>null</c> when it is not
+        /// base64 at all.
+        ///
+        /// Strict on purpose: <see cref="Convert.FromBase64String"/> silently
+        /// ignores whitespace, so a plain-text body would decode to garbage
+        /// instead of failing. Requiring an exact round-trip means a body that is
+        /// not base64 is reported as unusable rather than scanned as noise.
+        /// </summary>
+        private static string TryDecodeBase64(string encoded)
+        {
+            if (string.IsNullOrWhiteSpace(encoded)) return null;
+
+            string compact = encoded.Trim();
+            try
+            {
+                var bytes = Convert.FromBase64String(compact);
+                // Round-trip guard: a plain-text body decodes to bytes that do not
+                // re-encode to the same string.
+                if (Convert.ToBase64String(bytes) != compact) return null;
+
+                string decoded = new UTF8Encoding(false, true).GetString(bytes);
+                return string.IsNullOrWhiteSpace(decoded) ? null : decoded;
+            }
+            catch { return null; }
         }
 
         private string ReadCallerSource(string callerName, string partName)
