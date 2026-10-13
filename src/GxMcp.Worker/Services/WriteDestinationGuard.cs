@@ -80,11 +80,41 @@ namespace GxMcp.Worker.Services
             else if (!opening && !string.Equals(expectedVersion, actualVersion, StringComparison.OrdinalIgnoreCase)) code = "WriteDestinationVersionMismatch";
             else if (!opening && frozen != false) code = "WriteDestinationVersionNotWritable";
             if (code == null) return null;
+            var diagnostic = DescribePins(expectedPath, expectedVersion);
+            diagnostic.Merge(new JObject { ["expectedKbPath"] = expectedPath, ["actualKbPath"] = actualPath,
+                ["expectedKbVersion"] = expectedVersion, ["actualKbVersion"] = actualVersion, ["isFrozen"] = frozen });
             return McpResponse.Err(code: code, message: "The configured write destination could not be confirmed; no operation was dispatched.",
                 hint: "Check the profile pins and list KB versions. Explicit activation requires targetVersion matching the pin and autoUpdate=false.",
-                extra: new JObject { ["expectedKbPath"] = expectedPath, ["actualKbPath"] = actualPath,
-                    ["expectedKbVersion"] = expectedVersion, ["actualKbVersion"] = actualVersion, ["isFrozen"] = frozen,
-                    ["persisted"] = false });
+                extra: diagnostic);
+        }
+
+        internal static JObject DescribePins(string path, string version)
+        {
+            string identity = null;
+            try { if (!string.IsNullOrWhiteSpace(path)) identity = Helpers.SdkReflection.Sha256Hex(NormalizePath(path).ToUpperInvariant()); }
+            catch { }
+            string profile = Environment.GetEnvironmentVariable("GXMCP_PROFILE_CONFIG_PATH");
+            string revision = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(profile))
+                    using (var sha = System.Security.Cryptography.SHA256.Create())
+                        revision = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(profile))).Replace("-", "").Substring(0, 12);
+            }
+            catch { }
+            return new JObject
+            {
+                ["requiredPins"] = new JArray(PathVariable, VersionVariable),
+                ["effectivePins"] = new JObject
+                {
+                    ["kbPathConfigured"] = !string.IsNullOrWhiteSpace(path),
+                    ["versionConfigured"] = !string.IsNullOrWhiteSpace(version),
+                    ["kbIdentity"] = identity, ["version"] = version
+                },
+                ["profileRevision"] = revision, ["profileRevisionSource"] = "native-config",
+                ["phase"] = "write-destination", ["persisted"] = false, ["saved"] = false,
+                ["writeAttempted"] = false, ["implicitOperations"] = new JArray()
+            };
         }
 
         private static bool SamePath(string expected, string actual)

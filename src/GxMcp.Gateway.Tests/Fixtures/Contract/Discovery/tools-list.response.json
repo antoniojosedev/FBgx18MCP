@@ -1373,7 +1373,7 @@
             "type": "integer"
           },
           "expectedVersion": {
-            "description": "Alias of baseVersion. The write is…",
+            "description": "Concurrency alias of baseVersion;…",
             "type": "string"
           },
           "forceWrite": {

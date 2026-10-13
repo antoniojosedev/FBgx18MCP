@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -13,8 +14,27 @@ namespace GxMcp.Worker.Services
         {
             using (SdkGate.Enter())
             {
-                try { return EventsSaveIsolation.Preflight(_objectService.FindObject(target, typeFilter)); }
-                catch (Exception ex) { return new JObject { ["verified"] = false, ["blocker"] = "ObjectSaveIsolationUnverified", ["reason"] = ex.Message }; }
+                try
+                {
+                    var seed = _objectService.FindObject(target, typeFilter);
+                    var isolation = EventsSaveIsolation.Preflight(seed);
+                    var original = EventsSaveIsolation.Fresh(seed.KB, seed.Guid);
+                    var snapshot = ObjectMoveSnapshot.Capture(original);
+                    if (!snapshot.Compare(EventsSaveIsolation.Fresh(seed.KB, seed.Guid)).Equal)
+                        throw new InvalidOperationException("The canonical SDK snapshot changed during preflight.");
+                    isolation["canonicalSnapshotVerified"] = true;
+                    isolation["preservedParts"] = snapshot.PreservedParts;
+                    isolation["canonicalParts"] = snapshot.DescribeParts("Events");
+                    return isolation;
+                }
+                catch (Exception ex)
+                {
+                    var failure = EventsSaveIsolation.DescribeConfiguredPins();
+                    failure["verified"] = false;
+                    failure["blocker"] = "ObjectSaveIsolationUnverified";
+                    failure["reason"] = ex.Message;
+                    return failure;
+                }
             }
         }
 
@@ -109,8 +129,12 @@ namespace GxMcp.Worker.Services
                 try { isolation = EventsSaveIsolation.Preflight(seed); }
                 catch (Exception ex)
                 {
+                    var failure = EventsSaveIsolation.DescribeConfiguredPins();
+                    failure["writeAttempted"] = false;
+                    failure["partPersisted"] = false;
+                    failure["objectSaved"] = false;
                     return McpResponse.Err(code: "ObjectSaveIsolationUnverified", target: target,
-                        message: ex.Message, extra: new JObject { ["writeAttempted"] = false, ["partPersisted"] = false, ["objectSaved"] = false });
+                        message: ex.Message, extra: failure);
                 }
                 var kb = seed.KB;
                 guid = seed.Guid;
@@ -144,7 +168,12 @@ namespace GxMcp.Worker.Services
                             message: "The Events version changed; no save was attempted.",
                             extra: new JObject { ["currentVersion"] = originalToken, ["writeAttempted"] = false });
                     var snapshot = ObjectMoveSnapshot.Capture(original);
+                    receipt["preservedPartSnapshotBefore"] = snapshot.DescribeParts("Events");
+                    var timings = new JObject();
+                    receipt["isolationTimings"] = timings;
+                    var inventoryWatch = Stopwatch.StartNew();
                     var inventory = EventsSaveIsolation.Inventory(kb);
+                    timings["inventoryBeforeMs"] = inventoryWatch.ElapsedMilliseconds;
                     receipt["inventoryCount"] = inventory.Count;
                     receipt["inventoryComplete"] = true;
                     receipt["revisionBefore"] = revisionBefore;
@@ -175,6 +204,7 @@ namespace GxMcp.Worker.Services
                             // WriteObject. It records the attempt even after rollback.
                             if (!string.IsNullOrWhiteSpace(target)) _lastWriteAtUtc[target] = DateTime.UtcNow;
                             PatternSaveIsolationScope patternScope = null;
+                            var saveWatch = Stopwatch.StartNew();
                             try
                             {
                                 patternScope = new PatternSaveIsolationScope(current);
@@ -205,6 +235,7 @@ namespace GxMcp.Worker.Services
                             }
                             finally
                             {
+                                timings["saveMs"] = saveWatch.ElapsedMilliseconds;
                                 if (patternScope != null)
                                 {
                                     patternScope.Dispose();
@@ -218,8 +249,10 @@ namespace GxMcp.Worker.Services
                             // completed Save before commit; the mandatory fresh
                             // read after transaction disposal is the persistence
                             // proof below.
-                            var comparison = snapshot.Compare(current, "Events");
+                            var comparison = snapshot.Compare(current, new[] { "Events" });
+                            inventoryWatch.Restart();
                             var changedOthers = EventsSaveIsolation.ChangedOthers(inventory, EventsSaveIsolation.Inventory(kb), guid);
+                            timings["inventoryPreCommitMs"] = inventoryWatch.ElapsedMilliseconds;
                             receipt["preCommitObjectStateVerified"] = true;
                             receipt["preCommitFreshReadDeferred"] = true;
                             receipt["preCommitSourceMatch"] = receipt["preCommitObjectSourceMatch"]?.Value<bool>() == true;
@@ -264,14 +297,20 @@ namespace GxMcp.Worker.Services
                         persisted = EventsSaveIsolation.Fresh(kb, guid);
                         postCommitReadAttempts++;
                     }
-                    var finalComparison = snapshot.Compare(persisted, "Events");
+                    var finalComparison = snapshot.Compare(persisted, new[] { "Events" });
+                    receipt["preservedPartSnapshotAfter"] = ObjectMoveSnapshot.Capture(persisted).DescribeParts("Events");
+                    inventoryWatch.Restart();
                     var finalOthers = EventsSaveIsolation.ChangedOthers(inventory, EventsSaveIsolation.Inventory(kb), guid);
+                    timings["inventoryFinalMs"] = inventoryWatch.ElapsedMilliseconds;
                     bool partPersisted = EventsSaveIsolation.SourceEquivalent(EventsSaveIsolation.Source(persisted), source);
                     bool metadataAdvanced = persisted.VersionId > revisionBefore || persisted.LastUpdate > lastUpdateBefore;
                     bool otherPartsIntact = finalComparison.Equal && EventsSaveIsolation.Placement(persisted) == originalPlacement;
                     receipt["partPersisted"] = partPersisted;
                     receipt["objectSaved"] = committed;
+                    receipt["transactionCommitted"] = committed;
+                    receipt["idempotent"] = receipt["sourceChanged"]?.Value<bool>() == false;
                     receipt["metadataUpdated"] = committed && metadataAdvanced;
+                    receipt["metadataStampPersisted"] = committed && metadataAdvanced;
                     receipt["metadataEvidence"] = "fresh-sdk-read-after-object-save";
                     receipt["postCommitReadAttempts"] = postCommitReadAttempts;
                     receipt["otherPartsIntact"] = otherPartsIntact;
@@ -281,8 +320,10 @@ namespace GxMcp.Worker.Services
                     receipt["revisionAfter"] = persisted.VersionId;
                     receipt["lastUpdateAfter"] = persisted.LastUpdate.ToUniversalTime().ToString("o");
                     receipt["versionToken"] = EventsSaveIsolation.Token(persisted);
+                    receipt["persistedHash"] = EventsSaveIsolation.ContentHash(EventsSaveIsolation.Source(persisted));
+                    receipt["verified"] = committed && partPersisted && metadataAdvanced && otherPartsIntact && finalOthers.Count == 0;
                     receipt["reReadConfirmed"] = partPersisted;
-                    receipt["persisted"] = partPersisted;
+                    receipt["persisted"] = committed && partPersisted;
                     receipt["saved"] = committed;
                     receipt["rollbackVerified"] = !committed && EventsSaveIsolation.SourceEquivalent(EventsSaveIsolation.Source(persisted), originalSource)
                         && otherPartsIntact && finalOthers.Count == 0

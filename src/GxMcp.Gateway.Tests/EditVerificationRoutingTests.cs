@@ -7,6 +7,33 @@ namespace GxMcp.Gateway.Tests
     public class EditVerificationRoutingTests
     {
         [Theory]
+        [InlineData("genexus_edit", null)]
+        [InlineData("genexus_edit", "")]
+        [InlineData("genexus_patch", null)]
+        [InlineData("genexus_patch", " ")]
+        public void EventsPatch_ExpectedVersionMeetsTheSameSaveBarrier(string tool, string? baseVersion)
+        {
+            var args = JObject.Parse("{name:'SyntheticPanel',part:'Events',mode:'patch',operation:'Replace',context:'old',content:'new',expectedVersion:'35',requireObjectSave:true}");
+            args["baseVersion"] = baseVersion;
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall(tool, args)!);
+            Assert.Equal("35", routed["baseVersion"]?.ToString());
+            Assert.True(routed["requireObjectSave"]?.Value<bool>());
+        }
+
+        [Theory]
+        [InlineData("genexus_edit", true)]
+        [InlineData("genexus_edit", false)]
+        [InlineData("genexus_patch", true)]
+        [InlineData("genexus_patch", false)]
+        public void EventsPatch_RejectsConflictingVersionAliasesBeforeDispatch(string tool, bool dryRun)
+        {
+            var args = JObject.Parse("{name:'SyntheticPanel',part:'Events',mode:'patch',baseVersion:'35',expectedVersion:'36'}");
+            args["dryRun"] = dryRun;
+            var error = Assert.Throws<UsageException>(() => new ObjectRouter().ConvertToolCall(tool, args));
+            Assert.Contains("baseVersion and expectedVersion", error.Message);
+        }
+
+        [Theory]
         [InlineData(true)]
         [InlineData(false)]
         public void FullSource_ForwardsExactVerificationAndSaveRequirement(bool dryRun)

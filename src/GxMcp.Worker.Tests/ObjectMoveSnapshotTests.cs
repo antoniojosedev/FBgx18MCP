@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.Text;
+using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
 using Xunit;
 
@@ -6,6 +9,44 @@ namespace GxMcp.Worker.Tests
 {
     public class ObjectMoveSnapshotTests
     {
+        private sealed class LazySourcePart : ISource
+        {
+            public string Persisted;
+            public string Materialized;
+            public int Writes;
+            public string Source
+            {
+                get => Materialized ?? (Materialized = Persisted);
+                set { Writes++; Materialized = value; }
+            }
+            private byte[] SerializeData()
+            {
+                Persisted = Materialized ?? string.Empty;
+                return Encoding.UTF8.GetBytes(Persisted);
+            }
+        }
+
+        [Fact]
+        public void CaptureSource_MaterializesBeforeNativeSerialization_AndPreservesRealChanges()
+        {
+            var part = new LazySourcePart();
+            const string expected = "Parm(in:&SyntheticValue);\n";
+            part.Persisted = expected;
+            var before = ObjectMoveSnapshot.PartSnapshot.Capture("rules", "Rules", part);
+            Assert.Equal(expected, part.Persisted);
+            Assert.Equal(expected, Encoding.UTF8.GetString(before.VerificationData));
+            Assert.Equal(expected, Encoding.UTF8.GetString(before.RestoreData));
+            Assert.Equal(0, part.Writes);
+            part.Materialized = null;
+            var after = ObjectMoveSnapshot.PartSnapshot.Capture("rules", "Rules", part);
+            Assert.Equal(before.VerificationData, after.VerificationData);
+            part.Persisted = "Parm(out:&SyntheticValue);\n";
+            part.Materialized = null;
+            var changed = ObjectMoveSnapshot.PartSnapshot.Capture("rules", "Rules", part);
+            Assert.NotEqual(before.VerificationData, changed.VerificationData);
+            Assert.Equal(0, part.Writes);
+        }
+
         [Fact]
         public void FindChangedPartKeys_ExactSnapshot_HasNoDifferences()
         {

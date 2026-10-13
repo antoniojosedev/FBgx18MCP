@@ -37,6 +37,18 @@ namespace GxMcp.Worker.Helpers
             .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
             .Select(p => p.Name));
 
+        internal JArray DescribeParts(params string[] ignoredPartNames)
+        {
+            var ignored = new HashSet<string>(ignoredPartNames ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            return new JArray(_parts.Values.Where(p => !ignored.Contains(p.Name))
+                .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).Select(p => new JObject
+                {
+                    ["part"] = p.Name, ["format"] = p.VerificationFormat,
+                    ["restoreFormat"] = p.Format, ["length"] = p.VerificationData.Length,
+                    ["hash"] = HashBytes(p.VerificationData)
+                }));
+        }
+
         public static ObjectMoveSnapshot Capture(KBObject obj)
         {
             if (obj == null) throw new ArgumentNullException(nameof(obj));
@@ -161,8 +173,10 @@ namespace GxMcp.Worker.Helpers
                 result.Add(new JObject
                 {
                     ["part"] = before?.Name ?? after?.Name ?? key,
-                    ["beforeFormat"] = before?.Format,
-                    ["afterFormat"] = after?.Format,
+                    ["beforeFormat"] = before?.VerificationFormat,
+                    ["afterFormat"] = after?.VerificationFormat,
+                    ["beforeRestoreFormat"] = before?.Format,
+                    ["afterRestoreFormat"] = after?.Format,
                     ["beforeLength"] = before?.VerificationData?.Length ?? 0,
                     ["afterLength"] = after?.VerificationData?.Length ?? 0,
                     ["beforeHash"] = before == null ? null : HashBytes(before.VerificationData),
@@ -500,13 +514,14 @@ namespace GxMcp.Worker.Helpers
 
         internal sealed class PartSnapshot
         {
-            private PartSnapshot(string key, string name, string format, byte[] restoreData, byte[] verificationData)
+            private PartSnapshot(string key, string name, string format, byte[] restoreData, byte[] verificationData, string verificationFormat)
             {
                 Key = key;
                 Name = name;
                 Format = format;
                 RestoreData = restoreData ?? new byte[0];
                 VerificationData = verificationData ?? new byte[0];
+                VerificationFormat = verificationFormat;
             }
 
             public string Key { get; }
@@ -514,21 +529,25 @@ namespace GxMcp.Worker.Helpers
             public string Format { get; }
             public byte[] RestoreData { get; }
             public byte[] VerificationData { get; }
+            public string VerificationFormat { get; }
 
             public static PartSnapshot Capture(KBObjectPart part)
+                => Capture(GetKey(part), part.TypeDescriptor?.Name ?? part.GetType().Name, part);
+
+            internal static PartSnapshot Capture(string key, string name, object part)
             {
-                string key = GetKey(part);
-                string name = part.TypeDescriptor?.Name ?? part.GetType().Name;
-                byte[] native = SerializeEntityData(part);
                 var source = part as ISource;
+                // SourcePart.SerializeData consumes its cached Source; reading first
+                // materializes persisted tokens instead of serializing an unloaded null.
+                byte[] text = source == null ? null : Utf8(source.Source ?? string.Empty);
+                byte[] native = SerializeEntityData(part);
                 if (source != null)
                 {
-                    byte[] text = Utf8(source.Source ?? string.Empty);
-                    return new PartSnapshot(key, name, native != null ? "binary" : "source", native ?? text, text);
+                    return new PartSnapshot(key, name, native != null ? "binary" : "source", native ?? text, text, "source");
                 }
 
-                byte[] xml = Utf8(part.SerializeToXml() ?? string.Empty);
-                return new PartSnapshot(key, name, native != null ? "binary" : "xml", native ?? xml, xml);
+                byte[] xml = Utf8(((KBObjectPart)part).SerializeToXml() ?? string.Empty);
+                return new PartSnapshot(key, name, native != null ? "binary" : "xml", native ?? xml, xml, "xml");
             }
 
             public static string GetKey(KBObjectPart part)
