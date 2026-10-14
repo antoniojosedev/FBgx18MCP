@@ -79,6 +79,10 @@
 
   - Genuine attribute reads on the same line shape (`&Total = CustomerBalance`) are unaffected.
 
+- Transaction Structure authoring by `genexus_structure` now handles a multiline attribute formula, which previously failed three different ways and could leave a stray global Attribute behind ([#492](https://github.com/lennix1337/Genexus18MCP/issues/492)). `mode=ops` serializes the whole Structure and parses it back line by line, but GeneXus allows a formula to wrap across physical lines, so each continuation arrived as its own node: the truncated first line failed formula validation, or the continuation was read as a level name (`Caracteres inválidos para Nome do nível`), or it was created as a separate attribute. Wrapped declarations are now rejoined before parsing, so an attribute entry stays atomic and insertion lands after the complete entry. Brackets inside a quoted description are not counted, and an unterminated formula is still emitted so the caller reports the real syntax error instead of the text silently disappearing.
+
+- A Transaction Structure write that fails no longer leaves an orphaned global Attribute in the Knowledge Base ([#492](https://github.com/lennix1337/Genexus18MCP/issues/492)). A new attribute needs its global `Attribute` saved before the Transaction can reference it, but that save is outside the Transaction's own transaction; when the Transaction was then rejected the global survived, so a failed write reported failure while still leaving a stray object in the KB. Globals created during a parse are now recorded and removed when that parse does not complete. Removal is best effort and never masks the original failure.
+
 ### Internal
 
 - GxWire gained `build_index`/`save_index`, which carry the per-file parse entries, and `save_cache` (graph without reuse state) was removed: persisting a graph alone guarantees the next load reparses everything, so the API no longer offers a footgun. `genexus_wire --index` records the parse entries, so the first incremental reindex after a full build is already cheap.
