@@ -16,7 +16,7 @@ const CACHE_FILE_NAME: &str = ".gxwire_cache.bin";
 /// Layout marker, read before the payload so a cache written by a different
 /// gxwire build is discarded instead of being misread. The Knowledge Base is
 /// then reparsed in full, which is slow but never wrong.
-const CACHE_FORMAT_VERSION: u32 = 3;
+const CACHE_FORMAT_VERSION: u32 = 4;
 
 /// Parse output for one source file, together with the stat signature it was
 /// produced from. The entry is reused verbatim while both still match, which
@@ -26,7 +26,7 @@ pub struct FileParse {
     pub path: String,
     pub stem: String,
     pub kind: EntityKind,
-    pub mtime_ms: u64,
+    pub mtime_ticks: u64,
     pub size: u64,
     pub parse: ParseResult,
     /// Symbols this file's attribute formulas reference.
@@ -73,13 +73,32 @@ pub fn cache_path_for(root: &Path, override_path: Option<&Path>) -> PathBuf {
 fn stat_signature(path: &Path) -> (u64, u64) {
     match fs::metadata(path) {
         Ok(meta) => {
-            let mtime_ms = meta
+            // Full resolution, not milliseconds.
+            //
+            // `as_millis()` threw away resolution the filesystem already had:
+            // NTFS records 100-nanosecond ticks, and two writes inside the same
+            // millisecond produced an identical signature whenever the length
+            // matched. The cache then served the pre-edit graph, which is the one
+            // failure mode this signature exists to prevent. Demonstrated: a
+            // file whose content had changed from `Call(Alpha)` to `Call(Bravo)`
+            // - same length, same millisecond - still answered
+            // `--callers Alpha -> count: 1` while `--callers Bravo` reported
+            // `SymbolNotFound`.
+            //
+            // Length alone cannot close this: `Call(A)` -> `Call(B)`, or any
+            // one-character edit in a large file, keeps the size identical.
+            // Timestamp alone could not either, which is why size is still
+            // checked - a coarse-granularity filesystem can stamp two different
+            // versions identically.
+            //
+            // 100ns ticks since the epoch fit in a u64 until the year 2554.
+            let mtime = meta
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64)
+                .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
-            (mtime_ms, meta.len())
+            (mtime, meta.len())
         }
         // An unreadable file reparses on every run: slow, never stale.
         Err(_) => (0, 0),
@@ -106,6 +125,23 @@ fn collect_source_files(dir: &Path) -> Vec<SourceFile> {
         if !is_supported_ext(ext) {
             continue;
         }
+
+        // `.xml` has to be indexed - a GeneXus XML export writes its objects
+        // that way - but the same extension is what GeneXus and its tooling use
+        // for their own metadata. Observed at the root of three live Knowledge
+        // Bases, and indistinguishable from an exported object by extension or
+        // by file name alone.
+        //
+        // Restricted to the analysed root, which is the only place this metadata
+        // lives: an export that nests its objects is unaffected, and a deeper
+        // object that happens to share one of these names is still indexed.
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if path.parent() == Some(dir) && is_knowledge_base_metadata(stem) {
+            continue;
+        }
         out.push(SourceFile {
             path: path.to_path_buf(),
             stem: path
@@ -122,14 +158,24 @@ fn collect_source_files(dir: &Path) -> Vec<SourceFile> {
 /// already stat'ed the file to decide whether to reuse a cached entry, does not
 /// stat it a second time.
 fn parse_source(sf: &SourceFile, signature: (u64, u64)) -> FileParse {
-    let (mtime_ms, size) = signature;
+    let (mtime_ticks, size) = signature;
     let ext = sf.path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let kind = detect_entity_kind(&sf.path, &sf.stem, ext);
 
     // Read once. The incremental reindex exists so an unchanged file is never
-    // re-read, and computing the formula references in a second `read_to_string`
-    // here would reintroduce exactly that cost on every indexed file.
-    let content = fs::read_to_string(&sf.path).ok();
+    // re-read, and computing the formula references in a second read here would
+    // reintroduce exactly that cost on every indexed file.
+    //
+    // Decoded lossily rather than with `read_to_string`. That call rejects any
+    // byte sequence that is not valid UTF-8, and a Windows-1252 file - an
+    // accented description in a Brazilian Knowledge Base - took the whole file
+    // down to an empty parse. The object still became a node, so nothing looked
+    // wrong, and every reference in it silently vanished from the graph. Since
+    // call syntax is ASCII, decoding with replacement keeps the edges and only
+    // mangles the characters that were already unreadable.
+    let content = fs::read(&sf.path)
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
 
     let parse = match &content {
         Some(content) => parse_genexus_source(content),
@@ -159,7 +205,7 @@ fn parse_source(sf: &SourceFile, signature: (u64, u64)) -> FileParse {
         path: sf.path.to_string_lossy().to_string(),
         stem: sf.stem.clone(),
         kind,
-        mtime_ms,
+        mtime_ticks,
         size,
         parse,
         formula_refs,
@@ -278,7 +324,7 @@ fn reindex(root: &Path, mut cached: ParseMap) -> Result<Option<Reindex>, Box<dyn
 
         let reusable = match cached.get(&key) {
             Some(previous) => {
-                previous.mtime_ms == signature.0 && previous.size == signature.1
+                previous.mtime_ticks == signature.0 && previous.size == signature.1
             }
             None => false,
         };
@@ -428,6 +474,23 @@ pub fn load_cache_from(cache_path: &Path, root: &Path) -> Result<CsrGraph, Box<d
         let _ = save_index_to(&graph, &parses, cache_path);
         Ok(graph)
     }
+}
+
+/// Stems GeneXus and its tooling write into a Knowledge Base root.
+///
+/// Confirmed present in `KBTeste`, `KBTeste17` and `KBTesteProbe2`. Each was
+/// previously indexed as an object and reported as a hub - `CategoryViewConfig`
+/// came back as `kind: "Proc"`, `iar_objs` as `kind: "Tbl"` - which is how a
+/// Knowledge Base analysis can look like an answer while describing the IDE's
+/// own bookkeeping.
+///
+/// A blocklist rather than a content classifier on purpose: telling an exported
+/// object apart from metadata by content needs the real XML export schema, and
+/// guessing at one would exclude genuine objects. Adding a name here is
+/// verifiable; inventing a rule is not.
+fn is_knowledge_base_metadata(stem: &str) -> bool {
+    const METADATA_STEMS: &[&str] = &["CategoryViewConfig", "iar_objs", "nav_objs"];
+    METADATA_STEMS.iter().any(|m| m.eq_ignore_ascii_case(stem))
 }
 
 #[inline]
