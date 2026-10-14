@@ -68,10 +68,28 @@ A controlled fixture containing explicit default markers and neighbor tab struct
 
 ### 2. Does materialization preserve pattern bindings?
 
-**Yes.**
-- The instance identity (GUID), parent Transaction link, tab definitions, existing actions, and the newly added custom action remain intact and functional.
-- The generated web components and list continue to function identically.
-- **Note on future template default changes:** When an attribute changes from `<default>` to concrete `10`, GeneXus treats it as an explicit instance-level override. If the pattern template's default page size is later modified at the environment level, instances with explicit `page="10"` retain `10`. This is standard GeneXus override precedence.
+**Partly — and not in the way the receipt originally implied.**
+
+Preserved: the instance identity (GUID), the parent Transaction link, tab
+definitions, existing actions, and the newly added custom action remain intact.
+The generated web components and list continue to function identically.
+
+**Not preserved: the link to the template default.** When an attribute changes
+from `<default>` to a concrete `10`, GeneXus treats it as an explicit
+instance-level override. If the pattern template's default page size is later
+modified at the environment level, instances with explicit `page="10"` retain
+`10`. This is standard GeneXus override precedence, not a defect of the SDK, but
+it is a real loss of dynamic binding for that attribute.
+
+This is why `defaultNormalization` no longer claims that "pattern bindings are
+preserved". An agent that believes the instance still tracks the template default
+will reason incorrectly about the effect of a later change to the pattern.
+
+**Not verified:** the "later template default change" case was not executed in an
+isolated fixture. The conclusion above is read from GeneXus override precedence
+and from the observed before/after serialization, not from a measured run.
+Closing that gap needs a live Knowledge Base with an authored pattern; see
+"Residue" below.
 
 ## MCP contract improvements
 
@@ -83,9 +101,13 @@ To ensure complete auditability, predictability, and safety:
    - `"xml-fallback"` when executed via structured XML fallback in headless or test environments.
 
 2. **Default normalization disclosure**:
-   The receipt and plan carry `defaultNormalization`:
-   - Stating that native SDK serialization normalizes pattern defaults (such as `page="<default>"` to concrete values) upon save while preserving functional behavior and pattern bindings.
-   - Clarifying that byte-by-byte literal preservation of unmutated parts is not promised when the native SDK serializer expands defaults.
+   The receipt and plan carry `defaultNormalization`, stating that native SDK serialization
+   normalizes pattern defaults (such as `page="<default>"` to concrete values) upon save
+   while the instance stays functional, **and that a materialized attribute becomes an
+   explicit instance override which no longer follows a later change to the pattern
+   template default**. Byte-by-byte literal preservation of unmutated parts is not promised
+   when the native SDK serializer expands defaults, and neither is continued binding to the
+   template default.
 
 3. **Neighbor tab integrity verification**:
    The post-write verification re-read now explicitly verifies that the count and codes of neighbor tabs are preserved (`verifyTabs.Count >= tabs.Count`), failing closed with `VerificationFailed` if any neighbor tab was dropped.
@@ -97,6 +119,16 @@ To ensure complete auditability, predictability, and safety:
 
 - [x] Reproduce in controlled fixture with `page="<default>"` on Selection and a neighbor tab (`TryAddActionToXml_ControlledFixtureWithDefaultsAndNeighborTabs_PreservesDefaultsAndNeighborStructure`).
 - [x] Determine that materialization is standard GeneXus Pattern SDK serializer behavior.
-- [x] Document semantic equivalence and pattern binding implications.
+- [x] Document semantic equivalence, and state the override consequence that the
+      earlier draft answered as "preserved".
 - [x] Expose `route`, `verificationScope`, and `defaultNormalization` in `genexus_workwith` plans and receipts.
 - [x] Fail-closed verification guarding neighbor tabs from truncation.
+
+## Residue
+
+- [ ] **Later template default change, in an isolated fixture.** The issue asked to
+      determine whether the link survives a subsequent change to the pattern template
+      default. It was answered from override precedence and observed serialization, not
+      from a measured run. Needs a live GeneXus Knowledge Base with an authored pattern
+      and a second save after the template default changes. Until then, treat
+      "no longer follows the template default" as documented inference, not measurement.
