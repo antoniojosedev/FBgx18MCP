@@ -9,6 +9,8 @@
 
 ### Changed
 
+- CI validates PR updates once instead of duplicating branch-push runs, cancels superseded PR runs, and caches npm, NuGet, and toolchain-keyed gxwire build dependencies. The plugin scanner still runs on main pushes; all validation steps and required check names remain unchanged.
+
 ### Fixed
 
 - Salvamento isolado de Events: materializa a fonte antes da serialização nativa do snapshot para comparar Rules e demais partes pela mesma representação canônica, preservando a representação de restauração e a recusa de alterações reais. A prévia valida o snapshot usado pelo Save; o recibo distingue persistência transitória, transação confirmada e operação idempotente e informa o custo de inventário e Save.
