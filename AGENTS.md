@@ -466,6 +466,18 @@ Acceptance for a harness refresh: every registered writable client lists that
 Keep the npx matrix rows for operators who **do not** run from a local
 `publish\` checkout (npm-only installs).
 
+**Fork changelog:** record fork-local changes in `FORK_CHANGELOG.md`, never in
+`CHANGELOG.md`. `CHANGELOG.md` stays a faithful mirror of upstream — adding a
+fork-local entry there re-creates the recurring merge conflict this policy
+exists to remove. This overrides the general "entry under `CHANGELOG.md` →
+`## Unreleased`" rule for the fork-local change class (the set this block owns);
+upstream-authored code is still reported, not patched. Caveat: the upstream-owned
+`scripts/integration-preflight.ps1` gate still asks for a `CHANGELOG.md` touch
+when a change lands under a production path (`src/`, `cli/`, `scripts/`,
+`install.ps1`); that gate runs only for pull requests, and this fork pushes
+directly to `main`, so it does not fire in the normal flow — do not resolve it by
+moving the entry back.
+
 ### Operational safety and side effects
 
 - **Installer vs. build**: `install.ps1` mutates `config.json` and client configs; treat it as an installer, not a neutral build. `build.ps1` is the neutral compiler.

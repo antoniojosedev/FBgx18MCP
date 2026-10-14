@@ -1,0 +1,30 @@
+# Fork Changelog
+
+Changelog for **this fork only** (`antoniojosedev/FBgx18MCP`). It records the
+changes the fork owns, so they never produce a merge conflict.
+
+- Upstream (`lennix1337/Genexus18MCP`) never touches this file.
+- `CHANGELOG.md` is a faithful mirror of upstream and must stay byte-identical to
+  it. Do **not** add fork-local entries there; they go here instead.
+- Record each fork-local entry under `## Unreleased`, in the matching
+  `### Added` / `### Changed` / `### Fixed` / `### Internal` subsection.
+
+Caveat (fork policy, option A): the upstream-owned
+`scripts/integration-preflight.ps1` gate still requires `CHANGELOG.md` to be
+touched when a change lands under a "production" path (`src/`, `cli/`,
+`scripts/`, `install.ps1`). That gate runs for pull requests; this fork pushes
+directly to `main`, so it does not fire in the normal flow. If a fork PR is ever
+opened, expect the gate to ask for a `CHANGELOG.md` touch — do not resolve it by
+moving this entry back.
+
+## Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Fork-local pre-push mechanical checker: `details.failedPhases` and `details.failedPhaseDetails` now report every phase the release preflight treats as failed, not only a phase whose status is exactly `failed`. `release-preflight.ps1` decides failure by negation - any per-phase status outside its allowed terminal set (`passed`/`skipped`/`unavailable`, plus `dry-run` under `-DryRun`) - so a timed-out phase (`timeout`, synthetic exit 124) and a phase still persisted as `running` (a preflight killed mid-run, which `release-doctor.ps1` already counts as a failure) are failures too. The checker had enumerated `failed` in positive, so those phases - the ones that explain a run that stopped short - were missing from the retained detail, contradicting the promise in `AGENTS.md`. It now mirrors the preflight's rule by negation, reading every field defensively: under `Set-StrictMode -Version Latest` a bare property read of a missing key throws, and the catch here would discard *every* `failedPhaseDetails` entry and report "unable to parse" instead - losing the evidence exactly in the scenario the change exists to make legible. All reads go through the shared `Get-GxMcpReleaseFieldValue`, envelope included, so a summary that parses but carries no `phases` yields an empty set instead of nothing, and a phase with no `status` is reported as a failure with its name intact. A `null` element of `phases` is filtered rather than reported as an all-null failed phase (`@($null).Count` is 1, so it would otherwise invent a phase), an entry with no usable name is labelled `(unnamed phase)` rather than emitted as a `$null` that would inflate the count, and `failedPhases` is projected from `failedPhaseDetails` so the two cannot disagree about which phases failed. `release-doctor.ps1` already carries the same envelope and null-element guards under issue #348, and the checker shares those. It deliberately diverges from the doctor on one point, though: the doctor classifies a failed phase by a positive list (`failed`/`timeout`/`running`) with a `Set-StrictMode`-free read, while the checker decides by negation, so an unlabelled or future status is a failure here and silently nothing there. The mirrored status set is pinned against the producer's literal declaration: rewrite that literal and this test turns red instead of the fork silently diverging. The pin reads the declaration, so a change to *how* the rule is applied rather than to its literal text (a later re-derivation of the same variable, say) is not covered. The retained set is the phases the producer recorded, which is not the same as the complete list of unfinished phases: a preflight killed mid-run leaves every phase of the in-flight parallel wave as `running`, and phases never started are absent from the summary altogether. A `running` phase in a completed run is impossible - both waves drive every phase to a terminal status before the preflight aggregates - so that mapping carries no false positive. Reverting the filter to `status -eq 'failed'`, or to a positive `failed`/`timeout` pair, turns the fork-owned regression red.
+
+### Internal
