@@ -27,6 +27,15 @@ namespace GxMcp.Worker.Helpers
             ["Artech.Packages.Patterns"] = "36f99d7d76c3c7b54dded1249d09a02234834c9d38483c68afc9d79bd8538ace",
             ["DVelop.Patterns.WorkWithPlus"] = "16e15bcb8eaef779abd5b8ef9d33c724f58406979496612a253473688b52fb02"
         };
+        private static readonly Dictionary<string, string> UpdatedU16Assemblies = new Dictionary<string, string>
+        {
+            ["Artech.Architecture.Common"] = "978fab2afad4daaa28aecffd5cd327367b1bb9c0a8f027cfda74911a294eac12",
+            ["Artech.Genexus.Common"] = "cb7676857b75b817f5717edb37c4e19fbc06b2bb07feed10e64d74cb9bb159da",
+            ["Artech.Udm.Framework"] = "9ba54b1a27a320c10cefab53a204b9e9ed9b027f6f025b7e0122224b5a71e86c",
+            ["Artech.Common.Properties"] = "89cf957262dd5eee40d76b281abc5bb978881bb99959578d11a912fc7c069ae6",
+            ["Artech.Packages.Patterns"] = "1f5baabe79d15279f0e1759053b512cc880cf695553459dd860a01120896aba8",
+            ["DVelop.Patterns.WorkWithPlus"] = "16e15bcb8eaef779abd5b8ef9d33c724f58406979496612a253473688b52fb02"
+        };
         private static readonly HashSet<Type> Parts = new HashSet<Type>
         {
             typeof(EventsPart), typeof(WebFormPart), typeof(VariablesPart), typeof(RulesPart),
@@ -58,6 +67,7 @@ namespace GxMcp.Worker.Helpers
                 Environment.GetEnvironmentVariable(WriteDestinationGuard.VersionVariable),
                 kb.Location, version?.Name, version == null ? (bool?)null : version.IsFrozen, false);
             if (destinationError != null) throw new InvalidOperationException(destinationError);
+            var loadedHashes = new Dictionary<string, string>();
             foreach (var expected in AuditedAssemblies)
             {
                 var assembly = AppDomain.CurrentDomain.GetAssemblies().SingleOrDefault(a => a.GetName().Name == expected.Key);
@@ -65,9 +75,13 @@ namespace GxMcp.Worker.Helpers
                 // installed/attached. If loaded, its exact U16 bytes are still
                 // mandatory; an unknown loaded implementation is never trusted.
                 if (assembly == null && expected.Key == "DVelop.Patterns.WorkWithPlus") continue;
-                if (assembly == null || !string.Equals(Hash(File.ReadAllBytes(assembly.Location)), expected.Value, StringComparison.Ordinal))
+                if (assembly == null)
                     throw new InvalidOperationException("Unverified SDK implementation: " + expected.Key);
+                loadedHashes[expected.Key] = Hash(File.ReadAllBytes(assembly.Location));
             }
+            string auditedBuild = MatchAuditedBuild(loadedHashes);
+            if (auditedBuild == null)
+                throw new InvalidOperationException("Unverified SDK implementation bundle; isolated Events save requires a complete audited U16 build.");
             var partTypes = obj.Parts.Cast<KBObjectPart>().Select(p => p.GetType()).ToArray();
             if (!partTypes.Contains(typeof(EventsPart)) || partTypes.Any(p => !Parts.Contains(p)))
                 throw new InvalidOperationException("The object contains an unverified SDK or extension part: "
@@ -78,6 +92,10 @@ namespace GxMcp.Worker.Helpers
             foreach (KBObjectPart part in obj.Parts) InspectDirectCallbacks(part, callbacks);
             report["directCallbacks"] = callbacks;
             report["sdkFingerprintVerified"] = true;
+            report["auditedSdkBuild"] = auditedBuild;
+            report["destinationPinsVerified"] = true;
+            report["effectiveVersion"] = version.Name;
+            report["effectiveKbIdentity"] = ContentHash(Path.GetFullPath(kb.Location).TrimEnd('\\', '/').ToUpperInvariant());
             report["objectGuid"] = obj.Guid.ToString();
             report["parts"] = new JArray(partTypes.Select(p => p.FullName));
             report["patternPart"] = partTypes.Contains(typeof(PatternVirtualPart));
@@ -89,6 +107,26 @@ namespace GxMcp.Worker.Helpers
         }
 
         internal static bool IsAllowedPartType(Type type) => Parts.Contains(type);
+        internal static string MatchAuditedBuild(IDictionary<string, string> hashes)
+        {
+            if (Matches(AuditedAssemblies, hashes)) return "18.0.16.189550";
+            if (Matches(UpdatedU16Assemblies, hashes)) return "18.0.16.189595";
+            return null;
+        }
+
+        private static bool Matches(Dictionary<string, string> expected, IDictionary<string, string> actual)
+            => actual != null && expected.All(entry =>
+                entry.Key == "DVelop.Patterns.WorkWithPlus" && !actual.ContainsKey(entry.Key)
+                || actual.TryGetValue(entry.Key, out string hash) && string.Equals(hash, entry.Value, StringComparison.Ordinal));
+
+        internal static JObject DescribeConfiguredPins()
+        {
+            var report = WriteDestinationGuard.DescribePins(
+                Environment.GetEnvironmentVariable(WriteDestinationGuard.PathVariable),
+                Environment.GetEnvironmentVariable(WriteDestinationGuard.VersionVariable));
+            report["phase"] = "isolation-preflight";
+            return report;
+        }
         internal static bool IsAllowedPartTypeName(string fullName)
             => Parts.Any(type => type.FullName == fullName);
 

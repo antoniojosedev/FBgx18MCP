@@ -7,6 +7,15 @@ namespace GxMcp.Gateway.Tests
     public class TerseErrorTests
     {
         [Fact]
+        public void TrimErrorEnvelope_PreservesIsolatedSavePinsAndRollbackEvidence()
+        {
+            var input = JObject.Parse("{code:'ObjectSaveIncomplete',message:'verification failed',requiredPins:['kb','version'],effectivePins:{kbIdentity:'opaque',version:'Development'},profileRevision:'abc',phase:'isolation-preflight',persistabilityVerified:false,isolation:{verified:true},writeAttempted:true,verificationCompleted:true,persistenceUncertain:false,transactionRolledBack:true,rollbackVerified:true,otherPartsIntact:true,otherObjectMetadataIntact:true}");
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (var property in input.Properties())
+                Assert.True(JToken.DeepEquals(property.Value, trimmed[property.Name]), property.Name);
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_PreservesPhysicalSaveAndTypedDiff()
         {
             var input = JObject.Parse("{code:'WriteNotPersisted',message:'mismatch',saved:true,sdkSaveCompleted:true,persistedStateKnown:true,persisted:false,objectSaved:true,partPersisted:false,requireObjectSave:true,saveContract:'transactional-object-save',metadataStampPersisted:true,versionToken:'35',postSaveVerification:{representation:'genexus_read',matches:false},mutation:{diff:{reason:'contentMismatch',firstDifferentLine:2,expectedLine:'a',readLine:'b'}},implicitLifecycleActions:[]}");

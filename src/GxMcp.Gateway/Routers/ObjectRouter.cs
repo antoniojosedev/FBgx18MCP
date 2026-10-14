@@ -115,6 +115,20 @@ namespace GxMcp.Gateway.Routers
                 + "another form. No read was performed.");
         }
 
+        private static void NormalizeVersionAliases(JObject? input)
+        {
+            if (input != null)
+            {
+                string? baseVersion = input["baseVersion"]?.ToString();
+                string? expectedVersion = input["expectedVersion"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(baseVersion) && !string.IsNullOrWhiteSpace(expectedVersion)
+                    && !string.Equals(baseVersion, expectedVersion, StringComparison.Ordinal))
+                    throw new UsageException("VersionAliasesConflict", "baseVersion and expectedVersion must identify the same read; no write was attempted.");
+                if (string.IsNullOrWhiteSpace(baseVersion) && !string.IsNullOrWhiteSpace(expectedVersion))
+                    input["baseVersion"] = expectedVersion;
+            }
+        }
+
         public object? ConvertToolCall(string toolName, JObject? args)
         {
             string? nameArg = args?["name"]?.ToString();
@@ -223,6 +237,7 @@ namespace GxMcp.Gateway.Routers
 
                 case "genexus_edit":
                 {
+                    NormalizeVersionAliases(args);
                     // Issue #205/#206: `scope` / `indentation` are honored only by the
                     // abbreviated mode=patch form. Evaluated before ANY routing decision
                     // (changeSet / targets / parts / ops / JSON-Patch) so the protection can
@@ -499,6 +514,7 @@ namespace GxMcp.Gateway.Routers
                 case "genexus_read_source":
                     return new { module = "Read", action = "ExtractSource", target = target, part = part };
                 case "genexus_patch":
+                    NormalizeVersionAliases(args);
                     return new {
                         module = "Patch",
                         action = "Apply",

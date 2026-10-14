@@ -10,6 +10,32 @@ namespace GxMcp.Worker.Tests
 {
     public sealed class PropertyServiceResolverTests
     {
+        [Theory]
+        [InlineData(false, "Formula")]
+        [InlineData(true, "formula")]
+        [InlineData(true, " Formula ")]
+        public void FormulaBatchIsRejectedBeforeSdkAccess(bool dryRun, string propertyName)
+        {
+            var service = (PropertyService)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(PropertyService));
+            var result = JObject.Parse(service.SetProperties("Result", new JObject
+            {
+                ["Description"] = "Must not be written",
+                [propertyName] = "Value * 2\n IF Value > 0;"
+            }, typeFilter: "Attribute", dryRun: dryRun));
+
+            Assert.Equal("FormulaNotScalarWritable", result["error"]?["code"]?.ToString());
+            Assert.Contains("set_attribute", result["error"]?["hint"]?.ToString());
+        }
+
+        [Fact]
+        public void FormulaSingleWriteIsRejectedBeforeSdkAccess()
+        {
+            var service = (PropertyService)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(PropertyService));
+            var result = JObject.Parse(service.SetProperty("Result", "Formula", "Value * 2", typeFilter: "Attribute"));
+
+            Assert.Equal("FormulaNotScalarWritable", result["error"]?["code"]?.ToString());
+        }
+
         [Fact]
         public void ReadOnlyDescriptorIsRejectedBeforeAnySave()
         {

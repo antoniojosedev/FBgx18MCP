@@ -2,11 +2,16 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches-ignore:
-      - main
   workflow_call:
   workflow_dispatch:
+
+# Keep required check names stable; each PR update has one validation run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -19,11 +24,42 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            src/nexus-ide/package-lock.json
 
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v5
         with:
           dotnet-version: 10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.*', '**/Directory.Packages.props', '**/NuGet.Config') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Identify Rust toolchain
+        id: rust
+        shell: pwsh
+        run: |
+          $version = rustc --version
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain is unavailable.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Cache gxwire dependencies and build outputs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            src/gxwire/target
+          key: gxwire-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('src/gxwire/Cargo.lock', 'src/gxwire/Cargo.toml', 'src/gxwire/**/*.rs', 'src/gxwire/**/build.rs', '**/.cargo/config*') }}
+          restore-keys: |
+            gxwire-${{ runner.os }}-${{ steps.rust.outputs.version }}-
 
       - name: Cache VS Code test runtime
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
