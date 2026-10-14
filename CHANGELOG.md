@@ -7,6 +7,26 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Internal
+
+## v3.15.0 - 2026-10-13
+
+
+### Tracked issues
+
+- [#495](https://github.com/lennix1337/Genexus18MCP/issues/495) — [Bug] genexus_edit síncrono em part=Events: gravação persistida reportada como WriteVerificationUnavailable (readFailure), de forma intermitente, sem o motivo da falha de leitura
+- [#496](https://github.com/lennix1337/Genexus18MCP/issues/496) — [Docs/DX] genexus_edit part=Events: o modo estrito recusa por falta de isolamento o object-level save que o patch comum faz sem aviso; a descrição de requireObjectSave reforça a confusão
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
 - `GXMCP_GXWIRE_TIMEOUT_SECONDS` sets the wall-clock budget for one `gxwire.exe` invocation, overriding the per-action defaults.
 
 ### Changed

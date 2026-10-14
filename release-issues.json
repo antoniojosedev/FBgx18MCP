@@ -1,13 +1,13 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.14.0",
-  "tag": "v3.14.0",
-  "collectedAtUtc": "2026-10-11T15:45:25.1622045Z",
+  "version": "3.15.0",
+  "tag": "v3.15.0",
+  "collectedAtUtc": "2026-10-14T02:33:30.2504961Z",
   "issues": [
     {
-      "number": 450,
-      "title": "[Melhoria] Adicionar índice de docs/ (ou referenciar os docs de capacidade a partir do README/AGENTS)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/450",
+      "number": 495,
+      "title": "[Bug] genexus_edit síncrono em part=Events: gravação persistida reportada como WriteVerificationUnavailable (readFailure), de forma intermitente, sem o motivo da falha de leitura",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/495",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -15,39 +15,9 @@
       "milestone": null
     },
     {
-      "number": 452,
-      "title": "[Investigação][Follow-up #353] Save do WorkWith padrão persiste a instância, mas não propaga a descrição ao painel no GX18 U15",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/452",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 453,
-      "title": "[Docs/DX][Follow-up #352] Pontos residuais: exemplo de ordenação, orientação de regeneração e recibo de PatternInstance",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/453",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 454,
-      "title": "[Bug][Follow-up #453/#260] Diagnóstico encaminha WorkWith padrão a WWP; listagem aceita alvo incompatível",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/454",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 455,
-      "title": "[Feature] Autoria tipada de actions no General do WorkWith padrão",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/455",
+      "number": 496,
+      "title": "[Docs/DX] genexus_edit part=Events: o modo estrito recusa por falta de isolamento o object-level save que o patch comum faz sem aviso; a descrição de requireObjectSave reforça a confusão",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/496",
       "state": "open",
       "labels": [
         "fixed-pending-release"
