@@ -727,6 +727,7 @@ namespace GxMcp.Worker.Services
                         {
                             var isolation = _writeService.InspectEventsIsolation(target, typeFilter);
                             dryRunBody["objectSaveIsolation"] = isolation;
+                            dryRunBody["persistabilityVerified"] = isolation["verified"]?.Value<bool>() == true;
                             if (isolation["blocker"] != null) dryRunBody["writeBlocker"] = isolation["blocker"];
                         }
                         dryRunBody["requestedHash"] = dryRunEvidence.RequestedHash;

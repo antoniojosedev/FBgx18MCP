@@ -39,6 +39,16 @@ namespace GxMcp.Worker.Helpers
     internal static class AttributeDeclaration
     {
         /// <summary>
+        /// Opening part of the formula marker, shared with the parsers that have
+        /// to recognise it in text they did not render.
+        ///
+        /// <see cref="Render"/> builds the marker from this, so the two cannot
+        /// drift: a parser looking for a different prefix would silently stop
+        /// seeing every formula.
+        /// </summary>
+        internal const string FormulaMarkerPrefix = "[" + "Formula" + ":";
+
+        /// <summary>
         /// Renders <paramref name="name"/> with its type and optional detail.
         /// </summary>
         internal static AttributeDeclarationText Render(
@@ -60,7 +70,7 @@ namespace GxMcp.Worker.Helpers
             }
 
             if (!string.IsNullOrEmpty(formula))
-                detail.Add("[Formula: " + formula + "]");
+                detail.Add(FormulaMarkerPrefix + " " + formula + "]");
 
             if (isNullable)
                 detail.Add("[Nullable]");

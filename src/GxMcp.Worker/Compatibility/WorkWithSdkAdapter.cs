@@ -23,6 +23,25 @@ namespace GxMcp.Worker.Compatibility
         private static bool _assemblyResolved;
         private static readonly object _assemblyLock = new object();
 
+        /// Disclosed in both the dryRun plan and the write receipt.
+        ///
+        /// The earlier wording claimed "pattern bindings are preserved", which is
+        /// the opposite of what happens to the attribute that gets materialized:
+        /// `page="<default>"` becomes a concrete `10`, and GeneXus then treats it
+        /// as an explicit instance-level override. A later change to the pattern
+        /// template default no longer propagates to this instance. The instance
+        /// keeps working and its identity, tabs and actions are intact - what it
+        /// loses is the link to the template default, and saying otherwise led an
+        /// agent to reason about future default changes from a false premise
+        /// (issue #477).
+        internal const string NativeDefaultNormalization =
+            "Native WorkWith SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save. "
+            + "The instance stays functional and its pattern identity, tabs and actions are intact, but a materialized attribute "
+            + "becomes an explicit instance override and will no longer follow a later change to the pattern template default.";
+
+        internal const string FallbackDefaultNormalization =
+            "XML fallback preserves existing pattern XML defaults verbatim without normalization.";
+
         internal static Assembly GetWorkWithAssembly()
         {
             if (_assemblyResolved) return _cachedAssembly;
@@ -293,8 +312,8 @@ namespace GxMcp.Worker.Compatibility
                 result = BuildActionPlan(instanceObj.Name, tabCode, actionName, caption, procObj?.Name, condition, parameters, procObj);
                 result["route"] = IsNativeSdkAvailable ? "native-sdk" : "xml-fallback";
                 result["defaultNormalization"] = IsNativeSdkAvailable
-                    ? "Native WorkWith SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save; functional behavior and pattern bindings are preserved."
-                    : "XML fallback preserves existing pattern XML defaults verbatim without normalization.";
+                    ? NativeDefaultNormalization
+                    : FallbackDefaultNormalization;
                 return true;
             }
 
@@ -461,8 +480,8 @@ namespace GxMcp.Worker.Compatibility
                 ["route"] = nativeSucceeded ? "native-sdk" : "xml-fallback",
                 ["verificationScope"] = "action definition, target tab actions collection, neighbor tabs integrity, and post-write instance re-read",
                 ["defaultNormalization"] = nativeSucceeded
-                    ? "Native WorkWith SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save; functional behavior and pattern bindings are preserved."
-                    : "XML fallback preserves existing pattern XML defaults verbatim without normalization.",
+                    ? NativeDefaultNormalization
+                    : FallbackDefaultNormalization,
                 ["derivedObjectRegeneration"] = "WorkWith instance definition persisted. Note: On GeneXus 18/17, derived WebComponents (e.g. <Trn>General) may require IDE Apply or build to re-project the new action control."
             };
             return true;

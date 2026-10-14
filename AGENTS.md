@@ -179,6 +179,42 @@ Use the narrowest decisive test first, then the repository-wide checks. Known
 flaky tests are documented in the test section of `docs/agent_playbook.md`.
 Review-time rules live in [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
 
+## Live Knowledge Bases for validation
+
+Disposable test Knowledge Bases live under `C:\KBs`. Any directory whose name
+contains `teste` is a scratch KB that may be written to, retargeted and left in
+a modified state — it is not user data, and a lane that needs to reproduce a
+write, a rollback or a persistence failure should use one rather than asking
+for a KB.
+
+| Path | GeneXus major | Notes |
+| :--- | :--- | :--- |
+| `C:\KBs\KBTeste` | 18 | Largest (~1,800 files); the default target for SDK-level read/write lanes |
+| `C:\KBs\KBTeste17` | 17 | ~66 files; also carries `.gx` and `.gx_mirror` |
+| `C:\KBs\KBTeste16` | 16 | Smallest (~10 files); fast for smoke-level checks |
+| `C:\KBs\KBTesteProbe2` | 18 | ~122 files; used by probe/conversion work |
+
+Two properties must not be conflated, because they decide which tools can be
+validated where:
+
+- **These are native Knowledge Bases.** `GXLOCK`, `DATA*` and `.gx` are
+  present, so object sources live in the Knowledge Base database and are read
+  through the SDK. `genexus_read`, `genexus_edit`, `genexus_analyze` and the
+  `mode=ops` authoring paths work against them normally.
+- **`genexus_wire` cannot analyse them.** GxWire indexes files on disk, so on a
+  native KB it walks generated output and infers a graph from whatever text is
+  there. Validating a gxwire change needs a *text tree export* of a KB (a
+  directory of `.txt`/`.trn`/`.wp`/`.xml` object files), not a native KB
+  directory. This is the defect filed as
+  [#499](https://github.com/lennix1337/Genexus18MCP/issues/499), and it is why
+  gxwire parser work cannot be confirmed on these paths alone.
+
+A live KB opens on demand:
+
+```text
+genexus_kb action=open path=<KB root>   then   action=select to bind the session
+```
+
 ## Debugging and validation gates
 
 - For a numbered issue, read the current issue with `gh issue view <number>` and

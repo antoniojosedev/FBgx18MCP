@@ -13,6 +13,44 @@ namespace GxMcp.Worker.Tests
     public sealed class EventsSaveIsolationTests
     {
         [Theory]
+        [InlineData("AuditedAssemblies", "18.0.16.189550")]
+        [InlineData("UpdatedU16Assemblies", "18.0.16.189595")]
+        public void AuditedBuild_RequiresOneCompleteBundle(string field, string build)
+        {
+            var hashes = new Dictionary<string, string>((Dictionary<string, string>)typeof(EventsSaveIsolation)
+                .GetField(field, BindingFlags.Static | BindingFlags.NonPublic).GetValue(null));
+            Assert.Equal(build, EventsSaveIsolation.MatchAuditedBuild(hashes));
+            hashes.Remove("DVelop.Patterns.WorkWithPlus");
+            Assert.Equal(build, EventsSaveIsolation.MatchAuditedBuild(hashes));
+            hashes.Remove("Artech.Architecture.Common");
+            Assert.Null(EventsSaveIsolation.MatchAuditedBuild(hashes));
+        }
+
+        [Fact]
+        public void AuditedBuild_RejectsMixedBuildAndUnknownExtension()
+        {
+            var hashes = new Dictionary<string, string>((Dictionary<string, string>)typeof(EventsSaveIsolation)
+                .GetField("UpdatedU16Assemblies", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null));
+            hashes["Artech.Architecture.Common"] = "5de4b9fa160b2aca8fa08be8e070870c00286415d7ecdfad816aa5bdc406f283";
+            Assert.Null(EventsSaveIsolation.MatchAuditedBuild(hashes));
+            hashes["Artech.Architecture.Common"] = "978fab2afad4daaa28aecffd5cd327367b1bb9c0a8f027cfda74911a294eac12";
+            hashes["DVelop.Patterns.WorkWithPlus"] = "unknown";
+            Assert.Null(EventsSaveIsolation.MatchAuditedBuild(hashes));
+        }
+
+        [Fact]
+        public void PinDiagnostics_DoNotExposePathsOrClaimPersistence()
+        {
+            var report = EventsSaveIsolation.DescribeConfiguredPins();
+            Assert.Equal("isolation-preflight", report["phase"]);
+            Assert.Equal(2, ((JArray)report["requiredPins"]).Count);
+            Assert.False(report["persisted"].Value<bool>());
+            Assert.False(report["saved"].Value<bool>());
+            Assert.Empty((JArray)report["implicitOperations"]);
+            Assert.Null(report.SelectToken("effectivePins.kbPath"));
+        }
+
+        [Theory]
         [InlineData("{}", false)]
         [InlineData("{writeAttempted:false}", false)]
         [InlineData("{writeAttempted:true, rollbackVerified:true, persistenceUncertain:true}", false)]

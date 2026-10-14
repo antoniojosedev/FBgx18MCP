@@ -1,7 +1,7 @@
 use gxwire::analysis::{
     analyze_callers_ext, analyze_impact_ext, analyze_path_ext, search_for_task_ext,
 };
-use gxwire::cache::{get_cache_path, load_cache, save_cache};
+use gxwire::cache::{get_cache_path, load_cache, save_index};
 use gxwire::graph::CsrGraph;
 use gxwire::model::{CallMode, EdgeKind, EntityKind, EntityNode, RawEdge, WriteMode};
 use gxwire::output::{
@@ -172,8 +172,8 @@ fn test_capability_4_incremental_cache_freshness() {
     fs::write(&file_p2, "// empty\n").unwrap();
 
     // 1. Initial build and save
-    let g1 = gxwire::cache::build_graph_from_directory(&tmp_dir).unwrap();
-    save_cache(&g1, &tmp_dir).unwrap();
+    let (g1, parses1) = gxwire::cache::build_index(&tmp_dir).unwrap();
+    save_index(&g1, &parses1, &tmp_dir).unwrap();
     assert!(get_cache_path(&tmp_dir).exists());
 
     // 2. Load fresh cache

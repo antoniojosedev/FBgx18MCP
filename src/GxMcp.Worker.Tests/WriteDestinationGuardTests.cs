@@ -12,6 +12,20 @@ namespace GxMcp.Worker.Tests
     {
         private static int handlerCalls;
 
+        [Fact]
+        public void PartialPins_ReturnStructuredEvidenceBeforeWriting()
+        {
+            var report = JObject.Parse(WriteDestinationGuard.Check(@"C:\KB\Synthetic", null, @"C:\KB\Synthetic", null, null, true));
+            Assert.Equal(2, ((JArray)report["requiredPins"]).Count);
+            Assert.True(report.SelectToken("effectivePins.kbPathConfigured").Value<bool>());
+            Assert.False(report.SelectToken("effectivePins.versionConfigured").Value<bool>());
+            Assert.Equal("write-destination", report["phase"]);
+            Assert.False(report["saved"].Value<bool>());
+            Assert.False(report["persisted"].Value<bool>());
+            Assert.False(report["writeAttempted"].Value<bool>());
+            Assert.Null(report.SelectToken("effectivePins.kbPath"));
+        }
+
         [Theory]
         [InlineData("list", true)]
         [InlineData("set_active", false)]

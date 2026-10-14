@@ -60,7 +60,16 @@ struct Args {
     #[arg(long)]
     index: Option<Option<PathBuf>>,
 
-    /// Self-diagnostic and cache status
+    /// Where the index is read from and written to.
+  ///
+  /// Defaults to `.gxwire_cache.bin` inside `--dir`. Point it elsewhere to keep
+  /// the analysed directory untouched: the published contract declares
+  /// `genexus_wire` read-only, and with a native Knowledge Base the analysed
+  /// directory is the KB itself (#499).
+  #[arg(long = "cache-path")]
+  cache_path: Option<PathBuf>,
+
+  /// Self-diagnostic and cache status
     #[arg(long)]
     doctor: bool,
 
@@ -103,9 +112,13 @@ fn emit_error(format: &str, code: &str, target: &str, message: &str, next: &str)
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let root = args.dir.canonicalize().unwrap_or(args.dir.clone());
+    // Decided once, here, and threaded through every read and write. Defaults to
+    // a dotfile inside `root`, which is what gxwire has always done; the Gateway
+    // passes an explicit path so nothing is written into the analysed directory
+    // (#499).
+    let cache_path = cache::cache_path_for(&root, args.cache_path.as_deref());
 
     if args.doctor {
-        let cache_path = cache::get_cache_path(&root);
         let exists = cache_path.exists();
         let doc_res = model::DoctorResult {
             schema: "gxwire.doctor/v1".to_string(),
@@ -133,18 +146,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(index_dir_opt) = args.index {
         let target_dir = index_dir_opt.unwrap_or(root.clone());
         eprintln!("[gxwire] Building index from: {}", target_dir.display());
-        let g = cache::build_graph_from_directory(&target_dir)?;
-        cache::save_cache(&g, &root)?;
+        // Records the per-file parse entries alongside the graph so a later
+        // single-object edit only has to reparse that one file.
+        let (g, parses) = cache::build_index(&target_dir)?;
+        let node_count = g.nodes.len();
+        // Same split as the query path: keep the historical entry point when the index
+        // was not relocated.
+        match args.cache_path.as_deref() {
+            None => cache::save_index(&g, &parses, &root)?,
+            Some(_) => cache::save_index_to(&g, &parses, &cache_path)?,
+        };
         eprintln!(
             "[gxwire] Index built successfully! Nodes: {}, Cache: {}",
-            g.nodes.len(),
-            cache::get_cache_path(&root).display()
+            node_count,
+            cache_path.display()
         );
         return Ok(());
     }
 
     // Try loading existing cache or build on the fly
-    let g = match cache::load_cache(&root) {
+    let load = match args.cache_path.as_deref() {
+        // Not relocated: keep the historical entry point, which derives the
+        // path itself and skips the allocation.
+        None => cache::load_cache(&root),
+        Some(_) => cache::load_cache_from(&cache_path, &root),
+    };
+    let g = match load {
         Ok(cached) => cached,
         Err(_) => {
             // Build temporary graph from directory if no cache
@@ -332,7 +359,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Principle #8: Content First (0 args defaults to live KB graph status)
-    let cache_path = cache::get_cache_path(&root);
     let status_res = analysis::compute_status(&g, &root, &cache_path);
     if args.format == "mermaid" {
         print!("{}", output::format_status_mermaid(&status_res));

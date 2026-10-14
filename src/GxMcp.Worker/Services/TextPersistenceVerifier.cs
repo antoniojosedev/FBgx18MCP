@@ -64,7 +64,10 @@ namespace GxMcp.Worker.Services
                     ExactCanonicalize(persisted, partName),
                     StringComparison.Ordinal);
             else if (mode == "semantic")
-                matches = string.Equals(SemanticCanonicalize(nr), SemanticCanonicalize(np), StringComparison.Ordinal);
+                matches = string.Equals(
+                    SemanticCanonicalize(nr, partName),
+                    SemanticCanonicalize(np, partName),
+                    StringComparison.Ordinal);
             else
                 matches = string.Equals(nr, np, StringComparison.Ordinal);
 
@@ -88,7 +91,7 @@ namespace GxMcp.Worker.Services
             string mode = ResolveMode(requestedMode, partName);
             if (mode == "exact") return ExactCanonicalize(text, partName);
             string normalized = Normalize(text);
-            return mode == "semantic" ? SemanticCanonicalize(normalized) : normalized;
+            return mode == "semantic" ? SemanticCanonicalize(normalized, partName) : normalized;
         }
 
         internal static string Normalize(string text)
@@ -112,15 +115,197 @@ namespace GxMcp.Worker.Services
         private static string ExactCanonicalize(string text, string partName)
         {
             string value = text ?? string.Empty;
-            // Logical code text parts (Source, Rules, Events, Conditions) can return LF
-            // from the forced post-save SDK read even when the requested payload used CRLF.
-            // Canonicalize line endings so carriage return differences don't cause false mismatches.
-            return IsCodeOrTextPart(partName)
-                ? value.Replace("\r\n", "\n").Replace("\r", "\n")
-                : value;
+            // Line endings are canonicalized for every part, not only the code
+            // ones. A Structure is authored and re-read by different layers: the
+            // requested payload can carry CRLF while the forced post-save SDK
+            // read returns LF. Under `exact` that difference alone failed the
+            // comparison and reported `WriteNotPersisted` for a write that had
+            // landed (#494). Line endings carry no content in any part, so
+            // normalizing them cannot hide a real difference.
+            return value.Replace("\r\n", "\n").Replace("\r", "\n");
         }
 
-        private static string SemanticCanonicalize(string text)
+        /// <summary>
+        /// Drops the description GeneXus generates for an attribute from its
+        /// name, so a write that landed is not reported as
+        /// <c>WriteNotPersisted</c> merely because the SDK filled in a detail the
+        /// request never mentioned (#494).
+        ///
+        /// Scoped narrowly on purpose:
+        ///
+        /// - Only a description that matches what the SDK derives from the
+        ///   attribute's own name is dropped. "Generated" cannot be told from
+        ///   "caller-supplied" any other way, and treating every description as
+        ///   generated would pass a write that wrote the wrong description.
+        /// - Only for a Structure part. On a code part `semantic` must stay a
+        ///   pure keyword/spacing canonicalisation.
+        /// - A formula or `[Nullable]` after the description is preserved
+        ///   verbatim, since that part is what the caller wrote.
+        /// - Containment is deliberately not the rule: "persisted contains
+        ///   requested" proves an addition but not a removal.
+        ///
+        /// Known limitation: this closes the reported receipt, but the live
+        /// reproduction in #494 also shows the SDK not honouring the requested
+        /// insertion point (`after`), which is a separate defect in the
+        /// Structure apply path and is tracked in
+        /// <c>docs/plans/2026-10-13-open-issues-plan.md</c>.
+        /// </summary>
+        private static string SemanticCanonicalize(string text, string partName)
+        {
+            // The generated-description strip only applies to a Structure part.
+            // Applying it to a code part would rewrite lines that merely contain a
+            // comment, and `semantic` on Source/Rules/Events must stay a pure
+            // keyword/spacing canonicalisation.
+            if (IsCodeOrTextPart(partName))
+                return SemanticCanonicalizeRaw(text);
+
+            // Strip first, on the raw text. The description is part of the DSL's
+            // rendering, so it has to be recognised before keyword casing and
+            // whitespace normalisation alter the line around it.
+            return SemanticCanonicalizeRaw(StripSdkGeneratedAttributeDescriptions(text));
+        }
+
+        /// <summary>
+        /// Removes the description the SDK generates for an attribute, line by
+        /// line.
+        ///
+        /// "Generated" is decided by the text itself: the description must equal
+        /// what GeneXus derives from the attribute's own name. That is the only
+        /// rule that can tell a generated description from a caller-supplied one,
+        /// and it matters - stripping any description would make two genuinely
+        /// different descriptions compare equal, which is a false positive in a
+        /// write verdict.
+        ///
+        /// The same rule is what the DSL renderer already applies: a description
+        /// that merely repeats the name is not rendered at all. So a requested
+        /// `// "Attr"` on `Attr` and a persisted line with no comment are the same
+        /// declaration, and comparing them as different would be its own false
+        /// mismatch.
+        /// </summary>
+        internal static string StripSdkGeneratedAttributeDescriptions(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            if (text.IndexOf("//", StringComparison.Ordinal) < 0) return text;
+
+            var lines = (text ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            var sb = new StringBuilder(text.Length);
+
+            foreach (var line in lines)
+            {
+                var trimmed = line.TrimEnd(' ', '\t');
+                if (!TryGetGeneratedDescription(trimmed, out _, out string declaration))
+                {
+                    sb.Append(line).Append('\n');
+                    continue;
+                }
+                sb.Append(declaration).Append('\n');
+            }
+
+            // Preserve the absence of a trailing newline on the final line.
+            if (!text.EndsWith("\n", StringComparison.Ordinal) && sb.Length > 0)
+                sb.Length -= 1;
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Recognises an attribute declaration whose trailing comment is only the
+        /// description GeneXus derives from the attribute name. Returns the
+        /// declaration with that description removed.
+        /// </summary>
+        private static bool TryGetGeneratedDescription(string trimmedLine, out string description, out string declaration)
+        {
+            description = null;
+            declaration = null;
+
+            int commentAt = trimmedLine.IndexOf("//", StringComparison.Ordinal);
+            if (commentAt < 0) return false;
+
+            declaration = trimmedLine.Substring(0, commentAt).TrimEnd(' ', '\t');
+
+            // An attribute declaration is `Name[+*] : Type`; a level, a rule or a
+            // bare comment must be left alone.
+            int colon = declaration.IndexOf(':');
+            if (colon <= 0) return false;
+
+            string name = declaration.Substring(0, colon).TrimEnd(' ', '\t');
+            // Strip the key/nullable markers GeneXus puts in the declaration.
+            name = name.TrimEnd('+', '*', ' ').Trim();
+            if (name.Length == 0) return false;
+
+            string detail = trimmedLine.Substring(commentAt + 2).Trim();
+            if (detail.Length < 2 || detail[0] != '"') return false;
+
+            int close = detail.IndexOf('"', 1);
+            if (close < 0) return false;
+
+            string quoted = detail.Substring(1, close - 1).Trim();
+            if (!DescriptionMatchesName(quoted, name)) return false;
+
+            // A generated description is *not* the only detail a line can carry:
+            // the SDK renders `// "Attr Name", [Formula: ...]` and
+            // `// "Attr Name", [Nullable]`. Keep whatever follows the description
+            // verbatim, so only the description itself is dropped. Anything that
+            // is not a recognised detail marker means the caller put something
+            // else there and the line must be compared as written.
+            string after = detail.Substring(close + 1).Trim();
+            if (after.Length > 0)
+            {
+                if (after.StartsWith(",", StringComparison.Ordinal))
+                    after = after.Substring(1).Trim();
+
+                bool recognised =
+                    after.StartsWith("//", StringComparison.Ordinal)
+                    || after.StartsWith("[", StringComparison.Ordinal)
+                    || after.Length == 0;
+
+                if (!recognised) return false;
+            }
+
+            // Reassemble with the remaining detail so the formula or nullable
+            // marker survives into the canonical form.
+            declaration = declaration + (after.Length > 0 ? " // " + after : string.Empty);
+            description = quoted;
+            return true;
+        }
+
+        /// <summary>
+        /// True when <paramref name="description"/> is what GeneXus would derive
+        /// from <paramref name="name"/>: the name split on camel-case boundaries
+        /// and joined with spaces, compared case-insensitively and ignoring
+        /// punctuation the derivation also drops.
+        /// </summary>
+        private static bool DescriptionMatchesName(string description, string name)
+        {
+            if (description.Length == 0) return false;
+
+            var derived = new StringBuilder(name.Length + 8);
+            for (int i = 0; i < name.Length; i++)
+            {
+                char c = name[i];
+                bool boundary = i > 0
+                    && char.IsUpper(c)
+                    && (!char.IsUpper(name[i - 1]) || (i + 1 < name.Length && char.IsLower(name[i + 1])));
+                if (boundary) derived.Append(' ');
+                derived.Append(c);
+            }
+
+            return NormalizeForDescriptionCompare(description)
+                == NormalizeForDescriptionCompare(derived.ToString());
+        }
+
+        private static string NormalizeForDescriptionCompare(string value)
+        {
+            var sb = new StringBuilder(value.Length);
+            foreach (char c in value)
+            {
+                if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+                else if (sb.Length > 0 && sb[sb.Length - 1] != ' ') sb.Append(' ');
+            }
+            return sb.ToString().Trim();
+        }
+
+        private static string SemanticCanonicalizeRaw(string text)
         {
             var sb = new StringBuilder(text.Length);
             bool inString = false;

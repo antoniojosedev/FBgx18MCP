@@ -100,7 +100,14 @@ switch ($Action) {
             }
             Start-Sleep -Seconds 2
         }
-        $seconds = [Math]::Round(([DateTime]::Parse($state.endedUtc) - [DateTime]::Parse($state.startedUtc)).TotalSeconds)
+        # Cast, do not Parse. ConvertFrom-Json already materialised the round-trip
+        # 'o' timestamps as [DateTime], and handing one to [DateTime]::Parse
+        # forces a detour through a culture-formatted string. On a machine whose
+        # culture does not round-trip that form, the detour produced
+        #   String '10/14/2026 00:18:46' was not recognized as a valid DateTime
+        # and failed the gate that had actually passed. The values are never
+        # strings, so the parse was doing nothing but losing information.
+        $seconds = [Math]::Round((([DateTime]$state.endedUtc) - ([DateTime]$state.startedUtc)).TotalSeconds)
         $tail = @(Get-Content -LiteralPath $logPath -Tail 400 -ErrorAction SilentlyContinue)
         $summary = @($tail | Where-Object { $_ -match 'Passed!|Failed!|error\b|FAIL' } | Select-Object -Last 3)
         if ($summary.Count -eq 0) { $summary = @($tail | Select-Object -Last 3) }

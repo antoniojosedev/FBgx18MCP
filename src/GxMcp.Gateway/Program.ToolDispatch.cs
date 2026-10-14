@@ -1161,6 +1161,38 @@ namespace GxMcp.Gateway
                         ["message"] = "No Knowledge Base path resolved or directory does not exist. Open a KB with genexus_kb or specify 'kb'/'dir'."
                     };
                 }
+
+                // A native Knowledge Base keeps its object sources in the KB
+                // database, not in files. Walking its folder would index
+                // generated output - gigabytes of it - and the resulting graph
+                // would be inferred from whatever text happened to be there,
+                // which reads exactly like a real graph and is not one (#499).
+                var nativeKb = NativeKnowledgeBaseEvidence.Describe(kbDir!);
+                if (nativeKb != null)
+                {
+                    return new JObject
+                    {
+                        ["status"] = "error",
+                        ["error"] = "GXWIRE_REQUIRES_TEXT_SOURCE_TREE",
+                        ["message"] = "genexus_wire reads GeneXus sources from files, but this is a native Knowledge Base: its object sources live in the KB database, not on disk. Indexing the folder would read generated output, not the Knowledge Base.",
+                        ["path"] = kbDir,
+                        ["evidence"] = new JArray(nativeKb),
+                        ["hint"] = "Point genexus_wire at a text source tree instead - a GeneXus XML/text export of the same Knowledge Base (the directory holding the .txt/.gxd/.xml/.trn/.wp object files). Read the sources through the SDK instead: genexus_read, genexus_query, genexus_search_source, genexus_analyze and genexus_inspect all work against this Knowledge Base as-is.",
+                        ["sdkAlternative"] = new JArray("genexus_read", "genexus_query", "genexus_search_source", "genexus_analyze", "genexus_inspect")
+                    };
+                }
+            }
+
+            // The index goes to the MCP cache directory, never into the analysed
+            // folder. The published contract declares genexus_wire read-only, and
+            // with a native KB that folder is the Knowledge Base itself (#499).
+            string? gxwireCachePath = null;
+            try { gxwireCachePath = GxwireCacheLocation.Resolve(kbDir); }
+            catch (Exception ex)
+            {
+                // Not fatal: gxwire still works, it just falls back to its own
+                // in-tree default and stops being read-only. Reported, not hidden.
+                Console.Error.WriteLine("[genexus_wire] could not resolve a cache path outside the analysed directory: " + ex.Message);
             }
 
             var argsBuilder = new StringBuilder();
@@ -1265,6 +1297,14 @@ namespace GxMcp.Gateway
                     };
             }
 
+            // Appended once, after every action has contributed its own flags, so
+            // no action can be added later that forgets to keep the analysed
+            // directory read-only.
+            if (!string.IsNullOrWhiteSpace(gxwireCachePath))
+            {
+                argsBuilder.Append($" --cache-path \"{gxwireCachePath}\"");
+            }
+
             try
             {
                 var psi = new ProcessStartInfo
@@ -1290,11 +1330,35 @@ namespace GxMcp.Gateway
                     };
                 }
 
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                string stdout = await proc.StandardOutput.ReadToEndAsync(cts.Token);
-                string stderr = await proc.StandardError.ReadToEndAsync(cts.Token);
-                await proc.WaitForExitAsync(cts.Token);
+                GxwireProcessRun run;
+                try
+                {
+                    run = await GxwireProcessRunner.RunAsync(proc, GxwireProcessRunner.ResolveTimeoutSeconds(action));
+                }
+                finally
+                {
+                    // The runner kills on timeout, but a cancellation can also
+                    // arrive from outside (client disconnect, shutdown). Either
+                    // way the child must not outlive the gateway, otherwise it
+                    // keeps indexing with no owner (issue #498).
+                    GxwireProcessRunner.TryKillProcessTree(proc);
+                }
 
+                if (run.TimedOut)
+                {
+                    return new JObject
+                    {
+                        ["status"] = "error",
+                        ["error"] = "GxwireTimeout",
+                        ["message"] = $"gxwire exceeded its {run.TimeoutSeconds}s budget and was terminated. The partial index on disk is reused on the next call.",
+                        ["action"] = action,
+                        ["timeoutSeconds"] = run.TimeoutSeconds,
+                        ["next"] = "Retry with a larger GXMCP_GXWIRE_TIMEOUT_SECONDS for action=index, or run the index in smaller directories."
+                    };
+                }
+
+                string stdout = run.StandardOutput;
+                string stderr = run.StandardError;
                 if (proc.ExitCode != 0)
                 {
                     return new JObject

@@ -12,6 +12,48 @@ namespace GxMcp.Worker.Tests
 {
     public class SourceStoreBackfillServiceTests
     {
+        [Theory]
+        [InlineData("Transaction", "Events,Rules,WebForm", "Events,Rules,WebForm")]
+        [InlineData("Attribute", "", "")]
+        [InlineData("Table", "", "")]
+        [InlineData("Procedure", "Source,Rules,Layout", "Source,Rules,Layout")]
+        [InlineData("DataSelector", "Conditions", "Conditions")]
+        public void RequiredPartsOnlyIncludeSupportedSdkParts(string type, string available, string expected)
+        {
+            var parts = ObjectService.GetSourceStoreRequiredParts(type,
+                available.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries));
+            Assert.Equal(expected.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries), parts);
+        }
+
+        [Theory]
+        [InlineData("Transaction", "Events,Rules,WebForm")]
+        [InlineData("Attribute", "")]
+        [InlineData("Table", "")]
+        public void SliceCompletesWithoutRequestingUnsupportedParts(string type, string available)
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-backfill-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var entry = Entry(Guid.NewGuid().ToString("N"), 1);
+                entry.Type = type;
+                var required = ObjectService.GetSourceStoreRequiredParts(type,
+                    available.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries));
+                var service = new SourceStoreBackfillService(store);
+                Assert.True(service.Start(() => new[] { entry }, e => required
+                    .Select(p => new SourceStoreBackfillPart { PartName = p, Source = "", ReadSucceeded = true }).ToList(),
+                    requiredPartProvider: e => required, schedule: false));
+                Assert.True(service.RunOneSliceForTest(1, 1000));
+                var state = service.GetState();
+                Assert.Equal("complete", state.State);
+                Assert.Equal(1, state.ProcessedObjects);
+                Assert.True(string.IsNullOrEmpty(state.LastError));
+            }
+            finally { Directory.Delete(root, recursive: true); }
+        }
+
         [Fact]
         public void SlicePersistsProgressAndResumesFromCursor()
         {

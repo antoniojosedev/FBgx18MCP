@@ -56,6 +56,7 @@ also read [`AGENTS.md`](../AGENTS.md).
   [operation contract inventory](operation-contract-inventory.json).
 - [Required Events save isolation](events-object-save-isolation.md) and the
   [restricted U16 Events save candidate](events-save-u16-candidate.md).
+- [Snapshot canônico de Events](events-canonical-snapshot.md) — captura de Rules, verificação de Save e rollback.
 
 ## Architecture and debugging
 

@@ -268,6 +268,7 @@ Backfill progress is exposed under `index.sourceStore` (and lifecycle status) as
 
 | Variable | Purpose |
 |----------|---------|
+| `GXMCP_WORKER_GENERATION` | Worker generation identifier read by diagnostic envelopes to distinguish Worker instances. Optional; diagnostics omit it when unset. |
 | `GXMCP_SERVER_VERSION` | The gateway injects the server version into the worker's environment on spawn. Reading it in worker code is fine; setting it externally has no effect. |
 | `GXMCP_DRIVER` | Gateway-selected Worker driver (`native-sdk`, `dotnet-reflection`, or `com-gxpublic`), injected when it launches a Worker or shared Worker host. Do not set by hand. |
 | `GXMCP_TARGET_MAJOR` | Gateway-selected GeneXus major injected with the Worker driver; the Worker uses it for version-specific compatibility/provider behavior. Do not set by hand. |
@@ -353,6 +354,7 @@ enable experimental write paths or skip discovery guards.
 | `GXMCP_PARITY_MCP_NAME` | Name of the matching object patterned through MCP. | unset |
 | `GXMCP_DSO_NAME` | Name of an existing Design System with nonempty `Tokens` and `Styles` parts, for the read-only preview regression. Unset skips that live test. | unset |
 | `GXMCP_UPDATE_GOLDEN` | Set to `1` to overwrite the discovery golden fixture with the current `tools/list` response instead of asserting against it. Never set in CI. | unset |
+| `GXMCP_GXWIRE_TIMEOUT_SECONDS` | Wall-clock budget, in seconds, for one `gxwire.exe` invocation. Overrides both defaults: 30 for query actions and 900 for `action=index`. Unparsable or non-positive values fall back to those defaults rather than failing the call. | unset (per-action defaults) |
 | `GX_MCP_SDK_PROBE` | Set to `1` to run the full SDK surface probe on every pattern apply. It walks every loaded SDK assembly and writes a multi-megabyte dump; it used to run unconditionally and cost 5–15 s per apply. `genexus_sdk_probe` remains the explicit way to get a dump. | off |
 | `GX_MCP_SDK_PROBE_DIR` | Output directory for that dump. An installed package under `node_modules` never receives generated diagnostics in its own tree. | `<repo>\docs\sdk-probe`, else the Worker temp root |
 | `GX_MCP_REPO_ROOT` | Repository root used to place the probe output under `docs\sdk-probe`. Honoured only when the directory exists. | unset (heuristic: a parent with a `docs` folder) |

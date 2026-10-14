@@ -169,6 +169,31 @@ namespace GxMcp.Worker.Services
             return true;
         }
 
+        /// Identity of a hit for dedup purposes: object, part, field, position
+        /// and text.
+        ///
+        /// The position component reads `lineNumber`, which is the field source
+        /// hits publish. It used to read `line`, which no hit sets, so the
+        /// component was always empty and every identical line in the same
+        /// object+part collapsed into a single hit - while the envelope still
+        /// declared `partial: false` and `truncated: false` (issue #497).
+        /// Metadata hits carry no line at all, which is correct: they are already
+        /// keyed by field, and their value is the only thing that can repeat.
+        internal static string HitDedupKey(JObject hit)
+        {
+            if (hit == null) return string.Empty;
+
+            var line = hit["lineNumber"];
+            if (line == null || line.Type == JTokenType.Null) line = hit["line"];
+
+            return string.Join("|",
+                HitObjectIdentity(hit),
+                hit["part"]?.ToString() ?? string.Empty,
+                hit["field"]?.ToString() ?? string.Empty,
+                line?.ToString() ?? string.Empty,
+                hit["lineText"]?.ToString() ?? string.Empty);
+        }
+
         private static string HitObjectIdentity(JObject hit)
         {
             if (hit == null) return string.Empty;
@@ -190,18 +215,8 @@ namespace GxMcp.Worker.Services
                 return false;
             }
 
-            string hitKey = string.Join("|",
-                HitObjectIdentity(hit),
-                hit["part"]?.ToString() ?? string.Empty,
-                hit["field"]?.ToString() ?? string.Empty,
-                hit["line"]?.ToString() ?? string.Empty,
-                hit["lineText"]?.ToString() ?? string.Empty);
-            if (hits.OfType<JObject>().Any(existing => string.Join("|",
-                HitObjectIdentity(existing),
-                existing["part"]?.ToString() ?? string.Empty,
-                existing["field"]?.ToString() ?? string.Empty,
-                existing["line"]?.ToString() ?? string.Empty,
-                existing["lineText"]?.ToString() ?? string.Empty).Equals(hitKey, StringComparison.Ordinal)))
+            string hitKey = HitDedupKey(hit);
+            if (hits.OfType<JObject>().Any(existing => HitDedupKey(existing).Equals(hitKey, StringComparison.Ordinal)))
                 return false;
 
             hits.Add(hit);
