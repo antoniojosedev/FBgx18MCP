@@ -834,10 +834,20 @@ namespace GxMcp.Worker.Services
             return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: projResult);
         }
 
+        private static string FormulaWriteUnsupported(string target)
+        {
+            return Models.McpResponse.Err(code: "FormulaNotScalarWritable", target: target,
+                message: "Formula requires typed SDK parsing and cannot be assigned through genexus_properties, including dryRun.",
+                hint: "For an Attribute, use genexus_structure action=set_attribute with payload={formula: <text>}. That route does not support dryRun; inspect the attribute before writing.");
+        }
+
         public string SetProperty(string target, string propName, string value, string controlName = null, string typeFilter = null)
         {
             try
             {
+                if (string.IsNullOrEmpty(controlName) && string.Equals(propName?.Trim(), "Formula", StringComparison.OrdinalIgnoreCase))
+                    return FormulaWriteUnsupported(target);
+
                 var obj = _objectService.FindObject(target, typeFilter);
                 if (obj == null) return Models.McpResponse.Err(code: "ObjectNotFound", message: "Object not found.", hint: "Check the target name and that the KB is open.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists available objects to verify the target name.")), target: target);
 
@@ -1012,6 +1022,8 @@ namespace GxMcp.Worker.Services
                 if (!rollbackOnFailure)
                     return Models.McpResponse.Err(code: "RollbackRequired", target: target,
                         message: "Property writes require rollbackOnFailure=true to protect the complete object.");
+                if (string.IsNullOrEmpty(controlName) && properties.Properties().Any(p => string.Equals(p.Name.Trim(), "Formula", StringComparison.OrdinalIgnoreCase)))
+                    return FormulaWriteUnsupported(target);
 
                 var obj = _objectService.FindObject(target, typeFilter);
                 if (obj == null) return Models.McpResponse.Err(code: "ObjectNotFound", message: "Object not found.", hint: "Check the target name and that the KB is open.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists available objects to verify the target name.")), target: target);
