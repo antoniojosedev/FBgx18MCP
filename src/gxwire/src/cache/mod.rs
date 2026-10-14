@@ -1,5 +1,6 @@
 use crate::graph::CsrGraph;
 use crate::model::{EdgeKind, EntityKind, EntityNode, RawEdge};
+use crate::parser::lexer::ParsedSymbolRef;
 use crate::parser::{parse_genexus_source, ParseResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,7 +16,7 @@ const CACHE_FILE_NAME: &str = ".gxwire_cache.bin";
 /// Layout marker, read before the payload so a cache written by a different
 /// gxwire build is discarded instead of being misread. The Knowledge Base is
 /// then reparsed in full, which is slow but never wrong.
-const CACHE_FORMAT_VERSION: u32 = 2;
+const CACHE_FORMAT_VERSION: u32 = 3;
 
 /// Parse output for one source file, together with the stat signature it was
 /// produced from. The entry is reused verbatim while both still match, which
@@ -28,6 +29,13 @@ pub struct FileParse {
     pub mtime_ms: u64,
     pub size: u64,
     pub parse: ParseResult,
+    /// Symbols this file's attribute formulas reference.
+    ///
+    /// Kept beside `parse` rather than recomputed at graph-assembly time: the
+    /// file is already in memory when it is lexed, and re-reading every file
+    /// there would undo the incremental reindex.
+    #[serde(default)]
+    pub formula_refs: Vec<ParsedSymbolRef>,
 }
 
 /// Parse entries keyed by absolute source path.
@@ -102,14 +110,33 @@ fn parse_source(sf: &SourceFile, signature: (u64, u64)) -> FileParse {
     let ext = sf.path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let kind = detect_entity_kind(&sf.path, &sf.stem, ext);
 
-    let parse = match fs::read_to_string(&sf.path) {
-        Ok(content) => parse_genexus_source(&content),
+    // Read once. The incremental reindex exists so an unchanged file is never
+    // re-read, and computing the formula references in a second `read_to_string`
+    // here would reintroduce exactly that cost on every indexed file.
+    let content = fs::read_to_string(&sf.path).ok();
+
+    let parse = match &content {
+        Some(content) => parse_genexus_source(content),
         // Mirrors the previous builder, which left the node at its
         // constructor defaults when the file could not be read.
-        Err(_) => ParseResult {
+        None => ParseResult {
             complexity: 1,
             ..Default::default()
         },
+    };
+
+    // An attribute's formula is a dependency of whoever reads the attribute, so
+    // the calls it makes become DefinesFormula edges from the attribute itself.
+    // That is what lets `impact` on a Procedure report the attributes whose
+    // formula calls it, instead of returning `formulas: []` (#501).
+    //
+    // Gated on the `[Formula:` marker itself, not on `kind == Attribute`. A
+    // `.txt` attribute declaration has no distinctive extension or name prefix,
+    // so the kind resolver reports `Unknown` for it and a kind-based gate
+    // silently skipped every formula in a text tree export.
+    let formula_refs = match &content {
+        Some(content) => crate::parser::formula_references(content),
+        None => Vec::new(),
     };
 
     FileParse {
@@ -119,6 +146,7 @@ fn parse_source(sf: &SourceFile, signature: (u64, u64)) -> FileParse {
         mtime_ms,
         size,
         parse,
+        formula_refs,
     }
 }
 
@@ -155,14 +183,29 @@ fn assemble_graph(files: &[FileParse]) -> CsrGraph {
     // Pass 2: resolve references, creating phantoms for targets with no file.
     // Bounded by the file-backed count so phantoms are not themselves scanned.
     for (idx, fp) in files.iter().enumerate() {
-        for ref_sym in &fp.parse.references {
+        // References and formula references travel together, each carrying its
+        // own edge kind: a symbol reached through an attribute formula is a
+        // `DefinesFormula` dependency, not a plain read or write.
+        let mut edges: Vec<(&ParsedSymbolRef, EdgeKind)> = fp
+            .parse
+            .references
+            .iter()
+            .map(|r| (r, r.kind.clone()))
+            .collect();
+        edges.extend(
+            fp.formula_refs
+                .iter()
+                .map(|r| (r, EdgeKind::DefinesFormula)),
+        );
+
+        for (ref_sym, edge_kind) in edges {
             let target_key = ref_sym.target_name.to_ascii_lowercase();
             let target_id = match name_to_id.get(&target_key) {
                 Some(&id) => id,
                 None => {
                     let new_id = nodes.len() as u32;
                     name_to_id.insert(target_key, new_id);
-                    let kind = match ref_sym.kind {
+                    let kind = match edge_kind {
                         EdgeKind::WritesAttr(_) | EdgeKind::ReadsAttr => EntityKind::Attribute,
                         _ => EntityKind::Unknown,
                     };
@@ -184,7 +227,7 @@ fn assemble_graph(files: &[FileParse]) -> CsrGraph {
             raw_edges.push(RawEdge {
                 from: idx as u32,
                 to: target_id,
-                kind: ref_sym.kind.clone(),
+                kind: edge_kind,
                 line: ref_sym.line,
             });
         }
