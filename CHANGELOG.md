@@ -47,6 +47,8 @@
 
 - Salvamento isolado de Events: corrige a seleção da sobrecarga de comparação para preservar todas as partes irmãs, excluindo somente Events. Adiciona o conjunto coerente do SDK U16 `18.0.16.189595`, mantendo a recusa de builds misturados ou desconhecidos e a verificação transacional de Save, releitura e rollback.
 
+- `genexus_search_source` no longer drops distinct lines that happen to have byte-identical text in the same part of the same object: the dedup key read `hit["line"]`, but source hits publish `lineNumber`, so the position component was always empty and every repeated line collapsed into a single hit while the envelope still declared `partial: false` and `truncated: false`, making occurrence counts across an edit silently wrong ([#497](https://github.com/lennix1337/Genexus18MCP/issues/497)). Key construction is now a single `HitDedupKey` helper, which also removes the duplicated O(n²) key rebuild.
+
 ### Internal
 
 - GxWire gained `build_index`/`save_index`, which carry the per-file parse entries, and `save_cache` (graph without reuse state) was removed: persisting a graph alone guarantees the next load reparses everything, so the API no longer offers a footgun. `genexus_wire --index` records the parse entries, so the first incremental reindex after a full build is already cheap.
