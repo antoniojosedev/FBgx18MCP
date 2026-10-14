@@ -21,6 +21,11 @@ namespace GxMcp.Gateway
                 "# genexus_wire\n\n" +
                 "High-performance native Rust architectural discovery, call graph, and impact engine (sub-10ms).\n" +
                 "Call this FIRST before reading large objects or modifying the KB.\n\n" +
+                "## Requires a text source tree, not a native KB\n" +
+                "genexus_wire reads GeneXus sources **from files**. A native GeneXus 18 Knowledge Base keeps its object sources in the KB database, not on disk, so pointing `kb` at one is refused with `GXWIRE_REQUIRES_TEXT_SOURCE_TREE` rather than answered: indexing that folder would read generated output and report it as a graph.\n" +
+                "Point `dir` at a text source tree - a GeneXus XML/text export of the same Knowledge Base, the directory holding the .txt/.gxd/.xml/.trn/.wp object files.\n" +
+                "To work on a native KB itself, use the SDK-backed tools instead: `genexus_read`, `genexus_query`, `genexus_search_source`, `genexus_analyze`, `genexus_inspect`.\n" +
+                "genexus_wire writes nothing into the directory it analyses: the index lives under `%LOCALAPPDATA%\\GxMcp\\Cache\\gxwire`.\n\n" +
                 "## Actions\n" +
                 "- `pack_task` (default): Complete orientation bundle for a task description (ranked symbols, callers, signatures, variables) bounded under token_budget (default 1200).\n" +
                 "- `status`: Live KB graph status, node/edge counts, and top PageRank-central architectural hubs (content first).\n" +
