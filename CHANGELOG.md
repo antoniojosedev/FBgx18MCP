@@ -23,6 +23,8 @@
 
 - `genexus_wire impact` now reports Procedures reached through an attribute formula, which it previously omitted entirely ([#501](https://github.com/lennix1337/Genexus18MCP/issues/501)). A Procedure called from `[Formula: ...]` affects every object reading that attribute, but `formulas` came back empty because the lexer had no rule for a formula at all. Formula bodies are parsed across physical lines (GeneXus allows them to wrap) and nested Procedure calls are all reported, while built-ins and plain attribute references inside the formula are excluded so the guard does not invent relationships that would overstate a blast radius.
 
+- `TextPersistenceVerifier` canonicalizes line endings for every part under `exact`, not only for the code parts. A Structure is authored by one layer and re-read by another, so a CRLF request against an LF post-save read differed on line endings alone. Line endings carry no content in any part, so this cannot hide a real difference, and a guard pins that a genuine content difference still fails.
+
 ### Fixed
 
 - GxWire index files now carry an explicit format marker, so an index left behind by a different gxwire build is discarded rather than decoded as if it were ours (which could read arbitrary bytes as collection lengths and try to reserve gigabytes). An index that cannot be decoded - truncated, empty, or garbage - is now rebuilt from disk *and re-saved*; previously it failed to decode and every later call reparsed the whole Knowledge Base without ever refreshing the index.
