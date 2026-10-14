@@ -352,6 +352,44 @@ fn is_supported_ext(ext: &str) -> bool {
     )
 }
 
+/// Best-effort object kind from a file name, used only when the file's own
+/// content cannot say.
+///
+/// The old chain tested a single leading letter, so every Transaction whose
+/// name began with `P` - `PessoaDadosFiscaisAdicionais` among them - was
+/// reported as `kind: "Proc"`, and `callers` answered on the wrong object type
+/// (#500). Two-letter prefixes are unambiguous in GeneXus exports and are
+/// therefore checked first; a bare single-letter guess is no longer made,
+/// because `P` alone cannot distinguish a Procedure from a Transaction named
+/// after a person, and guessing wrong is worse than reporting `Unknown`.
+///
+/// Content detection remains authoritative for XML exports, where the element
+/// name says the real kind.
+fn kind_from_stem(file_stem: &str) -> EntityKind {
+    if file_stem.starts_with("UT_") {
+        return EntityKind::Test;
+    }
+    if file_stem.starts_with("Trn") {
+        return EntityKind::Transaction;
+    }
+    if file_stem.starts_with("WP") {
+        return EntityKind::WebPanel;
+    }
+    if file_stem.starts_with("SDP") {
+        return EntityKind::Panel;
+    }
+    if file_stem.starts_with("WW") {
+        return EntityKind::WorkWithPlus;
+    }
+    if file_stem.starts_with("Proc") {
+        return EntityKind::Procedure;
+    }
+    if file_stem.starts_with("DS") {
+        return EntityKind::DataSelector;
+    }
+    EntityKind::Unknown
+}
+
 fn detect_entity_kind(path: &Path, file_stem: &str, ext: &str) -> EntityKind {
     match ext.to_ascii_lowercase().as_str() {
         "prc" => EntityKind::Procedure,
@@ -387,28 +425,8 @@ fn detect_entity_kind(path: &Path, file_stem: &str, ext: &str) -> EntityKind {
                     }
                 }
             }
-            if file_stem.starts_with('P') {
-                EntityKind::Procedure
-            } else if file_stem.starts_with("Trn") || file_stem.starts_with('T') {
-                EntityKind::Transaction
-            } else if file_stem.starts_with("WP") || file_stem.starts_with('W') {
-                EntityKind::WebPanel
-            } else {
-                EntityKind::Procedure
-            }
+            kind_from_stem(file_stem)
         }
-        _ => {
-            if file_stem.starts_with('P') {
-                EntityKind::Procedure
-            } else if file_stem.starts_with("Trn") || file_stem.starts_with('T') {
-                EntityKind::Transaction
-            } else if file_stem.starts_with("WP") || file_stem.starts_with('W') {
-                EntityKind::WebPanel
-            } else if file_stem.starts_with("UT_") {
-                EntityKind::Test
-            } else {
-                EntityKind::Procedure
-            }
-        }
+        _ => kind_from_stem(file_stem),
     }
 }

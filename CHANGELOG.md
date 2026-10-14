@@ -19,6 +19,8 @@
 
 - CI validates PR updates once instead of duplicating branch-push runs, cancels superseded PR runs, and caches npm, NuGet, and toolchain-keyed gxwire build dependencies. The plugin scanner still runs on main pushes; all validation steps and required check names remain unchanged.
 
+- GxWire no longer infers an object kind from a single leading letter. A name-based guess could not tell a Procedure from a Transaction named after a person, so `PessoaDadosFiscaisAdicionais` was reported as `kind: "Proc"` and `callers` answered about the wrong object type; unambiguous two-letter prefixes are now checked first and an ambiguous name reports `Unknown` rather than guessing wrong ([#500](https://github.com/lennix1337/Genexus18MCP/issues/500)). Content detection remains authoritative for XML exports, where the element name states the real kind.
+
 ### Fixed
 
 - GxWire index files now carry an explicit format marker, so an index left behind by a different gxwire build is discarded rather than decoded as if it were ours (which could read arbitrary bytes as collection lengths and try to reserve gigabytes). An index that cannot be decoded - truncated, empty, or garbage - is now rebuilt from disk *and re-saved*; previously it failed to decode and every later call reparsed the whole Knowledge Base without ever refreshing the index.
@@ -64,6 +66,16 @@
   - **Pipe deadlock.** stdout was read to end before stderr was touched. A child that fills the stderr buffer blocks writing while the gateway blocks reading stdout, so both wait until the budget expires. gxwire is chatty on stderr, so this was the normal case. Both pipes are now drained concurrently.
 
   - **`action=index` always failed.** Index is the only action that parses the whole Knowledge Base and takes minutes, yet it shared the 30 s query budget. It now gets 900 s, and an expired budget returns a distinct `GxwireTimeout` that names the budget and points at `GXMCP_GXWIRE_TIMEOUT_SECONDS`, instead of a generic exception.
+
+- `genexus_wire callers`/`impact` now find the call forms that were invisible in the graph, and stop misreporting one of them ([#500](https://github.com/lennix1337/Genexus18MCP/issues/500)). Measured on a 15,170-file GeneXus 18 XML export before the fix: a Procedure invoked as a function had 36 textual occurrences resolving to a single caller, `.Popup(` returned nothing at all, and `&x = procName(...)` was recorded as an attribute read.
+
+  - Procedure-as-function calls (`procName(args)`) are now parsed. The rule is deliberately narrow: a bare `identifier(` is a call only when the identifier is not a control word or built-in, because matching everything would invent edges to phantom nodes for every built-in and inflate the blast radius of anything attached to them. A guard covers control words, casts and built-ins, and another confirms a genuine call nested inside a built-in's argument list is still found.
+
+  - `.Popup(` is recognized alongside `.Call(`; a Transaction opened in a popup used to answer `empty: true`, which is presented as a definitive empty rather than a miss.
+
+  - `&x = procName(...)` is a call, not an attribute read. It was classified `reads_att`, which made a Transaction look like an attribute consumer while the actual call edge went missing.
+
+  - Genuine attribute reads on the same line shape (`&Total = CustomerBalance`) are unaffected.
 
 ### Internal
 
