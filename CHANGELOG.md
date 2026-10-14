@@ -66,9 +66,9 @@
 
 - Updated tool profile counts across documentation (`docs/llm_cli_mcp_playbook.md` and `docs/environment_variables.md`) to match `ToolProfileFilter` allowlists and canonical `tool_definitions.json` (standard 20, core 15, authoring 35, devops 37, ui 23, db 19, all 60), included `standard` in the `GXMCP_PROFILE` enumeration, and introduced regression guard tests in `ToolProfileTests` to prevent doc/code drift ([#480](https://github.com/lennix1337/Genexus18MCP/issues/480)).
 
-- Salvamento isolado de Events: materializa a fonte antes da serialização nativa do snapshot para comparar Rules e demais partes pela mesma representação canônica, preservando a representação de restauração e a recusa de alterações reais. A prévia valida o snapshot usado pelo Save; o recibo distingue persistência transitória, transação confirmada e operação idempotente e informa o custo de inventário e Save.
+- Salvamento isolado de Events: materializa a fonte antes da serialização nativa do snapshot para comparar Rules e demais partes pela mesma representação canônica, preservando a representação de restauração e a recusa de alterações reais. A prévia valida o snapshot usado pelo Save; o recibo distingue persistência transitória, transação confirmada e operação idempotente e informa o custo de inventário e Save. ([#495](https://github.com/lennix1337/Genexus18MCP/issues/495)).
 
-- Eventos: `baseVersion` e `expectedVersion` atendem à mesma barreira de concorrência em patches; valores divergentes são recusados antes do despacho. A prévia informa a capacidade de persistência isolada e as recusas preservam os pins efetivos, a revisão do perfil e as evidências de rollback.
+- Eventos: `baseVersion` e `expectedVersion` atendem à mesma barreira de concorrência em patches; valores divergentes são recusados antes do despacho. A prévia informa a capacidade de persistência isolada e as recusas preservam os pins efetivos, a revisão do perfil e as evidências de rollback. ([#496](https://github.com/lennix1337/Genexus18MCP/issues/496)).
 
 - Salvamento isolado de Events: corrige a seleção da sobrecarga de comparação para preservar todas as partes irmãs, excluindo somente Events. Adiciona o conjunto coerente do SDK U16 `18.0.16.189595`, mantendo a recusa de builds misturados ou desconhecidos e a verificação transacional de Save, releitura e rollback.
 
