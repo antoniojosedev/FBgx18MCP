@@ -1161,6 +1161,38 @@ namespace GxMcp.Gateway
                         ["message"] = "No Knowledge Base path resolved or directory does not exist. Open a KB with genexus_kb or specify 'kb'/'dir'."
                     };
                 }
+
+                // A native Knowledge Base keeps its object sources in the KB
+                // database, not in files. Walking its folder would index
+                // generated output - gigabytes of it - and the resulting graph
+                // would be inferred from whatever text happened to be there,
+                // which reads exactly like a real graph and is not one (#499).
+                var nativeKb = NativeKnowledgeBaseEvidence.Describe(kbDir!);
+                if (nativeKb != null)
+                {
+                    return new JObject
+                    {
+                        ["status"] = "error",
+                        ["error"] = "GXWIRE_REQUIRES_TEXT_SOURCE_TREE",
+                        ["message"] = "genexus_wire reads GeneXus sources from files, but this is a native Knowledge Base: its object sources live in the KB database, not on disk. Indexing the folder would read generated output, not the Knowledge Base.",
+                        ["path"] = kbDir,
+                        ["evidence"] = new JArray(nativeKb),
+                        ["hint"] = "Point genexus_wire at a text source tree instead - a GeneXus XML/text export of the same Knowledge Base (the directory holding the .txt/.gxd/.xml/.trn/.wp object files). Read the sources through the SDK instead: genexus_read, genexus_query, genexus_search_source, genexus_analyze and genexus_inspect all work against this Knowledge Base as-is.",
+                        ["sdkAlternative"] = new JArray("genexus_read", "genexus_query", "genexus_search_source", "genexus_analyze", "genexus_inspect")
+                    };
+                }
+            }
+
+            // The index goes to the MCP cache directory, never into the analysed
+            // folder. The published contract declares genexus_wire read-only, and
+            // with a native KB that folder is the Knowledge Base itself (#499).
+            string? gxwireCachePath = null;
+            try { gxwireCachePath = GxwireCacheLocation.Resolve(kbDir); }
+            catch (Exception ex)
+            {
+                // Not fatal: gxwire still works, it just falls back to its own
+                // in-tree default and stops being read-only. Reported, not hidden.
+                Console.Error.WriteLine("[genexus_wire] could not resolve a cache path outside the analysed directory: " + ex.Message);
             }
 
             var argsBuilder = new StringBuilder();
@@ -1263,6 +1295,14 @@ namespace GxMcp.Gateway
                         ["error"] = $"Unknown action '{action}'.",
                         ["hint"] = "Supported: pack_task, status, for, callers, impact, path, slice, safe_delete, index, doctor."
                     };
+            }
+
+            // Appended once, after every action has contributed its own flags, so
+            // no action can be added later that forgets to keep the analysed
+            // directory read-only.
+            if (!string.IsNullOrWhiteSpace(gxwireCachePath))
+            {
+                argsBuilder.Append($" --cache-path \"{gxwireCachePath}\"");
             }
 
             try

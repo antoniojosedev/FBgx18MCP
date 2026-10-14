@@ -52,6 +52,22 @@ pub fn get_cache_path(root: &Path) -> PathBuf {
     root.join(CACHE_FILE_NAME)
 }
 
+/// Where the index actually lives.
+///
+/// Defaults to a dotfile inside `root`, which is what gxwire has always done and
+/// what its own tests assume. `--cache-path` moves it out, because the contract
+/// published for `genexus_wire` declares it read-only (`readOnlyHint: true`,
+/// "Mutating actions: none") while a real invocation wrote
+/// `.gxwire_cache.bin` into the directory it was asked to analyse. With a native
+/// Knowledge Base that directory is the KB itself, so the write lands a dotfile
+/// inside a GeneXus KB the tool was supposed to be reading (#499).
+pub fn cache_path_for(root: &Path, override_path: Option<&Path>) -> PathBuf {
+    match override_path {
+        Some(path) => path.to_path_buf(),
+        None => get_cache_path(root),
+    }
+}
+
 /// (mtime in milliseconds, size in bytes). Size is part of the signature so a
 /// same-millisecond rewrite that changes length cannot slip through as fresh.
 fn stat_signature(path: &Path) -> (u64, u64) {
@@ -310,13 +326,33 @@ struct BundleRef<'a> {
 /// Persisting a graph on its own is deliberately not offered: the next load
 /// would have no reuse state and would reparse the whole Knowledge Base.
 pub fn save_index(graph: &CsrGraph, parses: &ParseMap, root: &Path) -> Result<(), Box<dyn Error>> {
+    save_index_to(graph, parses, &get_cache_path(root))
+}
+
+/// Persists the index to an explicit file.
+///
+/// `save_index` derives the file from the analysed root, which is what the
+/// in-tree tests use. A caller that must not write into the analysed directory
+/// resolves the path with `cache_path_for` and calls this (#499).
+pub fn save_index_to(
+    graph: &CsrGraph,
+    parses: &ParseMap,
+    cache_path: &Path,
+) -> Result<(), Box<dyn Error>> {
     let view = BundleRef {
         version: CACHE_FORMAT_VERSION,
         graph,
         parses,
     };
     let encoded = bincode::serialize(&view)?;
-    let mut file = File::create(get_cache_path(root))?;
+    if let Some(parent) = cache_path.parent() {
+        // The cache may be relocated outside the analysed tree, so its directory
+        // is not guaranteed to exist the way the analysed root's is.
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut file = File::create(cache_path)?;
     file.write_all(&encoded)?;
     Ok(())
 }
@@ -365,16 +401,23 @@ pub fn build_graph_from_directory(dir: &Path) -> Result<CsrGraph, Box<dyn Error>
 /// Returns the graph for `root`, reindexing incrementally when the index is
 /// stale and reparsing from scratch when it is missing or unreadable.
 pub fn load_cache(root: &Path) -> Result<CsrGraph, Box<dyn Error>> {
-    let cache_path = get_cache_path(root);
+    load_cache_from(&get_cache_path(root), root)
+}
 
-    if let Some(bundle) = read_bundle(&cache_path) {
+/// Returns the graph for `root`, reading and writing the index at `cache_path`.
+///
+/// Split from `load_cache` so the index location can be decided by the caller.
+/// Keeping the analysed root and the index file separate is the whole point: the
+/// root decides what is parsed, the file decides where bytes land (#499).
+pub fn load_cache_from(cache_path: &Path, root: &Path) -> Result<CsrGraph, Box<dyn Error>> {
+    if let Some(bundle) = read_bundle(cache_path) {
         let CachedBundle { graph, parses, .. } = bundle;
         match reindex(root, parses)? {
             // Nothing on disk moved: the cached graph is already the truth.
             None => Ok(graph),
             Some((graph, parses)) => {
                 // A failed write costs speed on the next run, not correctness.
-                let _ = save_index(&graph, &parses, root);
+                let _ = save_index_to(&graph, &parses, cache_path);
                 Ok(graph)
             }
         }
@@ -382,7 +425,7 @@ pub fn load_cache(root: &Path) -> Result<CsrGraph, Box<dyn Error>> {
         // No usable index: parse everything. Saving is best effort so a
         // read-only Knowledge Base still answers queries.
         let (graph, parses) = build_index(root)?;
-        let _ = save_index(&graph, &parses, root);
+        let _ = save_index_to(&graph, &parses, cache_path);
         Ok(graph)
     }
 }
