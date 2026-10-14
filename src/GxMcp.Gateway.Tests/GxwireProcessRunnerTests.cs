@@ -75,7 +75,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void ChildThatFloodsStderr_DoesNotDeadlock()
+        public async Task ChildThatFloodsStderr_DoesNotDeadlock()
         {
             // The original code awaited stdout to end before touching stderr. A
             // child that fills the stderr pipe buffer blocks writing, while the
@@ -87,7 +87,7 @@ namespace GxMcp.Gateway.Tests
                 "-c",
                 "import sys;sys.stderr.write('E'*400000);sys.stderr.flush();print('done')");
 
-            var run = GxwireProcessRunner.RunAsync(proc, 30).GetAwaiter().GetResult();
+            var run = await GxwireProcessRunner.RunAsync(proc, 30);
 
             Assert.False(run.TimedOut, "a chatty child must not trip the budget");
             Assert.Equal(0, proc.ExitCode);
@@ -96,12 +96,12 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void TimeoutKillsTheChild_InsteadOfLeavingItOrphaned()
+        public async Task TimeoutKillsTheChild_InsteadOfLeavingItOrphaned()
         {
             using var proc = StartChild("-c", "import time;time.sleep(120)");
             Assert.False(proc.HasExited);
 
-            var run = GxwireProcessRunner.RunAsync(proc, 1).GetAwaiter().GetResult();
+            var run = await GxwireProcessRunner.RunAsync(proc, 1);
 
             Assert.True(run.TimedOut);
             Assert.Equal(1, run.TimeoutSeconds);
@@ -114,11 +114,11 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void FastChild_ReturnsOutputAndNoTimeout()
+        public async Task FastChild_ReturnsOutputAndNoTimeout()
         {
             using var proc = StartChild("-c", "print('hello');import sys;sys.stderr.write('warn')");
 
-            var run = GxwireProcessRunner.RunAsync(proc, 30).GetAwaiter().GetResult();
+            var run = await GxwireProcessRunner.RunAsync(proc, 30);
 
             Assert.False(run.TimedOut);
             Assert.Equal("hello", run.StandardOutput.Trim());

@@ -105,7 +105,7 @@ namespace GxMcp.Gateway
         /// a process that already exited, or one the caller cannot kill, must not
         /// turn a timeout into an unhandled exception.
         /// </summary>
-        internal static void TryKillProcessTree(Process proc)
+        internal static void TryKillProcessTree(Process? proc)
         {
             if (proc == null) return;
             try
