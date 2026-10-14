@@ -5,6 +5,10 @@
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
+### Added
+
+- `GXMCP_GXWIRE_TIMEOUT_SECONDS` sets the wall-clock budget for one `gxwire.exe` invocation, overriding the per-action defaults.
+
 ### Changed
 
 - **GxWire reindexes incrementally instead of reparsing the whole Knowledge Base on every edit.** `genexus_wire` is mandatory architectural discovery, and an agent session edits one object at a time; until now any change to any file made the next `genexus_wire` call re-read and re-lex every source in the Knowledge Base. The index now stores each file's parse output alongside the graph and reuses it while that file's `(mtime, size)` is unchanged, so only the objects that actually moved are reparsed. Measured in-process on a 4,000-object Knowledge Base (median of 5, release profile): one-object edit **769 ms → 201 ms (3.8x)**, object added **797 ms → 199 ms**, object deleted **759 ms → 201 ms**, unchanged load **143 ms → 89 ms**, index write **95 ms → 18 ms**. Through the real `gxwire.exe` CLI on the same Knowledge Base a one-object edit went from 440 ms to 156 ms (2.8x) with identical caller lists. Costs: the index file grows from 5.0 MB to 9.3 MB (the graph is now stored together with the per-file parse entries it was built from), and a full cold parse is about 15% slower because it materializes every file's parse result before assembling the graph. Through the CLI on a freshly copied Knowledge Base the cold build is indistinguishable (10.72 s vs 10.76 s).
@@ -52,6 +56,14 @@
 - Nexus IDE packaging no longer breaks on dependency bumps that CI could not see: `@types/vscode` was raised to `^1.140.0` while `engines.vscode` stayed at `^1.93.0`, and `@vscode/vsce` only rejects that combination at package time, so `vsce package` failed while compile, lint and tests stayed green ([#482](https://github.com/lennix1337/Genexus18MCP/issues/482)). `@types/vscode` is pinned to `~1.93.0` - the extension uses no VS Code API newer than 1.93, verified by compiling against the older types (a post-1.93 API such as `ChatResponseThinkingPart` correctly fails with TS2339) - and CI now runs `npm run package` and asserts exactly one `.vsix` matching `package.json`, so this class of breakage fails the build instead of the release.
 
 - `genexus_workwith add_action` no longer claims a preservation it does not perform. The `defaultNormalization` disclosure in both the dryRun plan and the write receipt asserted "functional behavior and pattern bindings are preserved" after the native SDK materialized `page="<default>"` into a concrete value - but GeneXus then treats that attribute as an explicit instance-level override, so it stops following a later change to the pattern template default. The instance does stay functional and its identity, tabs and actions are intact; what it loses is the dynamic binding, and an agent reading the old text reasoned about future default changes from a false premise ([#477](https://github.com/lennix1337/Genexus18MCP/issues/477)). The disclosure is now a named constant shared by both routes, `docs/workwith-default-materialization.md` states the override consequence instead of answering "Yes", and its acceptance checklist records the one case that was answered by inference rather than measurement (a later template default change in an isolated fixture, which needs a live Knowledge Base with an authored pattern).
+
+- `genexus_wire` no longer leaves an ownerless `gxwire.exe` behind and no longer deadlocks on a chatty child. Three defects in the invocation path, reported against 3.14.0 on a 15,170-file export ([#498](https://github.com/lennix1337/Genexus18MCP/issues/498)):
+
+  - **Orphaned process.** The 30 s budget expired, the gateway returned `GxwireException`, and the child kept indexing for roughly two more minutes with nobody holding it. The process tree is now killed before the timeout is reported, and the caller's `finally` kills it again for cancellations that arrive from outside.
+
+  - **Pipe deadlock.** stdout was read to end before stderr was touched. A child that fills the stderr buffer blocks writing while the gateway blocks reading stdout, so both wait until the budget expires. gxwire is chatty on stderr, so this was the normal case. Both pipes are now drained concurrently.
+
+  - **`action=index` always failed.** Index is the only action that parses the whole Knowledge Base and takes minutes, yet it shared the 30 s query budget. It now gets 900 s, and an expired budget returns a distinct `GxwireTimeout` that names the budget and points at `GXMCP_GXWIRE_TIMEOUT_SECONDS`, instead of a generic exception.
 
 ### Internal
 
