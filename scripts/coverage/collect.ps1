@@ -1,6 +1,17 @@
 param(
     [string]$OutputRoot = "",
-    [string]$GxPath = ""
+    [string]$GxPath = "",
+    # Which test project to run. Empty runs both, in sequence, as this script has
+    # always done.
+    #
+    # CI passes one label per matrix leg so the two projects build and run on
+    # separate runners at the same time. They were already fully isolated - each
+    # leg writes to its own `-p:BaseOutputPath` (`.test-bin/<label>`), its own
+    # runsettings and its own cobertura file - so nothing was preventing it; only
+    # the sequential loop was. The threshold assertion still runs once, in the
+    # `test` gate job, after both legs have uploaded their reports.
+    [ValidateSet('', 'gateway', 'worker')]
+    [string]$Label = ""
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -112,32 +123,52 @@ function Get-BaseOutputPath {
 
 $resolvedGxPath = Resolve-GxSdkPath
 
-Invoke-CoverageTest `
-    -ProjectPath (Join-Path $repoRoot "src\GxMcp.Gateway.Tests\GxMcp.Gateway.Tests.csproj") `
-    -Label "gateway" `
-    -BaseOutputPath (Get-BaseOutputPath -Label "gateway") `
-    -SettingsPath (Join-Path $PSScriptRoot "gateway.runsettings")
+# With -Label, only that project runs and its absence is not tolerated: the CI
+# matrix leg owns exactly one label, so a silent skip there would turn into a
+# missing coverage report and a failed threshold rather than a green run.
+$runGateway = [string]::IsNullOrWhiteSpace($Label) -or $Label -eq 'gateway'
+$runWorker = [string]::IsNullOrWhiteSpace($Label) -or $Label -eq 'worker'
 
-$previousGxPath = $env:GX_PATH
-if ($resolvedGxPath) {
-    Write-Host "Using GeneXus SDK from '$resolvedGxPath'."
-    $env:GX_PATH = $resolvedGxPath
-    try {
-        Invoke-CoverageTest `
-            -ProjectPath (Join-Path $repoRoot "src\GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj") `
-            -Label "worker" `
-            -BaseOutputPath (Get-BaseOutputPath -Label "worker") `
-            -SettingsPath (Join-Path $PSScriptRoot "worker.runsettings") `
-            -BuildProperties @("-p:Platform=x86", "-p:GX_PATH=$resolvedGxPath")
-    } catch {
-        New-Item -ItemType File -Path (Join-Path $OutputRoot "worker.failed.txt") -Force | Out-Null
-        Write-Host $_.Exception.Message -ForegroundColor Yellow
-    } finally {
-        $env:GX_PATH = $previousGxPath
+if ($runGateway) {
+    Invoke-CoverageTest `
+        -ProjectPath (Join-Path $repoRoot "src\GxMcp.Gateway.Tests\GxMcp.Gateway.Tests.csproj") `
+        -Label "gateway" `
+        -BaseOutputPath (Get-BaseOutputPath -Label "gateway") `
+        -SettingsPath (Join-Path $PSScriptRoot "gateway.runsettings")
+}
+
+if ($runWorker) {
+    $previousGxPath = $env:GX_PATH
+    if ($resolvedGxPath) {
+        Write-Host "Using GeneXus SDK from '$resolvedGxPath'."
+        $env:GX_PATH = $resolvedGxPath
+        try {
+            Invoke-CoverageTest `
+                -ProjectPath (Join-Path $repoRoot "src\GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj") `
+                -Label "worker" `
+                -BaseOutputPath (Get-BaseOutputPath -Label "worker") `
+                -SettingsPath (Join-Path $PSScriptRoot "worker.runsettings") `
+                -BuildProperties @("-p:Platform=x86", "-p:GX_PATH=$resolvedGxPath")
+        } catch {
+            if ([string]::IsNullOrWhiteSpace($Label)) {
+                # Sequential mode has always tolerated a Worker failure so the
+                # Gateway report still reaches the artifact upload.
+                New-Item -ItemType File -Path (Join-Path $OutputRoot "worker.failed.txt") -Force | Out-Null
+            } else {
+                throw
+            }
+            Write-Host $_.Exception.Message -ForegroundColor Yellow
+        } finally {
+            $env:GX_PATH = $previousGxPath
+        }
+    } else {
+        if ([string]::IsNullOrWhiteSpace($Label)) {
+            New-Item -ItemType File -Path (Join-Path $OutputRoot "worker.skipped.txt") -Force | Out-Null
+        } else {
+            throw "GeneXus SDK for primary major $(Get-GxPrimaryMajor -Catalog $gxCatalog) not found, and the worker coverage leg cannot be skipped."
+        }
+        Write-Host "GeneXus SDK for primary major $(Get-GxPrimaryMajor -Catalog $gxCatalog) not found. Set GX_PATH or pass -GxPath to include Worker.Tests."
     }
-} else {
-    New-Item -ItemType File -Path (Join-Path $OutputRoot "worker.skipped.txt") -Force | Out-Null
-    Write-Host "GeneXus SDK for primary major $(Get-GxPrimaryMajor -Catalog $gxCatalog) not found. Set GX_PATH or pass -GxPath to include Worker.Tests."
 }
 
 Get-ChildItem -Path $OutputRoot -Recurse | ForEach-Object {
