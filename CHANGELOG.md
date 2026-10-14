@@ -5,31 +5,53 @@
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
-### Added
-
 ### Changed
+
+- **GxWire reindexes incrementally instead of reparsing the whole Knowledge Base on every edit.** `genexus_wire` is mandatory architectural discovery, and an agent session edits one object at a time; until now any change to any file made the next `genexus_wire` call re-read and re-lex every source in the Knowledge Base. The index now stores each file's parse output alongside the graph and reuses it while that file's `(mtime, size)` is unchanged, so only the objects that actually moved are reparsed. Measured in-process on a 4,000-object Knowledge Base (median of 5, release profile): one-object edit **769 ms → 201 ms (3.8x)**, object added **797 ms → 199 ms**, object deleted **759 ms → 201 ms**, unchanged load **143 ms → 89 ms**, index write **95 ms → 18 ms**. Through the real `gxwire.exe` CLI on the same Knowledge Base a one-object edit went from 440 ms to 156 ms (2.8x) with identical caller lists. Costs: the index file grows from 5.0 MB to 9.3 MB (the graph is now stored together with the per-file parse entries it was built from), and a full cold parse is about 15% slower because it materializes every file's parse result before assembling the graph. Through the CLI on a freshly copied Knowledge Base the cold build is indistinguishable (10.72 s vs 10.76 s).
+
+- GxWire index detection now keys each file on `(mtime, size)` rather than `mtime` alone, so a same-millisecond rewrite that changes length cannot pass as fresh, and the freshness probe is a single directory walk with one stat per file instead of two walks.
+
+- GxWire directory indexing reads file type from the walk instead of calling `path.is_file()`, removing one stat syscall per Knowledge Base file on every path.
 
 - CI validates PR updates once instead of duplicating branch-push runs, cancels superseded PR runs, and caches npm, NuGet, and toolchain-keyed gxwire build dependencies. The plugin scanner still runs on main pushes; all validation steps and required check names remain unchanged.
 
 ### Fixed
 
-- Salvamento isolado de Events: materializa a fonte antes da serialização nativa do snapshot para comparar Rules e demais partes pela mesma representação canônica, preservando a representação de restauração e a recusa de alterações reais. A prévia valida o snapshot usado pelo Save; o recibo distingue persistência transitória, transação confirmada e operação idempotente e informa o custo de inventário e Save.
-- Eventos: `baseVersion` e `expectedVersion` atendem à mesma barreira de concorrência em patches; valores divergentes são recusados antes do despacho. A prévia informa a capacidade de persistência isolada e as recusas preservam os pins efetivos, a revisão do perfil e as evidências de rollback.
-- Salvamento isolado de Events: corrige a seleção da sobrecarga de comparação para preservar todas as partes irmãs, excluindo somente Events. Adiciona o conjunto coerente do SDK U16 `18.0.16.189595`, mantendo a recusa de builds misturados ou desconhecidos e a verificação transacional de Save, releitura e rollback.
+- GxWire index files now carry an explicit format marker, so an index left behind by a different gxwire build is discarded rather than decoded as if it were ours (which could read arbitrary bytes as collection lengths and try to reserve gigabytes). An index that cannot be decoded - truncated, empty, or garbage - is now rebuilt from disk *and re-saved*; previously it failed to decode and every later call reparsed the whole Knowledge Base without ever refreshing the index.
+
 - **Build Watchdog and Termination Diagnostics**: Clarified failure origin (`failureOrigin: "watchdog"` / `"watchdog_with_errors"` / `"errors"` / `"process_exit"`), made `ExitCode` nullable (`null` instead of misleading `0` when child process exit code was not obtained), reported child process state (`childProcessState: "terminated" | "exited" | "running" | "unknown" | "none"`), tracked confirmed stages (`confirmedStages`), and ensured build logs are flushed immediately to disk (`fullLogPath`) on watchdog termination so consumers can reconcile results without re-running Build All ([#475](https://github.com/lennix1337/Genexus18MCP/issues/475)).
+
 - Reconciled `genexus_workwith` contract and verification: removed inaccurate optimistic concurrency claim from schema and documented target-scoped locking; made `dryRun` plan declare performed validations along with explicit limits on procedure parameter arity/types and expression syntax/semantics (with advisory signature arity inspection when available); and made post-save verification compare all promised fields (name, caption, procedure, condition, ordered parameters) against reread instance state rather than echoing request parameters ([#476](https://github.com/lennix1337/Genexus18MCP/issues/476)).
+
 - **WorkWith pattern default materialization investigation and receipt contract** ([#477](https://github.com/lennix1337/Genexus18MCP/issues/477)):
+
   - Investigated and documented GeneXus Pattern SDK default materialization (`page="<default>"` → `10` and default action expansion) occurring during standard WorkWith instance serialization (`docs/workwith-default-materialization.md`).
+
   - `WorkWithSdkAdapter.AddAction` now exposes `route` (`native-sdk` | `xml-fallback`), `verificationScope`, and `defaultNormalization` in both `dryRun` plan and write receipts.
+
   - Hardened post-write verification to fail closed if neighbor tabs are truncated after save (`verifyTabs.Count >= tabs.Count`).
+
   - `TryAddActionToXml` now outputs with `SaveOptions.DisableFormatting`, preserving unmutated elements, whitespace, and literal `<default>` attributes without reformatting.
+
   - Added unit test fixtures in `WorkWithServiceTests` verifying defaults preservation on Selection and neighbor tabs across XML fallback authoring.
 
 - Qualified `routeUnsupported` diagnostic finding remediation and `PatternRouteUnsupported` rejection hint to distinguish reapply refusal from property editing: reapply remains unsupported on the generic route, existing property edits are permitted but whether derived objects update is not measured by the edit call and recorded results vary by environment, and callers are advised to apply the pattern in the GeneXus IDE if derived objects do not follow ([#478](https://github.com/lennix1337/Genexus18MCP/issues/478)).
+
 - Preserved sanitized diagnostic records and failing stage attribution (`resolve_object`, `refresh_object`, `access_part`, `query_variables`, `extract_content`) across the object read path instead of swallowing exceptions or degrading to generic `LegacyWorkerError`, exposing ambient correlation ID, UTC timestamps, execution duration, bounded stack traces, and non-blocking KB state snapshots without leaking sensitive credentials or variable values ([#479](https://github.com/lennix1337/Genexus18MCP/issues/479)).
+
 - Updated tool profile counts across documentation (`docs/llm_cli_mcp_playbook.md` and `docs/environment_variables.md`) to match `ToolProfileFilter` allowlists and canonical `tool_definitions.json` (standard 20, core 15, authoring 35, devops 37, ui 23, db 19, all 60), included `standard` in the `GXMCP_PROFILE` enumeration, and introduced regression guard tests in `ToolProfileTests` to prevent doc/code drift ([#480](https://github.com/lennix1337/Genexus18MCP/issues/480)).
 
+- Salvamento isolado de Events: materializa a fonte antes da serialização nativa do snapshot para comparar Rules e demais partes pela mesma representação canônica, preservando a representação de restauração e a recusa de alterações reais. A prévia valida o snapshot usado pelo Save; o recibo distingue persistência transitória, transação confirmada e operação idempotente e informa o custo de inventário e Save.
+
+- Eventos: `baseVersion` e `expectedVersion` atendem à mesma barreira de concorrência em patches; valores divergentes são recusados antes do despacho. A prévia informa a capacidade de persistência isolada e as recusas preservam os pins efetivos, a revisão do perfil e as evidências de rollback.
+
+- Salvamento isolado de Events: corrige a seleção da sobrecarga de comparação para preservar todas as partes irmãs, excluindo somente Events. Adiciona o conjunto coerente do SDK U16 `18.0.16.189595`, mantendo a recusa de builds misturados ou desconhecidos e a verificação transacional de Save, releitura e rollback.
+
 ### Internal
+
+- GxWire gained `build_index`/`save_index`, which carry the per-file parse entries, and `save_cache` (graph without reuse state) was removed: persisting a graph alone guarantees the next load reparses everything, so the API no longer offers a footgun. `genexus_wire --index` records the parse entries, so the first incremental reindex after a full build is already cheap.
+
+- Added `incremental_reindex_bench.rs` (end-to-end reindex timings, median of 5; sized down in debug builds so CI does not pay for numbers it cannot read) and `incremental_reindex_tests.rs`, whose guards compare an incrementally maintained graph against a cold rebuild of a pristine copy across edit, add, delete, rename, same-size rewrite, unreadable index, and empty Knowledge Base, and which assert that an unchanged Knowledge Base does not rewrite its index (the only externally visible symptom of the write and read layouts drifting apart).
 
 ## v3.14.0 - 2026-10-11
 

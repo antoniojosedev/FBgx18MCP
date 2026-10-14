@@ -1,3 +1,3 @@
 pub mod lexer;
 
-pub use lexer::parse_genexus_source;
+pub use lexer::{parse_genexus_source, ParseResult};
