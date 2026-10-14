@@ -1987,6 +1987,9 @@ namespace GxMcp.Gateway
                 "readCode", "readCompleted", "readError", "sdkSaveCompleted", "persistedStateKnown",
                 "implicitLifecycleActions", "mutation", "partialPersistenceDetected",
                 "requireObjectSave", "objectSaved", "partPersisted", "saveContract", "metadataStampPersisted",
+                "requiredPins", "effectivePins", "profileRevision", "profileRevisionSource", "phase", "persistabilityVerified",
+                "isolation", "writeAttempted", "verificationCompleted", "persistenceUncertain",
+                "transactionRolledBack", "rollbackVerified", "otherPartsIntact", "otherObjectMetadataIntact",
                 // Patch NoMatch diagnostics are nested in the worker's canonical
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
