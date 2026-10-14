@@ -49,6 +49,8 @@
 
 - `genexus_search_source` no longer drops distinct lines that happen to have byte-identical text in the same part of the same object: the dedup key read `hit["line"]`, but source hits publish `lineNumber`, so the position component was always empty and every repeated line collapsed into a single hit while the envelope still declared `partial: false` and `truncated: false`, making occurrence counts across an edit silently wrong ([#497](https://github.com/lennix1337/Genexus18MCP/issues/497)). Key construction is now a single `HitDedupKey` helper, which also removes the duplicated O(n²) key rebuild.
 
+- Nexus IDE packaging no longer breaks on dependency bumps that CI could not see: `@types/vscode` was raised to `^1.140.0` while `engines.vscode` stayed at `^1.93.0`, and `@vscode/vsce` only rejects that combination at package time, so `vsce package` failed while compile, lint and tests stayed green ([#482](https://github.com/lennix1337/Genexus18MCP/issues/482)). `@types/vscode` is pinned to `~1.93.0` - the extension uses no VS Code API newer than 1.93, verified by compiling against the older types (a post-1.93 API such as `ChatResponseThinkingPart` correctly fails with TS2339) - and CI now runs `npm run package` and asserts exactly one `.vsix` matching `package.json`, so this class of breakage fails the build instead of the release.
+
 ### Internal
 
 - GxWire gained `build_index`/`save_index`, which carry the per-file parse entries, and `save_cache` (graph without reuse state) was removed: persisting a graph alone guarantees the next load reparses everything, so the API no longer offers a footgun. `genexus_wire --index` records the parse entries, so the first incremental reindex after a full build is already cheap.
