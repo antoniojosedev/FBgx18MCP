@@ -107,6 +107,8 @@ namespace GxMcp.Gateway
             };
             info.EnvironmentVariables["GX_PROGRAM_DIR"] = installationPath ?? string.Empty;
             info.EnvironmentVariables["GX_KB_PATH"] = kb.Path ?? string.Empty;
+            info.EnvironmentVariables["GXMCP_KB_ID"] = kb.KbId ?? string.Empty;
+            info.EnvironmentVariables["GXMCP_KB_GENERATION"] = kb.ContextGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture);
             info.EnvironmentVariables["GXMCP_DRIVER"] = driver ?? string.Empty;
             info.EnvironmentVariables["GXMCP_TARGET_MAJOR"] = major ?? string.Empty;
             info.EnvironmentVariables["GXMCP_OPERATIONAL_STATE_KEY"] = identity.Key;
@@ -114,7 +116,7 @@ namespace GxMcp.Gateway
             // StateScope.JobsPath during a soft reload.
             var stateScope = StateScope.Create(id: StateScope.ProcessScopeId);
             info.EnvironmentVariables["GXMCP_JOBS_DIR"] = Path.GetDirectoryName(
-                stateScope.JobsPath(kb.KbId, kb.ContextGeneration))!;
+                stateScope.JobsPath(kb.KbId ?? kb.Alias, kb.ContextGeneration))!;
             if (!string.IsNullOrWhiteSpace(Configuration.CurrentConfigPath))
                 info.EnvironmentVariables["GXMCP_PROFILE_CONFIG_PATH"] = Configuration.CurrentConfigPath;
             if (!string.IsNullOrWhiteSpace(legacyProvider))

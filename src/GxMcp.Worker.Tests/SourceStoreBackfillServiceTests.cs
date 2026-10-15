@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Services;
 using Xunit;
@@ -500,6 +501,145 @@ namespace GxMcp.Worker.Tests
             finally
             {
                 try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void ConfirmedDeletedObjectAdvancesCursorAndRemovesFromStore()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-backfill-deleted-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var entry1 = Entry("00000000-0000-0000-0000-000000000091", 5);
+                var entry2 = Entry("00000000-0000-0000-0000-000000000092", 1);
+
+                // Pre-populate entry1 in store to prove RemoveObject cleans it up
+                store.Put(entry1.Guid, "Source", "old source", entry1.LastUpdate, "v0");
+                Assert.True(store.StoredRecordCount > 0);
+
+                var service = new SourceStoreBackfillService(store);
+                service.Start(
+                    () => new[] { entry1, entry2 },
+                    e =>
+                    {
+                        if (e.Guid == entry1.Guid)
+                        {
+                            return new[] { new SourceStoreBackfillPart { IsDeleted = true } };
+                        }
+                        return new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "fresh source" } };
+                    },
+                    maxObjectsPerSlice: 10,
+                    sliceBudgetMs: 1000,
+                    schedule: false,
+                    requiredPartProvider: e => new[] { "Source" });
+
+                bool sliceSuccess = service.RunOneSliceForTest(10, 1000);
+                Assert.True(sliceSuccess);
+
+                var state = service.GetState();
+                Assert.Equal("complete", state.State);
+                Assert.Equal(2, state.CursorIndex);
+                Assert.Equal(2, state.ProcessedObjects);
+                Assert.Equal(1, state.StoredObjects);
+                Assert.Equal(1, state.RemovedObjects);
+                Assert.True(string.IsNullOrEmpty(state.LastError));
+
+                // Verify entry1 was cleaned up from the store
+                Assert.False(store.RecordExistsForTest(entry1.Guid + ":Source"));
+                // Verify entry2 is stored and fresh
+                Assert.True(store.IsStoredAndFresh(entry2, new List<string> { "Source" }));
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void TriggerStateReflectsWaitingForTriggerWhenOff()
+        {
+            var state = new SourceStoreBackfillState { State = "off" };
+            var json = state.ToJson();
+            Assert.Equal("off", json["state"]?.ToString());
+            Assert.Equal("waitingForTrigger", json["triggerState"]?.ToString());
+
+            state.TriggerState = "running";
+            Assert.Equal("running", state.ToJson()["triggerState"]?.ToString());
+        }
+
+        [Fact]
+        public void DurableSourceStoreRoot_IndependentOfGatewayProcessScopeId()
+        {
+            string originalScope = Environment.GetEnvironmentVariable("GXMCP_STATE_SCOPE_ID");
+            string originalKey = Environment.GetEnvironmentVariable("GXMCP_OPERATIONAL_STATE_KEY");
+            string originalKbId = Environment.GetEnvironmentVariable("GXMCP_KB_ID");
+            string originalKbPath = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            string originalGen = Environment.GetEnvironmentVariable("GXMCP_KB_GENERATION");
+
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_KB_ID", "kb-alpha");
+                Environment.SetEnvironmentVariable("GX_KB_PATH", @"C:\TestKBs\Alpha");
+                Environment.SetEnvironmentVariable("GXMCP_KB_GENERATION", "1");
+
+                // Process 1 scope
+                Environment.SetEnvironmentVariable("GXMCP_STATE_SCOPE_ID", Guid.NewGuid().ToString("N"));
+                Environment.SetEnvironmentVariable("GXMCP_OPERATIONAL_STATE_KEY", "proc-1-token");
+                string root1 = RuntimePaths.DurableSourceStoreRoot;
+
+                // Process 2 scope (simulating gateway restart with a different StateScopeId)
+                Environment.SetEnvironmentVariable("GXMCP_STATE_SCOPE_ID", Guid.NewGuid().ToString("N"));
+                Environment.SetEnvironmentVariable("GXMCP_OPERATIONAL_STATE_KEY", "proc-2-token");
+                string root2 = RuntimePaths.DurableSourceStoreRoot;
+
+                Assert.Equal(root1, root2);
+
+                // Now bump generation: durable root MUST change
+                Environment.SetEnvironmentVariable("GXMCP_KB_GENERATION", "2");
+                string root3 = RuntimePaths.DurableSourceStoreRoot;
+                Assert.NotEqual(root1, root3);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_STATE_SCOPE_ID", originalScope);
+                Environment.SetEnvironmentVariable("GXMCP_OPERATIONAL_STATE_KEY", originalKey);
+                Environment.SetEnvironmentVariable("GXMCP_KB_ID", originalKbId);
+                Environment.SetEnvironmentVariable("GX_KB_PATH", originalKbPath);
+                Environment.SetEnvironmentVariable("GXMCP_KB_GENERATION", originalGen);
+            }
+        }
+
+        [Fact]
+        public void TryCleanupOrphanedStores_RemovesExpiredProcessScopedStores()
+        {
+            string tempBase = Path.Combine(Path.GetTempPath(), "gxmcp-test-cleanup-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempBase);
+            try
+            {
+                string stateDir = Path.Combine(tempBase, "state");
+                string currentStore = Path.Combine(stateDir, "current-hash", "source-store");
+                string oldStore = Path.Combine(stateDir, "old-hash", "source-store");
+
+                Directory.CreateDirectory(currentStore);
+                Directory.CreateDirectory(oldStore);
+
+                File.WriteAllText(Path.Combine(currentStore, "catalog.json.gz"), "current");
+                File.WriteAllText(Path.Combine(oldStore, "catalog.json.gz"), "old");
+
+                // Set old store last write time to 2 hours ago
+                Directory.SetLastWriteTimeUtc(oldStore, DateTime.UtcNow.AddHours(-2));
+
+                int cleaned = SourceStoreService.TryCleanupOrphanedStores(currentStore, TimeSpan.FromHours(1));
+                Assert.True(cleaned >= 1);
+                Assert.True(Directory.Exists(currentStore));
+                Assert.False(Directory.Exists(oldStore));
+            }
+            finally
+            {
+                try { Directory.Delete(tempBase, true); } catch { }
             }
         }
 

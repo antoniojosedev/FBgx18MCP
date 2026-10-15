@@ -6,11 +6,9 @@ This is the P0 response-contract audit for the published MCP surface.
 
 - Source of truth: `src/GxMcp.Gateway/tool_definitions.json`.
 - Dispatch path: Gateway router → Worker `CommandDispatcher` → service.
-- The schema currently publishes 50 tools, 31 action-bearing tools, and 215 action enum values.
-- Worker source scan covers 204 service files.
-- Scan result: 357 `McpResponse.Ok` calls, 860 `McpResponse.Err` calls, 4 `McpResponse.Partial` calls, and 1 `McpResponse.Accepted` call.
-- Scan result: no `McpResponse.Success`, `McpResponse.Error`, or legacy Pascal-case top-level status literals in Worker services.
-- The scan is a guard against drift, not proof that every computed runtime branch has been exercised. Runtime coverage remains the responsibility of `EnvelopeConformance` and live-KB tests.
+- Tool definitions and action inventory counts are validated continuously by `python scripts/validate-tool-contracts.py` against `src/GxMcp.Gateway/tool_definitions.json`.
+- Worker service responses use canonical helpers (`McpResponse.Ok`, `Err`, `Partial`, `Accepted`); legacy Pascal-case status literals and deprecated shapes are rejected statically by `src/GxMcp.Worker.Tests/EnvelopeContractGuardTests.cs`.
+- Static guards verify helper conformance; runtime coverage remains the responsibility of `EnvelopeConformance` and live-KB tests.
 
 ## Contract by response family
 
@@ -19,8 +17,8 @@ This is the P0 response-contract audit for the published MCP surface.
 | Read/query/list | `ok` or `partial` | Payload under `result`; collection metadata where applicable | Migrated helper usage is dominant | P0.2 map outliers in runtime contract tests |
 | Successful mutation | `ok` | Stable `code`, target, result, persistence evidence when applicable | Migrated helper usage is dominant | Require `changed`/verification semantics per mutation family |
 | No-op mutation | `ok` with code `NoChange` | No legacy top-level `noChange` field | Covered by canonical helpers and guards | Add cross-family runtime assertions |
-| Validation or partial result | `partial` | `result` plus `warnings[]` | Four helper call sites | Ensure warnings have stable machine-readable codes |
-| Long-running operation | `accepted` | `operationId`, preferably `pollTarget`, `pollTool`, `cancelTool` | One direct helper call; Gateway also tracks operations | Normalize all async entry points |
+| Validation or partial result | `partial` | `result` plus `warnings[]` | Canonical helper call sites | Ensure warnings have stable machine-readable codes |
+| Long-running operation | `accepted` | `operationId`, preferably `pollTarget`, `pollTool`, `cancelTool` | Canonical helper call sites; Gateway also tracks operations | Normalize all async entry points |
 | Client/input failure | `error` | `error.code`, `error.message`, actionable `hint`/`nextSteps` | Broad helper coverage | Complete action-by-action next-step audit |
 | Transient failure | `error` | `retryable: true`, normally `retryAfterMs` | Helper now supports explicit decision | Migrate transient branches to set it explicitly |
 | Unknown commit state | `error` | `retryable: false`, `reconciliationRequired: true`, operation handle | Journal and operation tracker exist | P0.3 adds the complete reconciliation path |

@@ -102,6 +102,7 @@ namespace GxMcp.Worker.Models
             public int Length { get; set; }
             public int Decimals { get; set; }
             public bool IsFormula { get; set; }
+            public string Formula { get; set; }
 
             // Table/Transaction specific
             public string RootTable { get; set; }

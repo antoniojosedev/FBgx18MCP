@@ -7,11 +7,33 @@
 
 ### Added
 
+- `genexus_workwith action=remove_action` allows atomic removal of custom actions from WorkWith and WorkWithDevices pattern instances, supporting typed SDK element deletion and XML fallback while preserving neighboring actions and validating post-save structure ([#538](https://github.com/lennix1337/Genexus18MCP/issues/538)).
+- Transaction attribute formula indexing and search in `genexus_query` / `SourceSearchService`: attribute formulas defined at transaction and table level are indexed into `SearchIndex.IndexEntry.Formula` and searchable via `fields=["formula"]`, as well as exposed in `genexus_analyze` formula dependency analysis ([#533](https://github.com/lennix1337/Genexus18MCP/issues/533)).
+
 ### Changed
+
+- `genexus_workwith action=add_action` preflight now validates procedure parameter arity against the target procedure's `parm()` rule, returning a structured `ArityMismatch` error response in both `dryRun` and real write while preserving signature advisories ([#537](https://github.com/lennix1337/Genexus18MCP/issues/537)).
+- `genexus_edit` pattern instance preflight guidance for Work With for Web now directs to `genexus_workwith action=add_action` without conflating standard WorkWith with WorkWithPlus ([#536](https://github.com/lennix1337/Genexus18MCP/issues/536)).
+- `genexus_analyze` call count scanner iterates `Events`, `Source`, and `Rules`, skipping `Source` when `Events` was already scanned to prevent duplicate caller counts on Transaction and WebPanel objects while preserving Procedure scans ([#528](https://github.com/lennix1337/Genexus18MCP/issues/528)).
+- `genexus_edit` object-level save fast path and strict mode boundaries clarified in tool help catalog and documentation ([#534](https://github.com/lennix1337/Genexus18MCP/issues/534)).
+- Synchronized and updated envelope documentation in `docs/envelope-coverage.md` for transaction, attribute, and pattern operations ([#521](https://github.com/lennix1337/Genexus18MCP/issues/521)).
 
 ### Fixed
 
+- `genexus_analyze mode=impact`: when the search index contains no callers for an object, the analyzer now falls back to native SDK cross-references (`TryGetSdkCallers`) and flags `fieldTrust="partial:sdk-fallback"` instead of returning an incomplete caller graph ([#527](https://github.com/lennix1337/Genexus18MCP/issues/527)).
+- `genexus_edit` semantic ops (`mode="ops"`) now properly forwards caller-provided `verifyMode` through to `WriteObject`, and defaults `Structure` part verification to semantic mode when unspecified so SDK-generated attribute descriptions do not cause false verification failures ([#525](https://github.com/lennix1337/Genexus18MCP/issues/525)).
+- `genexus_edit` semantic ops (`add_attribute`, `set_attribute`, `remove_attribute`) over multiline formulas now accurately determine transaction DSL entry boundaries using bracket depth, preventing truncation of multiline formula definitions ([#526](https://github.com/lennix1337/Genexus18MCP/issues/526)).
+- `genexus_lifecycle action=cancel` now accurately tracks child process states (`running`, `terminated`, `exited`, `unknown`), performs a bounded wait for child process exit before reporting final status, and fixes status resolution in external MSBuild runner phases ([#535](https://github.com/lennix1337/Genexus18MCP/issues/535)).
+- `GxwireCacheLocation` root KB detection now treats `knowledgebase.connection` as a hard marker and excludes root temporary/metadata XML files (`CategoryViewConfig`, `iar_objs`, `nav_objs`) from triggering false root inferences ([#529](https://github.com/lennix1337/Genexus18MCP/issues/529)).
+- `gxwire` lexer properly identifies chained method calls with leading dots (`.link(...)`, `.call(...)`, etc.) across newlines and boundary prefixes ([#530](https://github.com/lennix1337/Genexus18MCP/issues/530)).
+- `gxwire` entity kind identification supports XML exports with custom namespaces and nested folder elements, resolving object kind via GUID mapping and folder fallbacks ([#531](https://github.com/lennix1337/Genexus18MCP/issues/531)).
+- `gxwire` reference extraction captures Procedure and object calls nested within complex XML formula definitions and formula properties across multiline expressions ([#532](https://github.com/lennix1337/Genexus18MCP/issues/532)).
+
 ### Internal
+
+- Asynchronous partial indexing synchronization in `IndexCacheService` triggers backfill on unscoped search and signals `OnIndexReady` lifecycle events to synchronize cache state with object service consumers ([#522](https://github.com/lennix1337/Genexus18MCP/issues/522)).
+- Local cache and durable source store isolation (`DurableSourceStoreRoot`) is scoped per-KB (`GXMCP_KB_ID`), normalized path hash, and host generation, preventing transient path collisions and cleaning up orphaned stores ([#523](https://github.com/lennix1337/Genexus18MCP/issues/523)).
+- Source store backfill service properly detects deleted objects during synchronization, removing stale object records from the persistent store and updating progress metrics ([#524](https://github.com/lennix1337/Genexus18MCP/issues/524)).
 
 ## v3.15.0 - 2026-10-13
 

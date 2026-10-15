@@ -853,7 +853,7 @@ namespace GxMcp.Worker.Services
             bool explicitMode = !string.IsNullOrWhiteSpace(verifyMode);
             string mode = explicitMode
                 ? TextPersistenceVerifier.ResolveMode(verifyMode, partName)
-                : "normalized";
+                : (string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase) ? "semantic" : "normalized");
             bool exact = explicitMode && string.Equals(mode, "exact", StringComparison.OrdinalIgnoreCase);
 
             bool eolOnly = string.Equals(

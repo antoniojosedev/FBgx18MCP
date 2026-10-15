@@ -203,6 +203,8 @@ namespace GxMcp.Worker.Tests
             {
                 Assert.Contains("structural pattern edits require the GeneXus IDE", src, StringComparison.Ordinal);
                 Assert.Contains("IsWorkWithPlus", src, StringComparison.Ordinal);
+                Assert.Contains("IsWorkWith", src, StringComparison.Ordinal);
+                Assert.Contains("genexus_workwith action=add_action", src, StringComparison.Ordinal);
             }
         }
     }

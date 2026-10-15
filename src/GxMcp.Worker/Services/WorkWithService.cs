@@ -82,9 +82,12 @@ namespace GxMcp.Worker.Services
                 case "add_action":
                     return ExecuteAddAction(name, instanceObj, args);
 
+                case "remove_action":
+                    return ExecuteRemoveAction(name, instanceObj, args);
+
                 default:
                     return McpResponse.Err(code: "UnknownAction",
-                        message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action.",
+                        message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action, remove_action.",
                         nextSteps: new JArray(McpResponse.NextStep("genexus_workwith",
                             new JObject { ["action"] = "list_actions", ["name"] = name },
                             "List actions on the target WorkWith object.")),
@@ -146,7 +149,13 @@ namespace GxMcp.Worker.Services
             {
                 if (!WorkWithSdkAdapter.AddAction(instanceObj, _patterns, _write, tabCode, actionName, caption, procObj, condition, parameters, dryRun: true, out var plan, out var errCode, out var errMsg))
                 {
-                    return McpResponse.Err(code: errCode ?? "AddActionPlanFailed", message: errMsg ?? "Failed to create add_action plan.", target: target);
+                    var sigAdv = plan?["signatureAdvisory"] as JObject;
+                    return McpResponse.Err(
+                        code: errCode ?? "AddActionPlanFailed",
+                        message: errMsg ?? "Failed to create add_action plan.",
+                        target: target,
+                        extra: plan != null ? new JObject { ["plan"] = plan, ["dryRun"] = true } : null,
+                        errorExtra: sigAdv);
                 }
 
                 return McpResponse.Ok(target: target, code: "WorkWithActionPlan", result: new JObject
@@ -161,10 +170,53 @@ namespace GxMcp.Worker.Services
                 KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
                 if (!WorkWithSdkAdapter.AddAction(freshInstance, _patterns, _write, tabCode, actionName, caption, procObj, condition, parameters, dryRun: false, out var receipt, out var errCode, out var errMsg))
                 {
-                    return McpResponse.Err(code: errCode ?? "AddActionFailed", message: errMsg ?? "Failed to add action.", target: target);
+                    var sigAdv = receipt?["signatureAdvisory"] as JObject;
+                    return McpResponse.Err(
+                        code: errCode ?? "AddActionFailed",
+                        message: errMsg ?? "Failed to add action.",
+                        target: target,
+                        extra: receipt != null ? new JObject { ["plan"] = receipt } : null,
+                        errorExtra: sigAdv);
                 }
 
                 return McpResponse.Ok(target: target, code: "WorkWithActionAdded", result: receipt);
+            }
+        }
+
+        private string ExecuteRemoveAction(string target, KBObject instanceObj, JObject args)
+        {
+            string tabCode = args?["tab"]?.ToString();
+            if (string.IsNullOrWhiteSpace(tabCode)) tabCode = "General";
+
+            string actionName = args?["actionName"]?.ToString()?.Trim();
+            if (string.IsNullOrWhiteSpace(actionName))
+                return McpResponse.Err(code: "MissingActionName", message: "actionName is required for remove_action.", target: target);
+
+            bool dryRun = args?["dryRun"]?.ToObject<bool?>() == true;
+
+            if (dryRun)
+            {
+                if (!WorkWithSdkAdapter.RemoveAction(instanceObj, _patterns, _write, tabCode, actionName, dryRun: true, out var plan, out var errCode, out var errMsg))
+                {
+                    return McpResponse.Err(code: errCode ?? "RemoveActionPlanFailed", message: errMsg ?? "Failed to create remove_action plan.", target: target);
+                }
+
+                return McpResponse.Ok(target: target, code: "WorkWithActionPlan", result: new JObject
+                {
+                    ["plan"] = plan,
+                    ["dryRun"] = true
+                });
+            }
+
+            lock (WriteService.AcquirePerTargetLock(instanceObj.Name))
+            {
+                KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
+                if (!WorkWithSdkAdapter.RemoveAction(freshInstance, _patterns, _write, tabCode, actionName, dryRun: false, out var receipt, out var errCode, out var errMsg))
+                {
+                    return McpResponse.Err(code: errCode ?? "RemoveActionFailed", message: errMsg ?? "Failed to remove action.", target: target);
+                }
+
+                return McpResponse.Ok(target: target, code: "WorkWithActionRemoved", result: receipt);
             }
         }
     }

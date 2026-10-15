@@ -424,5 +424,97 @@ namespace GxMcp.Worker.Tests
             Assert.Contains(@"<tab code=""General"" name=""General"" type=""Tabular"">", newXml);
             Assert.Contains(@"<action name=""Update"" caption=""Update"" />", newXml);
         }
+
+        [Fact]
+        public void TryRemoveActionFromXml_RemovesTargetActionAndPreservesNeighbors()
+        {
+            bool removed = WorkWithSdkAdapter.TryRemoveActionFromXml(
+                SampleWorkWithXmlWithDefaultsAndNeighbors,
+                tabCode: "General",
+                actionName: "Delete",
+                out string newXml,
+                out string errorCode,
+                out string errorMessage);
+
+            Assert.True(removed, errorMessage);
+            Assert.Null(errorCode);
+            Assert.NotNull(newXml);
+
+            // Verify Delete was removed from General
+            Assert.DoesNotContain(@"<action name=""Delete""", newXml);
+
+            // Verify Update neighbor action on General was preserved
+            Assert.Contains(@"<action name=""Update"" caption=""Update"" />", newXml);
+
+            // Verify Orders neighbor tab and its action ViewOrder were preserved
+            Assert.Contains(@"code=""Orders""", newXml);
+            Assert.Contains(@"name=""ViewOrder""", newXml);
+
+            // Verify defaults were preserved verbatim
+            Assert.Contains("&lt;default&gt;", newXml);
+
+            // Verify list actions accurately parses the post-removal state
+            bool listed = WorkWithSdkAdapter.TryListActionsFromXml(newXml, out JArray tabs, out string listError);
+            Assert.True(listed, listError);
+            var generalTab = tabs.FirstOrDefault(t => string.Equals(t["code"]?.ToString(), "General")) as JObject;
+            Assert.NotNull(generalTab);
+            var generalActions = (JArray)generalTab["actions"];
+            Assert.Single(generalActions);
+            Assert.Equal("Update", generalActions[0]["name"]?.ToString());
+        }
+
+        [Fact]
+        public void TryRemoveActionFromXml_ActionNotFound_ReturnsFalseAndErrorCode()
+        {
+            bool removed = WorkWithSdkAdapter.TryRemoveActionFromXml(
+                SampleWorkWithXml,
+                tabCode: "General",
+                actionName: "NonExistentAction",
+                out string newXml,
+                out string errorCode,
+                out string errorMessage);
+
+            Assert.False(removed);
+            Assert.Null(newXml);
+            Assert.Equal("ActionNotFound", errorCode);
+            Assert.Contains("NonExistentAction", errorMessage);
+        }
+
+        [Fact]
+        public void TryRemoveActionFromXml_TabNotFound_ReturnsFalseAndErrorCode()
+        {
+            bool removed = WorkWithSdkAdapter.TryRemoveActionFromXml(
+                SampleWorkWithXml,
+                tabCode: "NonExistentTab",
+                actionName: "Update",
+                out string newXml,
+                out string errorCode,
+                out string errorMessage);
+
+            Assert.False(removed);
+            Assert.Null(newXml);
+            Assert.Equal("TabNotFound", errorCode);
+            Assert.Contains("NonExistentTab", errorMessage);
+        }
+
+        [Fact]
+        public void BuildActionPlan_ReflectsArityValidation()
+        {
+            var plan = WorkWithSdkAdapter.BuildActionPlan(
+                instanceName: "WorkWithWebTestTrn",
+                tabCode: "General",
+                actionName: "ExecutaTeste",
+                caption: "Executa Teste",
+                procName: "procExecutaTeste",
+                condition: "TestTrnPropria",
+                parameters: new[] { "P1" },
+                procObj: null);
+
+            Assert.NotNull(plan);
+            Assert.True(plan["valid"]?.ToObject<bool>());
+            var validations = plan["validations"] as JObject;
+            Assert.NotNull(validations);
+            Assert.True(validations["arityMatches"]?.ToObject<bool>());
+        }
     }
 }

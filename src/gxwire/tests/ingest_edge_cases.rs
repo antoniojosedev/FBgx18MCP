@@ -222,3 +222,30 @@ fn exported_object_xml_is_still_indexed() {
     assert!(names.iter().any(|n| n == "MyProcedure"));
     assert!(names.iter().any(|n| n == "Other"));
 }
+
+#[test]
+fn xml_export_object_type_guid_detection() {
+    use gxwire::model::EntityKind;
+    let dir = scratch("xml-guid");
+    let proc_xml = r#"<Object parentGuid="c88fffcd-b6f8-0000-8fec-00b5497e2117" user="admin" versionDate="2026-10-14" versionId="1" name="procCustomExport" description="" type="84a12160-f59b-4ad7-a683-ea4481ac23e9">
+    <Part type="c414ed00-8cc4-4f44-8820-4baf93547173"><Source><![CDATA[Call(Other);]]></Source></Part>
+</Object>"#;
+    let trn_xml = r#"<Object parentGuid="c88fffcd-b6f8-0000-8fec-00b5497e2117" user="admin" name="CustomTrn" type="1db606f2-af09-4cf9-a3b5-b481519d28f6">
+</Object>"#;
+    let wp_xml = r#"<Object parentGuid="c88fffcd-b6f8-0000-8fec-00b5497e2117" user="admin" name="CustomPanel" type="c9584656-94b6-4ccd-890f-332d11fc2c25">
+</Object>"#;
+
+    write_source(&dir, "procCustomExport.xml", proc_xml);
+    write_source(&dir, "CustomTrn.xml", trn_xml);
+    write_source(&dir, "CustomPanel.xml", wp_xml);
+
+    let graph = build_graph_from_directory(&dir).unwrap();
+    let proc_node = graph.get_node_by_name("procCustomExport").unwrap();
+    assert_eq!(proc_node.kind, EntityKind::Procedure);
+
+    let trn_node = graph.get_node_by_name("CustomTrn").unwrap();
+    assert_eq!(trn_node.kind, EntityKind::Transaction);
+
+    let wp_node = graph.get_node_by_name("CustomPanel").unwrap();
+    assert_eq!(wp_node.kind, EntityKind::WebPanel);
+}

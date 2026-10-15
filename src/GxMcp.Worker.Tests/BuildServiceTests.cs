@@ -780,6 +780,84 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ResolveChildProcessState_DifferentiatesStatesAccurately()
+        {
+            Assert.Equal("unknown", BuildService.ResolveChildProcessState(null, killRequested: false));
+            Assert.Equal("unknown", BuildService.ResolveChildProcessState(null, killRequested: true));
+
+            var running = System.Diagnostics.Process.GetCurrentProcess();
+            Assert.Equal("running", BuildService.ResolveChildProcessState(running, killRequested: false));
+            Assert.Equal("running", BuildService.ResolveChildProcessState(running, killRequested: true));
+
+            using (var exited = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c exit 0")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            }))
+            {
+                exited.WaitForExit(5000);
+                Assert.True(exited.HasExited);
+                Assert.Equal("exited", BuildService.ResolveChildProcessState(exited, killRequested: false));
+                Assert.Equal("terminated", BuildService.ResolveChildProcessState(exited, killRequested: true));
+            }
+        }
+
+        [Fact]
+        public void WatchdogFailure_Issue535_ReflectsActualProcessExitConfirmation()
+        {
+            var running = System.Diagnostics.Process.GetCurrentProcess();
+            var statusRunning = new BuildService.BuildTaskStatus
+            {
+                TaskId = "test535_running",
+                Status = "Running",
+                Phase = "Compiling",
+                Process = running
+            };
+
+            Assert.True(BuildService.TrySetWatchdogFailure(statusRunning,
+                phase => "timeout",
+                watchdogType: "wall-clock",
+                killRequested: true));
+            Assert.Equal("running", statusRunning.ChildProcessState);
+
+            using (var exited = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c exit 0")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            }))
+            {
+                exited.WaitForExit(5000);
+                Assert.True(exited.HasExited);
+
+                var statusTerminated = new BuildService.BuildTaskStatus
+                {
+                    TaskId = "test535_terminated",
+                    Status = "Running",
+                    Phase = "Compiling",
+                    Process = exited
+                };
+                Assert.True(BuildService.TrySetWatchdogFailure(statusTerminated,
+                    phase => "timeout",
+                    watchdogType: "wall-clock",
+                    killRequested: true));
+                Assert.Equal("terminated", statusTerminated.ChildProcessState);
+
+                var statusNaturalExit = new BuildService.BuildTaskStatus
+                {
+                    TaskId = "test535_exited",
+                    Status = "Running",
+                    Phase = "Compiling",
+                    Process = exited
+                };
+                Assert.True(BuildService.TrySetWatchdogFailure(statusNaturalExit,
+                    phase => "timeout",
+                    watchdogType: "wall-clock",
+                    killRequested: false));
+                Assert.Equal("exited", statusNaturalExit.ChildProcessState);
+            }
+        }
+
+        [Fact]
         public void ConfirmedStages_TracksCompletedStagesInOrder()
         {
             var status = new BuildService.BuildTaskStatus();

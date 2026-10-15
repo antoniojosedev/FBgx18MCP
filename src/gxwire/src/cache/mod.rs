@@ -248,10 +248,17 @@ fn assemble_graph(files: &[FileParse]) -> CsrGraph {
         // References and formula references travel together, each carrying its
         // own edge kind: a symbol reached through an attribute formula is a
         // `DefinesFormula` dependency, not a plain read or write.
+        let formula_targets: std::collections::HashSet<String> = fp
+            .formula_refs
+            .iter()
+            .map(|r| r.target_name.to_ascii_lowercase())
+            .collect();
+
         let mut edges: Vec<(&ParsedSymbolRef, EdgeKind)> = fp
             .parse
             .references
             .iter()
+            .filter(|r| !formula_targets.contains(&r.target_name.to_ascii_lowercase()))
             .map(|r| (r, r.kind.clone()))
             .collect();
         edges.extend(
@@ -514,26 +521,85 @@ fn is_supported_ext(ext: &str) -> bool {
 ///
 /// Content detection remains authoritative for XML exports, where the element
 /// name says the real kind.
+fn kind_from_type_guid(guid: &str) -> Option<EntityKind> {
+    match guid.to_ascii_lowercase().as_str() {
+        "84a12160-f59b-4ad7-a683-ea4481ac23e9" | "2a9e9aba-d2de-4801-ae7f-5e3819222daf" => Some(EntityKind::Procedure),
+        "1db606f2-af09-4cf9-a3b5-b481519d28f6" => Some(EntityKind::Transaction),
+        "c9584656-94b6-4ccd-890f-332d11fc2c25" | "198e8ea4-1d49-4c9c-8a9a-417024baa9d1" => Some(EntityKind::WebPanel),
+        "d82625fd-5892-40b0-99c9-5c8559c197fc" => Some(EntityKind::Panel),
+        "78cecefe-be7d-4980-86ce-8d6e91fba04b" | "15cf49b5-fc38-4899-91b5-395d02d79889" => Some(EntityKind::WorkWithPlus),
+        "857ca50e-7905-0000-0007-c5d9ff2975ec" => Some(EntityKind::Table),
+        "adbb33c9-0906-4971-833c-998de27e0676" => Some(EntityKind::Attribute),
+        "00972a17-9975-449e-aab1-d26165d51393" => Some(EntityKind::Domain),
+        "ffd44be7-3bb4-4d01-9e7e-d1c1a3c095af" => Some(EntityKind::DataSelector),
+        "447527b5-9210-4523-898b-5dccb17be60a" => Some(EntityKind::Sdt),
+        _ => None,
+    }
+}
+
+fn extract_type_guid_from_xml(head: &str) -> Option<&str> {
+    let pos = head.find("type=")?;
+    let rest = &head[pos + 5..];
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let rest = &rest[1..];
+    let end = rest.find(quote)?;
+    Some(&rest[..end])
+}
+
+fn kind_from_folder_name(path: &Path) -> Option<EntityKind> {
+    let parent = path.parent()?.file_name()?.to_str()?;
+    match parent.to_ascii_lowercase().as_str() {
+        "procedure" | "procedures" => Some(EntityKind::Procedure),
+        "transaction" | "transactions" => Some(EntityKind::Transaction),
+        "webpanel" | "webpanels" => Some(EntityKind::WebPanel),
+        "workwithforweb" | "workwith" => Some(EntityKind::WorkWithPlus),
+        "sdpanel" | "panel" => Some(EntityKind::Panel),
+        "table" | "tables" => Some(EntityKind::Table),
+        "attribute" | "attributes" => Some(EntityKind::Attribute),
+        "domain" | "domains" => Some(EntityKind::Domain),
+        "sdt" | "sdts" => Some(EntityKind::Sdt),
+        "dataselector" | "dataselectors" => Some(EntityKind::DataSelector),
+        _ => None,
+    }
+}
+
+/// Best-effort object kind from a file name, used only when the file's own
+/// content cannot say.
+///
+/// The old chain tested a single leading letter, so every Transaction whose
+/// name began with `P` - `PessoaDadosFiscaisAdicionais` among them - was
+/// reported as `kind: "Proc"`, and `callers` answered on the wrong object type
+/// (#500). Two-letter prefixes are unambiguous in GeneXus exports and are
+/// therefore checked first; a bare single-letter guess is no longer made,
+/// because `P` alone cannot distinguish a Procedure from a Transaction named
+/// after a person, and guessing wrong is worse than reporting `Unknown`.
+///
+/// Content detection remains authoritative for XML exports, where the element
+/// name says the real kind.
 fn kind_from_stem(file_stem: &str) -> EntityKind {
-    if file_stem.starts_with("UT_") {
+    let stem = file_stem.to_ascii_uppercase();
+    if stem.starts_with("UT_") {
         return EntityKind::Test;
     }
-    if file_stem.starts_with("Trn") {
+    if stem.starts_with("TRN") {
         return EntityKind::Transaction;
     }
-    if file_stem.starts_with("WP") {
+    if stem.starts_with("WP") {
         return EntityKind::WebPanel;
     }
-    if file_stem.starts_with("SDP") {
+    if stem.starts_with("SDP") {
         return EntityKind::Panel;
     }
-    if file_stem.starts_with("WW") {
+    if stem.starts_with("WW") {
         return EntityKind::WorkWithPlus;
     }
-    if file_stem.starts_with("Proc") {
+    if stem.starts_with("PROC") {
         return EntityKind::Procedure;
     }
-    if file_stem.starts_with("DS") {
+    if stem.starts_with("DS") {
         return EntityKind::DataSelector;
     }
     EntityKind::Unknown
@@ -547,7 +613,7 @@ fn detect_entity_kind(path: &Path, file_stem: &str, ext: &str) -> EntityKind {
         "sdp" => EntityKind::Panel,
         "xml" => {
             if let Ok(file) = File::open(path) {
-                let mut buf = [0u8; 512];
+                let mut buf = [0u8; 1024];
                 let mut reader = BufReader::new(file);
                 if let Ok(n) = reader.read(&mut buf) {
                     let head = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
@@ -571,8 +637,17 @@ fn detect_entity_kind(path: &Path, file_stem: &str, ext: &str) -> EntityKind {
                         return EntityKind::Sdt;
                     } else if head.contains("<dataselector") {
                         return EntityKind::DataSelector;
+                    } else if head.contains("<object") {
+                        if let Some(guid) = extract_type_guid_from_xml(&head) {
+                            if let Some(kind) = kind_from_type_guid(guid) {
+                                return kind;
+                            }
+                        }
                     }
                 }
+            }
+            if let Some(kind) = kind_from_folder_name(path) {
+                return kind;
             }
             kind_from_stem(file_stem)
         }

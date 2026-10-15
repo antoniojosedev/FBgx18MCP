@@ -160,3 +160,47 @@ fn reported_counts_are_recovered() {
         .count();
     assert_eq!(count, 5, "every invocation must be counted");
 }
+
+#[test]
+fn object_link_method_invocation_targets_object_not_first_argument() {
+    // Regression guard for issue #530:
+    // &IconeUpdate.link = PessoaDadosFiscaisAdicionais.Link(trnmode.Update, PessoaEmpresaId, PessoaId, PessoaDadosFiscaisAdicionaisId)
+    // Must generate an edge to PessoaDadosFiscaisAdicionais with CallMode::Link, and NOT to trnmode.
+    let source = "&IconeUpdate.link = PessoaDadosFiscaisAdicionais.Link(trnmode.Update, PessoaEmpresaId, PessoaId, PessoaDadosFiscaisAdicionaisId)\n";
+    let parsed = parse_genexus_source(source);
+
+    let link_refs: Vec<_> = parsed
+        .references
+        .iter()
+        .filter(|r| r.target_name.eq_ignore_ascii_case("PessoaDadosFiscaisAdicionais"))
+        .collect();
+    assert_eq!(
+        link_refs.len(),
+        1,
+        "Obj.Link(...) must create an edge targeting Obj: {:?}",
+        parsed.references
+    );
+    assert_eq!(link_refs[0].kind, EdgeKind::Calls(CallMode::Link));
+
+    let trnmode_refs: Vec<_> = parsed
+        .references
+        .iter()
+        .filter(|r| r.target_name.eq_ignore_ascii_case("trnmode"))
+        .collect();
+    assert!(
+        trnmode_refs.is_empty(),
+        "Obj.Link(...) must NOT record first argument 'trnmode' as a call target: {:?}",
+        trnmode_refs
+    );
+}
+
+#[test]
+fn standalone_link_invocation_still_works() {
+    let source = "Link(PessoaDadosFiscaisAdicionais, &id)\n";
+    let kinds = calls_named(source, "PessoaDadosFiscaisAdicionais");
+    assert_eq!(
+        kinds,
+        vec![EdgeKind::Calls(CallMode::Link)],
+        "standalone Link(Target, ...) must remain supported"
+    );
+}
