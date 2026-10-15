@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/genexus-mcp.svg)](https://www.npmjs.com/package/genexus-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![SafeSkill 85/100](https://img.shields.io/badge/SafeSkill-85%2F100_Passes%20with%20Notes-yellow)](https://safeskill.dev/scan/lennix1337-genexus18mcp)
-[![MCP Badge](https://lobehub.com/badge/mcp/lennix1337-genexus18mcp)](https://lobehub.com/mcp/lennix1337-genexus18mcp)
+[![Awesome AI Plugins](https://img.shields.io/badge/Awesome-AI%20Plugins-c5203e?logo=awesomelists&logoColor=white)](https://github.com/hashgraph-online/awesome-ai-plugins)
 
 > **¿Hablás español?** → [Guía de inicio en español](docs/GETTING_STARTED.es.md)
 > **Fala português?** → [Guia de início em português](docs/GETTING_STARTED.pt-br.md)
