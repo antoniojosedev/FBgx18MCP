@@ -365,23 +365,38 @@ namespace GxMcp.Worker.Services
                         json["verifiedZero"] = false;
                         json["hint"] = "The search index holds this object but no call-graph edges for it (it may not be enriched yet, or the snapshot is stale). Blast radius could NOT be confirmed — this is NOT a guarantee of zero impact. Run genexus_lifecycle(action='index', force=true) and retry, or cross-check with genexus_inspect(include=['callers']).";
                     }
-                    else if (sdk.Callers.Count > 0 || sdk.Callees.Count > 0)
+                    else if (sdk.Callers.Count > 0 || sdk.Callees.Count > 0 || sdk.FormulaDependents.Count > 0)
                     {
                         // SDK sees edges the index missed — surface them and flag the gap
                         // instead of reporting a misleading "0 affected / Low".
-                        json["riskLevel"] = sdk.Callers.Count > 5 ? "Medium" : "Low";
-                        json["totalAffected"] = sdk.Callers.Count;
+                        int totalAff = sdk.Callers.Count + sdk.FormulaDependents.Count;
+                        json["riskLevel"] = totalAff > 5 ? "Medium" : "Low";
+                        json["totalAffected"] = totalAff;
                         json["indexEdgesMissing"] = true;
                         var sdkCallers = new JArray();
                         foreach (var c in sdk.Callers) sdkCallers.Add(c);
                         var sdkCallees = new JArray();
                         foreach (var c in sdk.Callees) sdkCallees.Add(c);
-                        json["sdkCrossCheck"] = new JObject
+                        var crossCheckObj = new JObject
                         {
                             ["callers"] = sdkCallers,
                             ["callees"] = sdkCallees,
                             ["note"] = "Index call-graph edges weren't populated for this object yet; these edges come from the live SDK reference graph, which is authoritative. With lazy enrichment (default) the index edges fill in on demand — re-running impact for the same target shortly will use them. (force=true does NOT eagerly enrich in lazy mode.)"
                         };
+                        if (sdk.FormulaDependents.Count > 0)
+                        {
+                            var fDeps = new JArray();
+                            foreach (var fd in sdk.FormulaDependents)
+                            {
+                                fDeps.Add(new JObject
+                                {
+                                    ["attribute"] = fd.Attribute,
+                                    ["formula"] = fd.Formula
+                                });
+                            }
+                            crossCheckObj["formulaDependents"] = fDeps;
+                        }
+                        json["sdkCrossCheck"] = crossCheckObj;
                     }
                     else
                     {
@@ -492,6 +507,13 @@ namespace GxMcp.Worker.Services
         {
             public readonly List<string> Callers = new List<string>();
             public readonly List<string> Callees = new List<string>();
+            public readonly List<FormulaDependent> FormulaDependents = new List<FormulaDependent>();
+        }
+
+        internal sealed class FormulaDependent
+        {
+            public string Attribute { get; set; }
+            public string Formula { get; set; }
         }
 
         // v2.8.5 (friction 2026-06-02): when the index reports zero edges for an
@@ -521,7 +543,26 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         var s = kb?.DesignModel.Objects.Get(r.From);
-                        if (s != null && !refs.Callers.Contains(s.Name)) refs.Callers.Add(s.Name);
+                        if (s != null)
+                        {
+                            if (s is global::Artech.Genexus.Common.Objects.Attribute attr && attr.Formula != null)
+                            {
+                                string formulaText = null;
+                                try { formulaText = attr.Formula.ToString(); } catch { }
+                                if (!refs.FormulaDependents.Any(f => string.Equals(f.Attribute, s.Name, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    refs.FormulaDependents.Add(new FormulaDependent
+                                    {
+                                        Attribute = s.Name,
+                                        Formula = formulaText ?? string.Empty
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                if (!refs.Callers.Contains(s.Name)) refs.Callers.Add(s.Name);
+                            }
+                        }
                     }
                     catch { }
                 }
@@ -2546,7 +2587,6 @@ namespace GxMcp.Worker.Services
             return node;
         }
 
-        // ----------------------------------------------------------------
         // Item 24 — mode=callers: per-call-site detail with line + context.
         // Enumerates every caller from the index and scans their source for
         // actual call sites, returning line number + 3-line surrounding context.
@@ -2557,26 +2597,21 @@ namespace GxMcp.Worker.Services
             if ((_objectService == null && _callerSourceReader == null) || callerNames == null) return sites;
             foreach (var callerName in callerNames.Distinct(StringComparer.OrdinalIgnoreCase).Take(50))
             {
-                foreach (var partName in new[] { "Source", "Events", "Rules" })
+                bool eventsScanned = false;
+                foreach (var partName in new[] { "Events", "Source", "Rules" })
                 {
+                    if (eventsScanned && string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
                     string payload = null;
                     try { payload = ReadCallerSource(callerName, partName); } catch { }
                     if (string.IsNullOrWhiteSpace(payload)) continue;
 
-                    // `ReadObjectSource` answers with an MCP envelope, not the
-                    // part's text. The caller scan used to hand that JSON straight
-                    // to the call parser, so it searched `{"part":"Source",
-                    // "source":"...","readFreshness":{...}}` for call syntax and
-                    // never found any - every target answered
-                    // `CallerSitesUnconfirmed` with `callSiteCount: 0` while
-                    // `sdkCallers` was fully populated (#491, follow-up to #287,
-                    // which fixed the recognition but not what was being scanned).
-                    //
-                    // The failure is silent because the envelope is not an error
-                    // envelope: it parses, and the earlier guard below only
-                    // skipped payloads containing an `"error"` key.
                     string source = ExtractReadEnvelopeSource(payload);
                     if (source == null) continue;
+
+                    if (string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase))
+                        eventsScanned = true;
 
                     var lines = source.Split('\n');
                     foreach (var call in SourceParser.ParseCalls(source, false))
@@ -2774,38 +2809,27 @@ namespace GxMcp.Worker.Services
                     var callerName = distinctCallers[callerIndex];
 
                     // Read each source part that might contain calls
-                    string[] partsToCheck = { "Source", "Events", "Rules" };
+                    bool eventsScanned = false;
                     bool callerFullyScanned = true;
-                    foreach (var partName in partsToCheck)
+                    foreach (var partName in new[] { "Events", "Source", "Rules" })
                     {
+                        if (eventsScanned && string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
                         string src = null;
                         try
                         {
                             src = ReadCallerSource(callerName, partName);
-                            // Skip ReadObjectSource error envelopes — must look like a JSON error
-                            // object, NOT any source line that happens to contain the word "error".
-                            // Two shapes occur: {"status":"Error",...} and {"error":"..."} (no status).
-                            // Match both, case-insensitively, while still rejecting real source that
-                            // merely mentions "error" mid-line.
                             if (!string.IsNullOrEmpty(src))
                             {
-                                var trimmed = src.TrimStart();
-                                if (trimmed.StartsWith("{"))
-                                {
-                                    bool looksLikeStatusError = trimmed.IndexOf("\"status\"", StringComparison.OrdinalIgnoreCase) >= 0
-                                                                 && trimmed.IndexOf("\"Error\"", StringComparison.OrdinalIgnoreCase) >= 0;
-                                    // Front-of-payload error envelope: "error" key within the first 64 bytes
-                                    // of the JSON object. Real source rarely opens with a JSON object whose
-                                    // very first key is "error".
-                                    int errorKey = trimmed.IndexOf("\"error\"", StringComparison.OrdinalIgnoreCase);
-                                    bool looksLikeBareError = errorKey > 0 && errorKey < 64;
-                                    if (looksLikeStatusError || looksLikeBareError)
-                                        src = null;
-                                }
+                                src = ExtractReadEnvelopeSource(src);
                             }
                         }
                         catch { }
                         if (string.IsNullOrEmpty(src)) continue;
+
+                        if (string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase))
+                            eventsScanned = true;
 
                         // Issue #343: bound the retained work. A source's size is only
                         // knowable after reading it, so the charge lands here; what it
@@ -2946,6 +2970,20 @@ namespace GxMcp.Worker.Services
                         zeroResult["hint"] = "The index holds this object but no caller edges (it may not be enriched yet). This is NOT a confirmed 'no callers' — do NOT treat it as safe to delete/rename. Cross-check with genexus_analyze(mode=impact) or genexus_inspect(include=['callers']).";
                         return McpResponse.Ok(target: canonicalName, code: "CallerSitesUnconfirmed", result: zeroResult);
                     }
+                    if (sdk.FormulaDependents.Count > 0)
+                    {
+                        var formulaArray = new JArray();
+                        foreach (var fd in sdk.FormulaDependents)
+                        {
+                            formulaArray.Add(new JObject
+                            {
+                                ["attribute"] = fd.Attribute,
+                                ["formula"] = fd.Formula
+                            });
+                        }
+                        zeroResult["formulaDependents"] = formulaArray;
+                    }
+
                     if (sdk.Callers.Count > 0)
                     {
                         var sdkCallers = new JArray();
@@ -2965,6 +3003,14 @@ namespace GxMcp.Worker.Services
                         zeroResult["hint"] = "The live SDK reference graph found callers, but no supported call syntax was recognized in their Source, Events, or Rules parts. Read those parts directly if the call form is not covered.";
                         return McpResponse.Ok(target: canonicalName, code: "CallerSitesUnconfirmed", result: zeroResult);
                     }
+
+                    if (sdk.FormulaDependents.Count > 0)
+                    {
+                        zeroResult["verifiedZero"] = false;
+                        zeroResult["hint"] = "The procedure has formula dependents in attributes, but no direct callers with supported call syntax in Source, Events, or Rules.";
+                        return McpResponse.Ok(target: canonicalName, code: "CallerSitesFound", result: zeroResult);
+                    }
+
                     // SDK confirms genuinely zero incoming references.
                     zeroResult["indexEdgesMissing"] = false;
                     zeroResult["verifiedZero"] = true;

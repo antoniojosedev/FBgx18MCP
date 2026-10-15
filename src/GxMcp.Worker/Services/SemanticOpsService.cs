@@ -221,6 +221,22 @@ namespace GxMcp.Worker.Services
             return sb.ToString();
         }
 
+        private static int GetLogicalEntryEnd(List<string> lines, int start)
+        {
+            if (start < 0 || start >= lines.Count) return start;
+            var pending = new System.Text.StringBuilder();
+            pending.Append(lines[start]);
+            int depth = Parsers.TransactionDslParser.FormulaBracketDepth(pending.ToString());
+            int end = start;
+            while (depth > 0 && end + 1 < lines.Count)
+            {
+                end++;
+                pending.Append(' ').Append(lines[end].Trim());
+                depth = Parsers.TransactionDslParser.FormulaBracketDepth(pending.ToString());
+            }
+            return end;
+        }
+
         private static void ApplyDslOp(List<string> lines, SemanticOp op)
         {
             string name = op.Args["name"]?.ToString();
@@ -249,15 +265,22 @@ namespace GxMcp.Worker.Services
                         int afterIndex = FindDslAttrLine(lines, after);
                         if (afterIndex < 0)
                             throw new UsageException("usage_error", "add_attribute: after attribute '" + after + "' not found");
-                        insertAt = afterIndex + 1;
+                        int afterEnd = GetLogicalEntryEnd(lines, afterIndex);
+                        insertAt = afterEnd + 1;
                     }
                     else
                     {
+                        int lastAttrStart = -1;
                         for (int i = 0; i < lines.Count; i++)
                         {
                             var m = _dslAttrLine.Match(lines[i]);
                             if (m.Success && m.Groups["indent"].Value.Length == 0)
-                                insertAt = i + 1;
+                                lastAttrStart = i;
+                        }
+                        if (lastAttrStart >= 0)
+                        {
+                            int lastAttrEnd = GetLogicalEntryEnd(lines, lastAttrStart);
+                            insertAt = lastAttrEnd + 1;
                         }
                     }
                     lines.Insert(insertAt, newLine);
@@ -268,23 +291,29 @@ namespace GxMcp.Worker.Services
                     int idx = FindDslAttrLine(lines, name);
                     if (idx < 0)
                         throw new UsageException("usage_error", "attribute '" + name + "' not found");
+                    int entryEnd = GetLogicalEntryEnd(lines, idx);
                     var m = _dslAttrLine.Match(lines[idx]);
                     string type = op.Args["type"]?.ToString() ?? m.Groups["type"].Value.Trim();
                     bool key = m.Groups["key"].Value == "*";
                     string desc = op.Args["description"]?.ToString();
                     string formula = op.Args["formula"]?.ToString();
+                    string rebuilt;
                     if (desc == null)
                     {
                         // Preserve the existing inline comment when no new description is given.
                         string existingComment = m.Groups["comment"].Value;
-                        string rebuilt = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, null, formula);
+                        rebuilt = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, null, formula);
                         if (!string.IsNullOrEmpty(existingComment)) rebuilt += " " + existingComment;
-                        lines[idx] = rebuilt;
                     }
                     else
                     {
-                        lines[idx] = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, desc, formula);
+                        rebuilt = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, desc, formula);
                     }
+                    if (entryEnd > idx)
+                    {
+                        lines.RemoveRange(idx + 1, entryEnd - idx);
+                    }
+                    lines[idx] = rebuilt;
                     break;
                 }
                 case "remove_attribute":
@@ -292,7 +321,8 @@ namespace GxMcp.Worker.Services
                     int idx = FindDslAttrLine(lines, name);
                     if (idx < 0)
                         throw new UsageException("usage_error", "attribute '" + name + "' not found");
-                    lines.RemoveAt(idx);
+                    int entryEnd = GetLogicalEntryEnd(lines, idx);
+                    lines.RemoveRange(idx, entryEnd - idx + 1);
                     break;
                 }
                 default:

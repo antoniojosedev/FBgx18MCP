@@ -532,6 +532,11 @@ namespace GxMcp.Worker.Services
         // instead of running to completion while the gateway poller exits.
         public string SearchAsJson(SourceSearchCriteria c, System.Threading.CancellationToken ct)
         {
+            if (string.IsNullOrWhiteSpace(c?.ObjectName))
+            {
+                try { _objectService?.StartSourceStoreBackfillIfReady(); } catch { }
+            }
+
             // v2.3.8 (Task 2.1): surface index readiness as a structured envelope
             // BEFORE touching the body of SearchCore — keeping the envelope check
             // in a separate method that doesn't reference KBObject types means
@@ -1344,6 +1349,30 @@ namespace GxMcp.Worker.Services
                             string fieldValue = null;
                             if (string.Equals(field, "description", StringComparison.OrdinalIgnoreCase))
                                 fieldValue = e.Description;
+                            else if (string.Equals(field, "formula", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!string.IsNullOrEmpty(e.Formula))
+                                {
+                                    fieldValue = e.Formula;
+                                }
+                                else if (e.IsFormula || string.Equals(e.Type, "Attribute", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    KBObject obj2 = metadataCache.Object;
+                                    if (obj2 is global::Artech.Genexus.Common.Objects.Attribute attr)
+                                    {
+                                        try { fieldValue = attr.Formula?.ToString() ?? ""; } catch { fieldValue = ""; }
+                                    }
+                                    else if (obj2 != null)
+                                    {
+                                        try
+                                        {
+                                            dynamic dyn = obj2;
+                                            fieldValue = dyn?.Formula?.ToString() ?? "";
+                                        }
+                                        catch { fieldValue = ""; }
+                                    }
+                                }
+                            }
                             else if (string.Equals(field, "caption", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(field, "parmNames", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(field, "webForm", StringComparison.OrdinalIgnoreCase))

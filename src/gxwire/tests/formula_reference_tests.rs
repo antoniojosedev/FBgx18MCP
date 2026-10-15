@@ -121,3 +121,21 @@ fn formula_edges_use_the_defines_formula_kind() {
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].kind, EdgeKind::Calls(gxwire::model::CallMode::Static));
 }
+
+#[test]
+fn xml_property_formula_call_is_reported() {
+    // Regression guard for issue #532:
+    // In XML export, an attribute formula is stored in <Property><Name>Formula</Name><Value>...</Value></Property>
+    let xml = r#"
+<Attribute>
+    <Property><Name>Name</Name><Value>LimiteAnualDeAbatePeloCARFazendaId</Value></Property>
+    <Property><Name>Formula</Name><Value>procPessoaIdComRegistroNoCAR(LimiteAnualDeAbateEmpresaId, LimiteAnualDeAbateCodigoDeRegistroNoCAR, 0) IF not (LimiteAnualDeAbateCodigoDeRegistroNoCAR.IsEmpty())</Value></Property>
+</Attribute>
+"#;
+    let found = callees(xml);
+    assert!(
+        found.iter().any(|n| n.eq_ignore_ascii_case("procPessoaIdComRegistroNoCAR")),
+        "a Procedure called from XML <Property> Formula must be reported: {:?}",
+        found
+    );
+}

@@ -154,6 +154,37 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(NativeKnowledgeBaseEvidence.Describe(dir.Path));
         }
 
+        [Fact]
+        public void NativeKb_SqlServerWithoutMdf_IsRefused()
+        {
+            using var dir = new TempDir();
+            File.WriteAllText(Path.Combine(dir.Path, "knowledgebase.connection"), "Data Source=sqlserver;...");
+            File.WriteAllText(Path.Combine(dir.Path, "MyKb.gxw"), "");
+            foreach (var metadata in new[] { "CategoryViewConfig.xml", "iar_objs.xml", "nav_objs.xml" })
+            {
+                File.WriteAllText(Path.Combine(dir.Path, metadata), "<metadata/>");
+            }
+
+            var evidence = NativeKnowledgeBaseEvidence.Describe(dir.Path);
+            Assert.NotNull(evidence);
+            Assert.Contains(evidence!, t => t.ToString().Contains("knowledgebase.connection"));
+        }
+
+        [Fact]
+        public void NativeKb_WorkspaceAndMetadataXmlWithoutMdf_IsRefused()
+        {
+            using var dir = new TempDir();
+            File.WriteAllText(Path.Combine(dir.Path, "MyKb.gxw"), "");
+            foreach (var metadata in new[] { "CategoryViewConfig.xml", "iar_objs.xml", "nav_objs.xml" })
+            {
+                File.WriteAllText(Path.Combine(dir.Path, metadata), "<metadata/>");
+            }
+
+            var evidence = NativeKnowledgeBaseEvidence.Describe(dir.Path);
+            Assert.NotNull(evidence);
+            Assert.Contains(evidence!, t => t.ToString().Contains("MyKb.gxw"));
+        }
+
         [Theory]
         [InlineData("MyProc.txt")]
         [InlineData("MyAtt.gxd")]

@@ -25,6 +25,18 @@ namespace GxMcp.Worker.Services
         private SearchIndex _index;
         private string _indexPath;
 
+        public event Action<SearchIndex> OnIndexReady;
+
+        private void FireIndexReady()
+        {
+            try
+            {
+                var idx = _index;
+                if (idx != null) OnIndexReady?.Invoke(idx);
+            }
+            catch { }
+        }
+
         // ── Dirty-generation tracking (stale-index-forever fix) ─────────────────
         // Every in-memory mutation bumps _dirtyGeneration; a successful FlushToDisk
         // records the generation it captured at snapshot time into _flushedGeneration.
@@ -389,6 +401,7 @@ namespace GxMcp.Worker.Services
                 _state.EtaMs = null;
             }
             SignalStateChanged();
+            FireIndexReady();
         }
 
         // Fase 0: log [TIME-TO-USABLE] once per usable milestone so the SM warmup
@@ -2962,6 +2975,10 @@ namespace GxMcp.Worker.Services
                 entry.Length = attr.Length;
                 entry.Decimals = attr.Decimals;
                 entry.IsFormula = attr.Formula != null;
+                if (attr.Formula != null)
+                {
+                    try { entry.Formula = attr.Formula.ToString(); } catch { }
+                }
             }
             else if (obj is global::Artech.Genexus.Common.Objects.Table tbl)
             {

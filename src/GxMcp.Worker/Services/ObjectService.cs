@@ -214,6 +214,14 @@ namespace GxMcp.Worker.Services
             // beyond the KB identity accessors and would otherwise widen the
             // constructor every other caller of ObjectService has to satisfy.
             _conditionalRead = new ConditionalReadService(kbService, this);
+            if (_kbService != null)
+            {
+                var indexCache = _kbService.GetIndexCache();
+                if (indexCache != null)
+                {
+                    indexCache.OnIndexReady += index => StartSourceStoreBackfillIfReady(index);
+                }
+            }
         }
 
         public void SetDataInsightService(DataInsightService ds) { _dataInsightService = ds; }
@@ -268,12 +276,20 @@ namespace GxMcp.Worker.Services
         private IReadOnlyList<string> GetSourceStoreRequiredParts(SearchIndex.IndexEntry entry)
         {
             KBObject obj = FindObject(entry);
-            if (obj == null) throw new InvalidOperationException("The SDK object could not be resolved: " + entry.Guid);
+            if (obj == null)
+            {
+                if (_kbService?.GetKB()?.DesignModel != null) return Array.Empty<string>();
+                throw new InvalidOperationException("The SDK object could not be resolved: " + entry?.Guid);
+            }
             return GetSourceStoreRequiredParts(entry.Type, GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj));
         }
 
-        private void StartSourceStoreBackfillIfReady(SearchIndex index)
+        internal void StartSourceStoreBackfillIfReady(SearchIndex index = null)
         {
+            if (index == null)
+            {
+                index = _kbService?.GetIndexCache()?.TryGetLoadedIndex();
+            }
             if (!Configuration.SourceStoreBackfillEnabled || index?.Objects == null || index.Objects.Count == 0) return;
             var indexState = _kbService?.GetIndexCache()?.GetState();
             var backfillState = SourceStoreBackfillService.Instance.GetState();
@@ -299,7 +315,7 @@ namespace GxMcp.Worker.Services
             var store = SourceStoreService.Instance;
             var entryProvider = new Func<IReadOnlyList<SearchIndex.IndexEntry>>(() =>
             {
-                var loaded = _kbService.GetIndexCache().TryGetLoadedIndex();
+                var loaded = _kbService?.GetIndexCache()?.TryGetLoadedIndex();
                 return loaded?.Objects?.Values
                     .Where(e => e != null && !string.IsNullOrWhiteSpace(e.Guid))
                     .OrderByDescending(e => e.LastUpdate)
@@ -311,6 +327,16 @@ namespace GxMcp.Worker.Services
                 var result = new List<SourceStoreBackfillPart>();
                 if (entry == null) return null;
 
+                KBObject obj = FindObject(entry);
+                if (obj == null)
+                {
+                    if (_kbService?.GetKB()?.DesignModel != null)
+                    {
+                        return new List<SourceStoreBackfillPart> { new SourceStoreBackfillPart { IsDeleted = true } };
+                    }
+                    return null;
+                }
+
                 var actualParts = GetSourceStoreRequiredParts(entry);
                 var staleParts = actualParts
                     .Where(p => !store.IsStoredAndFresh(entry, new List<string> { p }))
@@ -318,9 +344,6 @@ namespace GxMcp.Worker.Services
                 // Discover supported parts before certifying coverage, but only read
                 // source content for stale parts.
                 if (staleParts.Count == 0) return result;
-
-                KBObject obj = FindObject(entry);
-                if (obj == null) return null;
 
                 foreach (string partName in staleParts)
                 {
