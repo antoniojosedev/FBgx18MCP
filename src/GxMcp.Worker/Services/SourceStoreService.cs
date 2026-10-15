@@ -176,7 +176,7 @@ namespace GxMcp.Worker.Services
 
         public SourceStoreService()
         {
-            _storeDirectory = Path.Combine(RuntimePaths.StateRoot, "source-store");
+            _storeDirectory = RuntimePaths.DurableSourceStoreRoot;
             Initialize();
         }
 
@@ -214,6 +214,94 @@ namespace GxMcp.Worker.Services
         public string StoreDirectory => _storeDirectory;
         public int StoredRecordCount => _records.Count;
 
+        /// <summary>
+        /// Removes all stored parts for the specified object GUID from catalog, trigram postings, certifications, and disk.
+        /// </summary>
+        public int RemoveObject(string guid)
+        {
+            if (string.IsNullOrWhiteSpace(guid)) return 0;
+            string targetGuid = guid.Trim().ToLowerInvariant();
+            int removedCount = 0;
+
+            var keysToRemove = _records.Keys
+                .Where(k => k.StartsWith(targetGuid + ":", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            foreach (var key in keysToRemove)
+            {
+                if (_records.TryRemove(key, out var rec))
+                {
+                    RemoveTrigramPostings(key);
+                    _certifications.TryRemove(key, out _);
+                    ApplyAccountingDelta(-rec.FileBytes);
+                    try
+                    {
+                        string fullPath = Path.Combine(_storeDirectory, rec.RelativeFilePath);
+                        if (File.Exists(fullPath)) File.Delete(fullPath);
+                    }
+                    catch
+                    {
+                        Interlocked.Increment(ref _orphanedFileCount);
+                    }
+                    removedCount++;
+                }
+            }
+
+            if (removedCount > 0)
+            {
+                MarkCatalogDirty();
+            }
+            return removedCount;
+        }
+
+        /// <summary>
+        /// Cleans up stale process-scoped stores from previous gateway/worker lifetimes.
+        /// </summary>
+        public static int TryCleanupOrphanedStores(string currentStateDir = null, TimeSpan? olderThan = null)
+        {
+            int cleaned = 0;
+            try
+            {
+                TimeSpan threshold = olderThan ?? TimeSpan.FromHours(1);
+                string currentStoreDir = currentStateDir ?? RuntimePaths.DurableSourceStoreRoot;
+                string stateBase = Path.GetDirectoryName(Path.GetDirectoryName(currentStoreDir));
+                if (string.IsNullOrWhiteSpace(stateBase) || !Directory.Exists(stateBase))
+                    return 0;
+
+                DateTime cutoff = DateTime.UtcNow - threshold;
+                foreach (string candidateDir in Directory.GetDirectories(stateBase))
+                {
+                    try
+                    {
+                        string candidateStore = Path.Combine(candidateDir, "source-store");
+                        if (!Directory.Exists(candidateStore)) continue;
+                        if (string.Equals(Path.GetFullPath(candidateStore), Path.GetFullPath(currentStoreDir), StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        DirectoryInfo di = new DirectoryInfo(candidateStore);
+                        if (di.LastWriteTimeUtc < cutoff)
+                        {
+                            Directory.Delete(candidateStore, recursive: true);
+                            cleaned++;
+                            if (Directory.GetFileSystemEntries(candidateDir).Length == 0)
+                            {
+                                Directory.Delete(candidateDir, recursive: false);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore transient access / lock errors
+                    }
+                }
+            }
+            catch
+            {
+                // Fail-safe
+            }
+            return cleaned;
+        }
+
         private void Initialize()
         {
             if (_initialized) return;
@@ -228,6 +316,7 @@ namespace GxMcp.Worker.Services
                     }
                     _initialized = true;
                     LoadCatalog();
+                    TryCleanupOrphanedStores();
                 }
                 catch (Exception ex)
                 {

@@ -353,6 +353,7 @@ namespace GxMcp.Gateway.Routers
                             // write when validationMode="specify" (rollback on spec errors).
                             validationMode = args?["validationMode"]?.ToString(),
                             rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                            verifyMode = args?["verifyMode"]?.ToString(),
                             baseVersion = args?["baseVersion"]?.ToString(),
                             transactionModule = args?["module"]?.ToString()
                         };

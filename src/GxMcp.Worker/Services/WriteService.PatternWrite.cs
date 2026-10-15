@@ -60,11 +60,13 @@ namespace GxMcp.Worker.Services
                 var plan = PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure);
                 if (plan.ErrorCode != null)
                 {
-                    string rejectionHint = currentPattern == null || currentPattern.IsWorkWithPlus
-                        ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
-                        : currentPattern.IsWorkWith
+                    string rejectionHint = (currentPattern != null && currentPattern.IsWorkWith)
                         ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; raw PatternInstance XML is limited to existing property changes."
-                        : $"{currentPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
+                        : (currentPattern != null && currentPattern.IsWorkWithPlus)
+                        ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
+                        : currentPattern != null
+                        ? $"{currentPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes."
+                        : "Structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
 
                     return CreateWriteError("Pattern edit rejected", target, partName,
                         plan.Error + " Use the appropriate SDK pattern authoring action for structural edits; this does not certify save isolation.",
@@ -85,7 +87,9 @@ namespace GxMcp.Worker.Services
                         ["verified"] = new JArray("xmlParse", "metadataPreserved", "structurePreserved", "diffVsCurrent"),
                         ["changes"] = plan.Changes,
                         ["savePathExercised"] = false,
-                        ["warning"] = currentPattern == null || currentPattern.IsWorkWithPlus
+                        ["warning"] = currentPattern == null
+                            ? "Pattern saves can still be rejected by the pattern's validator on save. This preview does not certify save isolation."
+                            : currentPattern.IsWorkWithPlus
                             ? "WorkWithPlus pattern saves can still be rejected by the WWP validator on save. This preview does not certify save isolation."
                             : currentPattern.Name + " pattern saves can still be rejected by the pattern's validator on save. This preview does not certify save isolation."
                     });

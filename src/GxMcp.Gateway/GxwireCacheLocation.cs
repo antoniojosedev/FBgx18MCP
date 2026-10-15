@@ -93,6 +93,7 @@ namespace GxMcp.Gateway
         {
             ("*.mdf", "Knowledge Base database"),
             ("*.ldf", "Knowledge Base database log"),
+            ("knowledgebase.connection", "Knowledge Base database connection"),
         };
 
         /// <summary>
@@ -148,9 +149,9 @@ namespace GxMcp.Gateway
 
             foreach (var (pattern, label) in markers)
             {
-                if (pattern == "GXLOCK")
+                if (!pattern.Contains('*'))
                 {
-                    if (File.Exists(Path.Combine(directory, "GXLOCK"))) found.Add("GXLOCK (" + label + ")");
+                    if (File.Exists(Path.Combine(directory, pattern))) found.Add(pattern + " (" + label + ")");
                     continue;
                 }
 
@@ -174,10 +175,17 @@ namespace GxMcp.Gateway
             new[] { "txt", "gxd", "xml", "gx", "prc", "trn", "wp", "sdp" },
             StringComparer.OrdinalIgnoreCase);
 
+        private static readonly HashSet<string> MetadataFileNames = new HashSet<string>(
+            new[] { "CategoryViewConfig.xml", "iar_objs.xml", "nav_objs.xml" },
+            StringComparer.OrdinalIgnoreCase);
+
         internal static bool HasSourceText(string directory)
         {
             foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
             {
+                string fileName = Path.GetFileName(path);
+                if (MetadataFileNames.Contains(fileName)) continue;
+
                 string ext = Path.GetExtension(path).TrimStart('.');
                 if (ext.Length > 0 && SourceExtensions.Contains(ext)) return true;
             }

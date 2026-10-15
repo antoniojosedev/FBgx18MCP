@@ -33,12 +33,14 @@ namespace GxMcp.Worker.Services
         // must not be confused with a missing record.
         public bool IsEmpty => Source != null && Source.Length == 0;
         public bool IsReadFailure => !ReadSucceeded || Source == null;
+        public bool IsDeleted { get; set; }
     }
 
     /// <summary>Persisted, resumable source-store population state.</summary>
     public sealed class SourceStoreBackfillState
     {
         public string State { get; set; } = "off";
+        public string TriggerState { get; set; }
         public string Cursor { get; set; }
         public string CatalogSignature { get; set; }
         public int CursorIndex { get; set; }
@@ -46,6 +48,7 @@ namespace GxMcp.Worker.Services
         public int ProcessedObjects { get; set; }
         public int StoredObjects { get; set; }
         public int StaleObjects { get; set; }
+        public int RemovedObjects { get; set; }
         public int RetryCount { get; set; }
         public int? EtaMs { get; set; }
         public DateTime? StartedAtUtc { get; set; }
@@ -53,11 +56,22 @@ namespace GxMcp.Worker.Services
         public DateTime? CompletedAtUtc { get; set; }
         public string LastError { get; set; }
 
+        public string ResolveTriggerState()
+        {
+            if (!string.IsNullOrWhiteSpace(TriggerState)) return TriggerState;
+            if (string.Equals(State, "off", StringComparison.OrdinalIgnoreCase))
+            {
+                return Configuration.SourceStoreBackfillEnabled ? "waitingForTrigger" : "disabledByConfig";
+            }
+            return State;
+        }
+
         public JObject ToJson()
         {
             return new JObject
             {
                 ["state"] = State,
+                ["triggerState"] = ResolveTriggerState(),
                 ["cursor"] = Cursor,
                 ["catalogSignature"] = CatalogSignature,
                 ["cursorIndex"] = CursorIndex,
@@ -65,6 +79,7 @@ namespace GxMcp.Worker.Services
                 ["processedObjects"] = ProcessedObjects,
                 ["storedObjects"] = StoredObjects,
                 ["staleObjects"] = StaleObjects,
+                ["removedObjects"] = RemovedObjects,
                 ["retryCount"] = RetryCount,
                 ["etaMs"] = EtaMs == null ? JValue.CreateNull() : new JValue(EtaMs.Value),
                 ["startedAtUtc"] = StartedAtUtc?.ToString("o"),
@@ -80,6 +95,7 @@ namespace GxMcp.Worker.Services
             return new SourceStoreBackfillState
             {
                 State = json["state"]?.ToString() ?? "off",
+                TriggerState = json["triggerState"]?.ToString(),
                 Cursor = json["cursor"]?.ToString(),
                 CatalogSignature = json["catalogSignature"]?.ToString(),
                 CursorIndex = json["cursorIndex"]?.ToObject<int>() ?? 0,
@@ -87,6 +103,7 @@ namespace GxMcp.Worker.Services
                 ProcessedObjects = json["processedObjects"]?.ToObject<int>() ?? 0,
                 StoredObjects = json["storedObjects"]?.ToObject<int>() ?? 0,
                 StaleObjects = json["staleObjects"]?.ToObject<int>() ?? 0,
+                RemovedObjects = json["removedObjects"]?.ToObject<int>() ?? 0,
                 RetryCount = json["retryCount"]?.ToObject<int>() ?? 0,
                 EtaMs = json["etaMs"]?.Type == JTokenType.Integer ? json["etaMs"].ToObject<int>() : (int?)null,
                 StartedAtUtc = ParseDate(json["startedAtUtc"]?.ToString()),
@@ -354,6 +371,21 @@ namespace GxMcp.Worker.Services
                         SetSliceError("The SDK object could not be resolved for source-store backfill: " + entry.Guid);
                         sliceHadError = true;
                         break;
+                    }
+
+                    if (parts.Count == 1 && parts[0].IsDeleted)
+                    {
+                        _store.RemoveObject(entry.Guid);
+                        lock (_gate)
+                        {
+                            _state.RemovedObjects++;
+                            _state.ProcessedObjects++;
+                            _state.CursorIndex = i + 1;
+                            _state.Cursor = EntryIdentity(entry);
+                            _state.UpdatedAtUtc = DateTime.UtcNow;
+                        }
+                        processed++;
+                        continue;
                     }
 
                     List<string> requiredParts = null;

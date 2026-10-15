@@ -161,15 +161,75 @@ namespace GxMcp.Worker.Services
             return McpResponse.Ok(code: "ImpactComputed", target: entry.Name, result: result);
         }
 
+        internal virtual List<string> TryGetSdkCallers(string name)
+        {
+            if (_objects == null || string.IsNullOrEmpty(name)) return null;
+            try
+            {
+                var obj = _objects.FindObject(name);
+                if (obj == null) return null;
+                dynamic kb = null;
+                try { kb = _kb?.GetKB(); } catch { }
+
+                var list = new List<string>();
+                const int cap = 50;
+                foreach (var r in obj.GetReferencesTo())
+                {
+                    if (list.Count >= cap) break;
+                    try
+                    {
+                        var s = kb?.DesignModel.Objects.Get(r.From);
+                        if (s != null)
+                        {
+                            string sName = s.Name;
+                            if (!string.IsNullOrEmpty(sName) && !list.Contains(sName, StringComparer.OrdinalIgnoreCase))
+                                list.Add(sName);
+                        }
+                    }
+                    catch { }
+                }
+                return list;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private JObject RunImpact(SearchIndex index, SearchIndex.IndexEntry entry, string direction, int maxDepth, int maxNodes, string typeFilter)
         {
             // The adjacency comes from enrichment: promote the root so its own edges are read.
             if (!entry.IsEnriched)
                 try { _indexCache.GetEnrichmentQueue()?.PromoteAsync(entry).GetAwaiter().GetResult(); } catch { }
 
+            bool usedSdkFallback = false;
+            bool sdkCheckFailed = false;
+
+            IReadOnlyList<string> CallerLookup(string n)
+            {
+                var callers = _graph?.GetCallers(n);
+                if (callers != null && callers.Count > 0)
+                    return callers;
+
+                var sdkCallers = TryGetSdkCallers(n);
+                if (sdkCallers != null)
+                {
+                    if (sdkCallers.Count > 0)
+                    {
+                        usedSdkFallback = true;
+                        return sdkCallers;
+                    }
+                }
+                else
+                {
+                    sdkCheckFailed = true;
+                }
+                return callers ?? new List<string>();
+            }
+
             string TypeOf(string n) => index.FindByName(n).FirstOrDefault()?.Type;
             ImpactResult impact = ImpactAnalyzer.Analyze(entry.Name, direction, maxDepth, maxNodes,
-                n => _graph.GetCallers(n), n => _graph.GetCallees(n), TypeOf, typeFilter);
+                CallerLookup, n => _graph.GetCallees(n), TypeOf, typeFilter);
 
             int enriched = 0, unenriched = 0;
             foreach (string name in impact.Order)
@@ -178,7 +238,29 @@ namespace GxMcp.Worker.Services
                 if (done) enriched++; else unenriched++;
             }
             int total = enriched + unenriched;
-            string trust = unenriched == 0 ? "complete" : "partial:" + (total == 0 ? 0 : 100 * enriched / total);
+            string trust;
+            string coverageNote = null;
+
+            if (usedSdkFallback)
+            {
+                trust = "partial:sdk-fallback";
+                coverageNote = "Caller edges were augmented from SDK references because index edges were missing or unenriched; depth traversal may be incomplete.";
+            }
+            else if (unenriched > 0)
+            {
+                trust = "partial:" + (total == 0 ? 0 : 100 * enriched / total);
+                coverageNote = "Callers/callees are filled by index enrichment; " + unenriched + " of " + total
+                    + " objects were not enriched, so an empty or short set is partial coverage, not a confirmed zero.";
+            }
+            else if (sdkCheckFailed && impact.Nodes.Count == 0 && (direction == "up" || direction == "both"))
+            {
+                trust = "partial:unconfirmed";
+                coverageNote = "The index holds no caller edges for this object and SDK reference check could not be completed; an empty set is unconfirmed.";
+            }
+            else
+            {
+                trust = "complete";
+            }
 
             var truncatedBy = new JArray();
             if (impact.TruncatedByDepth) truncatedBy.Add("maxDepth");
@@ -204,9 +286,7 @@ namespace GxMcp.Worker.Services
                     ["truncatedBy"] = truncatedBy
                 },
                 ["fieldTrust"] = trust,
-                ["coverageNote"] = unenriched == 0 ? null
-                    : "Callers/callees are filled by index enrichment; " + unenriched + " of " + total
-                        + " objects were not enriched, so an empty or short set is partial coverage, not a confirmed zero."
+                ["coverageNote"] = coverageNote
             };
         }
 

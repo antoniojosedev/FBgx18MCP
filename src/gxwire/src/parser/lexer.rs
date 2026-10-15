@@ -20,18 +20,11 @@ static RE_CALL_FUNC: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_CALL_METHOD: LazyLock<Regex> = LazyLock::new(|| {
-    // `.Popup(` opens a Transaction in a popup and is a real call form in
-    // Events/Rules, not decoration. It was absent, so every popup invocation
-    // looked like an object with no callers (#500).
-    Regex::new(r"(?i)(?:^|[\s,;(=])([&]?[a-zA-Z0-9_#]+)\s*\.\s*(?:call|popup)\s*\(").unwrap()
+    // `.Popup(` opens a Transaction in a popup, `.Link(` creates a link URL,
+    // and `.Call(` is a standard call form in Events/Rules.
+    Regex::new(r"(?i)(?:^|[\s,;(=])([&]?[a-zA-Z0-9_#]+)\s*\.\s*(call|popup|link)\s*\(").unwrap()
 });
 
-/// GeneXus lets a Procedure be invoked as a function: `procName(args)`. There
-/// was no rule for it, so the most common call shape in a Knowledge Base was
-/// invisible to the graph: 36 textual occurrences collapsed to one caller
-/// (#500). Deliberately narrow - a bare `identifier(` is only a call when the
-/// identifier is not a keyword or a built-in function, because matching
-/// everything would invent edges to phantom nodes for every built-in.
 /// GeneXus lets a Procedure be invoked as a function: `procName(args)`. There
 /// was no rule for it, so the most common call shape in a Knowledge Base was
 /// invisible to the graph: 36 textual occurrences collapsed to one caller
@@ -56,7 +49,12 @@ static RE_SUBMIT: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\blink\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
+    // Standalone `Link(Target, ...)`. Uses a delimiter prefix so `Obj.Link(` is not matched here.
+    Regex::new(r"(?i)(?:^|[\s,;(=])link\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
+});
+
+static RE_XML_PROPERTY_FORMULA: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<Property[^>]*>\s*<Name>\s*Formula\s*</Name>\s*<Value>(.*?)</Value>\s*</Property>").unwrap()
 });
 
 static RE_BC_METHOD: LazyLock<Regex> = LazyLock::new(|| {
@@ -251,11 +249,14 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
             }
         }
 
-        // 2. Target.Call(...)
+        // 2. Target.Call(...), Target.Popup(...), Target.Link(...)
         if let Some(caps) = RE_CALL_METHOD.captures(line) {
             if let Some(target) = caps.get(1) {
                 let name = target.as_str();
-                let mode = if name.starts_with('&') {
+                let method = caps.get(2).map(|m| m.as_str().to_ascii_lowercase()).unwrap_or_default();
+                let mode = if method == "link" {
+                    CallMode::Link
+                } else if name.starts_with('&') {
                     CallMode::Dynamic
                 } else {
                     CallMode::Static
@@ -427,6 +428,37 @@ pub fn formula_references(source: &str) -> Vec<ParsedSymbolRef> {
             }
 
             let within = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            let consumed = formula[..within].lines().count() as u32;
+            let line = base_line + consumed - u32::from(within == 0);
+
+            out.push(ParsedSymbolRef {
+                target_name: callee.to_string(),
+                kind: EdgeKind::Calls(CallMode::Static),
+                line,
+            });
+        }
+    }
+
+    for caps in RE_XML_PROPERTY_FORMULA.captures_iter(source) {
+        let Some(body) = caps.get(1) else { continue };
+        let raw_formula = body.as_str();
+        let formula = raw_formula
+            .replace("&gt;", ">")
+            .replace("&lt;", "<")
+            .replace("&quot;", "\"")
+            .replace("&amp;", "&");
+
+        let offset = caps.get(0).map(|m| m.start()).unwrap_or(0);
+        let base_line = source[..offset].lines().count() as u32 + 1;
+
+        for f_caps in RE_FUNCTION_CALL.captures_iter(&formula) {
+            let Some(name) = f_caps.get(1) else { continue };
+            let callee = name.as_str();
+            if is_call_keyword_or_builtin(callee) {
+                continue;
+            }
+
+            let within = f_caps.get(0).map(|m| m.start()).unwrap_or(0);
             let consumed = formula[..within].lines().count() as u32;
             let line = base_line + consumed - u32::from(within == 0);
 

@@ -15,6 +15,11 @@ namespace GxMcp.Worker.Helpers
             "state",
             GetOperationalStateKey());
 
+        internal static string DurableSourceStoreRoot => ResolveDurableSourceStoreRoot(
+            Environment.GetEnvironmentVariable("GXMCP_STATE_DIR"),
+            GetLocalAppData(),
+            GetDurableKbKey());
+
         internal static string LogsRoot => ResolveRoot(
             Environment.GetEnvironmentVariable("GXMCP_LOG_DIR"),
             GetLocalAppData(),
@@ -48,6 +53,58 @@ namespace GxMcp.Worker.Helpers
         {
             string path = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             return string.IsNullOrWhiteSpace(path) ? Path.GetTempPath() : path;
+        }
+
+        internal static string ResolveDurableSourceStoreRoot(string configuredRoot, string localAppData, string durableKbKey)
+        {
+            string baseDir;
+            if (!string.IsNullOrWhiteSpace(configuredRoot))
+            {
+                baseDir = Path.GetFullPath(configuredRoot.Trim());
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(localAppData))
+                    localAppData = Path.GetTempPath();
+                baseDir = Path.Combine(localAppData, "GenexusMCP", "state");
+            }
+
+            return Path.GetFullPath(Path.Combine(
+                baseDir,
+                HashKey("kb-store:" + (string.IsNullOrWhiteSpace(durableKbKey) ? "standalone" : durableKbKey)),
+                "source-store"));
+        }
+
+        internal static string GetDurableKbKey()
+        {
+            string kbId = Environment.GetEnvironmentVariable("GXMCP_KB_ID");
+            string kbPath = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            string generation = Environment.GetEnvironmentVariable("GXMCP_KB_GENERATION") ?? "0";
+
+            string normalizedPath = string.Empty;
+            if (!string.IsNullOrWhiteSpace(kbPath))
+            {
+                try
+                {
+                    normalizedPath = Path.GetFullPath(kbPath.Trim()).TrimEnd('\\', '/').ToLowerInvariant();
+                }
+                catch
+                {
+                    normalizedPath = kbPath.Trim().ToLowerInvariant();
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(kbId))
+            {
+                return kbId.Trim() + "|" + normalizedPath + "|g" + generation;
+            }
+
+            if (!string.IsNullOrWhiteSpace(normalizedPath))
+            {
+                return normalizedPath + "|g" + generation;
+            }
+
+            return "standalone";
         }
 
         private static string GetOperationalStateKey()
