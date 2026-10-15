@@ -55,7 +55,7 @@ if ($unavailable.status -ne 'incomplete' -or
     throw 'An unavailable local dependency must be incomplete and block push readiness.'
 }
 
-foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails')) {
+foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
     $functionDefinition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -67,7 +67,176 @@ foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 
 
 . (Join-Path $root 'scripts\release-contract.ps1')
 
-# --- Fork-local pre-push redaction pins -------------------------------------
+# --- Whitespace classifier (pure) -------------------------------------------
+# The classifier is the security-relevant surface: an unknown or case-folded
+# reason must fail closed, and a ':' in a path must not be mistaken for the line
+# separator. Each pin below maps to the manuscript's numbered case.
+function Assert-WhitespaceClassification {
+    param(
+        [Parameter(Mandatory = $true)][string]$CaseName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory = $true)][int]$Advisories,
+        [Parameter(Mandatory = $true)][int]$Blocking,
+        [Parameter(Mandatory = $true)][int]$Noise
+    )
+    $classification = Get-WhitespaceClassification -Text $Text
+    $actualAdvisories = @($classification.Advisories).Count
+    $actualBlocking = @($classification.Blocking).Count
+    $actualNoise = @($classification.NoiseLines).Count
+    if ($actualAdvisories -ne $Advisories -or $actualBlocking -ne $Blocking -or $actualNoise -ne $Noise) {
+        throw "Whitespace case '$CaseName': expected A=$Advisories B=$Blocking N=$Noise, got A=$actualAdvisories B=$actualBlocking N=$actualNoise."
+    }
+    return $classification
+}
+
+$noiseLine = "warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it"
+
+Assert-WhitespaceClassification -CaseName '1 empty' -Text '' -Advisories 0 -Blocking 0 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '2 trailing' -Text "ws.txt:1: trailing whitespace.`n+a   " -Advisories 1 -Blocking 0 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '3 blank-at-eof' -Text 'eof.txt:2: new blank line at EOF.' -Advisories 1 -Blocking 0 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '4 space-before-tab' -Text "tab.txt:4: space before tab in indent.`n+`t z" -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '5 conflict marker' -Text 'cm.txt:2: leftover conflict marker' -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '6 conflict marker with period (unknown, fail-closed)' -Text 'cm.txt:2: leftover conflict marker.' -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '7 unknown reason' -Text 'x.txt:1: some unknown reason.' -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '8 advisory alternation' -Text "a.txt:1: trailing whitespace.`n+a`nb.txt:1: trailing whitespace.`n+b`nc.txt:1: trailing whitespace.`n+c" -Advisories 3 -Blocking 0 -Noise 0 | Out-Null
+$drivePath = Assert-WhitespaceClassification -CaseName '9 drive path' -Text "C:/x/y.md:9: trailing whitespace.`n+" -Advisories 1 -Blocking 0 -Noise 0
+if (@($drivePath.Advisories)[0].path -ne 'C:/x/y.md' -or @($drivePath.Advisories)[0].line -ne 9) {
+    throw "A drive-letter path must be preserved verbatim; got '$(@($drivePath.Advisories)[0].path)'."
+}
+$quotedPath = Assert-WhitespaceClassification -CaseName '10 quoted path' -Text "`"a b/c d.md`":3: trailing whitespace.`n+ " -Advisories 1 -Blocking 0 -Noise 0
+if (@($quotedPath.Advisories)[0].path -ne 'a b/c d.md') {
+    throw "A quoted path must drop only its outer quotes; got '$(@($quotedPath.Advisories)[0].path)'."
+}
+Assert-WhitespaceClassification -CaseName '11 advisory plus blocking' -Text "a.txt:1: trailing whitespace.`n+b`nc.txt:2: space before tab in indent.`n+`t z" -Advisories 1 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '12 content consumed' -Text "ws.txt:1: trailing whitespace.`n+function Send(`$obj) { " -Advisories 1 -Blocking 0 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '13 two advisories no leak' -Text 'eof.txt:2: new blank line at EOF.' -Advisories 1 -Blocking 0 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '14 fatal then stray content' -Text "ws.txt:1: trailing whitespace.`nfatal: bad revision`n+conteudo" -Advisories 1 -Blocking 2 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '15 noise plus advisory' -Text "$noiseLine`nws.txt:1: trailing whitespace.`n+a" -Advisories 1 -Blocking 0 -Noise 1 | Out-Null
+Assert-WhitespaceClassification -CaseName '16 two noises' -Text "$noiseLine`n$noiseLine" -Advisories 0 -Blocking 0 -Noise 2 | Out-Null
+Assert-WhitespaceClassification -CaseName '17 other warning' -Text 'warning: something else' -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '18 record-shaped content after advisory' -Text "ws.txt:1: trailing whitespace.`n+weird.txt:9: indented with space." -Advisories 1 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '19 CRLF' -Text "ws.txt:1: trailing whitespace.`r`n+a" -Advisories 1 -Blocking 0 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '20 quoted space-before-tab' -Text "`"a b.md`":2: space before tab in indent.`n+`t z" -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '21 record after advisory record' -Text "eof.txt:2: new blank line at EOF.`nws.txt:1: trailing whitespace." -Advisories 2 -Blocking 0 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '22 advisory without content then fatal' -Text "ws.txt:1: trailing whitespace.`nfatal: x" -Advisories 1 -Blocking 1 -Noise 0 | Out-Null
+$caseFold = Assert-WhitespaceClassification -CaseName '23 case sensitivity' -Text 'ws.txt:1: Trailing whitespace.' -Advisories 0 -Blocking 1 -Noise 0
+if (@($caseFold.Blocking).Count -ne 1) { throw 'A case-folded reason must fail closed (m-case).' }
+Assert-WhitespaceClassification -CaseName '24 blank line between records' -Text "ws.txt:1: trailing whitespace.`n+a`n`neof.txt:2: new blank line at EOF." -Advisories 2 -Blocking 0 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '25 note' -Text 'note: whatever' -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '26 hint' -Text 'hint: whatever' -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+$absolutePath = Assert-WhitespaceClassification -CaseName '27 absolute path' -Text "/tmp/a b.md:1: trailing whitespace.`n+a" -Advisories 1 -Blocking 0 -Noise 0
+if (@($absolutePath.Advisories)[0].path -ne '/tmp/a b.md') {
+    throw "An absolute path with a space must be preserved; got '$(@($absolutePath.Advisories)[0].path)'."
+}
+Assert-WhitespaceClassification -CaseName '28 leading content line' -Text '+just content' -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '29 consumed then stray' -Text "ws.txt:1: trailing whitespace.`n+ok`n+stray`n+stray2" -Advisories 1 -Blocking 2 -Noise 0 | Out-Null
+Assert-WhitespaceClassification -CaseName '30 non-numeric line' -Text 'a.txt:x: trailing whitespace.' -Advisories 0 -Blocking 1 -Noise 0 | Out-Null
+$cQuoted = Assert-WhitespaceClassification -CaseName '31 C-quoted path' -Text '"a\tb.md":1: trailing whitespace.' -Advisories 1 -Blocking 0 -Noise 0
+if (@($cQuoted.Advisories)[0].path -ne 'a\tb.md') {
+    throw "A C-quoted path must keep its escaped payload byte for byte; got '$(@($cQuoted.Advisories)[0].path)'."
+}
+$ambiguousPath = Assert-WhitespaceClassification -CaseName '32 colon-digit path' -Text 'a.md:1:1: trailing whitespace.' -Advisories 1 -Blocking 0 -Noise 0
+if (@($ambiguousPath.Advisories)[0].path -ne 'a.md:1' -or @($ambiguousPath.Advisories)[0].line -ne 1) {
+    throw "A path containing ':digit:' must split on the last ':digit: '; got path='$(@($ambiguousPath.Advisories)[0].path)' line=$(@($ambiguousPath.Advisories)[0].line)."
+}
+
+# --- Whitespace phase (seam CapturedResult) ---------------------------------
+function New-CapturedGitResult {
+    param(
+        [string[]]$Output = @(),
+        [int]$ExitCode = 0,
+        [AllowNull()][object]$ErrorMessage = $null
+    )
+    return [pscustomobject]@{ output = @($Output); exitCode = $ExitCode; error = $ErrorMessage; durationSeconds = 0.01 }
+}
+
+$p2Log = @(
+    'src/GxMcp.Worker.Tests/SemanticOpsMultilineFormulaTests.cs:45: trailing whitespace.'
+    '+            '
+    'src/GxMcp.Worker.Tests/SemanticOpsMultilineFormulaTests.cs:82: trailing whitespace.'
+    '+            '
+)
+$phasePass = Invoke-GitWhitespacePhase -Name 'seam pass' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output $p2Log -ExitCode 2)
+if ($phasePass.status -ne 'passed' -or @($phasePass.advisories).Count -ne 2 -or $null -ne $phasePass.reason) {
+    throw 'A hygiene-only whitespace phase must pass with its advisories exposed and no reason.'
+}
+if (@($phasePass.advisories)[0].reason -ne 'trailing whitespace' -or @($phasePass.advisories)[0].line -ne 45) {
+    throw 'An advisory must carry a canonical reason without a trailing period and its integer line.'
+}
+if (Test-PhaseMechanicalFailure -Phase $phasePass) { throw 'A passed advisory phase is not a mechanical failure.' }
+
+$phaseFail = Invoke-GitWhitespacePhase -Name 'seam fail' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output @('tab.txt:4: space before tab in indent.', "+`t z") -ExitCode 2)
+if ($phaseFail.status -ne 'failed' -or @($phaseFail.blocking).Count -ne 1) {
+    throw 'A real whitespace defect must fail the phase.'
+}
+if (-not (Test-PhaseMechanicalFailure -Phase $phaseFail)) { throw 'A failed whitespace phase is a mechanical failure.' }
+
+$phaseEmpty = Invoke-GitWhitespacePhase -Name 'seam empty' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output @() -ExitCode 0)
+if ($phaseEmpty.status -ne 'passed' -or @($phaseEmpty.advisories).Count -ne 0) {
+    throw 'Empty output at exit 0 must pass cleanly.'
+}
+$phaseEmptyNonZero = Invoke-GitWhitespacePhase -Name 'seam empty fail' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output @() -ExitCode 2)
+if ($phaseEmptyNonZero.status -ne 'failed') { throw 'Empty output at a nonzero exit must fail.' }
+
+$phaseNoiseOnly = Invoke-GitWhitespacePhase -Name 'seam noise' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output @($noiseLine) -ExitCode 0)
+if ($phaseNoiseOnly.status -ne 'passed' -or @($phaseNoiseOnly.noiseLines).Count -ne 1) {
+    throw 'Noise-only output at exit 0 must pass with the noise recorded.'
+}
+$phaseNoiseFail = Invoke-GitWhitespacePhase -Name 'seam noise fail' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output @($noiseLine) -ExitCode 2)
+if ($phaseNoiseFail.status -ne 'failed') { throw 'Noise-only output at a nonzero exit must fail closed.' }
+
+foreach ($shortCircuit in @(
+        (New-CapturedGitResult -Output @('fatal: bad revision') -ExitCode 128),
+        (New-CapturedGitResult -Output $p2Log -ExitCode 128))) {
+    $phaseShort = Invoke-GitWhitespacePhase -Name 'seam 128' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult $shortCircuit
+    if ($phaseShort.status -ne 'failed' -or $phaseShort.reason -ne 'git diff --check exited with 128' -or
+        @($phaseShort.advisories).Count -ne 0 -or @($phaseShort.blocking).Count -ne 0) {
+        throw 'An exit code outside {0,1,2} must short-circuit to a failed phase with no advisories and no blocking evidence (m-exit).'
+    }
+}
+
+$phaseExitZeroBlocking = Invoke-GitWhitespacePhase -Name 'seam exit-0 blocking' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output @('tab.txt:4: space before tab in indent.', "+`t z") -ExitCode 0)
+if ($phaseExitZeroBlocking.status -ne 'failed') {
+    throw 'A recognized blocking record at exit 0 must fail closed (frontier F5 / m-exit0).'
+}
+
+$phaseKeepsExit = Invoke-GitWhitespacePhase -Name 'seam keeps exit' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output $p2Log -ExitCode 2)
+if ($phaseKeepsExit.exitCode -ne 2 -or $phaseKeepsExit.status -ne 'passed') {
+    throw 'A passed advisory phase must preserve the real git exit code.'
+}
+
+$advisorySummary = [ordered]@{
+    status           = 'passed'
+    baseRef          = 'origin/main'
+    headCommit       = 'deadbeef'
+    commitsAhead     = 1
+    commitsBehind    = 0
+    workingTreeDirty = $false
+    pushReadiness    = 'readyLocal'
+    reasons          = @()
+    phases           = New-Object System.Collections.Generic.List[object]
+}
+[void]$advisorySummary.phases.Add($phaseKeepsExit)
+$advisoryText = (Write-TextSummary -Summary $advisorySummary 6>&1 | Out-String)
+if ($advisoryText -notmatch 'advisory: src/GxMcp\.Worker\.Tests/SemanticOpsMultilineFormulaTests\.cs:45: trailing whitespace') {
+    throw 'The text summary must print advisories even when the phase passed.'
+}
+
+# --- Command composition (pure) ---------------------------------------------
+$expectedArguments = @(
+    '-C', $root
+    '-c', 'color.ui=never'
+    '-c', 'core.quotePath=false'
+    '-c', 'core.whitespace=blank-at-eol,blank-at-eof,space-before-tab'
+    'diff', '--check', '--no-color'
+)
+if (((Get-WhitespaceDiffArguments) -join '|') -cne ($expectedArguments -join '|')) {
+    throw 'The whitespace diff arguments must pin the locale-independent whitespace set and --no-color (m-arg).'
+}
+if (((Get-WhitespaceDiffArguments -Range 'origin/main..HEAD') -join '|') -cne (($expectedArguments + 'origin/main..HEAD') -join '|')) {
+    throw 'An explicit range must append after the fixed arguments.'
+}
+
 # The pre-push checker delegates to Protect-GxMcpReleaseText, so the fork does not
 # own the canonical redaction cases (the upstream test-release-contract.ps1 pins
 # those for #326). These two guarantees are the fork's own and are pinned here:
@@ -534,7 +703,17 @@ foreach ($marker in @(
         'release-contract.ps1',
         'Remove-StalePrePushArtifacts',
         'Test-ReleasePhaseStatusUnexpected',
-        'gxmcp-pre-push-'
+        'gxmcp-pre-push-',
+        'gxmcp-pre-push/2',
+        'advisories',
+        'noiseLines',
+        'Test-PhaseMechanicalFailure',
+        'Get-WhitespaceClassification',
+        'Get-WhitespaceDiffArguments',
+        'Invoke-GitWhitespacePhase',
+        'CapturedResult',
+        'core.whitespace',
+        '--no-color'
     )) {
     if ($source -notmatch [regex]::Escape($marker)) { throw "Checker is missing contract marker: $marker" }
 }

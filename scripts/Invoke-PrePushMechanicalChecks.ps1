@@ -186,6 +186,243 @@ function Get-GitLines {
     }
 }
 
+function New-WhitespaceAdvisory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Line,
+        [Parameter(Mandatory = $true)][string]$Reason
+    )
+
+    $normalizedPath = $Path
+    if ($Path.Length -ge 2 -and $Path.StartsWith('"') -and $Path.EndsWith('"')) {
+        # A quoted path keeps its C-quoted payload byte for byte; only the outer
+        # quotes are dropped.
+        $normalizedPath = $Path.Substring(1, $Path.Length - 2)
+    } else {
+        $normalizedPath = $Path.Replace('\', '/')
+    }
+
+    return [pscustomobject]@{
+        path = $normalizedPath
+        line = [int]$Line
+        reason = $Reason
+    }
+}
+
+function Get-WhitespaceClassification {
+    param([AllowNull()][string]$Text)
+
+    $advisories = New-Object System.Collections.Generic.List[object]
+    $blocking = New-Object System.Collections.Generic.List[string]
+    $noiseLines = New-Object System.Collections.Generic.List[string]
+    $pending = $false
+
+    if (-not [string]::IsNullOrEmpty($Text)) {
+        foreach ($line in @($Text -split '\r?\n')) {
+            # Rule 0: a blank or whitespace-only line carries no finding and does
+            # not disturb the pending-content state. It is required because the
+            # whitespace phase feeds this text straight from Invoke-NativeCapture,
+            # so it has NOT been filtered the way Get-GitLines filters its lines;
+            # without this rule a blank line would fall to rule 4 and block.
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+            # Rule 1: a git whitespace record. It always closes the previous
+            # pending state before it can open a new one.
+            $record = [regex]::Match($line, '^(?<path>"?.+?"?):(?<line>\d+): (?<reason>.*)$')
+            if ($record.Success) {
+                $pending = $false
+                $reason = $record.Groups['reason'].Value
+                # -ceq, never -eq: a case-folded comparison would silently
+                # reclassify 'Trailing whitespace.' (mutation m-case).
+                if ($reason -ceq 'trailing whitespace.') {
+                    [void]$advisories.Add((New-WhitespaceAdvisory -Path $record.Groups['path'].Value -Line $record.Groups['line'].Value -Reason 'trailing whitespace'))
+                    $pending = $true
+                } elseif ($reason -ceq 'new blank line at EOF.') {
+                    [void]$advisories.Add((New-WhitespaceAdvisory -Path $record.Groups['path'].Value -Line $record.Groups['line'].Value -Reason 'new blank line at EOF'))
+                } elseif ($reason -ceq 'space before tab in indent.') {
+                    [void]$blocking.Add($line)
+                    $pending = $true
+                } elseif ($reason -ceq 'leftover conflict marker') {
+                    [void]$blocking.Add($line)
+                } else {
+                    # Unknown reason: fail closed.
+                    [void]$blocking.Add($line)
+                }
+                continue
+            }
+
+            # Rule 2: the '+' content line of the record just seen. Consuming it
+            # closes the pending state, so a later '+' with no record above it is
+            # a finding, not content (mutation m2b).
+            if ($pending -and $line -cmatch '^\+') {
+                $pending = $false
+                continue
+            }
+
+            # Rule 3: the single enumerated EOL-conversion warning. It is noise,
+            # never a finding, and leaves pending state untouched.
+            if ($line -cmatch "^(?i)warning: in the working copy of '.+', (LF will be replaced by CRLF|CRLF will be replaced by LF) the next time Git touches it$") {
+                [void]$noiseLines.Add($line)
+                continue
+            }
+
+            # Rule 4: anything else is a finding (fail closed) and closes pending.
+            [void]$blocking.Add($line)
+            $pending = $false
+        }
+    }
+
+    return [pscustomobject]@{
+        Advisories = $advisories.ToArray()
+        Blocking   = $blocking.ToArray()
+        NoiseLines = $noiseLines.ToArray()
+    }
+}
+
+function Get-WhitespaceDiffArguments {
+    param([AllowNull()][string]$Range)
+
+    $arguments = @(
+        '-C', $root
+        '-c', 'color.ui=never'
+        '-c', 'core.quotePath=false'
+        '-c', 'core.whitespace=blank-at-eol,blank-at-eof,space-before-tab'
+        'diff', '--check', '--no-color'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($Range)) {
+        $arguments += $Range
+    }
+    return $arguments
+}
+
+function Test-PhaseMechanicalFailure {
+    param([Parameter(Mandatory = $true)][object]$Phase)
+
+    return ($Phase.status -ne 'passed')
+}
+
+function Invoke-GitWhitespaceCapture {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    # Pin the C locale for the capture so the reasons git prints are stable, then
+    # restore the caller's environment exactly: an absent variable must stay
+    # absent, which is not the same as setting it to an empty string.
+    $names = @('LC_ALL', 'LANGUAGE', 'LANG', 'LC_MESSAGES')
+    $saved = @{}
+    foreach ($name in $names) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        Set-Item -Path "Env:$name" -Value 'C' -ErrorAction SilentlyContinue
+    }
+    try {
+        return Invoke-NativeCapture -Executable 'git' -Arguments $Arguments
+    } finally {
+        foreach ($name in $names) {
+            $value = $saved[$name]
+            if ($null -eq $value) {
+                Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+            } else {
+                Set-Item -Path "Env:$name" -Value $value -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+function Get-CapturedFieldValue {
+    param(
+        [Parameter(Mandatory = $true)][object]$Result,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()][object]$Default = $null
+    )
+
+    if ($Result -is [System.Collections.IDictionary]) {
+        if ($Result.Contains($Name)) { return $Result[$Name] }
+        return $Default
+    }
+    $property = $Result.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $Default }
+    return $property.Value
+}
+
+function Invoke-GitWhitespacePhase {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [AllowNull()][object]$CapturedResult,
+        [string]$LogRoot
+    )
+
+    $phase = New-Phase -Name $Name -Command (Format-Command -Executable 'git' -Arguments $Arguments)
+    $phase.advisories = @()
+    $phase.noiseLines = @()
+    $phase.blocking = @()
+
+    $result = if ($null -ne $CapturedResult) { $CapturedResult } else { Invoke-GitWhitespaceCapture -Arguments $Arguments }
+    $output = @(Get-CapturedFieldValue -Result $result -Name 'output' -Default @())
+    $exitCode = Get-CapturedFieldValue -Result $result -Name 'exitCode' -Default 1
+    $captureError = Get-CapturedFieldValue -Result $result -Name 'error' -Default $null
+    $durationSeconds = Get-CapturedFieldValue -Result $result -Name 'durationSeconds' -Default 0
+
+    $phase.exitCode = $exitCode
+    $phase.durationSeconds = $durationSeconds
+    $phase.outputTail = @($output | Select-Object -Last 60)
+    [void](Write-PhaseLog -Phase $phase -Lines $output -LogRoot $LogRoot)
+
+    $classification = Get-WhitespaceClassification -Text ($output -join "`n")
+    $phase.advisories = @($classification.Advisories)
+    $phase.noiseLines = @($classification.NoiseLines)
+    $phase.blocking = @($classification.Blocking)
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$captureError)) {
+        $phase.reason = [string]$captureError
+        $phase.status = 'failed'
+        return $phase
+    }
+
+    # An exit code outside the documented git --check set means the command did
+    # not run to completion; the classification is not trusted, so the phase
+    # fails closed with no advisories and no blocking evidence.
+    if ($exitCode -notin @(0, 1, 2)) {
+        $phase.advisories = @()
+        $phase.blocking = @()
+        $phase.reason = "git diff --check exited with $exitCode"
+        $phase.status = 'failed'
+        return $phase
+    }
+
+    if ($phase.blocking.Count -gt 0) {
+        $phase.reason = "Whitespace defects detected: $($phase.blocking.Count)."
+        $phase.status = 'failed'
+        return $phase
+    }
+
+    if ($phase.advisories.Count -gt 0) {
+        # Hygiene findings never block: the phase passes with advisories exposed.
+        $phase.reason = $null
+        $phase.status = 'passed'
+        return $phase
+    }
+
+    if ($phase.noiseLines.Count -gt 0) {
+        # Noise-only output is tolerant at exit 0 and fails closed otherwise.
+        if ($exitCode -eq 0) {
+            $phase.status = 'passed'
+        } else {
+            $phase.reason = "Command exited with code $exitCode."
+            $phase.status = 'failed'
+        }
+        return $phase
+    }
+
+    if ($exitCode -ne 0) {
+        $phase.reason = "Command exited with code $exitCode."
+        $phase.status = 'failed'
+        return $phase
+    }
+
+    $phase.status = 'passed'
+    return $phase
+}
+
 function Get-TrackedPowerShellPaths {
     $result = Get-GitLines -Arguments @('ls-files', '--', '*.ps1')
     if ($result.exitCode -ne 0) {
@@ -288,6 +525,22 @@ function Write-TextSummary {
     foreach ($phase in $Summary.phases) {
         $suffix = if ($phase.outputPath) { " (log: $($phase.outputPath))" } else { '' }
         Write-Host ("  [{0}] {1}{2}" -f $phase.status, $phase.name, $suffix)
+        # Read 'advisories' defensively: not every phase carries the key, and under
+        # Set-StrictMode -Version Latest a bare property touch on a phase built by
+        # New-Phase would throw. Phases are ordered dictionaries (New-Phase) whose
+        # keys are not exposed through PSObject.Properties, so the dictionary path
+        # is the one that matches. Hygiene findings are surfaced even when the
+        # phase passed, which is the whole point of the downgrade.
+        $advisories = @()
+        if ($phase -is [System.Collections.IDictionary]) {
+            if ($phase.Contains('advisories')) { $advisories = @($phase['advisories']) }
+        } else {
+            $advisoryProperty = $phase.PSObject.Properties['advisories']
+            if ($null -ne $advisoryProperty -and $null -ne $advisoryProperty.Value) { $advisories = @($advisoryProperty.Value) }
+        }
+        foreach ($advisory in $advisories) {
+            Write-Host ("    advisory: {0}:{1}: {2}" -f $advisory.path, $advisory.line, $advisory.reason) -ForegroundColor DarkYellow
+        }
     }
 }
 
@@ -379,7 +632,7 @@ function Read-ReleasePhaseDetails {
 }
 
 $summary = [ordered]@{
-    schemaVersion = 'gxmcp-pre-push/1'
+    schemaVersion = 'gxmcp-pre-push/2'
     startedAtUtc = $startedAtUtc.ToString('o')
     endedAtUtc = $null
     root = $root
@@ -483,18 +736,18 @@ try {
     }
 
     if ($baseAvailable) {
-        $rangeDiffPhase = Invoke-NativePhase -Name 'git diff check (base..HEAD)' -Executable 'git' -Arguments @('-C', $root, 'diff', '--check', ("{0}..HEAD" -f $BaseRef)) -LogRoot $logRoot
+        $rangeDiffPhase = Invoke-GitWhitespacePhase -Name 'git diff check (base..HEAD)' -Arguments (Get-WhitespaceDiffArguments -Range ("{0}..HEAD" -f $BaseRef)) -LogRoot $logRoot
         [void]$summary.phases.Add($rangeDiffPhase)
-        if ($rangeDiffPhase.status -ne 'passed') { $mechanicalFailed = $true }
+        if (Test-PhaseMechanicalFailure -Phase $rangeDiffPhase) { $mechanicalFailed = $true }
     }
 
-    $workingDiffPhase = Invoke-NativePhase -Name 'git diff check (working tree)' -Executable 'git' -Arguments @('-C', $root, 'diff', '--check') -LogRoot $logRoot
+    $workingDiffPhase = Invoke-GitWhitespacePhase -Name 'git diff check (working tree)' -Arguments (Get-WhitespaceDiffArguments) -LogRoot $logRoot
     [void]$summary.phases.Add($workingDiffPhase)
-    if ($workingDiffPhase.status -ne 'passed') { $mechanicalFailed = $true }
+    if (Test-PhaseMechanicalFailure -Phase $workingDiffPhase) { $mechanicalFailed = $true }
 
     $parsePhase = Invoke-PowerShellParsePhase -LogRoot $logRoot
     [void]$summary.phases.Add($parsePhase)
-    if ($parsePhase.status -ne 'passed') { $mechanicalFailed = $true }
+    if (Test-PhaseMechanicalFailure -Phase $parsePhase) { $mechanicalFailed = $true }
 
     $releaseSummaryPath = Join-Path $tempRoot ('gxmcp-pre-push-release-' + [guid]::NewGuid().ToString('N') + '.json')
     $keepReleaseSummary = $false

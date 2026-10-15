@@ -351,6 +351,14 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   as local. Fixing an upstream defect here is not a resolution — it only hides
   it from the maintainer. `pushReadiness=blocked` caused by an upstream defect
   is then a correct terminal state, not a backlog item.
+- **Hygiene advisories (this fork):** Whitespace-hygiene findings
+  (`trailing whitespace`, `new blank line at EOF`) are surfaced as **advisories**
+  and create **no block of their own**: they do not set `pushReadiness=blocked` by
+  themselves and are printed in text, JSON and log. All other blocking conditions
+  (missing base, branch behind, dirty working tree, mechanical phase failure)
+  remain fully in force. The advisories are the visible record, not a resolution:
+  a hygiene finding in upstream-authored bytes is still reported under the fork
+  policy above, never patched locally.
 - Inspect the actual input/request/route/function/query/response path before
   fixing behavior. Add a regression test when technically viable.
 - Edit tracked text with the file-editing tool, not by piping it through a shell:
