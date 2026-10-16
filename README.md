@@ -150,6 +150,27 @@ The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) wh
 | `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟨 **Partial** | Independently implemented in portable compiler and tested with synthetic or bounded fixtures; pending full parity claims. |
 | `native_kb_read`, `sql_navigation`, `general_gx_surface` | ⬜ **Unsupported** | Not yet implemented in Rust. Always served 100% by the GeneXus SDK / Worker. |
 
+### ⚡ Performance Benchmarks (gx-engine vs. GeneXus SDK)
+
+Every performance comparison requires **exact output parity** verified before measuring timings (zero mismatches, identical hash/byte output). The initial differential benchmarks measured on local Windows x86_64 hardware:
+
+| Benchmark Workload | GeneXus SDK (.NET / MSBuild) | `gx-engine` (Rust) | Speedup / Gain | Verification & Oracle |
+| :--- | :---: | :---: | :---: | :--- |
+| **`Str()` Numeric Picture Formatting** (Microbenchmark) | 274 – 286 ns / row *(1.75 ms / pass)* | **121 – 130 ns / row** *(0.75 ms / pass)* | **~2.25x faster** | 6,152 rows (`str_matrix.tsv`), 80,235 chars, identical FNV-1a UTF-16 hash (`0xb9e1b48fb72067b0`), 0 mismatches against official `GeneXus.Classes.Core` runtime. |
+| **End-to-end Procedure Compilation & Build** | 10,930 ms *(SDK stages)*<br>16,366 ms *(MSBuild total)* | **223 ms** *(Rust parse + emit + rustc link)* | **~49x faster** | Synthetic `RustTimingProbe` in authorized `KBTeste` (`21 * 2 = 42`). Identical exit 0 and stdout `42`. |
+| **Generated Artifact Startup & Execution** | 123.06 ms *(CLR bootstrap + run)* | **5.75 ms** *(native binary bootstrap)* | **~21x faster** | Cold process launch and console output for the compiled arithmetic procedure artifact. |
+
+#### 📈 Benchmark Protocol & How to Record Improvements
+
+As new capabilities reach parity and additional optimizations land, follow this protocol to update this ledger:
+
+1. **Verify Parity First:** No benchmark is valid without zero diffs against the official SDK or recorded native differential fixture:
+   ```powershell
+   python src/gx-engine/scripts/benchmark.py --iterations 100
+   ```
+2. **Standardized Environment:** Keep compiler flags, hardware specifications, and iterations explicit (see [src/gx-engine/VALIDATION.md](src/gx-engine/VALIDATION.md)).
+3. **Record in Ledger:** Update this table and [plans/129-implementation-progress.md](plans/129-implementation-progress.md) with: workload description, GeneXus SDK baseline, gx-engine timing, observed speedup ratio, and the committed evidence fixture.
+
 ### Activation Flag & Safety Seam
 
 > [!IMPORTANT]
