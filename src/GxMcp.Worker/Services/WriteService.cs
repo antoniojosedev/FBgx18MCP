@@ -1707,6 +1707,11 @@ namespace GxMcp.Worker.Services
                     if (objToUpdate != null && (objToUpdate is global::Artech.Genexus.Common.Objects.Transaction || objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)))
                     {
                         try {
+                            string preSnapshot = null;
+                            if (objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                            {
+                                try { preSnapshot = GxMcp.Worker.Helpers.StructureParser.SerializeToText(objToUpdate); } catch { }
+                            }
                             StructureParser.ParseFromText(objToUpdate, decodedCode);
                             objToUpdate.EnsureSave();
                             StampObjectRevisionDates(objToUpdate, objToUpdate.Model as global::Artech.Architecture.Common.Objects.KBModel);
@@ -1771,16 +1776,38 @@ namespace GxMcp.Worker.Services
                                 Logger.Debug("[DEBUG-SAVE] SDT round-trip verify threw: " + verEx.Message);
                             }
 
-                            var okPayload = new JObject { ["details"] = "Structure DSL successfully applied" };
                             if (!string.IsNullOrEmpty(roundTripError))
                             {
-                                okPayload["persistedVerified"] = false;
-                                okPayload["persistedVerifyError"] = roundTripError;
+                                if (preSnapshot != null)
+                                {
+                                    try
+                                    {
+                                        StructureParser.ParseFromText(objToUpdate, preSnapshot);
+                                        objToUpdate.EnsureSave();
+                                        ScheduleFlush(force: true);
+                                    }
+                                    catch (Exception rbEx)
+                                    {
+                                        Logger.Warn("[DEBUG-SAVE] SDT rollback to preSnapshot failed: " + rbEx.Message);
+                                    }
+                                }
+                                return Models.McpResponse.Err(
+                                    code: "WriteNotPersisted",
+                                    message: roundTripError,
+                                    target: target,
+                                    extra: new JObject
+                                    {
+                                        ["persistedVerified"] = false,
+                                        ["persistedVerifyError"] = roundTripError,
+                                        ["rolledBack"] = preSnapshot != null
+                                    });
                             }
-                            else
+
+                            var okPayload = new JObject
                             {
-                                okPayload["persistedVerified"] = true;
-                            }
+                                ["details"] = "Structure DSL successfully applied",
+                                ["persistedVerified"] = true
+                            };
                             return Models.McpResponse.Ok(
                                 target: target,
                                 code: "WriteApplied",

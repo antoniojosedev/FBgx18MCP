@@ -120,7 +120,9 @@ namespace GxMcp.Worker.Services
             payload["code"] = commentOnly ? "CommentOnlyWriteNotPersisted" : "WriteNotPersisted";
             payload["message"] = commentOnly
                 ? "The SDK save completed, but the forced Source re-read did not contain the requested comment-only change."
-                : "The post-save re-read does not contain the requested patched content.";
+                : (saved
+                    ? "The SDK save completed, but post-save text verification detected a formatting or normalization difference."
+                    : "The post-save re-read does not contain the requested patched content.");
             if (!string.IsNullOrWhiteSpace(verifyError)) payload["persistedVerifyError"] = verifyError;
             payload["saveAttempted"] = saved;
             AttachOutcome(payload, saved, verified: false);

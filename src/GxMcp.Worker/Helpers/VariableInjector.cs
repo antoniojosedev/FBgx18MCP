@@ -1415,6 +1415,43 @@ namespace GxMcp.Worker.Helpers
                         ?? custom.GetType().GetField("m_guid", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string;
                     var resolved = TryGetObjectFromKey(model, token);
                     if (resolved != null) return resolved;
+
+                    string customStr = custom.ToString();
+                    if (!string.IsNullOrEmpty(customStr))
+                    {
+                        var m = System.Text.RegularExpressions.Regex.Match(customStr, @"<Id>(\d+)<\/Id><Type>([a-fA-F0-9-]+)<\/Type>");
+                        if (m.Success && int.TryParse(m.Groups[1].Value, out int id) && Guid.TryParse(m.Groups[2].Value, out Guid typeGuid))
+                        {
+                            try
+                            {
+                                var obj = model.Objects.Get(new global::Artech.Udm.Framework.EntityKey(typeGuid, id));
+                                if (obj != null) return obj;
+                            }
+                            catch { }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (variable.Type.ToString().Equals("GX_SDT", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var dtVal = variable.GetPropertyValue("DataType");
+                        var resolved = TryGetObjectFromKey(model, dtVal);
+                        if (resolved != null) return resolved;
+                    }
+                    catch { }
+
+                    string typeName = variable.GetPropertyValue("DataTypeString") as string;
+                    if (!string.IsNullOrWhiteSpace(typeName))
+                    {
+                        var resolved = ResolveTypeObject(model, typeName);
+                        if (resolved != null) return resolved;
+                    }
                 }
             }
             catch { }

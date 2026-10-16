@@ -61,6 +61,7 @@ namespace GxMcp.Worker.Services
         {
             public string Type;
             public string Name;
+            public string Description;
             public string Mode = "auto";               // create | update | auto
             public string ExpectedVersion;             // update-mode optimistic token
             public bool? LegacyUpdateExisting;          // PR63 alias when mode is omitted
@@ -201,6 +202,7 @@ namespace GxMcp.Worker.Services
             {
                 Type = args?["type"]?.ToString(),
                 Name = args?["name"]?.ToString(),
+                Description = (args?["description"] ?? args?["Description"])?.ToString(),
                 Mode = (args?["mode"]?.ToString()
                     ?? (legacyUpdateExisting.HasValue && !legacyUpdateExisting.Value ? "create" : "auto")).ToLowerInvariant(),
                 ExpectedVersion = (args?["expectedVersion"] ?? args?["baseVersion"])?.ToString(),
@@ -449,6 +451,7 @@ namespace GxMcp.Worker.Services
                         ["fieldErrors"] = spec.Errors,
                         ["note"] = "dryRun=true: full field validation passed; nothing was saved."
                     };
+                    if (!string.IsNullOrWhiteSpace(spec.Description)) preview["description"] = spec.Description;
                     return McpResponse.Ok(target: spec.Name, code: "DryRun", result: preview);
                 }
 
@@ -460,6 +463,10 @@ namespace GxMcp.Worker.Services
                 {
                     createdFreshObject = true;
                     obj = _objectService.CreateObjectInstance(spec.Type, spec.Name, args, out string seededDesc, out JObject domainMeta);
+                    if (!string.IsNullOrWhiteSpace(spec.Description))
+                    {
+                        try { obj.Description = spec.Description; } catch { }
+                    }
                     steps["create"] = new JObject
                     {
                         ["status"] = "ok",
@@ -481,6 +488,10 @@ namespace GxMcp.Worker.Services
                                 args: new JObject { ["name"] = spec.Name },
                                 why: "Checks if the object exists under a different type or casing.")),
                             target: spec.Name);
+                    if (!string.IsNullOrWhiteSpace(spec.Description))
+                    {
+                        try { obj.Description = spec.Description; } catch { }
+                    }
                 }
 
                 // Step 2 — variables (in-memory batch)

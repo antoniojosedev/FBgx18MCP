@@ -1283,10 +1283,17 @@ namespace GxMcp.Worker.Services
                     string errCode = !string.IsNullOrWhiteSpace(writeCode) ? writeCode : "PatchWriteFailed";
                     bool objectSaveIncomplete = string.Equals(errCode, "ObjectSaveIncomplete", StringComparison.OrdinalIgnoreCase);
                     bool verificationUnavailable = string.Equals(errCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
+                    bool saveAttemptedOrReported = resultObj["saveAttempted"]?.ToObject<bool>() == true
+                        || resultObj["objectSaved"]?.ToObject<bool>() == true
+                        || string.Equals(resultObj["outcome"]?.ToString(), "SavedUnverified", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(errCode, "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
+
                     string recoveryHint = objectSaveIncomplete
                         ? writePayload["manualRecovery"]?.ToString()
                         : verificationUnavailable
                             ? writePayload["hint"]?.ToString()
+                        : saveAttemptedOrReported
+                            ? "Re-read the object source and verify whether the persisted state matches your requirement before attempting any further changes. Do not retry blindly."
                         : "Re-read the object source and verify the part is writable, then retry.";
                     var canonical = JObject.Parse(Models.McpResponse.Err(
                         code: errCode,
@@ -1297,7 +1304,9 @@ namespace GxMcp.Worker.Services
                             args: new JObject { ["name"] = target, ["part"] = partName },
                             why: objectSaveIncomplete
                                 ? "Confirm the actual persisted content before deciding whether any further action is safe."
-                                : "Confirm the part content and state before retrying the patch.")),
+                                : saveAttemptedOrReported
+                                    ? "Confirm the actual persisted state before attempting any further changes. Do not retry blindly."
+                                    : "Confirm the part content and state before retrying the patch.")),
                         target: target,
                         extra: resultObj));
                     if (patternShadowWarnings != null && patternShadowWarnings.Count > 0)

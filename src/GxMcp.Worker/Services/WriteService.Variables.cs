@@ -1935,7 +1935,7 @@ namespace GxMcp.Worker.Services
 
             return VariableTypeNotPersisted(target, invalid,
                 "The SDK did not persist the requested SDT/Business Component as a native object reference.",
-                "The operation cannot be completed safely on this GeneXus build. Verify the object belongs to the active KB and retry.");
+                "Verify the object belongs to the active KB, or edit variables directly via genexus_edit part=Variables.");
         }
 
         // Reconstruct a removed variable instead of reusing the detached SDK instance. This is

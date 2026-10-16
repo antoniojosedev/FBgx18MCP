@@ -184,9 +184,13 @@ namespace GxMcp.Worker.Services
                         locked.Save();
                         ownedWriteVersion = WriteService.ComputeVersionToken(locked);
                         JObject staged = ReadStructure(locked);
-                        if (!MatchesPlan(beforeChildren, children, (JArray)staged["children"], add)
+                        if (!MatchesPlan(beforeChildren, children, (JArray)staged["children"], add, out string stagedMismatch)
                             || !MatchesMetadata(before, json, staged))
-                            throw new InvalidOperationException("The saved SDT structure did not match the requested plan.");
+                        {
+                            string msg = "The saved SDT structure did not match the requested plan.";
+                            if (!string.IsNullOrEmpty(stagedMismatch)) msg += " Detail: " + stagedMismatch;
+                            throw new InvalidOperationException(msg);
+                        }
                         if (!snapshot.CompareParts(locked, "SDTStructure").Equal)
                             throw new InvalidOperationException("The SDT save changed another object part.");
                         try { isCollection = (bool)root.IsCollection; } catch { }
@@ -212,21 +216,30 @@ namespace GxMcp.Worker.Services
                     if (persistedObj != null) persisted = ReadStructure(persistedObj);
                 }
                 catch (Exception ex) { Logger.Warn("SDT post-save read failed: " + ex.Message); }
+                string persistedMismatch = null;
                 bool verified = persisted != null
-                    && MatchesPlan(beforeChildren, children, (JArray)persisted["children"], add)
+                    && MatchesPlan(beforeChildren, children, (JArray)persisted["children"], add, out persistedMismatch)
                     && MatchesMetadata(before, json, persisted)
                     && snapshot.CompareParts(persistedObj, "SDTStructure").Equal;
                 if (!verified)
                 {
                     bool rolledBack = RestoreFromRevision(obj, beforeRevision, snapshot, before, ownedWriteVersion);
+                    var extra = new JObject
+                    {
+                        ["persisted"] = rolledBack ? (JToken)new JValue(false)
+                            : persisted == null ? JValue.CreateNull() : new JValue(true),
+                        ["persistedVerified"] = false,
+                        ["beforeVersion"] = versionBefore,
+                        ["versionToken"] = persisted?["versionToken"],
+                        ["persistedStructure"] = persisted,
+                        ["rollback"] = rolledBack ? "verified" : "unverified"
+                    };
+                    if (!string.IsNullOrEmpty(persistedMismatch)) extra["mismatchDetail"] = persistedMismatch;
                     return Models.McpResponse.Err(code: persisted == null ? "FreshReadUnavailable" : "StructureUpdateNotPersisted",
                         message: rolledBack ? "The post-save SDT could not be verified; the prior revision was restored and verified."
                             : "The post-save SDT could not be verified and rollback could not be confirmed. Stop writing this object.",
                         hint: "Read get_visual again through a fresh SDK instance before another write.",
-                        target: sdtName, extra: new JObject { ["persisted"] = rolledBack ? (JToken)new JValue(false)
-                                : persisted == null ? JValue.CreateNull() : new JValue(true), ["persistedVerified"] = false,
-                            ["beforeVersion"] = versionBefore, ["versionToken"] = persisted?["versionToken"],
-                            ["persistedStructure"] = persisted, ["rollback"] = rolledBack ? "verified" : "unverified" });
+                        target: sdtName, extra: extra);
                 }
                 try { _objectService.GetKbService().GetIndexCache().UpdateEntry(persistedObj); }
                 catch (Exception ex) { Logger.Warn("SDT index refresh failed after verified save: " + ex.Message); }
@@ -345,37 +358,89 @@ namespace GxMcp.Worker.Services
 
         internal static bool MatchesPlan(JArray before, JArray requested, JArray persisted, bool add)
         {
-            if (persisted == null || persisted.Count != (add ? (before?.Count ?? 0) + requested.Count : requested.Count))
+            return MatchesPlan(before, requested, persisted, add, out _);
+        }
+
+        internal static bool MatchesPlan(JArray before, JArray requested, JArray persisted, bool add, out string mismatchDetail)
+        {
+            mismatchDetail = null;
+            if (persisted == null)
+            {
+                mismatchDetail = "persisted structure is null";
                 return false;
+            }
+            int expectedCount = add ? (before?.Count ?? 0) + requested.Count : requested.Count;
+            if (persisted.Count != expectedCount)
+            {
+                mismatchDetail = $"member count mismatch: expected {expectedCount}, actual {persisted.Count}";
+                return false;
+            }
             if (add)
             {
                 for (int i = 0; i < before.Count; i++)
-                    if (!JToken.DeepEquals(before[i], persisted[i])) return false;
+                {
+                    if (!JToken.DeepEquals(before[i], persisted[i]))
+                    {
+                        mismatchDetail = $"prior member at index {i} modified or reordered";
+                        return false;
+                    }
+                }
             }
             int offset = add ? before.Count : 0;
             for (int i = 0; i < requested.Count; i++)
             {
                 var wanted = requested[i] as JObject;
                 var actual = persisted[i + offset] as JObject;
-                if (wanted == null || actual == null
-                    || !string.Equals(wanted["name"]?.ToString(), actual["name"]?.ToString(), StringComparison.OrdinalIgnoreCase))
+                if (wanted == null || actual == null)
+                {
+                    mismatchDetail = $"member at index {i} is null";
                     return false;
+                }
+                string wantedName = wanted["name"]?.ToString();
+                string actualName = actual["name"]?.ToString();
+                if (!string.Equals(wantedName, actualName, StringComparison.OrdinalIgnoreCase))
+                {
+                    mismatchDetail = $"member at index {i} name mismatch: expected '{wantedName}', actual '{actualName}'";
+                    return false;
+                }
                 foreach (string key in new[] { "basedOnDomain", "basedOnAttribute", "referencedType", "length", "decimals", "isCollection", "isLevel" })
+                {
                     if (wanted[key] != null && !string.Equals(wanted[key].ToString(), actual[key]?.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        mismatchDetail = $"member '{wantedName}' {key} mismatch: expected '{wanted[key]}', actual '{actual[key]}'";
                         return false;
+                    }
+                }
                 string type = wanted["type"]?.ToString();
-                if (type?.StartsWith("Attribute:", StringComparison.OrdinalIgnoreCase) == true
-                    && !string.Equals(type.Substring("Attribute:".Length).Trim(), actual["basedOnAttribute"]?.ToString(),
-                        StringComparison.OrdinalIgnoreCase)) return false;
+                if (type?.StartsWith("Attribute:", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    string expAttr = type.Substring("Attribute:".Length).Trim();
+                    string actAttr = actual["basedOnAttribute"]?.ToString();
+                    if (!string.Equals(expAttr, actAttr, StringComparison.OrdinalIgnoreCase))
+                    {
+                        mismatchDetail = $"member '{wantedName}' basedOnAttribute mismatch: expected '{expAttr}', actual '{actAttr}'";
+                        return false;
+                    }
+                }
                 if (!string.IsNullOrWhiteSpace(type) && !type.StartsWith("Attribute", StringComparison.OrdinalIgnoreCase)
                     && !type.Equals("GX_SDT", StringComparison.OrdinalIgnoreCase) && !type.Equals("Compound", StringComparison.OrdinalIgnoreCase))
                 {
                     string actualType = LooksLikePrimitiveType(type) ? actual["type"]?.ToString() : actual["referencedType"]?.ToString();
                     string expectedType = type.Split('(')[0].Trim();
-                    if (!string.Equals(expectedType, actualType, StringComparison.OrdinalIgnoreCase)) return false;
+                    if (!string.Equals(expectedType, actualType, StringComparison.OrdinalIgnoreCase))
+                    {
+                        mismatchDetail = $"member '{wantedName}' type mismatch: expected '{expectedType}', actual '{actualType}'";
+                        return false;
+                    }
                 }
-                if (wanted["children"] is JArray nested && !MatchesPlan(new JArray(), nested, actual["children"] as JArray, false))
-                    return false;
+                if (wanted["children"] is JArray nested)
+                {
+                    if (!MatchesPlan(new JArray(), nested, actual["children"] as JArray, false, out string childMismatch))
+                    {
+                        mismatchDetail = $"member '{wantedName}' children mismatch: {childMismatch}";
+                        return false;
+                    }
+                }
             }
             return true;
         }
@@ -598,39 +663,80 @@ namespace GxMcp.Worker.Services
                     if (r != null && r.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)) sdtObj = r;
                 }
 
+                object baseType;
+                if (attributeObj != null) { try { baseType = ((dynamic)attributeObj).Type; } catch { baseType = Enum.Parse(eDBTypeT, "VARCHAR"); } }
+                else if (domainObj != null) { try { baseType = ((dynamic)domainObj).DataType; } catch { baseType = Enum.Parse(eDBTypeT, "VARCHAR"); } }
+                else if (sdtObj != null) baseType = Enum.Parse(eDBTypeT, "GX_SDT");
+                else if (GxMcp.Worker.Helpers.VariableInjector.TryParseDbType(typeStr, out var pt)) baseType = pt;
+                else baseType = Enum.Parse(eDBTypeT, "VARCHAR");
+
                 if (target == null)
                 {
                     if (addItem == null || eDBTypeT == null) throw new MissingMethodException("SDT AddItem is unavailable.");
-                    object baseType;
-                    if (attributeObj != null) { try { baseType = ((dynamic)attributeObj).Type; } catch { baseType = Enum.Parse(eDBTypeT, "VARCHAR"); } }
-                    else if (domainObj != null) { try { baseType = ((dynamic)domainObj).DataType; } catch { baseType = Enum.Parse(eDBTypeT, "VARCHAR"); } }
-                    else if (sdtObj != null) baseType = Enum.Parse(eDBTypeT, "GX_SDT");
-                    else if (GxMcp.Worker.Helpers.VariableInjector.TryParseDbType(typeStr, out var pt)) baseType = pt;
-                    else baseType = Enum.Parse(eDBTypeT, "VARCHAR");
                     try { target = addItem.Invoke((object)node, new object[] { name, baseType }); }
                     catch (Exception ex) { throw new InvalidOperationException("AddItem failed for '" + name + "'.", ex); }
+                }
+                else
+                {
+                    try
+                    {
+                        var setType = target.GetType().GetProperty("Type");
+                        if (setType != null && setType.CanWrite)
+                        {
+                            object curType = setType.GetValue(target, null);
+                            if (!Equals(curType, baseType))
+                            {
+                                setType.SetValue(target, baseType, null);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug("[SDT WRITE] Updating target.Type failed: " + ex.Message);
+                    }
                 }
                 if (target == null) throw new InvalidOperationException("AddItem returned no member for '" + name + "'.");
 
                 try { target.IsCollection = isColl; } catch { }
                 if (attributeObj != null)
                 {
+                    GxMcp.Worker.Helpers.DomainPropertyApplier.ClearDomainBasedOn((object)target);
+                    try {
+                        var setProp = target.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
+                        setProp?.Invoke(target, new object[] { "ATTCUSTOMTYPE", null });
+                    } catch { }
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ApplyAttributeBasedOn((object)target, attributeObj);
                 }
                 else if (domainObj != null)
                 {
+                    GxMcp.Worker.Helpers.DomainPropertyApplier.ClearAttributeBasedOn((object)target);
+                    try {
+                        var setProp = target.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
+                        setProp?.Invoke(target, new object[] { "ATTCUSTOMTYPE", null });
+                    } catch { }
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ApplyDomainBasedOn((object)target, domainObj);
                 }
                 else if (sdtObj != null)
                 {
+                    GxMcp.Worker.Helpers.DomainPropertyApplier.ClearAttributeBasedOn((object)target);
+                    GxMcp.Worker.Helpers.DomainPropertyApplier.ClearDomainBasedOn((object)target);
                     GxMcp.Worker.Helpers.VariableInjector.BindSdtItemToSdt((object)target, sdtObj);
                 }
                 else
                 {
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ClearAttributeBasedOn((object)target);
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ClearDomainBasedOn((object)target);
+                    try {
+                        var setProp = target.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
+                        setProp?.Invoke(target, new object[] { "ATTCUSTOMTYPE", null });
+                    } catch { }
+
+                    var spec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(typeStr);
                     if (child["length"] != null) { try { SetIntProperty((object)target, "Length", child["length"].ToObject<int>()); } catch { } }
+                    else if (spec.Length.HasValue) { try { SetIntProperty((object)target, "Length", spec.Length.Value); } catch { } }
+
                     if (child["decimals"] != null) { try { SetIntProperty((object)target, "Decimals", child["decimals"].ToObject<int>()); } catch { } }
+                    else if (spec.Decimals.HasValue) { try { SetIntProperty((object)target, "Decimals", spec.Decimals.Value); } catch { } }
                 }
                 applied++;
             }
