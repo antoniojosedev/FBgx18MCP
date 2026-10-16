@@ -228,6 +228,70 @@ impl Text {
             0
         }
     }
+
+    /// Native `Left`: returns initial `size` characters. Negative size yields empty.
+    pub fn left(&self, size: i64) -> Self {
+        if size <= 0 {
+            return Self(String::new());
+        }
+        let size = size as usize;
+        let len = self.0.len();
+        if size >= len {
+            return self.clone();
+        }
+        Self(self.0[..size].to_owned())
+    }
+
+    /// Native `Right`: returns trailing `size` characters. Negative size throws ArgumentOutOfRangeException.
+    pub fn right(&self, size: i64) -> Result<Self, String> {
+        if size < 0 {
+            return Err(
+                "ArgumentOutOfRangeException: startIndex cannot be larger than length of string"
+                    .into(),
+            );
+        }
+        let size = size as usize;
+        let len = self.0.len();
+        if size >= len {
+            return Ok(self.clone());
+        }
+        let start = len - size;
+        Ok(Self(self.0[start..].to_owned()))
+    }
+
+    /// Native `Asc`: returns ASCII/Unicode code point of first character (32 for empty string).
+    pub fn asc(&self) -> i64 {
+        if self.0.is_empty() {
+            return 32;
+        }
+        self.0.chars().next().map(|c| c as i64).unwrap_or(32)
+    }
+
+    /// Native `Chr`: returns single-character string from ASCII/Unicode code point.
+    pub fn chr(ascii: i64) -> Result<Self, String> {
+        if !(0..=0x10FFFF).contains(&ascii) {
+            return Err("Invalid character code".into());
+        }
+        if let Some(c) = char::from_u32(ascii as u32) {
+            Ok(Self(c.to_string()))
+        } else {
+            Err("Invalid character code".into())
+        }
+    }
+
+    /// Native `NotNumeric`: returns true if any character in space-trimmed text is not a digit. Empty returns false.
+    pub fn not_numeric(&self) -> bool {
+        let trimmed = self.0.trim_matches(' ');
+        if trimmed.is_empty() {
+            return false;
+        }
+        for c in trimmed.chars() {
+            if !c.is_numeric() {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl PartialEq for Text {

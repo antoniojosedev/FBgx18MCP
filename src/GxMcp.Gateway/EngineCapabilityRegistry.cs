@@ -115,6 +115,15 @@ namespace GxMcp.Gateway
                 notes: "Measured against GeneXus.Utils.StringUtil in genexus.classes.core: LTrim/RTrim trim ASCII spaces (' ') only preserving tabs/newlines; PadL trims both ends before padding, PadR trims right end before padding; Concat trims right of first operand only; StrSearch uses 1-based indexing and clamps negative/zero start to 1. All comparisons are ordinal case-sensitive. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "numeric_math_functions",
+                title: "Mathematical and number conversion functions (Int, Round, Trunc, Val, Left, Right, Asc, Chr, NotNumeric, LTrimStr) and methods",
+                engineSurface: "frontend method grammar + typed runtime Decimal and Text methods",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (107 recorded native NumberUtil/StringUtil oracle rows: floor, rounding, truncation, parsing, character code conversions, numeric checks); src/gx-engine/tests/fixtures/numeric_math_native.tsv; src/gx-engine/tests/numeric_math.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GeneXus.Utils.NumberUtil and GeneXus.Utils.StringUtil in genexus.classes.core: Int uses Math.Floor, Round uses MidpointRounding.AwayFromZero supporting negative digits, Trunc truncates towards zero supporting negative digits, Val parses string to decimal stopping at first non-digit char and returning 0 on empty, Right throws ArgumentOutOfRangeException on negative size, Asc on empty string returns 32, NotNumeric on empty string returns false. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",

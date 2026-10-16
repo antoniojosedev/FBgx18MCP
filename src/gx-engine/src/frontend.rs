@@ -26,6 +26,16 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
             | "ENDSWITH"
             | "CONTAINS"
             | "STRSEARCH"
+            | "INT"
+            | "ROUND"
+            | "TRUNC"
+            | "VAL"
+            | "LEFT"
+            | "RIGHT"
+            | "ASC"
+            | "CHR"
+            | "NOTNUMERIC"
+            | "LTRIMSTR"
     )
 }
 
@@ -1112,6 +1122,38 @@ impl Parser {
                 Box::new(value),
                 Box::new(offset),
             ));
+        }
+        if matches!(name, "ROUND" | "TRUNC") {
+            self.expect(TokenKind::LeftParen, "'(' after method")?;
+            let digits = self.parse_or(depth, nodes)?;
+            self.expect(TokenKind::RightParen, "')' after method argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call(name.into(), vec![value, digits]));
+        }
+        if name == "INT" {
+            self.expect(TokenKind::LeftParen, "'(' after Int(")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument Int()")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("INT".into(), vec![value]));
+        }
+        if name == "TONUMERIC" {
+            self.expect(TokenKind::LeftParen, "'(' after ToNumeric(")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument ToNumeric()")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("VAL".into(), vec![value]));
+        }
+        if matches!(name, "LEFT" | "RIGHT") {
+            self.expect(TokenKind::LeftParen, "'(' after method")?;
+            let size = self.parse_or(depth, nodes)?;
+            self.expect(TokenKind::RightParen, "')' after method argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call(name.into(), vec![value, size]));
+        }
+        if matches!(name, "ASC" | "NOTNUMERIC") {
+            self.expect(TokenKind::LeftParen, "'(' after method")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument method")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call(name.into(), vec![value]));
         }
         if !matches!(
             name,

@@ -28,9 +28,15 @@ internal static class Program
             return 0;
         }
 
+        if (args.Length > 0 && args[0] == "generate-numeric-math")
+        {
+            GenerateNumericMath();
+            return 0;
+        }
+
         if (args.Length < 3 || args[0] != "bench-str")
         {
-            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended");
+            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math");
             return 2;
         }
 
@@ -275,6 +281,109 @@ internal static class Program
         foreach (var (s1, s2, start) in searchInputs)
         {
             Console.WriteLine($"strsearch|{Escape(s1)}|{Escape(s2)}|{start}=[{StringUtil.StringSearch(s1, s2, start)}]");
+        }
+    }
+
+    private static void GenerateNumericMath()
+    {
+        decimal[] intInputs = [
+            3.14m, 3.99m, 3.0m, 0.0m, 0.5m, -3.14m, -3.99m, -3.0m, -0.5m, -0.01m,
+            123456m, -123456m, 100.0m, -100.0m
+        ];
+        foreach (var val in intInputs)
+        {
+            Console.WriteLine($"int|{val.ToString(CultureInfo.InvariantCulture)}=[{NumberUtil.Int(val)}]");
+        }
+
+        (decimal val, int digits)[] roundInputs = [
+            (123.456m, 2), (123.454m, 2), (123.455m, 2), (-123.455m, 2), (-123.454m, 2),
+            (3.5m, 0), (3.4m, 0), (-3.5m, 0), (-3.4m, 0),
+            (1234.56m, -2), (1250m, -2), (1249m, -2), (-1250m, -2), (-1249m, -2),
+            (0.123456789012345m, 10), (0.123456789012345m, 15), (0m, 2)
+        ];
+        foreach (var (val, digits) in roundInputs)
+        {
+            Console.WriteLine($"round|{val.ToString(CultureInfo.InvariantCulture)}|{digits}=[{NumberUtil.Round(val, digits).ToString(CultureInfo.InvariantCulture)}]");
+        }
+
+        (decimal val, int digits)[] truncInputs = [
+            (123.456m, 2), (123.456m, 0), (123.456m, 1),
+            (-123.456m, 2), (-123.456m, 0), (-123.456m, 1),
+            (1234.56m, -2), (1250m, -2), (1299m, -2), (-1250m, -2), (-1299m, -2),
+            (0.99m, 0), (-0.99m, 0), (0m, 2)
+        ];
+        foreach (var (val, digits) in truncInputs)
+        {
+            Console.WriteLine($"trunc|{val.ToString(CultureInfo.InvariantCulture)}|{digits}=[{NumberUtil.Trunc(val, digits).ToString(CultureInfo.InvariantCulture)}]");
+        }
+
+        string[] valInputs = [
+            "123", "-123", "  123  ", "123.45", "-123.45",
+            "123.45abc", "123abc45", "abc123", "12.34.56",
+            "", "   ", "-", "-.", "0", "0.00"
+        ];
+        foreach (var str in valInputs)
+        {
+            Console.WriteLine($"val|{Escape(str)}=[{NumberUtil.Val(str).ToString(CultureInfo.InvariantCulture)}]");
+        }
+
+        (string str, string dSep)[] val2Inputs = [
+            ("123,45", ","), ("123.45", "."), ("123,45abc", ","), ("-123,45", ",")
+        ];
+        foreach (var (str, dSep) in val2Inputs)
+        {
+            Console.WriteLine($"val2|{Escape(str)}|{dSep}=[{NumberUtil.Val(str, dSep).ToString(CultureInfo.InvariantCulture)}]");
+        }
+
+        (string text, int size)[] leftRightInputs = [
+            ("hello", 3), ("hello", 0), ("hello", 5), ("hello", 10), ("hello", -1),
+            ("", 3), ("   abc   ", 4)
+        ];
+        foreach (var (text, size) in leftRightInputs)
+        {
+            try
+            {
+                Console.WriteLine($"left|{Escape(text)}|{size}=[{Escape(StringUtil.Left(text, size))}]");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"left|{Escape(text)}|{size}=[ERR:{ex.GetType().Name}]");
+            }
+
+            try
+            {
+                Console.WriteLine($"right|{Escape(text)}|{size}=[{Escape(StringUtil.Right(text, size))}]");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"right|{Escape(text)}|{size}=[ERR:{ex.GetType().Name}]");
+            }
+        }
+
+        string[] ascInputs = ["A", "a", "0", " ", "", "ABC", "Z", "z"];
+        foreach (var str in ascInputs)
+        {
+            Console.WriteLine($"asc|{Escape(str)}=[{StringUtil.Asc(str)}]");
+        }
+
+        int[] chrInputs = [65, 97, 48, 32, 10, 9, 66, 90];
+        foreach (var ascii in chrInputs)
+        {
+            Console.WriteLine($"chr|{ascii}=[{Escape(StringUtil.Chr(ascii))}]");
+        }
+
+        string[] notNumericInputs = ["123", "123.45", "123a", "   123   ", "", "-123", "0", "abc"];
+        foreach (var str in notNumericInputs)
+        {
+            Console.WriteLine($"notnumeric|{Escape(str)}=[{StringUtil.NotNumeric(str)}]");
+        }
+
+        (decimal val, int len, int dec)[] ltrimStrInputs = [
+            (123.45m, 10, 2), (123.45m, 6, 2), (123.45m, 5, 2), (-123.45m, 10, 2), (0m, 5, 0)
+        ];
+        foreach (var (val, len, dec) in ltrimStrInputs)
+        {
+            Console.WriteLine($"ltrimstr|{val.ToString(CultureInfo.InvariantCulture)}|{len}|{dec}=[{StringUtil.LTrimStr(val, len, dec)}]");
         }
     }
 

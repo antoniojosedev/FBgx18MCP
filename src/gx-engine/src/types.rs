@@ -242,6 +242,124 @@ impl Decimal {
             .map_err(|_| "Numeric value outside i64 range".into())
     }
 
+    /// Converts to `i64` by taking the mathematical floor (`Math.Floor`), matching
+    /// native `NumberUtil.Int` (e.g. 3.14 -> 3, -3.14 -> -4).
+    pub fn floor_to_i64(self) -> Result<i64, String> {
+        if self.scale == 0 {
+            return i64::try_from(self.coefficient)
+                .map_err(|_| "Numeric value outside i64 range".into());
+        }
+        let divisor = 10_i128
+            .checked_pow(self.scale)
+            .ok_or("decimal scale reduction overflow")?;
+        let int_part = self.coefficient / divisor;
+        let rem = self.coefficient % divisor;
+        let floored = if rem < 0 { int_part - 1 } else { int_part };
+        i64::try_from(floored).map_err(|_| "Numeric value outside i64 range".into())
+    }
+
+    /// Rounds to `digits` decimals using `MidpointRounding.AwayFromZero`, matching
+    /// native `NumberUtil.Round`. Supports negative `digits` (rounding to tens, hundreds, etc.).
+    pub fn round(self, digits: i64) -> Result<Self, String> {
+        if digits >= self.scale as i64 {
+            return Ok(self);
+        }
+        if digits >= 0 {
+            let drop = self.scale - digits as u32;
+            let divisor = 10_i128.checked_pow(drop).ok_or("decimal round overflow")?;
+            let half = divisor / 2;
+            let new_coeff = if self.coefficient >= 0 {
+                (self.coefficient + half) / divisor
+            } else {
+                -((-self.coefficient + half) / divisor)
+            };
+            Self::new(new_coeff, digits as u32)
+        } else {
+            let drop = self.scale + (-digits) as u32;
+            let divisor = 10_i128.checked_pow(drop).ok_or("decimal round overflow")?;
+            let half = divisor / 2;
+            let int_scaled = if self.coefficient >= 0 {
+                (self.coefficient + half) / divisor
+            } else {
+                -((-self.coefficient + half) / divisor)
+            };
+            let mult = 10_i128
+                .checked_pow((-digits) as u32)
+                .ok_or("decimal round overflow")?;
+            let new_coeff = int_scaled
+                .checked_mul(mult)
+                .ok_or("decimal round overflow")?;
+            Self::new(new_coeff, 0)
+        }
+    }
+
+    /// Truncates to `digits` decimals toward zero, matching native `NumberUtil.Trunc`.
+    /// Supports negative `digits`.
+    pub fn trunc(self, digits: i64) -> Result<Self, String> {
+        if digits >= self.scale as i64 {
+            return Ok(self);
+        }
+        if digits >= 0 {
+            let drop = self.scale - digits as u32;
+            let divisor = 10_i128.checked_pow(drop).ok_or("decimal trunc overflow")?;
+            let new_coeff = self.coefficient / divisor;
+            Self::new(new_coeff, digits as u32)
+        } else {
+            let drop = self.scale + (-digits) as u32;
+            let divisor = 10_i128.checked_pow(drop).ok_or("decimal trunc overflow")?;
+            let int_scaled = self.coefficient / divisor;
+            let mult = 10_i128
+                .checked_pow((-digits) as u32)
+                .ok_or("decimal trunc overflow")?;
+            let new_coeff = int_scaled
+                .checked_mul(mult)
+                .ok_or("decimal trunc overflow")?;
+            Self::new(new_coeff, 0)
+        }
+    }
+
+    /// Parses a string to `Decimal` matching native `NumberUtil.Val` / `ValParse`.
+    /// Trims input, parses initial number stopping at non-digit / unexpected characters,
+    /// returns 0 on empty / invalid input.
+    pub fn val(text: &str, dec_sep: Option<&str>) -> Self {
+        let text = text.trim();
+        if text.is_empty() {
+            return Self {
+                coefficient: 0,
+                scale: 0,
+            };
+        }
+        let sep_char = dec_sep.and_then(|s| s.chars().next()).unwrap_or('.');
+        let mut filtered = String::new();
+        let mut saw_dot = false;
+        let mut can_have_minus = true;
+        for c in text.chars() {
+            if c.is_ascii_digit() {
+                filtered.push(c);
+                can_have_minus = false;
+            } else if c == sep_char && !saw_dot {
+                filtered.push('.');
+                saw_dot = true;
+                can_have_minus = false;
+            } else if c == '-' && can_have_minus {
+                filtered.push('-');
+                can_have_minus = false;
+            } else {
+                break;
+            }
+        }
+        if filtered.is_empty() || filtered == "-" || filtered == "." || filtered == "-." {
+            return Self {
+                coefficient: 0,
+                scale: 0,
+            };
+        }
+        Self::from_str(&filtered).unwrap_or(Self {
+            coefficient: 0,
+            scale: 0,
+        })
+    }
+
     pub fn checked_add(self, other: Self) -> Result<Self, String> {
         let scale = self.scale.max(other.scale);
         let left = self
@@ -398,6 +516,15 @@ impl FromStr for Decimal {
             if negative { -coefficient } else { coefficient },
             scale.unwrap_or(0),
         )
+    }
+}
+
+impl From<i64> for Decimal {
+    fn from(value: i64) -> Self {
+        Self {
+            coefficient: i128::from(value),
+            scale: 0,
+        }
     }
 }
 

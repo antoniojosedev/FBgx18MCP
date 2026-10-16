@@ -1281,3 +1281,25 @@ Owner-reported implementation and native observations:
 - Verification: 253 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
 - Registry: new `text_extended_functions` capability at `Parity` (no consumers).
 
+## Mathematical & Number Conversion Core Parity (2026-10-16)
+
+- Native Oracle & Decompilation: Extracted `GeneXus.Utils.NumberUtil` and `GeneXus.Utils.StringUtil` semantics from `genexus.classes.core` 1.30.0 runtime via REA / ILSpy:
+  - `NumberUtil.Int`: `Math.Floor(value)`.
+  - `NumberUtil.Round`: `MidpointRounding.AwayFromZero`; supports negative digits for rounding to powers of 10 (`Round(1250, -2) == 1300`, `Round(-1250, -2) == -1300`).
+  - `NumberUtil.Trunc`: Truncates towards zero; supports negative digits (`Trunc(-3.14, 0) == -3`, `Trunc(1250, -2) == 1200`).
+  - `NumberUtil.Val` / `ValParse`: Trims whitespace, parses characters up to first non-digit/illegal char (allowing leading '-' and single decimal separator), returning `0` on empty/invalid.
+  - `StringUtil.Left`: Returns first `size` characters, clamping `size < 0` to 0.
+  - `StringUtil.Right`: Returns last `size` characters; throws `ArgumentOutOfRangeException` when `size < 0`.
+  - `StringUtil.Asc`: Returns ASCII code point of first char; returns 32 (space) on empty string.
+  - `StringUtil.Chr`: Returns single-character string from ASCII code point.
+  - `StringUtil.NotNumeric`: Returns true if any char in space-trimmed text is not a digit; empty string returns false.
+  - `StringUtil.LTrimStr`: Returns `LTrim(Str(val, len, dec))`.
+- Fixture & Evidence: Generated `tests/fixtures/numeric_math_native.tsv` (107 rows) directly from official runtime via `generate-numeric-math` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/types.rs`: Added `floor_to_i64`, `round`, `trunc`, `val` with exact scaling and rounding logic, and `From<i64> for Decimal`.
+  - `src/gx-engine/src/text.rs`: Added `left`, `right`, `asc`, `chr`, `not_numeric`.
+  - `src/gx-engine/src/frontend.rs`: Added AST mappings for `INT`, `ROUND`, `TRUNC`, `VAL`, `LEFT`, `RIGHT`, `ASC`, `CHR`, `NOTNUMERIC`, `LTRIMSTR` and methods `.Int()`, `.Round()`, `.Trunc()`, `.ToNumeric()`, `.Left()`, `.Right()`, `.Asc()`, `.NotNumeric()`.
+  - `src/gx-engine/src/typed_backend.rs`: Emitted code lowerings for all built-ins and method forms.
+  - `src/gx-engine/tests/numeric_math.rs`: Added fixture oracle verification (107 rows), executable e2e Procedure validation, and arity/type rejection tests.
+- Verification: 256 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
+- Registry: new `numeric_math_functions` capability at `Parity` (no consumers).

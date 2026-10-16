@@ -828,6 +828,109 @@ impl Emitter<'_> {
                     ),
                 )
             }
+            Expr::Call(name, args) if name == "INT" => {
+                if args.len() != 1 {
+                    return Err("Int expects exactly one argument".into());
+                }
+                let val = self.lower_expect(&args[0], assigned, Kind::Numeric, prelude)?;
+                (
+                    Kind::Numeric,
+                    format!("Decimal::from(({val}).floor_to_i64()?)"),
+                )
+            }
+            Expr::Call(name, args) if name == "ROUND" => {
+                if args.len() != 2 {
+                    return Err("Round expects two arguments".into());
+                }
+                let val = self.lower_expect(&args[0], assigned, Kind::Numeric, prelude)?;
+                let digits = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (
+                    Kind::Numeric,
+                    format!("({val}).round(({digits}).to_i64()?)?"),
+                )
+            }
+            Expr::Call(name, args) if name == "TRUNC" => {
+                if args.len() != 2 {
+                    return Err("Trunc expects two arguments".into());
+                }
+                let val = self.lower_expect(&args[0], assigned, Kind::Numeric, prelude)?;
+                let digits = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (
+                    Kind::Numeric,
+                    format!("({val}).trunc(({digits}).to_i64()?)?"),
+                )
+            }
+            Expr::Call(name, args) if name == "VAL" => {
+                if !(1..=2).contains(&args.len()) {
+                    return Err("Val expects one or two arguments".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let dsep = if let Some(dsep_arg) = args.get(1) {
+                    let dsep_val = self.lower_expect(dsep_arg, assigned, Kind::Text, prelude)?;
+                    format!("Some(&({dsep_val}).to_string())")
+                } else {
+                    "None".into()
+                };
+                (
+                    Kind::Numeric,
+                    format!("Decimal::val(&({text}).to_string(), {dsep})"),
+                )
+            }
+            Expr::Call(name, args) if name == "LEFT" => {
+                if args.len() != 2 {
+                    return Err("Left expects two arguments".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let size = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (Kind::Text, format!("({text}).left(({size}).to_i64()?)"))
+            }
+            Expr::Call(name, args) if name == "RIGHT" => {
+                if args.len() != 2 {
+                    return Err("Right expects two arguments".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let size = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (Kind::Text, format!("({text}).right(({size}).to_i64()?)?"))
+            }
+            Expr::Call(name, args) if name == "ASC" => {
+                if args.len() != 1 {
+                    return Err("Asc expects exactly one argument".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                (Kind::Numeric, format!("Decimal::from(({text}).asc())"))
+            }
+            Expr::Call(name, args) if name == "CHR" => {
+                if args.len() != 1 {
+                    return Err("Chr expects exactly one argument".into());
+                }
+                let ascii = self.lower_expect(&args[0], assigned, Kind::Numeric, prelude)?;
+                (Kind::Text, format!("Text::chr(({ascii}).to_i64()?)?"))
+            }
+            Expr::Call(name, args) if name == "NOTNUMERIC" => {
+                if args.len() != 1 {
+                    return Err("NotNumeric expects exactly one argument".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                (Kind::Boolean, format!("({text}).not_numeric()"))
+            }
+            Expr::Call(name, args) if name == "LTRIMSTR" => {
+                if !(2..=3).contains(&args.len()) {
+                    return Err("LTrimStr expects two or three arguments".into());
+                }
+                let val = self.lower_expect(&args[0], assigned, Kind::Numeric, prelude)?;
+                let len = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                let dec = if let Some(dec_arg) = args.get(2) {
+                    self.lower_expect(dec_arg, assigned, Kind::Numeric, prelude)?
+                } else {
+                    "Decimal::from(0)".into()
+                };
+                (
+                    Kind::Text,
+                    format!(
+                        "Text::new(&types::format_str({val}, ({len}).to_i64()? as u8, ({dec}).to_i64()? as u8)?.trim_start_matches(' '))?"
+                    ),
+                )
+            }
             Expr::Call(name, args) if name == "YMDHMSTOT" => {
                 if args.len() != 6 {
                     return Err("YMDHMSToT expects six Numeric arguments".into());
