@@ -296,6 +296,113 @@ impl Text {
         }
         false
     }
+
+    /// Native `StringUtil.Format(value, v1..v9)`: replaces `%1`..`%9` (with `\%` escape) or `{0}`..`{8}`.
+    pub fn format_template(pattern: &Self, args: &[Self]) -> Result<Self, String> {
+        let value = &pattern.0;
+        if value.is_empty() {
+            return Ok(Self(String::new()));
+        }
+        let get_arg = |idx: usize| -> &str { args.get(idx).map(|a| a.0.as_str()).unwrap_or("") };
+        let chars: Vec<char> = value.chars().collect();
+        let mut out = String::with_capacity(value.len());
+        let mut flag = false;
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '\\' {
+                if i + 1 < chars.len() && chars[i + 1] != '%' {
+                    out.push(c);
+                }
+                flag = true;
+                i += 1;
+            } else if c == '%' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() && !flag {
+                let digit = (chars[i + 1] as u8 - b'0') as usize;
+                if digit == 0 {
+                    return Err("Format placeholder %0 is out of range (expected %1..%9)".into());
+                }
+                out.push_str(get_arg(digit - 1));
+                i += 2;
+                flag = false;
+            } else {
+                out.push(c);
+                flag = false;
+                i += 1;
+            }
+        }
+        if out == *value && out.contains('{') {
+            for idx in 0..9 {
+                let token = format!("{{{idx}}}");
+                if out.contains(&token) {
+                    out = out.replace(&token, get_arg(idx));
+                }
+            }
+        }
+        Self::new(&out)
+    }
+
+    /// Native `StringUtil.Replicate(str, size)`: repeats string `size` times (<= 0 yields empty).
+    pub fn replicate(&self, size: i64) -> Result<Self, String> {
+        if size <= 0 || self.0.is_empty() {
+            return Ok(Self(String::new()));
+        }
+        let count = usize::try_from(size).map_err(|_| "Replicate size overflow")?;
+        let total_bytes = self
+            .0
+            .len()
+            .checked_mul(count)
+            .ok_or("text value exceeds maximum length")?;
+        if total_bytes > MAX_TEXT_BYTES {
+            return Err(format!("text value exceeds {MAX_TEXT_BYTES}-byte limit"));
+        }
+        Ok(Self(self.0.repeat(count)))
+    }
+
+    /// Native `StringUtil.CharAt(s, idx)`: 1-based character extraction (out-of-range yields empty).
+    pub fn char_at(&self, idx: i64) -> Self {
+        if idx <= 0 {
+            return Self(String::new());
+        }
+        self.substring(idx, 1)
+    }
+
+    /// Native `StringUtil.StringSearchRev(s1, s2, start)`: 1-based reverse search within `s1[..start]`.
+    pub fn str_search_rev(&self, find: &Self, start: i64) -> i64 {
+        if start == 0 || self.0.is_empty() {
+            return 0;
+        }
+        let s1 = &self.0;
+        let s2 = &find.0;
+        let end = if start < 0 || (start as usize) > s1.len() {
+            s1.len()
+        } else {
+            start as usize
+        };
+        if let Some(pos) = s1[..end].rfind(s2) {
+            (pos + 1) as i64
+        } else {
+            0
+        }
+    }
+
+    /// Native `StringUtil.BoolToStr(bool)`: `"true"` or `"false"`.
+    pub fn bool_to_str(value: bool) -> Self {
+        Self(if value {
+            "true".to_owned()
+        } else {
+            "false".to_owned()
+        })
+    }
+
+    /// Native `StringUtil.StrToBool(string)`: true iff `"true"` (case-insensitive) or `"1"`.
+    pub fn to_boolean(&self) -> bool {
+        self.0.eq_ignore_ascii_case("true") || self.0 == "1"
+    }
+
+    /// Native `StringUtil.NewLine()`: `"\r\n"`.
+    pub fn newline() -> Self {
+        Self("\r\n".to_owned())
+    }
 }
 
 impl PartialEq for Text {

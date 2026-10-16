@@ -454,9 +454,8 @@ impl Emitter<'_> {
         expression: &Expr,
         assigned: &mut BTreeSet<String>,
     ) -> Result<String, String> {
-        if let Expr::Call(name, args) = expression
-            && name == "NEW"
-            && args.is_empty()
+        if (matches!(expression, Expr::EmptyDate)
+            || matches!(expression, Expr::Call(name, args) if name == "NEW" && args.is_empty()))
             && matches!(
                 expected,
                 DataType::Record { .. } | DataType::Collection { .. }
@@ -777,12 +776,27 @@ impl Emitter<'_> {
             }
             Expr::DateMethod(method, receiver) => {
                 let (receiver_kind, value) = self.lower(receiver, assigned, prelude)?;
-                if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
-                    return Err("calendar method receiver must be Date or DateTime".into());
-                }
                 if method == "ISEMPTY" {
-                    (Kind::Boolean, format!("({value}).is_empty()"))
+                    let code = match receiver_kind {
+                        Kind::Date | Kind::DateTime | Kind::Collection => {
+                            format!("({value}).is_empty()")
+                        }
+                        Kind::Numeric => {
+                            format!("({value}).checked_cmp(\"0\".parse::<Decimal>()?)?.is_eq()")
+                        }
+                        Kind::Text => {
+                            format!("({value}).trim_end_spaces().utf16_length() == 0")
+                        }
+                        Kind::Boolean => format!("!({value})"),
+                        Kind::Record => {
+                            return Err("IsEmpty() is not supported on records directly".into());
+                        }
+                    };
+                    (Kind::Boolean, code)
                 } else {
+                    if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
+                        return Err("calendar method receiver must be Date or DateTime".into());
+                    }
                     let method = match method.as_str() {
                         "YEAR" => "year",
                         "MONTH" => "month",
@@ -1281,6 +1295,155 @@ impl Emitter<'_> {
                     ),
                 )
             }
+            Expr::Call(name, args) if name == "IIF" => {
+                if args.len() != 3 {
+                    return Err(
+                        "Iif expects three arguments (condition, trueExpr, falseExpr)".into(),
+                    );
+                }
+                let cond = self.lower_expect(&args[0], assigned, Kind::Boolean, prelude)?;
+                let mut true_prelude = String::new();
+                let (true_kind, true_val) = self.lower(&args[1], assigned, &mut true_prelude)?;
+                let mut false_prelude = String::new();
+                let (false_kind, false_val) = self.lower(&args[2], assigned, &mut false_prelude)?;
+                if true_kind != false_kind {
+                    return Err("Iif branches must have the same type".into());
+                }
+                if matches!(true_kind, Kind::Record | Kind::Collection) {
+                    return Err("Iif branches must be scalar values".into());
+                }
+                (
+                    true_kind,
+                    format!(
+                        "(if {cond} {{ {true_prelude}{true_val} }} else {{ {false_prelude}{false_val} }})"
+                    ),
+                )
+            }
+            Expr::Call(name, args) if name == "ISEMPTY" => {
+                if args.len() != 1 {
+                    return Err("IsEmpty expects exactly one argument".into());
+                }
+                let (receiver_kind, value) = self.lower(&args[0], assigned, prelude)?;
+                let code = match receiver_kind {
+                    Kind::Date | Kind::DateTime | Kind::Collection => {
+                        format!("({value}).is_empty()")
+                    }
+                    Kind::Numeric => {
+                        format!("({value}).checked_cmp(\"0\".parse::<Decimal>()?)?.is_eq()")
+                    }
+                    Kind::Text => {
+                        format!("({value}).trim_end_spaces().utf16_length() == 0")
+                    }
+                    Kind::Boolean => format!("!({value})"),
+                    Kind::Record => {
+                        return Err("IsEmpty is not supported on records directly".into());
+                    }
+                };
+                (Kind::Boolean, code)
+            }
+            Expr::Call(name, args) if name == "NULLVALUE" => {
+                if args.len() != 1 {
+                    return Err("Nullvalue expects exactly one variable or field argument".into());
+                }
+                let target_type = match &args[0] {
+                    Expr::Variable(var_name) => self.variable(var_name)?.1.clone(),
+                    Expr::Member(receiver, field) => self.member_type(receiver, field)?,
+                    _ => return Err("Nullvalue argument must be a variable or record field".into()),
+                };
+                match target_type {
+                    DataType::Numeric { .. } => (Kind::Numeric, "\"0\".parse::<Decimal>()?".into()),
+                    DataType::Character { .. } | DataType::Varchar { .. } => {
+                        (Kind::Text, "Text::new(\"\")?".into())
+                    }
+                    DataType::Boolean {} => (Kind::Boolean, "false".into()),
+                    DataType::Date {} => (Kind::Date, "Date::empty()".into()),
+                    DataType::DateTime {} => (Kind::DateTime, "DateTime::empty()".into()),
+                    DataType::Record { .. } | DataType::Collection { .. } => {
+                        return Err("Nullvalue requires a scalar variable or field".into());
+                    }
+                }
+            }
+            Expr::Call(name, args) if name == "FORMAT" => {
+                if !(1..=10).contains(&args.len()) {
+                    return Err("Format expects between one and ten arguments".into());
+                }
+                let pattern = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let mut lowered_args = Vec::with_capacity(args.len() - 1);
+                for arg in &args[1..] {
+                    let (k, v) = self.lower(arg, assigned, prelude)?;
+                    let text_expr = match k {
+                        Kind::Text => v,
+                        Kind::Numeric => format!("Text::new(&({v}).to_string())?"),
+                        Kind::Boolean => format!("Text::bool_to_str({v})"),
+                        Kind::Date | Kind::DateTime => format!("Text::new(&({v}).to_text())?"),
+                        _ => return Err("Format arguments must be scalar values".into()),
+                    };
+                    lowered_args.push(text_expr);
+                }
+                (
+                    Kind::Text,
+                    format!(
+                        "Text::format_template(&({pattern}), &[{}])?",
+                        lowered_args.join(", ")
+                    ),
+                )
+            }
+            Expr::Call(name, args) if name == "NEWLINE" => {
+                if !args.is_empty() {
+                    return Err("NewLine expects zero arguments".into());
+                }
+                (Kind::Text, "Text::newline()".into())
+            }
+            Expr::Call(name, args) if name == "REPLICATE" => {
+                if args.len() != 2 {
+                    return Err("Replicate expects two arguments (text, count)".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let count = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (
+                    Kind::Text,
+                    format!("({text}).replicate(({count}).to_i64()?)?"),
+                )
+            }
+            Expr::Call(name, args) if name == "CHARAT" => {
+                if args.len() != 2 {
+                    return Err("CharAt expects two arguments (text, index)".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let idx = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (Kind::Text, format!("({text}).char_at(({idx}).to_i64()?)"))
+            }
+            Expr::Call(name, args) if name == "STRSEARCHREV" => {
+                if !(2..=3).contains(&args.len()) {
+                    return Err("StrSearchRev expects two or three arguments".into());
+                }
+                let s1 = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let s2 = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                let start = if let Some(s) = args.get(2) {
+                    let val = self.lower_expect(s, assigned, Kind::Numeric, prelude)?;
+                    format!("({val}).to_i64()?")
+                } else {
+                    "-1".into()
+                };
+                (
+                    Kind::Numeric,
+                    format!("Decimal::from(({s1}).str_search_rev(&({s2}), {start}))"),
+                )
+            }
+            Expr::Call(name, args) if name == "BOOLTOSTR" => {
+                if args.len() != 1 {
+                    return Err("BoolToStr expects one Boolean argument".into());
+                }
+                let val = self.lower_expect(&args[0], assigned, Kind::Boolean, prelude)?;
+                (Kind::Text, format!("Text::bool_to_str({val})"))
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "TOBOOLEAN" | "STRTOBOOL") => {
+                if args.len() != 1 {
+                    return Err(format!("{name} expects one Text argument"));
+                }
+                let val = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                (Kind::Boolean, format!("({val}).to_boolean()"))
+            }
             Expr::Call(name, args) => {
                 let (result, value) = self.lower_call(name, args, assigned, prelude, false)?;
                 (result.expect("function calls return a value"), value)
@@ -1306,8 +1469,15 @@ impl Emitter<'_> {
         assigned: &mut BTreeSet<String>,
         expected: Kind,
     ) -> Result<String, String> {
-        if matches!(expr, Expr::EmptyDate) && expected == Kind::DateTime {
-            return Ok("DateTime::empty()".into());
+        if matches!(expr, Expr::EmptyDate) {
+            return match expected {
+                Kind::Date => Ok("Date::empty()".into()),
+                Kind::DateTime => Ok("DateTime::empty()".into()),
+                Kind::Numeric => Ok("\"0\".parse::<Decimal>()?".into()),
+                Kind::Text => Ok("Text::new(\"\")?".into()),
+                Kind::Boolean => Ok("false".into()),
+                Kind::Record | Kind::Collection => Err("typed value mismatch".into()),
+            };
         }
         let (actual, source) = self.expression(expr, assigned)?;
         if actual != expected {

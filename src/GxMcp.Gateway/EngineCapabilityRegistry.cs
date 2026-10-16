@@ -151,6 +151,15 @@ namespace GxMcp.Gateway
                 notes: "Matches native GeneXus subroutine semantics: subroutines are top-level, never executed on sequential fallthrough, share all procedure-scoped variables by mutable reference, and propagate early Return via returnInSub flag to exit the enclosing procedure immediately. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "conditional_and_state_operations",
+                title: "Inline conditional (Iif), universal empty/null state (IsEmpty, SetEmpty, Nullvalue), .UDP calls, and StringUtil formatting/search/boolean utilities",
+                engineSurface: "frontend expression/statement parser + typed_backend short-circuit conditional and state lowering + Text methods",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (57 recorded native GxClasses.dll StringUtil/state oracle rows); src/gx-engine/tests/fixtures/conditional_state_native.tsv; src/gx-engine/tests/conditional_state.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GeneXus.Utils.StringUtil in genexus.classes.core and native C# codegen: Iif(cond, trueExpr, falseExpr) short-circuits branch evaluation; IsEmpty and SetEmpty operate uniformly across Numeric, Text, Boolean, Date, DateTime, Collection, and Record members; Nullvalue(&var) returns the typed empty sentinel; Proc.UDP(...) invokes value-returning procedures; Format replaces %1..%9 (with \\% escape) or {0}..{8}; Replicate, CharAt, StrSearchRev/LastIndexOf, BoolToStr, ToBoolean/StrToBool, and NewLine match GxClasses.dll. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",

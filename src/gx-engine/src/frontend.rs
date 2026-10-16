@@ -55,6 +55,17 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
             | "ENDOFMONTH"
             | "RESETTIME"
             | "TOSTRING"
+            | "IIF"
+            | "ISEMPTY"
+            | "NULLVALUE"
+            | "FORMAT"
+            | "NEWLINE"
+            | "REPLICATE"
+            | "CHARAT"
+            | "STRSEARCHREV"
+            | "BOOLTOSTR"
+            | "TOBOOLEAN"
+            | "STRTOBOOL"
     )
 }
 
@@ -523,20 +534,26 @@ impl Parser {
 
     fn parse_statement(&mut self, nesting: usize) -> Result<Stmt, String> {
         match &self.current().kind {
-            TokenKind::Variable(name) => {
-                if self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Dot)
-                    && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Identifier(name) if name == "SETEMPTY")) {
-                    let name = name.clone();
-                    self.take(); self.take(); self.take();
-                    self.expect(TokenKind::LeftParen, "'(' after SetEmpty")?;
-                    self.expect(TokenKind::RightParen, "')' after SetEmpty(")?;
-                    return Ok(Stmt::Assign(name, Expr::EmptyDate));
-                }
+            TokenKind::Variable(_) => {
                 let location = self.current().location;
                 let mut nodes = 0;
                 let target = self.parse_primary(1, &mut nodes)?;
                 if self.at(&TokenKind::Dot) {
                     self.take();
+                    if self.at_keyword("SETEMPTY") {
+                        self.take();
+                        self.expect(TokenKind::LeftParen, "'(' after SetEmpty")?;
+                        self.expect(TokenKind::RightParen, "')' after SetEmpty(")?;
+                        return match target {
+                            Expr::Variable(name) => Ok(Stmt::Assign(name, Expr::EmptyDate)),
+                            Expr::Member(receiver, field) => {
+                                Ok(Stmt::AssignField(receiver, field, Expr::EmptyDate))
+                            }
+                            _ => Err(
+                                location.error("SetEmpty target must be a variable or record member")
+                            ),
+                        };
+                    }
                     if self.at_keyword("ADD") {
                         self.take();
                         self.expect(TokenKind::LeftParen, "'(' after Add")?;
@@ -611,7 +628,11 @@ impl Parser {
                 let location = self.take().location;
                 if self.at(&TokenKind::Dot) {
                     self.take();
-                    self.expect_keyword("CALL")?;
+                    if self.at_keyword("UDP") {
+                        self.take();
+                    } else {
+                        self.expect_keyword("CALL")?;
+                    }
                 }
                 if !self.at(&TokenKind::LeftParen) {
                     return Err(location.error(format_args!(
@@ -1066,15 +1087,17 @@ impl Parser {
         let mut value = self.parse_atom(depth, nodes)?;
         let mut methods = 0;
         while self.at(&TokenKind::Dot) {
-            // Add, Remove, and Clear are statement-only mutators, consumed by parse_statement.
-            if self
+            // Add, Remove, Clear, and SetEmpty are statement-only mutators, consumed by parse_statement.
+            if self.tokens.get(self.cursor + 1).is_some_and(|t| {
+                matches!(
+                    &t.kind,
+                    TokenKind::Identifier(name)
+                        if matches!(name.as_str(), "ADD" | "REMOVE" | "CLEAR" | "SETEMPTY")
+                )
+            }) && self
                 .tokens
-                .get(self.cursor + 1)
-                .is_some_and(|t| matches!(&t.kind, TokenKind::Identifier(name) if matches!(name.as_str(), "ADD" | "REMOVE" | "CLEAR")))
-                && self
-                    .tokens
-                    .get(self.cursor + 2)
-                    .is_some_and(|t| t.kind == TokenKind::LeftParen)
+                .get(self.cursor + 2)
+                .is_some_and(|t| t.kind == TokenKind::LeftParen)
             {
                 break;
             }
@@ -1191,6 +1214,32 @@ impl Parser {
             self.expect(TokenKind::RightParen, "')' after IndexOf arguments")?;
             self.count_expression_node(nodes, location)?;
             return Ok(Expr::Call("INDEXOF".into(), args));
+        }
+        if matches!(name, "LASTINDEXOF" | "STRSEARCHREV") {
+            self.expect(TokenKind::LeftParen, "'(' after LastIndexOf(")?;
+            let find = self.parse_or(depth, nodes)?;
+            let mut args = vec![value, find];
+            if self.current().kind == TokenKind::Comma {
+                self.take();
+                let start = self.parse_or(depth, nodes)?;
+                args.push(start);
+            }
+            self.expect(TokenKind::RightParen, "')' after LastIndexOf arguments")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("STRSEARCHREV".into(), args));
+        }
+        if name == "CHARAT" {
+            self.expect(TokenKind::LeftParen, "'(' after CharAt(")?;
+            let idx = self.parse_or(depth, nodes)?;
+            self.expect(TokenKind::RightParen, "')' after CharAt argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("CHARAT".into(), vec![value, idx]));
+        }
+        if name == "TOBOOLEAN" {
+            self.expect(TokenKind::LeftParen, "'(' after ToBoolean(")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument ToBoolean()")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("TOBOOLEAN".into(), vec![value]));
         }
         if name == "CLONE" {
             self.take();
@@ -1368,6 +1417,19 @@ impl Parser {
             }
             TokenKind::Identifier(name) => {
                 self.take();
+                if self.at(&TokenKind::Dot)
+                    && self
+                        .tokens
+                        .get(self.cursor + 1)
+                        .is_some_and(|t| matches!(&t.kind, TokenKind::Identifier(m) if m == "UDP"))
+                    && self
+                        .tokens
+                        .get(self.cursor + 2)
+                        .is_some_and(|t| t.kind == TokenKind::LeftParen)
+                {
+                    self.take();
+                    self.take();
+                }
                 if self.at(&TokenKind::LeftParen) {
                     self.take();
                     self.parse_call(name, depth + 1, nodes, token.location)

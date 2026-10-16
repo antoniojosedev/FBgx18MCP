@@ -1361,3 +1361,26 @@ Owner-reported implementation and native observations:
   - `src/gx-engine/tests/subroutines.rs`: Added 13 end-to-end tests covering variable mutation, case-insensitive resolution, quote styles, cooperative chaining (`SubA` -> `SubB` -> `SubC`), early `Return` propagation (including nested subroutines and value-returning helpers), fallthrough isolation, recursion depth limit, loops/collections/procedure calls inside subroutines, and compile-time error checks.
 - Verification: 275 passed / 0 failed in `gx-engine` (13 new subroutine tests), Gateway `EngineBackendTests` 40/40 passed, Clippy and rustfmt clean.
 - Registry: new `subroutine_control_flow` capability at `Parity` (no consumers).
+
+## Conditional, Empty/Null State & String Formatting Core Parity (2026-10-16)
+
+- Native Decompilation & Codegen Analysis: Extracted `GeneXus.Utils.StringUtil` semantics from `genexus.classes.core` 1.30.0 runtime via ILSpy and inspected generated C# in `C:\KBs\KBTeste\NetModel\web\gx0010.cs` and `Artech.Genexus.Common.AST.ASTNodesHelpers`:
+  - `Iif(condition, trueExpr, falseExpr)`: Short-circuit conditional expression (`(cond ? a : b)`), evaluating only the taken branch.
+  - Universal `.IsEmpty()` and `IsEmpty(expr)`: `Numeric` compares equal to `0`; `Text` checks `String.IsNullOrEmpty(StringUtil.RTrim(s))` (`trim_end_spaces().utf16_length() == 0`); `Boolean` checks `!b`; `Date`, `DateTime`, and `Collection` check `.is_empty()`.
+  - Universal `.SetEmpty()`: Resets `Numeric` to `0`, `Text` to `""`, `Boolean` to `false`, `Date`/`DateTime` to empty sentinels, `Collection` to empty list, `Record` to fresh default record, and supports record member targets (`&rec.Field.SetEmpty()`).
+  - `Nullvalue(&var)`: Returns the typed empty sentinel for `&var` or `&rec.Field` without requiring `&var` to be previously assigned.
+  - `Proc.UDP(...)`: Invokes value-returning (or out-parameter) procedures identically to `Proc(...)`.
+  - `StringUtil.Format(pattern, v1..v9)`: Replaces `%1`..`%9` (supporting `\%` escape and preserving non-`%` backslashes) or `{0}`..`{8}` when no `%N` replacement occurs.
+  - `StringUtil.Replicate(str, size)`: Repeats `str` `size` times (`size <= 0` returns `""`).
+  - `StringUtil.CharAt(str, idx)`: 1-based character extraction (`idx <= 0` or `idx > Length` returns `""`).
+  - `StringUtil.StringSearchRev(s1, s2, start)`: 1-based reverse search (`s1.LastIndexOf(s2, start - 1) + 1`, searching within `s1[..start]`).
+  - `StringUtil.BoolToStr(b)` (`"true"` / `"false"`), `StringUtil.StrToBool(s)` (true iff `"true"` case-insensitive or `"1"`), and `StringUtil.NewLine()` (`"\r\n"`).
+- Fixture & Evidence: Generated `tests/fixtures/conditional_state_native.tsv` (57 rows) directly from official runtime via `generate-conditional-state` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/text.rs`: Added `format_template`, `replicate`, `char_at`, `str_search_rev`, `bool_to_str`, `to_boolean`, and `newline`.
+  - `src/gx-engine/src/frontend.rs`: Added builtins `IIF`, `ISEMPTY`, `NULLVALUE`, `FORMAT`, `NEWLINE`, `REPLICATE`, `CHARAT`, `STRSEARCHREV`, `BOOLTOSTR`, `TOBOOLEAN`, `STRTOBOOL`; generalized `.SetEmpty()` to variables and record fields; added `.CharAt()`, `.LastIndexOf()` / `.StrSearchRev()`, `.ToBoolean()`, and `.UDP(...)` call support.
+  - `src/gx-engine/src/typed_backend.rs`: Emitted short-circuit lowering for `IIF`, universal `ISEMPTY` and `SetEmpty` across all types and container assignments, `NULLVALUE`, and string formatting/search/boolean builtins.
+  - `src/gx-engine/tests/conditional_state.rs`: Added 57-row native oracle test and end-to-end compiled Procedure tests.
+- Verification: 280 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
+- Registry: new `conditional_and_state_operations` capability at `Parity` (no consumers). **Control Flow & Procedure Pipeline** reaches **100.0% parity (6/6 areas)**.
+

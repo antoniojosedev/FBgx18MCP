@@ -46,9 +46,15 @@ internal static class Program
             return 0;
         }
 
+        if (args.Length > 0 && args[0] == "generate-conditional-state")
+        {
+            GenerateConditionalState();
+            return 0;
+        }
+
         if (args.Length < 3 || args[0] != "bench-str")
         {
-            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops | generate-calendar-ops");
+            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops | generate-calendar-ops | generate-conditional-state");
             return 2;
         }
 
@@ -587,6 +593,121 @@ internal static class Program
             Console.WriteLine($"endofmonth|{label}=[{eom.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture)}]");
             var rt = DateTimeUtil.ResetTime(dt);
             Console.WriteLine($"resettime|{label}=[{rt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture)}]");
+        }
+    }
+
+    private static void GenerateConditionalState()
+    {
+        // 1. StringUtil.Format(value, v1..v9)
+        (string pattern, string[] args)[] formatCases = [
+            ("Selection List %1", ["Customer"]),
+            ("Order %1 for %2: %3", ["1001", "Alice", "$250.00"]),
+            ("%1-%2-%3-%4-%5-%6-%7-%8-%9", ["A", "B", "C", "D", "E", "F", "G", "H", "I"]),
+            ("Repeated %1 and %2 and %1", ["X", "Y"]),
+            ("Missing %2 with only %1", ["One"]),
+            ("Escaped \\%1 and real %1", ["Value"]),
+            ("Backslash \\not_pct and %1", ["Val"]),
+            ("No placeholders here", ["Ignored"]),
+            ("", ["Ignored"]),
+            ("DotNet {0} and {1}", ["First", "Second"]),
+        ];
+        foreach (var (pattern, args) in formatCases)
+        {
+            string[] padded = new string[9];
+            for (int i = 0; i < 9; i++)
+            {
+                padded[i] = i < args.Length ? args[i] : "";
+            }
+            string res = StringUtil.Format(
+                pattern,
+                padded[0], padded[1], padded[2],
+                padded[3], padded[4], padded[5],
+                padded[6], padded[7], padded[8]);
+            string joinedArgs = string.Join(",", args.Select(Escape));
+            Console.WriteLine($"format|{Escape(pattern)}|{joinedArgs}=[{Escape(res)}]");
+        }
+
+        // 2. StringUtil.Replicate
+        (string str, int count)[] replicateCases = [
+            ("ab", 3),
+            ("x", 5),
+            ("abc", 0),
+            ("abc", -2),
+            ("", 4),
+            ("Gx", 1),
+        ];
+        foreach (var (str, count) in replicateCases)
+        {
+            string res = StringUtil.Replicate(str, count);
+            Console.WriteLine($"replicate|{Escape(str)}|{count}=[{Escape(res)}]");
+        }
+
+        // 3. StringUtil.CharAt
+        (string str, int idx)[] charAtCases = [
+            ("GeneXus", 1),
+            ("GeneXus", 4),
+            ("GeneXus", 7),
+            ("GeneXus", 0),
+            ("GeneXus", -1),
+            ("GeneXus", 8),
+            ("", 1),
+        ];
+        foreach (var (str, idx) in charAtCases)
+        {
+            string res = StringUtil.CharAt(str, idx);
+            Console.WriteLine($"charat|{Escape(str)}|{idx}=[{Escape(res)}]");
+        }
+
+        // 4. StringUtil.StringSearchRev
+        (string s1, string s2, int start)[] searchRevCases = [
+            ("ababa", "aba", -1),
+            ("ababa", "aba", 5),
+            ("ababa", "aba", 4),
+            ("ababa", "aba", 3),
+            ("ababa", "aba", 2),
+            ("ababa", "aba", 0),
+            ("hello world hello", "hello", -1),
+            ("hello world hello", "hello", 10),
+            ("hello world hello", "xyz", -1),
+            ("abc", "abc", 100),
+        ];
+        foreach (var (s1, s2, start) in searchRevCases)
+        {
+            int res = StringUtil.StringSearchRev(s1, s2, start);
+            Console.WriteLine($"strsearchrev|{Escape(s1)}|{Escape(s2)}|{start}=[{res}]");
+        }
+
+        // 5. BoolToStr and StrToBool
+        Console.WriteLine($"booltostr|true=[{StringUtil.BoolToStr(true)}]");
+        Console.WriteLine($"booltostr|false=[{StringUtil.BoolToStr(false)}]");
+        string[] strToBoolInputs = ["true", "TRUE", "True", "1", "false", "FALSE", "0", "", "yes"];
+        foreach (var s in strToBoolInputs)
+        {
+            bool res = StringUtil.StrToBool(s);
+            Console.WriteLine($"strtobool|{Escape(s)}=[{(res ? "true" : "false")}]");
+        }
+
+        // 6. NewLine
+        Console.WriteLine($"newline|=[{Escape(StringUtil.NewLine())}]");
+
+        // 7. IsEmpty across types (matching GeneXus C# generated expressions)
+        string[] textIsEmptyInputs = ["", "   ", " a ", "abc", "\t"];
+        foreach (var s in textIsEmptyInputs)
+        {
+            bool isEmpty = string.IsNullOrEmpty(StringUtil.RTrim(s));
+            Console.WriteLine($"isempty_text|{Escape(s)}=[{(isEmpty ? "true" : "false")}]");
+        }
+        decimal[] numIsEmptyInputs = [0m, 0.00m, 1m, -0.01m, 42.5m];
+        foreach (var n in numIsEmptyInputs)
+        {
+            bool isEmpty = (n == 0m);
+            Console.WriteLine($"isempty_num|{n.ToString(CultureInfo.InvariantCulture)}=[{(isEmpty ? "true" : "false")}]");
+        }
+        bool[] boolIsEmptyInputs = [false, true];
+        foreach (var b in boolIsEmptyInputs)
+        {
+            bool isEmpty = !b;
+            Console.WriteLine($"isempty_bool|{(b ? "true" : "false")}=[{(isEmpty ? "true" : "false")}]");
         }
     }
 
