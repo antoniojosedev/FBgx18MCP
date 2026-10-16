@@ -34,9 +34,15 @@ internal static class Program
             return 0;
         }
 
+        if (args.Length > 0 && args[0] == "generate-collection-ops")
+        {
+            GenerateCollectionOps();
+            return 0;
+        }
+
         if (args.Length < 3 || args[0] != "bench-str")
         {
-            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math");
+            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops");
             return 2;
         }
 
@@ -385,6 +391,57 @@ internal static class Program
         {
             Console.WriteLine($"ltrimstr|{val.ToString(CultureInfo.InvariantCulture)}|{len}|{dec}=[{StringUtil.LTrimStr(val, len, dec)}]");
         }
+    }
+
+    private static void GenerateCollectionOps()
+    {
+        var col = new GxSimpleCollection<string>();
+        Console.WriteLine($"count_initial|=[{col.Count}]");
+
+        col.Add("alpha");
+        col.Add("beta");
+        col.Add("gamma");
+        Console.WriteLine($"count_after_3_adds|=[{col.Count}]");
+        Console.WriteLine($"item|1=[{col.Item(1)}]");
+        Console.WriteLine($"item|2=[{col.Item(2)}]");
+        Console.WriteLine($"item|3=[{col.Item(3)}]");
+
+        Console.WriteLine($"index_of|alpha=[{col.IndexOf("alpha")}]");
+        Console.WriteLine($"index_of|beta=[{col.IndexOf("beta")}]");
+        Console.WriteLine($"index_of|gamma=[{col.IndexOf("gamma")}]");
+        Console.WriteLine($"index_of|missing=[{col.IndexOf("missing")}]");
+
+        col.Add("first", 1);
+        Console.WriteLine($"count_after_insert_1|=[{col.Count}]");
+        Console.WriteLine($"item_after_insert_1|1=[{col.Item(1)}]");
+        Console.WriteLine($"item_after_insert_1|2=[{col.Item(2)}]");
+
+        col.Add("third", 3);
+        Console.WriteLine($"count_after_insert_3|=[{col.Count}]");
+        Console.WriteLine($"item_after_insert_3|3=[{col.Item(3)}]");
+
+        col.Add("end", 0);
+        Console.WriteLine($"count_after_insert_0|=[{col.Count}]");
+        Console.WriteLine($"item_after_insert_0|last=[{col.Item(col.Count)}]");
+
+        col.RemoveItem(1);
+        Console.WriteLine($"count_after_remove_1|=[{col.Count}]");
+        Console.WriteLine($"item_after_remove_1|1=[{col.Item(1)}]");
+
+        col.RemoveItem(col.Count);
+        Console.WriteLine($"count_after_remove_last|=[{col.Count}]");
+        Console.WriteLine($"item_after_remove_last|last=[{col.Item(col.Count)}]");
+
+        col.RemoveItem(0);
+        col.RemoveItem(-1);
+        col.RemoveItem(999);
+        Console.WriteLine($"count_after_invalid_removes|=[{col.Count}]");
+
+        col.Clear();
+        Console.WriteLine($"count_after_clear|=[{col.Count}]");
+        Console.WriteLine($"index_of_cleared|alpha=[{col.IndexOf("alpha")}]");
+        col.RemoveItem(1);
+        Console.WriteLine($"count_after_remove_empty|=[{col.Count}]");
     }
 
     private static string Escape(string s) => s.Replace("\t", "\\t").Replace("\n", "\\n").Replace("\r", "\\r");

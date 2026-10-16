@@ -36,6 +36,7 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
             | "CHR"
             | "NOTNUMERIC"
             | "LTRIMSTR"
+            | "INDEXOF"
     )
 }
 
@@ -55,7 +56,9 @@ pub struct Procedure {
 pub enum Stmt {
     Assign(String, Expr),
     AssignField(Box<Expr>, String, Expr),
-    CollectionAdd(Box<Expr>, Expr),
+    CollectionAdd(Box<Expr>, Expr, Option<Expr>),
+    CollectionRemove(Box<Expr>, Expr),
+    CollectionClear(Box<Expr>),
     Print(Expr),
     MsgStatus(Expr),
     Return(Expr),
@@ -64,6 +67,10 @@ pub enum Stmt {
     While(Expr, Vec<Stmt>),
     /// Numeric For with an explicit, nonzero integer-literal stride.
     For(String, Expr, Expr, i64, Vec<Stmt>),
+    /// For &Item in &Collection
+    ForIn(String, Expr, Vec<Stmt>),
+    /// Loop break statement
+    Exit,
     /// `Proc(args)` or `Proc.Call(args)` as a statement; always holds an `Expr::Call`.
     Call(Expr),
 }
@@ -504,11 +511,34 @@ impl Parser {
                 let mut nodes = 0;
                 let target = self.parse_primary(1, &mut nodes)?;
                 if self.at(&TokenKind::Dot) {
-                    self.take(); self.expect_keyword("ADD")?;
-                    self.expect(TokenKind::LeftParen, "'(' after Add")?;
-                    let value = self.parse_expression()?;
-                    self.expect(TokenKind::RightParen, "')' after Add argument")?;
-                    return Ok(Stmt::CollectionAdd(Box::new(target), value));
+                    self.take();
+                    if self.at_keyword("ADD") {
+                        self.take();
+                        self.expect(TokenKind::LeftParen, "'(' after Add")?;
+                        let value = self.parse_expression()?;
+                        let opt_idx = if self.at(&TokenKind::Comma) {
+                            self.take();
+                            Some(self.parse_expression()?)
+                        } else {
+                            None
+                        };
+                        self.expect(TokenKind::RightParen, "')' after Add argument")?;
+                        return Ok(Stmt::CollectionAdd(Box::new(target), value, opt_idx));
+                    }
+                    if self.at_keyword("REMOVE") {
+                        self.take();
+                        self.expect(TokenKind::LeftParen, "'(' after Remove")?;
+                        let idx = self.parse_expression()?;
+                        self.expect(TokenKind::RightParen, "')' after Remove argument")?;
+                        return Ok(Stmt::CollectionRemove(Box::new(target), idx));
+                    }
+                    if self.at_keyword("CLEAR") {
+                        self.take();
+                        self.expect(TokenKind::LeftParen, "'(' after Clear")?;
+                        self.expect(TokenKind::RightParen, "')' after Clear()")?;
+                        return Ok(Stmt::CollectionClear(Box::new(target)));
+                    }
+                    return Err(location.error("unsupported statement method on target"));
                 }
                 self.expect(TokenKind::Equals, "'=' in an assignment")?;
                 let value = self.parse_expression()?;
@@ -517,6 +547,10 @@ impl Parser {
                     Expr::Member(receiver, field) => Ok(Stmt::AssignField(receiver, field, value)),
                     _ => Err(location.error("assignment target must be a variable or record member")),
                 }
+            }
+            TokenKind::Identifier(keyword) if keyword == "EXIT" => {
+                self.take();
+                Ok(Stmt::Exit)
             }
             TokenKind::Identifier(keyword) if keyword == "PRINT" => self.parse_print(),
             TokenKind::Identifier(keyword) if keyword == "MSG" => self.parse_msg_status(),
@@ -739,10 +773,22 @@ impl Parser {
         }
         let token = self.take();
         let TokenKind::Variable(variable) = token.kind else {
-            return Err(token
-                .location
-                .error("For requires a Numeric iterator variable"));
+            return Err(token.location.error("For requires an iterator variable"));
         };
+        if self.at_keyword("IN") {
+            self.take();
+            let collection = self.parse_expression()?;
+            self.require_statement_end()?;
+            let (body, end) = self.parse_block(nesting + 1)?;
+            if end != BlockEnd::EndFor {
+                return Err(self.current().location.error(format_args!(
+                    "expected EndFor, found {}",
+                    self.block_end_name(end)
+                )));
+            }
+            self.expect_keyword("ENDFOR")?;
+            return Ok(Stmt::ForIn(variable, collection, body));
+        }
         self.expect(TokenKind::Equals, "'=' after For iterator")?;
         let initial = self.parse_expression()?;
         self.expect_keyword("TO")?;
@@ -948,11 +994,11 @@ impl Parser {
         let mut value = self.parse_atom(depth, nodes)?;
         let mut methods = 0;
         while self.at(&TokenKind::Dot) {
-            // Add is a statement-only mutator, consumed by parse_statement.
+            // Add, Remove, and Clear are statement-only mutators, consumed by parse_statement.
             if self
                 .tokens
                 .get(self.cursor + 1)
-                .is_some_and(|t| matches!(&t.kind, TokenKind::Identifier(name) if name == "ADD"))
+                .is_some_and(|t| matches!(&t.kind, TokenKind::Identifier(name) if matches!(name.as_str(), "ADD" | "REMOVE" | "CLEAR")))
                 && self
                     .tokens
                     .get(self.cursor + 2)
@@ -1066,10 +1112,13 @@ impl Parser {
                 self.take();
                 let start = self.parse_or(depth, nodes)?;
                 args.push(start);
+                self.expect(TokenKind::RightParen, "')' after IndexOf arguments")?;
+                self.count_expression_node(nodes, location)?;
+                return Ok(Expr::Call("STRSEARCH".into(), args));
             }
             self.expect(TokenKind::RightParen, "')' after IndexOf arguments")?;
             self.count_expression_node(nodes, location)?;
-            return Ok(Expr::Call("STRSEARCH".into(), args));
+            return Ok(Expr::Call("INDEXOF".into(), args));
         }
         if name == "CLONE" {
             self.take();

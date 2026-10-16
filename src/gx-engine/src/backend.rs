@@ -277,7 +277,12 @@ fn collect_block(
             Stmt::For(..) => {
                 return Err("For requires format_version 2".into());
             }
-            Stmt::AssignField(_, _, _) | Stmt::CollectionAdd(_, _) => {
+            Stmt::AssignField(_, _, _)
+            | Stmt::CollectionAdd(..)
+            | Stmt::CollectionRemove(..)
+            | Stmt::CollectionClear(..)
+            | Stmt::ForIn(..)
+            | Stmt::Exit => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {
@@ -373,7 +378,12 @@ fn validate_block(
             Stmt::For(..) => {
                 return Err("For requires format_version 2".into());
             }
-            Stmt::AssignField(_, _, _) | Stmt::CollectionAdd(_, _) => {
+            Stmt::AssignField(_, _, _)
+            | Stmt::CollectionAdd(..)
+            | Stmt::CollectionRemove(..)
+            | Stmt::CollectionClear(..)
+            | Stmt::ForIn(..)
+            | Stmt::Exit => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {
@@ -676,7 +686,12 @@ fn emit_block(
             Stmt::For(..) => {
                 return Err("For requires format_version 2".into());
             }
-            Stmt::AssignField(_, _, _) | Stmt::CollectionAdd(_, _) => {
+            Stmt::AssignField(_, _, _)
+            | Stmt::CollectionAdd(..)
+            | Stmt::CollectionRemove(..)
+            | Stmt::CollectionClear(..)
+            | Stmt::ForIn(..)
+            | Stmt::Exit => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {

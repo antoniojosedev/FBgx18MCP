@@ -11,8 +11,26 @@ pub(crate) fn calls(body: &[Stmt]) -> HashSet<String> {
 fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
     for statement in statements {
         match statement {
-            Stmt::ReturnVoid => {}
-            Stmt::AssignField(receiver, _, value) | Stmt::CollectionAdd(receiver, value) => {
+            Stmt::ReturnVoid | Stmt::Exit => {}
+            Stmt::CollectionAdd(receiver, value, opt_idx) => {
+                collect_expression_calls(receiver, callees);
+                collect_expression_calls(value, callees);
+                if let Some(idx) = opt_idx {
+                    collect_expression_calls(idx, callees);
+                }
+            }
+            Stmt::CollectionRemove(receiver, idx) => {
+                collect_expression_calls(receiver, callees);
+                collect_expression_calls(idx, callees);
+            }
+            Stmt::CollectionClear(receiver) => {
+                collect_expression_calls(receiver, callees);
+            }
+            Stmt::ForIn(_, collection, body) => {
+                collect_expression_calls(collection, callees);
+                collect_block_calls(body, callees);
+            }
+            Stmt::AssignField(receiver, _, value) => {
                 collect_expression_calls(receiver, callees);
                 collect_expression_calls(value, callees);
             }

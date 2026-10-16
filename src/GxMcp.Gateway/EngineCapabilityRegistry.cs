@@ -124,6 +124,15 @@ namespace GxMcp.Gateway
                 notes: "Measured against GeneXus.Utils.NumberUtil and GeneXus.Utils.StringUtil in genexus.classes.core: Int uses Math.Floor, Round uses MidpointRounding.AwayFromZero supporting negative digits, Trunc truncates towards zero supporting negative digits, Val parses string to decimal stopping at first non-digit char and returning 0 on empty, Right throws ArgumentOutOfRangeException on negative size, Asc on empty string returns 32, NotNumeric on empty string returns false. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "collection_operations",
+                title: "Collection mutating and inspection operations (Add, Remove, Clear, IndexOf), For In iteration and Exit",
+                engineSurface: "frontend statement/expression grammar + format-2 typed compiler and Collection runtime",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (24 recorded native GxSimpleCollection/GXBaseCollection oracle rows: 1-based indexing, insertion, out-of-bounds silent removal, reference/object IndexOf, item aliasing in For In loops); src/gx-engine/tests/fixtures/collection_ops_native.tsv; src/gx-engine/tests/collection_ops.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GeneXus.Utils.GxSimpleCollection<T>, GeneXus.Utils.GXBaseCollection<T>, and GeneXus.Utils.IGxCollection in genexus.classes.core: Add(item, 0) appends, Add(item, idx>0) inserts at idx-1; Remove(idx) with idx<=0 or idx>Count is a safe no-op matching SDK; IndexOf returns 1-based index or 0 when absent; For &item in &col aliases elements allowing in-loop updates; Exit breaks out of the enclosing loop. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",

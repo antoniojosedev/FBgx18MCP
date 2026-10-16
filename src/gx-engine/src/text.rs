@@ -16,6 +16,10 @@ impl Text {
         Ok(Self(value.to_owned()))
     }
 
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub fn trim_spaces(self) -> Self {
         // GeneXus Trim preserves tabs and NBSP in the measured .NET path.
         Self(self.0.trim_matches(' ').to_owned())

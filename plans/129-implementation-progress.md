@@ -1303,3 +1303,24 @@ Owner-reported implementation and native observations:
   - `src/gx-engine/tests/numeric_math.rs`: Added fixture oracle verification (107 rows), executable e2e Procedure validation, and arity/type rejection tests.
 - Verification: 256 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
 - Registry: new `numeric_math_functions` capability at `Parity` (no consumers).
+
+## Collection Operations & For In Iteration Core Parity (2026-10-16)
+
+- Native Oracle & Decompilation: Extracted `GeneXus.Utils.GxSimpleCollection<T>`, `GeneXus.Utils.GXBaseCollection<T>`, and `GeneXus.Utils.IGxCollection` semantics from `genexus.classes.core` 1.30.0 runtime via REA / ILSpy:
+  - `Add(item, 0)`: Appends to end of collection (same as omitting the index).
+  - `Add(item, idx)`: When `idx > 0`, inserts at 1-based index `idx - 1`.
+  - `Remove(idx)` / `RemoveElement(idx)`: When `idx > 0 && idx <= Count`, removes item at `idx - 1`. When `idx <= 0` or `idx > Count`, it is a silent safe no-op (no exception).
+  - `Clear()` / `ClearCollection()`: Removes all items from the collection.
+  - `IndexOf(item)`: Compares items using reference/object equality (`Rc::ptr_eq`), returning 1-based index (`1..=Count`), or `0` if not present.
+  - `For &item in &collection ... EndFor`: Iterates elements, rebinding `&item` as an alias to the element inside the collection so mutations inside the loop directly update the collection elements.
+  - `Exit`: Immediately breaks execution of the enclosing loop (`break;`).
+- Fixture & Evidence: Generated `tests/fixtures/collection_ops_native.tsv` (24 rows) directly from official runtime via `generate-collection-ops` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/record_runtime.rs`: Added `insert`, `remove`, `clear`, and `index_of` to `Collection`.
+  - `src/gx-engine/src/frontend.rs`: Updated `Stmt::CollectionAdd` to accept optional index; added `Stmt::CollectionRemove`, `Stmt::CollectionClear`, `Stmt::ForIn`, and `Stmt::Exit`. Updated parser for `.Add(item [, index])`, `.Remove(index)`, `.Clear()`, `Exit`, and `For &item in &col`.
+  - `src/gx-engine/src/dependencies.rs`: Updated AST traversal for new statement variants.
+  - `src/gx-engine/src/typed_backend.rs`: Emitted lowerings for `INDEXOF` (supporting both collections and strings), `CollectionAdd`, `CollectionRemove`, `CollectionClear`, `ForIn` (with alias binding and per-iteration step cost budget), and `Exit`. Allowed `new()` for `DataType::Collection` in `container_assignment`.
+  - `src/gx-engine/tests/collection_ops.rs`: Added fixture oracle verification (24 rows), executable e2e Procedure validation, and schema mismatch rejection tests.
+- Verification: 259 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
+- Registry: new `collection_operations` capability at `Parity` (no consumers).
+

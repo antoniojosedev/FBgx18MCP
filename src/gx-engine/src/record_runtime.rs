@@ -139,6 +139,54 @@ impl Collection {
             items: Rc::new(RefCell::new(items)),
         }
     }
+
+    pub fn insert(&self, index: i64, record: Record) -> Result<(), String> {
+        if record.schema() != self.item_schema {
+            return Err(format!(
+                "collection expects item schema `{}`, got `{}`",
+                self.item_schema,
+                record.schema()
+            ));
+        }
+        let mut items = self.items.borrow_mut();
+        if items.len() >= MAX_COLLECTION_ITEMS {
+            return Err(format!(
+                "collection exceeds {MAX_COLLECTION_ITEMS} item resource limit"
+            ));
+        }
+        if index == 0 {
+            items.push(record);
+            return Ok(());
+        }
+        if index < 0 || (index as usize) > items.len() + 1 {
+            return Err(format!("collection insert index out of range: {index}"));
+        }
+        let pos = (index - 1) as usize;
+        items.insert(pos, record);
+        Ok(())
+    }
+
+    pub fn remove(&self, index: i64) -> Result<(), String> {
+        let mut items = self.items.borrow_mut();
+        if index > 0 && (index as usize) <= items.len() {
+            items.remove((index - 1) as usize);
+        }
+        Ok(())
+    }
+
+    pub fn clear(&self) {
+        self.items.borrow_mut().clear();
+    }
+
+    pub fn index_of(&self, record: &Record) -> i64 {
+        let items = self.items.borrow();
+        for (i, it) in items.iter().enumerate() {
+            if Rc::ptr_eq(&it.fields, &record.fields) {
+                return (i + 1) as i64;
+            }
+        }
+        0
+    }
 }
 
 fn ensure_compatible(name: &str, current: &Field, replacement: &Field) -> Result<(), String> {

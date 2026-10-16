@@ -124,18 +124,18 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 Similar to video game decompilation projects, progress is measured capability-by-capability against verified differential runs of the official GeneXus SDK in clean Knowledge Bases.
 
 ```text
-Overall SDK Replacement: [🟩🟩⬜⬜⬜⬜⬜⬜⬜⬜] 23.7% weighted (39.3% total areas touched: 22/56)
+Overall SDK Replacement: [🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜] 27.2% weighted (42.9% total areas touched: 24/56)
 ```
 
 | Subsystem | Progress | Status | Covered / Total |
 | :--- | :---: | :---: | :---: |
 | **Language & Runtime Core** (Math, Decimals, Text, Dates) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 8 / 8 areas |
-| **Control Flow & Procedure Pipeline** (`If`, `For`, `Case`, `Call`) | `[🟩🟩🟩🟩🟩⬜⬜⬜⬜⬜] 50.0%` | Bounded / Portable | 3 / 6 areas |
-| **Structured Data & Collections** (SDT, `Clone`, `Item`, Schemas) | `[🟩🟩🟩🟩⬜⬜⬜⬜⬜⬜] 40.0%` | Bounded / XML | 2 / 5 areas |
-| **Portable KB Catalog & XML Projection** (`ExportFile` XML) | `[🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜] 33.3%` | Bounded Projection | 2 / 6 areas |
-| **Specifier & SQL Navigation** (`For Each`, Tables, Navigation) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]  0.0%` | Unsupported | 0 / 8 areas |
-| **Native KB Database Storage** (`.gxi`, `GXLOCK`, `DATA*`) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]  0.0%` | Unsupported (SDK-only) | 0 / 5 areas |
-| **Full GeneXus Surface** (UI, Events, Rules, Generators) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]  0.0%` | Unsupported | 0 / 18 areas |
+| **Control Flow & Procedure Pipeline** (`If`, `For`, `For In`, `Exit`, `Case`, `Call`) | `[🟩🟩🟩🟩🟩🟩🟩⬜⬜⬜]  66.7%` | Native Parity Subset | 4 / 6 areas |
+| **Structured Data & Collections** (SDT, `Add`, `Remove`, `Clear`, `IndexOf`, `Item`) | `[🟩🟩🟩🟩🟩🟩⬜⬜⬜⬜]  60.0%` | Native Parity Subset | 3 / 5 areas |
+| **Portable KB Catalog & XML Projection** (`ExportFile` XML) | `[🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜]  33.3%` | Bounded Projection | 2 / 6 areas |
+| **Specifier & SQL Navigation** (`For Each`, Tables, Navigation) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported | 0 / 8 areas |
+| **Native KB Database Storage** (`.gxi`, `GXLOCK`, `DATA*`) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported (SDK-only) | 0 / 5 areas |
+| **Full GeneXus Surface** (UI, Events, Rules, Generators) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported | 0 / 18 areas |
 
 #### Gateway Capability Registry Gates
 
@@ -149,6 +149,7 @@ The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) wh
 | `text_functions` | 🟩 **Parity** | `Substr`/`Upper`/`Lower`/`StrReplace`: 63 native KBTeste cases verified (1-based, expand-casing, exact replace). |
 | `text_extended_functions` | 🟩 **Parity** | `LTrim`/`RTrim`/`PadL`/`PadR`/`Space`/`Concat`/`StartsWith`/`EndsWith`/`Contains`/`StrSearch`: 95 native `StringUtil` oracle rows verified (exact ASCII space trim, left/right pad truncation, single-sided concat trim, ordinal comparisons, 1-based index clamping). |
 | `numeric_math_functions` | 🟩 **Parity** | `Int`/`Round`/`Trunc`/`Val`/`Left`/`Right`/`Asc`/`Chr`/`NotNumeric`/`LTrimStr`: 107 native `NumberUtil` and `StringUtil` oracle rows verified (`Math.Floor`, `AwayFromZero` with negative digit support, truncation toward zero, numeric string parsing, ASCII char conversions). |
+| `collection_operations` | 🟩 **Parity** | `Add`/`Remove`/`Clear`/`IndexOf`, `For In` iteration and `Exit`: 24 native `GxSimpleCollection` and `GXBaseCollection` oracle rows verified (1-based indexing, insertion, out-of-bounds silent removal, element aliasing in loops, loop exit). |
 | `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟨 **Partial** | Independently implemented in portable compiler and tested with synthetic or bounded fixtures; pending full parity claims. |
 | `native_kb_read`, `sql_navigation`, `general_gx_surface` | ⬜ **Unsupported** | Not yet implemented in Rust. Always served 100% by the GeneXus SDK / Worker. |
 

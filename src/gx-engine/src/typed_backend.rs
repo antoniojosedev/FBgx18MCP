@@ -351,7 +351,10 @@ impl Emitter<'_> {
         if let Expr::Call(name, args) = expression
             && name == "NEW"
             && args.is_empty()
-            && matches!(expected, DataType::Record { .. })
+            && matches!(
+                expected,
+                DataType::Record { .. } | DataType::Collection { .. }
+            )
         {
             return empty_value(expected, self.record_types);
         }
@@ -828,6 +831,38 @@ impl Emitter<'_> {
                     ),
                 )
             }
+            Expr::Call(name, args) if name == "INDEXOF" => {
+                if args.len() != 2 {
+                    return Err("IndexOf expects two arguments".into());
+                }
+                let receiver_type = self.expression_type(&args[0])?;
+                match receiver_type {
+                    DataType::Collection { schema: col_schema } => {
+                        let item_type = self.expression_type(&args[1])?;
+                        if item_type != (DataType::Record { schema: col_schema }) {
+                            return Err("collection IndexOf item schema mismatch".into());
+                        }
+                        let receiver =
+                            self.lower_expect(&args[0], assigned, Kind::Collection, prelude)?;
+                        let item = self.lower_expect(&args[1], assigned, Kind::Record, prelude)?;
+                        (
+                            Kind::Numeric,
+                            format!("Decimal::from(({receiver}).index_of(&({item})))"),
+                        )
+                    }
+                    DataType::Character { .. } | DataType::Varchar { .. } => {
+                        let s1 = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                        let s2 = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                        (
+                            Kind::Numeric,
+                            format!(
+                                "({s1}).str_search(&({s2}), 1).to_string().parse::<Decimal>()?"
+                            ),
+                        )
+                    }
+                    _ => return Err("IndexOf receiver must be a text or collection".into()),
+                }
+            }
             Expr::Call(name, args) if name == "INT" => {
                 if args.len() != 1 {
                     return Err("Int expects exactly one argument".into());
@@ -1118,7 +1153,7 @@ impl Emitter<'_> {
                     let variant = record_field_variant(&field_type)?;
                     writeln!(output, "{{let field_value = {value}; ({receiver}).set({field:?}, Field::{variant}(field_value))?;}}").unwrap();
                 }
-                Stmt::CollectionAdd(receiver, expression) => {
+                Stmt::CollectionAdd(receiver, expression, opt_idx) => {
                     let DataType::Collection { schema } = self.expression_type(receiver)? else {
                         return Err("Add receiver must be a collection".into());
                     };
@@ -1127,7 +1162,32 @@ impl Emitter<'_> {
                     }
                     let receiver = self.expect(receiver, assigned, Kind::Collection)?;
                     let value = self.expect(expression, assigned, Kind::Record)?;
-                    writeln!(output, "{{let item = {value}; ({receiver}).add(item)?;}}").unwrap();
+                    if let Some(idx_expr) = opt_idx {
+                        let idx = self.expect(idx_expr, assigned, Kind::Numeric)?;
+                        writeln!(
+                            output,
+                            "{{let item = {value}; ({receiver}).insert(({idx}).to_i64()?, item)?;}}"
+                        )
+                        .unwrap();
+                    } else {
+                        writeln!(output, "{{let item = {value}; ({receiver}).add(item)?;}}")
+                            .unwrap();
+                    }
+                }
+                Stmt::CollectionRemove(receiver, idx_expr) => {
+                    let DataType::Collection { .. } = self.expression_type(receiver)? else {
+                        return Err("Remove receiver must be a collection".into());
+                    };
+                    let receiver = self.expect(receiver, assigned, Kind::Collection)?;
+                    let idx = self.expect(idx_expr, assigned, Kind::Numeric)?;
+                    writeln!(output, "({receiver}).remove(({idx}).to_i64()?)?;").unwrap();
+                }
+                Stmt::CollectionClear(receiver) => {
+                    let DataType::Collection { .. } = self.expression_type(receiver)? else {
+                        return Err("Clear receiver must be a collection".into());
+                    };
+                    let receiver = self.expect(receiver, assigned, Kind::Collection)?;
+                    writeln!(output, "({receiver}).clear();").unwrap();
                 }
                 Stmt::Assign(name, expression) => {
                     let (slot, data_type) = self.variable(name)?;
@@ -1249,6 +1309,31 @@ impl Emitter<'_> {
                     writeln!(output, "while {condition} {{\n*steps = steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;").unwrap();
                     self.block(body, &mut assigned.clone(), output)?;
                     output.push_str("}\n");
+                }
+                Stmt::ForIn(variable, collection, body) => {
+                    let (slot, var_type) = self.variable(variable)?;
+                    let DataType::Collection { schema: col_schema } =
+                        self.expression_type(collection)?
+                    else {
+                        return Err("For in collection must be a collection".into());
+                    };
+                    let DataType::Record { schema: var_schema } = var_type else {
+                        return Err(
+                            "For in iterator must be a record matching collection schema".into(),
+                        );
+                    };
+                    if var_schema != &col_schema {
+                        return Err("For in item schema mismatch with collection".into());
+                    }
+                    let col_val = self.expect(collection, assigned, Kind::Collection)?;
+                    writeln!(output, "for __idx in 1..=({col_val}).len() {{\n*steps = steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;\nv{slot} = ({col_val}).item(__idx as i64)?;\n").unwrap();
+                    let mut loop_assigned = assigned.clone();
+                    loop_assigned.insert(variable.clone());
+                    self.block(body, &mut loop_assigned, output)?;
+                    writeln!(output, "}}").unwrap();
+                }
+                Stmt::Exit => {
+                    writeln!(output, "break;").unwrap();
                 }
             }
         }
