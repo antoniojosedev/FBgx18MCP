@@ -368,11 +368,39 @@ namespace GxMcp.Worker.Services
             }
             var entry = IndexEntryResolver.Resolve(index, name, args?["type"]?.ToString(), guid, entityKey, path, out var candidates);
             if (entry != null) return entry;
-            error = candidates.Count > 1
-                ? McpResponse.Err("AmbiguousName", "'" + name + "' matches " + candidates.Count + " objects; select one with guid or path.",
-                    target: name, extra: new JObject { ["candidates"] = IndexEntryResolver.Describe(candidates) })
-                : McpResponse.Err("ObjectNotFound", "Object not found in the index.", "Re-run after genexus_lifecycle action=index completes.", target: name ?? guid ?? path ?? entityKey,
+            if (candidates.Count > 1)
+            {
+                bool canDisambiguateByType = candidates
+                    .GroupBy(c => c.Type ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .Any(g => g.Count() == 1);
+
+                if (canDisambiguateByType)
+                {
+                    var sampleCandidate = candidates.FirstOrDefault(c =>
+                        candidates.Count(x => string.Equals(x.Type, c.Type, StringComparison.OrdinalIgnoreCase)) == 1) ?? candidates[0];
+                    string sampleType = !string.IsNullOrWhiteSpace(sampleCandidate.Type) ? sampleCandidate.Type : "Type";
+                    string sampleGuid = !string.IsNullOrWhiteSpace(sampleCandidate.Guid) ? sampleCandidate.Guid : "Guid";
+                    string samplePath = !string.IsNullOrWhiteSpace(sampleCandidate.Path) ? sampleCandidate.Path : "Path";
+
+                    error = McpResponse.Err("AmbiguousName",
+                        $"'{name}' matches {candidates.Count} objects; select one with guid, path or type.",
+                        hint: $"Pass type={sampleType}, guid={sampleGuid} or path={samplePath} to disambiguate.",
+                        target: name,
+                        extra: new JObject { ["candidates"] = IndexEntryResolver.Describe(candidates) });
+                }
+                else
+                {
+                    error = McpResponse.Err("AmbiguousName",
+                        $"'{name}' matches {candidates.Count} objects; select one with guid or path.",
+                        target: name,
+                        extra: new JObject { ["candidates"] = IndexEntryResolver.Describe(candidates) });
+                }
+            }
+            else
+            {
+                error = McpResponse.Err("ObjectNotFound", "Object not found in the index.", "Re-run after genexus_lifecycle action=index completes.", target: name ?? guid ?? path ?? entityKey,
                     nextSteps: new JArray(McpResponse.NextStep("genexus_query", new JObject { ["query"] = name ?? path ?? guid }, "Find the object by name.")));
+            }
             return null;
         }
 

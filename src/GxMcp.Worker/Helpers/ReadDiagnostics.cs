@@ -126,6 +126,18 @@ namespace GxMcp.Worker.Helpers
             @"<(?:Source|Properties|Content)[^>]*>.*?</(?:Source|Properties|Content)>",
             RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
+        private static readonly Regex GeneXusBlockRegex = new Regex(
+            @"(?is)\b(?:Event\b.*?EndEvent|Sub\b.*?EndSub|For\s+each\b.*?EndFor|Do\s+case\b.*?EndCase|Do\s+while\b.*?EndDo)\b",
+            RegexOptions.Compiled);
+
+        private static readonly Regex GeneXusStatementRegex = new Regex(
+            @"(?im)^\s*(?:Event|EndEvent|Sub|EndSub|For\s+each|EndFor|Do\s+case|EndCase|Do\s+while|EndDo)\b[^\r\n]*",
+            RegexOptions.Compiled);
+
+        private static readonly Regex GeneXusCommandRegex = new Regex(
+            @"(?i)\b(?:msg|call|prc)\s*\([^)]*\)",
+            RegexOptions.Compiled);
+
         public static string SanitizeText(string text, out bool truncated)
         {
             truncated = false;
@@ -145,7 +157,13 @@ namespace GxMcp.Worker.Helpers
             // 3. Redact XML source/content blocks
             sanitized = SourceBlockRegex.Replace(sanitized, "<Source><redacted></Source>");
 
-            // 4. Enforce explicit message length limit
+            // 4. Redact raw GeneXus source code constructs, commands and blocks (issue #549)
+            sanitized = GeneXusBlockRegex.Replace(sanitized, "[source code omitted]");
+            sanitized = GeneXusCommandRegex.Replace(sanitized, "[source code omitted]");
+            sanitized = GeneXusStatementRegex.Replace(sanitized, "[source code omitted]");
+            sanitized = Regex.Replace(sanitized, @"(\[source code omitted\]\s*)+", "[source code omitted]");
+
+            // 5. Enforce explicit message length limit
             if (sanitized.Length > MaxMessageLength)
             {
                 truncated = true;
@@ -162,7 +180,7 @@ namespace GxMcp.Worker.Helpers
 
             string sanitized = LogRedaction.Redact(stackTrace);
 
-            // Cap frames
+            // 1. Cap frames
             var lines = sanitized.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
             if (lines.Length > MaxStackTraceFrames)
             {
@@ -170,7 +188,9 @@ namespace GxMcp.Worker.Helpers
                 sanitized = string.Join(Environment.NewLine, lines.Take(MaxStackTraceFrames))
                     + Environment.NewLine + "... [TRUNCATED: max stack frames exceeded]";
             }
-            else if (sanitized.Length > MaxStackTraceLength)
+
+            // 2. Cap character length (both limits must be enforced, issue #550)
+            if (sanitized.Length > MaxStackTraceLength)
             {
                 truncated = true;
                 sanitized = sanitized.Substring(0, MaxStackTraceLength)
@@ -328,6 +348,8 @@ namespace GxMcp.Worker.Helpers
                         ["processedCount"] = backfillState.ProcessedObjects,
                         ["totalCount"] = backfillState.TotalObjects,
                         ["retryCount"] = backfillState.RetryCount,
+                        ["failedCount"] = backfillState.FailedObjects,
+                        ["readFailedObjects"] = new JArray(backfillState.ReadFailedObjects ?? new List<string>()),
                         ["lastError"] = backfillState.LastError != null
                             ? LogRedaction.Redact(backfillState.LastError)
                             : null
@@ -364,7 +386,8 @@ namespace GxMcp.Worker.Helpers
                 ["exception"] = sanitizedException,
                 ["context"] = workerContext,
                 ["stateSnapshot"] = stateSnapshot,
-                ["persisted"] = false
+                ["persisted"] = false,
+                ["enqueued"] = false
             };
 
             // Attempt persistence without substituting original error on logging failure (Acceptance Criterion 2)
@@ -378,11 +401,13 @@ namespace GxMcp.Worker.Helpers
                 string exType = sanitizedException?["type"]?.ToString() ?? "Exception";
                 string exMsg = sanitizedException?["message"]?.ToString() ?? "Unknown error";
                 Logger.Error($"[READ-DIAGNOSTIC] [cid:{correlationId}] stage={stage} target={target} part={part} durationMs={durationMs} exType={exType} msg={exMsg}");
-                diagnosticPayload["persisted"] = true;
+                diagnosticPayload["persisted"] = false;
+                diagnosticPayload["enqueued"] = true;
             }
             catch (Exception logEx)
             {
                 diagnosticPayload["persisted"] = false;
+                diagnosticPayload["enqueued"] = false;
                 diagnosticPayload["persistenceError"] = "Failed to log diagnostic: " + logEx.Message;
             }
 
@@ -391,7 +416,7 @@ namespace GxMcp.Worker.Helpers
             string clientMsg = sanitizedException?["message"]?.ToString();
             if (string.IsNullOrWhiteSpace(clientMsg)) clientMsg = "Worker operation failed.";
 
-            string hint = $"Read failed at stage '{stage}'. Detailed sanitized diagnostics were logged with correlation ID '{correlationId}'. Use genexus_telemetry action=logs filterCorrelation='{correlationId}' to inspect.";
+            string hint = $"Read failed at stage '{stage}'. Complete diagnostics are available in error.diagnostics (correlation ID '{correlationId}').";
 
             var errorExtra = new JObject
             {
