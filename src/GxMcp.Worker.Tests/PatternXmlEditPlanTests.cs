@@ -64,18 +64,25 @@ namespace GxMcp.Worker.Tests
         }
 
         [Theory]
-        // Issue #349 removed the first case from this list: removing one leaf layout
-        // element from a container is now a permitted structural edit, covered by
-        // PatternStructuralLayoutEditTests.Removing_A_TextBlock_Is_Permitted. The two
-        // cases still here are the ones that remain refused: adding a container-valued
-        // child, and reordering siblings that carries no structural change of its own.
+        // Issues #349 and #545: removing one leaf layout element and reordering siblings
+        // by identity are permitted structural edits. Container-valued child additions remain refused.
         [InlineData("</table>", "<table name='New'/></table>")]
-        [InlineData("<textBlock name='A' caption='Alpha'/><textBlock name='B' caption='Beta'/>", "<textBlock name='B' caption='Beta'/><textBlock name='A' caption='Alpha'/>")]
         public void StructuralEditsAreRejected(string from, string to)
         {
             var plan = PatternXmlEditPlan.Create(Original, Original.Replace(from, to));
             Assert.NotNull(plan.ErrorCode);
             Assert.Empty(plan.Changes);
+        }
+
+        [Fact]
+        public void ReorderingSiblingsInContainerIsPermitted()
+        {
+            const string from = "<textBlock name='A' caption='Alpha'/><textBlock name='B' caption='Beta'/>";
+            const string to = "<textBlock name='B' caption='Beta'/><textBlock name='A' caption='Alpha'/>";
+            var plan = PatternXmlEditPlan.Create(Original, Original.Replace(from, to));
+            Assert.Null(plan.ErrorCode);
+            Assert.NotEmpty(plan.Changes);
+            Assert.Contains(plan.Changes, c => (string)c["operation"] == "Reorder");
         }
 
         [Fact]

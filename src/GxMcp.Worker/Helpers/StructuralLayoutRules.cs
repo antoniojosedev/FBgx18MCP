@@ -58,17 +58,22 @@ namespace GxMcp.Worker.Helpers
                 // A label on the form. `controlName` is the identifier the reconciler
                 // reads for textBlock.
                 { "textBlock", new Kind("controlName",
-                    "controlName", "caption", "title", "visible", "styleClass", "tag") },
+                    "controlName", "caption", "title", "visible", "styleClass", "themeClass", "class", "tag", "position") },
 
                 // A form variable declaration.
                 { "variable", new Kind("name",
                     "name", "type", "length", "decimals", "caption", "description",
-                    "domain", "initialValue", "labelPosition") },
+                    "domain", "initialValue", "labelPosition", "visible", "styleClass", "themeClass", "class", "controlName") },
 
                 // A data-element reference on the form.
                 { "attribute", new Kind("attribute",
-                    "attribute", "caption", "labelPosition", "visible", "styleClass",
-                    "tag", "contextSensitive") },
+                    "attribute", "caption", "labelPosition", "visible", "styleClass", "themeClass", "cellThemeClass", "class",
+                    "tag", "contextSensitive", "description", "mergeWithPrevious", "readOnly", "isPassword", "inviteMessage", "tooltip", "controlName") },
+
+                // A form button or grid row action.
+                { "userAction", new Kind("name",
+                    "name", "caption", "description", "visible", "styleClass", "themeClass", "class", "callObject",
+                    "popup", "parameters", "gxobject", "disabled", "confirm", "confirmText", "order", "image", "disabledImage", "controlName") },
 
                 // issue #408: a variable (or attribute) shown as a control - edit, combo box, radio.
                 // This is the element PopupLayoutBuilder emits for a combo bound to a variable, with the

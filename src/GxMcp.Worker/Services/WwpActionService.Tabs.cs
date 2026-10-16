@@ -197,6 +197,17 @@ namespace GxMcp.Worker.Services
         {
             string controlName = args?["controlName"]?.ToString();
             XElement tabs = document.Descendants().FirstOrDefault(e => Is(e, "tabs"));
+            if (tabs == null && operation == "add_tab")
+            {
+                XElement container = document.Descendants().FirstOrDefault(e => Is(e, "table") && string.Equals(Attr(e, "name"), "TableContent", StringComparison.OrdinalIgnoreCase))
+                    ?? document.Descendants().FirstOrDefault(e => Is(e, "table") && string.Equals(Attr(e, "name"), "TableMain", StringComparison.OrdinalIgnoreCase))
+                    ?? document.Descendants().FirstOrDefault(e => Is(e, "table"));
+                if (container != null)
+                {
+                    tabs = new XElement(container.Name.Namespace + "tabs");
+                    container.Add(tabs);
+                }
+            }
             if (tabs == null) return TabError("TabsContainerNotFound", "The PatternInstance has no <tabs> container.");
             XElement tab = tabs.Elements().FirstOrDefault(e => Is(e, "tab")
                 && string.Equals(Attr(e, "ControlName"), controlName, StringComparison.OrdinalIgnoreCase));
@@ -280,7 +291,14 @@ namespace GxMcp.Worker.Services
                 foreach (JObject child in (control["children"] as JArray ?? new JArray()).OfType<JObject>())
                     element.Add(BuildXmlControl(child));
             }
-            else throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table.");
+            else if (type.Equals("attribute", StringComparison.OrdinalIgnoreCase))
+            {
+                string attName = control["attribute"]?.ToString() ?? control["name"]?.ToString();
+                if (string.IsNullOrWhiteSpace(attName)) throw new WwpTabException("InvalidWwpChild", "Attribute child requires attribute or name.");
+                element = new XElement(ns + "attribute", new XAttribute("attribute", attName));
+                SetPair(element, "description", control["description"]);
+            }
+            else throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table|attribute.");
             return element;
         }
 
@@ -323,6 +341,17 @@ namespace GxMcp.Worker.Services
             object root = GetProperty(part, "RootElement");
             if (root == null) return TabError("WwpNativeRootUnavailable", "PatternInstance RootElement is unavailable.");
             object tabs = Walk(root).FirstOrDefault(e => NativeType(e).Equals("tabs", StringComparison.OrdinalIgnoreCase));
+            if (tabs == null && operation == "add_tab")
+            {
+                object container = Walk(root).FirstOrDefault(e => IsNativeTable(e) && string.Equals(NativeAttribute(e, "name"), "TableContent", StringComparison.OrdinalIgnoreCase))
+                    ?? Walk(root).FirstOrDefault(e => IsNativeTable(e) && string.Equals(NativeAttribute(e, "name"), "TableMain", StringComparison.OrdinalIgnoreCase))
+                    ?? Walk(root).FirstOrDefault(IsNativeTable);
+                if (container != null)
+                {
+                    tabs = CreateNativeChild(container, "tabs");
+                    ExecuteElementCommand(container, tabs, "AddElementCommand", null);
+                }
+            }
             if (tabs == null) return TabError("TabsContainerNotFound", "The native PatternInstance has no tabs container.");
             string controlName = args["controlName"].ToString();
             List<object> existingTabs = NativeChildren(tabs).Where(e => NativeType(e).Equals("tab", StringComparison.OrdinalIgnoreCase)).ToList();
@@ -379,8 +408,8 @@ namespace GxMcp.Worker.Services
         private static void AttachNativeControl(object parent, JObject control)
         {
             string type = control?["type"]?.ToString();
-            if (type != "variable" && type != "userAction" && type != "table")
-                throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table.");
+            if (type != "variable" && type != "userAction" && type != "table" && type != "attribute")
+                throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table|attribute.");
             object child = CreateNativeChild(parent, type);
             if (type == "variable")
             {
@@ -402,6 +431,13 @@ namespace GxMcp.Worker.Services
                 string name = Required(control, "name", type);
                 SetNativeAttribute(child, "name", name);
                 SetNativeAttribute(child, "caption", control["caption"]?.ToString() ?? name);
+            }
+            else if (type == "attribute")
+            {
+                string attName = control["attribute"]?.ToString() ?? control["name"]?.ToString();
+                if (string.IsNullOrWhiteSpace(attName)) throw new WwpTabException("InvalidWwpChild", "Attribute child requires attribute or name.");
+                SetNativeAttribute(child, "attribute", attName);
+                SetNativePair(child, "description", control["description"]);
             }
             else
             {
@@ -490,6 +526,7 @@ namespace GxMcp.Worker.Services
             if (element == null) yield break;
             string label = NativeAttribute(element, "name");
             if (string.IsNullOrWhiteSpace(label)) label = NativeAttribute(element, "controlName");
+            if (string.IsNullOrWhiteSpace(label) && IsNativeGrid(element)) label = "Grid";
             var path = new List<string>(ancestors);
             if (!string.IsNullOrWhiteSpace(label)) path.Add(label);
             yield return new KeyValuePair<object, List<string>>(element, path);
