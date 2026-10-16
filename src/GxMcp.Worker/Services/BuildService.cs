@@ -1571,6 +1571,31 @@ namespace GxMcp.Worker.Services
                         });
                 }
 
+                if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "rebuild_all", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrWhiteSpace(target))
+                    {
+                        return RejectGlobalActionWithTarget(action, target);
+                    }
+
+                    return McpResponse.Ok(
+                        code: "DryRun",
+                        result: new JObject
+                        {
+                            ["preview"] = new JObject
+                            {
+                                ["action"] = "RebuildAll",
+                                ["buildMode"] = "RebuildAll",
+                                ["kbWide"] = true,
+                                ["failIfReorg"] = false,
+                                ["wouldBuild"] = new JArray(),
+                                ["includeCallees"] = "ignored for Rebuild All",
+                                ["buildPlanCap"] = buildPlanCap
+                            }
+                        });
+                }
+
                 if (string.Equals(action, "CompileCheck", StringComparison.OrdinalIgnoreCase))
                 {
                     var compilePlan = BuildCompileCheckPlan(target, buildPlanCap, includeCallers, callerCap);
@@ -2516,7 +2541,8 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrWhiteSpace(target)) return null;
 
-            if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "build_all", StringComparison.OrdinalIgnoreCase))
             {
                 return McpResponse.Err(
                     code: "BuildAllTargetNotAllowed",
@@ -2524,18 +2550,20 @@ namespace GxMcp.Worker.Services
                     extra: new JObject { ["action"] = "build_all", ["target"] = target });
             }
 
-            if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "rebuild_all", StringComparison.OrdinalIgnoreCase))
             {
                 return McpResponse.Err(
-                    code: "RebuildAllTargetNotAllowed",
-                    message: "RebuildAll is global and cannot honour a target. The target would be silently "
-                        + "discarded and the whole Knowledge Base rebuilt. Use action=rebuild (targeted, "
-                        + "forced) for one object, or RebuildAll with no target to force the entire KB.",
+                    code: "TargetNotSupported",
+                    message: "action=rebuild does not accept a target; it performs a forced Rebuild All for the entire Knowledge Base. The target would be silently discarded and the whole Knowledge Base rebuilt.",
+                    hint: "Use action=build with target=<object> to build a specific object, or omit target to rebuild all objects.",
+                    target: target,
                     extra: new JObject
                     {
                         ["action"] = "rebuild",
                         ["target"] = target,
-                        ["requestedWorkerAction"] = action
+                        ["requestedWorkerAction"] = action,
+                        ["legacyCode"] = "RebuildAllTargetNotAllowed"
                     });
             }
 

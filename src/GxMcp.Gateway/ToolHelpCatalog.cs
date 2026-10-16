@@ -805,7 +805,9 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `list_actions` — read the current tabs and ordered actions (name, caption, procedure, parameters, condition) on the standard WorkWith instance.\n" +
                 "- `add_action` — author a typed action with Procedure call, ordered parameters, condition expression, and caption on a target tab (default `General`).\n" +
-                "- `remove_action` — remove a typed action by name from a target tab with post-removal verification.\n\n" +
+                "- `remove_action` — remove a typed action by name from a target tab with post-removal verification.\n" +
+                "- `list_filters` — read the current Selection filter attributes and conditions on the standard WorkWith instance.\n" +
+                "- `add_filter_attribute` — author a typed filter attribute with optional description, domain, and conditions on the Selection filter.\n\n" +
                 "## Safety, Concurrency, and Validation Rules\n" +
                 "- `dryRun: true` previews the planned action and reports explicit validation limits without persisting changes to the KB.\n" +
                 "- Action name must be a valid identifier and unique within the target tab.\n" +
@@ -813,10 +815,12 @@ namespace GxMcp.Gateway
                 "- Validation limits: pre-validation verifies tab existence, action name uniqueness, and Procedure existence/type. Parameter arity against the Procedure `parm()` rule is checked when known (divergence is refused with code ArityMismatch in both dryRun and write); condition/parameter expressions and types are not compiled or evaluated.\n" +
                 "- Concurrency: operations use target-scoped mutex locking and do not accept or check optimistic concurrency version tokens.\n" +
                 "- Verification: on save, the receipt rereads the tab actions from the in-memory instance and compares all fields (name, caption, procedure, condition, ordered parameters) to distinguish requested inputs from observed state.\n" +
-                "- Derived WebComponent regeneration: persisting an action updates the WorkWith instance definition; on GeneXus 18/17, derived WebComponents (e.g. `<Trn>General`) may require IDE Apply or build to re-project the new action control into the WebForm.\n" +
-                "- Route and default normalization: receipts report `route` (`native-sdk` or `xml-fallback`) and `verificationScope`. Native SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save while preserving functional behavior and pattern bindings; the XML fallback preserves existing XML defaults verbatim.\n\n" +
+                "- Derived WebComponent regeneration: persisting an action or filter updates the WorkWith instance definition; receipts declare `derivedObjectRegeneration: \"not_guaranteed\"`. On GeneXus 18/17, derived objects (e.g. `<Trn>General` or Selection WebPanels) may require IDE Apply or build to re-project into the WebForm.\n" +
+                "- Route and default normalization: receipts report `route` (`native-sdk` or `xml-fallback`) and `verificationScope`. Native WorkWith SDK serialization normalizes pattern defaults (such as page=\"<default>\" to concrete values) upon save. The instance stays functional and its pattern identity, tabs and actions are intact, but a materialized attribute becomes an explicit instance override and will no longer follow a later change to the pattern template default. The XML fallback preserves existing pattern XML defaults verbatim without normalization.\n\n" +
                 "Example: `{ action: 'add_action', name: 'Customer', tab: 'General', actionName: 'PrintStatement', caption: 'Print Statement', procedure: 'procPrintCustomer', parameters: ['CustomerId', '\"PDF\"'], condition: '&CustomerActive', dryRun: true }`.\n" +
-                "Example: `{ action: 'remove_action', name: 'Customer', tab: 'General', actionName: 'PrintStatement', dryRun: true }`.\n"
+                "Example: `{ action: 'remove_action', name: 'Customer', tab: 'General', actionName: 'PrintStatement', dryRun: true }`.\n" +
+                "Example: `{ action: 'list_filters', name: 'Customer' }`.\n" +
+                "Example: `{ action: 'add_filter_attribute', name: 'Customer', attribute: 'CustomerName', description: 'Customer Name', conditions: ['CustomerName like &CustomerName when not &CustomerName.IsEmpty();'], dryRun: true }`.\n"
         };
 
         internal static string? Get(string toolName)

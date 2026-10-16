@@ -739,7 +739,13 @@ namespace GxMcp.Worker.Services
                 response["verified"] = false;
             }
             if (!restored)
+            {
                 response["rollbackFailed"] = true;
+                if (string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
+                {
+                    response["hint"] = "Rollback could not automatically restore the previous Structure (likely due to attribute removal restrictions in the SDK). Use genexus_structure action=remove_attribute or the GeneXus IDE to manually remove unwanted attributes.";
+                }
+            }
             return response.ToString(Newtonsoft.Json.Formatting.None);
         }
 

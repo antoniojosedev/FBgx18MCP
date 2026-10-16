@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "revision": 1,
+  "objects": [
+    {
+      "id": "main-id",
+      "name": "Main",
+      "kind": "procedure",
+      "source_parts": [{"name": "Source", "source": "Print(Double(21))"}],
+      "references": [{"kind": "calls", "target": "double-id"}]
+    },
+    {
+      "id": "double-id",
+      "name": "Double",
+      "kind": "procedure",
+      "source_parts": [
+        {"name": "Source", "source": "&Result = &Value * 2"},
+        {"name": "Variables", "source": "{\"Value\":{\"kind\":\"numeric\",\"precision\":10,\"scale\":0},\"Result\":{\"kind\":\"numeric\",\"precision\":10,\"scale\":0}}"},
+        {"name": "Rules", "source": "Parm(in:&Value, out:&Result);"}
+      ],
+      "references": []
+    }
+  ]
+}

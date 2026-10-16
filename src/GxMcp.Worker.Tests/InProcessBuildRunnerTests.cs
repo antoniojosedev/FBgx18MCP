@@ -21,6 +21,13 @@ namespace GxMcp.Worker.Tests
     [Collection("InProcessSdkReflection")]
     public class InProcessBuildRunnerTests
     {
+        [Fact]
+        public void Batch_build_options_request_full_build_of_called_objects()
+        {
+            // GeneXus 18 BuildOptions: BuildCalled=1, ContinueOnError=224, BuildProcess=14336.
+            Assert.Equal(14561, InProcessBuildRunner.BatchBuildOptions);
+        }
+
         private static BuildService.BuildTaskStatus NewStatus()
         {
             return new BuildService.BuildTaskStatus

@@ -96,6 +96,16 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void AtomicCreate_validation_terse_envelope_keeps_field_errors()
+        {
+            var input = JObject.Parse(@"{status:'error',target:'Probe',error:{code:'AtomicCreateValidationFailed',message:'The object definition has 1 validation error(s); nothing was saved.',
+                hint:'Fix the field errors in error.fieldErrors and retry.',fieldErrors:[{field:'source',errors:['literal escape']}]}}");
+            var output = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            Assert.Equal("source", (string?)output["fieldErrors"]?[0]?["field"]);
+            Assert.Equal("literal escape", (string?)output["fieldErrors"]?[0]?["errors"]?[0]);
+        }
+
+        [Fact]
         public void Module_only_receipts_are_not_added_to_unrelated_errors()
         {
             var input = JObject.Parse("{error:{code:'OtherFailure',message:'failure'},inventory:[1],plan:[2],diagnostic:{parameter:'path'}}");

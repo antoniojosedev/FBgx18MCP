@@ -31,6 +31,9 @@ namespace GxMcp.Gateway
         [JsonProperty("Environment")]
         public EnvironmentConfig? Environment { get; set; }
 
+        [JsonProperty("Engine")]
+        public EngineConfig? Engine { get; set; }
+
         public static string? CurrentConfigPath { get; private set; }
         public static string ResolvedFrom { get; internal set; } = "launcher";
 
@@ -56,7 +59,10 @@ namespace GxMcp.Gateway
         // Legacy overrides (strict permits only an exact match with the file): GX_MCP_PORT,
         // GX_MCP_STDIO. Structural (strict rejects): GXMCP_SHARED_GATEWAY,
         // GX_MCP_SHARED_GATEWAY, GXMCP_PROFILE,
-        // GXMCP_NO_STRUCTURED_CONTENT, GXMCP_EMIT_STRUCTURED_CONTENT, GXMCP_TERSE.
+        // GXMCP_NO_STRUCTURED_CONTENT, GXMCP_EMIT_STRUCTURED_CONTENT, GXMCP_TERSE,
+        // GXMCP_ENGINE_BACKEND, GXMCP_ENGINE_FALLBACK, GXMCP_ENGINE_EXE,
+        // GXMCP_ENGINE_TIMEOUT_SECONDS (the strict document's Engine section is the
+        // only authority for the experimental engine backend).
         // Bootstrap selector (allowed): GX_CONFIG_PATH.
         // Secret (allowed): GXMCP_HTTP_TOKEN, GXMCP_AI_COMPLETE_KEY, GXMCP_GAM_PASS.
         // Diagnostic/operational (allowed): GXMCP_VERBOSE_LOGS, GXMCP_LOG_DIR, GXMCP_STATE_DIR,
@@ -278,7 +284,7 @@ namespace GxMcp.Gateway
             const int currentVersion = 2;
             var allowedRoot = new HashSet<string>(StringComparer.Ordinal)
             {
-                "ConfigSchemaVersion", "GatewayMode", "GeneXus", "Server", "Logging", "Environment"
+                "ConfigSchemaVersion", "GatewayMode", "GeneXus", "Server", "Logging", "Environment", "Engine"
             };
             RejectUnknown(document, allowedRoot, "root", path);
 
@@ -334,6 +340,38 @@ namespace GxMcp.Gateway
                 throw new InvalidDataException("Strict config ResolutionPolicy must be 'strict' or 'legacy'.");
             ValidateStrictKbCatalog(environment["KBs"], path);
             ValidateStrictDataStoreAliases(environment["DataStoreAliases"], "Environment.DataStoreAliases", path);
+
+            ValidateStrictEngineSection(document["Engine"], path);
+        }
+
+        /// <summary>
+        /// The optional Engine section is a behavioral switch: strict documents
+        /// must declare it in the file because the matching environment overrides
+        /// are rejected (see RejectStrictStructuralEnvironment).
+        /// </summary>
+        private static void ValidateStrictEngineSection(JToken? token, string path)
+        {
+            if (token == null || token.Type == JTokenType.Null) return;
+            var engine = token as JObject
+                ?? throw new InvalidDataException("Strict config Engine must be an object.");
+
+            RejectUnknown(engine, new HashSet<string>(new[] { "Backend", "Fallback", "Executable", "TimeoutSeconds" }, StringComparer.Ordinal), "Engine", path);
+
+            string backend = engine.Value<string>("Backend")?.Trim().ToLowerInvariant() ?? "sdk";
+            if (backend != "sdk" && backend != "gxengine")
+                throw new InvalidDataException("Strict config Engine.Backend must be 'sdk' or 'gxengine'.");
+
+            string fallback = engine.Value<string>("Fallback")?.Trim().ToLowerInvariant() ?? "sdk";
+            if (fallback != "sdk" && fallback != "error")
+                throw new InvalidDataException("Strict config Engine.Fallback must be 'sdk' or 'error'.");
+
+            JToken? executable = engine["Executable"];
+            if (executable != null && executable.Type != JTokenType.Null && executable.Type != JTokenType.String)
+                throw new InvalidDataException("Strict config Engine.Executable must be a string when present.");
+            JToken? timeoutSeconds = engine["TimeoutSeconds"];
+            if (timeoutSeconds != null
+                && (timeoutSeconds.Type != JTokenType.Integer || engine.Value<int>("TimeoutSeconds") <= 0))
+                throw new InvalidDataException("Strict config Engine.TimeoutSeconds must be a positive integer when present.");
         }
 
         private static void ValidateStrictKbCatalog(JToken? token, string path)
@@ -423,7 +461,10 @@ namespace GxMcp.Gateway
             string[] forbidden =
             {
                 "GXMCP_SHARED_GATEWAY", "GX_MCP_SHARED_GATEWAY", "GXMCP_PROFILE",
-                "GXMCP_NO_STRUCTURED_CONTENT", "GXMCP_EMIT_STRUCTURED_CONTENT", "GXMCP_TERSE"
+                "GXMCP_NO_STRUCTURED_CONTENT", "GXMCP_EMIT_STRUCTURED_CONTENT", "GXMCP_TERSE",
+                // The engine backend is a behavioral/execution switch; with a strict
+                // document the Engine section in the file is authoritative.
+                "GXMCP_ENGINE_BACKEND", "GXMCP_ENGINE_FALLBACK", "GXMCP_ENGINE_EXE", "GXMCP_ENGINE_TIMEOUT_SECONDS"
             };
             foreach (string name in forbidden)
             {
@@ -638,6 +679,35 @@ namespace GxMcp.Gateway
     {
         public string? Level { get; set; }
         public string? Path { get; set; }
+    }
+
+    /// <summary>
+    /// Experimental gx-engine backend switch (docs/engine_backend.md). An absent
+    /// section means the GeneXus SDK serves every operation, which is the default.
+    /// Only capabilities measured at full parity may be routed to the engine; the
+    /// capability gate lives in <see cref="EngineCapabilityRegistry"/>.
+    /// </summary>
+    public class EngineConfig
+    {
+        /// <summary>"sdk" (default) or "gxengine".</summary>
+        [JsonProperty("Backend")]
+        public string? Backend { get; set; }
+
+        /// <summary>
+        /// "sdk" (default) serves anything the engine does not cover with the
+        /// SDK; "error" refuses it instead — for experiment runs that must prove
+        /// the engine carried the whole call.
+        /// </summary>
+        [JsonProperty("Fallback")]
+        public string? Fallback { get; set; }
+
+        /// <summary>Optional explicit path to the gx-engine executable.</summary>
+        [JsonProperty("Executable")]
+        public string? Executable { get; set; }
+
+        /// <summary>Wall-clock budget in seconds for one engine invocation.</summary>
+        [JsonProperty("TimeoutSeconds")]
+        public int? TimeoutSeconds { get; set; }
     }
 
     public class EnvironmentConfig

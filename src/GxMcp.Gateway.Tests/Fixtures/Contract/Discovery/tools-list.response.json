@@ -5062,7 +5062,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed authoring and removal of actions and action parameters for standard WorkWith (WorkWith for Web) pattern instances. action=list_actions|add_action|remove_action. Full guidance: genexus://kb/tool-help/genexus_workwith",
+      "description": "Typed authoring and removal of actions, action parameters and selection filters for standard WorkWith pattern instances. action=list_actions|add_action|remove_action|list_filters|add_filter_attribute. Full guidance: genexus://kb/tool-help/genexus_workwith",
       "inputSchema": {
         "properties": {
           "action": {
@@ -5071,12 +5071,18 @@
             "enum": [
               "list_actions",
               "add_action",
-              "remove_action"
+              "remove_action",
+              "list_filters",
+              "add_filter_attribute"
             ],
             "type": "string"
           },
           "actionName": {
             "description": "Unique name for the action (required…",
+            "type": "string"
+          },
+          "attribute": {
+            "description": "Attribute name to filter on (required…",
             "type": "string"
           },
           "caption": {
@@ -5087,6 +5093,17 @@
             "description": "Optional condition expression to…",
             "type": "string"
           },
+          "conditions": {
+            "description": "Conditions associated with the filter…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "domain": {
+            "description": "Optional Domain name or reference for…",
+            "type": "string"
+          },
           "dryRun": {
             "default": false,
             "description": "When true, returns the execution plan…",
@@ -5094,6 +5111,10 @@
           },
           "kb": {
             "description": "KB alias.",
+            "type": "string"
+          },
+          "level": {
+            "description": "Target level name or id in the WorkWith…",
             "type": "string"
           },
           "name": {

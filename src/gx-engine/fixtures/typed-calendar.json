@@ -1,0 +1,24 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "variables": {
+        "DateValue": {
+          "kind": "date"
+        },
+        "DateOther": {
+          "kind": "date"
+        },
+        "DateDifference": {
+          "kind": "numeric",
+          "precision": 10,
+          "scale": 0
+        }
+      },
+      "source": "&DateValue = YMDToD(2024,1,31)\n&DateOther = &DateValue.AddMonths(1)\nPrint(&DateOther.Year())\nPrint(&DateOther.Month())\nPrint(&DateOther.Day())\n&DateOther = &DateValue.AddMonths(-1)\nPrint(&DateOther.Year())\nPrint(&DateOther.Month())\nPrint(&DateOther.Day())\n&DateValue = YMDToD(2024,2,29)\n&DateOther = &DateValue.AddYears(1)\nPrint(&DateOther.Year())\nPrint(&DateOther.Month())\nPrint(&DateOther.Day())\n&DateOther = &DateValue.AddYears(-4)\nPrint(&DateOther.Year())\nPrint(&DateOther.Month())\nPrint(&DateOther.Day())\n&DateValue.SetEmpty()\n&DateOther = &DateValue.AddMonths(1)\nPrint(&DateOther.Year())\nPrint(&DateOther.Month())\nPrint(&DateOther.Day())\n&DateOther = &DateValue.AddYears(1)\nPrint(&DateOther.Year())\nPrint(&DateOther.Month())\nPrint(&DateOther.Day())"
+    }
+  ]
+}

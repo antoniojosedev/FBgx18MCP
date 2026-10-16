@@ -755,7 +755,7 @@ namespace GxMcp.Worker.Services
             {
                 var available = new JArray();
                 foreach (string availableName in GetFormActionContainers(document)
-                    .Select(e => Attr(e, "name")).Where(n => !string.IsNullOrWhiteSpace(n)))
+                    .Select(ContainerLabel).Where(n => !string.IsNullOrWhiteSpace(n)))
                     available.Add(availableName);
                 var availablePaths = new JArray(GetFormActionContainers(document).Select(ContainerPath).Where(n => n.Length > 0).Distinct());
                 return new JObject
@@ -929,13 +929,17 @@ namespace GxMcp.Worker.Services
         // Every table and action group can hold a form action (#415); a bare name that
         // repeats across tabs is disambiguated by a path of named ancestors.
         private static IEnumerable<XElement> GetFormActionContainers(XDocument document) =>
-            document?.Descendants().Where(e => Is(e, "table") || Is(e, "actionGroup"))
+            document?.Descendants().Where(e => Is(e, "table") || Is(e, "actionGroup") || Is(e, "grid"))
             ?? Enumerable.Empty<XElement>();
 
         private static string ContainerLabel(XElement e)
         {
             string name = Attr(e, "name");
-            return string.IsNullOrWhiteSpace(name) ? Attr(e, "controlName") : name;
+            if (!string.IsNullOrWhiteSpace(name)) return name;
+            string ctrl = Attr(e, "controlName");
+            if (!string.IsNullOrWhiteSpace(ctrl)) return ctrl;
+            if (Is(e, "grid")) return "Grid";
+            return string.Empty;
         }
 
         internal static List<string> ContainerPathSegments(XElement container) =>
@@ -950,7 +954,8 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrWhiteSpace(requested)) return false;
             if (requested.IndexOf('/') < 0)
                 return string.Equals(own, requested, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(controlName, requested, StringComparison.OrdinalIgnoreCase);
+                    || string.Equals(controlName, requested, StringComparison.OrdinalIgnoreCase)
+                    || (segments.Count > 0 && string.Equals(segments[segments.Count - 1], requested, StringComparison.OrdinalIgnoreCase));
             string[] wanted = requested.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
             if (wanted.Length == 0 || wanted.Length > segments.Count) return false;
             for (int i = 0; i < wanted.Length; i++)

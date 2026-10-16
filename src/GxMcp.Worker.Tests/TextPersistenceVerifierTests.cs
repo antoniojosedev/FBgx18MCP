@@ -145,7 +145,7 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "DataSelector"));
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "WSDL"));
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Styles"));
-            Assert.Equal("exact", TextPersistenceVerifier.ResolveMode(null, "Structure"));
+            Assert.Equal("semantic", TextPersistenceVerifier.ResolveMode(null, "Structure"));
         }
 
         [Fact]

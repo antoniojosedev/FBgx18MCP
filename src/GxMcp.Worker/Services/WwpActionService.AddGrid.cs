@@ -179,7 +179,7 @@ namespace GxMcp.Worker.Services
             var available = new JArray();
             foreach (var entry in WalkWithPath(root, new List<string>()))
             {
-                if (!IsNativeTable(entry.Key) && !IsNativeActionGroup(entry.Key)) continue;
+                if (!IsNativeTable(entry.Key) && !IsNativeActionGroup(entry.Key) && !IsNativeGrid(entry.Key)) continue;
                 string path = string.Join("/", entry.Value);
                 available.Add(path);
                 if (ContainerPathMatches(entry.Value, NativeAttribute(entry.Key, "name"), NativeAttribute(entry.Key, "controlName"), containerName))

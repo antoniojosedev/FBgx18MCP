@@ -223,5 +223,23 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal("RequireObjectSaveUnsupportedPart", response["error"]?["code"]?.ToString());
         }
+
+        [Theory]
+        [InlineData("Structure", null, "semantic")]
+        [InlineData("Source", "ops", "semantic")]
+        [InlineData("Structure", "ops", "semantic")]
+        [InlineData("Source", "patch", null)]
+        public void NormalizeFacadeArgs_DefaultsVerifyModeToSemantic_ForStructureOrOps(string part, string mode, string expectedVerifyMode)
+        {
+            var args = new JObject
+            {
+                ["part"] = part,
+                ["content"] = "test"
+            };
+            if (mode != null) args["mode"] = mode;
+
+            var normalized = WriteService.NormalizeFacadeArgs(args);
+            Assert.Equal(expectedVerifyMode, normalized.VerifyMode);
+        }
     }
 }

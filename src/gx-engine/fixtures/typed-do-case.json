@@ -1,0 +1,89 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "source": "FirstTrue()\nNoMatch()\nNested()\nLaterHelper()"
+    },
+    {
+      "name": "Helper",
+      "params": [
+        "inout:Hits",
+        "out:Result"
+      ],
+      "variables": {
+        "Hits": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        },
+        "Result": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        }
+      },
+      "source": "&Hits = &Hits + 1\nMsg(\"later_condition_helper_called\", status)\n&Result = 1"
+    },
+    {
+      "name": "FirstTrue",
+      "params": [],
+      "variables": {
+        "Choice": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        }
+      },
+      "source": "&Choice = 1\nDo Case\n  Case &Choice = 1\n    Msg(\"first_true_first_case\", status)\n  Case &Choice >= 1\n    Msg(\"first_true_second_case\", status)\n  Otherwise\n    Msg(\"first_true_otherwise\", status)\nEndCase\nMsg(\"first_true_after\", status)"
+    },
+    {
+      "name": "NoMatch",
+      "params": [],
+      "variables": {
+        "Choice": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        }
+      },
+      "source": "&Choice = 3\nDo Case\n  Case &Choice = 1\n    Msg(\"no_match_case_one\", status)\n  Case &Choice = 2\n    Msg(\"no_match_case_two\", status)\nEndCase\nMsg(\"no_match_fell_through\", status)"
+    },
+    {
+      "name": "Nested",
+      "params": [],
+      "variables": {
+        "Outer": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        },
+        "Inner": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        }
+      },
+      "source": "&Outer = 1\n&Inner = 2\nDo Case\n  Case &Outer = 1\n    Msg(\"nested_outer_first\", status)\n    Do Case\n      Case &Inner = 1\n        Msg(\"nested_inner_one\", status)\n      Case &Inner = 2\n        Msg(\"nested_inner_two\", status)\n      Otherwise\n        Msg(\"nested_inner_otherwise\", status)\n    EndCase\n  Case &Outer = 2\n    Msg(\"nested_outer_second\", status)\n  Otherwise\n    Msg(\"nested_outer_otherwise\", status)\nEndCase\nMsg(\"nested_after\", status)"
+    },
+    {
+      "name": "LaterHelper",
+      "params": [],
+      "variables": {
+        "Choice": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        },
+        "Hits": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        }
+      },
+      "source": "&Choice = 1\n&Hits = 0\nDo Case\n  Case &Choice = 1\n    Msg(\"later_helper_first_case\", status)\n  Case &Choice = Helper(&Hits)\n    Msg(\"later_helper_second_case\", status)\n  Otherwise\n    Msg(\"later_helper_otherwise\", status)\nEndCase\nPrint(&Hits)"
+    }
+  ]
+}

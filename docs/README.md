@@ -15,6 +15,7 @@ also read [`AGENTS.md`](../AGENTS.md).
 - [Supported GeneXus versions](generated/supported-versions.md) — generated from `config/gx-versions.json`.
 - [SDK compatibility](sdk-compatibility.md) — how the Worker binds to each GeneXus major.
 - [Environment variables](environment_variables.md) — every runtime variable read by the Gateway and Worker.
+- [Engine backend switch (gx-engine)](engine_backend.md) — experimental SDK↔engine routing gate, capability registry and `genexus_doctor` reporting.
 - [Pinning the write destination](write-destination-pin.md) — fixing the target KB across restarts.
 - [Human-in-the-loop elicitation](elicitation.md) — client-side KB picker and human approval for irreversible calls.
 - [Migração para MCP 3.0](migration-3.0.md) — the 3.0 migration contract.

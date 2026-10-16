@@ -81,7 +81,7 @@ namespace GxMcp.Worker.Helpers
                     });
                     continue;
                 }
-                if (IsProtected(name.LocalName) || left?.IsNamespaceDeclaration == true || right?.IsNamespaceDeclaration == true)
+                if (IsProtected(before.Name.LocalName, name.LocalName) || left?.IsNamespaceDeclaration == true || right?.IsNamespaceDeclaration == true)
                 {
                     Reject("PatternMetadataChangeUnsupported", DescribeMetadataChange(path, name.LocalName));
                     return;
@@ -96,15 +96,21 @@ namespace GxMcp.Worker.Helpers
                     return;
                 if (TryAllowWebComponentInsertion(before, after, oldNodes, newNodes, path))
                     return;
+                if (TryAllowAttributePromptEdit(before, after, oldNodes, newNodes, path))
+                    return;
                 // Issue #349: structural layout authoring. Insert / remove / move of a
                 // single leaf layout element inside an existing container.
                 if (TryAllowStructuralLayoutEdit(oldNodes, newNodes, path, allowGridStructure))
+                    return;
+                if (TryAllowMultipleLayoutRemovals(oldNodes, newNodes, path))
                     return;
                 Reject("PatternStructureChangeUnsupported", DescribeStructureChange(path, oldNodes, newNodes, allowGridStructure));
                 return;
             }
             if (allowGridStructure && IsGrid(before)
                 && TryCompareGridReorder(oldNodes, newNodes, path, allowGridStructure))
+                return;
+            if (TryCompareContainerReorder(before, oldNodes, newNodes, path, allowGridStructure))
                 return;
             for (int i = 0; i < oldNodes.Length; i++)
             {
@@ -588,8 +594,12 @@ namespace GxMcp.Worker.Helpers
             || name.StartsWith("template", StringComparison.OrdinalIgnoreCase)
             || name.Equals("childrenOrderedList", StringComparison.OrdinalIgnoreCase);
 
-        private static bool IsProtected(string name)
+        private static bool IsProtected(string elementName, string name)
         {
+            if (string.Equals(elementName, "parameter", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(name, "name", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "value", StringComparison.OrdinalIgnoreCase)))
+                return false;
+
             return IsMetadata(name)
                 || name.Equals("name", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("controlName", StringComparison.OrdinalIgnoreCase)
@@ -602,6 +612,249 @@ namespace GxMcp.Worker.Helpers
                 || name.Equals("guid", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("key", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("entityKey", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private struct ElementPosition
+        {
+            public XElement Element;
+            public int Index;
+            public ElementPosition(XElement element, int index) { Element = element; Index = index; }
+        }
+
+        private bool TryCompareContainerReorder(
+            XElement container, XNode[] oldNodes, XNode[] newNodes, string path, bool allowGridStructure)
+        {
+            if (oldNodes.Length != newNodes.Length || oldNodes.Length <= 1) return false;
+
+            string containerName = container.Name.LocalName;
+            if (!string.Equals(containerName, "table", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(containerName, "actionGroup", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(containerName, "tabs", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(containerName, "tab", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var oldElements = oldNodes.OfType<XElement>().ToList();
+            var newElements = newNodes.OfType<XElement>().ToList();
+            if (oldElements.Count != oldNodes.Length || newElements.Count != newNodes.Length)
+                return false;
+
+            var oldMap = new Dictionary<string, ElementPosition>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < oldElements.Count; i++)
+            {
+                string id = GetElementCompositeKey(oldElements[i]);
+                if (string.IsNullOrWhiteSpace(id) || oldMap.ContainsKey(id)) return false;
+                oldMap[id] = new ElementPosition(oldElements[i], i);
+            }
+
+            var newMap = new Dictionary<string, ElementPosition>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < newElements.Count; i++)
+            {
+                string id = GetElementCompositeKey(newElements[i]);
+                if (string.IsNullOrWhiteSpace(id) || newMap.ContainsKey(id)) return false;
+                if (!oldMap.ContainsKey(id)) return false;
+                newMap[id] = new ElementPosition(newElements[i], i);
+            }
+
+            if (oldMap.Count != newMap.Count) return false;
+
+            bool anyPositionChanged = false;
+            foreach (var kvp in newMap)
+            {
+                if (kvp.Value.Index != oldMap[kvp.Key].Index)
+                {
+                    anyPositionChanged = true;
+                    break;
+                }
+            }
+
+            if (!anyPositionChanged) return false;
+
+            foreach (var kvp in newMap)
+            {
+                int newIdx = kvp.Value.Index;
+                int oldIdx = oldMap[kvp.Key].Index;
+                XElement newEl = kvp.Value.Element;
+                XElement oldEl = oldMap[kvp.Key].Element;
+
+                if (newIdx != oldIdx)
+                {
+                    string id = StructuralLayoutRules.Identity(newEl.Name.LocalName, newEl) ?? kvp.Key;
+                    Changes.Add(new JObject
+                    {
+                        ["path"] = path + newEl.Name.LocalName + "[@" + id + "]",
+                        ["operation"] = "Reorder",
+                        ["element"] = newEl.Name.LocalName,
+                        ["identity"] = id,
+                        ["fromIndex"] = oldIdx,
+                        ["toIndex"] = newIdx,
+                        ["ordering"] = OrderingNote
+                    });
+                }
+
+                Compare(oldEl, newEl, path + "[" + newIdx + "]/", allowGridStructure);
+                if (ErrorCode != null) return true;
+            }
+
+            return true;
+        }
+
+        private static string GetElementCompositeKey(XElement element)
+        {
+            if (element == null) return null;
+            string kind = element.Name.LocalName;
+            string id = StructuralLayoutRules.Identity(kind, element);
+            if (!string.IsNullOrWhiteSpace(id)) return kind + ":" + id;
+            id = (string)element.Attribute("attribute")
+                ?? (string)element.Attribute("controlName")
+                ?? (string)element.Attribute("name")
+                ?? (string)element.Attribute("variable");
+            return string.IsNullOrWhiteSpace(id) ? null : kind + ":" + id.Trim();
+        }
+
+        private bool TryAllowMultipleLayoutRemovals(XNode[] oldNodes, XNode[] newNodes, string path)
+        {
+            if (oldNodes.Length <= newNodes.Length) return false;
+
+            int oldIdx = 0;
+            var removedElements = new List<ElementPosition>();
+            for (int newIdx = 0; newIdx < newNodes.Length; newIdx++)
+            {
+                while (oldIdx < oldNodes.Length && !XNode.DeepEquals(oldNodes[oldIdx], newNodes[newIdx]))
+                {
+                    if (oldNodes[oldIdx] is XElement removedEl)
+                    {
+                        string kind = removedEl.Name.LocalName;
+                        if (!StructuralLayoutRules.IsPermittedKind(kind)) return false;
+                        removedElements.Add(new ElementPosition(removedEl, oldIdx));
+                    }
+                    else return false;
+                    oldIdx++;
+                }
+                if (oldIdx >= oldNodes.Length) return false;
+                oldIdx++;
+            }
+            while (oldIdx < oldNodes.Length)
+            {
+                if (oldNodes[oldIdx] is XElement removedEl)
+                {
+                    string kind = removedEl.Name.LocalName;
+                    if (!StructuralLayoutRules.IsPermittedKind(kind)) return false;
+                    removedElements.Add(new ElementPosition(removedEl, oldIdx));
+                }
+                else return false;
+                oldIdx++;
+            }
+
+            if (removedElements.Count == 0) return false;
+
+            foreach (var item in removedElements)
+            {
+                string removedKind = item.Element.Name.LocalName;
+                string removedIdentity = StructuralLayoutRules.ReportIdentity(removedKind, item.Element);
+                Changes.Add(new JObject
+                {
+                    ["path"] = path,
+                    ["operation"] = "Remove",
+                    ["element"] = removedKind,
+                    ["identity"] = removedIdentity,
+                    ["index"] = item.Index,
+                    ["ordering"] = OrderingNote
+                });
+                if (removedIdentity != null) _removedIdentities[removedIdentity] = removedKind;
+            }
+
+            return true;
+        }
+
+        private bool TryAllowAttributePromptEdit(XElement before, XElement after, XNode[] oldNodes, XNode[] newNodes, string path)
+        {
+            if (!string.Equals(before.Name.LocalName, "attribute", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var oldPrompt = oldNodes.OfType<XElement>().FirstOrDefault(e => string.Equals(e.Name.LocalName, "prompt", StringComparison.OrdinalIgnoreCase));
+            var newPrompt = newNodes.OfType<XElement>().FirstOrDefault(e => string.Equals(e.Name.LocalName, "prompt", StringComparison.OrdinalIgnoreCase));
+
+            if (oldPrompt == null && newPrompt == null) return false;
+
+            if (newPrompt != null && !ValidatePromptElement(newPrompt)) return false;
+
+            var oldOther = oldNodes.Where(n => n != oldPrompt).ToArray();
+            var newOther = newNodes.Where(n => n != newPrompt).ToArray();
+            if (!SameNodeSequence(oldOther, newOther)) return false;
+
+            if (oldPrompt == null && newPrompt != null)
+            {
+                string promptTarget = (string)newPrompt.Attribute("prompt") ?? (string)newPrompt.Attribute("gxobject") ?? (string)newPrompt.Attribute("name");
+                Changes.Add(new JObject
+                {
+                    ["path"] = path + "prompt",
+                    ["operation"] = "Insert",
+                    ["element"] = "prompt",
+                    ["prompt"] = promptTarget
+                });
+                return true;
+            }
+
+            if (oldPrompt != null && newPrompt == null)
+            {
+                Changes.Add(new JObject
+                {
+                    ["path"] = path + "prompt",
+                    ["operation"] = "Remove",
+                    ["element"] = "prompt"
+                });
+                return true;
+            }
+
+            if (oldPrompt != null && newPrompt != null)
+            {
+                if (!XNode.DeepEquals(oldPrompt, newPrompt))
+                {
+                    string promptTarget = (string)newPrompt.Attribute("prompt") ?? (string)newPrompt.Attribute("gxobject") ?? (string)newPrompt.Attribute("name");
+                    Changes.Add(new JObject
+                    {
+                        ["path"] = path + "prompt",
+                        ["operation"] = "Update",
+                        ["element"] = "prompt",
+                        ["prompt"] = promptTarget
+                    });
+                }
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool ValidatePromptElement(XElement prompt)
+        {
+            foreach (var attr in prompt.Attributes())
+            {
+                if (attr.IsNamespaceDeclaration) continue;
+                string name = attr.Name.LocalName;
+                if (!name.Equals("prompt", StringComparison.OrdinalIgnoreCase)
+                    && !name.Equals("gxobject", StringComparison.OrdinalIgnoreCase)
+                    && !name.Equals("name", StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+            foreach (var child in prompt.Elements())
+            {
+                if (!child.Name.LocalName.Equals("parameters", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                foreach (var param in child.Elements())
+                {
+                    if (!param.Name.LocalName.Equals("parameter", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    foreach (var pAttr in param.Attributes())
+                    {
+                        if (pAttr.IsNamespaceDeclaration) continue;
+                        string pName = pAttr.Name.LocalName;
+                        if (!pName.Equals("name", StringComparison.OrdinalIgnoreCase)
+                            && !pName.Equals("value", StringComparison.OrdinalIgnoreCase))
+                            return false;
+                    }
+                }
+            }
+            return true;
         }
     }
 }

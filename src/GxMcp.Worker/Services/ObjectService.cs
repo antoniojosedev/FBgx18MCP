@@ -513,6 +513,27 @@ namespace GxMcp.Worker.Services
                         ["name"] = name,
                         ["hint"] = "Re-run without dryRun to call Save()."
                     };
+                    string optDesc = (options?["description"] ?? options?["Description"])?.ToString();
+                    if (!string.IsNullOrWhiteSpace(optDesc)) planned["description"] = optDesc;
+
+                    if (type.Equals("Attribute", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string rawType = options?["dataType"]?.ToString() ?? options?["type"]?.ToString();
+                        var spec = AttributeTypeApplier.Parse(rawType);
+                        if (spec.Recognized && !string.Equals(spec.CanonicalType, "DomainReference", StringComparison.OrdinalIgnoreCase))
+                        {
+                            planned["dataType"] = spec.CanonicalType;
+                            planned["length"] = options?["length"]?.ToObject<int?>() ?? spec.Length;
+                            planned["decimals"] = options?["decimals"]?.ToObject<int?>() ?? spec.Decimals;
+                        }
+                        else if (!string.IsNullOrWhiteSpace(rawType))
+                        {
+                            planned["dataType"] = rawType;
+                            if (options?["length"] != null) planned["length"] = options["length"].ToObject<int?>();
+                            if (options?["decimals"] != null) planned["decimals"] = options["decimals"].ToObject<int?>();
+                        }
+                    }
+
                     if (!string.IsNullOrWhiteSpace(plannedSeed)) planned["seededDescription"] = plannedSeed;
                     return McpResponse.Ok(target: name, code: "DryRun", result: planned);
                 }
@@ -677,6 +698,12 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            string desc = (options?["description"] ?? options?["Description"])?.ToString();
+            if (!string.IsNullOrWhiteSpace(desc))
+            {
+                try { newObj.Description = desc; } catch { }
+            }
+
             if (type.Equals("SDT", StringComparison.OrdinalIgnoreCase) || type.Equals("StructuredDataType", StringComparison.OrdinalIgnoreCase))
             {
                 string firstItem = options?["firstItem"]?.ToString();
@@ -685,6 +712,54 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrWhiteSpace(firstItemType)) firstItemType = "VARCHAR";
                 string seededType = InitializeSDTWithDefaultItem(newObj, name, firstItem, firstItemType);
                 seededDescription = firstItem + " : " + (seededType ?? firstItemType);
+            }
+            else if (newObj is Artech.Genexus.Common.Objects.Attribute attrObj)
+            {
+                string basedOn = options?["basedOn"]?.ToString();
+                string dataType = options?["dataType"]?.ToString() ?? options?["type"]?.ToString();
+                int? length = options?["length"]?.ToObject<int?>();
+                int? decimals = options?["decimals"]?.ToObject<int?>();
+                bool? signed = options?["signed"]?.ToObject<bool?>();
+
+                if (!string.IsNullOrWhiteSpace(basedOn))
+                {
+                    try
+                    {
+                        var domainObj = kb.DesignModel.Objects.GetByName(null, null, basedOn)
+                            ?.OfType<Artech.Genexus.Common.Objects.Domain>()
+                            .FirstOrDefault();
+                        if (domainObj != null)
+                        {
+                            DomainPropertyApplier.ApplyDomainBasedOn(attrObj, domainObj);
+                        }
+                    }
+                    catch { }
+                }
+                else if (!string.IsNullOrWhiteSpace(dataType))
+                {
+                    var spec = AttributeTypeApplier.Parse(dataType);
+                    if (spec.Recognized)
+                    {
+                        if (string.Equals(spec.CanonicalType, "DomainReference", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                var domainObj = kb.DesignModel.Objects.GetByName(null, null, spec.DomainName)
+                                    ?.OfType<Artech.Genexus.Common.Objects.Domain>()
+                                    .FirstOrDefault();
+                                if (domainObj != null)
+                                {
+                                    DomainPropertyApplier.ApplyDomainBasedOn(attrObj, domainObj);
+                                }
+                            }
+                            catch { }
+                        }
+                        else
+                        {
+                            AttributeTypeApplier.ApplyPrimitive(attrObj, spec.CanonicalType, length ?? spec.Length, decimals ?? spec.Decimals);
+                        }
+                    }
+                }
             }
             else if (newObj is Artech.Genexus.Common.Objects.Transaction newTrn)
             {
@@ -2031,8 +2106,19 @@ namespace GxMcp.Worker.Services
                 // Resolve the requested item type to its canonical eDBType name (VarChar→VARCHAR,
                 // Character→CHARACTER, Numeric→NUMERIC, ...). Falls back to VARCHAR when unknown.
                 string wantedEnumName = "VARCHAR";
-                if (GxMcp.Worker.Helpers.VariableInjector.TryParseDbType(itemTypeName, out var wantedDbType))
+                int? parsedLen = null;
+                int? parsedDec = null;
+                var parsedSpec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(itemTypeName);
+                if (parsedSpec.Recognized && GxMcp.Worker.Helpers.AttributeTypeApplier.CanonicalToEdb.TryGetValue(parsedSpec.CanonicalType, out var mappedEdb))
+                {
+                    wantedEnumName = mappedEdb;
+                    parsedLen = parsedSpec.Length;
+                    parsedDec = parsedSpec.Decimals;
+                }
+                else if (GxMcp.Worker.Helpers.VariableInjector.TryParseDbType(itemTypeName, out var wantedDbType))
+                {
                     wantedEnumName = wantedDbType.ToString();
+                }
 
                 Type rootType = ((object)root).GetType();
                 var asm = rootType.Assembly;
@@ -2053,6 +2139,14 @@ namespace GxMcp.Worker.Services
                             object added = addItem.Invoke(root, new object[] { itemName, typeVal });
                             if (added != null)
                             {
+                                if (parsedLen.HasValue)
+                                {
+                                    try { var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(added.GetType(), "Length"); p?.SetValue(added, parsedLen.Value, null); } catch { }
+                                }
+                                if (parsedDec.HasValue)
+                                {
+                                    try { var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(added.GetType(), "Decimals"); p?.SetValue(added, parsedDec.Value, null); } catch { }
+                                }
                                 Logger.Info("InitializeSDTWithDefaultItem: seeded '" + itemName + "' (" + wantedEnumName + ") into " + sdtName + " via AddItem(string, eDBType)");
                                 // Friction-report 05-13 #2 (the exact trap SdtDslParser documents):
                                 // AddItem mutates the in-memory Items collection, but the
@@ -2062,7 +2156,9 @@ namespace GxMcp.Worker.Services
                                 // report). Force the part dirty exactly like the SDT write path
                                 // (SDTService.UpdateSDTStructure) does before returning.
                                 GxMcp.Worker.Parsers.SdtDslParser.MarkPartDirty((object)structure, sdtName);
-                                return wantedEnumName;
+                                string returnType = wantedEnumName;
+                                if (parsedLen.HasValue) returnType += "(" + parsedLen.Value + (parsedDec.HasValue ? "," + parsedDec.Value : "") + ")";
+                                return returnType;
                             }
                         }
                         catch (Exception ex)
@@ -2141,8 +2237,17 @@ namespace GxMcp.Worker.Services
                 {
                     if (eDBTypeT != null) newItem.Type = Enum.Parse(eDBTypeT, wantedEnumName);
                 } catch { }
+                if (parsedLen.HasValue)
+                {
+                    try { var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(newItem.GetType(), "Length"); p?.SetValue(newItem, parsedLen.Value, null); } catch { }
+                }
+                if (parsedDec.HasValue)
+                {
+                    try { var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(newItem.GetType(), "Decimals"); p?.SetValue(newItem, parsedDec.Value, null); } catch { }
+                }
                 items.Add(newItem);
                 seededTypeName = wantedEnumName;
+                if (parsedLen.HasValue) seededTypeName += "(" + parsedLen.Value + (parsedDec.HasValue ? "," + parsedDec.Value : "") + ")";
                 // Friction-report 05-13 #2: mark the part dirty here too so the fallback
                 // path persists the item on the next obj.Save() (see AddItem path above).
                 GxMcp.Worker.Parsers.SdtDslParser.MarkPartDirty((object)structure, sdtName);

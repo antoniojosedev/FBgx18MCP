@@ -55,9 +55,16 @@ namespace GxMcp.Worker.Services
         public DateTime? UpdatedAtUtc { get; set; }
         public DateTime? CompletedAtUtc { get; set; }
         public string LastError { get; set; }
+        public List<string> ReadFailedObjects { get; set; } = new List<string>();
+        public int FailedObjects => ReadFailedObjects?.Count ?? 0;
 
         public string ResolveTriggerState()
         {
+            if (string.Equals(State, "error", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(State, "idle", StringComparison.OrdinalIgnoreCase))
+            {
+                return State;
+            }
             if (!string.IsNullOrWhiteSpace(TriggerState)) return TriggerState;
             if (string.Equals(State, "off", StringComparison.OrdinalIgnoreCase))
             {
@@ -80,6 +87,8 @@ namespace GxMcp.Worker.Services
                 ["storedObjects"] = StoredObjects,
                 ["staleObjects"] = StaleObjects,
                 ["removedObjects"] = RemovedObjects,
+                ["failedObjects"] = FailedObjects,
+                ["readFailedObjects"] = new JArray(ReadFailedObjects ?? new List<string>()),
                 ["retryCount"] = RetryCount,
                 ["etaMs"] = EtaMs == null ? JValue.CreateNull() : new JValue(EtaMs.Value),
                 ["startedAtUtc"] = StartedAtUtc?.ToString("o"),
@@ -92,10 +101,18 @@ namespace GxMcp.Worker.Services
         public static SourceStoreBackfillState FromJson(JObject json)
         {
             if (json == null) return new SourceStoreBackfillState();
-            return new SourceStoreBackfillState
+            string loadedState = json["state"]?.ToString() ?? "off";
+            string loadedTriggerState = json["triggerState"]?.ToString();
+            if (string.Equals(loadedState, "error", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(loadedState, "idle", StringComparison.OrdinalIgnoreCase))
             {
-                State = json["state"]?.ToString() ?? "off",
-                TriggerState = json["triggerState"]?.ToString(),
+                loadedTriggerState = loadedState;
+            }
+
+            var state = new SourceStoreBackfillState
+            {
+                State = loadedState,
+                TriggerState = loadedTriggerState,
                 Cursor = json["cursor"]?.ToString(),
                 CatalogSignature = json["catalogSignature"]?.ToString(),
                 CursorIndex = json["cursorIndex"]?.ToObject<int>() ?? 0,
@@ -109,8 +126,12 @@ namespace GxMcp.Worker.Services
                 StartedAtUtc = ParseDate(json["startedAtUtc"]?.ToString()),
                 UpdatedAtUtc = ParseDate(json["updatedAtUtc"]?.ToString()),
                 CompletedAtUtc = ParseDate(json["completedAtUtc"]?.ToString()),
-                LastError = json["lastError"]?.ToString()
+                LastError = json["lastError"]?.ToString(),
+                ReadFailedObjects = json["readFailedObjects"] is JArray arr
+                    ? arr.Select(t => t.ToString()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                    : new List<string>()
             };
+            return state;
         }
 
         private static DateTime? ParseDate(string value)
@@ -145,6 +166,7 @@ namespace GxMcp.Worker.Services
         private Func<SearchIndex.IndexEntry, IReadOnlyList<string>> _requiredPartProvider;
         private IReadOnlyList<SearchIndex.IndexEntry> _entries = Array.Empty<SearchIndex.IndexEntry>();
         private SourceStoreBackfillState _state = new SourceStoreBackfillState();
+        private readonly Dictionary<string, int> _objectRetries = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private int _scheduled;
         private bool _startedForCurrentIndex;
         private const int MaxTransientRetries = 5;
@@ -212,6 +234,9 @@ namespace GxMcp.Worker.Services
                     _state.ProcessedObjects = 0;
                     _state.StoredObjects = 0;
                     _state.StaleObjects = 0;
+                    _state.RemovedObjects = 0;
+                    _state.ReadFailedObjects.Clear();
+                    _objectRetries.Clear();
                 }
                 _state.CatalogSignature = catalogSignature;
                 if (_state.StartedAtUtc == null || _state.State == "off" || _state.State == "error")
@@ -233,10 +258,15 @@ namespace GxMcp.Worker.Services
                     _state.ProcessedObjects = 0;
                     _state.StoredObjects = 0;
                     _state.StaleObjects = 0;
+                    _state.RemovedObjects = 0;
+                    _state.ReadFailedObjects.Clear();
+                    _objectRetries.Clear();
                 }
-                _state.State = _state.CursorIndex >= _entries.Count ? "complete" : "queued";
+                _state.State = _state.CursorIndex >= _entries.Count
+                    ? (_state.ReadFailedObjects.Count > 0 ? "completeWithFailures" : "complete")
+                    : "queued";
                 _state.UpdatedAtUtc = DateTime.UtcNow;
-                _state.CompletedAtUtc = _state.State == "complete" ? DateTime.UtcNow : null;
+                _state.CompletedAtUtc = (_state.State == "complete" || _state.State == "completeWithFailures") ? DateTime.UtcNow : null;
                 _startedForCurrentIndex = true;
                 PersistStateLocked();
             }
@@ -348,8 +378,6 @@ namespace GxMcp.Worker.Services
             }
 
             int processed = 0;
-            int stored = 0;
-            int stale = 0;
             bool sliceHadError = false;
             try
             {
@@ -358,22 +386,19 @@ namespace GxMcp.Worker.Services
                     if (watch.ElapsedMilliseconds >= sliceBudgetMs) break;
                     var entry = entries[i];
                     IReadOnlyList<SourceStoreBackfillPart> parts = null;
+                    string objectError = null;
                     try { parts = reader(entry); }
                     catch (Exception ex)
                     {
-                        SetSliceError("The SDK source-part reader failed for object '" + entry.Guid + "': " + ex.Message);
-                        sliceHadError = true;
-                        break;
+                        objectError = "The SDK source-part reader failed for object '" + entry.Guid + "': " + ex.Message;
                     }
 
-                    if (parts == null)
+                    if (objectError == null && parts == null)
                     {
-                        SetSliceError("The SDK object could not be resolved for source-store backfill: " + entry.Guid);
-                        sliceHadError = true;
-                        break;
+                        objectError = "The SDK object could not be resolved for source-store backfill: " + entry.Guid;
                     }
 
-                    if (parts.Count == 1 && parts[0].IsDeleted)
+                    if (objectError == null && parts.Count == 1 && parts[0].IsDeleted)
                     {
                         _store.RemoveObject(entry.Guid);
                         lock (_gate)
@@ -389,7 +414,7 @@ namespace GxMcp.Worker.Services
                     }
 
                     List<string> requiredParts = null;
-                    if (requiredPartProvider != null)
+                    if (objectError == null && requiredPartProvider != null)
                     {
                         try
                         {
@@ -400,9 +425,7 @@ namespace GxMcp.Worker.Services
                         }
                         catch (Exception ex)
                         {
-                            SetSliceError("The required source-part list could not be read for object '" + entry.Guid + "': " + ex.Message);
-                            sliceHadError = true;
-                            break;
+                            objectError = "The required source-part list could not be read for object '" + entry.Guid + "': " + ex.Message;
                         }
                     }
 
@@ -410,47 +433,43 @@ namespace GxMcp.Worker.Services
                     // failed/null part must never be silently omitted from a
                     // partially successful result.
                     var returnedParts = new Dictionary<string, SourceStoreBackfillPart>(StringComparer.OrdinalIgnoreCase);
-                    string readFailure = null;
-                    foreach (var part in parts)
+                    if (objectError == null)
                     {
-                        if (part == null)
+                        foreach (var part in parts)
                         {
-                            readFailure = "The SDK returned a null source part for object '" + entry.Guid + "'.";
-                            break;
+                            if (part == null)
+                            {
+                                objectError = "The SDK returned a null source part for object '" + entry.Guid + "'.";
+                                break;
+                            }
+                            string canonicalPart = NormalizePartName(entry.Type, part.PartName);
+                            if (string.IsNullOrWhiteSpace(canonicalPart))
+                            {
+                                objectError = "The SDK returned a source part without a part name for object '" + entry.Guid + "'.";
+                                break;
+                            }
+                            if (part.IsReadFailure)
+                            {
+                                objectError = "The SDK failed to read source part '"
+                                    + CanonicalPartName(entry.Type, canonicalPart)
+                                    + "' for object '" + entry.Guid + "': null source or read failure."
+                                    + (string.IsNullOrWhiteSpace(part.ReadError) ? string.Empty : " " + part.ReadError);
+                                break;
+                            }
+                            if (returnedParts.ContainsKey(canonicalPart))
+                            {
+                                objectError = "The SDK returned duplicate source part '"
+                                    + CanonicalPartName(entry.Type, canonicalPart)
+                                    + "' for object '" + entry.Guid + "'.";
+                                break;
+                            }
+                            returnedParts.Add(canonicalPart, part);
                         }
-                        string canonicalPart = NormalizePartName(entry.Type, part.PartName);
-                        if (string.IsNullOrWhiteSpace(canonicalPart))
-                        {
-                            readFailure = "The SDK returned a source part without a part name for object '" + entry.Guid + "'.";
-                            break;
-                        }
-                        if (part.IsReadFailure)
-                        {
-                            readFailure = "The SDK failed to read source part '"
-                                + CanonicalPartName(entry.Type, canonicalPart)
-                                + "' for object '" + entry.Guid + "': null source or read failure."
-                                + (string.IsNullOrWhiteSpace(part.ReadError) ? string.Empty : " " + part.ReadError);
-                            break;
-                        }
-                        if (returnedParts.ContainsKey(canonicalPart))
-                        {
-                            readFailure = "The SDK returned duplicate source part '"
-                                + CanonicalPartName(entry.Type, canonicalPart)
-                                + "' for object '" + entry.Guid + "'.";
-                            break;
-                        }
-                        returnedParts.Add(canonicalPart, part);
-                    }
-                    if (readFailure != null)
-                    {
-                        SetSliceError(readFailure);
-                        sliceHadError = true;
-                        break;
                     }
 
                     bool anyStored = false;
                     bool anyStale = false;
-                    if (requiredParts != null)
+                    if (objectError == null && requiredParts != null)
                     {
                         foreach (string requiredPart in requiredParts)
                         {
@@ -459,18 +478,42 @@ namespace GxMcp.Worker.Services
                             anyStale = true;
                             if (!returnedParts.ContainsKey(requiredPart))
                             {
-                                readFailure = "The SDK reader returned no evidence for required source part '"
+                                objectError = "The SDK reader returned no evidence for required source part '"
                                     + CanonicalPartName(entry.Type, requiredPart)
                                     + "' of object '" + entry.Guid + "'.";
                                 break;
                             }
                         }
                     }
-                    if (readFailure != null)
+
+                    if (objectError != null)
                     {
-                        SetSliceError(readFailure);
-                        sliceHadError = true;
-                        break;
+                        int attempt = _objectRetries.TryGetValue(entry.Guid, out int count) ? count : 0;
+                        if (attempt < 1)
+                        {
+                            _objectRetries[entry.Guid] = attempt + 1;
+                            SetSliceError(objectError);
+                            sliceHadError = true;
+                            break;
+                        }
+                        else
+                        {
+                            Logger.Warn("[SOURCE-STORE] " + objectError + " Advancing past failing object.");
+                            lock (_gate)
+                            {
+                                if (!_state.ReadFailedObjects.Contains(entry.Guid, StringComparer.OrdinalIgnoreCase))
+                                {
+                                    _state.ReadFailedObjects.Add(entry.Guid);
+                                }
+                                _state.LastError = objectError;
+                                _state.ProcessedObjects++;
+                                _state.CursorIndex = i + 1;
+                                _state.Cursor = EntryIdentity(entry);
+                                _state.UpdatedAtUtc = DateTime.UtcNow;
+                            }
+                            processed++;
+                            continue;
+                        }
                     }
 
                     foreach (var pair in returnedParts)
@@ -512,16 +555,14 @@ namespace GxMcp.Worker.Services
                     }
                     if (sliceHadError) break;
 
-                    if (anyStored) stored++;
-                    if (anyStale) stale++;
                     processed++;
                     lock (_gate)
                     {
                         _state.CursorIndex = i + 1;
                         _state.Cursor = EntryIdentity(entry);
-                        _state.ProcessedObjects += processed;
-                        _state.StoredObjects += stored;
-                        _state.StaleObjects += stale;
+                        _state.ProcessedObjects++;
+                        if (anyStored) _state.StoredObjects++;
+                        if (anyStale) _state.StaleObjects++;
                         _state.UpdatedAtUtc = DateTime.UtcNow;
                     }
                 }
@@ -541,7 +582,9 @@ namespace GxMcp.Worker.Services
                     _state.RetryCount = 0;
                     _state.LastError = null;
                     complete = _state.CursorIndex >= entries.Count;
-                    _state.State = complete ? "complete" : "running";
+                    _state.State = complete
+                        ? (_state.ReadFailedObjects.Count > 0 ? "completeWithFailures" : "complete")
+                        : "running";
                     if (complete)
                     {
                         _state.CompletedAtUtc = DateTime.UtcNow;

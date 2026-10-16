@@ -1,0 +1,25 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "variables": {
+        "FixedText": {
+          "kind": "character",
+          "length": 5
+        },
+        "VariableText": {
+          "kind": "varchar",
+          "length": 5
+        },
+        "LongText": {
+          "kind": "varchar",
+          "length": 20
+        }
+      },
+      "source": "&FixedText = \"ab\"\nPrint(\"fixed_short=[\" + &FixedText + \"]\")\nPrint(&FixedText.Length())\n&VariableText = \"ab\"\nPrint(\"variable_short=[\" + &VariableText + \"]\")\nPrint(&VariableText.Length())\n&FixedText = \"abcdefg\"\nPrint(\"fixed_long=[\" + &FixedText + \"]\")\n&VariableText = \"abcdefg\"\nPrint(\"variable_long=[\" + &VariableText + \"]\")\n&FixedText = \" ab \"\nPrint(\"fixed_spaces=[\" + &FixedText + \"]\")\n&VariableText = \" ab \"\nPrint(\"variable_spaces=[\" + &VariableText + \"]\")\nIf &FixedText = \" ab\"\nPrint(\"fixed_equal=1\")\nElse\nPrint(\"fixed_equal=0\")\nEndIf\nIf &VariableText = \" ab\"\nPrint(\"variable_equal=1\")\nElse\nPrint(\"variable_equal=0\")\nEndIf\nIf \"A\" = \"a\"\nPrint(\"case_equal=1\")\nElse\nPrint(\"case_equal=0\")\nEndIf\n&LongText = &FixedText + &VariableText\nPrint(\"concat=[\" + &LongText + \"]\")\n&FixedText = \"\"\nPrint(\"fixed_empty=[\" + &FixedText + \"]\")\n&VariableText = \"\"\nPrint(\"variable_empty=[\" + &VariableText + \"]\")\n&FixedText = \"ação\"\nPrint(\"fixed_unicode=[\" + &FixedText + \"]\")\nPrint(&FixedText.Length())\n&FixedText = \"a😀b\"\nPrint(\"astral=[\" + &FixedText + \"]\")\nPrint(&FixedText.Length())"
+    }
+  ]
+}

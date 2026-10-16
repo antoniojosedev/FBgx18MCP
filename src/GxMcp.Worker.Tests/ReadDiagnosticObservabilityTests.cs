@@ -123,7 +123,8 @@ namespace GxMcp.Worker.Tests
             Assert.NotNull(diag);
             Assert.Equal(ReadDiagnosticStages.ResolveObject, diag["failedStage"]?.ToString());
             Assert.Equal("unknown", diag["context"]?["resolvedIdentity"]?.ToString());
-            Assert.True(diag["persisted"]?.Value<bool>());
+            Assert.False(diag["persisted"]?.Value<bool>());
+            Assert.True(diag["enqueued"]?.Value<bool>());
 
             // Check ring buffer storage
             Assert.True(ReadDiagnosticStore.TryGet("test-read-cid-479", out var stored));
@@ -156,6 +157,7 @@ namespace GxMcp.Worker.Tests
                 var diag = error["diagnostics"] as JObject;
                 Assert.NotNull(diag);
                 Assert.False(diag["persisted"]?.Value<bool>());
+                Assert.False(diag["enqueued"]?.Value<bool>());
                 Assert.NotNull(diag["persistenceError"]?.ToString());
             }
             finally

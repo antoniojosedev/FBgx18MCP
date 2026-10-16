@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>sdk-oracle</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The real GeneXus runtime assembly generated applications link against
+         (`GeneXus.Utils.StringUtil`). Pinned to the same 1.30.0 used to record
+         the checked-in native fixtures. -->
+    <PackageReference Include="genexus.classes.core" Version="1.30.0" />
+  </ItemGroup>
+</Project>

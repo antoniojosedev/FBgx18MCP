@@ -1997,7 +1997,9 @@ namespace GxMcp.Gateway
                 "did_you_mean", "noNearMatchHint",
                 // Save+specify (SpecificationFailed): the itemized spc/gen diagnostics and
                 // the stale-environment-copy warning are the whole point of the error.
-                "diagnostics", "warnings", "staleEnvironmentCopy", "timedOut", "taskId"
+                "diagnostics", "warnings", "staleEnvironmentCopy", "timedOut", "taskId",
+                // object_atomic pre-flight: the hint tells the caller to read fieldErrors.
+                "fieldErrors"
             };
             foreach (var k in diagnosticKeys)
             {

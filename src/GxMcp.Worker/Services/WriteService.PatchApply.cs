@@ -55,6 +55,11 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrEmpty(partName))
                     partName = "Structure";
 
+                if (string.IsNullOrWhiteSpace(verifyMode) && string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
+                {
+                    verifyMode = "semantic";
+                }
+
                 // Pre-flight: reject immediately when no KB is open, before JIT-loading GeneXus types.
                 if (!_objectService.GetKbService().IsOpen)
                     throw new UsageException("usage_error", "object '" + target + "' not found");
@@ -322,7 +327,17 @@ namespace GxMcp.Worker.Services
             {
                 writeJson["opResults"] = opResultsJson;
                 writeJson["opsAttempted"] = ops.Count;
-                writeJson["note"] = "The ops parsed cleanly but the persist step failed — nothing was persisted. See code/message above; opResults reflect the in-memory DSL edit only.";
+                bool saved = writeJson["saved"]?.ToObject<bool?>() == true
+                    || writeJson["sdkSaveCompleted"]?.ToObject<bool?>() == true
+                    || writeJson["partialPersistenceDetected"]?.ToObject<bool?>() == true;
+                if (saved)
+                {
+                    writeJson["note"] = "The ops parsed cleanly and changes were saved, but post-write verification or rollback failed. See details above. If attribute removal was refused, try genexus_structure action=remove_attribute.";
+                }
+                else
+                {
+                    writeJson["note"] = "The ops parsed cleanly but the persist step failed — nothing was persisted. See code/message above; opResults reflect the in-memory DSL edit only. If attribute removal was refused, try genexus_structure action=remove_attribute.";
+                }
                 return writeJson.ToString(Newtonsoft.Json.Formatting.None);
             }
 

@@ -462,6 +462,15 @@ namespace GxMcp.Worker.Services
             return NativeElementXml(element)?.Name.LocalName.Equals("actionGroup", StringComparison.OrdinalIgnoreCase) == true;
         }
 
+        private static bool IsNativeGrid(object element)
+        {
+            if (element == null) return false;
+            string type = NativeType(element);
+            if (type.Equals("grid", StringComparison.OrdinalIgnoreCase)
+                || type.Equals("WPGrid", StringComparison.OrdinalIgnoreCase)) return true;
+            return NativeElementXml(element)?.Name.LocalName.Equals("grid", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
         private static bool TryFindXmlTarget(XDocument document, WebComponentReplacementRequest request,
             string elementType, out XElement parent, out XElement source, out JObject error)
         {

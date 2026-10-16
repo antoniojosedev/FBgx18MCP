@@ -1,0 +1,11 @@
+{
+  "format_version":2,"entry":"Main",
+  "record_types":[{"name":"Probe","fields":{
+    "Amount":{"kind":"numeric","precision":4,"scale":0},
+    "Label":{"kind":"varchar","length":6},"Fixed":{"kind":"character","length":6},
+    "Flag":{"kind":"boolean"},"Day":{"kind":"date"},"Stamp":{"kind":"date_time"}
+  }}],
+  "procedures":[{"name":"Main","params":[],"variables":{
+    "First":{"kind":"record","schema":"Probe"},"Second":{"kind":"record","schema":"Probe"}
+  },"source":"&First = new()\nPrint(&First.Flag)\nPrint(&First.Day.Year())\nPrint(&First.Stamp.Year())\n&First.Flag = True\n&First.Day = YMDToD(2024,2,29)\n&First.Stamp = YMDHMSToT(2023,12,31,23,59,58)\n&Second = &First\n&Second.Flag = False\n&Second.Day = YMDToD(2000,1,2)\n&Second.Stamp = YMDHMSToT(2001,2,3,4,5,6)\nPrint(&First.Flag)\nPrint(&First.Day.Year())\nPrint(&First.Stamp.Year())\n&Second = &First.Clone()\n&Second.Flag = True\n&Second.Day = YMDToD(1999,1,1)\n&Second.Stamp = YMDHMSToT(1998,1,2,3,4,5)\nPrint(&First.Flag)\nPrint(&Second.Flag)\nPrint(&First.Day.Year())\nPrint(&Second.Day.Year())\nPrint(&First.Stamp.Year())\nPrint(&Second.Stamp.Year())"}]
+}

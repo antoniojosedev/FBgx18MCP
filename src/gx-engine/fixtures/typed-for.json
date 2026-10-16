@@ -1,0 +1,14 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "variables": {
+        "Index": { "kind": "numeric", "precision": 5, "scale": 0 }
+      },
+      "source": "For &Index = 1 To 3\nPrint(&Index)\nEndFor\nPrint(&Index)"
+    }
+  ]
+}

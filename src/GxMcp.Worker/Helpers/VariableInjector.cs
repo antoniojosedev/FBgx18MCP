@@ -757,9 +757,18 @@ namespace GxMcp.Worker.Helpers
                 try { v.DomainBasedOn = null; } catch { }
                 try { v.DomainKey = null; } catch { }
                 try { DomainPropertyApplier.ClearAttributeBasedOn((object)v); } catch { }
+                string typeText = string.IsNullOrWhiteSpace(typeName) ? sdtObj.Name : typeName.Trim();
+                // Prefer the SDK's own type parser: it stores a resolved StructureTypeReference
+                // (Type guid + Id) in ATTCUSTOMTYPE. The by-name custom type below is only
+                // resolved at save time, after source validation, so a Procedure created in the
+                // same save that reads `&Var.Member` failed with src0216 (live, KBTeste).
+                if (TryParseSdtType(v, sdtObj))
+                {
+                    try { v.SetPropertyValue("DataTypeString", typeText); } catch (Exception ex) { Logger.Warn("DataTypeString set failed: " + ex.Message); }
+                    return true;
+                }
                 v.Type = global::Artech.Genexus.Common.eDBType.GX_SDT;
                 v.SetPropertyValue("DataType", sdtObj.Key);
-                string typeText = string.IsNullOrWhiteSpace(typeName) ? sdtObj.Name : typeName.Trim();
                 try { v.SetPropertyValue("DataTypeString", typeText); } catch (Exception ex) { Logger.Warn("DataTypeString set failed: " + ex.Message); }
                 try { v.SetPropertyValue("ATTCUSTOMTYPE", inst); }
                 catch (Exception ex)
@@ -776,6 +785,29 @@ namespace GxMcp.Worker.Helpers
                 return false;
             }
             return true;
+        }
+
+        // DataType.ParseInto is the parser behind the IDE's type column. It succeeds only when
+        // the name resolves to this SDT; anything else leaves the by-name path to decide.
+        private static bool TryParseSdtType(global::Artech.Genexus.Common.Variable v, KBObject sdtObj)
+        {
+            string qualified = sdtObj.QualifiedName?.ToString();
+            if (string.IsNullOrEmpty(qualified)) qualified = sdtObj.Name;
+            try
+            {
+                if (!global::Artech.Genexus.Common.Types.DataType.ParseInto(sdtObj.Model, qualified, v)) return false;
+                if (v.Type != global::Artech.Genexus.Common.eDBType.GX_SDT) return false;
+                object custom = v.GetPropertyValue("ATTCUSTOMTYPE");
+                string text = custom?.ToString() ?? string.Empty;
+                bool resolved = text.IndexOf("<Id>" + sdtObj.Id + "</Id>", StringComparison.Ordinal) >= 0;
+                if (!resolved) Logger.Warn("[BindVariableToSdt] ParseInto produced an unexpected reference: " + text);
+                return resolved;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[BindVariableToSdt] ParseInto failed: " + (ex.InnerException?.Message ?? ex.Message));
+                return false;
+            }
         }
 
         // Bind a variable to a Domain using both SDK references.
@@ -1383,6 +1415,43 @@ namespace GxMcp.Worker.Helpers
                         ?? custom.GetType().GetField("m_guid", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string;
                     var resolved = TryGetObjectFromKey(model, token);
                     if (resolved != null) return resolved;
+
+                    string customStr = custom.ToString();
+                    if (!string.IsNullOrEmpty(customStr))
+                    {
+                        var m = System.Text.RegularExpressions.Regex.Match(customStr, @"<Id>(\d+)<\/Id><Type>([a-fA-F0-9-]+)<\/Type>");
+                        if (m.Success && int.TryParse(m.Groups[1].Value, out int id) && Guid.TryParse(m.Groups[2].Value, out Guid typeGuid))
+                        {
+                            try
+                            {
+                                var obj = model.Objects.Get(new global::Artech.Udm.Framework.EntityKey(typeGuid, id));
+                                if (obj != null) return obj;
+                            }
+                            catch { }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (variable.Type.ToString().Equals("GX_SDT", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var dtVal = variable.GetPropertyValue("DataType");
+                        var resolved = TryGetObjectFromKey(model, dtVal);
+                        if (resolved != null) return resolved;
+                    }
+                    catch { }
+
+                    string typeName = variable.GetPropertyValue("DataTypeString") as string;
+                    if (!string.IsNullOrWhiteSpace(typeName))
+                    {
+                        var resolved = ResolveTypeObject(model, typeName);
+                        if (resolved != null) return resolved;
+                    }
                 }
             }
             catch { }

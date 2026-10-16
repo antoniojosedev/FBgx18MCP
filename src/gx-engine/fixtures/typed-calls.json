@@ -1,0 +1,82 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "variables": {
+        "Amount": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        },
+        "Flag": {
+          "kind": "boolean"
+        }
+      },
+      "source": "&Amount = Echo(1.235) + Echo(2.001)\nPrint(&Amount)\n&Flag = Positive(&Amount) Or Positive(Echo(99))\nIf &Flag\nPrint(1)\nElse\nPrint(0)\nEndIf\n&Amount = Pair(Echo(3.125), Echo(4.001))\nPrint(&Amount)\n&Amount = 0\nDo While Positive(Echo(1)) And &Amount < 2\n&Amount = &Amount + 1\nEndDo\nPrint(&Amount)"
+    },
+    {
+      "name": "Echo",
+      "params": [
+        "Value"
+      ],
+      "variables": {
+        "Value": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        }
+      },
+      "return_type": {
+        "kind": "numeric",
+        "precision": 5,
+        "scale": 2
+      },
+      "source": "Print(&Value)\nReturn &Value"
+    },
+    {
+      "name": "Positive",
+      "params": [
+        "Value"
+      ],
+      "variables": {
+        "Value": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        }
+      },
+      "return_type": {
+        "kind": "boolean"
+      },
+      "source": "Return &Value > 0"
+    },
+    {
+      "name": "Pair",
+      "params": [
+        "Left",
+        "Right"
+      ],
+      "variables": {
+        "Left": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        },
+        "Right": {
+          "kind": "numeric",
+          "precision": 5,
+          "scale": 2
+        }
+      },
+      "return_type": {
+        "kind": "numeric",
+        "precision": 5,
+        "scale": 2
+      },
+      "source": "Return &Left * 10 + &Right"
+    }
+  ]
+}

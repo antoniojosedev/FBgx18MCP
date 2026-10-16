@@ -1,0 +1,36 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "variables": {
+        "A": { "kind": "numeric", "precision": 5, "scale": 2 },
+        "B": { "kind": "numeric", "precision": 5, "scale": 2 },
+        "C": { "kind": "numeric", "precision": 5, "scale": 2 },
+        "X": { "kind": "numeric", "precision": 5, "scale": 2 }
+      },
+      "source": "&A = 1\n&B = 5\n&C = 3\nModeProbe(&A, &B, &C)\nPrint(&A)\nPrint(&B)\nPrint(&C)\nModeProbe.Call(&A, &B, &C)\nPrint(&A)\nPrint(&B)\nPrint(&C)\n&B = 5\nOutUnset(&B)\nPrint(&B)\n&X = 2\nModeProbe(&X, &X, &X)\nPrint(&X)"
+    },
+    {
+      "name": "ModeProbe",
+      "params": ["in:A", "out:B", "inout:C"],
+      "variables": {
+        "A": { "kind": "numeric", "precision": 5, "scale": 2 },
+        "B": { "kind": "numeric", "precision": 5, "scale": 2 },
+        "C": { "kind": "numeric", "precision": 5, "scale": 2 }
+      },
+      "source": "Print(&A)\nPrint(&B)\nPrint(&C)\n&B = &A + 1\n&C = &C * 2\n&A = 100"
+    },
+    {
+      "name": "OutUnset",
+      "params": ["out:B"],
+      "variables": {
+        "B": { "kind": "numeric", "precision": 5, "scale": 2 },
+        "Unused": { "kind": "numeric", "precision": 5, "scale": 2 }
+      },
+      "source": "Print(&B)\n&Unused = 1"
+    }
+  ]
+}

@@ -115,6 +115,98 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 
 ---
 
+## Experimental `gx-engine` (Rust SDK Replacement Project)
+
+`src/gx-engine` is an experimental, independent Rust compiler and runtime designed to progressively replace the proprietary GeneXus SDK with an open, high-performance native toolchain ([Plan 129](plans/129-independent-rust-toolchain.md)).
+
+### 🎮 Decompilation / Parity Progress
+
+Similar to video game decompilation projects, progress is measured capability-by-capability against verified differential runs of the official GeneXus SDK in clean Knowledge Bases.
+
+```text
+Overall SDK Replacement: [🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜] 29.1% weighted (44.6% total areas touched: 25/56)
+```
+
+| Subsystem | Progress | Status | Covered / Total |
+| :--- | :---: | :---: | :---: |
+| **Language & Runtime Core** (Math, Decimals, Text, Dates, Calendar) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 8 / 8 areas |
+| **Control Flow & Procedure Pipeline** (`If`, `For`, `For In`, `Exit`, `Case`, `Call`) | `[🟩🟩🟩🟩🟩🟩🟩⬜⬜⬜]  66.7%` | Native Parity Subset | 4 / 6 areas |
+| **Structured Data & Collections** (SDT, `Add`, `Remove`, `Clear`, `IndexOf`, `Item`) | `[🟩🟩🟩🟩🟩🟩⬜⬜⬜⬜]  60.0%` | Native Parity Subset | 3 / 5 areas |
+| **Portable KB Catalog & XML Projection** (`ExportFile` XML) | `[🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜]  33.3%` | Bounded Projection | 2 / 6 areas |
+| **Specifier & SQL Navigation** (`For Each`, Tables, Navigation) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported | 0 / 8 areas |
+| **Native KB Database Storage** (`.gxi`, `GXLOCK`, `DATA*`) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported (SDK-only) | 0 / 5 areas |
+| **Full GeneXus Surface** (UI, Events, Rules, Generators) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported | 0 / 18 areas |
+
+#### Gateway Capability Registry Gates
+
+The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) where operations are classified by measured parity before any traffic can be routed:
+
+| Capability | Status | Evidence & Performance |
+| :--- | :---: | :--- |
+| `str_format` | 🟩 **Parity** | `Str()` numeric picture rules: 36,246 native rows verified, 0 diffs. Measured ~121 ns/row vs ~280 ns/row SDK (~2.3x faster). |
+| `numeric_render` | 🟩 **Parity** | `&var.ToString()` / `Print()`: 120 native boundary cases verified (precision 1..18, scale corners, padding). |
+| `date_display` | 🟩 **Parity** | Date/DateTime rendering: 18 native boundary cases verified (`MM/dd/yy`, 12h AM/PM, empty sentinels). |
+| `text_functions` | 🟩 **Parity** | `Substr`/`Upper`/`Lower`/`StrReplace`: 63 native KBTeste cases verified (1-based, expand-casing, exact replace). |
+| `text_extended_functions` | 🟩 **Parity** | `LTrim`/`RTrim`/`PadL`/`PadR`/`Space`/`Concat`/`StartsWith`/`EndsWith`/`Contains`/`StrSearch`: 95 native `StringUtil` oracle rows verified (exact ASCII space trim, left/right pad truncation, single-sided concat trim, ordinal comparisons, 1-based index clamping). |
+| `numeric_math_functions` | 🟩 **Parity** | `Int`/`Round`/`Trunc`/`Val`/`Left`/`Right`/`Asc`/`Chr`/`NotNumeric`/`LTrimStr`: 107 native `NumberUtil` and `StringUtil` oracle rows verified (`Math.Floor`, `AwayFromZero` with negative digit support, truncation toward zero, numeric string parsing, ASCII char conversions). |
+| `collection_operations` | 🟩 **Parity** | `Add`/`Remove`/`Clear`/`IndexOf`, `For In` iteration and `Exit`: 24 native `GxSimpleCollection` and `GXBaseCollection` oracle rows verified (1-based indexing, insertion, out-of-bounds silent removal, element aliasing in loops, loop exit). |
+| `calendar_operations` | 🟩 **Parity** | `Day`/`Month`/`Year`/`Hour`/`Minute`/`Sec`/`Dow`, `AddYr`/`AddMth`/`DAdd`/`TAdd`, `DDiff`/`TDiff`, `Age`, `EndOfMonth`, `ResetTime`, and `.ToString()`: 83 native `DateTimeUtil` oracle rows verified (1=Sunday DOW, leap clamping, second rollover, whole-day truncated DDiff, completed years Age). |
+| `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟨 **Partial** | Independently implemented in portable compiler and tested with synthetic or bounded fixtures; pending full parity claims. |
+| `native_kb_read`, `sql_navigation`, `general_gx_surface` | ⬜ **Unsupported** | Not yet implemented in Rust. Always served 100% by the GeneXus SDK / Worker. |
+
+### ⚡ Performance Benchmarks (gx-engine vs. GeneXus SDK)
+
+Every performance comparison requires **exact output parity** verified before measuring timings (zero mismatches, identical hash/byte output). The initial differential benchmarks measured on local Windows x86_64 hardware:
+
+| Benchmark Workload | GeneXus SDK (.NET / MSBuild) | `gx-engine` (Rust) | Speedup / Gain | Verification & Oracle |
+| :--- | :---: | :---: | :---: | :--- |
+| **`Str()` Numeric Picture Formatting** (Microbenchmark) | 274 – 286 ns / row *(1.75 ms / pass)* | **121 – 130 ns / row** *(0.75 ms / pass)* | **~2.25x faster** | 6,152 rows (`str_matrix.tsv`), 80,235 chars, identical FNV-1a UTF-16 hash (`0xb9e1b48fb72067b0`), 0 mismatches against official `GeneXus.Classes.Core` runtime. |
+| **End-to-end Procedure Compilation & Build** | 10,930 ms *(SDK stages)*<br>16,366 ms *(MSBuild total)* | **223 ms** *(Rust parse + emit + rustc link)* | **~49x faster** | Synthetic `RustTimingProbe` in authorized `KBTeste` (`21 * 2 = 42`). Identical exit 0 and stdout `42`. |
+| **Generated Artifact Startup & Execution** | 123.06 ms *(CLR bootstrap + run)* | **5.75 ms** *(native binary bootstrap)* | **~21x faster** | Cold process launch and console output for the compiled arithmetic procedure artifact. |
+
+#### 📈 Benchmark Protocol & How to Record Improvements
+
+As new capabilities reach parity and additional optimizations land, follow this protocol to update this ledger:
+
+1. **Verify Parity First:** No benchmark is valid without zero diffs against the official SDK or recorded native differential fixture:
+   ```powershell
+   python src/gx-engine/scripts/benchmark.py --iterations 100
+   ```
+2. **Standardized Environment:** Keep compiler flags, hardware specifications, and iterations explicit (see [src/gx-engine/VALIDATION.md](src/gx-engine/VALIDATION.md)).
+3. **Record in Ledger:** Update this table and [plans/129-implementation-progress.md](plans/129-implementation-progress.md) with: workload description, GeneXus SDK baseline, gx-engine timing, observed speedup ratio, and the committed evidence fixture.
+
+### Activation Flag & Safety Seam
+
+> [!IMPORTANT]
+> **Zero Automatic Routing:** By default, `Engine.Backend` is `"sdk"`. The Gateway serves 100% of tool calls through the official GeneXus SDK. Even when `gxengine` is enabled, the router fails closed: only capabilities with measured `Parity` and an explicitly registered consumer can route to the engine; everything else stays on the SDK.
+
+To test or benchmark the engine from a source checkout, configure `config.json`:
+
+```json
+{
+  "Engine": {
+    "Backend": "gxengine",
+    "Fallback": "sdk",
+    "TimeoutSeconds": 120
+  }
+}
+```
+
+- **`Engine.Backend`**: `"sdk"` (default) or `"gxengine"` (opt-in).
+- **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK when not at parity) or `"error"` (fails closed with `EngineCapabilityNotParity` for strict verification).
+- **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, `capabilities`, and `routedOperations`.
+
+To run compiler tests or standalone projects from checkout:
+
+```powershell
+cargo test --manifest-path src/gx-engine/Cargo.toml
+cargo run --manifest-path src/gx-engine/Cargo.toml -- check src/gx-engine/fixtures/demo.json
+```
+
+See [docs/engine_backend.md](docs/engine_backend.md), the [engine guide](src/gx-engine/README.md), and the [capability matrix](plans/129-sdk-capability-matrix.md) for full architecture and evidence ledgers.
+
+---
+
 ## Sharing one Worker between MCP clients
 
 The Gateway and the GeneXus SDK Worker have different responsibilities. By

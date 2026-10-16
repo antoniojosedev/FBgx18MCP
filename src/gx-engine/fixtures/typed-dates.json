@@ -1,0 +1,25 @@
+{
+  "format_version": 2,
+  "date_two_digit_year_max": 2039,
+  "entry": "Main",
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "variables": {
+        "DateValue": {
+          "kind": "date"
+        },
+        "DateOther": {
+          "kind": "date"
+        },
+        "DateDifference": {
+          "kind": "numeric",
+          "precision": 10,
+          "scale": 0
+        }
+      },
+      "source": "&DateValue = YMDToD(2024, 2, 29)\nPrint(&DateValue.Year())\nPrint(&DateValue.Month())\nPrint(&DateValue.Day())\n&DateOther = &DateValue + 1\nPrint(&DateOther.Month())\nPrint(&DateOther.Day())\n&DateDifference = &DateOther - &DateValue\nPrint(&DateDifference)\n&DateOther = &DateValue - 1\nPrint(&DateOther.Day())\n&DateValue = YMDToD(2023, 2, 29)\nIf &DateValue.IsEmpty()\nPrint(1)\nElse\nPrint(0)\nEndIf\n&DateValue.SetEmpty()\nIf &DateValue.IsEmpty()\nPrint(1)\nElse\nPrint(0)\nEndIf\nPrint(&DateValue.Year())\n&DateValue = YMDToD(1, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(49, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(50, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(99, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(100, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(1900, 2, 29)\nIf &DateValue.IsEmpty()\nPrint(1)\nElse\nPrint(0)\nEndIf\n&DateValue = YMDToD(2000, 2, 29)\nPrint(&DateValue.Day())\n&DateValue = YMDToD(0, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(29, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(30, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(39, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(40, 1, 1)\nPrint(&DateValue.Year())\n&DateValue = YMDToD(2024,0,1)\nPrint(&DateValue.Year())\nPrint(&DateValue.Month())\nPrint(&DateValue.Day())\n&DateValue = YMDToD(2024,1,0)\nPrint(&DateValue.Year())\nPrint(&DateValue.Month())\nPrint(&DateValue.Day())\n&DateValue = YMDToD(9999,12,31)\nPrint(&DateValue.Year())\nPrint(&DateValue.Month())\nPrint(&DateValue.Day())\n&DateValue = YMDToD(100,1,1)\nPrint(&DateValue.Year())\nPrint(&DateValue.Month())\nPrint(&DateValue.Day())\n&DateValue = YMDToD(2023,2,29) + 1\nPrint(&DateValue.Year())\nPrint(&DateValue.Month())\nPrint(&DateValue.Day())"
+    }
+  ]
+}

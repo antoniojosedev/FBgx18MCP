@@ -643,6 +643,156 @@ namespace GxMcp.Worker.Tests
             }
         }
 
+        [Fact]
+        public void Slice_DoesNotGrowTriangularly_AccurateLinearCounts()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-linear-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var entries = Enumerable.Range(1, 5)
+                    .Select(i => Entry($"00000000-0000-0000-0000-00000000000{i}", i))
+                    .ToArray();
+
+                var service = new SourceStoreBackfillService(store);
+                service.Start(
+                    () => entries,
+                    e => new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code-" + e.Guid } },
+                    maxObjectsPerSlice: 10,
+                    sliceBudgetMs: 2000,
+                    schedule: false);
+
+                Assert.True(service.RunOneSliceForTest(10, 2000));
+                var state = service.GetState();
+                Assert.Equal("complete", state.State);
+                Assert.Equal(5, state.TotalObjects);
+                // Linear count check (issue #554: previously triangular sum 1+2+3+4+5=15)
+                Assert.Equal(5, state.ProcessedObjects);
+                Assert.Equal(5, state.StoredObjects);
+                Assert.Equal(0, state.RemovedObjects);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void Slice_HandlesDeletedObjectsWithoutDoubleCounting()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-del-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var e1 = Entry("00000000-0000-0000-0000-000000000010", 1);
+                var eDel = Entry("00000000-0000-0000-0000-000000000020", 2);
+                var e2 = Entry("00000000-0000-0000-0000-000000000030", 3);
+
+                var service = new SourceStoreBackfillService(store);
+                service.Start(
+                    () => new[] { e1, eDel, e2 },
+                    e => e.Guid == eDel.Guid
+                        ? new[] { new SourceStoreBackfillPart { IsDeleted = true } }
+                        : new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code-" + e.Guid } },
+                    maxObjectsPerSlice: 10,
+                    sliceBudgetMs: 2000,
+                    schedule: false);
+
+                Assert.True(service.RunOneSliceForTest(10, 2000));
+                var state = service.GetState();
+                Assert.Equal("complete", state.State);
+                Assert.Equal(3, state.ProcessedObjects);
+                Assert.Equal(2, state.StoredObjects);
+                Assert.Equal(1, state.RemovedObjects);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void Slice_AdvancesPastUnreadableObjectAfterRetry_AndCompletesWithFailures()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-fail-advance-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var eGood1 = Entry("00000000-0000-0000-0000-000000000001", 10);
+                var eBad = Entry("00000000-0000-0000-0000-000000000002", 20);
+                var eGood2 = Entry("00000000-0000-0000-0000-000000000003", 30);
+
+                var service = new SourceStoreBackfillService(store);
+                service.Start(
+                    () => new[] { eGood1, eBad, eGood2 },
+                    e =>
+                    {
+                        if (e.Guid == eBad.Guid)
+                            throw new InvalidOperationException("Corrupted SDK part for object 2");
+                        return new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code-" + e.Guid } };
+                    },
+                    maxObjectsPerSlice: 10,
+                    sliceBudgetMs: 2000,
+                    schedule: false);
+
+                // Slice 1: processes eGood1, hits eBad on attempt 0 -> fails slice without advancing past eBad
+                Assert.False(service.RunOneSliceForTest(10, 2000));
+                var stateAfterFail = service.GetState();
+                Assert.Equal("error", stateAfterFail.State);
+                Assert.Equal(1, stateAfterFail.CursorIndex); // CursorIndex stopped before advancing past eBad
+                Assert.Equal(1, stateAfterFail.ProcessedObjects);
+
+                // Slice 2 (the retry): hits eBad on attempt 1 -> records in readFailedObjects, advances past eBad, processes eGood2
+                Assert.True(service.RunOneSliceForTest(10, 2000));
+                var stateFinal = service.GetState();
+                Assert.Equal("completeWithFailures", stateFinal.State);
+                Assert.Equal(3, stateFinal.CursorIndex);
+                Assert.Equal(3, stateFinal.ProcessedObjects);
+                Assert.Equal(2, stateFinal.StoredObjects);
+                Assert.Equal(1, stateFinal.FailedObjects);
+                Assert.Contains(eBad.Guid, stateFinal.ReadFailedObjects);
+
+                var json = service.GetStateJson();
+                Assert.Equal("completeWithFailures", json["state"]?.ToString());
+                Assert.Equal(1, json["failedObjects"]?.ToObject<int>());
+                var failedArr = json["readFailedObjects"] as Newtonsoft.Json.Linq.JArray;
+                Assert.NotNull(failedArr);
+                Assert.Contains(eBad.Guid, failedArr.Select(t => t.ToString()));
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void TriggerState_DynamicallyResolvesWhenErrorOrIdle()
+        {
+            var json = new Newtonsoft.Json.Linq.JObject
+            {
+                ["state"] = "error",
+                ["triggerState"] = "running"
+            };
+            var state = SourceStoreBackfillState.FromJson(json);
+            // Must not stay frozen on "running" when state is error (issue #554)
+            Assert.Equal("error", state.ResolveTriggerState());
+            Assert.Equal("error", state.ToJson()["triggerState"]?.ToString());
+
+            var idleJson = new Newtonsoft.Json.Linq.JObject
+            {
+                ["state"] = "idle",
+                ["triggerState"] = "running"
+            };
+            var idleState = SourceStoreBackfillState.FromJson(idleJson);
+            Assert.Equal("idle", idleState.ResolveTriggerState());
+        }
+
         private static SearchIndex.IndexEntry Entry(string guid, int minutes)
             => new SearchIndex.IndexEntry
             {

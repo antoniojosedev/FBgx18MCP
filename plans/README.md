@@ -1,5 +1,21 @@
 # Implementation Plans
 
+## SDK/native-analysis roadmap — 2026-10-14
+
+| Plan | Scope | Priority | Status |
+|------|-------|----------|--------|
+| [129](./129-independent-rust-toolchain.md) | Independent Rust SDK/compiler: KB model, semantic IR, navigation/SQL, generators/runtime and MSBuild-independent build; three executable proof milestones | P1 implementation | AUTHORIZED / IN PROGRESS — parallel Rust implementation; [verification ledger](./129-implementation-progress.md) |
+| [128 evidence](./128-sdk-rust-investigation.md) | Static SDK investigation: bulk UDM catalog/graph, persisted token XML, hydration and native compiler boundaries | P1 investigation | Static evidence verified; runtime parity/performance unmeasured |
+| [128 original](./128-rea-native-analysis-roadmap.md) | Initial SDK-backed snapshot proposal and safety/compatibility gates | Historical proposal | Architecture/research ordering superseded by 129; integrity safeguards retained |
+
+These documents were checked against `b9de0a5a`; REA checkout is `c9764084b`
+(6.5.0), but REA itself was not run. Plan 129 responds to the user's explicit
+request to investigate recreating the whole SDK and build toolchain in Rust,
+not merely accelerating reads. It targets capability-by-capability independence,
+with the existing SDK as a transitional provider/oracle rather than a permanent
+architectural requirement. Integrated plans 077/078/080 remain reusable baseline
+mechanisms. Rust implementation is now authorized under `src/gx-engine/`; the ledger distinguishes verified vertical-slice behavior from unimplemented platform coverage. No native-KB parity or speedup is claimed.
+
 ## Current audit — 2026-10-01, commit `0f0d71a8`
 
 Fifteen findings survived vetting and became plans 110–124. Every finding was

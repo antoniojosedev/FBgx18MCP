@@ -1,0 +1,9 @@
+{
+  "format_version":2,"entry":"Main",
+  "record_types":[
+    {"name":"Root","fields":{"Child":{"kind":"record","schema":"Child"},"Rows":{"kind":"collection","schema":"Row"}}},
+    {"name":"Child","fields":{"Amount":{"kind":"numeric","precision":4,"scale":0}}},
+    {"name":"Row","fields":{"Amount":{"kind":"numeric","precision":4,"scale":0}}}
+  ],
+  "procedures":[{"name":"Main","params":[],"variables":{"First":{"kind":"record","schema":"Root"},"Second":{"kind":"record","schema":"Root"}},"source":"&First = new()\nMsg(\"default_child=\" + Trim(Str(&First.Child.Amount)), status)\n&First.Child.Amount = 7\n&Second = &First\n&Second.Child.Amount = 9\nMsg(\"alias_first=\" + Trim(Str(&First.Child.Amount)), status)\nMsg(\"alias_second=\" + Trim(Str(&Second.Child.Amount)), status)\n&Second = &First.Clone()\n&Second.Child.Amount = 11\nMsg(\"clone_first=\" + Trim(Str(&First.Child.Amount)), status)\nMsg(\"clone_second=\" + Trim(Str(&Second.Child.Amount)), status)"}]
+}

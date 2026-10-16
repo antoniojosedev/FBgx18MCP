@@ -1,0 +1,13 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "record_types": [{"name":"Probe","fields": {
+    "Amount":{"kind":"numeric","precision":4,"scale":0},
+    "Label":{"kind":"varchar","length":6},
+    "Fixed":{"kind":"character","length":6}
+  }}],
+  "procedures": [{"name":"Main","params":[],"variables":{
+    "First":{"kind":"record","schema":"Probe"},
+    "Second":{"kind":"record","schema":"Probe"}
+  },"source":"&First = new()\nMsg(\"default_label=[\" + &First.Label + \"]\", status)\nMsg(\"default_fixed=[\" + &First.Fixed + \"]\", status)\n&First.Label = \"alpha \"\n&First.Fixed = \"beta \"\n&Second = &First\n&Second.Label = \"alias \"\nMsg(\"alias_first=[\" + &First.Label + \"]\", status)\nMsg(\"alias_second=[\" + &Second.Label + \"]\", status)\n&Second = &First.Clone()\n&Second.Label = \"clone \"\n&Second.Fixed = \"other \"\nMsg(\"clone_first=[\" + &First.Label + \"]\", status)\nMsg(\"clone_second=[\" + &Second.Label + \"]\", status)\nMsg(\"fixed_first=[\" + &First.Fixed + \"]\", status)\nMsg(\"fixed_second=[\" + &Second.Fixed + \"]\", status)\nPrint(&First.Label.Length())"}]
+}

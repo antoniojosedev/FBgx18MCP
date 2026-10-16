@@ -1,0 +1,60 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "record_types": [
+    {
+      "name": "Root",
+      "fields": {
+        "Child": {
+          "kind": "record",
+          "schema": "Child"
+        },
+        "Rows": {
+          "kind": "collection",
+          "schema": "Row"
+        }
+      }
+    },
+    {
+      "name": "Child",
+      "fields": {
+        "Amount": {
+          "kind": "numeric",
+          "precision": 4,
+          "scale": 0
+        }
+      }
+    },
+    {
+      "name": "Row",
+      "fields": {
+        "Amount": {
+          "kind": "numeric",
+          "precision": 4,
+          "scale": 0
+        }
+      }
+    }
+  ],
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "variables": {
+        "First": {
+          "kind": "record",
+          "schema": "Root"
+        },
+        "Second": {
+          "kind": "record",
+          "schema": "Root"
+        },
+        "Row": {
+          "kind": "record",
+          "schema": "Row"
+        }
+      },
+      "source": "&First = new()\nMsg(\"default_count=\" + Trim(Str(&First.Rows.Count)), status)\n&Row = new()\n&First.Rows.Add(&Row)\n&First.Rows.Item(1).Amount = 7\nMsg(\"first_count=\" + Trim(Str(&First.Rows.Count)), status)\nMsg(\"first_item=\" + Trim(Str(&First.Rows.Item(1).Amount)), status)\n&Second = &First.Clone()\n&Second.Rows.Item(1).Amount = 9\n&Row = new()\n&Second.Rows.Add(&Row)\n&Second.Rows.Item(2).Amount = 11\nMsg(\"root_clone_first_item=\" + Trim(Str(&First.Rows.Item(1).Amount)), status)\nMsg(\"root_clone_first_count=\" + Trim(Str(&First.Rows.Count)), status)\nMsg(\"root_clone_second_count=\" + Trim(Str(&Second.Rows.Count)), status)\n&Second.Rows = &First.Rows.Clone()\n&Second.Rows.Item(1).Amount = 13\n&Row = new()\n&Second.Rows.Add(&Row)\nMsg(\"collection_clone_first_item=\" + Trim(Str(&First.Rows.Item(1).Amount)), status)\nMsg(\"collection_clone_second_item=\" + Trim(Str(&Second.Rows.Item(1).Amount)), status)\nMsg(\"collection_clone_first_count=\" + Trim(Str(&First.Rows.Count)), status)\nMsg(\"collection_clone_second_count=\" + Trim(Str(&Second.Rows.Count)), status)"
+    }
+  ]
+}

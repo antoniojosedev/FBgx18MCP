@@ -986,6 +986,12 @@ namespace GxMcp.Worker.Services
                 content = patchShape["replace"]?.ToString() ?? string.Empty;
             }
 
+            string verifyMode = args["verifyMode"]?.ToString();
+            if (string.IsNullOrWhiteSpace(verifyMode) && (string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase) || string.Equals(mode, "ops", StringComparison.OrdinalIgnoreCase)))
+            {
+                verifyMode = "semantic";
+            }
+
             return new FacadeWriteArgs
             {
                 Mode = mode,
@@ -1002,7 +1008,7 @@ namespace GxMcp.Worker.Services
                 Verbose = args["verbose"]?.ToObject<bool?>() ?? false,
                 ReplaceAll = args["replaceAll"]?.ToObject<bool?>() ?? false,
                 ExplicitBase64 = string.Equals(encoding, "base64", StringComparison.OrdinalIgnoreCase),
-                VerifyMode = args["verifyMode"]?.ToString(),
+                VerifyMode = verifyMode,
                 RollbackOnFailure = args["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
                 AllowGridStructure = string.Equals(args["patternEditMode"]?.ToString(), "grid-column", StringComparison.OrdinalIgnoreCase),
                 // Optimistic concurrency: the versionToken the caller got from the
@@ -1707,6 +1713,11 @@ namespace GxMcp.Worker.Services
                     if (objToUpdate != null && (objToUpdate is global::Artech.Genexus.Common.Objects.Transaction || objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)))
                     {
                         try {
+                            string preSnapshot = null;
+                            if (objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                            {
+                                try { preSnapshot = GxMcp.Worker.Helpers.StructureParser.SerializeToText(objToUpdate); } catch { }
+                            }
                             StructureParser.ParseFromText(objToUpdate, decodedCode);
                             objToUpdate.EnsureSave();
                             StampObjectRevisionDates(objToUpdate, objToUpdate.Model as global::Artech.Architecture.Common.Objects.KBModel);
@@ -1771,16 +1782,38 @@ namespace GxMcp.Worker.Services
                                 Logger.Debug("[DEBUG-SAVE] SDT round-trip verify threw: " + verEx.Message);
                             }
 
-                            var okPayload = new JObject { ["details"] = "Structure DSL successfully applied" };
                             if (!string.IsNullOrEmpty(roundTripError))
                             {
-                                okPayload["persistedVerified"] = false;
-                                okPayload["persistedVerifyError"] = roundTripError;
+                                if (preSnapshot != null)
+                                {
+                                    try
+                                    {
+                                        StructureParser.ParseFromText(objToUpdate, preSnapshot);
+                                        objToUpdate.EnsureSave();
+                                        ScheduleFlush(force: true);
+                                    }
+                                    catch (Exception rbEx)
+                                    {
+                                        Logger.Warn("[DEBUG-SAVE] SDT rollback to preSnapshot failed: " + rbEx.Message);
+                                    }
+                                }
+                                return Models.McpResponse.Err(
+                                    code: "WriteNotPersisted",
+                                    message: roundTripError,
+                                    target: target,
+                                    extra: new JObject
+                                    {
+                                        ["persistedVerified"] = false,
+                                        ["persistedVerifyError"] = roundTripError,
+                                        ["rolledBack"] = preSnapshot != null
+                                    });
                             }
-                            else
+
+                            var okPayload = new JObject
                             {
-                                okPayload["persistedVerified"] = true;
-                            }
+                                ["details"] = "Structure DSL successfully applied",
+                                ["persistedVerified"] = true
+                            };
                             return Models.McpResponse.Ok(
                                 target: target,
                                 code: "WriteApplied",
@@ -1800,8 +1833,8 @@ namespace GxMcp.Worker.Services
                                 code: apiUnsupported ? "StructureAttributeRemovalUnsupported" : "StructureAttributeNotRemoved",
                                 message: remEx.Message + ". The write was aborted; nothing was persisted.",
                                 hint: apiUnsupported
-                                    ? "Removing an attribute from a Transaction is not writable through the GeneXus SDK in this build — it is IDE-only. The MCP will not silently keep the attribute. Remove the attribute from the KB Explorer / Transaction Structure editor in the GeneXus IDE. (Renaming and adding attributes ARE supported via the MCP.)"
-                                    : "mode:full and remove_attribute are authoritative — they will not silently keep an attribute. The SDK refused to drop the attribute(s) above, usually because a key is still referenced by a foreign key, relation, or index elsewhere. Remove those usages first (or rename the attribute instead of replacing it), then retry.",
+                                    ? "Removing an attribute from a Transaction is not writable through the standard SDK collection in this build. Try genexus_structure action=remove_attribute, or remove the attribute from the KB Explorer / Transaction Structure editor in the GeneXus IDE. (Renaming and adding attributes ARE supported via the MCP.)"
+                                    : "mode:full and remove_attribute are authoritative — they will not silently keep an attribute. The SDK refused to drop the attribute(s) above, usually because a key is still referenced by a foreign key, relation, or index elsewhere. Try genexus_structure action=remove_attribute, or remove those usages first (or rename the attribute instead of replacing it), then retry.",
                                 nextSteps: new JArray(McpResponse.NextStep(
                                     tool: "genexus_read",
                                     args: new JObject { ["name"] = target, ["part"] = "Structure" },

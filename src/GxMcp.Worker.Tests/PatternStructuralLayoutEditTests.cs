@@ -318,7 +318,7 @@ namespace GxMcp.Worker.Tests
             // through exactly the node the SDK cannot address.
             foreach (var kind in new[]
             {
-                "textBlock", "variable", "attribute",
+                "textBlock", "variable", "attribute", "userAction",
                 "image", "userControl", "actionGroup", "errorViewer",
             })
             {
@@ -357,6 +357,95 @@ namespace GxMcp.Worker.Tests
             var plan = PatternXmlEditPlan.Create(before, after);
             Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
             Assert.Contains("gridVariable", plan.Error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Adding_A_TextBlock_With_ThemeClass_Is_Permitted()
+        {
+            var after = WithExtraChild("<textBlock controlName=\"TxtValorSinal\" caption=\"Valor (+)\" themeClass=\"TextBlock\" />");
+            var plan = PatternXmlEditPlan.Create(Before, after);
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Insert", (string)change["operation"]);
+            Assert.Equal("textBlock", (string)change["element"]);
+            Assert.Equal("TxtValorSinal", (string)change["identity"]);
+        }
+
+        [Fact]
+        public void Adding_A_UserAction_In_Form_Table_Is_Permitted()
+        {
+            var after = WithExtraChild("<userAction name=\"BtnCustom\" caption=\"Click Me\" />");
+            var plan = PatternXmlEditPlan.Create(Before, after);
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Insert", (string)change["operation"]);
+            Assert.Equal("userAction", (string)change["element"]);
+            Assert.Equal("BtnCustom", (string)change["identity"]);
+        }
+
+        [Fact]
+        public void Reordering_Attributes_In_TableAttributes_Is_Permitted()
+        {
+            var before = Header
+                + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"CliCod\" caption=\"Código\" />"
+                + "<attribute attribute=\"CliNom\" caption=\"Nome\" />"
+                + "</table></transaction></instance>";
+            var after = Header
+                + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"CliNom\" caption=\"Nome\" />"
+                + "<attribute attribute=\"CliCod\" caption=\"Código\" />"
+                + "</table></transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+            Assert.Null(plan.ErrorCode);
+            Assert.Equal(2, plan.Changes.Count);
+            Assert.All(plan.Changes, c => Assert.Equal("Reorder", (string)c["operation"]));
+        }
+
+        [Fact]
+        public void Removing_Multiple_Attributes_In_Table_Is_Permitted()
+        {
+            var before = Header
+                + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"A\" />"
+                + "<attribute attribute=\"B\" />"
+                + "<attribute attribute=\"C\" />"
+                + "<attribute attribute=\"D\" />"
+                + "</table></transaction></instance>";
+            var after = Header
+                + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"A\" />"
+                + "<attribute attribute=\"D\" />"
+                + "</table></transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+            Assert.Null(plan.ErrorCode);
+            Assert.Equal(2, plan.Changes.Count);
+            Assert.All(plan.Changes, c => Assert.Equal("Remove", (string)c["operation"]));
+        }
+
+        [Fact]
+        public void Adding_Prompt_With_Parameters_Inside_Attribute_Is_Permitted()
+        {
+            var before = Header
+                + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"FroTip\" />"
+                + "</table></transaction></instance>";
+            var after = Header
+                + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"FroTip\">"
+                + "<prompt prompt=\"1db606f2-af09-4cf9-a3b5-b481519d28f6-TFroTip\">"
+                + "<parameters><parameter name=\"TrnMode.Insert\" /><parameter name=\"nullvalue(FroTip)\" /></parameters>"
+                + "</prompt>"
+                + "</attribute>"
+                + "</table></transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Insert", (string)change["operation"]);
+            Assert.Equal("prompt", (string)change["element"]);
         }
     }
 }

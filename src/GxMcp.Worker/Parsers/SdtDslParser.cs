@@ -557,6 +557,8 @@ namespace GxMcp.Worker.Parsers
                     if (pNode.IsCompound) SyncSDTNodes(targetChild, pNode.Children);
                     else if (sdtMemberObj != null)
                     {
+                        DomainPropertyApplier.ClearAttributeBasedOn((object)targetChild);
+                        DomainPropertyApplier.ClearDomainBasedOn((object)targetChild);
                         // issue #33: type the member as a reference to the SDT (GX_SDT +
                         // ATTCUSTOMTYPE). IsCollection above already carries the "Collection" marker.
                         if (!VariableInjector.BindSdtItemToSdt((object)targetChild, sdtMemberObj))
@@ -564,11 +566,35 @@ namespace GxMcp.Worker.Parsers
                     }
                     else if (attributeMemberObj != null)
                     {
+                        DomainPropertyApplier.ClearDomainBasedOn((object)targetChild);
+                        try {
+                            var setProp = targetChild.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
+                            setProp?.Invoke(targetChild, new object[] { "ATTCUSTOMTYPE", null });
+                        } catch { }
+                        try {
+                            Type eDBTypeT = targetChild.GetType().Assembly.GetType("Artech.Genexus.Common.eDBType");
+                            object dbType;
+                            try { dbType = ((dynamic)attributeMemberObj).Type; }
+                            catch { dbType = Enum.Parse(eDBTypeT, "VARCHAR"); }
+                            targetChild.Type = dbType;
+                        } catch { }
                         // issue #109: bind attribute reference to SDT member
                         DomainPropertyApplier.ApplyAttributeBasedOn((object)targetChild, attributeMemberObj);
                     }
                     else if (domainMemberObj != null)
                     {
+                        DomainPropertyApplier.ClearAttributeBasedOn((object)targetChild);
+                        try {
+                            var setProp = targetChild.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
+                            setProp?.Invoke(targetChild, new object[] { "ATTCUSTOMTYPE", null });
+                        } catch { }
+                        try {
+                            Type eDBTypeT = targetChild.GetType().Assembly.GetType("Artech.Genexus.Common.eDBType");
+                            object dbType;
+                            try { dbType = ((dynamic)domainMemberObj).DataType; }
+                            catch { dbType = Enum.Parse(eDBTypeT, "VARCHAR"); }
+                            targetChild.Type = dbType;
+                        } catch { }
                         // issue #51: bind domain reference to SDT member
                         DomainPropertyApplier.ApplyDomainBasedOn((object)targetChild, domainMemberObj);
                     }
@@ -577,12 +603,13 @@ namespace GxMcp.Worker.Parsers
                         DomainPropertyApplier.ClearAttributeBasedOn((object)targetChild);
                         DomainPropertyApplier.ClearDomainBasedOn((object)targetChild);
                         try {
+                            var setProp = targetChild.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
+                            setProp?.Invoke(targetChild, new object[] { "ATTCUSTOMTYPE", null });
+                        } catch { }
+                        try {
                             Type eDBType = targetChild.GetType().Assembly.GetType("Artech.Genexus.Common.eDBType");
-                            if (pNode.TypeStr.StartsWith("Numeric", StringComparison.OrdinalIgnoreCase)) targetChild.Type = Enum.Parse(eDBType, "NUMERIC");
-                            else if (pNode.TypeStr.StartsWith("Char", StringComparison.OrdinalIgnoreCase)) targetChild.Type = Enum.Parse(eDBType, "VARCHAR");
-                            else if (pNode.TypeStr.StartsWith("Date", StringComparison.OrdinalIgnoreCase)) targetChild.Type = Enum.Parse(eDBType, "DATE");
-                            else if (pNode.TypeStr.StartsWith("Bool", StringComparison.OrdinalIgnoreCase)) targetChild.Type = Enum.Parse(eDBType, "Boolean");
-                            else targetChild.Type = Enum.Parse(eDBType, "VARCHAR");
+                            var resolvedDb = ResolveDbType(eDBType, pNode.TypeStr);
+                            if (resolvedDb != null) targetChild.Type = resolvedDb;
                         } catch { }
 
                         // issue #31.1: apply Length/Decimals when the type carries them
