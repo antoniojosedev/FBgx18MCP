@@ -22,9 +22,15 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "generate-text-extended")
+        {
+            GenerateTextExtended();
+            return 0;
+        }
+
         if (args.Length < 3 || args[0] != "bench-str")
         {
-            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations>");
+            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended");
             return 2;
         }
 
@@ -177,4 +183,100 @@ internal static class Program
         string HashUnits,
         int ExpectedMismatches,
         int Errors);
+
+    private static void GenerateTextExtended()
+    {
+        string[] trimInputs = ["   hello", "hello", "hello   ", "   hello   ", "   ", "", "\thello", "\nhello", "  a  b  ", "hello\t", "hello\n"];
+        foreach (var s in trimInputs)
+        {
+            Console.WriteLine($"ltrim|{Escape(s)}=[{Escape(StringUtil.LTrim(s))}]");
+            Console.WriteLine($"rtrim|{Escape(s)}=[{Escape(StringUtil.RTrim(s))}]");
+        }
+
+        (string text, int size, string fill)[] padInputs = [
+            ("abc", 5, " "),
+            ("abc", 5, "*"),
+            ("abc", 6, "-="),
+            ("  abc  ", 5, "0"),
+            ("  abc  ", 6, "0"),
+            ("abcdef", 4, " "),
+            ("abc", 3, " "),
+            ("abc", 0, " "),
+            ("abc", -1, " "),
+            ("", 5, "#"),
+            ("hello", 10, "123")
+        ];
+        foreach (var (text, size, fill) in padInputs)
+        {
+            Console.WriteLine($"padl|{Escape(text)}|{size}|{Escape(fill)}=[{Escape(StringUtil.PadL(text, size, fill))}]");
+            Console.WriteLine($"padr|{Escape(text)}|{size}|{Escape(fill)}=[{Escape(StringUtil.PadR(text, size, fill))}]");
+        }
+
+        int[] spaceCounts = [0, 1, 5, 10, -5];
+        foreach (var count in spaceCounts)
+        {
+            var res = count > 0 ? StringUtil.Space(count) : "";
+            Console.WriteLine($"space|{count}=[{Escape(res)}]");
+        }
+
+        (string s1, string s2)[] concat2 = [
+            ("hello", "world"),
+            ("hello  ", "world"),
+            ("hello", "  world"),
+            ("", "world"),
+            ("hello", "")
+        ];
+        foreach (var (s1, s2) in concat2)
+        {
+            Console.WriteLine($"concat|{Escape(s1)}|{Escape(s2)}=[{Escape(StringUtil.Concat(s1, s2))}]");
+        }
+
+        (string s1, string s2, string sep)[] concat3 = [
+            ("hello", "world", " "),
+            ("hello  ", "world", "-"),
+            ("hello", "world", ""),
+            ("", "world", ":")
+        ];
+        foreach (var (s1, s2, sep) in concat3)
+        {
+            Console.WriteLine($"concat3|{Escape(s1)}|{Escape(s2)}|{Escape(sep)}=[{Escape(StringUtil.Concat(s1, s2, sep))}]");
+        }
+
+        (string s1, string s2)[] boolInputs = [
+            ("GeneXus", "Gene"),
+            ("GeneXus", "gene"),
+            ("GeneXus", ""),
+            ("", ""),
+            ("GeneXus", "Xus"),
+            ("GeneXus", "xus"),
+            ("GeneXus", "neX"),
+            ("GeneXus", "nex"),
+            ("GeneXus", "18")
+        ];
+        foreach (var (s1, s2) in boolInputs)
+        {
+            Console.WriteLine($"startswith|{Escape(s1)}|{Escape(s2)}=[{StringUtil.StartsWith(s1, s2)}]");
+            Console.WriteLine($"endswith|{Escape(s1)}|{Escape(s2)}=[{StringUtil.EndsWith(s1, s2)}]");
+            Console.WriteLine($"contains|{Escape(s1)}|{Escape(s2)}=[{StringUtil.Contains(s1, s2)}]");
+        }
+
+        (string s1, string s2, int start)[] searchInputs = [
+            ("banana", "na", 1),
+            ("banana", "na", 4),
+            ("banana", "na", 6),
+            ("banana", "xyz", 1),
+            ("banana", "ba", 1),
+            ("banana", "", 1),
+            ("banana", "na", 0),
+            ("banana", "na", -5),
+            ("banana", "na", 10),
+            ("banana", "an", 2)
+        ];
+        foreach (var (s1, s2, start) in searchInputs)
+        {
+            Console.WriteLine($"strsearch|{Escape(s1)}|{Escape(s2)}|{start}=[{StringUtil.StringSearch(s1, s2, start)}]");
+        }
+    }
+
+    private static string Escape(string s) => s.Replace("\t", "\\t").Replace("\n", "\\n").Replace("\r", "\\r");
 }

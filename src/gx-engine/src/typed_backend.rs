@@ -737,6 +737,97 @@ impl Emitter<'_> {
                     format!("({text}).str_replace(&({find}), &({with}))?"),
                 )
             }
+            Expr::Call(name, args) if matches!(name.as_str(), "LTRIM" | "RTRIM") => {
+                let [argument] = args.as_slice() else {
+                    return Err(format!("{name} requires exactly one argument"));
+                };
+                let value = self.lower_expect(argument, assigned, Kind::Text, prelude)?;
+                let method = if name == "LTRIM" {
+                    "trim_start_spaces"
+                } else {
+                    "trim_end_spaces"
+                };
+                (Kind::Text, format!("({value}).{method}()"))
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "PADL" | "PADR") => {
+                if !(2..=3).contains(&args.len()) {
+                    return Err(format!("{name} expects two or three arguments"));
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let size = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                let fill = if let Some(fill_arg) = args.get(2) {
+                    self.lower_expect(fill_arg, assigned, Kind::Text, prelude)?
+                } else {
+                    "Text::new(\" \")?".into()
+                };
+                let method = if name == "PADL" {
+                    "pad_left"
+                } else {
+                    "pad_right"
+                };
+                (
+                    Kind::Text,
+                    format!("({text}).{method}(({size}).to_i64()?, &({fill}))?"),
+                )
+            }
+            Expr::Call(name, args) if name == "SPACE" => {
+                let [argument] = args.as_slice() else {
+                    return Err("Space requires exactly one argument".into());
+                };
+                let count = self.lower_expect(argument, assigned, Kind::Numeric, prelude)?;
+                (Kind::Text, format!("Text::space(({count}).to_i64()?)?"))
+            }
+            Expr::Call(name, args) if name == "CONCAT" => {
+                if !(2..=3).contains(&args.len()) {
+                    return Err("Concat expects two or three arguments".into());
+                }
+                let s1 = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let s2 = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                let sep = if let Some(sep_arg) = args.get(2) {
+                    let sep_val = self.lower_expect(sep_arg, assigned, Kind::Text, prelude)?;
+                    format!("Some(&({sep_val}))")
+                } else {
+                    "None".into()
+                };
+                (
+                    Kind::Text,
+                    format!("({s1}).concat_with_sep(&({s2}), {sep})?"),
+                )
+            }
+            Expr::Call(name, args)
+                if matches!(name.as_str(), "STARTSWITH" | "ENDSWITH" | "CONTAINS") =>
+            {
+                let [s1_arg, s2_arg] = args.as_slice() else {
+                    return Err(format!("{name} requires exactly two arguments"));
+                };
+                let s1 = self.lower_expect(s1_arg, assigned, Kind::Text, prelude)?;
+                let s2 = self.lower_expect(s2_arg, assigned, Kind::Text, prelude)?;
+                let method = match name.as_str() {
+                    "STARTSWITH" => "starts_with",
+                    "ENDSWITH" => "ends_with",
+                    "CONTAINS" => "contains",
+                    _ => unreachable!(),
+                };
+                (Kind::Boolean, format!("({s1}).{method}(&({s2}))"))
+            }
+            Expr::Call(name, args) if name == "STRSEARCH" => {
+                if !(2..=3).contains(&args.len()) {
+                    return Err("StrSearch expects two or three arguments".into());
+                }
+                let s1 = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let s2 = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                let start = if let Some(start_arg) = args.get(2) {
+                    self.lower_expect(start_arg, assigned, Kind::Numeric, prelude)?
+                } else {
+                    "Decimal::from(1)".into()
+                };
+                (
+                    Kind::Numeric,
+                    format!(
+                        "({s1}).str_search(&({s2}), ({start}).to_i64()?).to_string().parse::<Decimal>()?"
+                    ),
+                )
+            }
             Expr::Call(name, args) if name == "YMDHMSTOT" => {
                 if args.len() != 6 {
                     return Err("YMDHMSToT expects six Numeric arguments".into());

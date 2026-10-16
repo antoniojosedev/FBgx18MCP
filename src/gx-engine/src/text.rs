@@ -106,6 +106,128 @@ impl Text {
         }
         Ok(Self(value))
     }
+
+    /// Native `LTrim`: trims leading spaces (' ') only.
+    pub fn trim_start_spaces(&self) -> Self {
+        Self(self.0.trim_start_matches(' ').to_owned())
+    }
+
+    /// Native `RTrim`: trims trailing spaces (' ') only.
+    pub fn trim_end_spaces(&self) -> Self {
+        Self(self.0.trim_end_matches(' ').to_owned())
+    }
+
+    /// Native `PadL`: trims text, then pads on the left with repeated fill until size.
+    /// If size is smaller than trimmed text length, it is truncated.
+    pub fn pad_left(&self, size: i64, fill: &Self) -> Result<Self, String> {
+        if size <= 0 {
+            return Ok(Self(String::new()));
+        }
+        let size = size as usize;
+        if size > MAX_TEXT_BYTES {
+            return Err("pad_left size exceeds 1 MiB resource limit".into());
+        }
+        let trimmed = self.0.trim_matches(' ');
+        let len = trimmed.len();
+        if size <= len {
+            return Ok(Self(trimmed[..size].to_owned()));
+        }
+        let needed = size - len;
+        let fill_str = if fill.0.is_empty() { " " } else { &fill.0 };
+        let count = needed / fill_str.len() + 1;
+        let mut repeated = String::with_capacity(count * fill_str.len());
+        for _ in 0..count {
+            repeated.push_str(fill_str);
+        }
+        let mut result = repeated[..needed].to_owned();
+        result.push_str(trimmed);
+        Ok(Self(result[..size].to_owned()))
+    }
+
+    /// Native `PadR`: trims trailing spaces, then pads on the right with repeated fill until size.
+    /// If size is smaller than rtrimmed text length, it is truncated.
+    pub fn pad_right(&self, size: i64, fill: &Self) -> Result<Self, String> {
+        if size <= 0 {
+            return Ok(Self(String::new()));
+        }
+        let size = size as usize;
+        if size > MAX_TEXT_BYTES {
+            return Err("pad_right size exceeds 1 MiB resource limit".into());
+        }
+        let rtrimmed = self.0.trim_end_matches(' ');
+        if size <= rtrimmed.len() {
+            return Ok(Self(rtrimmed[..size].to_owned()));
+        }
+        let needed = size - rtrimmed.len();
+        let fill_str = if fill.0.is_empty() { " " } else { &fill.0 };
+        let count = needed / fill_str.len() + 1;
+        let mut repeated = String::with_capacity(count * fill_str.len());
+        for _ in 0..count {
+            repeated.push_str(fill_str);
+        }
+        let mut result = rtrimmed.to_owned();
+        result.push_str(&repeated[..needed]);
+        Ok(Self(result[..size].to_owned()))
+    }
+
+    /// Native `Space`: returns a string consisting of N spaces (' ').
+    pub fn space(count: i64) -> Result<Self, String> {
+        if count <= 0 {
+            return Ok(Self(String::new()));
+        }
+        let count = count as usize;
+        if count > MAX_TEXT_BYTES {
+            return Err("space count exceeds 1 MiB resource limit".into());
+        }
+        Ok(Self(" ".repeat(count)))
+    }
+
+    /// Native `Concat`: trims trailing spaces of left operand, appends optional separator, and right operand.
+    pub fn concat_with_sep(&self, other: &Self, sep: Option<&Self>) -> Result<Self, String> {
+        let left = self.0.trim_end_matches(' ');
+        let sep_str = sep.map(|s| s.0.as_str()).unwrap_or("");
+        let right = &other.0;
+        let total_len = left.len() + sep_str.len() + right.len();
+        if total_len > MAX_TEXT_BYTES {
+            return Err("concat text exceeds 1 MiB resource limit".into());
+        }
+        let mut result = String::with_capacity(total_len);
+        result.push_str(left);
+        result.push_str(sep_str);
+        result.push_str(right);
+        Ok(Self(result))
+    }
+
+    /// Native `StartsWith`: ordinal comparison.
+    pub fn starts_with(&self, prefix: &Self) -> bool {
+        self.0.starts_with(&prefix.0)
+    }
+
+    /// Native `EndsWith`: ordinal comparison.
+    pub fn ends_with(&self, suffix: &Self) -> bool {
+        self.0.ends_with(&suffix.0)
+    }
+
+    /// Native `Contains`: ordinal comparison.
+    pub fn contains(&self, needle: &Self) -> bool {
+        self.0.contains(&needle.0)
+    }
+
+    /// Native `StringSearch` / `StrSearch` / `IndexOf`: 1-based index (0 if not found).
+    pub fn str_search(&self, find: &Self, start: i64) -> i64 {
+        let s1 = &self.0;
+        let s2 = &find.0;
+        let start = if start <= 0 { 1 } else { start };
+        if start as usize > s1.len() {
+            return 0;
+        }
+        let start_idx = (start - 1) as usize;
+        if let Some(pos) = s1[start_idx..].find(s2) {
+            (start_idx + pos + 1) as i64
+        } else {
+            0
+        }
+    }
 }
 
 impl PartialEq for Text {

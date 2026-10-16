@@ -16,6 +16,16 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
             | "UPPER"
             | "LOWER"
             | "STRREPLACE"
+            | "LTRIM"
+            | "RTRIM"
+            | "PADL"
+            | "PADR"
+            | "SPACE"
+            | "CONCAT"
+            | "STARTSWITH"
+            | "ENDSWITH"
+            | "CONTAINS"
+            | "STRSEARCH"
     )
 }
 
@@ -988,6 +998,68 @@ impl Parser {
             self.expect(TokenKind::RightParen, "')' after Trim(")?;
             self.count_expression_node(nodes, location)?;
             return Ok(Expr::Call("TRIM".into(), vec![value]));
+        }
+        if matches!(name, "TRIMSTART" | "TRIMEND") {
+            if !matches!(value, Expr::Variable(_) | Expr::Member(_, _)) {
+                return Err(method_location
+                    .error("TrimStart()/TrimEnd() currently requires a text variable or member"));
+            }
+            self.take();
+            self.expect(TokenKind::RightParen, "')' after trim method")?;
+            self.count_expression_node(nodes, location)?;
+            let builtin = if name == "TRIMSTART" {
+                "LTRIM"
+            } else {
+                "RTRIM"
+            };
+            return Ok(Expr::Call(builtin.into(), vec![value]));
+        }
+        if matches!(name, "PADLEFT" | "PADRIGHT") {
+            self.expect(TokenKind::LeftParen, "'(' after pad method")?;
+            let size = self.parse_or(depth, nodes)?;
+            let mut args = vec![value, size];
+            if self.current().kind == TokenKind::Comma {
+                self.take();
+                let fill = self.parse_or(depth, nodes)?;
+                args.push(fill);
+            }
+            self.expect(TokenKind::RightParen, "')' after pad arguments")?;
+            self.count_expression_node(nodes, location)?;
+            let builtin = if name == "PADLEFT" { "PADL" } else { "PADR" };
+            return Ok(Expr::Call(builtin.into(), args));
+        }
+        if name == "CONCAT" {
+            self.expect(TokenKind::LeftParen, "'(' after Concat(")?;
+            let other = self.parse_or(depth, nodes)?;
+            let mut args = vec![value, other];
+            if self.current().kind == TokenKind::Comma {
+                self.take();
+                let sep = self.parse_or(depth, nodes)?;
+                args.push(sep);
+            }
+            self.expect(TokenKind::RightParen, "')' after Concat arguments")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("CONCAT".into(), args));
+        }
+        if matches!(name, "STARTSWITH" | "ENDSWITH" | "CONTAINS") {
+            self.expect(TokenKind::LeftParen, "'(' after string method")?;
+            let target = self.parse_or(depth, nodes)?;
+            self.expect(TokenKind::RightParen, "')' after argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call(name.into(), vec![value, target]));
+        }
+        if name == "INDEXOF" {
+            self.expect(TokenKind::LeftParen, "'(' after IndexOf(")?;
+            let find = self.parse_or(depth, nodes)?;
+            let mut args = vec![value, find];
+            if self.current().kind == TokenKind::Comma {
+                self.take();
+                let start = self.parse_or(depth, nodes)?;
+                args.push(start);
+            }
+            self.expect(TokenKind::RightParen, "')' after IndexOf arguments")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("STRSEARCH".into(), args));
         }
         if name == "CLONE" {
             self.take();

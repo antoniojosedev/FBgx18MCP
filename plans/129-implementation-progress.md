@@ -1249,3 +1249,35 @@ Owner-reported implementation and native observations:
 - Not in this claim: non-BMP (astral) positions (Rust counts chars; CP1252 is
   1 char/unit), database-column semantics, the native KB store; the exchange
   lane keeps namespaced XML.
+
+## Extended text functions parity (2026-10-16)
+
+- Native Oracle & Decompilation: Extracted `GeneXus.Utils.StringUtil` semantics
+  from `genexus.classes.core` 1.30.0 runtime via REA / ILSpy:
+  - `LTrim` and `RTrim` trim ASCII spaces (`' '`) only, preserving tabs and newlines.
+  - `PadL` trims both ends of input (`text.Trim()`) before left-padding with replicated
+    `fill`; `PadR` trims trailing spaces (`RTrim(text)`) before right-padding. Both
+    truncate to `size` if input length exceeds `size`, and return empty if `size <= 0`.
+  - `Space(count)` returns `new string(' ', count)` or `""` if `count <= 0`.
+  - `Concat(init, last[, sep])` right-trims `init` only, appending optional `sep` and
+    leaving `last` untrimmed.
+  - `StartsWith`, `EndsWith`, `Contains` use ordinal case-sensitive comparison.
+  - `StrSearch(s1, s2, start)` / `IndexOf` uses 1-based indexing, clamping `start <= 0`
+    to 1, returning 0 if `start > s1.Length` or not found.
+- Fixture & Evidence: Generated `tests/fixtures/text_extended_native.tsv` (95 rows)
+  directly from `GeneXus.Utils.StringUtil` via `generate-text-extended` in
+  `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/text.rs`: Implemented `trim_start_spaces`, `trim_end_spaces`,
+    `pad_left`, `pad_right`, `space`, `concat_with_sep`, `starts_with`, `ends_with`,
+    `contains`, `str_search` with checked 1 MiB resource bounds.
+  - `src/gx-engine/src/frontend.rs`: Added AST mappings for `LTRIM`, `RTRIM`, `PADL`,
+    `PADR`, `SPACE`, `CONCAT`, `STARTSWITH`, `ENDSWITH`, `CONTAINS`, `STRSEARCH` and
+    method forms `.TrimStart()`, `.TrimEnd()`, `.PadLeft()`, `.PadRight()`, `.Concat()`,
+    `.StartsWith()`, `.EndsWith()`, `.Contains()`, `.IndexOf()`.
+  - `src/gx-engine/src/typed_backend.rs`: Emitted lowerings for all built-ins and method forms.
+  - `src/gx-engine/tests/text_extended.rs`: Added fixture oracle verification (95 rows),
+    executable e2e Procedure validation, and arity/type rejection tests.
+- Verification: 253 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
+- Registry: new `text_extended_functions` capability at `Parity` (no consumers).
+

@@ -106,6 +106,15 @@ namespace GxMcp.Gateway
                 notes: "Measured on Character/Varchar values in a standalone Procedure: Substr is 1-based over the raw stored value (no padding), an out-of-range start yields empty text and a negative length takes the remainder; case mapping keeps a character when its mapping expands; StrReplace is case-sensitive, non-overlapping and left to right, and an empty find is a no-op. Non-BMP inputs and database-column semantics are outside the measured set. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "text_extended_functions",
+                title: "Extended text functions (LTrim, RTrim, PadL, PadR, Space, Concat, StartsWith, EndsWith, Contains, StrSearch)",
+                engineSurface: "frontend method grammar + typed runtime Text methods",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (95 recorded native StringUtil oracle rows: exact spacing, trimming, padding, search and case comparisons); src/gx-engine/tests/fixtures/text_extended_native.tsv; src/gx-engine/tests/text_extended.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GeneXus.Utils.StringUtil in genexus.classes.core: LTrim/RTrim trim ASCII spaces (' ') only preserving tabs/newlines; PadL trims both ends before padding, PadR trims right end before padding; Concat trims right of first operand only; StrSearch uses 1-based indexing and clamps negative/zero start to 1. All comparisons are ordinal case-sensitive. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",
