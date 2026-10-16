@@ -281,6 +281,7 @@ fn collect_block(
             | Stmt::CollectionAdd(..)
             | Stmt::CollectionRemove(..)
             | Stmt::CollectionClear(..)
+            | Stmt::FromJson(..)
             | Stmt::ForIn(..)
             | Stmt::Exit => {
                 return Err("record fields require format_version 2".into());
@@ -386,6 +387,7 @@ fn validate_block(
             | Stmt::CollectionRemove(..)
             | Stmt::CollectionClear(..)
             | Stmt::ForIn(..)
+            | Stmt::FromJson(..)
             | Stmt::Exit => {
                 return Err("record fields require format_version 2".into());
             }
@@ -697,6 +699,7 @@ fn emit_block(
             | Stmt::CollectionRemove(..)
             | Stmt::CollectionClear(..)
             | Stmt::ForIn(..)
+            | Stmt::FromJson(..)
             | Stmt::Exit => {
                 return Err("record fields require format_version 2".into());
             }

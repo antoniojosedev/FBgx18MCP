@@ -160,6 +160,15 @@ namespace GxMcp.Gateway
                 notes: "Measured against GeneXus.Utils.StringUtil in genexus.classes.core and native C# codegen: Iif(cond, trueExpr, falseExpr) short-circuits branch evaluation; IsEmpty and SetEmpty operate uniformly across Numeric, Text, Boolean, Date, DateTime, Collection, and Record members; Nullvalue(&var) returns the typed empty sentinel; Proc.UDP(...) invokes value-returning procedures; Format replaces %1..%9 (with \\% escape) or {0}..{8}; Replicate, CharAt, StrSearchRev/LastIndexOf, BoolToStr, ToBoolean/StrToBool, and NewLine match GxClasses.dll. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "sdt_and_collection_json",
+                title: "Structured Data Type (SDT) and Collection JSON serialization and deserialization (ToJson/FromJson)",
+                engineSurface: "record_runtime SimpleJson parser/serializer + frontend method/statement parser + typed_backend code emitter",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (32 recorded native GxClasses.dll GxUserType/GXBaseCollection JSON oracle rows); src/gx-engine/tests/fixtures/sdt_json_native.tsv; src/gx-engine/tests/sdt_json.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GxUserType.ToJSonString/FromJSonString and GXBaseCollection<T>.ToJSonString/FromJSonString in GxClasses.dll and generated C# (type_Sdt*.cs): ToJson serializes SDTs and collections with native empty representations (\"0000-00-00\" for Date, \"0000-00-00T00:00:00\" for DateTime, 0, \"\", false) and escaped strings; FromJson supports case-insensitive property matching, partial updates (preserving unmentioned fields), array item repopulation, and fail-closed false return on invalid/non-container JSON. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",

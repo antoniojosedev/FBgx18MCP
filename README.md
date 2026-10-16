@@ -124,14 +124,14 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 Similar to video game decompilation projects, progress is measured capability-by-capability against verified differential runs of the official GeneXus SDK in clean Knowledge Bases.
 
 ```text
-Overall SDK Replacement: [🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜] 33.0% weighted (48.2% total areas touched: 27/56)
+Overall SDK Replacement: [🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜] 35.0% weighted (50.0% total areas touched: 28/56)
 ```
 
 | Subsystem | Progress | Status | Covered / Total |
 | :--- | :---: | :---: | :---: |
 | **Language & Runtime Core** (Math, Decimals, Text, Dates, Calendar) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 8 / 8 areas |
 | **Control Flow & Procedure Pipeline** (`If`, `Iif`, `For`, `For In`, `Exit`, `Case`, `Sub`/`Do`, `Call`/`.UDP`, `IsEmpty`/`SetEmpty`/`Nullvalue`) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 6 / 6 areas |
-| **Structured Data & Collections** (SDT, `Add`, `Remove`, `Clear`, `IndexOf`, `Item`) | `[🟩🟩🟩🟩🟩🟩⬜⬜⬜⬜]  60.0%` | Native Parity Subset | 3 / 5 areas |
+| **Structured Data & Collections** (SDT, `Add`, `Remove`, `Clear`, `IndexOf`, `Item`, `ToJson`, `FromJson`) | `[🟩🟩🟩🟩🟩🟩🟩🟩⬜⬜]  80.0%` | Native Parity Subset | 4 / 5 areas |
 | **Portable KB Catalog & XML Projection** (`ExportFile` XML) | `[🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜]  33.3%` | Bounded Projection | 2 / 6 areas |
 | **Specifier & SQL Navigation** (`For Each`, Tables, Navigation) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported | 0 / 8 areas |
 | **Native KB Database Storage** (`.gxi`, `GXLOCK`, `DATA*`) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported (SDK-only) | 0 / 5 areas |
@@ -153,6 +153,7 @@ The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) wh
 | `calendar_operations` | 🟩 **Parity** | `Day`/`Month`/`Year`/`Hour`/`Minute`/`Sec`/`Dow`, `AddYr`/`AddMth`/`DAdd`/`TAdd`, `DDiff`/`TDiff`, `Age`, `EndOfMonth`, `ResetTime`, and `.ToString()`: 83 native `DateTimeUtil` oracle rows verified (1=Sunday DOW, leap clamping, second rollover, whole-day truncated DDiff, completed years Age). |
 | `subroutine_control_flow` | 🟩 **Parity** | `Sub 'Name' ... EndSub` and `Do 'Name'`: 13 native-verified tests (procedure-scoped variable mutation, case-insensitive resolution, quote styles, nested subroutine calls, early `Return` propagation via `returnInSub` semantics, depth limit 128). |
 | `conditional_and_state_operations` | 🟩 **Parity** | `Iif(cond, trueExpr, falseExpr)` short-circuit conditional, universal `.IsEmpty()`/`IsEmpty()` and `.SetEmpty()` across all types, `Nullvalue(&var)`, `.UDP(...)` calls, and `Format`/`NewLine`/`Replicate`/`CharAt`/`StrSearchRev`/`.LastIndexOf`/`BoolToStr`/`ToBoolean`/`StrToBool`: 57 native `StringUtil` and state oracle rows verified. |
+| `sdt_and_collection_json` | 🟩 **Parity** | `&sdt.ToJson()`, `&sdt.FromJson()`, `&col.ToJson()`, `&col.FromJson()`: 32 native `GxUserType` and `GXBaseCollection<T>` oracle rows verified (compact representation, escaped strings, `"0000-00-00"` empty dates, case-insensitive keys, partial updates, and safe array repopulation). |
 | `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟨 **Partial** | Independently implemented in portable compiler and tested with synthetic or bounded fixtures; pending full parity claims. |
 | `native_kb_read`, `sql_navigation`, `general_gx_surface` | ⬜ **Unsupported** | Not yet implemented in Rust. Always served 100% by the GeneXus SDK / Worker. |
 

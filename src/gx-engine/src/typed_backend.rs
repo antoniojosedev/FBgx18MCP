@@ -79,7 +79,14 @@ fn empty_value(
         return Ok(format!("r{index}({steps_arg})?"));
     }
     if let DataType::Collection { schema } = data_type {
-        return Ok(format!("Collection::new({schema:?})"));
+        let index = record_types
+            .iter()
+            .position(|t| &t.name == schema)
+            .ok_or("unknown record schema")?;
+        let steps_arg = if is_sub { "self.steps" } else { "steps" };
+        return Ok(format!(
+            "Collection::with_prototype({schema:?}, r{index}({steps_arg})?)"
+        ));
     }
     Ok(match kind(data_type) {
         Kind::Boolean => "false",
@@ -1444,6 +1451,34 @@ impl Emitter<'_> {
                 let val = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
                 (Kind::Boolean, format!("({val}).to_boolean()"))
             }
+            Expr::Call(name, args) if matches!(name.as_str(), "TOJSON" | "TOJSONSTRING") => {
+                if args.len() != 1 {
+                    return Err(format!("{name} expects one argument"));
+                }
+                let data_type = self.expression_type(&args[0])?;
+                let k = kind(&data_type);
+                if !matches!(k, Kind::Record | Kind::Collection) {
+                    return Err(format!("{name} argument must be a record or collection"));
+                }
+                let target = self.lower_expect(&args[0], assigned, k, prelude)?;
+                (Kind::Text, format!("Text::new(&({target}).to_json())?"))
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "FROMJSON" | "FROMJSONSTRING") => {
+                if args.len() != 2 {
+                    return Err(format!("{name} expects two arguments (target, json)"));
+                }
+                let data_type = self.expression_type(&args[0])?;
+                let k = kind(&data_type);
+                if !matches!(k, Kind::Record | Kind::Collection) {
+                    return Err(format!("{name} target must be a record or collection"));
+                }
+                let target = self.lower_expect(&args[0], assigned, k, prelude)?;
+                let json = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                (
+                    Kind::Boolean,
+                    format!("({target}).from_json(({json}).as_str())"),
+                )
+            }
             Expr::Call(name, args) => {
                 let (result, value) = self.lower_call(name, args, assigned, prelude, false)?;
                 (result.expect("function calls return a value"), value)
@@ -1870,6 +1905,23 @@ impl Emitter<'_> {
                 }
                 Stmt::Exit => {
                     writeln!(output, "break;").unwrap();
+                }
+                Stmt::FromJson(receiver, json_expr) => {
+                    let data_type = self.expression_type(receiver)?;
+                    let kind_type = kind(&data_type);
+                    if !matches!(kind_type, Kind::Record | Kind::Collection) {
+                        return Err("FromJson receiver must be a record or collection".into());
+                    }
+                    let receiver_code = self.expect(receiver, assigned, kind_type)?;
+                    let json_code = self.expect(json_expr, assigned, Kind::Text)?;
+                    if let Expr::Variable(name) = receiver.as_ref() {
+                        assigned.insert(name.clone());
+                    }
+                    writeln!(
+                        output,
+                        "let _ = ({receiver_code}).from_json(({json_code}).as_str());"
+                    )
+                    .unwrap();
                 }
             }
         }

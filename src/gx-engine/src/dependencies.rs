@@ -29,6 +29,10 @@ fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
             Stmt::CollectionClear(receiver) => {
                 collect_expression_calls(receiver, callees);
             }
+            Stmt::FromJson(receiver, json_expr) => {
+                collect_expression_calls(receiver, callees);
+                collect_expression_calls(json_expr, callees);
+            }
             Stmt::ForIn(_, collection, body) => {
                 collect_expression_calls(collection, callees);
                 collect_block_calls(body, callees);

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GeneXus.Application;
 using GeneXus.Utils;
 
 namespace SdkOracle;
@@ -52,9 +53,15 @@ internal static class Program
             return 0;
         }
 
+        if (args.Length > 0 && args[0] == "generate-sdt-json")
+        {
+            GenerateSdtJson();
+            return 0;
+        }
+
         if (args.Length < 3 || args[0] != "bench-str")
         {
-            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops | generate-calendar-ops | generate-conditional-state");
+            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops | generate-calendar-ops | generate-conditional-state | generate-sdt-json");
             return 2;
         }
 
@@ -711,5 +718,171 @@ internal static class Program
         }
     }
 
+    private static void GenerateSdtJson()
+    {
+        // 1. Empty SDT ToJson
+        var sdtEmpty = new TestItemSdt();
+        Console.WriteLine($"sdt_empty_to_json|=[{Escape(sdtEmpty.ToJSonString())}]");
+
+        // 2. Populated scalar SDT ToJson
+        var sdt = new TestItemSdt();
+        sdt.gxTpr_Amount = 42;
+        sdt.gxTpr_Label = "Hello \"world\"";
+        sdt.gxTpr_Fixed = "ABC";
+        sdt.gxTpr_Flag = true;
+        sdt.gxTpr_Day = new DateTime(2026, 3, 29);
+        sdt.gxTpr_Stamp = new DateTime(2026, 3, 29, 14, 30, 45);
+        string sdtJson = sdt.ToJSonString();
+        Console.WriteLine($"sdt_to_json|=[{Escape(sdtJson)}]");
+
+        // 3. FromJson roundtrip
+        var sdtRound = new TestItemSdt();
+        bool okRound = sdtRound.FromJSonString(sdtJson);
+        Console.WriteLine($"sdt_from_json_ok|=[{okRound}]");
+        Console.WriteLine($"sdt_round_amount|=[{sdtRound.gxTpr_Amount}]");
+        Console.WriteLine($"sdt_round_label|=[{Escape(sdtRound.gxTpr_Label)}]");
+        Console.WriteLine($"sdt_round_fixed|=[{Escape(sdtRound.gxTpr_Fixed)}]");
+        Console.WriteLine($"sdt_round_flag|=[{sdtRound.gxTpr_Flag}]");
+        Console.WriteLine($"sdt_round_day|=[{DateTimeUtil.Year(sdtRound.gxTpr_Day):D4}-{DateTimeUtil.Month(sdtRound.gxTpr_Day):D2}-{DateTimeUtil.Day(sdtRound.gxTpr_Day):D2}]");
+        Console.WriteLine($"sdt_round_stamp|=[{DateTimeUtil.Year(sdtRound.gxTpr_Stamp):D4}-{DateTimeUtil.Month(sdtRound.gxTpr_Stamp):D2}-{DateTimeUtil.Day(sdtRound.gxTpr_Stamp):D2}T{DateTimeUtil.Hour(sdtRound.gxTpr_Stamp):D2}:{DateTimeUtil.Minute(sdtRound.gxTpr_Stamp):D2}:{DateTimeUtil.Second(sdtRound.gxTpr_Stamp):D2}]");
+
+        // 4. Case-insensitive keys and partial update
+        var sdtPartial = new TestItemSdt();
+        sdtPartial.gxTpr_Amount = 100;
+        sdtPartial.gxTpr_Label = "Initial";
+        bool okPartial = sdtPartial.FromJSonString("{\"label\":\"Updated\",\"flag\":true,\"unknown\":\"ignored\"}");
+        Console.WriteLine($"sdt_partial_ok|=[{okPartial}]");
+        Console.WriteLine($"sdt_partial_amount_preserved|=[{sdtPartial.gxTpr_Amount}]");
+        Console.WriteLine($"sdt_partial_label_updated|=[{Escape(sdtPartial.gxTpr_Label)}]");
+        Console.WriteLine($"sdt_partial_flag_updated|=[{sdtPartial.gxTpr_Flag}]");
+
+        // 5. Invalid JSON handling
+        var sdtInvalid = new TestItemSdt();
+        bool okEmpty = sdtInvalid.FromJSonString("");
+        bool okMalformed = sdtInvalid.FromJSonString("{invalid");
+        bool okNotObj = sdtInvalid.FromJSonString("123");
+        Console.WriteLine($"sdt_from_json_empty|=[{okEmpty}]");
+        Console.WriteLine($"sdt_from_json_malformed|=[{okMalformed}]");
+        Console.WriteLine($"sdt_from_json_not_obj|=[{okNotObj}]");
+
+        // 6. Nested SDT ToJson and FromJson
+        var parent = new TestParentSdt();
+        parent.gxTpr_Code = "P01";
+        parent.gxTpr_Child.gxTpr_Amount = 10;
+        parent.gxTpr_Child.gxTpr_Label = "Sub";
+        var parentItem = new TestItemSdt();
+        parentItem.gxTpr_Amount = 100;
+        parentItem.gxTpr_Label = "Row1";
+        parent.gxTpr_Items.Add(parentItem);
+        string parentJson = parent.ToJSonString();
+        Console.WriteLine($"parent_to_json|=[{Escape(parentJson)}]");
+
+        var parentRound = new TestParentSdt();
+        bool okParent = parentRound.FromJSonString(parentJson);
+        Console.WriteLine($"parent_from_json_ok|=[{okParent}]");
+        Console.WriteLine($"parent_round_code|=[{Escape(parentRound.gxTpr_Code)}]");
+        Console.WriteLine($"parent_round_child_amount|=[{parentRound.gxTpr_Child.gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_child_label|=[{Escape(parentRound.gxTpr_Child.gxTpr_Label)}]");
+        Console.WriteLine($"parent_round_items_count|=[{parentRound.gxTpr_Items.Count}]");
+        Console.WriteLine($"parent_round_item1_amount|=[{parentRound.gxTpr_Items[0].gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_item1_label|=[{Escape(parentRound.gxTpr_Items[0].gxTpr_Label)}]");
+
+        // 7. Collection of SDTs ToJson and FromJson
+        var col = new GXBaseCollection<TestItemSdt>();
+        Console.WriteLine($"col_empty_to_json|=[{Escape(col.ToJSonString())}]");
+
+        var item1 = new TestItemSdt();
+        item1.gxTpr_Amount = 1;
+        item1.gxTpr_Label = "One";
+        var item2 = new TestItemSdt();
+        item2.gxTpr_Amount = 2;
+        item2.gxTpr_Label = "Two";
+        col.Add(item1);
+        col.Add(item2);
+        string colJson = col.ToJSonString();
+        Console.WriteLine($"col_to_json|=[{Escape(colJson)}]");
+
+        var colRound = new GXBaseCollection<TestItemSdt>();
+        bool okCol = colRound.FromJSonString(colJson);
+        Console.WriteLine($"col_from_json_ok|=[{okCol}]");
+        Console.WriteLine($"col_round_count|=[{colRound.Count}]");
+        Console.WriteLine($"col_round_item1_amount|=[{colRound[0].gxTpr_Amount}]");
+        Console.WriteLine($"col_round_item1_label|=[{Escape(colRound[0].gxTpr_Label)}]");
+        Console.WriteLine($"col_round_item2_amount|=[{colRound[1].gxTpr_Amount}]");
+        Console.WriteLine($"col_round_item2_label|=[{Escape(colRound[1].gxTpr_Label)}]");
+
+        // 8. Collection invalid JSON
+        bool okColEmpty = colRound.FromJSonString("");
+        bool okColNotArray = colRound.FromJSonString("{\"Amount\":1}");
+        Console.WriteLine($"col_from_json_empty|=[{okColEmpty}]");
+        Console.WriteLine($"col_from_json_not_array|=[{okColNotArray}]");
+    }
+
     private static string Escape(string s) => s.Replace("\t", "\\t").Replace("\n", "\\n").Replace("\r", "\\r");
 }
+
+public class TestItemSdt : GxUserType
+{
+    private short gxTv_Amount;
+    private string gxTv_Label = "";
+    private string gxTv_Fixed = "";
+    private bool gxTv_Flag;
+    private DateTime gxTv_Day = DateTime.MinValue;
+    private DateTime gxTv_Stamp = DateTime.MinValue;
+
+    public TestItemSdt() { }
+    public TestItemSdt(IGxContext? context) { this.context = context; }
+
+    public short gxTpr_Amount { get => gxTv_Amount; set { gxTv_Amount = value; SetDirty("Amount"); } }
+    public string gxTpr_Label { get => gxTv_Label; set { gxTv_Label = value; SetDirty("Label"); } }
+    public string gxTpr_Fixed { get => gxTv_Fixed; set { gxTv_Fixed = value; SetDirty("Fixed"); } }
+    public bool gxTpr_Flag { get => gxTv_Flag; set { gxTv_Flag = value; SetDirty("Flag"); } }
+    public DateTime gxTpr_Day { get => gxTv_Day; set { gxTv_Day = value; SetDirty("Day"); } }
+    public DateTime gxTpr_Stamp { get => gxTv_Stamp; set { gxTv_Stamp = value; SetDirty("Stamp"); } }
+
+    public override void ToJSON(bool includeState)
+    {
+        AddObjectProperty("Amount", gxTpr_Amount, false);
+        AddObjectProperty("Label", gxTpr_Label, false);
+        AddObjectProperty("Fixed", gxTpr_Fixed, false);
+        AddObjectProperty("Flag", gxTpr_Flag, false);
+
+        string sDateCnv = $"{DateTimeUtil.Year(gxTpr_Day):D4}-{DateTimeUtil.Month(gxTpr_Day):D2}-{DateTimeUtil.Day(gxTpr_Day):D2}";
+        AddObjectProperty("Day", sDateCnv, false);
+
+        string sStampCnv = $"{DateTimeUtil.Year(gxTpr_Stamp):D4}-{DateTimeUtil.Month(gxTpr_Stamp):D2}-{DateTimeUtil.Day(gxTpr_Stamp):D2}T{DateTimeUtil.Hour(gxTpr_Stamp):D2}:{DateTimeUtil.Minute(gxTpr_Stamp):D2}:{DateTimeUtil.Second(gxTpr_Stamp):D2}";
+        AddObjectProperty("Stamp", sStampCnv, false);
+    }
+
+    public override void ToJSON(bool includeState, bool includeNoInitialized)
+    {
+        ToJSON(includeState);
+    }
+}
+
+public class TestParentSdt : GxUserType
+{
+    private string gxTv_Code = "";
+    private TestItemSdt? gxTv_Child;
+    private GXBaseCollection<TestItemSdt>? gxTv_Items;
+
+    public TestParentSdt() { }
+    public TestParentSdt(IGxContext? context) { this.context = context; }
+
+    public string gxTpr_Code { get => gxTv_Code; set { gxTv_Code = value; SetDirty("Code"); } }
+    public TestItemSdt gxTpr_Child { get => gxTv_Child ??= new TestItemSdt(); set { gxTv_Child = value; SetDirty("Child"); } }
+    public GXBaseCollection<TestItemSdt> gxTpr_Items { get => gxTv_Items ??= new GXBaseCollection<TestItemSdt>(); set { gxTv_Items = value; SetDirty("Items"); } }
+
+    public override void ToJSON(bool includeState)
+    {
+        AddObjectProperty("Code", gxTpr_Code, false);
+        if (gxTv_Child != null) AddObjectProperty("Child", gxTv_Child, false);
+        if (gxTv_Items != null) AddObjectProperty("Items", gxTv_Items, false);
+    }
+
+    public override void ToJSON(bool includeState, bool includeNoInitialized)
+    {
+        ToJSON(includeState);
+    }
+}
+

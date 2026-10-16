@@ -66,6 +66,8 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
             | "BOOLTOSTR"
             | "TOBOOLEAN"
             | "STRTOBOOL"
+            | "TOJSON"
+            | "FROMJSON"
     )
 }
 
@@ -88,6 +90,8 @@ pub enum Stmt {
     CollectionAdd(Box<Expr>, Expr, Option<Expr>),
     CollectionRemove(Box<Expr>, Expr),
     CollectionClear(Box<Expr>),
+    /// Deserializes JSON string into a Record or Collection: `&target.FromJson(&str)`
+    FromJson(Box<Expr>, Expr),
     Print(Expr),
     MsgStatus(Expr),
     Return(Expr),
@@ -538,6 +542,12 @@ impl Parser {
                 let location = self.current().location;
                 let mut nodes = 0;
                 let target = self.parse_primary(1, &mut nodes)?;
+                if let Expr::Call(ref name, ref args) = target
+                    && matches!(name.as_str(), "FROMJSON" | "FROMJSONSTRING")
+                    && args.len() == 2
+                {
+                    return Ok(Stmt::FromJson(Box::new(args[0].clone()), args[1].clone()));
+                }
                 if self.at(&TokenKind::Dot) {
                     self.take();
                     if self.at_keyword("SETEMPTY") {
@@ -579,6 +589,13 @@ impl Parser {
                         self.expect(TokenKind::LeftParen, "'(' after Clear")?;
                         self.expect(TokenKind::RightParen, "')' after Clear()")?;
                         return Ok(Stmt::CollectionClear(Box::new(target)));
+                    }
+                    if self.at_keyword("FROMJSON") || self.at_keyword("FROMJSONSTRING") {
+                        self.take();
+                        self.expect(TokenKind::LeftParen, "'(' after FromJson")?;
+                        let json_expr = self.parse_expression()?;
+                        self.expect(TokenKind::RightParen, "')' after FromJson argument")?;
+                        return Ok(Stmt::FromJson(Box::new(target), json_expr));
                     }
                     return Err(location.error("unsupported statement method on target"));
                 }
@@ -1240,6 +1257,19 @@ impl Parser {
             self.expect(TokenKind::RightParen, "')' after zero-argument ToBoolean()")?;
             self.count_expression_node(nodes, location)?;
             return Ok(Expr::Call("TOBOOLEAN".into(), vec![value]));
+        }
+        if matches!(name, "TOJSON" | "TOJSONSTRING") {
+            self.expect(TokenKind::LeftParen, "'(' after ToJson(")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument ToJson()")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("TOJSON".into(), vec![value]));
+        }
+        if matches!(name, "FROMJSON" | "FROMJSONSTRING") {
+            self.expect(TokenKind::LeftParen, "'(' after FromJson(")?;
+            let json_arg = self.parse_or(depth, nodes)?;
+            self.expect(TokenKind::RightParen, "')' after FromJson argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("FROMJSON".into(), vec![value, json_arg]));
         }
         if name == "CLONE" {
             self.take();
