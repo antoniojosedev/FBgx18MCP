@@ -2573,21 +2573,6 @@ namespace GxMcp.Worker.Services
                     extra: new JObject { ["action"] = "build_all", ["target"] = target });
             }
 
-            if (string.Equals(action, "rebuild", StringComparison.OrdinalIgnoreCase))
-            {
-                return McpResponse.Err(
-                    code: "TargetNotSupported",
-                    message: "action=rebuild does not accept a target; it performs a forced Rebuild All for the entire Knowledge Base.",
-                    hint: "Use action=build with target=<object> to build a specific object, or omit target to rebuild all objects.",
-                    target: target,
-                    extra: new JObject
-                    {
-                        ["action"] = "rebuild",
-                        ["target"] = target,
-                        ["requestedWorkerAction"] = action
-                    });
-            }
-
             if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase))
             {
                 return McpResponse.Err(
