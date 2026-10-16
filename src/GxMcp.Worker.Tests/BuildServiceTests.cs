@@ -1548,5 +1548,49 @@ namespace GxMcp.Worker.Tests
             TasksRegistry()[taskId] = status;
             return (svc, status, taskId);
         }
+
+        [Fact]
+        public void Rebuild_with_target_is_rejected_with_TargetNotSupported()
+        {
+            var service = new BuildService();
+            var raw = service.Build("rebuild", "Customer", "transitive", 200, false, null, false);
+            var result = JObject.Parse(raw);
+
+            Assert.Equal("error", result["status"]?.ToString());
+            Assert.Equal("TargetNotSupported", result["error"]?["code"]?.ToString());
+            Assert.Contains("action=rebuild does not accept a target", result["error"]?["message"]?.ToString());
+            Assert.Contains("Use action=build with target=<object>", result["error"]?["hint"]?.ToString());
+        }
+
+        [Fact]
+        public void Rebuild_dry_run_with_target_is_rejected_with_TargetNotSupported()
+        {
+            var service = new BuildService();
+            var raw = service.BuildDryRun("rebuild", "Customer", "transitive", 200);
+            var result = JObject.Parse(raw);
+
+            Assert.Equal("error", result["status"]?.ToString());
+            Assert.Equal("TargetNotSupported", result["error"]?["code"]?.ToString());
+            Assert.Contains("action=rebuild does not accept a target", result["error"]?["message"]?.ToString());
+            Assert.Contains("Use action=build with target=<object>", result["error"]?["hint"]?.ToString());
+        }
+
+        [Fact]
+        public void Rebuild_dry_run_without_target_shows_entire_kb()
+        {
+            var service = new BuildService();
+            var raw = service.BuildDryRun("rebuild", null, "transitive", 200);
+            var result = JObject.Parse(raw);
+
+            Assert.Equal("ok", result["status"]?.ToString());
+            var preview = result["result"]?["preview"];
+            Assert.NotNull(preview);
+            Assert.Equal("RebuildAll", preview["action"]?.ToString());
+            Assert.True(preview["kbWide"]?.Value<bool>());
+            var wouldBuild = preview["wouldBuild"] as JArray;
+            Assert.NotNull(wouldBuild);
+            Assert.Single(wouldBuild);
+            Assert.Equal("<entire selected Knowledge Base>", wouldBuild[0]?.ToString());
+        }
     }
 }

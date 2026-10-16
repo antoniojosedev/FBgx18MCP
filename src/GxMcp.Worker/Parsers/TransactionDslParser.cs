@@ -426,7 +426,7 @@ namespace GxMcp.Worker.Parsers
                     // reflection and classify the outcome accurately.
                     string reflError;
                     bool apiMissing;
-                    bool removed = TryRemoveAttribute(attrsColl, (object)dead, deadName, out apiMissing, out reflError);
+                    bool removed = TryRemoveAttribute(attrsColl, (object)sdkLevel, (object)dead, deadName, out apiMissing, out reflError);
 
                     // Verify (a removal method can no-op without throwing when the SDK refuses).
                     bool stillPresent = false;
@@ -437,11 +437,11 @@ namespace GxMcp.Worker.Parsers
                     if (removed && !stillPresent) continue;
 
                     if (apiMissing)
-                        _removalFailures.Add(deadName + " (SDK-API-UNSUPPORTED: this GeneXus SDK build exposes no attribute-removal method on the transaction structure — removing an attribute from a Transaction is not writable through the SDK; remove it in the GeneXus IDE)");
+                        _removalFailures.Add(deadName + " (SDK-API-UNSUPPORTED: this GeneXus SDK build exposes no attribute-removal method on the transaction structure — use genexus_structure action=remove_attribute or remove it in the GeneXus IDE)");
                     else if (!string.IsNullOrEmpty(reflError))
-                        _removalFailures.Add(deadName + " (" + reflError + ")");
+                        _removalFailures.Add(deadName + " (" + reflError + "; try genexus_structure action=remove_attribute)");
                     else
-                        _removalFailures.Add(deadName + " (SDK kept the attribute — it is likely a key in use, or referenced by a relation/index)");
+                        _removalFailures.Add(deadName + " (SDK kept the attribute — it is likely a key in use, or referenced by a relation/index; try genexus_structure action=remove_attribute)");
                 }
             }
         }
@@ -450,57 +450,118 @@ namespace GxMcp.Worker.Parsers
         // blind `dynamic .Remove(dead)` (which throws RuntimeBinderException — a missing
         // member — when no such method exists, and was mis-reported as "key in use").
         // Tries, in order: collection.Remove(item), collection.Remove(name),
-        // collection.RemoveAt(index), then the item's own Remove()/Delete(). Sets
-        // apiMissing=true only when NONE of these members exist on the types involved.
-        private static bool TryRemoveAttribute(object attrsColl, object dead, string deadName,
+        // collection.RemoveAt(index), item.Remove()/Delete(), and native sdkLevel.Items m_Inner.
+        // Sets apiMissing=true only when NONE of these members exist on the types involved.
+        private static bool TryRemoveAttribute(object attrsColl, object sdkLevel, object dead, string deadName,
             out bool apiMissing, out string error)
         {
             apiMissing = false;
             error = null;
-            if (attrsColl == null) { apiMissing = true; return false; }
-            var collType = attrsColl.GetType();
+            if (attrsColl == null && sdkLevel == null) { apiMissing = true; return false; }
             bool anyMemberFound = false;
 
-            // 1) collection.Remove(item)  2) collection.Remove(string)
-            foreach (var m in collType.GetMethods().Where(mi => mi.Name == "Remove"))
+            if (attrsColl != null)
             {
-                var ps = m.GetParameters();
-                if (ps.Length != 1) continue;
-                object arg = null;
-                if (ps[0].ParameterType.IsInstanceOfType(dead)) arg = dead;
-                else if (ps[0].ParameterType == typeof(string)) arg = deadName;
-                else continue;
-                anyMemberFound = true;
-                try { m.Invoke(attrsColl, new[] { arg }); return true; }
-                catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
-            }
+                var collType = attrsColl.GetType();
 
-            // 3) collection.RemoveAt(index)
-            var removeAt = collType.GetMethod("RemoveAt", new[] { typeof(int) });
-            if (removeAt != null)
-            {
-                anyMemberFound = true;
-                try
+                // 1) collection.Remove(item)  2) collection.Remove(string)
+                foreach (var m in collType.GetMethods().Where(mi => mi.Name == "Remove"))
                 {
-                    int idx = 0, found = -1;
-                    foreach (dynamic a in (System.Collections.IEnumerable)attrsColl)
-                    {
-                        if (((string)a.Name).Equals(deadName, StringComparison.OrdinalIgnoreCase)) { found = idx; break; }
-                        idx++;
-                    }
-                    if (found >= 0) { removeAt.Invoke(attrsColl, new object[] { found }); return true; }
+                    var ps = m.GetParameters();
+                    if (ps.Length != 1) continue;
+                    object arg = null;
+                    if (ps[0].ParameterType.IsInstanceOfType(dead)) arg = dead;
+                    else if (ps[0].ParameterType == typeof(string)) arg = deadName;
+                    else continue;
+                    anyMemberFound = true;
+                    try { m.Invoke(attrsColl, new[] { arg }); return true; }
+                    catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
                 }
-                catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
+
+                // 3) collection.RemoveAt(index)
+                var removeAt = collType.GetMethod("RemoveAt", new[] { typeof(int) });
+                if (removeAt != null)
+                {
+                    anyMemberFound = true;
+                    try
+                    {
+                        int idx = 0, found = -1;
+                        foreach (dynamic a in (System.Collections.IEnumerable)attrsColl)
+                        {
+                            if (((string)a.Name).Equals(deadName, StringComparison.OrdinalIgnoreCase)) { found = idx; break; }
+                            idx++;
+                        }
+                        if (found >= 0) { removeAt.Invoke(attrsColl, new object[] { found }); return true; }
+                    }
+                    catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
+                }
             }
 
             // 4) item.Remove() / item.Delete()
-            foreach (var name in new[] { "Remove", "Delete" })
+            if (dead != null)
             {
-                var im = dead.GetType().GetMethod(name, Type.EmptyTypes);
-                if (im == null) continue;
-                anyMemberFound = true;
-                try { im.Invoke(dead, null); return true; }
-                catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
+                foreach (var name in new[] { "Remove", "Delete" })
+                {
+                    var im = dead.GetType().GetMethod(name, Type.EmptyTypes);
+                    if (im == null) continue;
+                    anyMemberFound = true;
+                    try { im.Invoke(dead, null); return true; }
+                    catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
+                }
+            }
+
+            // 5) sdkLevel.Items native storage (m_Inner IList removal)
+            if (sdkLevel != null)
+            {
+                try
+                {
+                    var itemsProp = sdkLevel.GetType().GetProperty("Items",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                    var items = itemsProp?.GetValue(sdkLevel, null);
+                    if (items != null)
+                    {
+                        var innerField = SdkReflection.FindField(items.GetType(), "m_Inner");
+                        var inner = innerField?.GetValue(items) as System.Collections.IList;
+                        if (inner != null)
+                        {
+                            anyMemberFound = true;
+                            int itemIndex = -1;
+                            for (int i = 0; i < inner.Count; i++)
+                            {
+                                if (object.ReferenceEquals(inner[i], dead)) { itemIndex = i; break; }
+                            }
+                            if (itemIndex < 0)
+                            {
+                                for (int i = 0; i < inner.Count; i++)
+                                {
+                                    var item = inner[i];
+                                    if (item != null)
+                                    {
+                                        var nameProp = item.GetType().GetProperty("Name");
+                                        var itemName = nameProp?.GetValue(item, null)?.ToString();
+                                        if (string.Equals(itemName, deadName, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            itemIndex = i;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if (itemIndex >= 0)
+                            {
+                                inner.RemoveAt(itemIndex);
+                                var dirtyProp = items.GetType().GetProperty("Dirty",
+                                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                                dirtyProp?.SetValue(items, true, null);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    error = (ex.InnerException ?? ex).Message;
+                }
             }
 
             if (!anyMemberFound) apiMissing = true;

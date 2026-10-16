@@ -43,6 +43,8 @@ namespace GxMcp.Worker.Services
             string mode = (requestedMode ?? string.Empty).Trim().ToLowerInvariant();
             if (mode.Length == 0)
             {
+                if (string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
+                    return "semantic";
                 return IsCodeOrTextPart(partName) ? "normalized" : "exact";
             }
             if (mode != "exact" && mode != "normalized" && mode != "semantic")
@@ -277,7 +279,12 @@ namespace GxMcp.Worker.Services
         /// </summary>
         private static bool DescriptionMatchesName(string description, string name)
         {
-            if (description.Length == 0) return false;
+            if (string.IsNullOrWhiteSpace(description) || string.IsNullOrWhiteSpace(name)) return false;
+
+            string descAlphanumeric = new string(description.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+            string nameAlphanumeric = new string(name.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+            if (descAlphanumeric.Length > 0 && descAlphanumeric == nameAlphanumeric)
+                return true;
 
             var derived = new StringBuilder(name.Length + 8);
             for (int i = 0; i < name.Length; i++)

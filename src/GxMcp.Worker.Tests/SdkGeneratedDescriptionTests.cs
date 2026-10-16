@@ -178,5 +178,17 @@ namespace GxMcp.Worker.Tests
 
             Assert.False(result.Matches, "an extra persisted line is a real mismatch");
         }
+
+        [Fact]
+        public void McpTstR03A_WithoutDescription_MatchesSdkGeneratedDescriptionWhenVerifyModeOmitted()
+        {
+            const string requested = "McpTstR03A : Character(20)";
+            const string persisted = "McpTstR03A : Character(20) // \"Mcp Tst R03 A\"";
+
+            // With verifyMode omitted (null), Structure resolves to semantic verification
+            // and strips the SDK-generated description for McpTstR03A
+            var result = TextPersistenceVerifier.Evaluate(requested, persisted, null, "Structure");
+            Assert.True(result.Matches, "SDK-generated description 'Mcp Tst R03 A' for 'McpTstR03A' should match when verifyMode is omitted");
+        }
     }
 }

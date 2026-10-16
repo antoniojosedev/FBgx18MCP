@@ -40,6 +40,9 @@ async function main() {
 
 		if (!vscodeExecutablePath) throw lastDownloadError;
 
+		const userDataDir = path.resolve(cachePath, `user-data-${Date.now()}-${process.pid}`);
+		const extensionsDir = path.resolve(cachePath, `extensions-${Date.now()}-${process.pid}`);
+
 		// Keep functional test failures outside the infrastructure retry loop.
 		await runTests({
 			extensionDevelopmentPath,
@@ -48,15 +51,19 @@ async function main() {
 			vscodeExecutablePath,
 			timeout: 120000,
 			launchArgs: [
+				`--user-data-dir=${userDataDir}`,
+				`--extensions-dir=${extensionsDir}`,
 				'--disable-updates',
 				'--skip-welcome',
 				'--skip-release-notes',
+				'--disable-workspace-trust',
+				'--disable-gpu',
 				'--enable-proposed-api',
 				'lennix1337.nexus-ide',
 			],
 		});
 	} catch (err) {
-		console.error('Failed to run tests', err);
+		console.error('Failed to run tests with detail:', err);
 		process.exit(1);
 	}
 }

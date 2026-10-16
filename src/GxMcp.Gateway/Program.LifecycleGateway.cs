@@ -453,7 +453,7 @@ namespace GxMcp.Gateway
         /// job long-poll. Returns null for lifecycle actions that must be forwarded
         /// to the Worker (index, verify, legacy taskId paths).
         /// </summary>
-        private static async Task<JObject?> HandleLifecycleGatewayInterceptsAsync(
+        internal static async Task<JObject?> HandleLifecycleGatewayInterceptsAsync(
             JToken? idToken, string toolName, JObject? args, JObject request, string sessionId,
             CancellationToken transportCancellation)
         {
@@ -467,6 +467,20 @@ namespace GxMcp.Gateway
                 string? lifecycleId = args?["job_id"]?.ToString();
                 if (string.IsNullOrWhiteSpace(lifecycleId)) lifecycleId = args?["jobId"]?.ToString();
                 if (string.IsNullOrWhiteSpace(lifecycleId)) lifecycleId = lifecycleTarget;
+
+                if (string.Equals(lifecycleAction, "rebuild", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(lifecycleTarget))
+                {
+                    var errPayload = new JObject
+                    {
+                        ["status"] = "error",
+                        ["code"] = "TargetNotSupported",
+                        ["message"] = "action=rebuild does not accept a target; it performs a forced Rebuild All for the entire Knowledge Base.",
+                        ["hint"] = "Use action=build with target=<object> to build a specific object, or omit target to rebuild all objects.",
+                        ["target"] = lifecycleTarget
+                    };
+                    return BuildToolTextResponse(idToken, errPayload, isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                }
 
                 // Durable mutation recovery is intentionally Gateway-local. After a
                 // restart the Worker cannot safely infer whether a timed-out write
