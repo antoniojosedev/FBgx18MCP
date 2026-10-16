@@ -7,12 +7,12 @@ before the SDK is removed: flip one setting, see the engine from
 `genexus_doctor`, and let capabilities move to the engine as they reach measured
 parity.
 
-**Status.** No product operation is served by the engine today. The three
-capabilities measured at full parity (`str_format`, numeric `Str` pictures;
-`numeric_render`, the implicit `&var.ToString()` picture; and `text_functions`,
-`Substr`/`Upper`/`Lower`/`StrReplace` with their method forms) have no product
-consumer yet, and the gate is built so nothing partial can route. This page
-documents the seam, its rules, and how the first real swap lands.
+**Status.** No product operation is served by the engine today. The capabilities
+measured at full parity (`str_format`, `numeric_render`, `text_functions`,
+`text_extended_functions`, `numeric_math_functions`, `collection_operations`,
+and `calendar_operations`) have no product consumer yet, and the gate is built
+so nothing partial can route. This page documents the seam, its rules, and how
+the first real swap lands.
 
 ## Enabling it
 
@@ -84,6 +84,7 @@ a repository path that does not exist. Snapshot (source of truth is
 | `text_extended_functions` | parity | `LTrim`/`RTrim`/`PadL`/`PadR`/`Space`/`Concat`/`StartsWith`/`EndsWith`/`Contains`/`StrSearch` plus method forms: 95 recorded `GeneXus.Utils.StringUtil` rows (exact ASCII space trimming, left/right padding with truncation, single-sided concat trimming, ordinal comparisons, 1-based index clamping); `src/gx-engine/tests/fixtures/text_extended_native.tsv` + `src/gx-engine/tests/text_extended.rs`. No consumer yet. |
 | `numeric_math_functions` | parity | `Int`/`Round`/`Trunc`/`Val`/`Left`/`Right`/`Asc`/`Chr`/`NotNumeric`/`LTrimStr` plus method forms: 107 recorded `GeneXus.Utils.NumberUtil` and `StringUtil` rows (`Math.Floor`, `AwayFromZero` with negative digit support, truncation toward zero, numeric string parsing, ASCII char conversions); `src/gx-engine/tests/fixtures/numeric_math_native.tsv` + `src/gx-engine/tests/numeric_math.rs`. No consumer yet. |
 | `collection_operations` | parity | `Add`/`Remove`/`Clear`/`IndexOf`, `For In` iteration and `Exit`: 24 recorded `GeneXus.Utils.GxSimpleCollection` and `GXBaseCollection` rows (1-based index, index insertion, silent bounds removal, element aliasing in loops, loop exit); `src/gx-engine/tests/fixtures/collection_ops_native.tsv` + `src/gx-engine/tests/collection_ops.rs`. No consumer yet. |
+| `calendar_operations` | parity | `Day`/`Month`/`Year`/`Hour`/`Minute`/`Sec`/`Dow`/`AddYr`/`AddMth`/`DAdd`/`TAdd`/`DDiff`/`TDiff`/`Age`/`EndOfMonth`/`ResetTime` plus method forms: 83 recorded `GeneXus.Utils.DateTimeUtil` rows (components, leap day clamping, day of week indexing 1=Sunday, forward/backward date and second arithmetic, day/second differences, completed years age calculation, end-of-month and time reset); `src/gx-engine/tests/fixtures/calendar_ops_native.tsv` + `src/gx-engine/tests/calendar_ops.rs`. No consumer yet. |
 | `numeric_core` | partial | Signed 64-bit arithmetic and checked overflow; not a Numeric/Decimal compatibility claim. |
 | `text_core` | partial | Len/Trim/comparisons over CP1252 bytes; known encoding divergence on high bytes. |
 | `calendar_values` | partial | Date/DateTime component subset; no timezone or fractional-second coverage. |

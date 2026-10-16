@@ -62,6 +62,68 @@ impl DateTime {
     pub fn second(self) -> i64 {
         i64::from(self.seconds % 60)
     }
+    pub fn day_of_week(self) -> i64 {
+        if self.is_empty() {
+            0
+        } else {
+            self.date.day_of_week()
+        }
+    }
+    pub fn end_of_month(self) -> Self {
+        if self.is_empty() {
+            return self;
+        }
+        let year = self.year();
+        let month = self.month();
+        let last_day = crate::date::month_days(year, month);
+        let date = Date::ymd(year, month, last_day).unwrap_or(self.date);
+        Self {
+            date,
+            seconds: self.seconds,
+        }
+    }
+    pub fn reset_time(self) -> Self {
+        Self {
+            date: self.date,
+            seconds: 0,
+        }
+    }
+    pub fn age(self, current: Self) -> i64 {
+        if self.is_empty() || current.is_empty() {
+            return 0;
+        }
+        let mut age = current.year() - self.year();
+        if current.month() < self.month()
+            || (current.month() == self.month() && current.day() < self.day())
+        {
+            age -= 1;
+        }
+        age
+    }
+    pub fn add_days(self, days: i64) -> Result<Self, String> {
+        Ok(Self {
+            date: self.date.add_days(days)?,
+            seconds: self.seconds,
+        })
+    }
+    pub fn add_months(self, months: i64) -> Result<Self, String> {
+        Ok(Self {
+            date: self.date.add_months(months)?,
+            seconds: self.seconds,
+        })
+    }
+    pub fn add_years(self, years: i64) -> Result<Self, String> {
+        Ok(Self {
+            date: self.date.add_years(years)?,
+            seconds: self.seconds,
+        })
+    }
+    pub fn add_minutes(self, minutes: i64) -> Result<Self, String> {
+        self.add_seconds(minutes.checked_mul(60).ok_or("DateTime minutes overflow")?)
+    }
+    pub fn add_hours(self, hours: i64) -> Result<Self, String> {
+        self.add_seconds(hours.checked_mul(3600).ok_or("DateTime hours overflow")?)
+    }
     pub fn add_seconds(self, seconds: i64) -> Result<Self, String> {
         let time = i64::from(self.seconds)
             .checked_add(seconds)

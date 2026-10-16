@@ -1324,3 +1324,26 @@ Owner-reported implementation and native observations:
 - Verification: 259 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
 - Registry: new `collection_operations` capability at `Parity` (no consumers).
 
+## Calendar & DateTime Operations Core Parity (2026-10-16)
+
+- Native Oracle & Decompilation: Extracted `GeneXus.Utils.DateTimeUtil` semantics from `genexus.classes.core` 1.30.0 runtime via REA / ILSpy:
+  - `Day`, `Month`, `Year`, `Hour`, `Minute`, `Second`: Return numeric component; return `0` on empty/nullDate (`DateTime.MinValue`).
+  - `Dow`: Returns `0` on empty/nullDate; otherwise returns `(byte)(dt.DayOfWeek + 1)` (1=Sunday, 2=Monday, ..., 7=Saturday).
+  - `AddYr(dt, n)` / `AddMth(dt, n)`: Returns `nullDate` on empty/invalid; clamps day to target month end (e.g. Feb 29 + 1 year = Feb 28; Jan 31 + 1 month in leap = Feb 29). Preserves time on DateTime.
+  - `DAdd(dt, days)` / `TAdd(dt, seconds)`: Adds days or seconds with correct Euclidean rollover and cross-day calculation.
+  - `DDiff(dt1, dt2)`: Truncated difference in whole days (`Convert.ToInt32((dt1 - dt2).TotalDays)`).
+  - `TDiff(dt1, dt2)`: Difference in seconds (`Convert.ToInt64((dt1 - dt2).TotalSeconds)`).
+  - `Age(birth, current)`: Completed years calculation (`current.Year - birth.Year`, decremented if current date/time is before the birthday in that year).
+  - `EndOfMonth(dt)`: Sets day to `DateTime.DaysInMonth(year, month)` while preserving time.
+  - `ResetTime(dt)`: Zeroes time component to `00:00:00` while preserving date.
+  - Added `.ToString()` support across all primitive types (Numeric, Date, DateTime, Boolean, Text) for uniform string conversions.
+- Fixture & Evidence: Generated `tests/fixtures/calendar_ops_native.tsv` (83 rows) directly from official runtime via `generate-calendar-ops` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/date.rs`: Added `day_of_week`, `end_of_month`, `reset_time`, `age`, and exposed `month_days`.
+  - `src/gx-engine/src/datetime.rs`: Added `day_of_week`, `end_of_month`, `reset_time`, `age`, `add_days`, `add_months`, `add_years`, `add_minutes`, `add_hours`.
+  - `src/gx-engine/src/frontend.rs`: Added AST mappings for `DAY`, `MONTH`, `YEAR`, `HOUR`, `MINUTE`, `SEC`, `DOW`, `ADDYR`, `ADDMTH`, `ADDDAYS`, `DADD`, `TADD`, `DDIFF`, `TDIFF`, `AGE`, `ENDOFMONTH`, `RESETTIME`, `TOSTRING`, and method forms `.DayOfWeek()`, `.Dow()`, `.EndOfMonth()`, `.ResetTime()`, `.AddDays()`, `.AddMonths()`, `.AddYears()`, `.AddHours()`, `.AddMinutes()`, `.AddSeconds()`, `.Age()`, `.ToString()`.
+  - `src/gx-engine/src/typed_backend.rs`: Emitted lowerings for all built-ins, date shift/diff operations, and `.ToString()`.
+  - `src/gx-engine/tests/calendar_ops.rs`: Added fixture oracle verification (83 rows), executable e2e Procedure validation, and invalid type/argument rejection tests.
+- Verification: 262 passed / 0 failed in `gx-engine` (3 new tests, 83 oracle assertions), Clippy and rustfmt clean.
+- Registry: new `calendar_operations` capability at `Parity` (no consumers).
+

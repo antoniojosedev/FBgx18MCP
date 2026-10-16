@@ -37,6 +37,24 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
             | "NOTNUMERIC"
             | "LTRIMSTR"
             | "INDEXOF"
+            | "DAY"
+            | "MONTH"
+            | "YEAR"
+            | "HOUR"
+            | "MINUTE"
+            | "SEC"
+            | "DOW"
+            | "ADDYR"
+            | "ADDMTH"
+            | "ADDDAYS"
+            | "DADD"
+            | "TADD"
+            | "DDIFF"
+            | "TDIFF"
+            | "AGE"
+            | "ENDOFMONTH"
+            | "RESETTIME"
+            | "TOSTRING"
     )
 }
 
@@ -1161,7 +1179,16 @@ impl Parser {
             self.count_expression_node(nodes, location)?;
             return Ok(Expr::CollectionItem(Box::new(value), Box::new(index)));
         }
-        if matches!(name, "ADDMONTHS" | "ADDYEARS" | "ADDSECONDS" | "DIFFERENCE") {
+        if matches!(
+            name,
+            "ADDMONTHS"
+                | "ADDYEARS"
+                | "ADDDAYS"
+                | "ADDHOURS"
+                | "ADDMINUTES"
+                | "ADDSECONDS"
+                | "DIFFERENCE"
+        ) {
             self.expect(TokenKind::LeftParen, "'(' after calendar method")?;
             let offset = self.parse_or(depth, nodes)?;
             self.expect(TokenKind::RightParen, "')' after calendar offset")?;
@@ -1171,6 +1198,25 @@ impl Parser {
                 Box::new(value),
                 Box::new(offset),
             ));
+        }
+        if name == "AGE" {
+            self.expect(TokenKind::LeftParen, "'(' after Age(")?;
+            let current = self.parse_or(depth, nodes)?;
+            self.expect(TokenKind::RightParen, "')' after Age argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("AGE".into(), vec![value, current]));
+        }
+        if matches!(name, "ENDOFMONTH" | "RESETTIME") {
+            self.expect(TokenKind::LeftParen, "'(' after calendar method")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument method")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call(name.into(), vec![value]));
+        }
+        if matches!(name, "DAYOFWEEK" | "DOW") {
+            self.expect(TokenKind::LeftParen, "'(' after method")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument method")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("DOW".into(), vec![value]));
         }
         if matches!(name, "ROUND" | "TRUNC") {
             self.expect(TokenKind::LeftParen, "'(' after method")?;
@@ -1184,6 +1230,12 @@ impl Parser {
             self.expect(TokenKind::RightParen, "')' after zero-argument Int()")?;
             self.count_expression_node(nodes, location)?;
             return Ok(Expr::Call("INT".into(), vec![value]));
+        }
+        if name == "TOSTRING" {
+            self.expect(TokenKind::LeftParen, "'(' after ToString(")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument ToString()")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("TOSTRING".into(), vec![value]));
         }
         if name == "TONUMERIC" {
             self.expect(TokenKind::LeftParen, "'(' after ToNumeric(")?;

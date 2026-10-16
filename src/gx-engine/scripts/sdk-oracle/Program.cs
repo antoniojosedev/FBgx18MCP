@@ -40,9 +40,15 @@ internal static class Program
             return 0;
         }
 
+        if (args.Length > 0 && args[0] == "generate-calendar-ops")
+        {
+            GenerateCalendarOps();
+            return 0;
+        }
+
         if (args.Length < 3 || args[0] != "bench-str")
         {
-            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops");
+            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops | generate-calendar-ops");
             return 2;
         }
 
@@ -442,6 +448,146 @@ internal static class Program
         Console.WriteLine($"index_of_cleared|alpha=[{col.IndexOf("alpha")}]");
         col.RemoveItem(1);
         Console.WriteLine($"count_after_remove_empty|=[{col.Count}]");
+    }
+
+    private static void GenerateCalendarOps()
+    {
+        // 1. Component extraction: Day, Month, Year, Hour, Minute, Second, Dow
+        DateTime[] dates = [
+            new DateTime(2024, 2, 29, 14, 30, 45), // leap year Thursday (Dow=5)
+            new DateTime(2023, 1, 1, 0, 0, 0),     // Sunday (Dow=1)
+            new DateTime(2023, 12, 31, 23, 59, 59), // Sunday (Dow=1)
+            new DateTime(2024, 6, 15, 12, 0, 0),   // Saturday (Dow=7)
+            DateTimeUtil.NullDate()                   // empty / nullDate
+        ];
+
+        foreach (var dt in dates)
+        {
+            string label = dt == DateTimeUtil.NullDate() ? "empty" : dt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            Console.WriteLine($"day|{label}=[{DateTimeUtil.Day(dt)}]");
+            Console.WriteLine($"month|{label}=[{DateTimeUtil.Month(dt)}]");
+            Console.WriteLine($"year|{label}=[{DateTimeUtil.Year(dt)}]");
+            Console.WriteLine($"hour|{label}=[{DateTimeUtil.Hour(dt)}]");
+            Console.WriteLine($"minute|{label}=[{DateTimeUtil.Minute(dt)}]");
+            Console.WriteLine($"second|{label}=[{DateTimeUtil.Second(dt)}]");
+            Console.WriteLine($"dow|{label}=[{DateTimeUtil.Dow(dt)}]");
+        }
+
+        // 2. AddYr
+        (DateTime dt, int n)[] addYrInputs = [
+            (new DateTime(2024, 2, 29, 10, 0, 0), 1),  // 2024-02-29 + 1 yr -> 2025-02-28
+            (new DateTime(2024, 2, 29, 10, 0, 0), 4),  // 2024-02-29 + 4 yr -> 2028-02-29
+            (new DateTime(2024, 2, 29, 10, 0, 0), -1), // 2024-02-29 - 1 yr -> 2023-02-28
+            (new DateTime(2023, 5, 15, 0, 0, 0), 5),
+            (DateTimeUtil.NullDate(), 1),
+            (DateTimeUtil.NullDate(), -1),
+        ];
+        foreach (var (dt, n) in addYrInputs)
+        {
+            string label = dt == DateTimeUtil.NullDate() ? "empty" : dt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            var res = DateTimeUtil.AddYr(dt, n);
+            string resStr = res == DateTimeUtil.NullDate() ? "empty" : res.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            Console.WriteLine($"addyr|{label}|{n}=[{resStr}]");
+        }
+
+        // 3. AddMth
+        (DateTime dt, int n)[] addMthInputs = [
+            (new DateTime(2024, 1, 31, 10, 0, 0), 1),  // Jan 31 + 1 mth -> Feb 29 (leap)
+            (new DateTime(2023, 1, 31, 10, 0, 0), 1),  // Jan 31 + 1 mth -> Feb 28 (non-leap)
+            (new DateTime(2024, 3, 31, 10, 0, 0), 1),  // Mar 31 + 1 mth -> Apr 30
+            (new DateTime(2024, 5, 31, 10, 0, 0), -3), // May 31 - 3 mth -> Feb 29
+            (new DateTime(2023, 5, 31, 10, 0, 0), -3), // May 31 - 3 mth -> Feb 28
+            (new DateTime(2023, 10, 15, 0, 0, 0), 14), // cross-year
+            (DateTimeUtil.NullDate(), 1),
+            (DateTimeUtil.NullDate(), -1),
+        ];
+        foreach (var (dt, n) in addMthInputs)
+        {
+            string label = dt == DateTimeUtil.NullDate() ? "empty" : dt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            var res = DateTimeUtil.AddMth(dt, n);
+            string resStr = res == DateTimeUtil.NullDate() ? "empty" : res.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            Console.WriteLine($"addmth|{label}|{n}=[{resStr}]");
+        }
+
+        // 4. DAdd
+        (DateTime dt, int n)[] daddInputs = [
+            (new DateTime(2024, 2, 28, 10, 0, 0), 1),  // Feb 28 + 1 -> Feb 29 (leap)
+            (new DateTime(2024, 2, 28, 10, 0, 0), 2),  // Feb 28 + 2 -> Mar 1 (leap)
+            (new DateTime(2023, 2, 28, 10, 0, 0), 1),  // Feb 28 + 1 -> Mar 1 (non-leap)
+            (new DateTime(2024, 1, 1, 0, 0, 0), -1),   // cross-year backward
+            (new DateTime(2023, 12, 31, 0, 0, 0), 1),  // cross-year forward
+            (DateTimeUtil.NullDate(), 1),
+            (DateTimeUtil.NullDate(), -1),
+        ];
+        foreach (var (dt, n) in daddInputs)
+        {
+            string label = dt == DateTimeUtil.NullDate() ? "empty" : dt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            var res = DateTimeUtil.DAdd(dt, n);
+            string resStr = res == DateTimeUtil.NullDate() ? "empty" : res.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            Console.WriteLine($"dadd|{label}|{n}=[{resStr}]");
+        }
+
+        // 5. TAdd
+        (DateTime dt, int s)[] taddInputs = [
+            (new DateTime(2024, 1, 1, 0, 0, 0), 60),
+            (new DateTime(2024, 1, 1, 23, 59, 30), 60), // rolls over day
+            (new DateTime(2024, 1, 1, 0, 0, 30), -60),  // rolls back day
+            (DateTimeUtil.NullDate(), 10),
+        ];
+        foreach (var (dt, s) in taddInputs)
+        {
+            string label = dt == DateTimeUtil.NullDate() ? "empty" : dt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            var res = DateTimeUtil.TAdd(dt, s);
+            string resStr = res == DateTimeUtil.NullDate() ? "empty" : res.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            Console.WriteLine($"tadd|{label}|{s}=[{resStr}]");
+        }
+
+        // 6. DDiff and TDiff
+        (DateTime dt1, DateTime dt2)[] diffInputs = [
+            (new DateTime(2024, 3, 1, 0, 0, 0), new DateTime(2024, 2, 28, 0, 0, 0)), // 2 days in leap year
+            (new DateTime(2023, 3, 1, 0, 0, 0), new DateTime(2023, 2, 28, 0, 0, 0)), // 1 day in non-leap year
+            (new DateTime(2023, 2, 28, 0, 0, 0), new DateTime(2023, 3, 1, 0, 0, 0)), // negative
+            (new DateTime(2024, 1, 1, 12, 0, 0), new DateTime(2024, 1, 1, 11, 30, 0)), // 1800s
+        ];
+        foreach (var (dt1, dt2) in diffInputs)
+        {
+            string l1 = dt1.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            string l2 = dt2.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            Console.WriteLine($"ddiff|{l1}|{l2}=[{DateTimeUtil.DDiff(dt1, dt2)}]");
+            Console.WriteLine($"tdiff|{l1}|{l2}=[{DateTimeUtil.TDiff(dt1, dt2)}]");
+        }
+
+        // 7. Age
+        (DateTime birth, DateTime current)[] ageInputs = [
+            (new DateTime(2000, 5, 15, 0, 0, 0), new DateTime(2024, 5, 15, 0, 0, 0)), // exact birthday -> 24
+            (new DateTime(2000, 5, 15, 0, 0, 0), new DateTime(2024, 5, 14, 0, 0, 0)), // day before -> 23
+            (new DateTime(2000, 5, 15, 0, 0, 0), new DateTime(2024, 5, 16, 0, 0, 0)), // day after -> 24
+            (new DateTime(2000, 2, 29, 0, 0, 0), new DateTime(2023, 2, 28, 0, 0, 0)), // leap birth in non-leap -> 22
+            (new DateTime(2000, 2, 29, 0, 0, 0), new DateTime(2024, 2, 29, 0, 0, 0)), // leap birth in leap -> 24
+        ];
+        foreach (var (birth, current) in ageInputs)
+        {
+            string lb = birth.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            string lc = current.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            Console.WriteLine($"age|{lb}|{lc}=[{DateTimeUtil.Age(birth, current)}]");
+        }
+
+        // 8. EndOfMonth and ResetTime
+        DateTime[] endOfMonthInputs = [
+            new DateTime(2024, 2, 10, 14, 30, 0), // leap Feb -> 29
+            new DateTime(2023, 2, 10, 14, 30, 0), // non-leap Feb -> 28
+            new DateTime(2024, 4, 5, 12, 0, 0),   // Apr -> 30
+            new DateTime(2024, 1, 15, 8, 15, 0),  // Jan -> 31
+            new DateTime(2024, 12, 1, 0, 0, 0),   // Dec -> 31
+        ];
+        foreach (var dt in endOfMonthInputs)
+        {
+            string label = dt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            var eom = DateTimeUtil.EndOfMonth(dt);
+            Console.WriteLine($"endofmonth|{label}=[{eom.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture)}]");
+            var rt = DateTimeUtil.ResetTime(dt);
+            Console.WriteLine($"resettime|{label}=[{rt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture)}]");
+        }
     }
 
     private static string Escape(string s) => s.Replace("\t", "\\t").Replace("\n", "\\n").Replace("\r", "\\r");

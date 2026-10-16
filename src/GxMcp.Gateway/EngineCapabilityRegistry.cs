@@ -133,6 +133,15 @@ namespace GxMcp.Gateway
                 notes: "Measured against GeneXus.Utils.GxSimpleCollection<T>, GeneXus.Utils.GXBaseCollection<T>, and GeneXus.Utils.IGxCollection in genexus.classes.core: Add(item, 0) appends, Add(item, idx>0) inserts at idx-1; Remove(idx) with idx<=0 or idx>Count is a safe no-op matching SDK; IndexOf returns 1-based index or 0 when absent; For &item in &col aliases elements allowing in-loop updates; Exit breaks out of the enclosing loop. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "calendar_operations",
+                title: "Calendar functions and Date/DateTime methods (Day, Month, Year, Hour, Minute, Sec, Dow, AddYr, AddMth, DAdd, TAdd, DDiff, TDiff, Age, EndOfMonth, ResetTime)",
+                engineSurface: "frontend statement/expression grammar + Date and DateTime typed runtime methods",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (83 recorded native DateTimeUtil oracle rows: components, leap day clamping, day of week indexing 1=Sunday, forward/backward date and second arithmetic, day/second differences, completed years age calculation, end-of-month and time reset); src/gx-engine/tests/fixtures/calendar_ops_native.tsv; src/gx-engine/tests/calendar_ops.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GeneXus.Utils.DateTimeUtil in genexus.classes.core: Day/Month/Year/Hour/Minute/Second return 0 on empty/nullDate; Dow returns 1 for Sunday through 7 for Saturday and 0 on nullDate; AddYr/AddMth clamp day to target month length; DAdd/TAdd handle day/second rollover; DDiff returns total days truncated to integer; TDiff returns total seconds; Age computes completed years decremented if birthday has not occurred; EndOfMonth clamps day to DaysInMonth preserving time; ResetTime zeroes time to 00:00:00. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",

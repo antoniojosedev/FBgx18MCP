@@ -618,22 +618,32 @@ impl Emitter<'_> {
             }
             Expr::DateShift(method, receiver, offset) => {
                 let (receiver_kind, receiver) = self.lower(receiver, assigned, prelude)?;
+                if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
+                    return Err("calendar shift receiver must be Date or DateTime".into());
+                }
                 if method == "DIFFERENCE" {
-                    if receiver_kind != Kind::DateTime {
-                        return Err("Difference receiver must be DateTime".into());
+                    if receiver_kind == Kind::Date {
+                        let offset = self.lower_expect(offset, assigned, Kind::Date, prelude)?;
+                        (
+                            Kind::Numeric,
+                            format!("Decimal::from(({receiver}).difference({offset}))"),
+                        )
+                    } else {
+                        let offset =
+                            self.lower_expect(offset, assigned, Kind::DateTime, prelude)?;
+                        (
+                            Kind::Numeric,
+                            format!("Decimal::from(({receiver}).difference({offset}))"),
+                        )
                     }
-                    let offset = self.lower_expect(offset, assigned, Kind::DateTime, prelude)?;
-                    (
-                        Kind::Numeric,
-                        format!(
-                            "({receiver}).difference({offset}).to_string().parse::<Decimal>()?"
-                        ),
-                    )
                 } else {
                     let offset = self.lower_expect(offset, assigned, Kind::Numeric, prelude)?;
                     let method = match (receiver_kind, method.as_str()) {
-                        (Kind::Date, "ADDMONTHS") => "add_months",
-                        (Kind::Date, "ADDYEARS") => "add_years",
+                        (Kind::Date, "ADDMONTHS") | (Kind::DateTime, "ADDMONTHS") => "add_months",
+                        (Kind::Date, "ADDYEARS") | (Kind::DateTime, "ADDYEARS") => "add_years",
+                        (Kind::Date, "ADDDAYS") | (Kind::DateTime, "ADDDAYS") => "add_days",
+                        (Kind::DateTime, "ADDHOURS") => "add_hours",
+                        (Kind::DateTime, "ADDMINUTES") => "add_minutes",
                         (Kind::DateTime, "ADDSECONDS") => "add_seconds",
                         _ => return Err("unsupported calendar shift receiver/method".into()),
                     };
@@ -655,14 +665,14 @@ impl Emitter<'_> {
                         "YEAR" => "year",
                         "MONTH" => "month",
                         "DAY" => "day",
-                        "HOUR" if receiver_kind == Kind::DateTime => "hour",
-                        "MINUTE" if receiver_kind == Kind::DateTime => "minute",
-                        "SECOND" if receiver_kind == Kind::DateTime => "second",
+                        "HOUR" => "hour",
+                        "MINUTE" => "minute",
+                        "SECOND" => "second",
                         _ => return Err("unsupported calendar component".into()),
                     };
                     (
                         Kind::Numeric,
-                        format!("({value}).{method}().to_string().parse::<Decimal>()?"),
+                        format!("Decimal::from(({value}).{method}())"),
                     )
                 }
             }
@@ -965,6 +975,155 @@ impl Emitter<'_> {
                         "Text::new(&types::format_str({val}, ({len}).to_i64()? as u8, ({dec}).to_i64()? as u8)?.trim_start_matches(' '))?"
                     ),
                 )
+            }
+            Expr::Call(name, args)
+                if matches!(
+                    name.as_str(),
+                    "DAY" | "MONTH" | "YEAR" | "HOUR" | "MINUTE" | "SECOND" | "SEC" | "DOW"
+                ) =>
+            {
+                if args.len() != 1 {
+                    return Err(format!("{name} expects exactly one argument"));
+                }
+                let (receiver_kind, value) = self.lower(&args[0], assigned, prelude)?;
+                if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
+                    return Err(format!("{name} argument must be Date or DateTime"));
+                }
+                let method = match name.as_str() {
+                    "DAY" => "day",
+                    "MONTH" => "month",
+                    "YEAR" => "year",
+                    "HOUR" => "hour",
+                    "MINUTE" => "minute",
+                    "SECOND" | "SEC" => "second",
+                    "DOW" => "day_of_week",
+                    _ => unreachable!(),
+                };
+                (
+                    Kind::Numeric,
+                    format!("Decimal::from(({value}).{method}())"),
+                )
+            }
+            Expr::Call(name, args)
+                if matches!(name.as_str(), "ADDYR" | "ADDMTH" | "ADDDAYS" | "DADD") =>
+            {
+                if args.len() != 2 {
+                    return Err(format!("{name} expects two arguments"));
+                }
+                let (receiver_kind, value) = self.lower(&args[0], assigned, prelude)?;
+                if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
+                    return Err(format!("{name} first argument must be Date or DateTime"));
+                }
+                let offset = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                let method = match name.as_str() {
+                    "ADDYR" => "add_years",
+                    "ADDMTH" => "add_months",
+                    "ADDDAYS" | "DADD" => "add_days",
+                    _ => unreachable!(),
+                };
+                (
+                    receiver_kind,
+                    format!("({value}).{method}(({offset}).to_i64()?)?"),
+                )
+            }
+            Expr::Call(name, args) if name == "TADD" => {
+                if args.len() != 2 {
+                    return Err("TAdd expects two arguments".into());
+                }
+                let dt = self.lower_expect(&args[0], assigned, Kind::DateTime, prelude)?;
+                let seconds = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (
+                    Kind::DateTime,
+                    format!("({dt}).add_seconds(({seconds}).to_i64()?)?"),
+                )
+            }
+            Expr::Call(name, args) if name == "DDIFF" => {
+                if args.len() != 2 {
+                    return Err("DDiff expects two arguments".into());
+                }
+                let (k1, v1) = self.lower(&args[0], assigned, prelude)?;
+                let (k2, v2) = self.lower(&args[1], assigned, prelude)?;
+                if !matches!(k1, Kind::Date | Kind::DateTime) || k1 != k2 {
+                    return Err("DDiff requires two Date or two DateTime arguments".into());
+                }
+                if k1 == Kind::Date {
+                    (
+                        Kind::Numeric,
+                        format!("Decimal::from(({v1}).difference({v2}))"),
+                    )
+                } else {
+                    (
+                        Kind::Numeric,
+                        format!("Decimal::from(({v1}).difference({v2}) / 86400)"),
+                    )
+                }
+            }
+            Expr::Call(name, args) if name == "TDIFF" => {
+                if args.len() != 2 {
+                    return Err("TDiff expects two DateTime arguments".into());
+                }
+                let v1 = self.lower_expect(&args[0], assigned, Kind::DateTime, prelude)?;
+                let v2 = self.lower_expect(&args[1], assigned, Kind::DateTime, prelude)?;
+                (
+                    Kind::Numeric,
+                    format!("Decimal::from(({v1}).difference({v2}))"),
+                )
+            }
+            Expr::Call(name, args) if name == "AGE" => {
+                if !(1..=2).contains(&args.len()) {
+                    return Err("Age expects one or two arguments".into());
+                }
+                let (k1, v1) = self.lower(&args[0], assigned, prelude)?;
+                if !matches!(k1, Kind::Date | Kind::DateTime) {
+                    return Err("Age argument must be Date or DateTime".into());
+                }
+                let v2 = if let Some(arg2) = args.get(1) {
+                    let (k2, v2) = self.lower(arg2, assigned, prelude)?;
+                    if k1 != k2 {
+                        return Err("Age arguments must both be Date or both DateTime".into());
+                    }
+                    v2
+                } else {
+                    return Err("Age with 1 argument requires system clock which is not supported in deterministic engine".into());
+                };
+                (Kind::Numeric, format!("Decimal::from(({v1}).age({v2}))"))
+            }
+            Expr::Call(name, args) if name == "ENDOFMONTH" => {
+                if args.len() != 1 {
+                    return Err("EndOfMonth expects exactly one argument".into());
+                }
+                let (k, v) = self.lower(&args[0], assigned, prelude)?;
+                if !matches!(k, Kind::Date | Kind::DateTime) {
+                    return Err("EndOfMonth argument must be Date or DateTime".into());
+                }
+                (k, format!("({v}).end_of_month()"))
+            }
+            Expr::Call(name, args) if name == "RESETTIME" => {
+                if args.len() != 1 {
+                    return Err("ResetTime expects exactly one argument".into());
+                }
+                let (k, v) = self.lower(&args[0], assigned, prelude)?;
+                if !matches!(k, Kind::Date | Kind::DateTime) {
+                    return Err("ResetTime argument must be Date or DateTime".into());
+                }
+                (k, format!("({v}).reset_time()"))
+            }
+            Expr::Call(name, args) if name == "TOSTRING" => {
+                if args.len() != 1 {
+                    return Err("ToString expects zero arguments on receiver".into());
+                }
+                let (kind, value) = self.lower(&args[0], assigned, prelude)?;
+                match kind {
+                    Kind::Text => (Kind::Text, value),
+                    Kind::Numeric => (Kind::Text, format!("Text::new(&({value}).to_string())?")),
+                    Kind::Date => (Kind::Text, format!("Text::new(&({value}).to_text())?")),
+                    Kind::DateTime => (Kind::Text, format!("Text::new(&({value}).to_text())?")),
+                    Kind::Boolean => (
+                        Kind::Text,
+                        format!("Text::new(if {value} {{ \"true\" }} else {{ \"false\" }})?"),
+                    ),
+                    _ => return Err("ToString receiver must be a primitive value".into()),
+                }
             }
             Expr::Call(name, args) if name == "YMDHMSTOT" => {
                 if args.len() != 6 {

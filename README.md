@@ -124,12 +124,12 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 Similar to video game decompilation projects, progress is measured capability-by-capability against verified differential runs of the official GeneXus SDK in clean Knowledge Bases.
 
 ```text
-Overall SDK Replacement: [🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜] 27.2% weighted (42.9% total areas touched: 24/56)
+Overall SDK Replacement: [🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜] 29.1% weighted (44.6% total areas touched: 25/56)
 ```
 
 | Subsystem | Progress | Status | Covered / Total |
 | :--- | :---: | :---: | :---: |
-| **Language & Runtime Core** (Math, Decimals, Text, Dates) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 8 / 8 areas |
+| **Language & Runtime Core** (Math, Decimals, Text, Dates, Calendar) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 8 / 8 areas |
 | **Control Flow & Procedure Pipeline** (`If`, `For`, `For In`, `Exit`, `Case`, `Call`) | `[🟩🟩🟩🟩🟩🟩🟩⬜⬜⬜]  66.7%` | Native Parity Subset | 4 / 6 areas |
 | **Structured Data & Collections** (SDT, `Add`, `Remove`, `Clear`, `IndexOf`, `Item`) | `[🟩🟩🟩🟩🟩🟩⬜⬜⬜⬜]  60.0%` | Native Parity Subset | 3 / 5 areas |
 | **Portable KB Catalog & XML Projection** (`ExportFile` XML) | `[🟩🟩🟩⬜⬜⬜⬜⬜⬜⬜]  33.3%` | Bounded Projection | 2 / 6 areas |
@@ -150,6 +150,7 @@ The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) wh
 | `text_extended_functions` | 🟩 **Parity** | `LTrim`/`RTrim`/`PadL`/`PadR`/`Space`/`Concat`/`StartsWith`/`EndsWith`/`Contains`/`StrSearch`: 95 native `StringUtil` oracle rows verified (exact ASCII space trim, left/right pad truncation, single-sided concat trim, ordinal comparisons, 1-based index clamping). |
 | `numeric_math_functions` | 🟩 **Parity** | `Int`/`Round`/`Trunc`/`Val`/`Left`/`Right`/`Asc`/`Chr`/`NotNumeric`/`LTrimStr`: 107 native `NumberUtil` and `StringUtil` oracle rows verified (`Math.Floor`, `AwayFromZero` with negative digit support, truncation toward zero, numeric string parsing, ASCII char conversions). |
 | `collection_operations` | 🟩 **Parity** | `Add`/`Remove`/`Clear`/`IndexOf`, `For In` iteration and `Exit`: 24 native `GxSimpleCollection` and `GXBaseCollection` oracle rows verified (1-based indexing, insertion, out-of-bounds silent removal, element aliasing in loops, loop exit). |
+| `calendar_operations` | 🟩 **Parity** | `Day`/`Month`/`Year`/`Hour`/`Minute`/`Sec`/`Dow`, `AddYr`/`AddMth`/`DAdd`/`TAdd`, `DDiff`/`TDiff`, `Age`, `EndOfMonth`, `ResetTime`, and `.ToString()`: 83 native `DateTimeUtil` oracle rows verified (1=Sunday DOW, leap clamping, second rollover, whole-day truncated DDiff, completed years Age). |
 | `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟨 **Partial** | Independently implemented in portable compiler and tested with synthetic or bounded fixtures; pending full parity claims. |
 | `native_kb_read`, `sql_navigation`, `general_gx_surface` | ⬜ **Unsupported** | Not yet implemented in Rust. Always served 100% by the GeneXus SDK / Worker. |
 

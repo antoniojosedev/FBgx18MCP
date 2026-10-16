@@ -13,7 +13,7 @@ fn before_year(year: i64) -> i64 {
     let y = year - 1;
     y * 365 + y / 4 - y / 100 + y / 400
 }
-fn month_days(year: i64, month: i64) -> i64 {
+pub(crate) fn month_days(year: i64, month: i64) -> i64 {
     match month {
         2 => {
             if leap(year) {
@@ -147,5 +147,44 @@ impl Date {
     }
     pub fn day(self) -> i64 {
         self.components().2
+    }
+    pub fn hour(self) -> i64 {
+        0
+    }
+    pub fn minute(self) -> i64 {
+        0
+    }
+    pub fn second(self) -> i64 {
+        0
+    }
+    pub fn day_of_week(self) -> i64 {
+        if self.is_empty() {
+            return 0;
+        }
+        let ordinal = i64::from(self.0);
+        (ordinal + 1) % 7 + 1
+    }
+    pub fn end_of_month(self) -> Self {
+        if self.is_empty() {
+            return self;
+        }
+        let (year, month, _day) = self.components();
+        let last_day = month_days(year, month);
+        Self::full_year_date(year, month, last_day).unwrap_or(self)
+    }
+    pub fn reset_time(self) -> Self {
+        self
+    }
+    pub fn age(self, current: Self) -> i64 {
+        if self.is_empty() || current.is_empty() {
+            return 0;
+        }
+        let (b_year, b_month, b_day) = self.components();
+        let (c_year, c_month, c_day) = current.components();
+        let mut age = c_year - b_year;
+        if c_month < b_month || (c_month == b_month && c_day < b_day) {
+            age -= 1;
+        }
+        age
     }
 }
