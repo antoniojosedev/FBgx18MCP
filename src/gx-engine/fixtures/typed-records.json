@@ -1,0 +1,10 @@
+{
+  "format_version": 2,
+  "entry": "Main",
+  "record_types": [{"name": "Probe", "fields": {"Amount": {"kind": "numeric", "precision": 4, "scale": 0}}}],
+  "procedures": [{
+    "name": "Main", "params": [],
+    "variables": {"First": {"kind": "record", "schema": "Probe"}, "Second": {"kind": "record", "schema": "Probe"}},
+    "source": "&First = new()\nPrint(&First.Amount)\n&First.Amount = 7\n&Second = &First\n&Second.Amount = 9\nPrint(&First.Amount)\nPrint(&Second.Amount)\n&Second = &First.Clone()\n&Second.Amount = 11\nPrint(&First.Amount)\nPrint(&Second.Amount)"
+  }]
+}

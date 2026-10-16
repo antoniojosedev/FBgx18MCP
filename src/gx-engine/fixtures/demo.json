@@ -1,0 +1,16 @@
+{
+  "format_version": 1,
+  "entry": "main",
+  "procedures": [
+    {
+      "name": "main",
+      "params": [],
+      "source": "&number = 21\n&result = double(&number)\n&count = 0\nIf &result > 0\nDo While &count < 2\nPrint(&result)\n&count = &count + 1\nEndDo\nElse\nPrint(0)\nEndIf\nReturn &result"
+    },
+    {
+      "name": "double",
+      "params": ["number"],
+      "source": "Return &number * 2"
+    }
+  ]
+}

@@ -1,0 +1,1147 @@
+//! Semantic validation and deterministic Rust emission for the portable engine subset.
+//!
+//! Procedures that reach their end without an explicit `Return` produce `0`.
+//! Print remains available in every procedure. Calls carry bounded call-depth
+//! and shared execution-budget checks.
+
+use crate::frontend::{BinOp, Expr, Procedure, Stmt};
+use std::collections::HashMap;
+use std::fmt::Write as _;
+
+const MAX_PROCEDURES: usize = 1_024;
+const MAX_PARAMETERS: usize = 1_024;
+const MAX_IDENTIFIER_BYTES: usize = 128;
+const MAX_AST_DEPTH: usize = 128;
+const MAX_AST_NODES: usize = 20_000;
+const MAX_GENERATED_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RUNTIME_CALL_DEPTH: u32 = 128;
+const MAX_RUNTIME_STEPS: u64 = 100_000;
+
+#[derive(Debug)]
+struct ProcedureInfo {
+    variables: HashMap<String, usize>,
+    parameter_slots: Vec<usize>,
+    local_count: usize,
+    falls_through: bool,
+}
+
+impl ProcedureInfo {
+    fn new() -> Self {
+        Self {
+            variables: HashMap::new(),
+            parameter_slots: Vec::new(),
+            local_count: 0,
+            falls_through: false,
+        }
+    }
+
+    fn add_variable(&mut self, key: String) -> usize {
+        if let Some(&slot) = self.variables.get(&key) {
+            return slot;
+        }
+        let slot = self.local_count;
+        self.local_count += 1;
+        self.variables.insert(key, slot);
+        slot
+    }
+}
+
+#[derive(Default)]
+struct AstBudget {
+    nodes: usize,
+}
+
+impl AstBudget {
+    fn visit(&mut self) -> Result<(), String> {
+        self.nodes += 1;
+        if self.nodes > MAX_AST_NODES {
+            return Err(format!(
+                "project AST exceeds the {MAX_AST_NODES}-node limit"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Validate a portable procedure AST and emit standalone Rust source.
+///
+/// User-provided identifiers are validated and used only for case-insensitive
+/// lookup. Emitted identifiers are generated from stable procedure/slot indices;
+/// source names are never interpolated into the Rust program.
+pub fn emit(procedures: &[Procedure], entry: &str) -> Result<String, String> {
+    if procedures.is_empty() {
+        return Err("project must contain at least one procedure".to_string());
+    }
+    if procedures.len() > MAX_PROCEDURES {
+        return Err(format!(
+            "project exceeds the {MAX_PROCEDURES}-procedure limit"
+        ));
+    }
+
+    let entry_key = identifier_key(entry, "entry procedure")?;
+    let mut procedure_indices = HashMap::with_capacity(procedures.len());
+    for (index, procedure) in procedures.iter().enumerate() {
+        let key = identifier_key(&procedure.name, "procedure")?;
+        if let Some(previous) = procedure_indices.insert(key, index) {
+            return Err(format!(
+                "procedure names at indices {previous} and {index} are duplicates ignoring ASCII case"
+            ));
+        }
+    }
+    let entry_index = *procedure_indices
+        .get(&entry_key)
+        .ok_or_else(|| "entry procedure does not exist".to_string())?;
+    if !procedures[entry_index].params.is_empty() {
+        return Err("entry procedure must have zero parameters".to_string());
+    }
+
+    let mut infos: Vec<ProcedureInfo> = procedures
+        .iter()
+        .map(|procedure| {
+            if procedure.params.len() > MAX_PARAMETERS {
+                return Err(format!(
+                    "procedure has more than {MAX_PARAMETERS} parameters"
+                ));
+            }
+            let mut info = ProcedureInfo::new();
+            for (parameter_index, parameter) in procedure.params.iter().enumerate() {
+                let key = identifier_key(parameter, "parameter")?;
+                if info.variables.contains_key(&key) {
+                    return Err(format!(
+                        "procedure has duplicate parameter names ignoring ASCII case (parameter {parameter_index})"
+                    ));
+                }
+                let slot = info.add_variable(key);
+                info.parameter_slots.push(slot);
+            }
+            Ok(info)
+        })
+        .collect::<Result<_, String>>()?;
+
+    let mut budget = AstBudget::default();
+    for (index, procedure) in procedures.iter().enumerate() {
+        collect_block(&procedure.body, 0, &mut budget, &mut infos[index])?;
+    }
+
+    for (index, procedure) in procedures.iter().enumerate() {
+        let mut assigned = vec![false; infos[index].local_count];
+        for &slot in &infos[index].parameter_slots {
+            assigned[slot] = true;
+        }
+        infos[index].falls_through = validate_block(
+            &procedure.body,
+            0,
+            index,
+            entry_index,
+            &procedure_indices,
+            procedures,
+            &infos,
+            &mut assigned,
+        )?;
+    }
+
+    let mut source = String::new();
+    source.push_str(
+        r#"// Generated by gx-engine. A procedure path that reaches its end returns 0.
+#![forbid(unsafe_code)]
+
+use std::sync::atomic::{AtomicU64, Ordering};
+"#,
+    );
+    writeln!(
+        source,
+        "static __GX_EXECUTION_BUDGET: AtomicU64 = AtomicU64::new({MAX_RUNTIME_STEPS});\n"
+    )
+    .unwrap();
+    source.push_str(
+        r#"
+fn __gx_fail(message: &str) -> ! {
+    eprintln!("gx-engine runtime error: {message}");
+    std::process::exit(70)
+}
+
+fn __gx_tick() {
+    if __GX_EXECUTION_BUDGET
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| remaining.checked_sub(1))
+        .is_err()
+    {
+        __gx_fail("execution step limit exceeded");
+    }
+}
+
+fn __gx_add(left: i64, right: i64) -> i64 {
+    match left.checked_add(right) {
+        Some(value) => value,
+        None => __gx_fail("integer addition overflow"),
+    }
+}
+
+fn __gx_sub(left: i64, right: i64) -> i64 {
+    match left.checked_sub(right) {
+        Some(value) => value,
+        None => __gx_fail("integer subtraction overflow"),
+    }
+}
+
+fn __gx_mul(left: i64, right: i64) -> i64 {
+    match left.checked_mul(right) {
+        Some(value) => value,
+        None => __gx_fail("integer multiplication overflow"),
+    }
+}
+
+fn __gx_div(left: i64, right: i64) -> i64 {
+    if right == 0 {
+        __gx_fail("division by zero");
+    }
+    match left.checked_div(right) {
+        Some(value) => value,
+        None => __gx_fail("integer division overflow"),
+    }
+}
+
+fn __gx_neg(value: i64) -> i64 {
+    match value.checked_neg() {
+        Some(result) => result,
+        None => __gx_fail("integer negation overflow"),
+    }
+}
+
+"#,
+    );
+
+    for (index, procedure) in procedures.iter().enumerate() {
+        emit_procedure(
+            &mut source,
+            index,
+            procedure,
+            &infos[index],
+            &procedure_indices,
+            &infos,
+        )?;
+    }
+
+    writeln!(
+        source,
+        "fn main() {{\n    let _ = __gx_proc_{entry_index}(0_u32);\n}}"
+    )
+    .unwrap();
+    if source.len() > MAX_GENERATED_SOURCE_BYTES {
+        return Err(format!(
+            "generated Rust source exceeds the {MAX_GENERATED_SOURCE_BYTES}-byte limit"
+        ));
+    }
+    Ok(source)
+}
+
+fn identifier_key(value: &str, kind: &str) -> Result<String, String> {
+    let valid = !value.is_empty()
+        && value.len() <= MAX_IDENTIFIER_BYTES
+        && (value.as_bytes()[0].is_ascii_alphabetic() || value.as_bytes()[0] == b'_')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if !valid {
+        return Err(format!(
+            "invalid {kind} identifier; expected 1-128 ASCII letters, digits, or underscores, starting with a letter or underscore"
+        ));
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
+fn collect_block(
+    statements: &[Stmt],
+    depth: usize,
+    budget: &mut AstBudget,
+    info: &mut ProcedureInfo,
+) -> Result<(), String> {
+    if depth > MAX_AST_DEPTH {
+        return Err(format!(
+            "statement nesting exceeds the {MAX_AST_DEPTH}-level limit"
+        ));
+    }
+    for statement in statements {
+        budget.visit()?;
+        match statement {
+            Stmt::Assign(name, expression) => {
+                let key = identifier_key(name, "variable")?;
+                info.add_variable(key);
+                collect_expr(expression, 0, budget)?;
+            }
+            Stmt::Print(expression) | Stmt::Return(expression) => {
+                collect_expr(expression, 0, budget)?;
+            }
+            Stmt::Call(_) => {
+                return Err("procedure call statements require format_version 2".into());
+            }
+            Stmt::For(..) => {
+                return Err("For requires format_version 2".into());
+            }
+            Stmt::AssignField(_, _, _) | Stmt::CollectionAdd(_, _) => {
+                return Err("record fields require format_version 2".into());
+            }
+            Stmt::ReturnVoid => {
+                return Err("bare Return requires format_version 2".into());
+            }
+            Stmt::MsgStatus(_) => {
+                return Err("Msg status requires format_version 2".into());
+            }
+            Stmt::If(condition, then_body, else_body) => {
+                collect_expr(condition, 0, budget)?;
+                collect_block(then_body, depth + 1, budget, info)?;
+                collect_block(else_body, depth + 1, budget, info)?;
+            }
+            Stmt::While(condition, body) => {
+                collect_expr(condition, 0, budget)?;
+                collect_block(body, depth + 1, budget, info)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_expr(expression: &Expr, depth: usize, budget: &mut AstBudget) -> Result<(), String> {
+    if depth > MAX_AST_DEPTH {
+        return Err(format!(
+            "expression nesting exceeds the {MAX_AST_DEPTH}-level limit"
+        ));
+    }
+    budget.visit()?;
+    match expression {
+        Expr::Integer(_)
+        | Expr::Decimal(_)
+        | Expr::Text(_)
+        | Expr::Boolean(_)
+        | Expr::EmptyDate => {}
+        Expr::Member(_, _) | Expr::CloneRecord(_) | Expr::CollectionItem(_, _) => {
+            return Err("record expressions require format_version 2".into());
+        }
+        Expr::Variable(name) | Expr::Call(name, _) => {
+            identifier_key(
+                name,
+                if matches!(expression, Expr::Call(_, _)) {
+                    "call"
+                } else {
+                    "variable"
+                },
+            )?;
+            if let Expr::Call(_, arguments) = expression {
+                for argument in arguments {
+                    collect_expr(argument, depth + 1, budget)?;
+                }
+            }
+        }
+        Expr::Binary(left, _, right) | Expr::DateShift(_, left, right) => {
+            collect_expr(left, depth + 1, budget)?;
+            collect_expr(right, depth + 1, budget)?;
+        }
+        Expr::Negate(operand)
+        | Expr::Not(operand)
+        | Expr::TextLength(operand)
+        | Expr::DateMethod(_, operand) => collect_expr(operand, depth + 1, budget)?,
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_block(
+    statements: &[Stmt],
+    depth: usize,
+    procedure_index: usize,
+    entry_index: usize,
+    procedure_indices: &HashMap<String, usize>,
+    procedures: &[Procedure],
+    infos: &[ProcedureInfo],
+    assigned: &mut [bool],
+) -> Result<bool, String> {
+    if depth > MAX_AST_DEPTH {
+        return Err(format!(
+            "statement nesting exceeds the {MAX_AST_DEPTH}-level limit"
+        ));
+    }
+    let mut falls_through = true;
+    for (statement_index, statement) in statements.iter().enumerate() {
+        if !falls_through {
+            return Err(format!(
+                "procedure {procedure_index} has an unreachable statement at index {statement_index}"
+            ));
+        }
+        falls_through = match statement {
+            Stmt::Call(_) => {
+                return Err("procedure call statements require format_version 2".into());
+            }
+            Stmt::For(..) => {
+                return Err("For requires format_version 2".into());
+            }
+            Stmt::AssignField(_, _, _) | Stmt::CollectionAdd(_, _) => {
+                return Err("record fields require format_version 2".into());
+            }
+            Stmt::ReturnVoid => {
+                return Err("bare Return requires format_version 2".into());
+            }
+            Stmt::MsgStatus(_) => {
+                return Err("Msg status requires format_version 2".into());
+            }
+            Stmt::Assign(name, expression) => {
+                validate_expr(
+                    expression,
+                    0,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    assigned,
+                )?;
+                let key = identifier_key(name, "variable")?;
+                let slot = infos[procedure_index].variables[&key];
+                assigned[slot] = true;
+                true
+            }
+            Stmt::Print(expression) => {
+                validate_expr(
+                    expression,
+                    0,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    assigned,
+                )?;
+                true
+            }
+            Stmt::Return(expression) => {
+                validate_expr(
+                    expression,
+                    0,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    assigned,
+                )?;
+                false
+            }
+            Stmt::If(condition, then_body, else_body) => {
+                validate_expr(
+                    condition,
+                    0,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    assigned,
+                )?;
+                let before = assigned.to_vec();
+                let mut then_assigned = before.clone();
+                let mut else_assigned = before.clone();
+                let then_falls = validate_block(
+                    then_body,
+                    depth + 1,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    &mut then_assigned,
+                )?;
+                let else_falls = validate_block(
+                    else_body,
+                    depth + 1,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    &mut else_assigned,
+                )?;
+                match (then_falls, else_falls) {
+                    (true, true) => {
+                        for ((out, then_value), else_value) in
+                            assigned.iter_mut().zip(then_assigned).zip(else_assigned)
+                        {
+                            *out = then_value && else_value;
+                        }
+                        true
+                    }
+                    (true, false) => {
+                        assigned.copy_from_slice(&then_assigned);
+                        true
+                    }
+                    (false, true) => {
+                        assigned.copy_from_slice(&else_assigned);
+                        true
+                    }
+                    (false, false) => false,
+                }
+            }
+            Stmt::While(condition, body) => {
+                validate_expr(
+                    condition,
+                    0,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    assigned,
+                )?;
+                let mut body_assigned = assigned.to_vec();
+                let _ = validate_block(
+                    body,
+                    depth + 1,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    &mut body_assigned,
+                )?;
+                // The loop may run zero times, so its assignments are not definite.
+                true
+            }
+        };
+    }
+    Ok(falls_through)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_expr(
+    expression: &Expr,
+    depth: usize,
+    procedure_index: usize,
+    entry_index: usize,
+    procedure_indices: &HashMap<String, usize>,
+    procedures: &[Procedure],
+    infos: &[ProcedureInfo],
+    assigned: &[bool],
+) -> Result<(), String> {
+    if depth > MAX_AST_DEPTH {
+        return Err(format!(
+            "expression nesting exceeds the {MAX_AST_DEPTH}-level limit"
+        ));
+    }
+    match expression {
+        Expr::Integer(_) => Ok(()),
+        Expr::Decimal(_)
+        | Expr::Text(_)
+        | Expr::Boolean(_)
+        | Expr::EmptyDate
+        | Expr::TextLength(_)
+        | Expr::DateMethod(_, _)
+        | Expr::Member(_, _)
+        | Expr::CollectionItem(_, _)
+        | Expr::CloneRecord(_)
+        | Expr::DateShift(_, _, _) => Err("typed literals require format_version 2".into()),
+        Expr::Variable(name) => {
+            let key = identifier_key(name, "variable")?;
+            let Some(&slot) = infos[procedure_index].variables.get(&key) else {
+                return Err(format!(
+                    "procedure {procedure_index} reads an undeclared or unassigned variable"
+                ));
+            };
+            if !assigned[slot] {
+                return Err(format!(
+                    "procedure {procedure_index} reads a variable before assignment"
+                ));
+            }
+            Ok(())
+        }
+        Expr::Call(name, arguments) => {
+            let key = identifier_key(name, "call")?;
+            let Some(&callee_index) = procedure_indices.get(&key) else {
+                return Err(format!(
+                    "procedure {procedure_index} calls an unresolved procedure"
+                ));
+            };
+            if callee_index == entry_index {
+                return Err("the entry procedure cannot be called as a function".to_string());
+            }
+            let expected = procedures[callee_index].params.len();
+            if arguments.len() != expected {
+                return Err(format!(
+                    "call in procedure {procedure_index} passes {} arguments; callee expects {expected}",
+                    arguments.len()
+                ));
+            }
+            for argument in arguments {
+                validate_expr(
+                    argument,
+                    depth + 1,
+                    procedure_index,
+                    entry_index,
+                    procedure_indices,
+                    procedures,
+                    infos,
+                    assigned,
+                )?;
+            }
+            Ok(())
+        }
+        Expr::Binary(left, _, right) => {
+            validate_expr(
+                left,
+                depth + 1,
+                procedure_index,
+                entry_index,
+                procedure_indices,
+                procedures,
+                infos,
+                assigned,
+            )?;
+            validate_expr(
+                right,
+                depth + 1,
+                procedure_index,
+                entry_index,
+                procedure_indices,
+                procedures,
+                infos,
+                assigned,
+            )
+        }
+        Expr::Negate(operand) | Expr::Not(operand) => validate_expr(
+            operand,
+            depth + 1,
+            procedure_index,
+            entry_index,
+            procedure_indices,
+            procedures,
+            infos,
+            assigned,
+        ),
+    }
+}
+
+fn emit_procedure(
+    output: &mut String,
+    index: usize,
+    procedure: &Procedure,
+    info: &ProcedureInfo,
+    procedure_indices: &HashMap<String, usize>,
+    infos: &[ProcedureInfo],
+) -> Result<(), String> {
+    write!(output, "fn __gx_proc_{index}(__gx_depth: u32").unwrap();
+    for &slot in &info.parameter_slots {
+        write!(output, ", mut __gx_v{slot}: i64").unwrap();
+    }
+    output.push_str(") -> i64 {\n");
+    writeln!(
+        output,
+        "    if __gx_depth >= {MAX_RUNTIME_CALL_DEPTH}_u32 {{ __gx_fail(\"procedure call depth limit exceeded\"); }}"
+    )
+    .unwrap();
+    line(output, 1, "__gx_tick();");
+    for slot in info.parameter_slots.len()..info.local_count {
+        writeln!(output, "    let mut __gx_v{slot}: i64 = 0_i64;").unwrap();
+    }
+    emit_block(
+        output,
+        &procedure.body,
+        1,
+        index,
+        procedure_indices,
+        infos,
+        0,
+    )?;
+    if info.falls_through {
+        output.push_str("    0_i64\n");
+    }
+    output.push_str("}\n\n");
+    Ok(())
+}
+
+fn emit_block(
+    output: &mut String,
+    statements: &[Stmt],
+    indent: usize,
+    procedure_index: usize,
+    procedure_indices: &HashMap<String, usize>,
+    infos: &[ProcedureInfo],
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_AST_DEPTH {
+        return Err(format!(
+            "statement nesting exceeds the {MAX_AST_DEPTH}-level limit"
+        ));
+    }
+    for statement in statements {
+        match statement {
+            Stmt::Call(_) => {
+                return Err("procedure call statements require format_version 2".into());
+            }
+            Stmt::For(..) => {
+                return Err("For requires format_version 2".into());
+            }
+            Stmt::AssignField(_, _, _) | Stmt::CollectionAdd(_, _) => {
+                return Err("record fields require format_version 2".into());
+            }
+            Stmt::ReturnVoid => {
+                return Err("bare Return requires format_version 2".into());
+            }
+            Stmt::MsgStatus(_) => {
+                return Err("Msg status requires format_version 2".into());
+            }
+            Stmt::Assign(name, expression) => {
+                let key = identifier_key(name, "variable")?;
+                let slot = infos[procedure_index].variables[&key];
+                let expression =
+                    rust_expr(expression, procedure_index, procedure_indices, infos, 0)?;
+                line(output, indent, &format!("__gx_v{slot} = {expression};"));
+            }
+            Stmt::Print(expression) => {
+                let expression =
+                    rust_expr(expression, procedure_index, procedure_indices, infos, 0)?;
+                line(
+                    output,
+                    indent,
+                    &format!("println!(\"{{}}\", {expression});"),
+                );
+            }
+            Stmt::Return(expression) => {
+                let expression =
+                    rust_expr(expression, procedure_index, procedure_indices, infos, 0)?;
+                line(output, indent, &format!("return {expression};"));
+            }
+            Stmt::If(condition, then_body, else_body) => {
+                let condition = rust_expr(condition, procedure_index, procedure_indices, infos, 0)?;
+                line(output, indent, &format!("if ({condition}) != 0_i64 {{"));
+                emit_block(
+                    output,
+                    then_body,
+                    indent + 1,
+                    procedure_index,
+                    procedure_indices,
+                    infos,
+                    depth + 1,
+                )?;
+                line(output, indent, "} else {");
+                emit_block(
+                    output,
+                    else_body,
+                    indent + 1,
+                    procedure_index,
+                    procedure_indices,
+                    infos,
+                    depth + 1,
+                )?;
+                line(output, indent, "}");
+            }
+            Stmt::While(condition, body) => {
+                let condition = rust_expr(condition, procedure_index, procedure_indices, infos, 0)?;
+                line(output, indent, &format!("while ({condition}) != 0_i64 {{"));
+                line(output, indent + 1, "__gx_tick();");
+                emit_block(
+                    output,
+                    body,
+                    indent + 1,
+                    procedure_index,
+                    procedure_indices,
+                    infos,
+                    depth + 1,
+                )?;
+                line(output, indent, "}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn line(output: &mut String, indent: usize, text: &str) {
+    for _ in 0..indent {
+        output.push_str("    ");
+    }
+    output.push_str(text);
+    output.push('\n');
+}
+
+fn rust_expr(
+    expression: &Expr,
+    procedure_index: usize,
+    procedure_indices: &HashMap<String, usize>,
+    infos: &[ProcedureInfo],
+    depth: usize,
+) -> Result<String, String> {
+    if depth > MAX_AST_DEPTH {
+        return Err(format!(
+            "expression nesting exceeds the {MAX_AST_DEPTH}-level limit"
+        ));
+    }
+    match expression {
+        Expr::Decimal(_)
+        | Expr::Text(_)
+        | Expr::Boolean(_)
+        | Expr::EmptyDate
+        | Expr::TextLength(_)
+        | Expr::DateMethod(_, _)
+        | Expr::Member(_, _)
+        | Expr::CollectionItem(_, _)
+        | Expr::CloneRecord(_)
+        | Expr::DateShift(_, _, _) => Err("typed literals require format_version 2".into()),
+        Expr::Not(value) => Ok(format!(
+            "i64::from({} == 0)",
+            rust_expr(value, procedure_index, procedure_indices, infos, depth + 1)?
+        )),
+        Expr::Integer(value) if *value == i64::MIN => Ok("i64::MIN".to_string()),
+        Expr::Integer(value) => Ok(format!("{value}_i64")),
+        Expr::Variable(name) => {
+            let key = identifier_key(name, "variable")?;
+            let slot = infos[procedure_index].variables[&key];
+            Ok(format!("__gx_v{slot}"))
+        }
+        Expr::Call(name, arguments) => {
+            let key = identifier_key(name, "call")?;
+            let callee_index = procedure_indices[&key];
+            let mut emitted_arguments = Vec::with_capacity(arguments.len() + 1);
+            emitted_arguments.push("__gx_depth + 1_u32".to_string());
+            for argument in arguments {
+                emitted_arguments.push(rust_expr(
+                    argument,
+                    procedure_index,
+                    procedure_indices,
+                    infos,
+                    depth + 1,
+                )?);
+            }
+            Ok(format!(
+                "__gx_proc_{callee_index}({})",
+                emitted_arguments.join(", ")
+            ))
+        }
+        Expr::Binary(left, operator, right) => {
+            let left = rust_expr(left, procedure_index, procedure_indices, infos, depth + 1)?;
+            let right = rust_expr(right, procedure_index, procedure_indices, infos, depth + 1)?;
+            let left = format!("({left})");
+            let right = format!("({right})");
+            match operator {
+                BinOp::And => Ok(format!("i64::from({left} != 0 && {right} != 0)")),
+                BinOp::Or => Ok(format!("i64::from({left} != 0 || {right} != 0)")),
+                BinOp::Add => Ok(format!("__gx_add({left}, {right})")),
+                BinOp::Subtract => Ok(format!("__gx_sub({left}, {right})")),
+                BinOp::Multiply => Ok(format!("__gx_mul({left}, {right})")),
+                BinOp::Divide => Ok(format!("__gx_div({left}, {right})")),
+                BinOp::Equal => Ok(bool_number(&left, "==", &right)),
+                BinOp::NotEqual => Ok(bool_number(&left, "!=", &right)),
+                BinOp::Less => Ok(bool_number(&left, "<", &right)),
+                BinOp::LessEqual => Ok(bool_number(&left, "<=", &right)),
+                BinOp::Greater => Ok(bool_number(&left, ">", &right)),
+                BinOp::GreaterEqual => Ok(bool_number(&left, ">=", &right)),
+            }
+        }
+        Expr::Negate(operand) => Ok(format!(
+            "__gx_neg({})",
+            rust_expr(
+                operand,
+                procedure_index,
+                procedure_indices,
+                infos,
+                depth + 1,
+            )?
+        )),
+    }
+}
+
+fn bool_number(left: &str, operator: &str, right: &str) -> String {
+    format!("(if {left} {operator} {right} {{ 1_i64 }} else {{ 0_i64 }})")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn procedure(name: &str, params: &[&str], body: Vec<Stmt>) -> Procedure {
+        Procedure {
+            name: name.to_string(),
+            params: params.iter().map(|value| (*value).to_string()).collect(),
+            body,
+        }
+    }
+
+    fn add(left: Expr, right: Expr) -> Expr {
+        Expr::Binary(Box::new(left), BinOp::Add, Box::new(right))
+    }
+
+    fn call(name: &str, args: Vec<Expr>) -> Expr {
+        Expr::Call(name.to_string(), args)
+    }
+
+    fn main_with(expression: Expr) -> Procedure {
+        procedure("main", &[], vec![Stmt::Return(expression)])
+    }
+
+    #[test]
+    fn emits_deterministic_rust_using_generated_names_only() {
+        let procedures = vec![
+            procedure(
+                "double",
+                &["model_user_parameter"],
+                vec![Stmt::Return(add(
+                    Expr::Variable("MODEL_USER_PARAMETER".to_string()),
+                    Expr::Variable("model_user_parameter".to_string()),
+                ))],
+            ),
+            main_with(call("DOUBLE", vec![Expr::Integer(21)])),
+        ];
+        let first = emit(&procedures, "Main").unwrap();
+        let second = emit(&procedures, "main").unwrap();
+        assert_eq!(first, second);
+        assert!(first.contains("fn __gx_proc_0"));
+        assert!(first.contains("__gx_proc_0(__gx_depth + 1_u32, 21_i64)"));
+        assert!(!first.contains("double"));
+        assert!(!first.contains("model_user_parameter"));
+        assert!(first.contains("#![forbid(unsafe_code)]"));
+    }
+
+    #[test]
+    fn rejects_procedure_and_parameter_duplicates_ignoring_case() {
+        assert!(
+            emit(
+                &[main_with(Expr::Integer(0)), procedure("MAIN", &[], vec![])],
+                "main"
+            )
+            .unwrap_err()
+            .contains("duplicates")
+        );
+        let helper = procedure(
+            "helper",
+            &["Value", "value"],
+            vec![Stmt::Return(Expr::Integer(0))],
+        );
+        let entry = main_with(call("helper", vec![Expr::Integer(1), Expr::Integer(2)]));
+        assert!(
+            emit(&[helper, entry], "main")
+                .unwrap_err()
+                .contains("duplicate parameter")
+        );
+    }
+
+    #[test]
+    fn rejects_hostile_or_non_portable_identifiers_without_emitting_them() {
+        let hostile = "x; fn injected() {} //";
+        let error = emit(&[procedure(hostile, &[], vec![])], hostile).unwrap_err();
+        assert!(error.contains("invalid"));
+        assert!(!error.contains("injected"));
+
+        let error = emit(&[main_with(Expr::Variable("x); panic!()".into()))], "main").unwrap_err();
+        assert!(error.contains("invalid variable identifier"));
+    }
+
+    #[test]
+    fn resolves_calls_case_insensitively_and_checks_arity_and_targets() {
+        let helper = procedure(
+            "double",
+            &["x"],
+            vec![Stmt::Return(Expr::Variable("x".into()))],
+        );
+        assert!(
+            emit(
+                &[
+                    helper.clone(),
+                    main_with(call("DOUBLE", vec![Expr::Integer(1)]))
+                ],
+                "main"
+            )
+            .is_ok()
+        );
+        assert!(
+            emit(
+                &[helper.clone(), main_with(call("missing", vec![]))],
+                "main"
+            )
+            .unwrap_err()
+            .contains("unresolved")
+        );
+        assert!(
+            emit(&[helper, main_with(call("double", vec![]))], "main")
+                .unwrap_err()
+                .contains("expects 1")
+        );
+    }
+
+    #[test]
+    fn requires_entry_to_have_no_parameters_and_exist() {
+        assert!(
+            emit(&[procedure("main", &["x"], vec![])], "main")
+                .unwrap_err()
+                .contains("zero parameters")
+        );
+        assert!(
+            emit(&[main_with(Expr::Integer(0))], "other")
+                .unwrap_err()
+                .contains("does not exist")
+        );
+    }
+
+    #[test]
+    fn detects_reads_before_assignment_and_intersects_branch_assignments() {
+        let conditional = Stmt::If(
+            Expr::Variable("condition".into()),
+            vec![Stmt::Assign("result".into(), Expr::Integer(1))],
+            vec![Stmt::Assign("RESULT".into(), Expr::Integer(2))],
+        );
+        let valid = procedure(
+            "helper",
+            &["condition"],
+            vec![conditional, Stmt::Return(Expr::Variable("result".into()))],
+        );
+        let entry = main_with(call("helper", vec![Expr::Integer(1)]));
+        assert!(emit(&[valid, entry], "main").is_ok());
+
+        let invalid = procedure(
+            "helper",
+            &["condition"],
+            vec![
+                Stmt::If(
+                    Expr::Variable("condition".into()),
+                    vec![Stmt::Assign("result".into(), Expr::Integer(1))],
+                    vec![],
+                ),
+                Stmt::Return(Expr::Variable("result".into())),
+            ],
+        );
+        let entry = main_with(call("helper", vec![Expr::Integer(1)]));
+        assert!(
+            emit(&[invalid, entry], "main")
+                .unwrap_err()
+                .contains("before assignment")
+        );
+    }
+
+    #[test]
+    fn loop_assignments_are_not_definite_after_the_loop() {
+        let helper = procedure(
+            "helper",
+            &["condition"],
+            vec![
+                Stmt::While(
+                    Expr::Variable("condition".into()),
+                    vec![Stmt::Assign("result".into(), Expr::Integer(1))],
+                ),
+                Stmt::Return(Expr::Variable("result".into())),
+            ],
+        );
+        let entry = main_with(call("helper", vec![Expr::Integer(0)]));
+        assert!(
+            emit(&[helper, entry], "main")
+                .unwrap_err()
+                .contains("before assignment")
+        );
+    }
+
+    #[test]
+    fn end_of_procedure_returns_documented_zero_and_min_literal_is_safe() {
+        let source = emit(&[procedure("main", &[], vec![])], "main").unwrap();
+        assert!(source.contains("A procedure path that reaches its end returns 0."));
+        assert!(source.contains("    0_i64\n"));
+
+        let source = emit(&[main_with(Expr::Integer(i64::MIN))], "main").unwrap();
+        assert!(source.contains("return i64::MIN;"));
+        assert!(!source.contains("-9223372036854775808_i64"));
+    }
+
+    #[test]
+    fn arithmetic_is_checked_comparisons_are_numeric_and_conditions_are_nonzero() {
+        let condition = Expr::Binary(
+            Box::new(Expr::Integer(1)),
+            BinOp::Less,
+            Box::new(Expr::Integer(2)),
+        );
+        let source = emit(
+            &[procedure(
+                "main",
+                &[],
+                vec![
+                    Stmt::If(
+                        condition,
+                        vec![Stmt::Print(add(Expr::Integer(1), Expr::Integer(2)))],
+                        vec![],
+                    ),
+                    Stmt::Return(Expr::Binary(
+                        Box::new(Expr::Integer(1)),
+                        BinOp::Divide,
+                        Box::new(Expr::Integer(0)),
+                    )),
+                ],
+            )],
+            "main",
+        )
+        .unwrap();
+        assert!(source.contains("checked_add"));
+        assert!(source.contains("checked_div"));
+        assert!(source.contains("division by zero"));
+        assert!(source.contains("if ((if (1_i64) < (2_i64)"));
+        assert!(source.contains("println!(\"{}\", __gx_add"));
+        assert!(!source.contains("unsafe {"));
+    }
+
+    #[test]
+    fn preserves_prints_in_helpers_and_rejects_calls_to_entry() {
+        let helper = procedure(
+            "helper",
+            &[],
+            vec![
+                Stmt::Print(Expr::Integer(7)),
+                Stmt::Return(Expr::Integer(0)),
+            ],
+        );
+        let source = emit(&[helper, main_with(call("helper", vec![]))], "main").unwrap();
+        assert!(source.contains("println!(\"{}\", 7_i64)"));
+
+        let caller = procedure("helper", &[], vec![Stmt::Return(call("main", vec![]))]);
+        assert!(
+            emit(&[caller, main_with(Expr::Integer(0))], "main")
+                .unwrap_err()
+                .contains("entry procedure cannot be called")
+        );
+    }
+
+    #[test]
+    fn recursive_calls_have_a_runtime_depth_limit() {
+        let recursive = procedure(
+            "recur",
+            &["value"],
+            vec![Stmt::Return(call(
+                "recur",
+                vec![Expr::Variable("value".into())],
+            ))],
+        );
+        let source = emit(
+            &[recursive, main_with(call("recur", vec![Expr::Integer(1)]))],
+            "main",
+        )
+        .unwrap();
+        assert!(source.contains("procedure call depth limit exceeded"));
+        assert!(source.contains("__gx_proc_0(__gx_depth + 1_u32, __gx_v0)"));
+    }
+
+    #[test]
+    fn infinite_loops_consume_the_shared_runtime_budget() {
+        let source = emit(
+            &[procedure(
+                "main",
+                &[],
+                vec![Stmt::While(Expr::Integer(1), vec![])],
+            )],
+            "main",
+        )
+        .unwrap();
+        assert!(source.contains("execution step limit exceeded"));
+        assert!(source.contains("while (1_i64) != 0_i64 {\n        __gx_tick();"));
+    }
+
+    #[test]
+    fn rejects_excessive_ast_depth() {
+        let mut expression = Expr::Integer(1);
+        for _ in 0..=MAX_AST_DEPTH {
+            expression = Expr::Negate(Box::new(expression));
+        }
+        assert!(
+            emit(&[main_with(expression)], "main")
+                .unwrap_err()
+                .contains("expression nesting")
+        );
+    }
+}

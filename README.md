@@ -115,6 +115,23 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 
 ---
 
+## Experimental `gx-engine` (source checkout only)
+
+`src/gx-engine` is an experimental Rust compiler/build driver for an independent
+portable format, not a drop-in GeneXus SDK replacement. The published MCP remains
+SDK-/legacy-driver-backed: this engine does not open native KB databases or integrate
+with the SDK, and it is not packaged in npm. To try it from a source checkout:
+
+```powershell
+cargo run --manifest-path src/gx-engine/Cargo.toml -- check src/gx-engine/fixtures/demo.json
+```
+
+See the [engine guide](src/gx-engine/README.md) and
+[capability matrix](plans/129-sdk-capability-matrix.md) for its bounded scope and
+separate implementation/native-evidence status.
+
+---
+
 ## Sharing one Worker between MCP clients
 
 The Gateway and the GeneXus SDK Worker have different responsibilities. By

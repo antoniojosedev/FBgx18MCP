@@ -42,6 +42,7 @@ namespace GxMcp.Gateway
     {
         public string Key { get; set; } = string.Empty;
         public int GatewayPid { get; set; }
+        public long GatewayStartTimeUtcTicks { get; set; }
         public int WorkerPid { get; set; }
         public long WorkerStartTimeUtcTicks { get; set; }
         public string WorkerExecutable { get; set; } = string.Empty;
@@ -67,7 +68,7 @@ namespace GxMcp.Gateway
                 {
                 Directory.CreateDirectory(RegistryRoot);
                 WorkerOwnershipRecord? existing = Read(path);
-                if (existing != null && IsLive(existing.GatewayPid))
+                if (existing != null && IsLiveGateway(existing))
                 {
                     throw new InvalidOperationException(
                         $"Worker ownership is already held by gateway PID {existing.GatewayPid} for this checkout and KB.");
@@ -79,10 +80,12 @@ namespace GxMcp.Gateway
                     TryDelete(path);
                 }
 
+                using var gateway = Process.GetCurrentProcess();
                 var record = new WorkerOwnershipRecord
                 {
                     Key = key,
                     GatewayPid = Environment.ProcessId,
+                    GatewayStartTimeUtcTicks = gateway.StartTime.ToUniversalTime().Ticks,
                     WorkerExecutable = Normalize(workerExecutable),
                     KbPath = Normalize(kbPath)
                 };
@@ -125,7 +128,7 @@ namespace GxMcp.Gateway
             lock (Gate)
             {
                 WorkerOwnershipRecord? record = Read(path);
-                if (record == null || IsLive(record.GatewayPid)) return;
+                if (record == null || IsLiveGateway(record)) return;
                 ReapRecordedWorker(record);
                 TryDelete(path);
             }
@@ -173,11 +176,20 @@ namespace GxMcp.Gateway
             catch (Exception ex) { Program.Log($"[Gateway] Stale worker cleanup failed: {ex.Message}"); }
         }
 
-        private static bool IsLive(int pid)
+        private static bool IsLiveGateway(WorkerOwnershipRecord record)
         {
-            if (pid <= 0) return false;
-            try { using (var p = Process.GetProcessById(pid)) return !p.HasExited; }
-            catch { return false; }
+            if (record.GatewayPid <= 0) return false;
+            try
+            {
+                using var process = Process.GetProcessById(record.GatewayPid);
+                if (process.HasExited) return false;
+                // Old records lack a start time. Preserve their live-PID reservation;
+                // uncertain ownership must not authorize reaping a possibly live worker.
+                return record.GatewayStartTimeUtcTicks <= 0
+                    || process.StartTime.ToUniversalTime().Ticks == record.GatewayStartTimeUtcTicks;
+            }
+            catch (ArgumentException) { return false; }
+            catch { return true; }
         }
 
         private static WorkerOwnershipRecord? Read(string path)

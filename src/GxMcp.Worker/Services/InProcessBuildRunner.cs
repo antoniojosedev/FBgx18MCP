@@ -51,6 +51,10 @@ namespace GxMcp.Worker.Services
         private static Type _typeObjectNameHelper;
         private static Type _typeDevelopmentWorkingSet;
         private static Type _typeBuildOptions;
+        // Artech.Genexus.Common.Commands.BuildOptions (GeneXus 18) values for
+        // ContinueOnError (0xE0) | BuildProcess (Specify|Generate|Compile, 0x3800) | BuildCalled (0x1).
+        // 0x01|0x04|0x08 (BuildCalled|CompileMains|OnlyThemes) skipped generating called SDTs.
+        internal const int BatchBuildOptions = 0xE0 | 0x3800 | 0x1;
         private static Type _typeGenexusBLServices;
         private static System.Reflection.MethodInfo _miBuildBuild; // Build(workingSet, BuildOptions, IEnumerable<EntityKey>, CancellationToken)
         private static System.Reflection.MethodInfo _miBuildWithTheseOnly; // BuildWithTheseOnly(workingSet, IEnumerable<EntityKey>, CancellationToken)
@@ -687,8 +691,7 @@ namespace GxMcp.Worker.Services
                 }
                 object workingSet = workingSetCtor.Invoke(new object[] { designModel });
 
-                // BuildOptions(ContinueOnError | BuildProcess | BuildCalled)
-                object buildOptions = Enum.ToObject(_typeBuildOptions, 0x01 | 0x04 | 0x08);
+                object buildOptions = Enum.ToObject(_typeBuildOptions, BatchBuildOptions);
 
                 using (var cts = new CancellationTokenSource())
                 {

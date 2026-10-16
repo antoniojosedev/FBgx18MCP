@@ -1378,6 +1378,18 @@ namespace GxMcp.Gateway
             if (kb["active"] == null || kb["active"]!.Type == JTokenType.Null)
                 warnings.Add("No active KB is selected.");
 
+            var engine = BuildEngineDoctorSection(_activeConfig);
+            if (engine["backend"]?.ToString() == EngineBackendSettings.GxEngineBackend
+                && engine["available"]?.Type == JTokenType.Boolean
+                && engine["available"]!.Value<bool>() == false)
+            {
+                warnings.Add("Engine backend 'gxengine' is enabled but the gx-engine executable is not usable ("
+                    + (engine["error"]?["code"]?.ToString() ?? "unknown")
+                    + "). Anything the engine cannot serve follows Engine.Fallback="
+                    + (engine["fallback"]?.ToString() ?? "sdk")
+                    + ".");
+            }
+
             var index = whoami["index"] as JObject;
             var metrics = _operationTracker.BuildMetricsSummary();
             metrics["source"] = "gateway";
@@ -1404,6 +1416,7 @@ namespace GxMcp.Gateway
                 },
                 ["telemetry"] = metrics,
                 ["buildQueue"] = JobRegistry.BuildLifecycleQueueSnapshot(sessionId),
+                ["engine"] = engine,
                 ["warnings"] = warnings,
                 ["hint"] = warnings.Count > 0 ? warnings[0] : JValue.CreateNull()
             };
@@ -1414,6 +1427,44 @@ namespace GxMcp.Gateway
                 ["code"] = "DoctorOk",
                 ["result"] = result
             };
+        }
+
+        /// <summary>
+        /// Engine backend status for genexus_doctor (docs/engine_backend.md). With
+        /// the default sdk backend this is a static, process-free block; with the
+        /// gxengine backend it probes the executable so an operator immediately
+        /// sees whether the switch found a working binary.
+        /// </summary>
+        internal static JObject BuildEngineDoctorSection(Configuration? config)
+        {
+            var settings = EngineBackendSettings.Resolve(config);
+            var section = new JObject
+            {
+                ["backend"] = settings.Backend,
+                ["fallback"] = settings.Fallback,
+                ["capabilities"] = new JObject
+                {
+                    ["parity"] = EngineCapabilityRegistry.All.Count(c => c.Status == EngineCapabilityStatus.Parity),
+                    ["partial"] = EngineCapabilityRegistry.All.Count(c => c.Status == EngineCapabilityStatus.Partial),
+                    ["unsupported"] = EngineCapabilityRegistry.All.Count(c => c.Status == EngineCapabilityStatus.Unsupported),
+                    ["routedOperations"] = new JArray(EngineCapabilityRegistry.RoutedOperations())
+                }
+            };
+
+            if (!settings.EngineEnabled) return section;
+
+            GxEngineProbe probe = GxEngineClient.ProbeAsync(settings).GetAwaiter().GetResult();
+            section["executable"] = probe.Executable == null ? JValue.CreateNull() : (JToken)probe.Executable;
+            section["available"] = probe.Available;
+            section["version"] = probe.Version == null ? JValue.CreateNull() : (JToken)probe.Version;
+            section["error"] = probe.ErrorCode == null
+                ? JValue.CreateNull()
+                : new JObject
+                {
+                    ["code"] = probe.ErrorCode,
+                    ["message"] = probe.ErrorMessage ?? string.Empty
+                };
+            return section;
         }
 
         // Stand-in Configuration for a gateway that has not loaded a config file. The

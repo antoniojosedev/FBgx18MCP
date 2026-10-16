@@ -48,6 +48,21 @@ read-preview-save workflow.
 | `GXMCP_TERSE` | Set to `1` (or `true`) for terse responses: omits `next_legal_actions` and the `_meta.tokens` block from tool results, keeping only the payload plus error hints. Equivalent config: `Server.TerseResponses: true`. Env wins over config. | unset (full UX sugar emitted) |
 | `GXMCP_PROFILE` | Tool profile for `tools/list` surface (`standard`, `core`, `authoring`, `devops`, `ui`, `db`, `all`). Lean profiles like `core` (15 tools) or `authoring` (35 tools) drastically reduce initial system prompt tokens vs the full 60-tool surface. | `all` |
 
+## Engine backend (`gx-engine`, experimental)
+
+See [Engine backend switch](engine_backend.md). **Operator-facing**, and the
+variables apply to non-strict configurations only: a strict document rejects all
+four at load time as structural overrides, so the `Engine` section in the file
+is the only authority there. Equivalent config keys: `Engine.Backend`,
+`Engine.Fallback`, `Engine.Executable`, `Engine.TimeoutSeconds`.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `GXMCP_ENGINE_BACKEND` | `gxengine` lets the engine serve capabilities the capability gate marks at measured parity; anything else stays on the GeneXus SDK. | `sdk` |
+| `GXMCP_ENGINE_FALLBACK` | What happens when a routed capability is not at parity: `sdk` keeps the GeneXus SDK; `error` refuses the call with `EngineCapabilityNotParity`. | `sdk` |
+| `GXMCP_ENGINE_EXE` | Absolute path to the `gx-engine` executable. Authoritative: a missing file reports `EngineNotFound` instead of searching further. | unset (Gateway directory → `publish/` → checkout cargo output → `PATH`) |
+| `GXMCP_ENGINE_TIMEOUT_SECONDS` | Wall-clock budget for one engine invocation. | `120` |
+
 ## Generated documentation artifacts (`genexus_doc`)
 
 `genexus_doc action=wiki` and `action=visualize` write durable files outside the installed Worker directory. The default root is `%LOCALAPPDATA%\GxMcp\Artifacts`; each open KB gets a stable `kb-<identity>` child with separate `docs` and `html` directories. This per-KB scope is applied even when a custom root is configured, so two KBs cannot silently share `Customer.md` or a graph file. Package upgrades can replace the Worker installation without moving this output.

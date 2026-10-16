@@ -1,0 +1,4 @@
+/target/
+.gx-engine/
+/scripts/*/bin/
+/scripts/*/obj/

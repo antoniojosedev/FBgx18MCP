@@ -1,0 +1,25 @@
+{
+  "format_version": 2,
+  "date_two_digit_year_max": 2039,
+  "entry": "Main",
+  "procedures": [
+    {
+      "name": "Main",
+      "params": [],
+      "variables": {
+        "DateTimeValue": {
+          "kind": "date_time"
+        },
+        "DateTimeOther": {
+          "kind": "date_time"
+        },
+        "TimeDifference": {
+          "kind": "numeric",
+          "precision": 10,
+          "scale": 0
+        }
+      },
+      "source": "&DateTimeValue = YMDHMSToT(2024,2,29,23,59,58)\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Month())\nPrint(&DateTimeValue.Day())\nPrint(&DateTimeValue.Hour())\nPrint(&DateTimeValue.Minute())\nPrint(&DateTimeValue.Second())\n&DateTimeOther = &DateTimeValue.AddSeconds(3)\nPrint(&DateTimeOther.Month())\nPrint(&DateTimeOther.Day())\nPrint(&DateTimeOther.Hour())\nPrint(&DateTimeOther.Second())\n&TimeDifference = &DateTimeOther.Difference(&DateTimeValue)\nPrint(&TimeDifference)\n&DateTimeValue.SetEmpty()\nIf &DateTimeValue.IsEmpty()\nPrint(1)\nElse\nPrint(0)\nEndIf\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Hour())\n&DateTimeValue = YMDHMSToT(2023,2,29,12,1,1)\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Hour())\nPrint(&DateTimeValue.Minute())\nPrint(&DateTimeValue.Second())\n&DateTimeValue = YMDHMSToT(2024,1,1,24,12,34)\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Hour())\nPrint(&DateTimeValue.Minute())\nPrint(&DateTimeValue.Second())\n&DateTimeValue = YMDHMSToT(2024,1,1,12,60,34)\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Hour())\nPrint(&DateTimeValue.Minute())\nPrint(&DateTimeValue.Second())\n&DateTimeValue = YMDHMSToT(2024,1,1,12,34,60)\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Hour())\nPrint(&DateTimeValue.Minute())\nPrint(&DateTimeValue.Second())\n&DateTimeValue = YMDHMSToT(39,1,1,0,0,0)\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Hour())\nPrint(&DateTimeValue.Minute())\nPrint(&DateTimeValue.Second())\n&DateTimeValue = YMDHMSToT(40,1,1,0,0,0)\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Hour())\nPrint(&DateTimeValue.Minute())\nPrint(&DateTimeValue.Second())\n&DateTimeValue = YMDHMSToT(2023,2,29,0,0,0)\n&DateTimeValue = &DateTimeValue.AddSeconds(1)\nPrint(&DateTimeValue.Year())\nPrint(&DateTimeValue.Hour())\nPrint(&DateTimeValue.Minute())\nPrint(&DateTimeValue.Second())"
+    }
+  ]
+}
