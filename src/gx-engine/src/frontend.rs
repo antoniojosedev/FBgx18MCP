@@ -91,6 +91,10 @@ pub enum Stmt {
     Exit,
     /// `Proc(args)` or `Proc.Call(args)` as a statement; always holds an `Expr::Call`.
     Call(Expr),
+    /// Call subroutine: `Do 'SubName'` or `Do SubName`
+    DoSub(String),
+    /// Subroutine definition: `Sub 'SubName' ... EndSub`
+    Sub(String, Vec<Stmt>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,12 +284,12 @@ impl<'a> Lexer<'a> {
                     };
                     self.push(kind, start)?;
                 }
-                '"' => {
-                    self.bump();
+                '"' | '\'' => {
+                    let quote = self.bump().unwrap();
                     let mut value = String::new();
                     loop {
                         match self.bump() {
-                            Some('"') => break,
+                            Some(ch) if ch == quote => break,
                             Some('\n') | None => {
                                 return Err(start.error("unterminated text literal"));
                             }
@@ -376,6 +380,7 @@ enum BlockEnd {
     EndDo,
     EndCase,
     EndFor,
+    EndSub,
     Eof,
 }
 
@@ -496,6 +501,8 @@ impl Parser {
                 Some(BlockEnd::EndCase)
             } else if self.at_keyword("ENDFOR") {
                 Some(BlockEnd::EndFor)
+            } else if self.at_keyword("ENDSUB") {
+                Some(BlockEnd::EndSub)
             } else if self.at(&TokenKind::Eof) {
                 Some(BlockEnd::Eof)
             } else {
@@ -587,10 +594,11 @@ impl Parser {
             TokenKind::Identifier(keyword) if keyword == "FOR" => self.parse_for(nesting),
             TokenKind::Identifier(keyword) if keyword == "IF" => self.parse_if(nesting),
             TokenKind::Identifier(keyword) if keyword == "DO" => self.parse_do(nesting),
+            TokenKind::Identifier(keyword) if keyword == "SUB" => self.parse_sub(nesting),
             TokenKind::Identifier(keyword)
                 if matches!(
                     keyword.as_str(),
-                    "ELSE" | "CASE" | "OTHERWISE" | "ENDIF" | "ENDDO" | "ENDCASE" | "WHILE"
+                    "ELSE" | "CASE" | "OTHERWISE" | "ENDIF" | "ENDDO" | "ENDCASE" | "ENDFOR" | "ENDSUB" | "WHILE"
                 ) =>
             {
                 Err(self
@@ -678,9 +686,54 @@ impl Parser {
     fn parse_do(&mut self, nesting: usize) -> Result<Stmt, String> {
         if self.next_is_keyword("CASE") {
             self.parse_do_case(nesting)
-        } else {
+        } else if self.next_is_keyword("WHILE") {
             self.parse_while(nesting)
+        } else {
+            self.expect_keyword("DO")?;
+            let name = match &self.current().kind {
+                TokenKind::Text(name) => name.clone(),
+                TokenKind::Identifier(name) => name.clone(),
+                _ => {
+                    return Err(self
+                        .current()
+                        .location
+                        .error("expected subroutine name, While, or Case after Do"));
+                }
+            };
+            self.take();
+            Ok(Stmt::DoSub(name.to_ascii_uppercase()))
         }
+    }
+
+    fn parse_sub(&mut self, nesting: usize) -> Result<Stmt, String> {
+        if nesting > 0 {
+            return Err(self
+                .current()
+                .location
+                .error("subroutines cannot be nested inside blocks"));
+        }
+        self.take();
+        let name = match &self.current().kind {
+            TokenKind::Text(name) => name.clone(),
+            TokenKind::Identifier(name) => name.clone(),
+            _ => {
+                return Err(self
+                    .current()
+                    .location
+                    .error("expected subroutine name after Sub"));
+            }
+        };
+        self.take();
+        self.require_statement_end()?;
+        let (sub_body, end) = self.parse_block(nesting + 1)?;
+        if end != BlockEnd::EndSub {
+            return Err(self.current().location.error(format_args!(
+                "expected EndSub, found {}",
+                self.block_end_name(end)
+            )));
+        }
+        self.expect_keyword("ENDSUB")?;
+        Ok(Stmt::Sub(name.to_ascii_uppercase(), sub_body))
     }
 
     fn parse_do_case(&mut self, nesting: usize) -> Result<Stmt, String> {
@@ -884,6 +937,7 @@ impl Parser {
             BlockEnd::EndDo => "EndDo",
             BlockEnd::EndCase => "EndCase",
             BlockEnd::EndFor => "EndFor",
+            BlockEnd::EndSub => "EndSub",
             BlockEnd::Eof => "end of input",
         }
     }

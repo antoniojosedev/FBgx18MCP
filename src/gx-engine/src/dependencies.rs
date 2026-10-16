@@ -11,7 +11,10 @@ pub(crate) fn calls(body: &[Stmt]) -> HashSet<String> {
 fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
     for statement in statements {
         match statement {
-            Stmt::ReturnVoid | Stmt::Exit => {}
+            Stmt::ReturnVoid | Stmt::Exit | Stmt::DoSub(_) => {}
+            Stmt::Sub(_, body) => {
+                collect_block_calls(body, callees);
+            }
             Stmt::CollectionAdd(receiver, value, opt_idx) => {
                 collect_expression_calls(receiver, callees);
                 collect_expression_calls(value, callees);

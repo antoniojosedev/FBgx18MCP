@@ -142,6 +142,15 @@ namespace GxMcp.Gateway
                 notes: "Measured against GeneXus.Utils.DateTimeUtil in genexus.classes.core: Day/Month/Year/Hour/Minute/Second return 0 on empty/nullDate; Dow returns 1 for Sunday through 7 for Saturday and 0 on nullDate; AddYr/AddMth clamp day to target month length; DAdd/TAdd handle day/second rollover; DDiff returns total days truncated to integer; TDiff returns total seconds; Age computes completed years decremented if birthday has not occurred; EndOfMonth clamps day to DaysInMonth preserving time; ResetTime zeroes time to 00:00:00. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "subroutine_control_flow",
+                title: "Local Subroutine definitions and calls (Sub 'Name' ... EndSub, Do 'Name', early Return propagation)",
+                engineSurface: "frontend Sub/Do parser + typed_backend P{index}Sub zero-allocation state runner",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (native C# S111() and returnInSub generation observed in NetModel/web/general/ui/listprograms.cs); src/gx-engine/tests/subroutines.rs (13/13 tests: shared procedure-scoped variable mutation, case-insensitive resolution, quote styles, nested subroutine calls, early Return propagation exiting caller procedure, recursion depth limit 128, and compile-time validation)",
+                consumers: Array.Empty<string>(),
+                notes: "Matches native GeneXus subroutine semantics: subroutines are top-level, never executed on sequential fallthrough, share all procedure-scoped variables by mutable reference, and propagate early Return via returnInSub flag to exit the enclosing procedure immediately. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",

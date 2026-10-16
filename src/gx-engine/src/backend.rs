@@ -291,6 +291,9 @@ fn collect_block(
             Stmt::MsgStatus(_) => {
                 return Err("Msg status requires format_version 2".into());
             }
+            Stmt::DoSub(_) | Stmt::Sub(..) => {
+                return Err("subroutines require format_version 2".into());
+            }
             Stmt::If(condition, then_body, else_body) => {
                 collect_expr(condition, 0, budget)?;
                 collect_block(then_body, depth + 1, budget, info)?;
@@ -391,6 +394,9 @@ fn validate_block(
             }
             Stmt::MsgStatus(_) => {
                 return Err("Msg status requires format_version 2".into());
+            }
+            Stmt::DoSub(_) | Stmt::Sub(..) => {
+                return Err("subroutines require format_version 2".into());
             }
             Stmt::Assign(name, expression) => {
                 validate_expr(
@@ -699,6 +705,9 @@ fn emit_block(
             }
             Stmt::MsgStatus(_) => {
                 return Err("Msg status requires format_version 2".into());
+            }
+            Stmt::DoSub(_) | Stmt::Sub(..) => {
+                return Err("subroutines require format_version 2".into());
             }
             Stmt::Assign(name, expression) => {
                 let key = identifier_key(name, "variable")?;

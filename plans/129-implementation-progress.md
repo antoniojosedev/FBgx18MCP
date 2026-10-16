@@ -1347,3 +1347,17 @@ Owner-reported implementation and native observations:
 - Verification: 262 passed / 0 failed in `gx-engine` (3 new tests, 83 oracle assertions), Clippy and rustfmt clean.
 - Registry: new `calendar_operations` capability at `Parity` (no consumers).
 
+## Local Subroutine Control Flow Core Parity (2026-10-16)
+
+- Native Decompilation & Codegen Analysis: Inspected generated C# in `C:\KBs\KBTeste\NetModel\web\general\ui\listprograms.cs` and REA (`C:\Projetos\rea`):
+  - GeneXus extracts each `Sub 'Name' ... EndSub` block into a dedicated method (`protected void S111()`), never executing subroutines on sequential fallthrough from the main body.
+  - All procedure variables are shared across the main procedure body and all subroutines.
+  - When `Return` is executed inside a subroutine, GeneXus sets `returnInSub = true; return;`, and every caller checks `if (returnInSub) return;` immediately after invoking the subroutine, exiting the entire enclosing procedure.
+  - Subroutine names accept single quotes (`'Name'`), double quotes (`"Name"`), and bare identifiers (`Name`), resolved case-insensitively.
+- Engine Implementation:
+  - `src/gx-engine/src/frontend.rs`: Extended `Lexer` to lex single-quoted and double-quoted strings; added `BlockEnd::EndSub`, `Stmt::DoSub(String)`, and `Stmt::Sub(String, Vec<Stmt>)`; implemented `parse_sub` (enforcing top-level `nesting == 0`) and extended `parse_do` to dispatch `Do 'SubName'`.
+  - `src/gx-engine/src/dependencies.rs` & `src/gx-engine/src/backend.rs`: Traversed `Stmt::Sub` bodies for dependency analysis; rejected subroutines in legacy format version 1 (`subroutines require format_version 2`).
+  - `src/gx-engine/src/typed_backend.rs`: Implemented compile-time validation of subroutine calls (`validate_subroutine_calls`) and duplicate definitions; emitted zero-allocation `struct P{index}Sub<'a>` holding mutable references (`&'a mut`) to all procedure-scoped variables, shared execution `steps` budget, `depth`, `sub_depth` (bounded at 128), `return_in_sub` flag, and optional `return_value` for value-returning helper procedures.
+  - `src/gx-engine/tests/subroutines.rs`: Added 13 end-to-end tests covering variable mutation, case-insensitive resolution, quote styles, cooperative chaining (`SubA` -> `SubB` -> `SubC`), early `Return` propagation (including nested subroutines and value-returning helpers), fallthrough isolation, recursion depth limit, loops/collections/procedure calls inside subroutines, and compile-time error checks.
+- Verification: 275 passed / 0 failed in `gx-engine` (13 new subroutine tests), Gateway `EngineBackendTests` 40/40 passed, Clippy and rustfmt clean.
+- Registry: new `subroutine_control_flow` capability at `Parity` (no consumers).
