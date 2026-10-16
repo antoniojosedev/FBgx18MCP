@@ -5,7 +5,7 @@
     "src/GxMcp.Gateway/OperationClassifier.cs"
   ],
   "toolCount": 60,
-  "actionCount": 302,
+  "actionCount": 304,
   "tools": [
     {
       "tool": "genexus_k2b_designer",
@@ -4169,6 +4169,30 @@
         },
         {
           "action": "remove_action",
+          "kind": "mutating",
+          "effects": "kb.write",
+          "execution": "worker",
+          "retry": "operation_key",
+          "cache": "never",
+          "invalidation": [
+            "kb",
+            "dependents",
+            "collections"
+          ],
+          "previewSupported": true
+        },
+        {
+          "action": "list_filters",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": [],
+          "previewSupported": false
+        },
+        {
+          "action": "add_filter_attribute",
           "kind": "mutating",
           "effects": "kb.write",
           "execution": "worker",

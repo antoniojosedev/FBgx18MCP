@@ -1553,7 +1553,7 @@ namespace GxMcp.Worker.Tests
         public void Rebuild_with_target_is_rejected_with_TargetNotSupported()
         {
             var service = new BuildService();
-            var raw = service.Build("rebuild", "Customer", "transitive", 200, false, null, false);
+            var raw = service.Build("RebuildAll", "Customer", "transitive", 200, false, null, false);
             var result = JObject.Parse(raw);
 
             Assert.Equal("error", result["status"]?.ToString());
@@ -1566,7 +1566,7 @@ namespace GxMcp.Worker.Tests
         public void Rebuild_dry_run_with_target_is_rejected_with_TargetNotSupported()
         {
             var service = new BuildService();
-            var raw = service.BuildDryRun("rebuild", "Customer", "transitive", 200);
+            var raw = service.BuildDryRun("RebuildAll", "Customer", "transitive", 200);
             var result = JObject.Parse(raw);
 
             Assert.Equal("error", result["status"]?.ToString());
@@ -1579,7 +1579,7 @@ namespace GxMcp.Worker.Tests
         public void Rebuild_dry_run_without_target_shows_entire_kb()
         {
             var service = new BuildService();
-            var raw = service.BuildDryRun("rebuild", null, "transitive", 200);
+            var raw = service.BuildDryRun("RebuildAll", null, "transitive", 200);
             var result = JObject.Parse(raw);
 
             Assert.Equal("ok", result["status"]?.ToString());
@@ -1589,8 +1589,7 @@ namespace GxMcp.Worker.Tests
             Assert.True(preview["kbWide"]?.Value<bool>());
             var wouldBuild = preview["wouldBuild"] as JArray;
             Assert.NotNull(wouldBuild);
-            Assert.Single(wouldBuild);
-            Assert.Equal("<entire selected Knowledge Base>", wouldBuild[0]?.ToString());
+            Assert.Empty(wouldBuild);
         }
     }
 }

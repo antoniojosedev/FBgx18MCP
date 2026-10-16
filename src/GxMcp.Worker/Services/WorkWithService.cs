@@ -85,13 +85,93 @@ namespace GxMcp.Worker.Services
                 case "remove_action":
                     return ExecuteRemoveAction(name, instanceObj, args);
 
+                case "list_filters":
+                    return ExecuteListFilters(name, instanceObj, args);
+
+                case "add_filter_attribute":
+                    return ExecuteAddFilterAttribute(name, instanceObj, args);
+
                 default:
                     return McpResponse.Err(code: "UnknownAction",
-                        message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action, remove_action.",
+                        message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action, remove_action, list_filters, add_filter_attribute.",
                         nextSteps: new JArray(McpResponse.NextStep("genexus_workwith",
                             new JObject { ["action"] = "list_actions", ["name"] = name },
                             "List actions on the target WorkWith object.")),
                         target: name);
+            }
+        }
+
+        private string ExecuteListFilters(string target, KBObject instanceObj, JObject args)
+        {
+            string level = args?["level"]?.ToString();
+            if (!WorkWithSdkAdapter.ListFilters(instanceObj, _patterns, level, out var filters, out var error))
+            {
+                return McpResponse.Err(code: error ?? "ListFiltersFailed",
+                    message: error == "WorkWithFilterNotPresent"
+                        ? "Standard WorkWith filter node is not present on the selection."
+                        : $"Failed to list filters for '{instanceObj.Name}': {error}",
+                    hint: error == "WorkWithFilterNotPresent" ? "Create the filter node on Selection in the GeneXus IDE." : null,
+                    target: target);
+            }
+
+            return McpResponse.Ok(target: target, code: "WorkWithFiltersRead", result: new JObject
+            {
+                ["instance"] = instanceObj.Name,
+                ["filters"] = filters
+            });
+        }
+
+        private string ExecuteAddFilterAttribute(string target, KBObject instanceObj, JObject args)
+        {
+            string level = args?["level"]?.ToString();
+            string attribute = args?["attribute"]?.ToString()?.Trim();
+            if (string.IsNullOrWhiteSpace(attribute))
+                return McpResponse.Err(code: "MissingAttribute", message: "attribute is required for add_filter_attribute.", target: target);
+
+            string description = args?["description"]?.ToString();
+            string domain = args?["domain"]?.ToString();
+            string condition = args?["condition"]?.ToString();
+            var conditionsToken = args?["conditions"] as JArray;
+            var conditions = conditionsToken != null
+                ? conditionsToken.Select(t => t.ToString()).ToList()
+                : new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(condition) && !conditions.Contains(condition))
+                conditions.Insert(0, condition);
+
+            bool dryRun = args?["dryRun"]?.ToObject<bool?>() == true;
+
+            if (dryRun)
+            {
+                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, _write, level, attribute, description, domain, conditions, dryRun: true, out var plan, out var errCode, out var errMsg))
+                {
+                    return McpResponse.Err(
+                        code: errCode ?? "AddFilterAttributePlanFailed",
+                        message: errMsg ?? "Failed to create add_filter_attribute plan.",
+                        target: target,
+                        extra: plan != null ? new JObject { ["plan"] = plan, ["dryRun"] = true } : null);
+                }
+
+                return McpResponse.Ok(target: target, code: "WorkWithFilterPlan", result: new JObject
+                {
+                    ["plan"] = plan,
+                    ["dryRun"] = true
+                });
+            }
+
+            lock (WriteService.AcquirePerTargetLock(instanceObj.Name))
+            {
+                KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
+                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, _write, level, attribute, description, domain, conditions, dryRun: false, out var receipt, out var errCode, out var errMsg))
+                {
+                    return McpResponse.Err(
+                        code: errCode ?? "AddFilterAttributeFailed",
+                        message: errMsg ?? "Failed to add filter attribute.",
+                        target: target,
+                        extra: receipt != null ? new JObject { ["plan"] = receipt } : null);
+                }
+
+                return McpResponse.Ok(target: target, code: "WorkWithFilterAdded", result: receipt);
             }
         }
 

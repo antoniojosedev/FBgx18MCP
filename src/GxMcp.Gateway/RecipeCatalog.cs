@@ -397,7 +397,7 @@ namespace GxMcp.Gateway
                         ),
                         ["pitfalls"] = new JArray(
                             "Do NOT touch `childrenOrderedList` attributes by hand. It is SDK-owned metadata and a change to it is rejected as PatternMetadataChangeUnsupported; the MCP does not rebuild it from your XML child order on save.",
-                            "Raw PatternInstance XML edits are limited to existing property changes. Adding or moving a node is rejected as PatternStructureChangeUnsupported — use the typed genexus_wwp action for that structure.",
+                            "Raw PatternInstance XML edits are limited to existing property changes. Adding or moving a node is rejected as PatternStructureChangeUnsupported — use genexus_workwith for standard WorkWith filter/action structure, genexus_wwp for supported WorkWithPlus operations, or edit in the GeneXus IDE for other structures.",
                             "Saving the instance does not regenerate the pattern's generated objects. Apply the pattern in the GeneXus IDE for that.",
                             "Avoid mode='full' unless you really intend a whole-tree rewrite; patch keeps surrounding state safe."
                         )

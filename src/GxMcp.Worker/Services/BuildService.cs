@@ -1571,31 +1571,8 @@ namespace GxMcp.Worker.Services
                         });
                 }
 
-                if (string.Equals(action, "rebuild", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!string.IsNullOrWhiteSpace(target))
-                    {
-                        return RejectGlobalActionWithTarget(action, target);
-                    }
-
-                    return McpResponse.Ok(
-                        code: "DryRun",
-                        result: new JObject
-                        {
-                            ["preview"] = new JObject
-                            {
-                                ["action"] = "RebuildAll",
-                                ["buildMode"] = "RebuildAll",
-                                ["kbWide"] = true,
-                                ["failIfReorg"] = false,
-                                ["wouldBuild"] = new JArray("<entire selected Knowledge Base>"),
-                                ["includeCallees"] = "ignored for Rebuild All",
-                                ["buildPlanCap"] = buildPlanCap
-                            }
-                        });
-                }
-
-                if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "rebuild_all", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!string.IsNullOrWhiteSpace(target))
                     {
@@ -2573,7 +2550,8 @@ namespace GxMcp.Worker.Services
                     extra: new JObject { ["action"] = "build_all", ["target"] = target });
             }
 
-            if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "rebuild_all", StringComparison.OrdinalIgnoreCase))
             {
                 return McpResponse.Err(
                     code: "TargetNotSupported",
