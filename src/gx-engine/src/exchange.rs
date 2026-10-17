@@ -13,10 +13,12 @@ const PROCEDURE: &str = "84a12160-f59b-4ad7-a683-ea4481ac23e9";
 const SDT: &str = "447527b5-9210-4523-898b-5dccb17be60a";
 const DOMAIN: &str = "00972a17-9975-449e-aab1-d26165d51393";
 const ATTRIBUTE: &str = "adbb33c9-0906-4971-833c-998de27e0676";
+const TRANSACTION: &str = "1db606f2-af09-4cf9-a3b5-b481519d28f6";
 const SOURCE: &str = "528d1c06-a9c2-420d-bd35-21dca83f12ff";
 const RULES: &str = "9b0a32a3-de6d-4be1-a4dd-1b85d3741534";
 const VARIABLES: &str = "e4c4ade7-53f0-4a56-bdfd-843735b66f47";
 const STRUCTURE: &str = "5c2aa9da-8fc4-4b6b-ae02-8db4fa48976a";
+const TRANSACTION_STRUCTURE: &str = "1608677c-a7a2-4a00-8809-6d2466085a5a";
 pub const MAX_XML_BYTES: usize = 8 * 1024 * 1024;
 
 fn child<'a, 'input>(
@@ -721,6 +723,9 @@ fn empty_metadata_part(part: Node<'_, '_>) -> Result<(), String> {
             | "763f0d8b-d8ac-4db4-8dd4-de8979f2b5b9"
             | "ad3ca970-19d0-44e1-a7b7-db05556e820c"
             | "babf62c5-0111-49e9-a1c3-cc004d90900a"
+            | "d24a58ad-57ba-41b7-9e6e-eaca3543c778"
+            | "c44bd5ff-f918-415b-98e6-aca44fed84fa"
+            | "017ea008-6202-4468-a400-3f412c938473"
     );
     if !known {
         return Err("unsupported XML object part".into());
@@ -748,6 +753,174 @@ fn empty_metadata_part(part: Node<'_, '_>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn parse_transaction_structure(
+    part: Node<'_, '_>,
+    default_name: &str,
+    identities: &BTreeMap<String, (ObjectId, ObjectKind)>,
+) -> Result<(crate::transaction::TransactionStructure, Vec<ObjectId>), String> {
+    let root_level_node = match child(part, "Level")? {
+        Some(lvl) => lvl,
+        None => {
+            if let Some(struct_node) = child(part, "Structure")? {
+                child(struct_node, "Level")?.ok_or("XML Transaction Structure has no root Level")?
+            } else {
+                return Err("XML Transaction Structure has no root Level".into());
+            }
+        }
+    };
+    let mut references = Vec::new();
+    let root_level = parse_transaction_level(
+        root_level_node,
+        0,
+        default_name,
+        identities,
+        &mut references,
+    )?;
+    let structure = crate::transaction::TransactionStructure::new(root_level);
+    structure.validate()?;
+    Ok((structure, references))
+}
+
+fn parse_transaction_level(
+    node: Node<'_, '_>,
+    depth: usize,
+    fallback_name: &str,
+    identities: &BTreeMap<String, (ObjectId, ObjectKind)>,
+    references: &mut Vec<ObjectId>,
+) -> Result<crate::transaction::TransactionLevel, String> {
+    if depth > crate::transaction::MAX_LEVEL_DEPTH {
+        return Err(format!(
+            "Transaction level nesting exceeds maximum depth of {}",
+            crate::transaction::MAX_LEVEL_DEPTH
+        ));
+    }
+    let level_props = properties(node)?;
+    let name = if let Some(n) = node.attribute("Name").or_else(|| node.attribute("name")) {
+        n.to_string()
+    } else if let Some(n) = level_props.get("NAME") {
+        n.clone()
+    } else if let Some(name_node) = child(node, "Name")? {
+        text(name_node)?
+    } else {
+        fallback_name.to_string()
+    };
+
+    let description = node
+        .attribute("Description")
+        .or_else(|| node.attribute("description"))
+        .map(|s| s.to_string())
+        .or_else(|| level_props.get("DESCRIPTION").cloned());
+
+    let mut level = crate::transaction::TransactionLevel::new(name);
+    level.description = description;
+
+    for child_node in node.children().filter(|n| n.is_element()) {
+        let tag = child_node.tag_name().name();
+        if tag.eq_ignore_ascii_case("Properties") {
+            continue;
+        }
+        if tag.eq_ignore_ascii_case("Attribute") {
+            let attr_props = properties(child_node)?;
+            let attr_name = if let Some(n) = child_node
+                .attribute("Name")
+                .or_else(|| child_node.attribute("name"))
+            {
+                n.to_string()
+            } else if let Some(n) = attr_props.get("NAME") {
+                n.clone()
+            } else if let Some(name_node) = child(child_node, "Name")? {
+                text(name_node)?
+            } else {
+                return Err("XML Transaction Attribute has no name".into());
+            };
+
+            let is_key = child_node
+                .attribute("IsKey")
+                .or_else(|| child_node.attribute("isKey"))
+                .map(|v| {
+                    v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes")
+                })
+                .or_else(|| {
+                    attr_props.get("ISKEY").map(|v| {
+                        v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes")
+                    })
+                })
+                .unwrap_or(false);
+
+            let formula = child_node
+                .attribute("Formula")
+                .or_else(|| child_node.attribute("formula"))
+                .map(|s| s.to_string())
+                .or_else(|| attr_props.get("FORMULA").cloned());
+
+            let is_nullable = child_node
+                .attribute("Nullable")
+                .or_else(|| child_node.attribute("nullable"))
+                .map(|v| v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+                .or_else(|| {
+                    attr_props
+                        .get("NULLABLE")
+                        .map(|v| v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+                })
+                .unwrap_or(false);
+
+            let is_foreign_key = child_node
+                .attribute("IsForeignKey")
+                .or_else(|| child_node.attribute("isForeignKey"))
+                .map(|v| v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+                .or_else(|| {
+                    attr_props
+                        .get("ISFOREIGNKEY")
+                        .map(|v| v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+                })
+                .unwrap_or(false);
+
+            let data_type = if attr_props.contains_key("ATTCUSTOMTYPE")
+                || attr_props.contains_key("TYPE")
+                || attr_props.contains_key("DATATYPESTRING")
+            {
+                match parse_type_definition(&attr_props)? {
+                    ParsedTypeDefinition::Concrete(dt) => Some(dt),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            let key = attr_name.to_ascii_uppercase();
+            if let Some((target_id, ObjectKind::Attribute | ObjectKind::Domain)) =
+                identities.get(&key)
+            {
+                references.push(target_id.clone());
+            }
+
+            level
+                .attributes
+                .push(crate::transaction::TransactionAttributeRef {
+                    name: attr_name,
+                    is_key,
+                    data_type,
+                    formula,
+                    is_nullable,
+                    is_foreign_key,
+                });
+        } else if tag.eq_ignore_ascii_case("Level") {
+            let child_level = parse_transaction_level(
+                child_node,
+                depth + 1,
+                &format!("{}_Child", level.name),
+                identities,
+                references,
+            )?;
+            level.levels.push(child_level);
+        } else {
+            return Err(format!("unsupported XML Transaction level element '{tag}'"));
+        }
+    }
+
+    Ok(level)
 }
 
 pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
@@ -802,6 +975,7 @@ pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
             SDT => ObjectKind::StructuredDataType,
             DOMAIN => ObjectKind::Domain,
             ATTRIBUTE => ObjectKind::Attribute,
+            TRANSACTION => ObjectKind::Transaction,
             _ => return Err("unsupported SDK XML object kind".into()),
         };
         let object_properties = properties(object)?;
@@ -826,6 +1000,13 @@ pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
                 .any(|key| !matches!(key.as_str(), "NAME" | "ISDEFAULT"))
             {
                 return Err("unsupported XML object properties".into());
+            }
+        } else if kind == ObjectKind::Transaction {
+            if object_properties
+                .keys()
+                .any(|key| !matches!(key.as_str(), "NAME" | "DESCRIPTION" | "ISDEFAULT"))
+            {
+                return Err("unsupported XML Transaction object properties".into());
             }
         } else {
             for name in object_properties.keys() {
@@ -1050,6 +1231,74 @@ pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
             });
             edits.push(Edit::Upsert(object));
             continue;
+        } else if object.kind == ObjectKind::Transaction {
+            let part = parts
+                .remove(TRANSACTION_STRUCTURE)
+                .or_else(|| parts.remove(STRUCTURE))
+                .ok_or("XML Transaction has no Structure")?;
+            let (structure, attr_references) =
+                parse_transaction_structure(part, &object.name, &identities)?;
+            for target_id in attr_references {
+                object.references.push(Reference {
+                    kind: ReferenceKind::Uses,
+                    target: target_id,
+                });
+            }
+            if let Some(rules_part) = parts.remove(RULES) {
+                only_children(rules_part, &["Source", "Properties"])?;
+                if let Some(source) = child(rules_part, "Source")? {
+                    let rules = text(source)?;
+                    if !rules.trim().is_empty() {
+                        object.source_parts.push(SourcePart {
+                            name: "Rules".into(),
+                            source: rules,
+                        });
+                    }
+                }
+            }
+            if let Some(var_part) = parts.remove(VARIABLES) {
+                let raw_variables = declarations(var_part, "Variable", "Name")?;
+                let mut variables: BTreeMap<String, crate::kb::RawCatalogType> = BTreeMap::new();
+                for (name, parsed_type) in raw_variables {
+                    match parsed_type {
+                        ParsedTypeDefinition::Concrete(data_type) => {
+                            variables.insert(name, crate::kb::RawCatalogType::Concrete(data_type));
+                        }
+                        ParsedTypeDefinition::BasedOn(target_name) => {
+                            let key = target_name.to_ascii_uppercase();
+                            if let Some((target_id, ObjectKind::Domain | ObjectKind::Attribute)) =
+                                identities.get(&key)
+                            {
+                                object.references.push(Reference {
+                                    kind: ReferenceKind::BasedOn,
+                                    target: target_id.clone(),
+                                });
+                            }
+                            variables.insert(
+                                name,
+                                crate::kb::RawCatalogType::BasedOnShort {
+                                    target: target_name,
+                                },
+                            );
+                        }
+                    }
+                }
+                object.source_parts.push(SourcePart {
+                    name: "Variables".into(),
+                    source: serde_json::to_string(&variables).map_err(|e| e.to_string())?,
+                });
+            }
+            for part in parts.values() {
+                empty_metadata_part(*part)?;
+            }
+            object.references.sort();
+            object.references.dedup();
+            object.source_parts.push(SourcePart {
+                name: "STRUCTURE".into(),
+                source: serde_json::to_string(&structure).map_err(|e| e.to_string())?,
+            });
+            edits.push(Edit::Upsert(object));
+            continue;
         } else {
             let part = parts.remove(SOURCE).ok_or("XML Procedure has no Source")?;
             only_children(part, &["Source", "Properties"])?;
@@ -1111,8 +1360,13 @@ pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
                                 let (target, kind) = identities
                                     .get(&key)
                                     .ok_or("unresolved XML SDT declaration")?;
-                                if *kind != ObjectKind::StructuredDataType {
-                                    return Err("XML SDT declaration targets a non-SDT".into());
+                                if *kind != ObjectKind::StructuredDataType
+                                    && *kind != ObjectKind::Transaction
+                                {
+                                    return Err(
+                                        "XML SDT declaration targets a non-SDT and non-Transaction"
+                                            .into(),
+                                    );
                                 }
                                 variables
                                     .insert(name, crate::kb::RawCatalogType::Concrete(data_type));

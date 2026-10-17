@@ -170,6 +170,53 @@ fn resolve_catalog_variables(
     Ok(resolved)
 }
 
+fn project_transaction_level_schemas(
+    transaction_name: &str,
+    level: &crate::transaction::TransactionLevel,
+    catalog: &Catalog,
+    record_types: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut fields: BTreeMap<String, DataType> = BTreeMap::new();
+    for attr in &level.attributes {
+        let data_type = if let Some(ref dt) = attr.data_type {
+            dt.clone()
+        } else {
+            resolve_domain_or_attribute_data_type(catalog, &attr.name, &mut BTreeSet::new(), 0)
+                .map_err(|e| {
+                    format!(
+                        "cannot resolve data type for Transaction attribute '{}' in level '{}': {e}",
+                        attr.name, level.name
+                    )
+                })?
+        };
+        fields.insert(attr.name.clone(), data_type);
+    }
+    for child in &level.levels {
+        let child_schema_name = format!("{}_{}", transaction_name, child.name);
+        fields.insert(
+            child.name.clone(),
+            DataType::Collection {
+                schema: child_schema_name.clone(),
+            },
+        );
+        project_transaction_level_schemas(transaction_name, child, catalog, record_types)?;
+    }
+    let schema_name = if level.name.eq_ignore_ascii_case(transaction_name) {
+        transaction_name.to_string()
+    } else {
+        format!("{}_{}", transaction_name, level.name)
+    };
+    record_types.push(format!(
+        "{{\"name\":{},\"fields\":{}}}",
+        serde_json::to_string(&schema_name).map_err(|e| e.to_string())?,
+        serde_json::to_string(&fields).map_err(|e| e.to_string())?
+    ));
+    if record_types.len() > 128 {
+        return Err("catalog compile exceeds 128 record schemas".into());
+    }
+    Ok(())
+}
+
 /// Converts the reachable Procedure/Calls graph and explicit Uses SDT schemas. Unsupported
 /// referenced kinds/parts fail before compilation; the catalog is never mutated.
 pub fn project_from_catalog(
@@ -284,6 +331,54 @@ pub fn project_from_catalog(
             }
             continue;
         }
+        if object.kind == ObjectKind::Transaction {
+            let structure_part = object
+                .source_parts
+                .iter()
+                .find(|p| p.name == "STRUCTURE")
+                .ok_or_else(|| {
+                    format!(
+                        "portable Transaction '{}' requires a STRUCTURE part",
+                        object.name
+                    )
+                })?;
+            let structure: crate::transaction::TransactionStructure =
+                serde_json::from_str(&structure_part.source).map_err(|e| {
+                    format!(
+                        "invalid portable Transaction STRUCTURE part on '{}': {e}",
+                        object.name
+                    )
+                })?;
+            structure.validate()?;
+
+            for reference in &object.references {
+                let target = catalog
+                    .get(&reference.target)
+                    .ok_or("catalog reference was not found")?;
+                if !matches!(
+                    (&reference.kind, target.kind),
+                    (ReferenceKind::Uses, ObjectKind::Attribute)
+                        | (ReferenceKind::Uses, ObjectKind::Domain)
+                        | (ReferenceKind::Uses, ObjectKind::Transaction)
+                        | (ReferenceKind::BasedOn, ObjectKind::Attribute)
+                        | (ReferenceKind::BasedOn, ObjectKind::Domain)
+                ) {
+                    return Err(format!(
+                        "Transaction '{}' references must be Uses or BasedOn to Attributes, Domains, or Transactions",
+                        object.name
+                    ));
+                }
+                queue.push_back(reference.target.clone());
+            }
+
+            project_transaction_level_schemas(
+                &object.name,
+                &structure.root,
+                catalog,
+                &mut record_types,
+            )?;
+            continue;
+        }
         if object.kind != ObjectKind::Procedure {
             return Err(format!(
                 "catalog compiler does not support referenced kind {:?}",
@@ -301,11 +396,12 @@ pub fn project_from_catalog(
                 (&reference.kind, target.kind),
                 (ReferenceKind::Calls, ObjectKind::Procedure)
                     | (ReferenceKind::Uses, ObjectKind::StructuredDataType)
+                    | (ReferenceKind::Uses, ObjectKind::Transaction)
                     | (ReferenceKind::BasedOn, ObjectKind::Domain)
                     | (ReferenceKind::BasedOn, ObjectKind::Attribute)
             ) {
                 return Err(
-                    "catalog compiler requires Calls to Procedures, Uses to SDTs, or BasedOn to Domains/Attributes"
+                    "catalog compiler requires Calls to Procedures, Uses to SDTs/Transactions, or BasedOn to Domains/Attributes"
                         .into(),
                 );
             }

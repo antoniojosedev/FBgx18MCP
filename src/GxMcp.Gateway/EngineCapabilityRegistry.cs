@@ -232,6 +232,15 @@ namespace GxMcp.Gateway
                 notes: "Resolves GeneXus Domain (00972a17-9975-449e-aab1-d26165d51393) and Attribute (adbb33c9-0906-4971-833c-998de27e0676) objects in the portable catalog and SDK ExportFile XML into concrete DataTypes at procedure and SDT boundaries. Enforces GeneXus rules: domains cannot be based on attributes, bounded recursion depth of 16, strict cycle detection, and explicit BasedOn reference validation. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "transaction_structure_projection",
+                title: "Transaction structure and keys projection, multi-level hierarchy, Business Component record lowering, and XML Exchange parity",
+                engineSurface: "transaction validator + kb catalog resolver + exchange ExportFile XML projection",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/transaction_structure.rs (10/10 tests: nested levels, primary key validation, attribute referencing, cycle/depth limits, XML parsing, procedure interoperability)",
+                consumers: Array.Empty<string>(),
+                notes: "Validates GeneXus Transaction (1db606f2-af09-4cf9-a3b5-b481519d28f6) structures and keys, enforces root and child primary keys, bounded recursion depth of 16, unique level/attribute names, lowers transaction levels into Business Component RecordType schemas for procedure consumption, and parses <TransactionStructure> from ExportFile XML. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "xml_projection",
                 title: "SDK ExportFile XML to portable catalog projection",
                 engineSurface: "gx-engine xml-check/xml-emit/xml-build/xml-run",

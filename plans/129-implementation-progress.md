@@ -1440,3 +1440,37 @@ Owner-reported implementation and native observations:
 - Registry: new `domain_attribute_projection` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
 - Milestone: **Portable KB Catalog & XML Projection** advances from **33.3% to 66.7% (4/6 areas: Procedures, SDTs, Domains, Attributes)**. Overall weighted SDK replacement advances from **37.0% to 40.7% (31/56 areas touched: 55.4%)**.
 
+## Transaction Structure, Keys & Business Component Record Lowering in Portable Catalog & XML (2026-10-16)
+
+- Native Contract & Object Class Analysis:
+  - Official GeneXus GUIDs from `Artech.Genexus.Common.ObjClass`:
+    - Transaction: `1db606f2-af09-4cf9-a3b5-b481519d28f6`
+    - Transaction Structure: `1608677c-a7a2-4a00-8809-6d2466085a5a`
+  - Semantic Rules:
+    - Root level and nested child levels require at least one primary key attribute (`IsKey = true`).
+    - Level names must be valid identifiers and unique within the transaction hierarchy.
+    - Attribute names must be unique within their level.
+    - Transaction levels lower into Business Component `RecordType` schemas for procedure manipulation.
+    - Attribute types are resolved against catalog `Attribute` and `Domain` objects when not specified inline.
+    - Bounded recursion: max depth 16, strict cycle detection, visited set tracking.
+- Engine Implementation:
+  - `src/gx-engine/src/transaction.rs`:
+    - Defined `TransactionAttributeRef`, `TransactionLevel`, and `TransactionStructure`.
+    - Implemented `validate` checking primary keys, bounded recursion depth (16), unique names, and valid identifiers.
+    - Implemented `root_primary_key()` and `all_attributes()`.
+  - `src/gx-engine/src/kb.rs`:
+    - Added `project_transaction_level_schemas` lowering Transaction levels to `RecordType` schemas.
+    - Updated `project_from_catalog` to admit `ObjectKind::Transaction` with `"STRUCTURE"` source part and wire references to Attributes and Domains.
+    - Updated `Procedure` dependency checking to permit `ReferenceKind::Uses` targeting `ObjectKind::Transaction`.
+  - `src/gx-engine/src/exchange.rs`:
+    - Added `TRANSACTION` and `TRANSACTION_STRUCTURE` GUID constants.
+    - Added empty metadata part admission for Transaction Layout, Events, and Help.
+    - Implemented `parse_transaction_structure` and `parse_transaction_level` extracting `<Level>`, `<Attribute>`, `IsKey`, `Formula`, `Nullable`, `IsForeignKey`.
+    - Updated `catalog_from_xml` to parse Transaction objects and wire references to referenced Attributes/Domains.
+    - Updated XML variable declaration check to admit `ObjectKind::Transaction` for `Record` schemas.
+  - `src/gx-engine/tests/transaction_structure.rs`:
+    - Added 10/10 end-to-end integration tests covering nested levels, primary key validation, attribute referencing, cycle/depth limits, XML parsing, procedure interoperability.
+- Verification: 316 passed / 0 failed across all 30 test binaries in `gx-engine`, Clippy and rustfmt clean. 40/40 `EngineBackendTests` passed in .NET.
+- Registry: new `transaction_structure_projection` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Portable KB Catalog & XML Projection** advances from **66.7% to 83.3% (5/6 areas: Procedures, SDTs, Domains, Attributes, Transactions)**. Overall weighted SDK replacement advances from **40.7% to 42.5% (33/56 areas touched: 58.9%)**.
+
