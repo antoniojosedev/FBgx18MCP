@@ -871,5 +871,160 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
             Assert.Contains("parameters", plan.Error, StringComparison.Ordinal);
         }
+
+        // ── issue #560: the DVelop Combo insert prompt, a <prompt> child of an <attribute> ──
+
+        private const string PromptTarget = "1db606f2-af09-4cf9-a3b5-b481519d28f6-TFroTip";
+        private const string InsertParameter = "<parameter name=\"TrnMode.Insert\" />";
+        private const string NullValueParameter = "<parameter name=\"nullvalue(FroTip)\" />";
+
+        private static string AttributeWith(string children) => Header
+            + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+            + "<attribute attribute=\"FroTip\">" + children + "</attribute>"
+            + "</table></transaction></instance>";
+
+        private static string PromptWith(string parameters, string target = PromptTarget) =>
+            "<prompt prompt=\"" + target + "\"><parameters>" + parameters + "</parameters></prompt>";
+
+        [Fact]
+        public void Adding_A_Parameter_To_An_Existing_Prompt_Is_Permitted()
+        {
+            // The reporter's second attempt: the prompt already exists and only a
+            // <parameter> is added. The attribute keeps one child on both sides, so the
+            // size-differs handler never ran and the positional recursion rejected it at
+            // <parameters> as "1 child element added. Added: parameter".
+            var plan = PatternXmlEditPlan.Create(
+                AttributeWith(PromptWith(InsertParameter)),
+                AttributeWith(PromptWith(InsertParameter + NullValueParameter)));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Update", (string)change["operation"]);
+            Assert.Equal("prompt", (string)change["element"]);
+            Assert.Equal(PromptTarget, (string)change["prompt"]);
+            Assert.EndsWith("attribute/prompt", (string)change["path"], StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Removing_A_Parameter_From_An_Existing_Prompt_Is_Permitted()
+        {
+            var plan = PatternXmlEditPlan.Create(
+                AttributeWith(PromptWith(InsertParameter + NullValueParameter)),
+                AttributeWith(PromptWith(InsertParameter)));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Update", (string)change["operation"]);
+            Assert.Equal("prompt", (string)change["element"]);
+        }
+
+        [Fact]
+        public void Removing_The_Prompt_Is_Permitted()
+        {
+            var plan = PatternXmlEditPlan.Create(
+                AttributeWith(PromptWith(InsertParameter + NullValueParameter)),
+                AttributeWith(""));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Remove", (string)change["operation"]);
+            Assert.Equal("prompt", (string)change["element"]);
+        }
+
+        [Fact]
+        public void Changing_The_Prompt_Target_Emits_Update()
+        {
+            const string other = "1db606f2-af09-4cf9-a3b5-b481519d28f6-TOther";
+            var plan = PatternXmlEditPlan.Create(
+                AttributeWith(PromptWith(InsertParameter)),
+                AttributeWith(PromptWith(InsertParameter, other)));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Update", (string)change["operation"]);
+            Assert.Equal(other, (string)change["prompt"]);
+        }
+
+        [Fact]
+        public void A_Prompt_With_An_Unknown_Attribute_Is_Rejected()
+        {
+            // Whether the prompt is new or replaced in place, an attribute outside the
+            // allow-list is refused and named - the in-place case must not fall through
+            // to the generic property-edit path, which would accept it.
+            var inserted = PatternXmlEditPlan.Create(
+                AttributeWith(""),
+                AttributeWith("<prompt prompt=\"" + PromptTarget + "\" foo=\"1\" />"));
+            var replaced = PatternXmlEditPlan.Create(
+                AttributeWith(PromptWith(InsertParameter)),
+                AttributeWith("<prompt prompt=\"" + PromptTarget + "\" foo=\"1\">"
+                    + "<parameters>" + InsertParameter + "</parameters></prompt>"));
+
+            Assert.Equal("PatternStructureChangeUnsupported", inserted.ErrorCode);
+            Assert.Contains("foo", inserted.Error, StringComparison.Ordinal);
+            Assert.Equal("PatternStructureChangeUnsupported", replaced.ErrorCode);
+            Assert.Contains("foo", replaced.Error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_Prompt_Outside_An_Attribute_Is_Rejected()
+        {
+            var before = Header
+                + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<textBlock controlName=\"Note\" />"
+                + "</table></transaction></instance>";
+            var after = Header
+                + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<textBlock controlName=\"Note\">" + PromptWith(InsertParameter) + "</textBlock>"
+                + "</table></transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Contains("prompt", plan.Error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_Prompt_With_An_Empty_Target_Is_Rejected()
+        {
+            var missing = PatternXmlEditPlan.Create(
+                AttributeWith(""),
+                AttributeWith("<prompt><parameters>" + InsertParameter + "</parameters></prompt>"));
+            var blanked = PatternXmlEditPlan.Create(
+                AttributeWith(PromptWith(InsertParameter)),
+                AttributeWith(PromptWith(InsertParameter, "")));
+
+            Assert.Equal("PatternStructureChangeUnsupported", missing.ErrorCode);
+            Assert.Contains("target", missing.Error, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("PatternStructureChangeUnsupported", blanked.ErrorCode);
+            Assert.Contains("target", blanked.Error, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void A_Parameter_With_Children_Is_Rejected()
+        {
+            var plan = PatternXmlEditPlan.Create(
+                AttributeWith(PromptWith(InsertParameter)),
+                AttributeWith(PromptWith(InsertParameter + "<parameter name=\"x\"><y /></parameter>")));
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Contains("leaf <parameter>", plan.Error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void An_Unchanged_Prompt_Does_Not_Block_An_Unrelated_Property_Edit()
+        {
+            // A prompt the IDE wrote may carry an attribute this gate does not know. As
+            // long as the prompt itself is untouched, that must not reject an edit to the
+            // attribute's own properties.
+            const string idePrompt = "<prompt prompt=\"" + PromptTarget + "\" foo=\"1\" />";
+            var plan = PatternXmlEditPlan.Create(
+                AttributeWith(idePrompt),
+                AttributeWith(idePrompt).Replace("<attribute attribute=\"FroTip\">",
+                    "<attribute attribute=\"FroTip\" caption=\"Tipo\">"));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.EndsWith("@caption", (string)change["path"], StringComparison.Ordinal);
+        }
     }
 }
