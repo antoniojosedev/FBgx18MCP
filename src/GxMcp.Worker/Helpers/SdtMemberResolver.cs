@@ -1,6 +1,5 @@
 using System;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using Artech.Architecture.Common.Objects;
 
 namespace GxMcp.Worker.Helpers
@@ -33,9 +32,8 @@ namespace GxMcp.Worker.Helpers
 
                 // Persisted StructureTypeReference is an EntityKey pair: <Type> = the referenced
                 // object's class guid, <Id> = its numeric id. Resolve via model.Objects.Get(EntityKey).
-                var mRef = Regex.Match(guid, @"<Type>([0-9a-fA-F\-]{36})</Type>\s*<Id>(\d+)</Id>");
-                if (mRef.Success && Guid.TryParse(mRef.Groups[1].Value, out var classGuid)
-                    && int.TryParse(mRef.Groups[2].Value, out var objId))
+                // issue #543: the pair is parsed by the shared order-tolerant helper.
+                if (CustomTypeReferenceParser.TryParse(guid, out var classGuid, out var objId))
                 {
                     try
                     {

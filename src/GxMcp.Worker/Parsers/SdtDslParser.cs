@@ -372,10 +372,8 @@ namespace GxMcp.Worker.Parsers
                 // Persisted StructureTypeReference is an EntityKey pair:
                 //   <Type> = the SDT class guid (a constant, not the target), <Id> = the target
                 //   SDT object's numeric id. Resolve it via model.Objects.Get(EntityKey).
-                var mRef = System.Text.RegularExpressions.Regex.Match(guid,
-                    @"<Type>([0-9a-fA-F\-]{36})</Type>\s*<Id>(\d+)</Id>");
-                if (mRef.Success && Guid.TryParse(mRef.Groups[1].Value, out var classGuid)
-                    && int.TryParse(mRef.Groups[2].Value, out var objId))
+                // issue #543: the pair is parsed by the shared order-tolerant helper.
+                if (GxMcp.Worker.Helpers.CustomTypeReferenceParser.TryParse(guid, out var classGuid, out var objId))
                 {
                     try
                     {
