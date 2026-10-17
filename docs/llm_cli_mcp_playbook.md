@@ -231,7 +231,8 @@ For a complete incremental build of the selected Knowledge Base, use
 `BuildAll` task when available, reports completion evidence, and returns
 `ReorgRequired` instead of applying a schema reorganization implicitly. Use
 `action='build'` for a directed target and `action='rebuild'` for the forced
-Rebuild All contract.
+Rebuild All contract; `rebuild` is KB-global like `build_all` and rejects
+`target` with `TargetNotSupported`.
 
 ## Pagination and Token Budgeting
 

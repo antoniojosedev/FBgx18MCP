@@ -1589,7 +1589,7 @@ namespace GxMcp.Worker.Services
                                 ["buildMode"] = "RebuildAll",
                                 ["kbWide"] = true,
                                 ["failIfReorg"] = false,
-                                ["wouldBuild"] = new JArray(),
+                                ["wouldBuild"] = new JArray("<entire selected Knowledge Base>"),
                                 ["includeCallees"] = "ignored for Rebuild All",
                                 ["buildPlanCap"] = buildPlanCap
                             }

@@ -95,7 +95,7 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `build` — non-blocking when `estimated_seconds >= 20`; returns `{ operationId, job_id, status: 'running', pollTarget: 'op:<id>' }` and surfaces `_meta.background_jobs` on the next call. Pass `wait_until_done: true` to block until terminal (single turn instead of polling); the same terminal wait is available for `specify`, `validate-kb`, `reorg`, and forced `index`.\n" +
                 "- `build_all` — incremental Build All for the entire selected KB (`ForceRebuild=false`). It is global and rejects `target`; if the SDK reports a required reorganization it returns `status: 'ReorgRequired'` without applying the reorg.\n" +
-                "- `rebuild` — forced Rebuild All (`ForceRebuild=true`) and remains compatible with directed targets.\n" +
+                "- `rebuild` — forced Rebuild All (`ForceRebuild=true`) for the entire selected KB. Like `build_all` it is global and rejects `target` with `TargetNotSupported`; use `build` with `target` for a directed build.\n" +
                 "- `validate` — inline validation/specifier check. Returns the result in the same call; it does not currently use the background-job path.\n" +
                 "- `index` — rebuilds the search index. Pass `force=true` to ignore the on-disk cache.\n" +
                 "- `status` — accepts a Gateway operation id (`op:<id>` or the bare id) and a legacy Worker `taskId`; pass `wait_seconds > 0` to long-poll up to 600s. Use `until=change|terminal` (`wait_until_done=true` implies `terminal`). Status warning output is cursor-based (`newWarnings` plus totals); use `action=result` for the full warning list. A positive lifecycle status wait is not cut to the generic 50s no-progress cap; without `target`, `wait` blocks on the search index and `freshness` sets the target state: `freshness='current'` waits for a warm-start delta refresh to finish (a snapshot restored from the warm cache is `Ready` but `stale`, so a status-only wait returns immediately). The reply carries `waitSatisfied` so a timeout is distinguishable from success.\n" +
@@ -106,7 +106,7 @@ namespace GxMcp.Gateway
                 "## target format\n" +
                 "- Build/validate: object name(s), comma- or semicolon-separated.\n" +
                 "- compile_check: use a unique object name, `Type:Name`, or GUID. Folder paths and textual EntityKey values are unsupported build identifiers.\n" +
-                "- Build All: omit `target`; the action always covers the selected KB.\n" +
+                "- Build All / Rebuild All (`build_all`, `rebuild`): omit `target`; both actions always cover the selected KB.\n" +
                 "- Status/result on a background op: `op:<operationId>` or just `<job_id>`.\n\n" +
                 "## Build-evidence checklist (issue #42)\n" +
                 "A GeneXus build can report `Status: Succeeded` (0 errors/0 warnings) without the generated `.cs` actually landing on disk. Do NOT treat `Succeeded` alone as proof your edit was compiled. On every build result:\n" +
