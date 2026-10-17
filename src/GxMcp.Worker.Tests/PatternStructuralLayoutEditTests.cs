@@ -447,5 +447,189 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("Insert", (string)change["operation"]);
             Assert.Equal("prompt", (string)change["element"]);
         }
+
+        // ── issue #551: row action in a grid, re-serialised siblings, selection parameters ──
+
+        [Fact]
+        public void Adding_A_UserAction_Inside_A_Grid_Is_Permitted()
+        {
+            var before = Header
+                + "<transaction name=\"T1\"><table name=\"TableMain\"><grid>"
+                + "<gridAttribute attribute=\"A\" /><standardAction name=\"Update\" />"
+                + "</grid></table></transaction></instance>";
+            var after = before.Replace("<standardAction name=\"Update\" />",
+                "<userAction name=\"Aprovar\" caption=\"Aprovar\" /><standardAction name=\"Update\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Insert", (string)change["operation"]);
+            Assert.Equal("userAction", (string)change["element"]);
+            Assert.Equal(1, (int)change["index"]);
+        }
+
+        // The reporter's textBlock was well-formed, yet the answer was the generic
+        // "1 child element added. Added: textBlock." - the structural handler had declined
+        // because an untouched sibling no longer satisfied XNode.DeepEquals once the client
+        // re-serialised the export. Attribute order, indentation inside a sibling, and
+        // <x></x> versus <x/> are all the same sibling.
+        private const string ReporterTextBlock =
+            "<textBlock controlName=\"TxtValorSinal\" caption=\"Valor (-) quando ...; Valor (+) quando ...\" />";
+
+        [Theory]
+        [InlineData("<attribute attribute=\"ValorSinal\" caption=\"Sinal\" />",
+                    "<attribute caption=\"Sinal\" attribute=\"ValorSinal\" />")]
+        [InlineData("<attribute attribute=\"ValorSinal\"><prompt prompt=\"x\" /></attribute>",
+                    "<attribute attribute=\"ValorSinal\">\n      <prompt prompt=\"x\" />\n    </attribute>")]
+        [InlineData("<attribute attribute=\"ValorSinal\"></attribute>",
+                    "<attribute attribute=\"ValorSinal\" />")]
+        public void Adding_A_TextBlock_Next_To_A_Reserialised_Sibling_Is_Permitted(string exported, string reserialised)
+        {
+            var before = Header + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"Cod\" />" + exported
+                + "</table></transaction></instance>";
+            var after = Header + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"Cod\" />" + reserialised + ReporterTextBlock
+                + "</table></transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Insert", (string)change["operation"]);
+            Assert.Equal("textBlock", (string)change["element"]);
+            Assert.Equal("TxtValorSinal", (string)change["identity"]);
+            Assert.Equal(2, (int)change["index"]);
+        }
+
+        [Fact]
+        public void A_Sibling_That_Really_Changed_Is_Named_Instead_Of_The_Inserted_Element()
+        {
+            var before = Header + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"Cod\" /><attribute attribute=\"ValorSinal\" caption=\"Sinal\" />"
+                + "</table></transaction></instance>";
+            var after = Header + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+                + "<attribute attribute=\"Cod\" /><attribute attribute=\"ValorSinal\" caption=\"Valor\" />" + ReporterTextBlock
+                + "</table></transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Contains("a <textBlock> was added", plan.Error, StringComparison.Ordinal);
+            Assert.Contains("existing <attribute> at index 1 also changed", plan.Error, StringComparison.Ordinal);
+            Assert.DoesNotContain("1 child element added", plan.Error, StringComparison.Ordinal);
+        }
+
+        private static string Selection(string parameters) => Header
+            + "<level><selection>" + parameters + "<table name=\"TableMain\" /></selection></level></instance>";
+
+        [Fact]
+        public void Adding_A_Selection_Parameter_Is_Permitted()
+        {
+            var plan = PatternXmlEditPlan.Create(
+                Selection("<parameters><parameter name=\"&amp;CliCod\" /></parameters>"),
+                Selection("<parameters><parameter name=\"&amp;CliCod\" /><parameter name=\"&amp;Modo\" value=\"1\" /></parameters>"));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Insert", (string)change["operation"]);
+            Assert.Equal("parameter", (string)change["element"]);
+            Assert.Equal("&Modo", (string)change["identity"]);
+            Assert.Equal(1, (int)change["index"]);
+        }
+
+        [Fact]
+        public void Adding_Two_Selection_Parameters_At_Once_Is_Permitted()
+        {
+            var plan = PatternXmlEditPlan.Create(
+                Selection("<parameters><parameter name=\"&amp;CliCod\" /></parameters>"),
+                Selection("<parameters><parameter name=\"&amp;Antes\" /><parameter name=\"&amp;CliCod\" /><parameter name=\"&amp;Depois\" /></parameters>"));
+
+            Assert.Null(plan.ErrorCode);
+            Assert.Equal(2, plan.Changes.Count);
+            Assert.All(plan.Changes, c => Assert.Equal("Insert", (string)c["operation"]));
+            Assert.Equal(new[] { "&Antes", "&Depois" }, plan.Changes.Select(c => (string)c["identity"]));
+        }
+
+        [Fact]
+        public void Removing_A_Selection_Parameter_Is_Permitted()
+        {
+            var plan = PatternXmlEditPlan.Create(
+                Selection("<parameters><parameter name=\"&amp;CliCod\" /><parameter name=\"&amp;Modo\" /></parameters>"),
+                Selection("<parameters><parameter name=\"&amp;Modo\" /></parameters>"));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Remove", (string)change["operation"]);
+            Assert.Equal("&CliCod", (string)change["identity"]);
+            Assert.Equal(0, (int)change["index"]);
+        }
+
+        [Fact]
+        public void Adding_The_Parameters_List_Under_A_Selection_Is_Permitted()
+        {
+            // The reporter's exact shape: the selection had no list at all.
+            var plan = PatternXmlEditPlan.Create(
+                Selection(""),
+                Selection("<parameters><parameter name=\"&amp;x\" /></parameters>"));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Insert", (string)change["operation"]);
+            Assert.Equal("parameters", (string)change["element"]);
+            Assert.Equal(1, (int)change["parameters"]);
+        }
+
+        [Theory]
+        [InlineData("prompt")]
+        [InlineData("userAction")]
+        public void Adding_A_Parameter_To_An_Existing_List_Of_A_Prompt_Or_UserAction_Is_Permitted(string host)
+        {
+            string Hosted(string parameters) => Header + "<transaction name=\"T1\"><table name=\"T\"><" + host + " name=\"X\">"
+                + parameters + "</" + host + "></table></transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(
+                Hosted("<parameters><parameter name=\"TrnMode.Insert\" /></parameters>"),
+                Hosted("<parameters><parameter name=\"TrnMode.Insert\" /><parameter name=\"nullvalue(FroTip)\" /></parameters>"));
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Insert", (string)change["operation"]);
+            Assert.Equal("nullvalue(FroTip)", (string)change["identity"]);
+        }
+
+        [Fact]
+        public void A_Parameter_Outside_A_Parameters_List_Is_Rejected()
+        {
+            var plan = PatternXmlEditPlan.Create(
+                Selection(""),
+                Selection("<parameter name=\"&amp;x\" />"));
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Contains("parameter", plan.Error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_Parameter_With_An_Unknown_Attribute_Is_Rejected_And_Named()
+        {
+            var plan = PatternXmlEditPlan.Create(
+                Selection("<parameters><parameter name=\"&amp;CliCod\" /></parameters>"),
+                Selection("<parameters><parameter name=\"&amp;CliCod\" /><parameter name=\"&amp;Modo\" wibble=\"1\" /></parameters>"));
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Contains("wibble", plan.Error, StringComparison.Ordinal);
+            Assert.Contains("Permitted: name, value", plan.Error, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void A_Parameters_List_Under_Any_Other_Parent_Is_Still_Rejected()
+        {
+            var plan = PatternXmlEditPlan.Create(Before,
+                WithExtraChild("<parameters><parameter name=\"&amp;x\" /></parameters>"));
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Contains("parameters", plan.Error, StringComparison.Ordinal);
+        }
     }
 }

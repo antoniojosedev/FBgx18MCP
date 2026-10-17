@@ -182,7 +182,7 @@ namespace GxMcp.Worker.Services
                 if (!IsNativeTable(entry.Key) && !IsNativeActionGroup(entry.Key) && !IsNativeGrid(entry.Key)) continue;
                 string path = string.Join("/", entry.Value);
                 available.Add(path);
-                if (ContainerPathMatches(entry.Value, NativeAttribute(entry.Key, "name"), NativeAttribute(entry.Key, "controlName"), containerName))
+                if (ContainerPathMatches(entry.Value, NativeContainerLabel(entry.Key), NativeAttribute(entry.Key, "controlName"), containerName))
                 {
                     containers.Add(entry.Key);
                     containerPaths.Add(path);

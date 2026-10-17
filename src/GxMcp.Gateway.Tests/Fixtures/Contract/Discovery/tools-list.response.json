@@ -5407,7 +5407,7 @@
             "type": "boolean"
           },
           "position": {
-            "description": "Zero-based action or tab index.",
+            "description": "Zero-based action or tab index.…",
             "minimum": 0,
             "type": "integer"
           },

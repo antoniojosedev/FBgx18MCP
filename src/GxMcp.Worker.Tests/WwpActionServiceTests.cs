@@ -238,6 +238,72 @@ namespace GxMcp.Worker.Tests
             Assert.Empty(document.Descendants("userAction"));
         }
 
+        // issue #551: a row action goes into the unnamed WorkWith grid, addressed as "Grid".
+        [Fact]
+        public void AddFormUserAction_IntoGrid_ByBareName()
+        {
+            var document = XDocument.Parse("<instance><table name='TableMain'><grid><gridAttribute attribute='A'/><standardAction name='Update'/></grid></table></instance>");
+
+            JObject result = WwpActionService.Apply(document, "add_user_action", new JObject
+            {
+                ["containerName"] = "Grid", ["actionName"] = "Aprovar", ["caption"] = "Aprovar"
+            }, null);
+
+            Assert.Null(result["error"]);
+            Assert.Equal("DoAprovar", result["event"]?.ToString());
+            XElement action = document.Descendants("userAction").Single();
+            Assert.Equal("grid", action.Parent!.Name.LocalName);
+            Assert.Equal("Aprovar", (string)action.Attribute("name"));
+
+            JObject missing = WwpActionService.Apply(document, "add_user_action", new JObject
+            {
+                ["containerName"] = "Nope", ["actionName"] = "X", ["caption"] = "X"
+            }, null);
+            Assert.Equal("FormActionContainerNotFound", missing["code"]?.ToString());
+            Assert.Contains("Grid", missing["availableContainers"]!.Values<string>());
+            Assert.Contains("TableMain/Grid", missing["availablePaths"]!.Values<string>());
+        }
+
+        // issue #551: position is the index among the container's standard and user actions,
+        // so a grid row action can go before Update; omitted still appends to the container.
+        [Fact]
+        public void AddFormUserAction_HonoursPositionAmongContainerActions()
+        {
+            const string xml = "<instance><table name='TableActions'><standardAction name='Cancel'/><standardAction name='Delete'/><footer/></table></instance>";
+            JObject Add(XDocument doc, int? position)
+            {
+                var args = new JObject { ["actionName"] = "Go", ["caption"] = "Go" };
+                if (position.HasValue) args["position"] = position.Value;
+                return WwpActionService.Apply(doc, "add_user_action", args, null);
+            }
+            string[] Order(XDocument doc) => doc.Root!.Element("table")!.Elements()
+                .Select(e => (string)e.Attribute("name") ?? e.Name.LocalName).ToArray();
+
+            var first = XDocument.Parse(xml);
+            Assert.Equal(0, (int)Add(first, 0)["position"]);
+            Assert.Equal(new[] { "Go", "Cancel", "Delete", "footer" }, Order(first));
+
+            var middle = XDocument.Parse(xml);
+            Assert.Equal(1, (int)Add(middle, 1)["position"]);
+            Assert.Equal(new[] { "Cancel", "Go", "Delete", "footer" }, Order(middle));
+
+            var past = XDocument.Parse(xml);
+            Assert.Equal(2, (int)Add(past, 7)["position"]);
+            Assert.Equal(new[] { "Cancel", "Delete", "footer", "Go" }, Order(past));
+
+            var omitted = XDocument.Parse(xml);
+            Assert.Null(Add(omitted, null)["error"]);
+            Assert.Equal(new[] { "Cancel", "Delete", "footer", "Go" }, Order(omitted));
+
+            var grid = XDocument.Parse("<instance><table name='TableMain'><grid><gridAttribute attribute='A'/><standardAction name='Update'/></grid></table></instance>");
+            Assert.Null(WwpActionService.Apply(grid, "add_user_action", new JObject
+            {
+                ["containerName"] = "Grid", ["actionName"] = "Go", ["caption"] = "Go", ["position"] = 0
+            }, null)["error"]);
+            Assert.Equal(new[] { "gridAttribute", "Go", "Update" },
+                grid.Descendants("grid").Single().Elements().Select(e => (string)e.Attribute("name") ?? e.Name.LocalName));
+        }
+
         [Fact]
         public void FormUserActionPersistencePathUsesNativeSdkInsteadOfGenericPatternWriter()
         {

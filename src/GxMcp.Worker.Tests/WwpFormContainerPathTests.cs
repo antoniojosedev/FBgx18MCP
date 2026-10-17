@@ -62,5 +62,22 @@ namespace GxMcp.Worker.Tests
             Assert.True(WwpActionService.ContainerPathMatches(new[] { "A", "B", "C" }, "C", null, "B/C"));
             Assert.False(WwpActionService.ContainerPathMatches(new[] { "A", "XB", "C" }, "C", null, "B/C"));
         }
+
+        // issue #551: an unnamed table under TableMain must not answer to "TableMain"; only
+        // the unnamed grid answers to its synthetic "Grid" label.
+        [Fact]
+        public void BareNameDoesNotMatchUnnamedDescendantTable()
+        {
+            var doc = XDocument.Parse("<instance><table name='TableMain'><table type='Responsive'/></table></instance>");
+
+            JObject result = Add(doc, "TableMain");
+
+            Assert.Null(result["error"]);
+            XElement action = doc.Descendants("userAction").Single();
+            Assert.Equal("TableMain", (string)action.Parent!.Attribute("name"));
+            Assert.False(WwpActionService.ContainerPathMatches(new[] { "TableMain" }, "", "", "TableMain"));
+            Assert.True(WwpActionService.ContainerPathMatches(new[] { "TableMain", "Grid" }, "Grid", "", "Grid"));
+            Assert.False(WwpActionService.ContainerPathMatches(new[] { "TableMain", "Grid" }, "", "", "Grid"));
+        }
     }
 }
