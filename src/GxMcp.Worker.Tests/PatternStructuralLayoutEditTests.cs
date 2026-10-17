@@ -447,5 +447,246 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("Insert", (string)change["operation"]);
             Assert.Equal("prompt", (string)change["element"]);
         }
+
+        // ── issue #545: reordering by identity ─────────────────────────────────────
+
+        private static string Table(string children) => Header
+            + "<transaction name=\"T1\"><table name=\"TableAttributes\">"
+            + children
+            + "</table></transaction></instance>";
+
+        [Fact]
+        public void Reordering_Mixed_Leaf_Kinds_Is_Permitted()
+        {
+            // A form table mixes kinds; the reorder key is kind plus identity, so a
+            // userAction moved ahead of an attribute and a variable is still a reorder.
+            var before = Table(
+                "<attribute attribute=\"CliCod\" />"
+                + "<variable name=\"Total\" />"
+                + "<userAction name=\"Auditar\" caption=\"Auditar\" />");
+            var after = Table(
+                "<userAction name=\"Auditar\" caption=\"Auditar\" />"
+                + "<attribute attribute=\"CliCod\" />"
+                + "<variable name=\"Total\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Null(plan.ErrorCode);
+            Assert.NotEmpty(plan.Changes);
+            Assert.All(plan.Changes, c => Assert.Equal("Reorder", (string)c["operation"]));
+            Assert.Contains(plan.Changes, c =>
+                (string)c["element"] == "userAction" && (string)c["identity"] == "Auditar");
+        }
+
+        [Fact]
+        public void Reordering_Tabs_By_ControlName_Is_Permitted()
+        {
+            // WorkWithPlus writes `ControlName` (capital C) on tab elements, and a
+            // Transaction instance uses the gridTab / tabularTab kinds. The identity
+            // lookup must not be case-sensitive, or every tab reorder falls back to the
+            // positional comparison and is refused as an identity change.
+            var before = Header
+                + "<transaction name=\"T1\"><tabs>"
+                + "<tabularTab ControlName=\"TabOne\" title=\"One\" />"
+                + "<gridTab ControlName=\"TabTwo\" title=\"Two\"><table /></gridTab>"
+                + "</tabs></transaction></instance>";
+            var after = Header
+                + "<transaction name=\"T1\"><tabs>"
+                + "<gridTab ControlName=\"TabTwo\" title=\"Two\"><table /></gridTab>"
+                + "<tabularTab ControlName=\"TabOne\" title=\"One\" />"
+                + "</tabs></transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Null(plan.ErrorCode);
+            Assert.Equal(2, plan.Changes.Count);
+            Assert.All(plan.Changes, c => Assert.Equal("Reorder", (string)c["operation"]));
+            Assert.Contains(plan.Changes, c =>
+                (string)c["element"] == "gridTab" && (string)c["identity"] == "TabTwo");
+        }
+
+        [Fact]
+        public void Reordering_Next_To_An_Unnamed_Group_Table_With_A_Unique_Title_Is_Permitted()
+        {
+            // A group table carries no name; WorkWithPlus addresses it by title, so a
+            // unique title is enough identity to leave it in place while its siblings move.
+            var before = Table(
+                "<attribute attribute=\"A\" />"
+                + "<table isGroup=\"True\" title=\"Dados\" />"
+                + "<attribute attribute=\"B\" />");
+            var after = Table(
+                "<attribute attribute=\"B\" />"
+                + "<table isGroup=\"True\" title=\"Dados\" />"
+                + "<attribute attribute=\"A\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Null(plan.ErrorCode);
+            Assert.Equal(2, plan.Changes.Count);
+            Assert.All(plan.Changes, c => Assert.Equal("Reorder", (string)c["operation"]));
+            Assert.DoesNotContain(plan.Changes, c => (string)c["element"] == "table");
+        }
+
+        [Fact]
+        public void Reorder_Refused_When_A_Sibling_Has_No_Identity_Names_The_Sibling()
+        {
+            // The reporter's contradiction: the childrenOrderedList message says "move
+            // the child element itself", the caller does, and the positional comparison
+            // then reports "identity changed at .../attribute/@attribute". When a
+            // sibling cannot be matched by identity the rejection must say which one.
+            var before = Table(
+                "<attribute attribute=\"A\" />"
+                + "<table type=\"Responsive\" />"
+                + "<attribute attribute=\"B\" />");
+            var after = Table(
+                "<attribute attribute=\"B\" />"
+                + "<table type=\"Responsive\" />"
+                + "<attribute attribute=\"A\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Empty(plan.Changes);
+            Assert.Contains("<table>", plan.Error, StringComparison.Ordinal);
+            Assert.Contains("index 1", plan.Error, StringComparison.Ordinal);
+            Assert.Contains("controlName", plan.Error, StringComparison.Ordinal);
+            Assert.DoesNotContain("identity changed", plan.Error, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Reorder_Refused_When_Siblings_Share_An_Identity_Names_Both()
+        {
+            var before = Table(
+                "<attribute attribute=\"A\" />"
+                + "<table title=\"Grupo\" />"
+                + "<table title=\"Grupo\" />"
+                + "<attribute attribute=\"B\" />");
+            var after = Table(
+                "<attribute attribute=\"B\" />"
+                + "<table title=\"Grupo\" />"
+                + "<table title=\"Grupo\" />"
+                + "<attribute attribute=\"A\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Contains("index 1", plan.Error, StringComparison.Ordinal);
+            Assert.Contains("index 2", plan.Error, StringComparison.Ordinal);
+            Assert.DoesNotContain("identity changed", plan.Error, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void A_Property_Change_Next_To_An_Unnamed_Sibling_Is_Still_A_Property_Change()
+        {
+            // The unnamed sibling only blocks a reorder; an ordinary property edit in
+            // the same container must keep working exactly as before.
+            var before = Table(
+                "<attribute attribute=\"A\" caption=\"Old\" />"
+                + "<table type=\"Responsive\" />");
+            var after = Table(
+                "<attribute attribute=\"A\" caption=\"New\" />"
+                + "<table type=\"Responsive\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Old", (string)change["before"]);
+            Assert.Equal("New", (string)change["after"]);
+        }
+
+        [Fact]
+        public void Renaming_An_Attribute_Next_To_An_Unnamed_Sibling_Still_Reports_The_Identity_Change()
+        {
+            // A new identity that no old sibling carried is not a move, so the honest
+            // message stays the protected-attribute one.
+            var before = Table(
+                "<attribute attribute=\"A\" />"
+                + "<table type=\"Responsive\" />"
+                + "<attribute attribute=\"B\" />");
+            var after = Table(
+                "<attribute attribute=\"A\" />"
+                + "<table type=\"Responsive\" />"
+                + "<attribute attribute=\"C\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Equal("PatternMetadataChangeUnsupported", plan.ErrorCode);
+            Assert.Contains("identity changed", plan.Error, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // ── issue #545: several removals, a move and a reorder in one import ───────
+
+        [Fact]
+        public void Removing_Several_Children_And_Reordering_In_One_Import()
+        {
+            // The reporter's real task: drop some attributes, put one back elsewhere and
+            // reorder, with as few imports as possible. One import covers three
+            // containers: two removals (one of them re-inserted elsewhere, so a Move)
+            // and a reorder.
+            var before = Header
+                + "<transaction name=\"T1\">"
+                + "<table name=\"TableAttributes\">"
+                + "<attribute attribute=\"A\" /><attribute attribute=\"B\" />"
+                + "<attribute attribute=\"C\" /><attribute attribute=\"D\" />"
+                + "</table>"
+                + "<table name=\"TableOther\"><attribute attribute=\"X\" /></table>"
+                + "<table name=\"TableActions\"><userAction name=\"P\" /><userAction name=\"Q\" /></table>"
+                + "</transaction></instance>";
+            var after = Header
+                + "<transaction name=\"T1\">"
+                + "<table name=\"TableAttributes\">"
+                + "<attribute attribute=\"A\" /><attribute attribute=\"D\" />"
+                + "</table>"
+                + "<table name=\"TableOther\"><attribute attribute=\"X\" /><attribute attribute=\"B\" /></table>"
+                + "<table name=\"TableActions\"><userAction name=\"Q\" /><userAction name=\"P\" /></table>"
+                + "</transaction></instance>";
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Null(plan.ErrorCode);
+            var move = Assert.Single(plan.Changes, c => (string)c["operation"] == "Move");
+            Assert.Equal("B", (string)move["identity"]);
+            Assert.NotNull(move["fromPath"]);
+            var remove = Assert.Single(plan.Changes, c => (string)c["operation"] == "Remove");
+            Assert.Equal("C", (string)remove["identity"]);
+            Assert.Equal(2, plan.Changes.Count(c => (string)c["operation"] == "Reorder"));
+            Assert.Equal(4, plan.Changes.Count);
+        }
+
+        [Fact]
+        public void Removing_Several_While_Editing_A_Survivor_Is_Rejected()
+        {
+            // Several removals are accepted only when the survivors are untouched;
+            // otherwise this is a rewrite dressed as a removal.
+            var before = Table(
+                "<attribute attribute=\"A\" /><attribute attribute=\"B\" />"
+                + "<attribute attribute=\"C\" /><attribute attribute=\"D\" caption=\"Old\" />");
+            var after = Table(
+                "<attribute attribute=\"A\" /><attribute attribute=\"D\" caption=\"New\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Equal("PatternStructureChangeUnsupported", plan.ErrorCode);
+            Assert.Empty(plan.Changes);
+        }
+
+        [Fact]
+        public void Removing_A_Leaf_Without_An_Identity_Does_Not_Throw()
+        {
+            // A textBlock that predates the controlName convention has no reportable
+            // identity. Removing it must plan a Remove with a null identity rather than
+            // escape the plan with an ArgumentNullException from the identity map.
+            var before = Table("<textBlock caption=\"Legacy\" /><attribute attribute=\"A\" />");
+            var after = Table("<attribute attribute=\"A\" />");
+
+            var plan = PatternXmlEditPlan.Create(before, after);
+
+            Assert.Null(plan.ErrorCode);
+            var change = Assert.Single(plan.Changes);
+            Assert.Equal("Remove", (string)change["operation"]);
+            Assert.Equal("textBlock", (string)change["element"]);
+            Assert.Null((string)change["identity"]);
+        }
     }
 }

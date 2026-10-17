@@ -60,13 +60,14 @@ namespace GxMcp.Worker.Services
                 var plan = PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure);
                 if (plan.ErrorCode != null)
                 {
+                    // Issue #545: the scope sentence lives on the plan, which is what decides it.
                     string rejectionHint = (currentPattern != null && currentPattern.IsWorkWith)
-                        ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; raw PatternInstance XML is limited to existing property changes."
+                        ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; " + PatternXmlEditPlan.RawXmlEditScopeHint
                         : (currentPattern != null && currentPattern.IsWorkWithPlus)
-                        ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
+                        ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; " + PatternXmlEditPlan.RawXmlEditScopeHint
                         : currentPattern != null
-                        ? $"{currentPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes."
-                        : "Structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
+                        ? $"{currentPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; " + PatternXmlEditPlan.RawXmlEditScopeHint
+                        : "Structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; " + PatternXmlEditPlan.RawXmlEditScopeHint;
 
                     return CreateWriteError("Pattern edit rejected", target, partName,
                         plan.Error + " Use the appropriate SDK pattern authoring action for structural edits; this does not certify save isolation.",

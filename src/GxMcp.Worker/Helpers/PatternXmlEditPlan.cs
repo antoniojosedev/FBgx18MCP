@@ -110,12 +110,22 @@ namespace GxMcp.Worker.Helpers
             if (allowGridStructure && IsGrid(before)
                 && TryCompareGridReorder(oldNodes, newNodes, path, allowGridStructure))
                 return;
-            if (TryCompareContainerReorder(before, oldNodes, newNodes, path, allowGridStructure))
+            if (TryCompareContainerReorder(before, oldNodes, newNodes, path, allowGridStructure, out string reorderBlocker))
                 return;
             for (int i = 0; i < oldNodes.Length; i++)
             {
                 if (oldNodes[i] is XElement oldElement && newNodes[i] is XElement newElement)
                 {
+                    // Issue #545: identity matching declined because a sibling has no
+                    // identity, and this slot now holds a sibling that used to be
+                    // elsewhere. Reporting that positionally as "identity changed at
+                    // .../@attribute" contradicts the childrenOrderedList message that
+                    // told the caller to move the element; name the real blocker instead.
+                    if (reorderBlocker != null && IsMovedSibling(oldNodes, newNodes, oldElement, newElement))
+                    {
+                        Reject("PatternStructureChangeUnsupported", DescribeBlockedReorder(path, reorderBlocker));
+                        return;
+                    }
                     if (IsMetadata(oldElement.Name.LocalName) && !XNode.DeepEquals(oldElement, newElement))
                         Reject("PatternMetadataChangeUnsupported", "SDK-owned metadata changed at " + path + oldElement.Name);
                     else
@@ -162,6 +172,41 @@ namespace GxMcp.Worker.Helpers
                 + ". This attribute is maintained by the SDK and cannot be authored through"
                 + " a raw XML edit.";
         }
+
+        /// <summary>
+        /// Issue #545. A reorder is matched by sibling identity, so one sibling without
+        /// an identity makes every move in that container unverifiable. The caller can
+        /// act on "which element and why"; they cannot act on "identity changed at
+        /// .../attribute/@attribute", which is what the positional fallback said.
+        /// </summary>
+        private static string DescribeBlockedReorder(string path, string blocker)
+        {
+            return "Reorder refused at " + path + ": " + blocker
+                + ". Siblings are matched by identity when they are reordered, and one that"
+                + " cannot be matched makes the move read as an identity change instead."
+                + " Give that element a name or controlName in the GeneXus IDE so every"
+                + " sibling has a distinct identity, then retry; actions, tabs and grid"
+                + " columns can also be moved through genexus_wwp move_action, move_tab"
+                + " and move_grid_column.";
+        }
+
+        /// <summary>
+        /// What a raw PatternInstance edit accepts and refuses, for the rejection hint.
+        /// Issue #545: the previous hint said raw XML "is limited to existing property
+        /// changes" after #349 had opened single-leaf structural edits, so a caller
+        /// refused for one reason was told that the edits the preflight accepts were
+        /// impossible. Keep this in step with the handlers in <see cref="Compare"/>.
+        /// </summary>
+        public const string RawXmlEditScopeHint =
+            "raw PatternInstance XML accepts property changes on existing elements, one leaf"
+            + " element (textBlock, attribute, variable, userAction, image, userControl,"
+            + " actionGroup, errorViewer, data; or a webComponent into a table) added per"
+            + " container, several leaf removals, a leaf moved between containers, siblings"
+            + " reordered by identity inside a table, actionGroup, tabs or tab, and a <prompt>"
+            + " added to or removed from an <attribute>; it still refuses identity and"
+            + " childrenOrderedList edits, container-valued or nested additions, more than one"
+            + " addition per container, and a reorder next to a sibling without an identity"
+            + " attribute.";
 
         /// <summary>
         /// Names what actually changed, because "Child structure changed at /path" was true
@@ -325,7 +370,10 @@ namespace GxMcp.Worker.Helpers
                 ["index"] = firstDiff,
                 ["ordering"] = OrderingNote
             });
-            _removedIdentities[removedIdentity] = removedKind;
+            // Issue #545: ReportIdentity is null for a leaf that predates its identity
+            // attribute, and a null key throws out of the plan instead of planning the
+            // removal.
+            if (removedIdentity != null) _removedIdentities[removedIdentity] = removedKind;
             return true;
         }
 
@@ -621,9 +669,23 @@ namespace GxMcp.Worker.Helpers
             public ElementPosition(XElement element, int index) { Element = element; Index = index; }
         }
 
+        /// <summary>
+        /// Same-size container whose children were reordered: match them by identity
+        /// and report a <c>Reorder</c> per displaced child.
+        ///
+        /// <para>
+        /// Issue #545. <paramref name="blocker"/> is set when the container is one this
+        /// handles and a child cannot be matched (no identity, or an identity shared
+        /// with a sibling). The caller does not reject on it - a property edit next to
+        /// an unnamed group table must keep working - but uses it to explain a refused
+        /// move instead of reporting a positional identity change.
+        /// </para>
+        /// </summary>
         private bool TryCompareContainerReorder(
-            XElement container, XNode[] oldNodes, XNode[] newNodes, string path, bool allowGridStructure)
+            XElement container, XNode[] oldNodes, XNode[] newNodes, string path, bool allowGridStructure,
+            out string blocker)
         {
+            blocker = null;
             if (oldNodes.Length != newNodes.Length || oldNodes.Length <= 1) return false;
 
             string containerName = container.Name.LocalName;
@@ -642,7 +704,19 @@ namespace GxMcp.Worker.Helpers
             for (int i = 0; i < oldElements.Count; i++)
             {
                 string id = GetElementCompositeKey(oldElements[i]);
-                if (string.IsNullOrWhiteSpace(id) || oldMap.ContainsKey(id)) return false;
+                if (id == null)
+                {
+                    blocker = "child <" + oldElements[i].Name.LocalName + "> at index " + i
+                        + " has no identity attribute (name, controlName, attribute or variable;"
+                        + " an unnamed <table> may be addressed by a unique title)";
+                    return false;
+                }
+                if (oldMap.TryGetValue(id, out var duplicate))
+                {
+                    blocker = "children at index " + duplicate.Index + " and index " + i
+                        + " share the identity '" + id + "'";
+                    return false;
+                }
                 oldMap[id] = new ElementPosition(oldElements[i], i);
             }
 
@@ -678,7 +752,7 @@ namespace GxMcp.Worker.Helpers
 
                 if (newIdx != oldIdx)
                 {
-                    string id = StructuralLayoutRules.Identity(newEl.Name.LocalName, newEl) ?? kvp.Key;
+                    string id = ElementIdentity(newEl);
                     Changes.Add(new JObject
                     {
                         ["path"] = path + newEl.Name.LocalName + "[@" + id + "]",
@@ -700,15 +774,62 @@ namespace GxMcp.Worker.Helpers
 
         private static string GetElementCompositeKey(XElement element)
         {
+            string id = ElementIdentity(element);
+            return id == null ? null : element.Name.LocalName + ":" + id;
+        }
+
+        /// <summary>
+        /// The identity a sibling is matched by when reordering, or null.
+        ///
+        /// <para>
+        /// Issue #545. The lookup is case-insensitive because WorkWithPlus writes
+        /// <c>ControlName</c> on tab elements and <c>controlName</c> on text blocks, and
+        /// an <c>XName</c> lookup on the wrong spelling made every tab reorder fall back
+        /// to the positional comparison. An unnamed group table is addressed by its
+        /// title, the same weak identifier <c>PatternChildOrderReconciler</c> derives for
+        /// it; uniqueness is enforced by the caller's map, not here.
+        /// </para>
+        /// </summary>
+        private static string ElementIdentity(XElement element)
+        {
             if (element == null) return null;
             string kind = element.Name.LocalName;
-            string id = StructuralLayoutRules.Identity(kind, element);
-            if (!string.IsNullOrWhiteSpace(id)) return kind + ":" + id;
-            id = (string)element.Attribute("attribute")
-                ?? (string)element.Attribute("controlName")
-                ?? (string)element.Attribute("name")
-                ?? (string)element.Attribute("variable");
-            return string.IsNullOrWhiteSpace(id) ? null : kind + ":" + id.Trim();
+            string id = StructuralLayoutRules.Identity(kind, element)
+                ?? AttributeIgnoreCase(element, "attribute")
+                ?? AttributeIgnoreCase(element, "controlName")
+                ?? AttributeIgnoreCase(element, "name")
+                ?? AttributeIgnoreCase(element, "variable");
+            if (id == null && string.Equals(kind, "table", StringComparison.OrdinalIgnoreCase))
+                id = AttributeIgnoreCase(element, "title") ?? AttributeIgnoreCase(element, "caption");
+            return id?.Trim();
+        }
+
+        private static string AttributeIgnoreCase(XElement element, string localName)
+        {
+            foreach (var attribute in element.Attributes())
+            {
+                if (attribute.IsNamespaceDeclaration) continue;
+                if (!string.Equals(attribute.Name.LocalName, localName, StringComparison.OrdinalIgnoreCase)) continue;
+                return string.IsNullOrWhiteSpace(attribute.Value) ? null : attribute.Value;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// True when the element now at this position carries the identity of a sibling
+        /// that was elsewhere, or the old occupant's identity turns up elsewhere: a move,
+        /// not a rename. A rename to an identity no sibling had stays a protected
+        /// attribute change and keeps its own message.
+        /// </summary>
+        private static bool IsMovedSibling(XNode[] oldNodes, XNode[] newNodes, XElement oldElement, XElement newElement)
+        {
+            string oldKey = GetElementCompositeKey(oldElement);
+            string newKey = GetElementCompositeKey(newElement);
+            if (string.Equals(oldKey, newKey, StringComparison.OrdinalIgnoreCase)) return false;
+            return (newKey != null && oldNodes.OfType<XElement>().Any(e =>
+                        string.Equals(GetElementCompositeKey(e), newKey, StringComparison.OrdinalIgnoreCase)))
+                || (oldKey != null && newNodes.OfType<XElement>().Any(e =>
+                        string.Equals(GetElementCompositeKey(e), oldKey, StringComparison.OrdinalIgnoreCase)));
         }
 
         private bool TryAllowMultipleLayoutRemovals(XNode[] oldNodes, XNode[] newNodes, string path)

@@ -591,13 +591,14 @@ namespace GxMcp.Worker.Services
                     if (patchPlan.ErrorCode != null)
                     {
                         var matchedPattern = _patternAnalysisService?.MatchInstancePattern(resolvedPatternObject ?? patchObjectForTarget);
+                        // Issue #545: the scope sentence lives on the plan, which is what decides it.
                         string rejectionHint = (matchedPattern != null && matchedPattern.IsWorkWith)
-                            ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; raw PatternInstance XML is limited to existing property changes."
+                            ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; " + Helpers.PatternXmlEditPlan.RawXmlEditScopeHint
                             : (matchedPattern != null && matchedPattern.IsWorkWithPlus)
-                            ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
+                            ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; " + Helpers.PatternXmlEditPlan.RawXmlEditScopeHint
                             : matchedPattern != null
-                            ? $"{matchedPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes."
-                            : "Structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
+                            ? $"{matchedPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; " + Helpers.PatternXmlEditPlan.RawXmlEditScopeHint
+                            : "Structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; " + Helpers.PatternXmlEditPlan.RawXmlEditScopeHint;
 
                         return AttachTimings(
                             Models.McpResponse.Err(
