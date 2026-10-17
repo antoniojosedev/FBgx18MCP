@@ -101,18 +101,14 @@ namespace GxMcp.Worker.Services
         public static SourceStoreBackfillState FromJson(JObject json)
         {
             if (json == null) return new SourceStoreBackfillState();
-            string loadedState = json["state"]?.ToString() ?? "off";
-            string loadedTriggerState = json["triggerState"]?.ToString();
-            if (string.Equals(loadedState, "error", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(loadedState, "idle", StringComparison.OrdinalIgnoreCase))
-            {
-                loadedTriggerState = loadedState;
-            }
 
+            // The persisted "triggerState" is a snapshot resolved from "state" at
+            // write time.  It is deliberately not loaded back: reloading it would
+            // freeze the value while State keeps progressing after a restart
+            // (issue #554), so the live value is always derived from State.
             var state = new SourceStoreBackfillState
             {
-                State = loadedState,
-                TriggerState = loadedTriggerState,
+                State = json["state"]?.ToString() ?? "off",
                 Cursor = json["cursor"]?.ToString(),
                 CatalogSignature = json["catalogSignature"]?.ToString(),
                 CursorIndex = json["cursorIndex"]?.ToObject<int>() ?? 0,
@@ -142,6 +138,27 @@ namespace GxMcp.Worker.Services
     }
 
     /// <summary>
+    /// Run clock behind the backfill ETA.  Tests inject a deterministic clock
+    /// through the internal constructor; production uses a Stopwatch.
+    /// </summary>
+    internal interface ISourceStoreBackfillClock
+    {
+        TimeSpan Elapsed { get; }
+        void Start();
+        void Stop();
+        void Reset();
+    }
+
+    internal sealed class StopwatchBackfillClock : ISourceStoreBackfillClock
+    {
+        private readonly Stopwatch _stopwatch = new Stopwatch();
+        public TimeSpan Elapsed => _stopwatch.Elapsed;
+        public void Start() => _stopwatch.Start();
+        public void Stop() => _stopwatch.Stop();
+        public void Reset() => _stopwatch.Reset();
+    }
+
+    /// <summary>
     /// Low-priority, resumable source-store backfill.  Each SDK-facing slice is
     /// submitted through the Worker's STA action queue and is bounded by both an
     /// object count and wall-clock budget; the queue is never held while waiting for
@@ -157,7 +174,12 @@ namespace GxMcp.Worker.Services
         private readonly Func<string, string, string, DateTime?, string, bool> _put;
         private readonly Func<Action, bool> _enqueueSdkAction;
         private readonly object _gate = new object();
-        private readonly Stopwatch _runClock = new Stopwatch();
+        private readonly ISourceStoreBackfillClock _runClock;
+        // ProcessedObjects when _runClock last started from zero.  The ETA rate is
+        // measured only over the objects this clock actually timed, so a count
+        // persisted before a restart cannot deflate it and a counter reset cannot
+        // inflate it (issue #554).
+        private int _runClockBaseline;
         private Func<IReadOnlyList<SearchIndex.IndexEntry>> _entryProvider;
         private Func<SearchIndex.IndexEntry, IReadOnlyList<SourceStoreBackfillPart>> _partReader;
         // Production readers use this to distinguish "all required parts are
@@ -179,11 +201,13 @@ namespace GxMcp.Worker.Services
         internal SourceStoreBackfillService(
             SourceStoreService store,
             Func<string, string, string, DateTime?, string, bool> put,
-            Func<Action, bool> enqueueSdkAction)
+            Func<Action, bool> enqueueSdkAction,
+            ISourceStoreBackfillClock runClock = null)
         {
             _store = store ?? throw new ArgumentNullException(nameof(store));
             _put = put ?? store.Put;
             _enqueueSdkAction = enqueueSdkAction ?? GxMcp.Worker.Program.EnqueueSdkAction;
+            _runClock = runClock ?? new StopwatchBackfillClock();
             _state = LoadState();
         }
 
@@ -229,6 +253,7 @@ namespace GxMcp.Worker.Services
                 if (!string.IsNullOrWhiteSpace(_state.CatalogSignature)
                     && !string.Equals(_state.CatalogSignature, catalogSignature, StringComparison.Ordinal))
                 {
+                    _runClock.Reset();
                     _state.CursorIndex = 0;
                     _state.Cursor = null;
                     _state.ProcessedObjects = 0;
@@ -253,6 +278,7 @@ namespace GxMcp.Worker.Services
                 if (_state.CursorIndex >= _entries.Count && _state.CursorIndex > 0)
                 {
                     // A changed catalogue invalidates a previously exhausted cursor.
+                    _runClock.Reset();
                     _state.CursorIndex = 0;
                     _state.Cursor = null;
                     _state.ProcessedObjects = 0;
@@ -374,6 +400,7 @@ namespace GxMcp.Worker.Services
                 requiredPartProvider = _requiredPartProvider;
                 start = Math.Max(0, Math.Min(_state.CursorIndex, entries.Count));
                 _state.State = "running";
+                if (_runClock.Elapsed == TimeSpan.Zero) _runClockBaseline = _state.ProcessedObjects;
                 _runClock.Start();
             }
 
@@ -593,7 +620,8 @@ namespace GxMcp.Worker.Services
                     else
                     {
                         int remaining = Math.Max(0, entries.Count - _state.CursorIndex);
-                        double perObject = _state.ProcessedObjects <= 0 ? 0 : _runClock.Elapsed.TotalMilliseconds / _state.ProcessedObjects;
+                        int timedObjects = _state.ProcessedObjects - _runClockBaseline;
+                        double perObject = timedObjects <= 0 ? 0 : _runClock.Elapsed.TotalMilliseconds / timedObjects;
                         _state.EtaMs = (int)Math.Max(0, Math.Min(int.MaxValue, perObject * remaining));
                     }
                     PersistStateLocked();
