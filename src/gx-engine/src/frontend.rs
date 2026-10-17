@@ -121,6 +121,10 @@ pub enum Stmt {
     DoSub(String),
     /// Subroutine definition: `Sub 'SubName' ... EndSub`
     Sub(String, Vec<Stmt>),
+    /// Commit database transaction: `Commit` or `Commit()`
+    Commit,
+    /// Rollback database transaction: `Rollback` or `Rollback()`
+    Rollback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -674,6 +678,22 @@ impl Parser {
             TokenKind::Identifier(keyword) if keyword == "EXIT" => {
                 self.take();
                 Ok(Stmt::Exit)
+            }
+            TokenKind::Identifier(keyword) if keyword == "COMMIT" => {
+                self.take();
+                if matches!(self.current().kind, TokenKind::LeftParen) {
+                    self.take();
+                    self.expect(TokenKind::RightParen, "')' after Commit")?;
+                }
+                Ok(Stmt::Commit)
+            }
+            TokenKind::Identifier(keyword) if keyword == "ROLLBACK" => {
+                self.take();
+                if matches!(self.current().kind, TokenKind::LeftParen) {
+                    self.take();
+                    self.expect(TokenKind::RightParen, "')' after Rollback")?;
+                }
+                Ok(Stmt::Rollback)
             }
             TokenKind::Identifier(keyword) if keyword == "PRINT" => self.parse_print(),
             TokenKind::Identifier(keyword) if keyword == "MSG" => self.parse_msg_status(),

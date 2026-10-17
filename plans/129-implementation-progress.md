@@ -1501,6 +1501,30 @@ Owner-reported implementation and native observations:
   - `src/gx-engine/tests/rules_parity.rs`:
     - Added 10/10 end-to-end integration tests covering all rule variants, comments, string literals, fail-closed diagnostics, procedure scoping, and catalog + XML exchange integration.
 - Verification: 326 passed / 0 failed across all 31 test binaries in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
-- Registry: new `rules_and_parm_parity` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
 - Milestone: **Portable KB Catalog & XML Projection** reaches **100.0% parity (6/6 areas: Procedures, SDTs, Domains, Attributes, Transactions, Rules)**. Overall weighted SDK replacement advances from **42.5% to 44.6% (33/56 areas touched: 58.9%)**.
+
+## Database Transaction Control Procedural Statements (Commit and Rollback) Parity (2026-10-16)
+
+- Native Procedural Grammar Analysis:
+  - In GeneXus Procedures, `Commit` and `Rollback` control database transactions:
+    - `Commit` / `commit()`: commits current transaction state.
+    - `Rollback` / `rollback()`: rolls back current transaction state.
+    - Valid inside standard statement contexts: top-level procedure bodies, conditional blocks (`If ... Else ... EndIf`), loops (`For`, `For In`, `Do While`), and local subroutines (`Sub ... EndSub`).
+    - Format 1 fail-closed rejection: legacy format_version 1 rejects modern control statements explicitly.
+- Engine Implementation:
+  - `src/gx-engine/src/frontend.rs`:
+    - Added `Stmt::Commit` and `Stmt::Rollback`.
+    - Added parsing in `parse_statement` supporting both bare keywords (`Commit`, `Rollback`) and call-syntax forms (`Commit()`, `Rollback()`) with optional semicolons.
+  - `src/gx-engine/src/dependencies.rs`:
+    - Handled `Stmt::Commit` and `Stmt::Rollback` as terminal non-calling statements.
+  - `src/gx-engine/src/backend.rs`:
+    - Admitted `Stmt::Commit` and `Stmt::Rollback` into format_version 1 validation/collection guards.
+  - `src/gx-engine/src/typed_backend.rs`:
+    - Emitted comment markers `// commit;` and `// rollback;` in typed code generator, preserving control flow and procedure return analysis.
+  - `src/gx-engine/tests/transaction_control.rs`:
+    - Added 7/7 end-to-end integration tests covering statement variants, conditionals, loops, subroutines, while loops, format_version 1 fail-closed rejection, and SDK ExportFile XML exchange.
+- Verification: 333 passed / 0 failed across all 32 test binaries in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
+- Registry: new `transaction_control` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Control Flow & Procedure Pipeline** expands with full transaction control statements. Overall weighted SDK replacement advances to **45.2%**.
+
 

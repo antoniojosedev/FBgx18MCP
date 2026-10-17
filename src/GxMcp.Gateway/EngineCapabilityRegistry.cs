@@ -250,6 +250,15 @@ namespace GxMcp.Gateway
                 notes: "Parses GeneXus Rules parts (9b0a32a3-de6d-4be1-a4dd-1b85d3741534) for Procedures and Transactions. Strips // and /* */ comments cleanly, preserves string literals with semicolons and escaped quotes, validates rule signatures, rejects invalid keywords (src0295), rejects duplicate Parm rules, enforces procedure scoping (variables only in Parm, no transaction-only rules in procedures), and integrates with catalog and XML exchange. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "transaction_control",
+                title: "Database transaction control procedural statements (Commit and Rollback)",
+                engineSurface: "compiler frontend + AST + typed procedural lowering + XML exchange",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/transaction_control.rs (7/7 tests: Commit, Rollback, commit(), rollback(), conditionals, loops, subroutines, format_version 1 fail-closed rejection, compiled executable execution, and ExportFile XML exchange)",
+                consumers: Array.Empty<string>(),
+                notes: "Implements Commit and Rollback transaction control statements in Procedure source bodies with optional parens. Emits runtime transactional lowering hooks, validates nesting within conditionals, loops, and subroutines, and integrates into the portable KB catalog and SDK ExportFile XML exchange. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "xml_projection",
                 title: "SDK ExportFile XML to portable catalog projection",
                 engineSurface: "gx-engine xml-check/xml-emit/xml-build/xml-run",

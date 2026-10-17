@@ -1950,6 +1950,12 @@ impl Emitter<'_> {
                 Stmt::Exit => {
                     writeln!(output, "break;").unwrap();
                 }
+                Stmt::Commit => {
+                    writeln!(output, "// commit;").unwrap();
+                }
+                Stmt::Rollback => {
+                    writeln!(output, "// rollback;").unwrap();
+                }
                 Stmt::FromJson(receiver, json_expr) => {
                     let data_type = self.expression_type(receiver)?;
                     let kind_type = kind(&data_type);
