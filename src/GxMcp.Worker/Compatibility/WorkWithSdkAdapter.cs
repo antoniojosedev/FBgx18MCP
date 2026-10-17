@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -22,6 +23,10 @@ namespace GxMcp.Worker.Compatibility
         private static Assembly _cachedAssembly;
         private static bool _assemblyResolved;
         private static readonly object _assemblyLock = new object();
+
+        /// Test seam: when set, replaces the assembly lookup so the native-unavailable
+        /// refusals can be exercised without a GeneXus installation.
+        internal static Func<Assembly> AssemblyResolverOverride;
 
         /// Disclosed in both the dryRun plan and the write receipt.
         ///
@@ -44,6 +49,8 @@ namespace GxMcp.Worker.Compatibility
 
         internal static Assembly GetWorkWithAssembly()
         {
+            var resolverOverride = AssemblyResolverOverride;
+            if (resolverOverride != null) return resolverOverride();
             if (_assemblyResolved) return _cachedAssembly;
             lock (_assemblyLock)
             {
@@ -1052,14 +1059,91 @@ namespace GxMcp.Worker.Compatibility
             }
         }
 
-        public static bool ListFilters(KBObject instanceObj, PatternAnalysisService patterns, string levelId, out JObject filters, out string error)
+        internal sealed class FilterLevelCandidate
+        {
+            public string Id;
+            public bool HasSelection;
+            public object Filter;
+        }
+
+        private static string LevelIdOrDefault(string id, int index)
+        {
+            if (!string.IsNullOrWhiteSpace(id)) return id;
+            return index == 0 ? "Root" : "Level" + index;
+        }
+
+        /// Fail-closed Level selection shared by the native and XML readers and by the
+        /// native writer: one Level resolves implicitly, two or more require `level`.
+        internal static bool TryResolveFilterLevel(
+            IList<FilterLevelCandidate> candidates,
+            string levelId,
+            out FilterLevelCandidate resolved,
+            out string error,
+            out string errorMessage)
+        {
+            resolved = null;
+            error = null;
+            errorMessage = null;
+            string available = string.Join(", ", candidates.Select(c => c.Id));
+
+            if (!string.IsNullOrWhiteSpace(levelId))
+            {
+                resolved = candidates.FirstOrDefault(c => string.Equals(c.Id, levelId, StringComparison.OrdinalIgnoreCase));
+                if (resolved == null)
+                {
+                    error = "FilterLevelNotFound";
+                    errorMessage = candidates.Count == 0
+                        ? $"Level '{levelId}' was not found: the WorkWith instance has no Levels."
+                        : $"Level '{levelId}' was not found in the WorkWith instance. Available levels: {available}.";
+                    return false;
+                }
+            }
+            else if (candidates.Count == 0)
+            {
+                error = "FilterLevelNotFound";
+                errorMessage = "The WorkWith instance has no Levels.";
+                return false;
+            }
+            else if (candidates.Count > 1)
+            {
+                error = "FilterLevelAmbiguous";
+                errorMessage = $"The WorkWith instance has {candidates.Count} Levels; pass `level` to choose one. Candidates: {available}.";
+                return false;
+            }
+            else
+            {
+                resolved = candidates[0];
+            }
+
+            if (!resolved.HasSelection)
+            {
+                error = "WorkWithSelectionMissing";
+                errorMessage = $"Level '{resolved.Id}' has no selection node.";
+                resolved = null;
+                return false;
+            }
+
+            if (resolved.Filter == null)
+            {
+                error = "WorkWithFilterNotPresent";
+                errorMessage = $"Standard WorkWith filter node is not present on the selection of Level '{resolved.Id}'. Create the filter in the GeneXus IDE.";
+                resolved = null;
+                return false;
+            }
+
+            return true;
+        }
+
+        public static bool ListFilters(KBObject instanceObj, PatternAnalysisService patterns, string levelId, out JObject filters, out string error, out string errorMessage)
         {
             filters = null;
             error = null;
+            errorMessage = null;
 
             if (instanceObj == null)
             {
                 error = "NullInstance";
+                errorMessage = "WorkWith PatternInstance object is null.";
                 return false;
             }
 
@@ -1069,77 +1153,16 @@ namespace GxMcp.Worker.Compatibility
                 try
                 {
                     var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                    if (wwiType != null)
+                    var loadMethod = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
+                    object wwi = loadMethod?.Invoke(null, new object[] { instanceObj });
+                    var levels = wwi != null ? wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable : null;
+                    if (levels != null)
                     {
-                        var loadMethod = wwiType.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                        object wwi = loadMethod != null ? loadMethod.Invoke(null, new object[] { instanceObj }) : null;
-                        if (wwi != null)
-                        {
-                            var levelsProp = wwiType.GetProperty("Levels");
-                            var levels = levelsProp?.GetValue(wwi, null) as IEnumerable;
-                            if (levels != null)
-                            {
-                                foreach (var lvl in levels)
-                                {
-                                    string lvlId = lvl.GetType().GetProperty("Id")?.GetValue(lvl, null)?.ToString()
-                                        ?? lvl.GetType().GetProperty("Name")?.GetValue(lvl, null)?.ToString();
-                                    if (!string.IsNullOrWhiteSpace(levelId) && !string.Equals(lvlId, levelId, StringComparison.OrdinalIgnoreCase))
-                                        continue;
+                        if (!TryResolveFilterLevel(CollectNativeFilterLevels(levels), levelId, out var resolved, out error, out errorMessage))
+                            return false;
 
-                                    var selection = lvl.GetType().GetProperty("Selection")?.GetValue(lvl, null);
-                                    if (selection == null) continue;
-
-                                    var filter = selection.GetType().GetProperty("Filter")?.GetValue(selection, null);
-                                    if (filter == null)
-                                    {
-                                        error = "WorkWithFilterNotPresent";
-                                        return false;
-                                    }
-
-                                    var attrsArray = new JArray();
-                                    var filterAttrs = filter.GetType().GetProperty("Attributes")?.GetValue(filter, null) as IEnumerable;
-                                    if (filterAttrs != null)
-                                    {
-                                        foreach (var fa in filterAttrs)
-                                        {
-                                            string faName = fa.GetType().GetProperty("Name")?.GetValue(fa, null)?.ToString() ?? "";
-                                            string faDesc = fa.GetType().GetProperty("Description")?.GetValue(fa, null)?.ToString();
-                                            string faDom = fa.GetType().GetProperty("DomainName")?.GetValue(fa, null)?.ToString()
-                                                ?? fa.GetType().GetProperty("Domain")?.GetValue(fa, null)?.ToString();
-                                            string faVar = fa.GetType().GetProperty("VariableName")?.GetValue(fa, null)?.ToString();
-
-                                            attrsArray.Add(new JObject
-                                            {
-                                                ["name"] = faName,
-                                                ["description"] = faDesc ?? faName,
-                                                ["domain"] = faDom ?? "",
-                                                ["variableName"] = faVar ?? ("&" + faName)
-                                            });
-                                        }
-                                    }
-
-                                    var condsArray = new JArray();
-                                    var conds = filter.GetType().GetProperty("Conditions")?.GetValue(filter, null) as IEnumerable;
-                                    if (conds != null)
-                                    {
-                                        foreach (var c in conds)
-                                        {
-                                            string val = c.GetType().GetProperty("Value")?.GetValue(c, null)?.ToString();
-                                            if (!string.IsNullOrWhiteSpace(val))
-                                                condsArray.Add(val);
-                                        }
-                                    }
-
-                                    filters = new JObject
-                                    {
-                                        ["level"] = lvlId ?? "Root",
-                                        ["attributes"] = attrsArray,
-                                        ["conditions"] = condsArray
-                                    };
-                                    return true;
-                                }
-                            }
-                        }
+                        filters = ReadNativeFilter(resolved);
+                        return true;
                     }
                 }
                 catch (Exception ex)
@@ -1152,154 +1175,240 @@ namespace GxMcp.Worker.Compatibility
             if (string.IsNullOrWhiteSpace(xml))
             {
                 error = "PatternInstanceXmlEmpty";
+                errorMessage = "PatternInstance XML was empty; filters could not be read.";
                 return false;
             }
 
-            return TryListFiltersFromXml(xml, levelId, out filters, out error);
+            return TryListFiltersFromXml(xml, levelId, out filters, out error, out errorMessage);
         }
 
-        internal static bool TryListFiltersFromXml(string xml, string levelId, out JObject filters, out string error)
+        private static List<FilterLevelCandidate> CollectNativeFilterLevels(IEnumerable levels)
+        {
+            var candidates = new List<FilterLevelCandidate>();
+            int index = 0;
+            foreach (var lvl in levels)
+            {
+                string id = lvl.GetType().GetProperty("Id")?.GetValue(lvl, null)?.ToString()
+                    ?? lvl.GetType().GetProperty("Name")?.GetValue(lvl, null)?.ToString();
+                var selection = lvl.GetType().GetProperty("Selection")?.GetValue(lvl, null);
+                candidates.Add(new FilterLevelCandidate
+                {
+                    Id = LevelIdOrDefault(id, index),
+                    HasSelection = selection != null,
+                    Filter = selection?.GetType().GetProperty("Filter")?.GetValue(selection, null)
+                });
+                index++;
+            }
+            return candidates;
+        }
+
+        private static JObject ReadNativeFilter(FilterLevelCandidate level)
+        {
+            object filter = level.Filter;
+            var attrsArray = new JArray();
+            var filterAttrs = filter.GetType().GetProperty("Attributes")?.GetValue(filter, null) as IEnumerable;
+            if (filterAttrs != null)
+            {
+                foreach (var fa in filterAttrs)
+                {
+                    string faName = fa.GetType().GetProperty("Name")?.GetValue(fa, null)?.ToString() ?? "";
+                    string faDesc = fa.GetType().GetProperty("Description")?.GetValue(fa, null)?.ToString();
+                    string faDom = fa.GetType().GetProperty("DomainName")?.GetValue(fa, null)?.ToString()
+                        ?? fa.GetType().GetProperty("Domain")?.GetValue(fa, null)?.ToString();
+                    string faVar = fa.GetType().GetProperty("VariableName")?.GetValue(fa, null)?.ToString();
+
+                    attrsArray.Add(new JObject
+                    {
+                        ["name"] = faName,
+                        ["description"] = faDesc ?? faName,
+                        ["domain"] = faDom ?? "",
+                        ["variableName"] = faVar ?? ("&" + faName)
+                    });
+                }
+            }
+
+            var condsArray = new JArray();
+            var conds = filter.GetType().GetProperty("Conditions")?.GetValue(filter, null) as IEnumerable;
+            if (conds != null)
+            {
+                foreach (var c in conds)
+                {
+                    string val = c.GetType().GetProperty("Value")?.GetValue(c, null)?.ToString();
+                    if (!string.IsNullOrWhiteSpace(val))
+                        condsArray.Add(val);
+                }
+            }
+
+            return new JObject
+            {
+                ["level"] = level.Id,
+                ["attributes"] = attrsArray,
+                ["conditions"] = condsArray
+            };
+        }
+
+        /// Read-only XML projection of the standard WorkWith filter, used when the native
+        /// surface is unavailable. The real nodes are `filterAttribute` under `attributes`
+        /// and `condition` under `conditions` (see PatternChildOrderReconciler).
+        internal static bool TryListFiltersFromXml(string xml, string levelId, out JObject filters, out string error, out string errorMessage)
         {
             filters = null;
             error = null;
+            errorMessage = null;
             try
             {
                 var doc = XDocument.Parse(xml);
-                var levels = doc.Descendants().Where(e => string.Equals(e.Name.LocalName, "level", StringComparison.OrdinalIgnoreCase)).ToList();
-                if (levels.Count == 0)
+                if (!TryResolveFilterLevel(CollectXmlFilterLevels(doc), levelId, out var resolved, out error, out errorMessage))
+                    return false;
+
+                var filter = (XElement)resolved.Filter;
+                var attrsArray = new JArray();
+                var attrsContainer = ChildNamed(filter, "attributes");
+                if (attrsContainer != null)
                 {
-                    // Some XML variants store Selection directly under root
-                    var directSelection = doc.Descendants().FirstOrDefault(e => string.Equals(e.Name.LocalName, "selection", StringComparison.OrdinalIgnoreCase));
-                    if (directSelection != null)
+                    foreach (var a in attrsContainer.Elements().Where(e => HasLocalName(e, "filterAttribute")))
                     {
-                        var directFilter = directSelection.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "filter", StringComparison.OrdinalIgnoreCase));
-                        if (directFilter == null)
+                        string aName = (string)a.Attribute("name") ?? "";
+                        attrsArray.Add(new JObject
                         {
-                            error = "WorkWithFilterNotPresent";
-                            return false;
-                        }
-
-                        var attrsArray = new JArray();
-                        var attrsContainer = directFilter.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "attributes", StringComparison.OrdinalIgnoreCase));
-                        if (attrsContainer != null)
-                        {
-                            foreach (var a in attrsContainer.Elements().Where(e => string.Equals(e.Name.LocalName, "attribute", StringComparison.OrdinalIgnoreCase)))
-                            {
-                                string aName = (string)a.Attribute("name") ?? "";
-                                string aDesc = (string)a.Attribute("description");
-                                string aDom = (string)a.Attribute("domain");
-                                string aVar = (string)a.Attribute("variableName");
-                                attrsArray.Add(new JObject
-                                {
-                                    ["name"] = aName,
-                                    ["description"] = aDesc ?? aName,
-                                    ["domain"] = aDom ?? "",
-                                    ["variableName"] = aVar ?? ("&" + aName)
-                                });
-                            }
-                        }
-
-                        var condsArray = new JArray();
-                        var condsContainer = directFilter.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "conditions", StringComparison.OrdinalIgnoreCase));
-                        if (condsContainer != null)
-                        {
-                            foreach (var c in condsContainer.Elements().Where(e => string.Equals(e.Name.LocalName, "condition", StringComparison.OrdinalIgnoreCase)))
-                            {
-                                string val = (string)c.Attribute("value");
-                                if (!string.IsNullOrWhiteSpace(val)) condsArray.Add(val);
-                            }
-                        }
-
-                        filters = new JObject
-                        {
-                            ["level"] = "Root",
-                            ["attributes"] = attrsArray,
-                            ["conditions"] = condsArray
-                        };
-                        return true;
+                            ["name"] = aName,
+                            ["description"] = (string)a.Attribute("description") ?? aName,
+                            ["domain"] = StripObjectReferenceGuid((string)a.Attribute("domain")) ?? "",
+                            ["variableName"] = (string)a.Attribute("variableName") ?? ("&" + aName)
+                        });
                     }
                 }
 
-                if (levels.Count > 0 && !string.IsNullOrWhiteSpace(levelId))
+                var condsArray = new JArray();
+                var condsContainer = ChildNamed(filter, "conditions");
+                if (condsContainer != null)
                 {
-                    bool levelExists = levels.Any(lvl => string.Equals((string)lvl.Attribute("id") ?? (string)lvl.Attribute("name"), levelId, StringComparison.OrdinalIgnoreCase));
-                    if (!levelExists)
+                    foreach (var c in condsContainer.Elements().Where(e => HasLocalName(e, "condition")))
                     {
-                        error = "LevelNotFound";
-                        return false;
+                        string val = (string)c.Attribute("value");
+                        if (!string.IsNullOrWhiteSpace(val)) condsArray.Add(val);
                     }
                 }
 
-                foreach (var lvl in levels)
+                filters = new JObject
                 {
-                    string lvlId = (string)lvl.Attribute("id") ?? (string)lvl.Attribute("name");
-                    if (!string.IsNullOrWhiteSpace(levelId) && !string.Equals(lvlId, levelId, StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var selection = lvl.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "selection", StringComparison.OrdinalIgnoreCase));
-                    if (selection == null) continue;
-
-                    var filter = selection.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "filter", StringComparison.OrdinalIgnoreCase));
-                    if (filter == null)
-                    {
-                        error = "WorkWithFilterNotPresent";
-                        return false;
-                    }
-
-                    var attrsArray = new JArray();
-                    var attrsContainer = filter.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "attributes", StringComparison.OrdinalIgnoreCase));
-                    if (attrsContainer != null)
-                    {
-                        foreach (var a in attrsContainer.Elements().Where(e => string.Equals(e.Name.LocalName, "attribute", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            string aName = (string)a.Attribute("name") ?? "";
-                            string aDesc = (string)a.Attribute("description");
-                            string aDom = (string)a.Attribute("domain");
-                            string aVar = (string)a.Attribute("variableName");
-                            attrsArray.Add(new JObject
-                            {
-                                ["name"] = aName,
-                                ["description"] = aDesc ?? aName,
-                                ["domain"] = aDom ?? "",
-                                ["variableName"] = aVar ?? ("&" + aName)
-                            });
-                        }
-                    }
-
-                    var condsArray = new JArray();
-                    var condsContainer = filter.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "conditions", StringComparison.OrdinalIgnoreCase));
-                    if (condsContainer != null)
-                    {
-                        foreach (var c in condsContainer.Elements().Where(e => string.Equals(e.Name.LocalName, "condition", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            string val = (string)c.Attribute("value");
-                            if (!string.IsNullOrWhiteSpace(val)) condsArray.Add(val);
-                        }
-                    }
-
-                    filters = new JObject
-                    {
-                        ["level"] = lvlId ?? "Root",
-                        ["attributes"] = attrsArray,
-                        ["conditions"] = condsArray
-                    };
-                    return true;
-                }
-
-                error = "WorkWithFilterNotPresent";
-                return false;
+                    ["level"] = resolved.Id,
+                    ["attributes"] = attrsArray,
+                    ["conditions"] = condsArray
+                };
+                return true;
             }
             catch (Exception ex)
             {
                 error = "XmlParseError: " + ex.Message;
+                errorMessage = "PatternInstance XML could not be parsed: " + ex.Message;
                 return false;
             }
         }
 
+        private static List<FilterLevelCandidate> CollectXmlFilterLevels(XDocument doc)
+        {
+            var candidates = new List<FilterLevelCandidate>();
+            var levels = doc.Descendants().Where(e => HasLocalName(e, "level")).ToList();
+            if (levels.Count == 0)
+            {
+                // Some XML variants store Selection directly under root
+                var directSelection = doc.Descendants().FirstOrDefault(e => HasLocalName(e, "selection"));
+                if (directSelection != null)
+                    candidates.Add(new FilterLevelCandidate { Id = "Root", HasSelection = true, Filter = ChildNamed(directSelection, "filter") });
+                return candidates;
+            }
+
+            int index = 0;
+            foreach (var lvl in levels)
+            {
+                var selection = ChildNamed(lvl, "selection");
+                candidates.Add(new FilterLevelCandidate
+                {
+                    Id = LevelIdOrDefault((string)lvl.Attribute("id") ?? (string)lvl.Attribute("name"), index),
+                    HasSelection = selection != null,
+                    Filter = selection != null ? ChildNamed(selection, "filter") : null
+                });
+                index++;
+            }
+            return candidates;
+        }
+
+        private static bool HasLocalName(XElement element, string localName)
+        {
+            return string.Equals(element.Name.LocalName, localName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static XElement ChildNamed(XElement parent, string localName)
+        {
+            return parent.Elements().FirstOrDefault(e => HasLocalName(e, localName));
+        }
+
+        /// Pattern XML stores object references as `{guid}-{Name}`; readers report the name.
+        private static string StripObjectReferenceGuid(string reference)
+        {
+            if (string.IsNullOrEmpty(reference)) return reference;
+            var parts = reference.Split(new[] { '-' }, 6);
+            return parts.Length == 6 && Guid.TryParse(string.Join("-", parts, 0, 5), out _) ? parts[5] : reference;
+        }
+
+        private static readonly Regex FilterAttributeNamePattern = new Regex(@"^&?[a-zA-Z_][a-zA-Z0-9_]*$", RegexOptions.Compiled);
+
+        /// Deterministic request validation: identifier shape of the filter attribute name
+        /// (an optional leading `&` marks a variable), no empty condition, and no condition
+        /// repeated within the request or against the conditions already on the filter.
+        internal static bool ValidateFilterRequest(
+            string attributeName,
+            IList<string> conditions,
+            JArray existingConditions,
+            out string errorCode,
+            out string errorMessage)
+        {
+            errorCode = null;
+            errorMessage = null;
+
+            if (string.IsNullOrWhiteSpace(attributeName) || !FilterAttributeNamePattern.IsMatch(attributeName))
+            {
+                errorCode = "InvalidFilterAttributeName";
+                errorMessage = $"Filter attribute name '{attributeName}' is not a valid identifier (letters, digits and underscore, optionally prefixed with '&').";
+                return false;
+            }
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            if (existingConditions != null)
+            {
+                foreach (var existing in existingConditions)
+                    seen.Add(existing.ToString());
+            }
+
+            if (conditions == null) return true;
+            for (int i = 0; i < conditions.Count; i++)
+            {
+                string condition = conditions[i];
+                if (string.IsNullOrWhiteSpace(condition))
+                {
+                    errorCode = "FilterConditionEmpty";
+                    errorMessage = $"conditions[{i}] is empty; every filter condition must be a non-empty expression.";
+                    return false;
+                }
+
+                if (!seen.Add(condition))
+                {
+                    errorCode = "FilterConditionDuplicate";
+                    errorMessage = $"conditions[{i}] '{condition}' repeats another condition in the request or one already present on the filter.";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// Filter authoring writes only through the native WorkWith SDK. Authoring the
+        /// filter through raw PatternInstance XML is exactly what the structural preflight
+        /// refuses, so there is deliberately no XML write fallback here (issue #559).
         public static bool AddFilterAttribute(
             KBObject instanceObj,
             PatternAnalysisService patterns,
-            WriteService write,
             string levelId,
             string attributeName,
             string description,
@@ -1321,40 +1430,32 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            if (!ListFilters(instanceObj, patterns, levelId, out var existingFilters, out var listError))
-            {
-                errorCode = listError ?? "ListFiltersFailed";
-                errorMessage = listError == "WorkWithFilterNotPresent"
-                    ? "Standard WorkWith filter node is not present on the selection. Create the filter in the GeneXus IDE."
-                    : $"Could not inspect filters for WorkWith instance '{instanceObj.Name}': {listError}";
+            if (!ListFilters(instanceObj, patterns, levelId, out var existingFilters, out errorCode, out errorMessage))
                 return false;
-            }
 
-            var existingAttrs = existingFilters["attributes"] as JArray;
-            if (existingAttrs != null && existingAttrs.Any(a => string.Equals(a["name"]?.ToString(), attributeName, StringComparison.OrdinalIgnoreCase)))
+            var existingAttrs = existingFilters["attributes"] as JArray ?? new JArray();
+            var existingConditions = existingFilters["conditions"] as JArray;
+            string resolvedLevel = existingFilters["level"]?.ToString();
+
+            if (!ValidateFilterRequest(attributeName, conditions, existingConditions, out errorCode, out errorMessage))
+                return false;
+
+            if (existingAttrs.Any(a => string.Equals(a["name"]?.ToString(), attributeName, StringComparison.OrdinalIgnoreCase)))
             {
                 errorCode = "FilterAttributeAlreadyExists";
                 errorMessage = $"Filter attribute '{attributeName}' already exists in WorkWith instance '{instanceObj.Name}'.";
                 return false;
             }
 
-            string resolvedLevel = existingFilters["level"]?.ToString() ?? levelId ?? "Root";
-            var plan = new JObject
+            var plan = BuildFilterPlan(instanceObj.Name, resolvedLevel, attributeName, description, domain, conditions);
+
+            if (GetWorkWithAssembly() == null)
             {
-                ["instance"] = instanceObj.Name,
-                ["level"] = resolvedLevel,
-                ["filterAttribute"] = new JObject
-                {
-                    ["name"] = attributeName,
-                    ["description"] = !string.IsNullOrWhiteSpace(description) ? description : attributeName,
-                    ["domain"] = domain ?? ""
-                },
-                ["conditions"] = conditions != null ? JArray.FromObject(conditions) : new JArray(),
-                ["route"] = IsNativeSdkAvailable ? "native-sdk" : "xml-fallback",
-                ["defaultNormalization"] = IsNativeSdkAvailable
-                    ? NativeDefaultNormalization
-                    : FallbackDefaultNormalization
-            };
+                result = plan;
+                errorCode = "WorkWithSdkUnavailable";
+                errorMessage = "Native WorkWith filter authoring is unavailable: the Artech.Patterns.WorkWith assembly could not be resolved. Filter writes have no XML fallback.";
+                return false;
+            }
 
             if (dryRun)
             {
@@ -1362,232 +1463,334 @@ namespace GxMcp.Worker.Compatibility
                 return true;
             }
 
-            bool nativeSucceeded = false;
-            var asm = GetWorkWithAssembly();
-            if (asm != null)
+            if (!TryAddFilterAttributeNative(instanceObj, resolvedLevel, attributeName, description, domain, conditions, out errorCode, out errorMessage))
+                return false;
+
+            if (!ListFilters(instanceObj, patterns, resolvedLevel, out var verifyFilters, out _, out _))
             {
-                try
-                {
-                    var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                    var loadMethod = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                    object wwi = loadMethod?.Invoke(null, new object[] { instanceObj });
-                    if (wwi != null)
-                    {
-                        var levels = wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable;
-                        object sdkFilter = null;
-                        if (levels != null)
-                        {
-                            foreach (var lvl in levels)
-                            {
-                                string lvlId = lvl.GetType().GetProperty("Id")?.GetValue(lvl, null)?.ToString()
-                                    ?? lvl.GetType().GetProperty("Name")?.GetValue(lvl, null)?.ToString();
-                                if (!string.IsNullOrWhiteSpace(levelId) && !string.Equals(lvlId, levelId, StringComparison.OrdinalIgnoreCase))
-                                    continue;
-
-                                var sel = lvl.GetType().GetProperty("Selection")?.GetValue(lvl, null);
-                                sdkFilter = sel?.GetType().GetProperty("Filter")?.GetValue(sel, null);
-                                if (sdkFilter != null) break;
-                            }
-                        }
-
-                        if (sdkFilter != null)
-                        {
-                            var addFaMethod = sdkFilter.GetType().GetMethod("AddFilterAttribute", new[] { typeof(string) });
-                            object newFa = addFaMethod?.Invoke(sdkFilter, new object[] { attributeName });
-                            if (newFa == null)
-                            {
-                                addFaMethod = sdkFilter.GetType().GetMethod("AddFilterAttribute", Type.EmptyTypes);
-                                newFa = addFaMethod?.Invoke(sdkFilter, null);
-                                newFa?.GetType().GetProperty("Name")?.SetValue(newFa, attributeName, null);
-                            }
-
-                            if (newFa != null)
-                            {
-                                if (!string.IsNullOrWhiteSpace(description))
-                                    newFa.GetType().GetProperty("Description")?.SetValue(newFa, description, null);
-
-                                if (!string.IsNullOrWhiteSpace(domain))
-                                {
-                                    var domProp = newFa.GetType().GetProperty("DomainName") ?? newFa.GetType().GetProperty("Domain");
-                                    domProp?.SetValue(newFa, domain, null);
-                                }
-
-                                if (conditions != null)
-                                {
-                                    var addCondMethod = sdkFilter.GetType().GetMethod("AddCondition", new[] { typeof(string) });
-                                    foreach (var c in conditions)
-                                    {
-                                        if (!string.IsNullOrWhiteSpace(c))
-                                            addCondMethod?.Invoke(sdkFilter, new object[] { c });
-                                    }
-                                }
-
-                                var saveToMethod = wwiType.GetMethod("SaveTo", new[] { instanceObj.GetType() });
-                                saveToMethod?.Invoke(wwi, new object[] { instanceObj });
-                                instanceObj.Save();
-                                nativeSucceeded = true;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warn("[WorkWithSdkAdapter] Native AddFilterAttribute failed, falling back to XML: " + ex.Message);
-                }
+                errorCode = "VerificationReadFailed";
+                errorMessage = "Filter attribute was saved, but verification re-read failed.";
+                return false;
             }
 
-            if (!nativeSucceeded)
+            var verifiedAttrs = verifyFilters["attributes"] as JArray ?? new JArray();
+            var verifiedConditions = verifyFilters["conditions"] as JArray ?? new JArray();
+            int expectedAttributeCount = existingAttrs.Count + 1;
+            if (verifiedAttrs.Count < expectedAttributeCount)
             {
-                string xml = patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
-                if (string.IsNullOrWhiteSpace(xml))
-                {
-                    errorCode = "PatternInstanceXmlEmpty";
-                    errorMessage = "PatternInstance XML was empty; cannot apply fallback.";
-                    return false;
-                }
-
-                if (!TryAddFilterAttributeToXml(xml, levelId, attributeName, description, domain, conditions, out string updatedXml, out var xmlErrCode, out var xmlErrMsg))
-                {
-                    errorCode = xmlErrCode;
-                    errorMessage = xmlErrMsg;
-                    return false;
-                }
-
-                var writeArgs = new JObject
-                {
-                    ["part"] = "PatternInstance",
-                    ["mode"] = "full",
-                    ["content"] = updatedXml,
-                    ["validate"] = false
-                };
-                string writeResponse = write.WriteObject(instanceObj.Name, writeArgs);
-                var writeResult = JObject.Parse(writeResponse);
-                if (writeResult["status"]?.ToString() != "ok")
-                {
-                    errorCode = writeResult["code"]?.ToString() ?? "PatternInstanceWriteFailed";
-                    errorMessage = writeResult["message"]?.ToString() ?? "Failed to save updated PatternInstance XML.";
-                    return false;
-                }
+                errorCode = "VerificationFailed";
+                errorMessage = $"Filter attributes were truncated after write: expected at least {expectedAttributeCount}, found {verifiedAttrs.Count}.";
+                return false;
             }
 
-            var receipt = new JObject
+            var verifiedAttr = verifiedAttrs.FirstOrDefault(a => string.Equals(a["name"]?.ToString(), attributeName, StringComparison.OrdinalIgnoreCase)) as JObject;
+            if (verifiedAttr == null)
             {
-                ["instance"] = instanceObj.Name,
-                ["applied"] = true,
-                ["plan"] = plan,
-                ["derivedObjectRegeneration"] = "not_guaranteed"
-            };
+                errorCode = "VerificationFailed";
+                errorMessage = $"Filter attribute '{attributeName}' was not found in the verified post-write state.";
+                return false;
+            }
 
-            result = receipt;
+            if (!VerifyFilterAttributeMatches(verifiedAttr, verifiedConditions, attributeName, description, domain, conditions, out string mismatchDetail))
+            {
+                errorCode = "VerificationMismatch";
+                errorMessage = $"Filter attribute '{attributeName}' was persisted, but post-save verification failed: {mismatchDetail}";
+                return false;
+            }
+
+            result = BuildFilterReceipt(instanceObj.Name, resolvedLevel, verifiedAttr, verifiedConditions, attributeName, description, domain, conditions);
             return true;
         }
 
-        internal static bool TryAddFilterAttributeToXml(
-            string xml,
+        internal static JObject BuildFilterPlan(
+            string instanceName,
+            string level,
+            string attributeName,
+            string description,
+            string domain,
+            IList<string> conditions)
+        {
+            var filterAttribute = new JObject { ["name"] = attributeName };
+            if (!string.IsNullOrWhiteSpace(description)) filterAttribute["description"] = description;
+            if (!string.IsNullOrWhiteSpace(domain)) filterAttribute["domain"] = domain;
+
+            return new JObject
+            {
+                ["instance"] = instanceName,
+                ["level"] = level,
+                ["filterAttribute"] = filterAttribute,
+                ["conditions"] = new JArray(conditions ?? Array.Empty<string>()),
+                ["route"] = "native-sdk",
+                ["validations"] = new JObject
+                {
+                    ["targetObjectResolved"] = true,
+                    ["workWithInstanceResolved"] = true,
+                    ["levelResolved"] = true,
+                    ["filterPresent"] = true,
+                    ["attributeNameFormatValid"] = true,
+                    ["attributeNameUnique"] = true,
+                    ["conditionsNonEmptyAndUnique"] = true
+                },
+                ["validationLimits"] = new JObject
+                {
+                    ["attributeName"] = "The filter attribute name is stored as given; it is not resolved against KB attributes or variables.",
+                    ["domain"] = "The Domain is stored as given; it is not resolved against KB Domains.",
+                    ["conditionExpressions"] = "Filter condition expressions are not compiled or evaluated."
+                },
+                ["defaultNormalization"] = NativeDefaultNormalization
+            };
+        }
+
+        private sealed class NativeFilterSurface
+        {
+            public MethodInfo Load;
+            public PropertyInfo Levels;
+            public MethodInfo SaveTo;
+            public MethodInfo AddFilterAttribute;
+            public MethodInfo AddCondition;
+            public PropertyInfo Description;
+            public PropertyInfo DomainName;
+        }
+
+        private static bool TryResolveNativeFilterSurface(
+            Type instanceType,
+            bool needsDescription,
+            bool needsDomain,
+            bool needsConditions,
+            out NativeFilterSurface surface,
+            out string missingMember)
+        {
+            surface = null;
+            missingMember = null;
+            var asm = GetWorkWithAssembly();
+            if (asm == null)
+            {
+                missingMember = "the Artech.Patterns.WorkWith assembly could not be resolved";
+                return false;
+            }
+
+            try
+            {
+                var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
+                var filterType = asm.GetType("Artech.Patterns.WorkWith.FilterElement");
+                var resolved = new NativeFilterSurface
+                {
+                    Load = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static),
+                    Levels = wwiType?.GetProperty("Levels"),
+                    SaveTo = (instanceType != null ? wwiType?.GetMethod("SaveTo", new[] { instanceType }) : null)
+                        ?? wwiType?.GetMethod("SaveTo"),
+                    AddFilterAttribute = filterType?.GetMethod("AddFilterAttribute", new[] { typeof(string) }),
+                    AddCondition = filterType?.GetMethod("AddCondition", new[] { typeof(string) })
+                };
+                var attributeType = resolved.AddFilterAttribute?.ReturnType;
+                resolved.Description = attributeType?.GetProperty("Description");
+                resolved.DomainName = new[] { attributeType?.GetProperty("DomainName"), attributeType?.GetProperty("Domain") }
+                    .FirstOrDefault(p => p != null && p.CanWrite && p.PropertyType == typeof(string));
+
+                var missing = new List<string>();
+                if (wwiType == null) missing.Add("WorkWithInstance");
+                if (resolved.Load == null) missing.Add("WorkWithInstance.Load");
+                if (resolved.Levels == null) missing.Add("WorkWithInstance.Levels");
+                if (resolved.SaveTo == null) missing.Add("WorkWithInstance.SaveTo");
+                if (filterType == null) missing.Add("FilterElement");
+                if (resolved.AddFilterAttribute == null) missing.Add("FilterElement.AddFilterAttribute(string)");
+                if (needsConditions && resolved.AddCondition == null) missing.Add("FilterElement.AddCondition(string)");
+                if (needsDescription && (resolved.Description == null || !resolved.Description.CanWrite)) missing.Add("FilterAttributeElement.Description setter");
+                if (needsDomain && resolved.DomainName == null) missing.Add("FilterAttributeElement.DomainName string setter");
+                if (missing.Count > 0)
+                {
+                    missingMember = "unresolved member(s): " + string.Join(", ", missing);
+                    return false;
+                }
+
+                surface = resolved;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                missingMember = "surface reflection failed: " + ex.Message;
+                return false;
+            }
+        }
+
+        /// Native write: every SDK member is resolved before the typed model is touched,
+        /// and nothing is saved unless every requested piece was applied.
+        internal static bool TryAddFilterAttributeNative(
+            KBObject instanceObj,
             string levelId,
             string attributeName,
             string description,
             string domain,
             IList<string> conditions,
-            out string updatedXml,
             out string errorCode,
             out string errorMessage)
         {
-            updatedXml = null;
             errorCode = null;
             errorMessage = null;
+            bool hasDescription = !string.IsNullOrWhiteSpace(description);
+            bool hasDomain = !string.IsNullOrWhiteSpace(domain);
+            bool hasConditions = conditions != null && conditions.Count > 0;
+
+            if (!TryResolveNativeFilterSurface(instanceObj?.GetType(), hasDescription, hasDomain, hasConditions, out var surface, out string missingMember))
+            {
+                errorCode = "WorkWithSdkUnavailable";
+                errorMessage = "Native WorkWith filter authoring is unavailable: " + missingMember + ". Filter writes have no XML fallback.";
+                return false;
+            }
+
+            bool writtenToPart = false;
             try
             {
-                var doc = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
-                var levels = doc.Descendants().Where(e => string.Equals(e.Name.LocalName, "level", StringComparison.OrdinalIgnoreCase)).ToList();
-                XElement targetFilter = null;
-                if (levels.Count == 0)
+                object wwi = surface.Load.Invoke(null, new object[] { instanceObj });
+                if (wwi == null)
                 {
-                    var directSelection = doc.Descendants().FirstOrDefault(e => string.Equals(e.Name.LocalName, "selection", StringComparison.OrdinalIgnoreCase));
-                    if (directSelection != null)
-                        targetFilter = directSelection.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "filter", StringComparison.OrdinalIgnoreCase));
-                }
-                else
-                {
-                    if (!string.IsNullOrWhiteSpace(levelId))
-                    {
-                        bool levelExists = levels.Any(lvl => string.Equals((string)lvl.Attribute("id") ?? (string)lvl.Attribute("name"), levelId, StringComparison.OrdinalIgnoreCase));
-                        if (!levelExists)
-                        {
-                            errorCode = "LevelNotFound";
-                            errorMessage = $"Level '{levelId}' was not found in WorkWith instance.";
-                            return false;
-                        }
-                    }
-
-                    foreach (var lvl in levels)
-                    {
-                        string lvlId = (string)lvl.Attribute("id") ?? (string)lvl.Attribute("name");
-                        if (!string.IsNullOrWhiteSpace(levelId) && !string.Equals(lvlId, levelId, StringComparison.OrdinalIgnoreCase))
-                            continue;
-
-                        var selection = lvl.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "selection", StringComparison.OrdinalIgnoreCase));
-                        if (selection != null)
-                        {
-                            targetFilter = selection.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "filter", StringComparison.OrdinalIgnoreCase));
-                            if (targetFilter != null) break;
-                        }
-                    }
-                }
-
-                if (targetFilter == null)
-                {
-                    errorCode = "WorkWithFilterNotPresent";
-                    errorMessage = "Standard WorkWith filter node is not present on the selection.";
+                    errorCode = "WorkWithFilterAuthoringFailed";
+                    errorMessage = "WorkWithInstance.Load returned null for the PatternInstance.";
                     return false;
                 }
 
-                var attrsContainer = targetFilter.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "attributes", StringComparison.OrdinalIgnoreCase));
-                if (attrsContainer == null)
-                {
-                    attrsContainer = new XElement("Attributes");
-                    targetFilter.AddFirst(attrsContainer);
-                }
+                var levels = surface.Levels.GetValue(wwi, null) as IEnumerable;
+                var candidates = levels != null ? CollectNativeFilterLevels(levels) : new List<FilterLevelCandidate>();
+                if (!TryResolveFilterLevel(candidates, levelId, out var resolved, out errorCode, out errorMessage))
+                    return false;
 
-                if (attrsContainer.Elements().Any(e => string.Equals((string)e.Attribute("name"), attributeName, StringComparison.OrdinalIgnoreCase)))
+                object newAttribute = surface.AddFilterAttribute.Invoke(resolved.Filter, new object[] { attributeName });
+                if (newAttribute == null)
                 {
-                    errorCode = "FilterAttributeAlreadyExists";
-                    errorMessage = $"Filter attribute '{attributeName}' already exists in filter.";
+                    errorCode = "WorkWithFilterAuthoringFailed";
+                    errorMessage = "FilterElement.AddFilterAttribute returned null; nothing was saved.";
                     return false;
                 }
 
-                var newAttr = new XElement("Attribute", new XAttribute("name", attributeName));
-                if (!string.IsNullOrWhiteSpace(description))
-                    newAttr.Add(new XAttribute("description", description));
-                if (!string.IsNullOrWhiteSpace(domain))
-                    newAttr.Add(new XAttribute("domain", domain));
-                attrsContainer.Add(newAttr);
-
-                if (conditions != null && conditions.Count > 0)
+                if (hasDescription) surface.Description.SetValue(newAttribute, description, null);
+                if (hasDomain) surface.DomainName.SetValue(newAttribute, domain, null);
+                if (hasConditions)
                 {
-                    var condsContainer = targetFilter.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "conditions", StringComparison.OrdinalIgnoreCase));
-                    if (condsContainer == null)
-                    {
-                        condsContainer = new XElement("Conditions");
-                        targetFilter.Add(condsContainer);
-                    }
-
-                    foreach (var c in conditions)
-                    {
-                        if (!string.IsNullOrWhiteSpace(c))
-                            condsContainer.Add(new XElement("Condition", new XAttribute("value", c)));
-                    }
+                    foreach (var condition in conditions)
+                        surface.AddCondition.Invoke(resolved.Filter, new object[] { condition });
                 }
 
-                updatedXml = doc.ToString(SaveOptions.DisableFormatting);
+                surface.SaveTo.Invoke(wwi, new object[] { instanceObj });
+                writtenToPart = true;
+                instanceObj.Save();
                 return true;
             }
             catch (Exception ex)
             {
-                errorCode = "XmlUpdateFailed";
-                errorMessage = ex.Message;
+                var cause = ex is TargetInvocationException invocation && invocation.InnerException != null ? invocation.InnerException : ex;
+                errorCode = "WorkWithFilterAuthoringFailed";
+                errorMessage = "Native WorkWith filter authoring failed: " + cause.Message
+                    + (writtenToPart
+                        ? " The typed model was written to the in-memory PatternInstance part but Save failed; reopen the object before retrying."
+                        : " Nothing was saved.");
                 return false;
             }
         }
+
+        private static string[] ComparedFilterFields(string description, string domain)
+        {
+            var fields = new List<string> { "name" };
+            if (!string.IsNullOrWhiteSpace(description)) fields.Add("description");
+            if (!string.IsNullOrWhiteSpace(domain)) fields.Add("domain");
+            fields.Add("conditions");
+            return fields.ToArray();
+        }
+
+        internal static bool VerifyFilterAttributeMatches(
+            JObject observedAttribute,
+            JArray observedConditions,
+            string attributeName,
+            string description,
+            string domain,
+            IList<string> conditions,
+            out string mismatchDetail)
+        {
+            mismatchDetail = null;
+            if (observedAttribute == null)
+            {
+                mismatchDetail = "Filter attribute not found in verified state.";
+                return false;
+            }
+
+            string observedName = observedAttribute["name"]?.ToString() ?? "";
+            if (!string.Equals(observedName, attributeName, StringComparison.OrdinalIgnoreCase))
+            {
+                mismatchDetail = $"Filter attribute name mismatch: expected '{attributeName}', observed '{observedName}'.";
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(description))
+            {
+                string observedDescription = observedAttribute["description"]?.ToString() ?? "";
+                if (!string.Equals(observedDescription, description, StringComparison.Ordinal))
+                {
+                    mismatchDetail = $"Description mismatch: expected '{description}', observed '{observedDescription}'.";
+                    return false;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(domain))
+            {
+                string observedDomain = observedAttribute["domain"]?.ToString() ?? "";
+                if (!string.Equals(observedDomain, domain, StringComparison.OrdinalIgnoreCase))
+                {
+                    mismatchDetail = $"Domain mismatch: expected '{domain}', observed '{observedDomain}'.";
+                    return false;
+                }
+            }
+
+            var observed = observedConditions?.Select(c => c.ToString()).ToList() ?? new List<string>();
+            foreach (var condition in conditions ?? Array.Empty<string>())
+            {
+                if (!observed.Contains(condition, StringComparer.Ordinal))
+                {
+                    mismatchDetail = $"Condition '{condition}' was not found in the verified filter conditions [{string.Join(", ", observed)}].";
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        internal static JObject BuildFilterReceipt(
+            string instanceName,
+            string level,
+            JObject observedAttribute,
+            JArray observedConditions,
+            string attributeName,
+            string description,
+            string domain,
+            IList<string> conditions)
+        {
+            return new JObject
+            {
+                ["instance"] = instanceName,
+                ["level"] = level,
+                ["filterAttribute"] = observedAttribute.DeepClone(),
+                ["conditions"] = observedConditions.DeepClone(),
+                ["requested"] = new JObject
+                {
+                    ["name"] = attributeName,
+                    ["description"] = description ?? "",
+                    ["domain"] = domain ?? "",
+                    ["conditions"] = new JArray(conditions ?? Array.Empty<string>())
+                },
+                ["saved"] = true,
+                ["persisted"] = true,
+                ["verified"] = true,
+                ["verification"] = new JObject
+                {
+                    ["scope"] = "filter_attribute_reread",
+                    ["fieldsCompared"] = new JArray(ComparedFilterFields(description, domain)),
+                    ["allFieldsMatched"] = true,
+                    ["observedSource"] = "in_memory_instance_reread"
+                },
+                ["route"] = "native-sdk",
+                ["verificationScope"] = "filter attribute definition, the Level's filter conditions, filter attribute count integrity, and post-write in-memory instance re-read",
+                ["defaultNormalization"] = NativeDefaultNormalization,
+                ["derivedObjectRegeneration"] = "not_guaranteed"
+            };
+        }
+
     }
 }

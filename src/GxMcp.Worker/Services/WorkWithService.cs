@@ -104,12 +104,10 @@ namespace GxMcp.Worker.Services
         private string ExecuteListFilters(string target, KBObject instanceObj, JObject args)
         {
             string level = args?["level"]?.ToString();
-            if (!WorkWithSdkAdapter.ListFilters(instanceObj, _patterns, level, out var filters, out var error))
+            if (!WorkWithSdkAdapter.ListFilters(instanceObj, _patterns, level, out var filters, out var error, out var errorMessage))
             {
                 return McpResponse.Err(code: error ?? "ListFiltersFailed",
-                    message: error == "WorkWithFilterNotPresent"
-                        ? "Standard WorkWith filter node is not present on the selection."
-                        : $"Failed to list filters for '{instanceObj.Name}': {error}",
+                    message: errorMessage ?? $"Failed to list filters for '{instanceObj.Name}': {error}",
                     hint: error == "WorkWithFilterNotPresent" ? "Create the filter node on Selection in the GeneXus IDE." : null,
                     target: target);
             }
@@ -136,14 +134,14 @@ namespace GxMcp.Worker.Services
                 ? conditionsToken.Select(t => t.ToString()).ToList()
                 : new List<string>();
 
-            if (!string.IsNullOrWhiteSpace(condition) && !conditions.Contains(condition))
+            if (!string.IsNullOrWhiteSpace(condition))
                 conditions.Insert(0, condition);
 
             bool dryRun = args?["dryRun"]?.ToObject<bool?>() == true;
 
             if (dryRun)
             {
-                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, _write, level, attribute, description, domain, conditions, dryRun: true, out var plan, out var errCode, out var errMsg))
+                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, level, attribute, description, domain, conditions, dryRun: true, out var plan, out var errCode, out var errMsg))
                 {
                     return McpResponse.Err(
                         code: errCode ?? "AddFilterAttributePlanFailed",
@@ -162,7 +160,7 @@ namespace GxMcp.Worker.Services
             lock (WriteService.AcquirePerTargetLock(instanceObj.Name))
             {
                 KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
-                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, _write, level, attribute, description, domain, conditions, dryRun: false, out var receipt, out var errCode, out var errMsg))
+                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, level, attribute, description, domain, conditions, dryRun: false, out var receipt, out var errCode, out var errMsg))
                 {
                     return McpResponse.Err(
                         code: errCode ?? "AddFilterAttributeFailed",

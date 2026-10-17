@@ -5082,7 +5082,7 @@
             "type": "string"
           },
           "attribute": {
-            "description": "Attribute name to filter on (required…",
+            "description": "Filter attribute name (required for…",
             "type": "string"
           },
           "caption": {
@@ -5094,14 +5094,18 @@
             "type": "string"
           },
           "conditions": {
-            "description": "Conditions associated with the filter…",
+            "description": "Filter conditions added with the…",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
+          "description": {
+            "description": "Optional description of the filter…",
+            "type": "string"
+          },
           "domain": {
-            "description": "Optional Domain name or reference for…",
+            "description": "Optional Domain name for the filter…",
             "type": "string"
           },
           "dryRun": {
