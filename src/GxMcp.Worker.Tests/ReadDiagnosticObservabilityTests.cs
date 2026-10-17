@@ -123,8 +123,11 @@ namespace GxMcp.Worker.Tests
             Assert.NotNull(diag);
             Assert.Equal(ReadDiagnosticStages.ResolveObject, diag["failedStage"]?.ToString());
             Assert.Equal("unknown", diag["context"]?["resolvedIdentity"]?.ToString());
-            Assert.False(diag["persisted"]?.Value<bool>());
+            // Enqueued only: persistence is unconfirmed (null), not failed (false).
+            Assert.NotNull(diag["persisted"]);
+            Assert.Equal(JTokenType.Null, diag["persisted"].Type);
             Assert.True(diag["enqueued"]?.Value<bool>());
+            Assert.Null(diag["persistenceError"]);
 
             // Check ring buffer storage
             Assert.True(ReadDiagnosticStore.TryGet("test-read-cid-479", out var stored));
@@ -156,14 +159,56 @@ namespace GxMcp.Worker.Tests
 
                 var diag = error["diagnostics"] as JObject;
                 Assert.NotNull(diag);
-                Assert.False(diag["persisted"]?.Value<bool>());
+                // Hand-off failed: persisted is an explicit false (not the unconfirmed null) and the cause is carried.
+                Assert.Equal(JTokenType.Boolean, diag["persisted"]?.Type);
+                Assert.False(diag["persisted"].Value<bool>());
                 Assert.False(diag["enqueued"]?.Value<bool>());
-                Assert.NotNull(diag["persistenceError"]?.ToString());
+                string persistenceError = diag["persistenceError"]?.ToString();
+                Assert.False(string.IsNullOrWhiteSpace(persistenceError));
+                Assert.Contains("Simulated persistence failure", persistenceError, StringComparison.Ordinal);
+                Assert.Equal("Part descriptor missing.", diag["exception"]?["message"]?.ToString());
             }
             finally
             {
                 ReadDiagnosticFaultInjector.PersistenceFailure = false;
             }
+        }
+
+        [Fact]
+        public void Helper_HintPointsToErrorDiagnostics_AndCarriesInnerChain()
+        {
+            var context = new ReadDiagnosticContext
+            {
+                CorrelationId = "test-hint-cid-548",
+                Target = "OrderProcedure",
+                PartName = "Source",
+                CurrentStage = ReadDiagnosticStages.ExtractContent
+            };
+
+            var ex = new InvalidOperationException("Outer synthetic", new ApplicationException("INNER_MARKER_479"));
+            string envelopeJson = ReadDiagnosticHelper.CreateFailureEnvelope(context, ex, null);
+
+            var error = JObject.Parse(envelopeJson)["error"] as JObject;
+            Assert.NotNull(error);
+
+            string hint = error["hint"]?.ToString();
+            Assert.NotNull(hint);
+            Assert.Contains("error.diagnostics", hint, StringComparison.Ordinal);
+            Assert.Contains("test-hint-cid-548", hint, StringComparison.Ordinal);
+            Assert.DoesNotContain("genexus_telemetry", hint, StringComparison.OrdinalIgnoreCase);
+
+            // The destination the hint promises must carry the sanitized inner chain the log summary omits.
+            var diag = error["diagnostics"] as JObject;
+            Assert.NotNull(diag);
+            var inner = diag["exception"]?["innerException"] as JObject;
+            Assert.NotNull(inner);
+            Assert.Equal(typeof(ApplicationException).FullName, inner["type"]?.ToString());
+            Assert.Equal("INNER_MARKER_479", inner["message"]?.ToString());
+
+            Assert.True(diag["enqueued"]?.Value<bool>());
+            Assert.NotNull(diag["persisted"]);
+            Assert.Equal(JTokenType.Null, diag["persisted"].Type);
+            Assert.Null(diag["persistenceError"]);
         }
 
         [Fact]

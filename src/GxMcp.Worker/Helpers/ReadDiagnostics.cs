@@ -386,7 +386,10 @@ namespace GxMcp.Worker.Helpers
                 ["exception"] = sanitizedException,
                 ["context"] = workerContext,
                 ["stateSnapshot"] = stateSnapshot,
-                ["persisted"] = false,
+                // Persistence contract (issue #548): the logger writes the file asynchronously and never
+                // reports back, so `persisted` stays null (unconfirmed) once the entry is enqueued, becomes
+                // false only when the hand-off itself failed (`persistenceError` present), and is never true here.
+                ["persisted"] = JValue.CreateNull(),
                 ["enqueued"] = false
             };
 
@@ -401,7 +404,6 @@ namespace GxMcp.Worker.Helpers
                 string exType = sanitizedException?["type"]?.ToString() ?? "Exception";
                 string exMsg = sanitizedException?["message"]?.ToString() ?? "Unknown error";
                 Logger.Error($"[READ-DIAGNOSTIC] [cid:{correlationId}] stage={stage} target={target} part={part} durationMs={durationMs} exType={exType} msg={exMsg}");
-                diagnosticPayload["persisted"] = false;
                 diagnosticPayload["enqueued"] = true;
             }
             catch (Exception logEx)
