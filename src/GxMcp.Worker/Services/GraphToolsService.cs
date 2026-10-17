@@ -370,15 +370,17 @@ namespace GxMcp.Worker.Services
             if (entry != null) return entry;
             if (candidates.Count > 1)
             {
+                // An empty type never filters (#555): only a non-empty type value held by exactly one candidate disambiguates.
                 bool canDisambiguateByType = candidates
-                    .GroupBy(c => c.Type ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .Where(c => !string.IsNullOrWhiteSpace(c.Type))
+                    .GroupBy(c => c.Type, StringComparer.OrdinalIgnoreCase)
                     .Any(g => g.Count() == 1);
 
                 if (canDisambiguateByType)
                 {
-                    var sampleCandidate = candidates.FirstOrDefault(c =>
-                        candidates.Count(x => string.Equals(x.Type, c.Type, StringComparison.OrdinalIgnoreCase)) == 1) ?? candidates[0];
-                    string sampleType = !string.IsNullOrWhiteSpace(sampleCandidate.Type) ? sampleCandidate.Type : "Type";
+                    var sampleCandidate = candidates.First(c => !string.IsNullOrWhiteSpace(c.Type)
+                        && candidates.Count(x => string.Equals(x.Type, c.Type, StringComparison.OrdinalIgnoreCase)) == 1);
+                    string sampleType = sampleCandidate.Type;
                     string sampleGuid = !string.IsNullOrWhiteSpace(sampleCandidate.Guid) ? sampleCandidate.Guid : "Guid";
                     string samplePath = !string.IsNullOrWhiteSpace(sampleCandidate.Path) ? sampleCandidate.Path : "Path";
 
