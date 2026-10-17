@@ -284,6 +284,27 @@ if (Test-Path (Join-Path $gxwireDir "Cargo.toml")) {
     }
 }
 
+# 6.06 Build and bundle gx-engine (Rust engine)
+$gxEngineDir = Join-Path $root "src\gx-engine"
+if (Test-Path (Join-Path $gxEngineDir "Cargo.toml")) {
+    $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
+    if ($cargoCmd) {
+        Write-Host "   > Building gx-engine (Rust release)..."
+        Push-Location $gxEngineDir
+        try {
+            & cargo build --release
+            if ($LASTEXITCODE -eq 0 -and (Test-Path "target\release\gx-engine.exe")) {
+                Copy-Item "target\release\gx-engine.exe" -Destination "$publishDir\gx-engine.exe" -Force
+                Write-Host "   > Deployed gx-engine.exe to publish." -ForegroundColor Green
+            } else {
+                Write-Host "   > Warning: gx-engine build failed with exit code $LASTEXITCODE" -ForegroundColor Yellow
+            }
+        } finally {
+            Pop-Location
+        }
+    }
+}
+
 # 6.1 Slim the publish output: drop debug symbols (.pdb - not shipped) and any
 # transient runtime logs/cache a dev run may have written into the dir.
 Get-ChildItem -Path $publishDir -Recurse -Include *.pdb,*.log,*.prev.log,*panic*.log -ErrorAction SilentlyContinue |
@@ -320,6 +341,9 @@ Write-Host "`n[build] Build complete." -ForegroundColor Green
 Write-Host "   - Output: $publishDir"
 Write-Host "   - Worker: $publishDir\worker\GxMcp.Worker.exe"
 Write-Host "   - Gateway: $publishDir\GxMcp.Gateway.exe"
+if (Test-Path "$publishDir\gx-engine.exe") {
+    Write-Host "   - Engine: $publishDir\gx-engine.exe"
+}
 
 # 7. Deploy to Extension Backend (for live development)
 $extBackendDir = Join-Path $root "src\nexus-ide\backend"

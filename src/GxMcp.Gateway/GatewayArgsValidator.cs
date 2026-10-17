@@ -36,7 +36,7 @@ namespace GxMcp.Gateway
         // but that individual tool schemas don't redeclare (projection knobs, KB
         // selectors, mutation guards). Never flagged as unknown even when a tool's
         // `properties` doesn't list them.
-        private static readonly HashSet<string> CrossCuttingArgs = new(StringComparer.OrdinalIgnoreCase)
+        internal static readonly HashSet<string> CrossCuttingArgs = new(StringComparer.OrdinalIgnoreCase)
         {
             "axiCompact", "projection", "fields", "full",
             "kb", "kbAlias", "alias", "workingDir", "correlationId",

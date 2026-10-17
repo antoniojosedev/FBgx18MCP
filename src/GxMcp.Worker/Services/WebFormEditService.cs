@@ -239,7 +239,7 @@ namespace GxMcp.Worker.Services
 
                 bool equivalent = false;
                 string readBackDiff = null;
-                try { equivalent = XmlEquivalence.AreEquivalent(xmlAfter, readBack, out readBackDiff); }
+                try { equivalent = XmlEquivalence.AreEquivalent(xmlAfter, readBack, XmlEquivalenceOptions.Layout, out readBackDiff); }
                 catch (Exception ex) { readBackDiff = ex.Message; }
                 if (string.IsNullOrWhiteSpace(readBack))
                 {
@@ -336,12 +336,12 @@ namespace GxMcp.Worker.Services
                 try
                 {
                     currentIsBaseline = XmlEquivalence.AreEquivalent(
-                        baselineXml, currentXml, out string baselineDiff);
+                        baselineXml, currentXml, XmlEquivalenceOptions.Layout, out string baselineDiff);
                     if (!currentIsBaseline) currentDiff = baselineDiff;
                     if (!currentIsBaseline)
                     {
                         currentIsRequested = XmlEquivalence.AreEquivalent(
-                            requestedXml, currentXml, out string requestedDiff);
+                            requestedXml, currentXml, XmlEquivalenceOptions.Layout, out string requestedDiff);
                         if (!currentIsRequested) currentDiff = requestedDiff;
                     }
                 }
@@ -613,7 +613,7 @@ namespace GxMcp.Worker.Services
             try
             {
                 currentIsAttemptedState = XmlEquivalence.AreEquivalent(
-                    expectedCurrentXml, currentXml, out currentDiff);
+                    expectedCurrentXml, currentXml, XmlEquivalenceOptions.Layout, out currentDiff);
             }
             catch (Exception ex)
             {
@@ -666,7 +666,7 @@ namespace GxMcp.Worker.Services
             evidence["readEvidence"] = readEvidence;
             try
             {
-                if (XmlEquivalence.AreEquivalent(baselineXml, restoredXml, out string restoreDiff))
+                if (XmlEquivalence.AreEquivalent(baselineXml, restoredXml, XmlEquivalenceOptions.Layout, out string restoreDiff))
                 {
                     evidence["succeeded"] = true;
                     evidence["deferred"] = false;

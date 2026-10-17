@@ -142,6 +142,42 @@ namespace GxMcp.Gateway
                 notes: "Measured against GeneXus.Utils.DateTimeUtil in genexus.classes.core: Day/Month/Year/Hour/Minute/Second return 0 on empty/nullDate; Dow returns 1 for Sunday through 7 for Saturday and 0 on nullDate; AddYr/AddMth clamp day to target month length; DAdd/TAdd handle day/second rollover; DDiff returns total days truncated to integer; TDiff returns total seconds; Age computes completed years decremented if birthday has not occurred; EndOfMonth clamps day to DaysInMonth preserving time; ResetTime zeroes time to 00:00:00. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "subroutine_control_flow",
+                title: "Local Subroutine definitions and calls (Sub 'Name' ... EndSub, Do 'Name', early Return propagation)",
+                engineSurface: "frontend Sub/Do parser + typed_backend P{index}Sub zero-allocation state runner",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (native C# S111() and returnInSub generation observed in NetModel/web/general/ui/listprograms.cs); src/gx-engine/tests/subroutines.rs (13/13 tests: shared procedure-scoped variable mutation, case-insensitive resolution, quote styles, nested subroutine calls, early Return propagation exiting caller procedure, recursion depth limit 128, and compile-time validation)",
+                consumers: Array.Empty<string>(),
+                notes: "Matches native GeneXus subroutine semantics: subroutines are top-level, never executed on sequential fallthrough, share all procedure-scoped variables by mutable reference, and propagate early Return via returnInSub flag to exit the enclosing procedure immediately. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "conditional_and_state_operations",
+                title: "Inline conditional (Iif), universal empty/null state (IsEmpty, SetEmpty, Nullvalue), .UDP calls, and StringUtil formatting/search/boolean utilities",
+                engineSurface: "frontend expression/statement parser + typed_backend short-circuit conditional and state lowering + Text methods",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (57 recorded native GxClasses.dll StringUtil/state oracle rows); src/gx-engine/tests/fixtures/conditional_state_native.tsv; src/gx-engine/tests/conditional_state.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GeneXus.Utils.StringUtil in genexus.classes.core and native C# codegen: Iif(cond, trueExpr, falseExpr) short-circuits branch evaluation; IsEmpty and SetEmpty operate uniformly across Numeric, Text, Boolean, Date, DateTime, Collection, and Record members; Nullvalue(&var) returns the typed empty sentinel; Proc.UDP(...) invokes value-returning procedures; Format replaces %1..%9 (with \\% escape) or {0}..{8}; Replicate, CharAt, StrSearchRev/LastIndexOf, BoolToStr, ToBoolean/StrToBool, and NewLine match GxClasses.dll. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "sdt_and_collection_json",
+                title: "Structured Data Type (SDT) and Collection JSON serialization and deserialization (ToJson/FromJson)",
+                engineSurface: "record_runtime SimpleJson parser/serializer + frontend method/statement parser + typed_backend code emitter",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (32 recorded native GxClasses.dll GxUserType/GXBaseCollection JSON oracle rows); src/gx-engine/tests/fixtures/sdt_json_native.tsv; src/gx-engine/tests/sdt_json.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GxUserType.ToJSonString/FromJSonString and GXBaseCollection<T>.ToJSonString/FromJSonString in GxClasses.dll and generated C# (type_Sdt*.cs): ToJson serializes SDTs and collections with native empty representations (\"0000-00-00\" for Date, \"0000-00-00T00:00:00\" for DateTime, 0, \"\", false) and escaped strings; FromJson supports case-insensitive property matching, partial updates (preserving unmentioned fields), array item repopulation, and fail-closed false return on invalid/non-container JSON. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "sdt_and_collection_xml",
+                title: "Structured Data Type (SDT) and Collection XML serialization and deserialization (ToXml/FromXml)",
+                engineSurface: "record_runtime SimpleXmlElement parser/serializer + frontend method/statement parser + typed_backend code emitter",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (40 recorded native GxClasses.dll GxUserType/GXBaseCollection XML oracle rows); src/gx-engine/tests/fixtures/sdt_xml_native.tsv; src/gx-engine/tests/sdt_xml.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GxUserType.ToXml/FromXml and GXBaseCollection<T>.ToXml/FromXml in GxClasses.dll and generated C# (type_Sdt*.cs): ToXml serializes SDTs and collections with native XML formatting (indentation, self-closing tags <Tag />, XML entities &lt; &gt; &amp; &quot; &apos;, dates as yyyy-MM-ddT00:00:00, and booleans as true/false); FromXml supports case-insensitive element matching, resetting missing fields to empty defaults, array repopulation, and fail-closed false return on malformed XML or mismatched root element. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",
@@ -187,11 +223,56 @@ namespace GxMcp.Gateway
                 notes: "Bounded reachability (1,024 Procedures); no Rules/Events beyond standalone Parm."),
 
             new EngineCapability(
+                id: "domain_attribute_projection",
+                title: "Domain and Attribute projection, chained dependency resolution and BasedOn typing in KB Catalog and XML",
+                engineSurface: "kb catalog resolver + exchange ExportFile XML projection + BasedOn reference wiring",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/domain_attribute.rs (10/10 tests: Procedure variables based on Domain/Attribute, chained Domains, SDT items based on Domain, cyclic dependency detection, domain-cannot-be-based-on-attribute enforcement, and end-to-end xml-run)",
+                consumers: Array.Empty<string>(),
+                notes: "Resolves GeneXus Domain (00972a17-9975-449e-aab1-d26165d51393) and Attribute (adbb33c9-0906-4971-833c-998de27e0676) objects in the portable catalog and SDK ExportFile XML into concrete DataTypes at procedure and SDT boundaries. Enforces GeneXus rules: domains cannot be based on attributes, bounded recursion depth of 16, strict cycle detection, and explicit BasedOn reference validation. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "transaction_structure_projection",
+                title: "Transaction structure and keys projection, multi-level hierarchy, Business Component record lowering, and XML Exchange parity",
+                engineSurface: "transaction validator + kb catalog resolver + exchange ExportFile XML projection",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/transaction_structure.rs (10/10 tests: nested levels, primary key validation, attribute referencing, cycle/depth limits, XML parsing, procedure interoperability)",
+                consumers: Array.Empty<string>(),
+                notes: "Validates GeneXus Transaction (1db606f2-af09-4cf9-a3b5-b481519d28f6) structures and keys, enforces root and child primary keys, bounded recursion depth of 16, unique level/attribute names, lowers transaction levels into Business Component RecordType schemas for procedure consumption, and parses <TransactionStructure> from ExportFile XML. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "rules_and_parm_parity",
+                title: "GeneXus Rules grammar parser and AST with Parm interface parity",
+                engineSurface: "rules parser + AST tokenizer + procedure/transaction rules validation + XML exchange",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/rules_parity.rs (10/10 tests: Parm, Error, Msg, Default, NoAccept, Accept, Order, Prompt, Serial, Hidden, single/multi-line comments, strings with semicolons/escaped quotes, fail-closed diagnostics, procedure-scope enforcement, catalog and XML exchange integration)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses GeneXus Rules parts (9b0a32a3-de6d-4be1-a4dd-1b85d3741534) for Procedures and Transactions. Strips // and /* */ comments cleanly, preserves string literals with semicolons and escaped quotes, validates rule signatures, rejects invalid keywords (src0295), rejects duplicate Parm rules, enforces procedure scoping (variables only in Parm, no transaction-only rules in procedures), and integrates with catalog and XML exchange. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "transaction_control",
+                title: "Database transaction control procedural statements (Commit and Rollback)",
+                engineSurface: "compiler frontend + AST + typed procedural lowering + XML exchange",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/transaction_control.rs (7/7 tests: Commit, Rollback, commit(), rollback(), conditionals, loops, subroutines, format_version 1 fail-closed rejection, compiled executable execution, and ExportFile XML exchange)",
+                consumers: Array.Empty<string>(),
+                notes: "Implements Commit and Rollback transaction control statements in Procedure source bodies with optional parens. Emits runtime transactional lowering hooks, validates nesting within conditionals, loops, and subroutines, and integrates into the portable KB catalog and SDK ExportFile XML exchange. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "physical_table_ddl",
+                title: "Physical Table schema normalization and multi-dialect SQL DDL generation",
+                engineSurface: "table schema + relational normalization + DDL generator + XML exchange",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/table_ddl.rs (9/9 tests: data type mappings for ANSI/SqlServer/PostgreSQL/Oracle, table validation rules, single-level lowering, multi-level hierarchy with inherited primary keys and foreign keys, 3-level depth, catalog dictionary attribute type resolution, cross-transaction foreign keys, full database DDL generation, and ExportFile XML exchange)",
+                consumers: Array.Empty<string>(),
+                notes: "Derives normalized relational database tables from Transaction structures, resolves attribute data types through Domain/Attribute chains, computes primary keys, automatically infers parent-child and cross-transaction foreign keys, generates primary and secondary indexes, and renders multi-dialect SQL DDL (ANSI, SQL Server, PostgreSQL, Oracle) with zero SQL writes. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "xml_projection",
                 title: "SDK ExportFile XML to portable catalog projection",
                 engineSurface: "gx-engine xml-check/xml-emit/xml-build/xml-run",
                 status: EngineCapabilityStatus.Partial,
-                evidence: "src/gx-engine/README.md (read-only SDK XML compilation projection); exchange suite 16/16; one fresh disposable-KB export ran unchanged",
+                evidence: "src/gx-engine/README.md (read-only SDK XML compilation projection); exchange suite 16/16; domain_attribute suite 10/10; fresh disposable-KB exports run unchanged",
                 consumers: Array.Empty<string>(),
                 notes: "Bounded depth and item-alias rules; a compilation projection, not a lossless importer."),
 
@@ -215,12 +296,129 @@ namespace GxMcp.Gateway
 
             new EngineCapability(
                 id: "sql_navigation",
-                title: "Specifier, navigation and SQL planning",
-                engineSurface: "none",
-                status: EngineCapabilityStatus.Unsupported,
-                evidence: "src/gx-engine/README.md (For each and SQL/navigation planning listed as unsupported)",
+                title: "Specifier, base table inference, For Each navigation, and SQL query planning",
+                engineSurface: "navigation engine + base table inference + extended table joins + index selection + multi-dialect SQL query generator",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/navigation_specifier.rs (10/10 tests: single table base table inference, extended table join resolution, Defined By disambiguation, spc0004 unrelated attributes fail-closed, spc0005 ambiguous base table fail-closed, secondary index selection and descending orders, multi-dialect SQL generation for ANSI/SqlServer/PostgreSQL/Oracle, nested For Each automatic correlation, When None block preservation, end-to-end specify_procedure and specify_catalog with NavigationReport JSON serialization); frontend for_each parsing (13/13 unit tests)",
                 consumers: Array.Empty<string>(),
-                notes: "Plan 129 milestone M2 territory."),
+                notes: "Adheres strictly to official GeneXus specifier semantics and error diagnostics (spc0004, spc0005). Computes relational extended table (Tabela Estendida) foreign key paths up to depth 16, infers minimal base tables, selects primary and secondary indexes, resolves foreign key joins, correlates nested loops automatically, and generates read-only multi-dialect SELECT queries with zero external dependencies and zero SQL writes. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "formula_navigation",
+                title: "Formula specification, aggregate calculation navigation (Sum, Count, Max, Min, Find, Average), horizontal formulas, and context correlation",
+                engineSurface: "navigation engine + aggregate formula specifier + horizontal formula evaluator + multi-dialect SQL query generator",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/formula_navigation.rs (11/11 tests: correlated aggregate Sum in For Each, multi-aggregate formulas Count/Max/Min, standalone formulas outside For Each, Find formula with multi-dialect SQL TOP 1 / LIMIT 1 / ROWNUM = 1, conditional Count formulas, Average with default value, fail-closed spc0004 unrelated attributes, fail-closed spc0005 ambiguous base table, horizontal formulas over direct and extended table attributes, transaction attribute formulas, and full catalog procedure navigation report with formulas); frontend expression attribute and Star token support",
+                consumers: Array.Empty<string>(),
+                notes: "Implements GeneXus aggregate (Sum, Count, Max, Min, Find, Average/Avg) and horizontal formula specification. Automatically correlates aggregate formulas with enclosing query context tables via foreign keys and extended table paths, selects optimal secondary indexes for correlation columns, enforces reachability in horizontal formulas, validates fail-closed diagnostics (spc0004, spc0005), and generates read-only multi-dialect SELECT queries (ANSI, SQL Server, PostgreSQL, Oracle) with zero SQL writes. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "dml_navigation",
+                title: "Relational DML query planning, procedural updates, deletes, and row insertions",
+                engineSurface: "dml engine + navigation engine + multi-dialect SQL DML generator + primary key validation + when duplicate conflict handling",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/dml.rs; src/gx-engine/tests/dml_navigation.rs (10/10 tests: update inside For Each, spc0034 PK update rejection, delete inside For Each, basic new insertion, when duplicate multi-dialect conflict handling for ANSI/SqlServer/PostgreSql/Oracle, spc0023 incomplete PK rejection, multi-table nested updates/deletes, expression assignments, JSON serialization, end-to-end procedure DML planning)",
+                consumers: Array.Empty<string>(),
+                notes: "Generates read-only multi-dialect INSERT, UPDATE, and DELETE query plans with primary key validation, foreign key cascade verification, and WHEN DUPLICATE conflict handling. Rejects PK updates in For Each with spc0034 and incomplete PK inserts with spc0023. Zero SQL writes against live databases. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "dataselector_composition",
+                title: "DataSelector object parsing, parameter substitution, and query composition",
+                engineSurface: "dataselector engine + frontend For Each using clause parser + parameter substitution + order/filter composition",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/dataselector.rs; src/gx-engine/tests/data_selector.rs (9/9 tests: parse rules and conditions, parameter substitution, compose with For Each, arity mismatch fail-closed, For Each using syntax parsing, For Each with explicit attributes and using, composed base table inference, multi-dialect SQL query generation with composed filters, ComposedForEach wrapper helpers)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses GeneXus DataSelector rules and conditions, validates parameter arity, performs parameter substitution into filter expressions, and composes DataSelector orders and where conditions seamlessly into For Each navigation query plans. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "database_reorganization",
+                title: "Database reorganization schema diffing, physical alteration planning, and multi-dialect migration script generation",
+                engineSurface: "reorganization engine + schema diffing + column alteration mapping + index/FK lifecycle + data loss risk analysis",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/reorg.rs; src/gx-engine/tests/reorg_impact.rs (9/9 tests: table creation/drop diffing, column addition/drop/modification, nullability change detection, foreign key addition/removal, secondary index lifecycle, risk warnings on destructive operations, and multi-dialect migration scripts for ANSI, SQL Server, PostgreSQL, Oracle)",
+                consumers: Array.Empty<string>(),
+                notes: "Detects physical table and column differences between previous and current schema snapshots, plans minimal non-destructive changes, highlights potential data loss with risk warnings, and generates dialect-specific DDL scripts (ALTER TABLE ADD/DROP/MODIFY/ALTER COLUMN, CREATE/DROP TABLE, ADD/DROP CONSTRAINT, CREATE/DROP INDEX). Read-only migration plan generation with zero SQL execution against live databases. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "module_namespaces",
+                title: "Hierarchical module DAG, namespace encapsulation, and qualified object name resolution",
+                engineSurface: "module engine + qualified name parser + module hierarchy tree + local precedence resolution + spc0006 ambiguous homonym diagnostics",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/module.rs; src/gx-engine/tests/module_resolution.rs (10/10 tests: qualified name parsing and validation, module hierarchy DAG, parent-child resolution, cycle detection, depth limit guards, local module precedence for unqualified references, root module resolution, spc0006 ambiguous object reference diagnostics across distinct modules, JSON serialization, and catalog integration)",
+                consumers: Array.Empty<string>(),
+                notes: "Implements hierarchical Module trees up to depth 16 with cycle detection, parsing and serialization of QualifiedName (e.g. 'Sales.Invoicing.Invoice'), and GeneXus standard object resolution rules: local module precedence for bare names, unambiguous cross-module resolution, and fail-closed spc0006 diagnostics on ambiguous homonyms. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "dataprovider_specification",
+                title: "DataProvider declarative specification, parameter substitution, SDT schema validation, and JSON evaluation",
+                engineSurface: "dataprovider engine + group/property grammar parser + comment stripping + SDT schema validation + JSON evaluation",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/dataprovider.rs; src/gx-engine/tests/data_provider.rs (10/10 tests: scalar assignments, nested group hierarchy, collection group repetition, parameter substitution, parm rule parsing, comment preservation and string escaping, SDT schema validation success, fail-closed unknown SDT fields, JSON serialization, and catalog integration)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses GeneXus DataProvider grammar including parm(...) rules, bracketed properties [Count = N], nested groups, and item assignments. Evaluates DataProvider hierarchies to clean JSON matching target SDT schemas, and validates field conformity against catalog SDTs. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "object_impact_analysis",
+                title: "Object cross-reference indexing, call graph traversal, attribute/table impact analysis, and blast radius risk assessment",
+                engineSurface: "impact engine + cross-reference indexer + cycle-safe transitive traversal + attribute/table impact queries + blast radius calculator",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/impact.rs; src/gx-engine/tests/impact_analysis.rs (10/10 tests: direct procedure calls, transitive callers/dependents, cycle safety under mutual recursion, attribute impact queries, table CRUD impact queries, mixed dependency kinds, catalog-wide indexing, blast radius and risk assessment, max depth 16 enforcement, and JSON serialization)",
+                consumers: Array.Empty<string>(),
+                notes: "Indexes catalog-wide object relationships (CallsProcedure, UsesSdt, ReferencesAttribute, ReadsTable, UpdatesTable, InsertsTable, DeletesTable). Calculates cycle-safe transitive callers and dependents up to depth 16, pinpoints all objects affected by attribute or table schema alterations, and computes blast radius with risk classification. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "guid_and_extended_math",
+                title: "GUID 128-bit RFC 4122 v4 type support, variable method dispatch, and mathematical utility operations",
+                engineSurface: "extended types engine + RFC 4122 v4 GUID parser/generator + empty sentinel + math ops (Mod, Pow, Sqrt, Abs, Random)",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/extended_types.rs; src/gx-engine/tests/extended_types.rs (10/10 tests: RFC 4122 v4 GUID generation and bit compliance, hyphenated/unhyphenated hex parsing, fail-closed invalid string parsing, empty state and set_empty, equality and hashing, JSON serialization, math modulo with zero handling, math power and square root with negative number rejection, absolute value and pseudo-random generation, and variable method dispatch simulation)",
+                consumers: Array.Empty<string>(),
+                notes: "Provides complete 128-bit GUID type semantics matching GeneXus Guid.NewGuid(), Guid.FromString(), .IsEmpty(), .SetEmpty(), and .ToString(). Includes standard mathematical functions (Mod, Pow, Sqrt, Abs, Random) matching GeneXus expressions and variable method calls. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "design_system_tokens_styles",
+                title: "Design System Object (DSO) tokens, style rules, inheritance, and CSS stylesheet rendering",
+                engineSurface: "design system engine + DSO grammar parser + token resolution with group/parent scope + clean CSS stylesheet renderer",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/design_system.rs; src/gx-engine/tests/design_system.rs (10/10 tests: token set and group parsing, style rules and declaration parsing, comment stripping with string literal preservation, token resolution and CSS rendering, fail-closed unresolved tokens, DSO @import and token inheritance, pseudo-classes and complex selectors, AST JSON serialization, font and media query tokens, and catalog integration)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses modern GeneXus Design System Objects (DSO) including tokens with groups (#colors, #spacing, #fonts), @import parent inheritance, and style rules with class selectors and pseudo-classes. Resolves tokens with scoped fallback and renders clean, valid CSS stylesheets, failing closed if any token reference is unresolvable. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "structured_diagnostics_catalog",
+                title: "Official GeneXus diagnostics catalog, source span mapping, categories, severities, and Clang/Rust-style terminal rendering",
+                engineSurface: "diagnostics catalog engine + GeneXus diagnostic codes (spc0004-spc0216, src0295) + source location mapping + caret terminal renderer + JSON bag",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/diagnostics_catalog.rs; src/gx-engine/tests/diagnostics_catalog.rs (10/10 tests: diagnostic code metadata, error and warning counting, fail-closed error checks, terminal rendering with line and caret, rendering without location, JSON serialization/deserialization, severity filtering, category grouping, spc0004/spc0005, and spc0006/spc0034 instantiation)",
+                consumers: Array.Empty<string>(),
+                notes: "Provides an authoritative catalog of official GeneXus error codes (spc0004, spc0005, spc0006, spc0009, spc0010, spc0023, spc0034, spc0051, spc0216, src0295) mapped to categories (Syntax, TypeCheck, Specification, Database, Reorganization, Naming, Security) and severities. Emits Clang/Rust-style terminal diagnostic blocks with line extraction, carets (^), and JSON bags for IDE/MCP consumption. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "text_tree_roundtrip",
+                title: "Text tree export, import, and round-trip catalog serialization for filesystem indexing and GxWire interop (Issue #499)",
+                engineSurface: "text tree engine + directory tree serialization (.prc, .trn, .sdt, .dom, .att, .dp, .ds, .dso) + recursive reader/writer + catalog roundtrip",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/text_tree.rs; src/gx-engine/tests/text_tree.rs (10/10 tests: procedure export, transaction export, domain/attribute export, SDT export, dataprovider/dataselector export, design system export, full catalog round-trip export/import, filesystem directory write/read roundtrip, fail-closed corrupted extension rejection, and JSON snapshot serialization)",
+                consumers: Array.Empty<string>(),
+                notes: "Exports and imports entire GeneXus Knowledge Base catalogs as clean text trees on the filesystem (.prc, .trn, .sdt, .dom, .att, .dp, .ds, .dso). Enables external static analysis and solves Issue #499 by allowing GxWire to parse and index Knowledge Bases without requiring a proprietary SDK or live database. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "dataview_external_table_mapping",
+                title: "Data Views, external table/view mappings, attribute-to-column bidirectional mapping, index mapping, and external multi-dialect SELECT generation",
+                engineSurface: "dataview engine + DataView DSL parser + bidirectional attribute/column mapper + dialect-quoted external SQL renderer",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/dataview.rs; src/gx-engine/tests/data_view.rs (10/10 tests: basic DSL parsing, attribute-to-column bidirectional mapping, primary and unique indexes inspection, external SQL SELECT generation for SqlServer, PostgreSql, and Oracle, WHERE clause filtering, fail-closed duplicate fields and missing tables, and catalog admission with ObjectKind::DataView)",
+                consumers: Array.Empty<string>(),
+                notes: "Implements GeneXus Data Views mapping internal attributes and tables to external database tables, views, and columns across ANSI, SQL Server, PostgreSQL, and Oracle dialects. Enforces fail-closed validation on duplicate attributes/columns, unmapped index keys, and missing external names. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "output_channels_streaming_buffers",
+                title: "Structured output buffering across Console, WebBuffer, Log, and StatusLine channels (msg(..., status)), and bounded streaming chunk rendering",
+                engineSurface: "output channel engine + multi-channel message recorder + status line tracking + channel filtering + bounded streaming chunk partitioner",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/output_channel.rs; src/gx-engine/tests/output_channel.rs (10/10 tests: initial buffer empty, console write and flush, status messages with status code and latest status inspection, web buffer write and flush, channel filtering, interleaved channel ordering, streaming chunks bounded partitioning, buffer clear and reuse, JSON serialization roundtrip, and procedure runtime output collection)",
+                consumers: Array.Empty<string>(),
+                notes: "Provides structured multi-channel message routing matching GeneXus procedure execution semantics: separates console display output from web response buffers, logs, and UI status-line reports (msg(..., status)). Enables bounded streaming chunk partitioning for MCP and real-time streaming interfaces. Zero external dependencies. No product operation consumes it yet."),
 
             new EngineCapability(
                 id: "general_gx_surface",

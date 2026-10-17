@@ -38,6 +38,9 @@ struct Emitter<'a> {
     /// Slots of out/inout parameters, copied back to the caller in parameter order.
     writebacks: Vec<usize>,
     date_two_digit_year_max: Option<u16>,
+    sub_ids: &'a BTreeMap<String, usize>,
+    is_sub: bool,
+    proc_index: usize,
 }
 
 /// Validated `(mode, name)` pairs; the model has already checked every entry.
@@ -65,16 +68,25 @@ fn record_field_variant(data_type: &DataType) -> Result<&'static str, String> {
 fn empty_value(
     data_type: &DataType,
     record_types: &[crate::model::RecordType],
+    is_sub: bool,
 ) -> Result<String, String> {
     if let DataType::Record { schema } = data_type {
         let index = record_types
             .iter()
             .position(|t| &t.name == schema)
             .ok_or("unknown record schema")?;
-        return Ok(format!("r{index}(steps)?"));
+        let steps_arg = if is_sub { "self.steps" } else { "steps" };
+        return Ok(format!("r{index}({steps_arg})?"));
     }
     if let DataType::Collection { schema } = data_type {
-        return Ok(format!("Collection::new({schema:?})"));
+        let index = record_types
+            .iter()
+            .position(|t| &t.name == schema)
+            .ok_or("unknown record schema")?;
+        let steps_arg = if is_sub { "self.steps" } else { "steps" };
+        return Ok(format!(
+            "Collection::with_prototype({schema:?}, r{index}({steps_arg})?)"
+        ));
     }
     Ok(match kind(data_type) {
         Kind::Boolean => "false",
@@ -89,12 +101,17 @@ fn empty_value(
     .into())
 }
 
-fn assign_code(slot: usize, data_type: &DataType, value: &str) -> String {
+fn assign_code(slot: usize, data_type: &DataType, value: &str, is_sub: bool) -> String {
+    let target = if is_sub {
+        format!("*self.v{slot}")
+    } else {
+        format!("v{slot}")
+    };
     match data_type {
         DataType::Numeric { precision, scale } => {
-            format!("v{slot} = NumericType::new({precision}, {scale})?.assign({value})?;")
+            format!("{target} = NumericType::new({precision}, {scale})?.assign({value})?;")
         }
-        _ => format!("v{slot} = {value};"),
+        _ => format!("{target} = {value};"),
     }
 }
 
@@ -102,6 +119,30 @@ pub fn emit(project: &Project) -> Result<String, String> {
     let canonical = Project::from_json(&project.to_json()?)?;
     let parsed = canonical.parse()?;
     emit_parsed(&canonical, &parsed)
+}
+
+fn validate_subroutine_calls(
+    stmts: &[Stmt],
+    subroutines: &BTreeMap<String, Vec<Stmt>>,
+) -> Result<(), String> {
+    for stmt in stmts {
+        match stmt {
+            Stmt::DoSub(name) => {
+                if !subroutines.contains_key(name) {
+                    return Err(format!("call to undefined subroutine '{name}'"));
+                }
+            }
+            Stmt::If(_, yes, no) => {
+                validate_subroutine_calls(yes, subroutines)?;
+                validate_subroutine_calls(no, subroutines)?;
+            }
+            Stmt::While(_, body) | Stmt::For(_, _, _, _, body) | Stmt::ForIn(_, _, body) => {
+                validate_subroutine_calls(body, subroutines)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn emit_parsed(
@@ -173,7 +214,7 @@ pub(crate) fn emit_parsed(
                 return Err("typed generated source exceeds 8 MiB".into());
             }
             let variant = record_field_variant(data_type)?;
-            let value = empty_value(data_type, &canonical.record_types)?;
+            let value = empty_value(data_type, &canonical.record_types, false)?;
             output.push_str(
                 "*steps = steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;\n",
             );
@@ -187,7 +228,29 @@ pub(crate) fn emit_parsed(
     }
     for (index, procedure) in canonical.procedures.iter().enumerate() {
         let body = &parsed[index].body;
-        if procedure.return_type.is_some() && !returns(body) {
+        let mut subroutines: BTreeMap<String, Vec<Stmt>> = BTreeMap::new();
+        let mut main_body: Vec<Stmt> = Vec::new();
+        for stmt in body {
+            match stmt {
+                Stmt::Sub(name, sub_body) => {
+                    if subroutines.contains_key(name) {
+                        return Err(format!("duplicate subroutine definition '{name}'"));
+                    }
+                    subroutines.insert(name.clone(), sub_body.clone());
+                }
+                other => main_body.push(other.clone()),
+            }
+        }
+        validate_subroutine_calls(&main_body, &subroutines)?;
+        for sub_body in subroutines.values() {
+            validate_subroutine_calls(sub_body, &subroutines)?;
+        }
+        let sub_ids: BTreeMap<String, usize> = subroutines
+            .keys()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i))
+            .collect();
+        if procedure.return_type.is_some() && !returns(&main_body) {
             return Err(format!(
                 "typed helper {} must return on every path",
                 procedure.name
@@ -205,6 +268,49 @@ pub(crate) fn emit_parsed(
             .filter(|(mode, _)| *mode != ParamMode::In)
             .map(|(_, name)| slots[*name])
             .collect();
+        if !subroutines.is_empty() {
+            let ret_field = if let Some(rt) = procedure.return_type.as_ref() {
+                format!("return_value: Option<{}>,\n", rust_type(rt))
+            } else {
+                String::new()
+            };
+            let mut var_fields = String::new();
+            for (name, data_type) in &procedure.variables {
+                let slot = slots[name];
+                var_fields.push_str(&format!("v{slot}: &'a mut {},\n", rust_type(data_type)));
+            }
+            writeln!(
+                output,
+                "struct P{index}Sub<'a> {{\nsteps: &'a mut u32,\ndepth: u32,\nsub_depth: u32,\nreturn_in_sub: bool,\n{ret_field}{var_fields}}}\n"
+            ).unwrap();
+            writeln!(
+                output,
+                "impl<'a> P{index}Sub<'a> {{\nfn run(&mut self, sub_id: usize) -> Result<(), String> {{\nself.sub_depth += 1;\nif self.sub_depth > 128 {{\nreturn Err(\"subroutine call depth limit exceeded\".into());\n}}\n*self.steps = self.steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;\nmatch sub_id {{\n"
+            ).unwrap();
+            let sub_emitter = Emitter {
+                variables: &procedure.variables,
+                record_types: &canonical.record_types,
+                slots: slots.clone(),
+                procedures: &canonical.procedures,
+                return_type: procedure.return_type.as_ref(),
+                writebacks: writebacks.clone(),
+                date_two_digit_year_max: canonical.date_two_digit_year_max,
+                sub_ids: &sub_ids,
+                is_sub: true,
+                proc_index: index,
+            };
+            for (name, id) in &sub_ids {
+                writeln!(output, "{id} => {{").unwrap();
+                let mut sub_assigned = BTreeSet::new();
+                sub_emitter.block(&subroutines[name], &mut sub_assigned, &mut output)?;
+                writeln!(output, "}}").unwrap();
+            }
+            writeln!(
+                output,
+                "_ => unreachable!(),\n}}\nself.sub_depth -= 1;\nOk(())\n}}\n}}\n"
+            )
+            .unwrap();
+        }
         let emitter = Emitter {
             variables: &procedure.variables,
             record_types: &canonical.record_types,
@@ -213,6 +319,9 @@ pub(crate) fn emit_parsed(
             return_type: procedure.return_type.as_ref(),
             writebacks,
             date_two_digit_year_max: canonical.date_two_digit_year_max,
+            sub_ids: &sub_ids,
+            is_sub: false,
+            proc_index: index,
         };
         write!(output, "fn p{index}(steps: &mut u32, depth: u32").unwrap();
         for (i, (mode, name)) in params.iter().enumerate() {
@@ -242,16 +351,20 @@ pub(crate) fn emit_parsed(
             write!(output, "let mut v{slot}: {}", rust_type(data_type)).unwrap();
             if let Some(i) = params.iter().position(|(_, p)| p == name) {
                 if params[i].0 == ParamMode::Out {
-                    let value = empty_value(data_type, &canonical.record_types)?;
+                    let value = empty_value(data_type, &canonical.record_types, false)?;
                     write!(output, " = {value}").unwrap();
                 } else {
                     write!(output, " = {}", boundary(data_type, &format!("a{i}"))).unwrap();
                 }
                 assigned.insert(name.clone());
+            } else if !subroutines.is_empty() {
+                let value = empty_value(data_type, &canonical.record_types, false)?;
+                write!(output, " = {value}").unwrap();
+                assigned.insert(name.clone());
             }
             output.push_str(";\n");
         }
-        emitter.block(body, &mut assigned, &mut output)?;
+        emitter.block(&main_body, &mut assigned, &mut output)?;
         if procedure.return_type.is_none() {
             writeln!(output, "Ok({})", emitter.result("()")).unwrap();
         }
@@ -348,15 +461,14 @@ impl Emitter<'_> {
         expression: &Expr,
         assigned: &mut BTreeSet<String>,
     ) -> Result<String, String> {
-        if let Expr::Call(name, args) = expression
-            && name == "NEW"
-            && args.is_empty()
+        if (matches!(expression, Expr::EmptyDate)
+            || matches!(expression, Expr::Call(name, args) if name == "NEW" && args.is_empty()))
             && matches!(
                 expected,
                 DataType::Record { .. } | DataType::Collection { .. }
             )
         {
-            return empty_value(expected, self.record_types);
+            return empty_value(expected, self.record_types, self.is_sub);
         }
         if &self.expression_type(expression)? != expected {
             return Err("record/collection schema mismatch".into());
@@ -391,7 +503,18 @@ impl Emitter<'_> {
             .procedures
             .iter()
             .position(|p| p.name == name)
-            .ok_or_else(|| format!("unknown typed procedure {name}"))?;
+            .ok_or_else(|| {
+                if matches!(
+                    name.to_ascii_uppercase().as_str(),
+                    "SUM" | "COUNT" | "MAX" | "MIN" | "FIND" | "AVERAGE" | "AVG"
+                ) {
+                    format!(
+                        "database aggregate formula {name} requires the navigation/specifier engine and is not supported in standalone typed offline binaries"
+                    )
+                } else {
+                    format!("unknown typed procedure {name}")
+                }
+            })?;
         let procedure = &self.procedures[index];
         let params = parameters(procedure);
         // GeneXus allows the last out parameter to be omitted at a function call;
@@ -469,7 +592,12 @@ impl Emitter<'_> {
             let value = self.lower_expect(arg, assigned, expected, prelude)?;
             write!(code, "let arg{i} = {value};").unwrap();
         }
-        write!(code, "p{index}(steps, depth + 1").unwrap();
+        let (steps_arg, depth_arg) = if self.is_sub {
+            ("self.steps", "self.depth + 1")
+        } else {
+            ("steps", "depth + 1")
+        };
+        write!(code, "p{index}({steps_arg}, {depth_arg}").unwrap();
         for (i, (mode, _)) in params.iter().enumerate() {
             if *mode != ParamMode::Out {
                 write!(code, ", arg{i}").unwrap();
@@ -483,7 +611,12 @@ impl Emitter<'_> {
         let mut value = call.clone();
         if !targets.is_empty() {
             for (k, slot, data_type, target) in &targets {
-                prelude.push_str(&assign_code(*slot, data_type, &format!("{call}.{k}")));
+                prelude.push_str(&assign_code(
+                    *slot,
+                    data_type,
+                    &format!("{call}.{k}"),
+                    self.is_sub,
+                ));
                 assigned.insert(target.clone());
             }
         }
@@ -547,6 +680,11 @@ impl Emitter<'_> {
             Expr::Decimal(text) => (Kind::Numeric, format!("{text:?}.parse::<Decimal>()?")),
             Expr::Boolean(value) => (Kind::Boolean, value.to_string()),
             Expr::Text(value) => (Kind::Text, format!("Text::new({value:?})?")),
+            Expr::Attribute(_) => {
+                return Err(
+                    "Attribute expressions require specifier navigation and are not admitted in standalone typed binaries".into(),
+                );
+            }
             Expr::Member(receiver, field) => {
                 let field_type = self.member_type(receiver, field)?;
                 if matches!(self.expression_type(receiver)?, DataType::Collection { .. }) {
@@ -576,10 +714,11 @@ impl Emitter<'_> {
                     DataType::Collection { .. } => "u32::try_from(clone_value.len().max(1)).map_err(|_| \"clone size overflow\")?".into(),
                     _ => return Err("Clone receiver must be a container".into()),
                 };
+                let steps_ref = if self.is_sub { "self.steps" } else { "steps" };
                 (
                     kind(&data_type),
                     format!(
-                        "{{let clone_value = {value}; *steps = steps.checked_sub({cost}).ok_or(\"execution step limit exceeded\")?; clone_value.shallow_clone()}}"
+                        "{{let clone_value = {value}; *{steps_ref} = {steps_ref}.checked_sub({cost}).ok_or(\"execution step limit exceeded\")?; clone_value.shallow_clone()}}"
                     ),
                 )
             }
@@ -603,16 +742,21 @@ impl Emitter<'_> {
             }
             Expr::Variable(name) => {
                 let (slot, data_type) = self.variable(name)?;
-                if !assigned.contains(name) {
+                if !assigned.contains(name) && !self.is_sub {
                     return Err(format!("typed variable {name} read before assignment"));
                 }
+                let target = if self.is_sub {
+                    format!("(*self.v{slot})")
+                } else {
+                    format!("v{slot}")
+                };
                 let value = if matches!(
                     kind(data_type),
                     Kind::Text | Kind::Record | Kind::Collection
                 ) {
-                    format!("v{slot}.clone()")
+                    format!("{target}.clone()")
                 } else {
-                    format!("v{slot}")
+                    target
                 };
                 (kind(data_type), value)
             }
@@ -655,12 +799,27 @@ impl Emitter<'_> {
             }
             Expr::DateMethod(method, receiver) => {
                 let (receiver_kind, value) = self.lower(receiver, assigned, prelude)?;
-                if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
-                    return Err("calendar method receiver must be Date or DateTime".into());
-                }
                 if method == "ISEMPTY" {
-                    (Kind::Boolean, format!("({value}).is_empty()"))
+                    let code = match receiver_kind {
+                        Kind::Date | Kind::DateTime | Kind::Collection => {
+                            format!("({value}).is_empty()")
+                        }
+                        Kind::Numeric => {
+                            format!("({value}).checked_cmp(\"0\".parse::<Decimal>()?)?.is_eq()")
+                        }
+                        Kind::Text => {
+                            format!("({value}).trim_end_spaces().utf16_length() == 0")
+                        }
+                        Kind::Boolean => format!("!({value})"),
+                        Kind::Record => {
+                            return Err("IsEmpty() is not supported on records directly".into());
+                        }
+                    };
+                    (Kind::Boolean, code)
                 } else {
+                    if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
+                        return Err("calendar method receiver must be Date or DateTime".into());
+                    }
                     let method = match method.as_str() {
                         "YEAR" => "year",
                         "MONTH" => "month",
@@ -1159,6 +1318,227 @@ impl Emitter<'_> {
                     ),
                 )
             }
+            Expr::Call(name, args) if name == "IIF" => {
+                if args.len() != 3 {
+                    return Err(
+                        "Iif expects three arguments (condition, trueExpr, falseExpr)".into(),
+                    );
+                }
+                let cond = self.lower_expect(&args[0], assigned, Kind::Boolean, prelude)?;
+                let mut true_prelude = String::new();
+                let (true_kind, true_val) = self.lower(&args[1], assigned, &mut true_prelude)?;
+                let mut false_prelude = String::new();
+                let (false_kind, false_val) = self.lower(&args[2], assigned, &mut false_prelude)?;
+                if true_kind != false_kind {
+                    return Err("Iif branches must have the same type".into());
+                }
+                if matches!(true_kind, Kind::Record | Kind::Collection) {
+                    return Err("Iif branches must be scalar values".into());
+                }
+                (
+                    true_kind,
+                    format!(
+                        "(if {cond} {{ {true_prelude}{true_val} }} else {{ {false_prelude}{false_val} }})"
+                    ),
+                )
+            }
+            Expr::Call(name, args) if name == "ISEMPTY" => {
+                if args.len() != 1 {
+                    return Err("IsEmpty expects exactly one argument".into());
+                }
+                let (receiver_kind, value) = self.lower(&args[0], assigned, prelude)?;
+                let code = match receiver_kind {
+                    Kind::Date | Kind::DateTime | Kind::Collection => {
+                        format!("({value}).is_empty()")
+                    }
+                    Kind::Numeric => {
+                        format!("({value}).checked_cmp(\"0\".parse::<Decimal>()?)?.is_eq()")
+                    }
+                    Kind::Text => {
+                        format!("({value}).trim_end_spaces().utf16_length() == 0")
+                    }
+                    Kind::Boolean => format!("!({value})"),
+                    Kind::Record => {
+                        return Err("IsEmpty is not supported on records directly".into());
+                    }
+                };
+                (Kind::Boolean, code)
+            }
+            Expr::Call(name, args) if name == "NULLVALUE" => {
+                if args.len() != 1 {
+                    return Err("Nullvalue expects exactly one variable or field argument".into());
+                }
+                let target_type = match &args[0] {
+                    Expr::Variable(var_name) => self.variable(var_name)?.1.clone(),
+                    Expr::Member(receiver, field) => self.member_type(receiver, field)?,
+                    _ => return Err("Nullvalue argument must be a variable or record field".into()),
+                };
+                match target_type {
+                    DataType::Numeric { .. } => (Kind::Numeric, "\"0\".parse::<Decimal>()?".into()),
+                    DataType::Character { .. } | DataType::Varchar { .. } => {
+                        (Kind::Text, "Text::new(\"\")?".into())
+                    }
+                    DataType::Boolean {} => (Kind::Boolean, "false".into()),
+                    DataType::Date {} => (Kind::Date, "Date::empty()".into()),
+                    DataType::DateTime {} => (Kind::DateTime, "DateTime::empty()".into()),
+                    DataType::Record { .. } | DataType::Collection { .. } => {
+                        return Err("Nullvalue requires a scalar variable or field".into());
+                    }
+                }
+            }
+            Expr::Call(name, args) if name == "FORMAT" => {
+                if !(1..=10).contains(&args.len()) {
+                    return Err("Format expects between one and ten arguments".into());
+                }
+                let pattern = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let mut lowered_args = Vec::with_capacity(args.len() - 1);
+                for arg in &args[1..] {
+                    let (k, v) = self.lower(arg, assigned, prelude)?;
+                    let text_expr = match k {
+                        Kind::Text => v,
+                        Kind::Numeric => format!("Text::new(&({v}).to_string())?"),
+                        Kind::Boolean => format!("Text::bool_to_str({v})"),
+                        Kind::Date | Kind::DateTime => format!("Text::new(&({v}).to_text())?"),
+                        _ => return Err("Format arguments must be scalar values".into()),
+                    };
+                    lowered_args.push(text_expr);
+                }
+                (
+                    Kind::Text,
+                    format!(
+                        "Text::format_template(&({pattern}), &[{}])?",
+                        lowered_args.join(", ")
+                    ),
+                )
+            }
+            Expr::Call(name, args) if name == "NEWLINE" => {
+                if !args.is_empty() {
+                    return Err("NewLine expects zero arguments".into());
+                }
+                (Kind::Text, "Text::newline()".into())
+            }
+            Expr::Call(name, args) if name == "REPLICATE" => {
+                if args.len() != 2 {
+                    return Err("Replicate expects two arguments (text, count)".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let count = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (
+                    Kind::Text,
+                    format!("({text}).replicate(({count}).to_i64()?)?"),
+                )
+            }
+            Expr::Call(name, args) if name == "CHARAT" => {
+                if args.len() != 2 {
+                    return Err("CharAt expects two arguments (text, index)".into());
+                }
+                let text = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let idx = self.lower_expect(&args[1], assigned, Kind::Numeric, prelude)?;
+                (Kind::Text, format!("({text}).char_at(({idx}).to_i64()?)"))
+            }
+            Expr::Call(name, args) if name == "STRSEARCHREV" => {
+                if !(2..=3).contains(&args.len()) {
+                    return Err("StrSearchRev expects two or three arguments".into());
+                }
+                let s1 = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                let s2 = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                let start = if let Some(s) = args.get(2) {
+                    let val = self.lower_expect(s, assigned, Kind::Numeric, prelude)?;
+                    format!("({val}).to_i64()?")
+                } else {
+                    "-1".into()
+                };
+                (
+                    Kind::Numeric,
+                    format!("Decimal::from(({s1}).str_search_rev(&({s2}), {start}))"),
+                )
+            }
+            Expr::Call(name, args) if name == "BOOLTOSTR" => {
+                if args.len() != 1 {
+                    return Err("BoolToStr expects one Boolean argument".into());
+                }
+                let val = self.lower_expect(&args[0], assigned, Kind::Boolean, prelude)?;
+                (Kind::Text, format!("Text::bool_to_str({val})"))
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "TOBOOLEAN" | "STRTOBOOL") => {
+                if args.len() != 1 {
+                    return Err(format!("{name} expects one Text argument"));
+                }
+                let val = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                (Kind::Boolean, format!("({val}).to_boolean()"))
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "TOJSON" | "TOJSONSTRING") => {
+                if args.len() != 1 {
+                    return Err(format!("{name} expects one argument"));
+                }
+                let data_type = self.expression_type(&args[0])?;
+                let k = kind(&data_type);
+                if !matches!(k, Kind::Record | Kind::Collection) {
+                    return Err(format!("{name} argument must be a record or collection"));
+                }
+                let target = self.lower_expect(&args[0], assigned, k, prelude)?;
+                (Kind::Text, format!("Text::new(&({target}).to_json())?"))
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "FROMJSON" | "FROMJSONSTRING") => {
+                if args.len() != 2 {
+                    return Err(format!("{name} expects two arguments (target, json)"));
+                }
+                let data_type = self.expression_type(&args[0])?;
+                let k = kind(&data_type);
+                if !matches!(k, Kind::Record | Kind::Collection) {
+                    return Err(format!("{name} target must be a record or collection"));
+                }
+                let target = self.lower_expect(&args[0], assigned, k, prelude)?;
+                let json = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                (
+                    Kind::Boolean,
+                    format!("({target}).from_json(({json}).as_str())"),
+                )
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "TOXML") => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err("ToXml expects 1 or 2 arguments".into());
+                }
+                let data_type = self.expression_type(&args[0])?;
+                let k = kind(&data_type);
+                if !matches!(k, Kind::Record | Kind::Collection) {
+                    return Err("ToXml argument must be a record or collection".into());
+                }
+                let target = self.lower_expect(&args[0], assigned, k, prelude)?;
+                if args.len() == 2 {
+                    let root = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                    (
+                        Kind::Text,
+                        format!("Text::new(&({target}).to_xml(Some(({root}).as_str())))?"),
+                    )
+                } else {
+                    (Kind::Text, format!("Text::new(&({target}).to_xml(None))?"))
+                }
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "FROMXML") => {
+                if args.len() < 2 || args.len() > 3 {
+                    return Err("FromXml expects 2 or 3 arguments (target, xml, [opt_root])".into());
+                }
+                let data_type = self.expression_type(&args[0])?;
+                let k = kind(&data_type);
+                if !matches!(k, Kind::Record | Kind::Collection) {
+                    return Err("FromXml target must be a record or collection".into());
+                }
+                let target = self.lower_expect(&args[0], assigned, k, prelude)?;
+                let xml = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                if args.len() == 3 {
+                    let root = self.lower_expect(&args[2], assigned, Kind::Text, prelude)?;
+                    (
+                        Kind::Boolean,
+                        format!("({target}).from_xml(({xml}).as_str(), Some(({root}).as_str()))"),
+                    )
+                } else {
+                    (
+                        Kind::Boolean,
+                        format!("({target}).from_xml(({xml}).as_str(), None)"),
+                    )
+                }
+            }
             Expr::Call(name, args) => {
                 let (result, value) = self.lower_call(name, args, assigned, prelude, false)?;
                 (result.expect("function calls return a value"), value)
@@ -1184,8 +1564,15 @@ impl Emitter<'_> {
         assigned: &mut BTreeSet<String>,
         expected: Kind,
     ) -> Result<String, String> {
-        if matches!(expr, Expr::EmptyDate) && expected == Kind::DateTime {
-            return Ok("DateTime::empty()".into());
+        if matches!(expr, Expr::EmptyDate) {
+            return match expected {
+                Kind::Date => Ok("Date::empty()".into()),
+                Kind::DateTime => Ok("DateTime::empty()".into()),
+                Kind::Numeric => Ok("\"0\".parse::<Decimal>()?".into()),
+                Kind::Text => Ok("Text::new(\"\")?".into()),
+                Kind::Boolean => Ok("false".into()),
+                Kind::Record | Kind::Collection => Err("typed value mismatch".into()),
+            };
         }
         let (actual, source) = self.expression(expr, assigned)?;
         if actual != expected {
@@ -1289,13 +1676,16 @@ impl Emitter<'_> {
         assigned: &mut BTreeSet<String>,
         output: &mut String,
     ) -> Result<(), String> {
+        let step_check = if self.is_sub {
+            "*self.steps = self.steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;\n"
+        } else {
+            "*steps = steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;\n"
+        };
         for statement in body {
             if output.len() > 8 * 1024 * 1024 {
                 return Err("typed generated source exceeds 8 MiB".into());
             }
-            output.push_str(
-                "*steps = steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;\n",
-            );
+            output.push_str(step_check);
             match statement {
                 Stmt::AssignField(receiver, field, expression) => {
                     let field_type = self.member_type(receiver, field)?;
@@ -1350,12 +1740,17 @@ impl Emitter<'_> {
                 }
                 Stmt::Assign(name, expression) => {
                     let (slot, data_type) = self.variable(name)?;
+                    let target = if self.is_sub {
+                        format!("*self.v{slot}")
+                    } else {
+                        format!("v{slot}")
+                    };
                     if matches!(
                         data_type,
                         DataType::Record { .. } | DataType::Collection { .. }
                     ) {
                         let value = self.container_assignment(data_type, expression, assigned)?;
-                        writeln!(output, "v{slot} = {value};").unwrap();
+                        writeln!(output, "{target} = {value};").unwrap();
                         assigned.insert(name.clone());
                         continue;
                     }
@@ -1367,10 +1762,10 @@ impl Emitter<'_> {
                         | DataType::Character { .. }
                         | DataType::Varchar { .. }
                         | DataType::Record { .. }
-                        | DataType::Collection { .. } => writeln!(output, "v{slot} = {value};"),
+                        | DataType::Collection { .. } => writeln!(output, "{target} = {value};"),
                         DataType::Numeric { precision, scale } => writeln!(
                             output,
-                            "v{slot} = NumericType::new({precision}, {scale})?.assign({value})?;"
+                            "{target} = NumericType::new({precision}, {scale})?.assign({value})?;"
                         ),
                     }
                     .unwrap();
@@ -1402,17 +1797,33 @@ impl Emitter<'_> {
                             "bare Return is not valid in a value-returning procedure".into()
                         );
                     }
-                    writeln!(output, "return Ok({});", self.result("()")).unwrap();
+                    if self.is_sub {
+                        writeln!(output, "self.return_in_sub = true; return Ok(());").unwrap();
+                    } else {
+                        writeln!(output, "return Ok({});", self.result("()")).unwrap();
+                    }
                 }
                 Stmt::Return(expression) => {
                     if let Some(data_type) = self.return_type {
                         let value = self.expect(expression, assigned, kind(data_type))?;
                         let value = boundary(data_type, &value);
-                        writeln!(output, "return Ok({});", self.result(&value)).unwrap();
+                        if self.is_sub {
+                            writeln!(output, "self.return_value = Some({value}); self.return_in_sub = true; return Ok(());").unwrap();
+                        } else {
+                            writeln!(output, "return Ok({});", self.result(&value)).unwrap();
+                        }
                     } else {
                         let value = self.expect(expression, assigned, Kind::Numeric)?;
-                        writeln!(output, "let _ = {value}; return Ok({});", self.result("()"))
+                        if self.is_sub {
+                            writeln!(
+                                output,
+                                "let _ = {value}; self.return_in_sub = true; return Ok(());"
+                            )
                             .unwrap();
+                        } else {
+                            writeln!(output, "let _ = {value}; return Ok({});", self.result("()"))
+                                .unwrap();
+                        }
                     }
                 }
                 Stmt::Call(call) => {
@@ -1446,26 +1857,36 @@ impl Emitter<'_> {
                     if kind(data_type) != Kind::Numeric {
                         return Err("For iterator must be Numeric".into());
                     }
+                    let target = if self.is_sub {
+                        format!("(*self.v{slot})")
+                    } else {
+                        format!("v{slot}")
+                    };
                     let initial = self.expect(initial, assigned, Kind::Numeric)?;
-                    writeln!(output, "{{{}", assign_code(slot, data_type, &initial)).unwrap();
+                    writeln!(
+                        output,
+                        "{{{}",
+                        assign_code(slot, data_type, &initial, self.is_sub)
+                    )
+                    .unwrap();
                     assigned.insert(name.clone());
                     let limit = self.expect(limit, assigned, Kind::Numeric)?;
                     let comparison = if *step > 0 { "is_le" } else { "is_ge" };
-                    writeln!(output, "while {{let for_limit = {limit}; v{slot}.checked_cmp(for_limit)?.{comparison}()}} {{\n*steps = steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;").unwrap();
+                    writeln!(output, "while {{let for_limit = {limit}; {target}.checked_cmp(for_limit)?.{comparison}()}} {{\n{step_check}").unwrap();
                     self.block(body, &mut assigned.clone(), output)?;
                     let increment = format!(
-                        "v{slot}.checked_add(({step}_i64).to_string().parse::<Decimal>()?)?"
+                        "{target}.checked_add(({step}_i64).to_string().parse::<Decimal>()?)?"
                     );
                     writeln!(
                         output,
                         "{}\n}}\n}}",
-                        assign_code(slot, data_type, &increment)
+                        assign_code(slot, data_type, &increment, self.is_sub)
                     )
                     .unwrap();
                 }
                 Stmt::While(condition, body) => {
                     let condition = self.expect(condition, assigned, Kind::Boolean)?;
-                    writeln!(output, "while {condition} {{\n*steps = steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;").unwrap();
+                    writeln!(output, "while {condition} {{\n{step_check}").unwrap();
                     self.block(body, &mut assigned.clone(), output)?;
                     output.push_str("}\n");
                 }
@@ -1485,14 +1906,131 @@ impl Emitter<'_> {
                         return Err("For in item schema mismatch with collection".into());
                     }
                     let col_val = self.expect(collection, assigned, Kind::Collection)?;
-                    writeln!(output, "for __idx in 1..=({col_val}).len() {{\n*steps = steps.checked_sub(1).ok_or(\"execution step limit exceeded\")?;\nv{slot} = ({col_val}).item(__idx as i64)?;\n").unwrap();
+                    let target = if self.is_sub {
+                        format!("*self.v{slot}")
+                    } else {
+                        format!("v{slot}")
+                    };
+                    writeln!(output, "for __idx in 1..=({col_val}).len() {{\n{step_check}{target} = ({col_val}).item(__idx as i64)?;\n").unwrap();
                     let mut loop_assigned = assigned.clone();
                     loop_assigned.insert(variable.clone());
                     self.block(body, &mut loop_assigned, output)?;
                     writeln!(output, "}}").unwrap();
                 }
+                Stmt::DoSub(name) => {
+                    let sub_id = self
+                        .sub_ids
+                        .get(name)
+                        .ok_or_else(|| format!("unknown subroutine {name}"))?;
+                    if self.is_sub {
+                        writeln!(
+                            output,
+                            "self.run({sub_id})?; if self.return_in_sub {{ return Ok(()); }}"
+                        )
+                        .unwrap();
+                    } else {
+                        let mut sub_fields = vec![
+                            "steps".to_string(),
+                            "depth".to_string(),
+                            "sub_depth: 0".to_string(),
+                            "return_in_sub: false".to_string(),
+                        ];
+                        if self.return_type.is_some() {
+                            sub_fields.push("return_value: None".to_string());
+                        }
+                        for slot in self.slots.values() {
+                            sub_fields.push(format!("v{slot}: &mut v{slot}"));
+                        }
+                        let inst =
+                            format!("P{}Sub {{ {} }}", self.proc_index, sub_fields.join(", "));
+                        if self.return_type.is_some() {
+                            writeln!(
+                                output,
+                                "{{\nlet (__ret_in_sub, __ret_val) = {{\nlet mut __sub_runner = {inst};\n__sub_runner.run({sub_id})?;\n(__sub_runner.return_in_sub, __sub_runner.return_value)\n}};\nif __ret_in_sub {{\nlet __val = __ret_val.ok_or(\"subroutine returned without value\")?;\nreturn Ok({});\n}}\n}}",
+                                self.result("__val")
+                            )
+                            .unwrap();
+                        } else {
+                            writeln!(
+                                output,
+                                "{{\nlet __ret_in_sub = {{\nlet mut __sub_runner = {inst};\n__sub_runner.run({sub_id})?;\n__sub_runner.return_in_sub\n}};\nif __ret_in_sub {{\nreturn Ok({});\n}}\n}}",
+                                self.result("()")
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                Stmt::Sub(..) => {
+                    return Err("subroutines cannot be nested or placed inside blocks".into());
+                }
                 Stmt::Exit => {
                     writeln!(output, "break;").unwrap();
+                }
+                Stmt::Commit => {
+                    writeln!(output, "// commit;").unwrap();
+                }
+                Stmt::Rollback => {
+                    writeln!(output, "// rollback;").unwrap();
+                }
+                Stmt::FromJson(receiver, json_expr) => {
+                    let data_type = self.expression_type(receiver)?;
+                    let kind_type = kind(&data_type);
+                    if !matches!(kind_type, Kind::Record | Kind::Collection) {
+                        return Err("FromJson receiver must be a record or collection".into());
+                    }
+                    let receiver_code = self.expect(receiver, assigned, kind_type)?;
+                    let json_code = self.expect(json_expr, assigned, Kind::Text)?;
+                    if let Expr::Variable(name) = receiver.as_ref() {
+                        assigned.insert(name.clone());
+                    }
+                    writeln!(
+                        output,
+                        "let _ = ({receiver_code}).from_json(({json_code}).as_str());"
+                    )
+                    .unwrap();
+                }
+                Stmt::FromXml(from_xml) => {
+                    let data_type = self.expression_type(&from_xml.target)?;
+                    let kind_type = kind(&data_type);
+                    if !matches!(kind_type, Kind::Record | Kind::Collection) {
+                        return Err("FromXml receiver must be a record or collection".into());
+                    }
+                    let receiver_code = self.expect(&from_xml.target, assigned, kind_type)?;
+                    let xml_code = self.expect(&from_xml.xml, assigned, Kind::Text)?;
+                    let opt_root_code = if let Some(ref root_expr) = from_xml.root {
+                        let root_code = self.expect(root_expr, assigned, Kind::Text)?;
+                        format!("Some(({root_code}).as_str())")
+                    } else {
+                        "None".to_string()
+                    };
+                    if let Expr::Variable(name) = from_xml.target.as_ref() {
+                        assigned.insert(name.clone());
+                    }
+                    writeln!(
+                        output,
+                        "let _ = ({receiver_code}).from_xml(({xml_code}).as_str(), {opt_root_code});"
+                    )
+                    .unwrap();
+                }
+                Stmt::ForEach(_) => {
+                    return Err(
+                        "For Each database statements require specifier navigation and are not admitted in standalone typed binaries".into(),
+                    );
+                }
+                Stmt::AssignAttribute(_, _) => {
+                    return Err(
+                        "Attribute assignment requires specifier navigation and is not admitted in standalone typed binaries".into(),
+                    );
+                }
+                Stmt::Delete => {
+                    return Err(
+                        "Delete database statement requires specifier navigation and is not admitted in standalone typed binaries".into(),
+                    );
+                }
+                Stmt::New(_) => {
+                    return Err(
+                        "New database statement requires specifier navigation and is not admitted in standalone typed binaries".into(),
+                    );
                 }
             }
         }

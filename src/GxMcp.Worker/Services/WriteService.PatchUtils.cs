@@ -407,6 +407,13 @@ namespace GxMcp.Worker.Services
             var verification = EvaluatePersistedVerification(requested, actual, truncated, readFailure, verifyMode, part);
             bool known = !verification.IsIndeterminate;
             var diff = BuildPersistenceDiff(requested, actual, verification, known);
+            // #557: a Structure whose persisted text differs from the request only by the
+            // attribute description GeneXus derives from the attribute name is labelled, so
+            // a textual mismatch the caller opted into (explicit normalized/exact) is not
+            // mistaken for a lost write. The verdict itself is unchanged.
+            bool sdkDescriptionOnly = known && !verification.Matches
+                && TextPersistenceVerifier.OnlySdkGeneratedAttributeDescriptionDiffers(part, requested, actual);
+            if (sdkDescriptionOnly) diff["mismatchKind"] = "sdk-generated-description";
             response["sdkSaveCompleted"] = saved.HasValue ? (JToken)saved.Value : JValue.CreateNull();
             response["saved"] = response["sdkSaveCompleted"].DeepClone();
             // Errors can occur after EnsureSave/Commit was attempted. Do not turn
@@ -453,14 +460,18 @@ namespace GxMcp.Worker.Services
             {
                 response["status"] = "error";
                 response["code"] = known ? "WriteNotPersisted" : "WriteVerificationUnavailable";
+                string hint = "Do not retry automatically. Read the complete current state and its versionToken before deciding on another edit.";
+                if (sdkDescriptionOnly)
+                    hint = "The persisted Structure differs from the request only by the attribute description GeneXus derives from the attribute name; the requested declarations landed. Omit verifyMode (Structure defaults to semantic) or pass verifyMode=semantic to accept that rendering. " + hint;
                 response["error"] = new JObject
                 {
                     ["code"] = response["code"].DeepClone(),
                     ["message"] = known
                         ? "The persisted public-read text differs from the request; inspect the diff. The SDK save result is reported separately."
                         : "The post-save state could not be read reliably. The SDK save result is reported separately.",
-                    ["hint"] = "Do not retry automatically. Read the complete current state and its versionToken before deciding on another edit."
+                    ["hint"] = hint
                 };
+                if (sdkDescriptionOnly) response["error"]["mismatchKind"] = "sdk-generated-description";
                 response["partialPersistenceDetected"] = known && before != null
                     && !string.Equals(before, actual, StringComparison.Ordinal)
                     && !string.Equals((requested ?? "").Replace("\r\n", "\n").Replace('\r', '\n'), (actual ?? "").Replace("\r\n", "\n").Replace('\r', '\n'), StringComparison.Ordinal);
@@ -663,17 +674,8 @@ namespace GxMcp.Worker.Services
                 // A WriteNotPersisted/verification-unavailable response can still
                 // have performed the physical restore. Do not trust that envelope
                 // alone; the forced read below is the deciding evidence.
-                if (restoreEnvelope != null)
-                {
-                    string restoreStatus = restoreEnvelope["status"]?.ToString();
-                    string restoreCode = restoreEnvelope["code"]?.ToString();
-                    bool knownRestoreFailure = !string.Equals(restoreStatus, "ok", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(restoreStatus, "success", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(restoreCode, "WriteNotPersisted", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(restoreCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
-                    if (knownRestoreFailure && restoreError == null)
-                        restoreError = restoreEnvelope["error"]?["message"]?.ToString() ?? restoreEnvelope["message"]?.ToString() ?? "Rollback write failed.";
-                }
+                if (restoreEnvelope != null && restoreError == null)
+                    restoreError = DescribeRollbackWriteFailure(restoreEnvelope);
             }
             catch (Exception ex)
             {
@@ -749,12 +751,44 @@ namespace GxMcp.Worker.Services
             return response.ToString(Newtonsoft.Json.Formatting.None);
         }
 
+        /// <summary>
+        /// The rollback error for a restore writer envelope, or null when that
+        /// envelope is not a known failure (ok/success, or a verification outcome
+        /// the forced re-read decides).
+        ///
+        /// Prefixed so it reads as the rollback write's own failure: the restore
+        /// reuses WriteObject, whose Structure abort message landed verbatim in
+        /// rollback.error beside saved:true and read as if the original write had
+        /// not been saved either (issue #558).
+        /// </summary>
+        internal static string DescribeRollbackWriteFailure(JObject restoreEnvelope)
+        {
+            string restoreStatus = restoreEnvelope["status"]?.ToString();
+            string restoreCode = restoreEnvelope["code"]?.ToString();
+            bool knownRestoreFailure = !string.Equals(restoreStatus, "ok", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(restoreStatus, "success", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(restoreCode, "WriteNotPersisted", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(restoreCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
+            if (!knownRestoreFailure) return null;
+            string message = restoreEnvelope["error"]?["message"]?.ToString() ?? restoreEnvelope["message"]?.ToString();
+            return string.IsNullOrWhiteSpace(message) ? "Rollback write failed." : "Rollback write failed: " + message;
+        }
+
+        /// <summary>
+        /// Error text for a Structure write aborted by a refused attribute
+        /// removal. It speaks only about this write: the same envelope is also
+        /// the rollback writer's reply, where "nothing was persisted" contradicted
+        /// the saved:true of the original write (issue #558).
+        /// </summary>
+        internal static string BuildStructureRemovalAbortMessage(string removalFailure)
+            => removalFailure + ". This write was aborted before its save step.";
+
         private static bool ContentEqualsForRollback(string actual, string expected, string partName)
         {
             if (actual == null || expected == null) return false;
             if (WebFormXmlHelper.IsVisualPart(partName))
             {
-                try { return XmlEquivalence.AreEquivalent(actual, expected, out _); }
+                try { return XmlEquivalence.AreEquivalent(actual, expected, XmlEquivalenceOptions.Layout, out _); }
                 catch { return false; }
             }
             return string.Equals(actual, expected, StringComparison.Ordinal);
@@ -857,9 +891,7 @@ namespace GxMcp.Worker.Services
             // Variables (and other rendered parts) must tolerate harmless SDK casing,
             // whitespace, and line-ending normalization.
             bool explicitMode = !string.IsNullOrWhiteSpace(verifyMode);
-            string mode = explicitMode
-                ? TextPersistenceVerifier.ResolveMode(verifyMode, partName)
-                : (string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase) ? "semantic" : "normalized");
+            string mode = ResolveEffectiveVerifyMode(verifyMode, partName);
             bool exact = explicitMode && string.Equals(mode, "exact", StringComparison.OrdinalIgnoreCase);
 
             bool eolOnly = string.Equals(
@@ -896,6 +928,19 @@ namespace GxMcp.Worker.Services
             string reason = ModuleQualificationEquals(persisted, requested) ? "moduleQualification"
                 : matches ? "normalization" : "contentMismatch";
             return new PersistedVerificationResult { State = matches ? "verified" : "mismatch", Reason = reason, Matches = matches };
+        }
+
+        /// <summary>
+        /// Comparison mode a post-save receipt uses. An explicit mode is resolved as
+        /// requested; an omitted one keeps the SDK-tolerant default: <c>semantic</c>
+        /// for Structure, where the SDK renders an attribute description derived from
+        /// the attribute name (#525, #557), and <c>normalized</c> for every other part.
+        /// </summary>
+        internal static string ResolveEffectiveVerifyMode(string verifyMode, string partName)
+        {
+            if (!string.IsNullOrWhiteSpace(verifyMode))
+                return TextPersistenceVerifier.ResolveMode(verifyMode, partName);
+            return string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase) ? "semantic" : "normalized";
         }
 
         // ----------------------------------------------------------------------

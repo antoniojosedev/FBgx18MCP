@@ -82,6 +82,7 @@ namespace GxMcp.Gateway.Tests
                 ""code"":""WriteNotPersisted"",""message"":""post-save mismatch"",
                 ""saved"":true,""verified"":false,""requestedHash"":""req"",""persistedHash"":""disk"",
                 ""persistedMatchCount"":1,""oldContentPresent"":true,""versionToken"":""123"",
+                ""mismatchKind"":""normalization"",
                 ""rollback"":{""requested"":true,""saved"":true,""verified"":true},""rolledBack"":true
             }");
 
@@ -89,6 +90,8 @@ namespace GxMcp.Gateway.Tests
 
             Assert.True(trimmed["saved"]!.ToObject<bool>());
             Assert.False(trimmed["verified"]!.ToObject<bool>());
+            // Issue #547: the mismatch classification must survive the terse projection.
+            Assert.Equal("normalization", trimmed["mismatchKind"]!.ToString());
             Assert.Equal("req", trimmed["requestedHash"]!.ToString());
             Assert.Equal("disk", trimmed["persistedHash"]!.ToString());
             Assert.Equal(1, trimmed["persistedMatchCount"]!.ToObject<int>());

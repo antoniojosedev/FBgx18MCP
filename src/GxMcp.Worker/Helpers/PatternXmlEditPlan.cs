@@ -98,6 +98,9 @@ namespace GxMcp.Worker.Helpers
                     return;
                 if (TryAllowAttributePromptEdit(before, after, oldNodes, newNodes, path))
                     return;
+                // Issue #551: <parameter> leaves of a selection, prompt or user action list.
+                if (TryAllowParameterListEdit(before, oldNodes, newNodes, path))
+                    return;
                 // Issue #349: structural layout authoring. Insert / remove / move of a
                 // single leaf layout element inside an existing container.
                 if (TryAllowStructuralLayoutEdit(oldNodes, newNodes, path, allowGridStructure))
@@ -110,12 +113,28 @@ namespace GxMcp.Worker.Helpers
             if (allowGridStructure && IsGrid(before)
                 && TryCompareGridReorder(oldNodes, newNodes, path, allowGridStructure))
                 return;
-            if (TryCompareContainerReorder(before, oldNodes, newNodes, path, allowGridStructure))
+            // Issue #560: a <prompt> edited in place (target changed, a <parameter> added
+            // or removed) leaves the <attribute> with the same number of children, so it
+            // never reached the handler above and the positional recursion rejected the
+            // <parameters> size change instead. Same handler, same allow-list, one Update.
+            if (TryAllowAttributePromptEdit(before, after, oldNodes, newNodes, path))
+                return;
+            if (TryCompareContainerReorder(before, oldNodes, newNodes, path, allowGridStructure, out string reorderBlocker))
                 return;
             for (int i = 0; i < oldNodes.Length; i++)
             {
                 if (oldNodes[i] is XElement oldElement && newNodes[i] is XElement newElement)
                 {
+                    // Issue #545: identity matching declined because a sibling has no
+                    // identity, and this slot now holds a sibling that used to be
+                    // elsewhere. Reporting that positionally as "identity changed at
+                    // .../@attribute" contradicts the childrenOrderedList message that
+                    // told the caller to move the element; name the real blocker instead.
+                    if (reorderBlocker != null && IsMovedSibling(oldNodes, newNodes, oldElement, newElement))
+                    {
+                        Reject("PatternStructureChangeUnsupported", DescribeBlockedReorder(path, reorderBlocker));
+                        return;
+                    }
                     if (IsMetadata(oldElement.Name.LocalName) && !XNode.DeepEquals(oldElement, newElement))
                         Reject("PatternMetadataChangeUnsupported", "SDK-owned metadata changed at " + path + oldElement.Name);
                     else
@@ -162,6 +181,41 @@ namespace GxMcp.Worker.Helpers
                 + ". This attribute is maintained by the SDK and cannot be authored through"
                 + " a raw XML edit.";
         }
+
+        /// <summary>
+        /// Issue #545. A reorder is matched by sibling identity, so one sibling without
+        /// an identity makes every move in that container unverifiable. The caller can
+        /// act on "which element and why"; they cannot act on "identity changed at
+        /// .../attribute/@attribute", which is what the positional fallback said.
+        /// </summary>
+        private static string DescribeBlockedReorder(string path, string blocker)
+        {
+            return "Reorder refused at " + path + ": " + blocker
+                + ". Siblings are matched by identity when they are reordered, and one that"
+                + " cannot be matched makes the move read as an identity change instead."
+                + " Give that element a name or controlName in the GeneXus IDE so every"
+                + " sibling has a distinct identity, then retry; actions, tabs and grid"
+                + " columns can also be moved through genexus_wwp move_action, move_tab"
+                + " and move_grid_column.";
+        }
+
+        /// <summary>
+        /// What a raw PatternInstance edit accepts and refuses, for the rejection hint.
+        /// Issue #545: the previous hint said raw XML "is limited to existing property
+        /// changes" after #349 had opened single-leaf structural edits, so a caller
+        /// refused for one reason was told that the edits the preflight accepts were
+        /// impossible. Keep this in step with the handlers in <see cref="Compare"/>.
+        /// </summary>
+        public const string RawXmlEditScopeHint =
+            "raw PatternInstance XML accepts property changes on existing elements, one leaf"
+            + " element (textBlock, attribute, variable, userAction, image, userControl,"
+            + " actionGroup, errorViewer, data; or a webComponent into a table) added per"
+            + " container, several leaf removals, a leaf moved between containers, siblings"
+            + " reordered by identity inside a table, actionGroup, tabs or tab, and a <prompt>"
+            + " added to or removed from an <attribute>; it still refuses identity and"
+            + " childrenOrderedList edits, container-valued or nested additions, more than one"
+            + " addition per container, and a reorder next to a sibling without an identity"
+            + " attribute.";
 
         /// <summary>
         /// Names what actually changed, because "Child structure changed at /path" was true
@@ -247,7 +301,7 @@ namespace GxMcp.Worker.Helpers
             int firstDiff = limit;
             for (int i = 0; i < limit; i++)
             {
-                if (XNode.DeepEquals(oldNodes[i], newNodes[i])) continue;
+                if (SameLayoutNode(oldNodes[i], newNodes[i])) continue;
                 firstDiff = i;
                 break;
             }
@@ -257,11 +311,31 @@ namespace GxMcp.Worker.Helpers
                 if (firstDiff >= newNodes.Length) return false;
                 if (!(newNodes[firstDiff] is XElement inserted)) return false;
                 // Everything but the inserted node must be untouched and in order, or this
-                // is a rewrite rather than an insertion.
+                // is a rewrite rather than an insertion. Untouched is semantic (#551): a
+                // sibling re-serialised with its attributes in another order, or re-indented,
+                // is the same sibling, and XNode.DeepEquals refused it as if the inserted
+                // element were the problem.
                 for (int i = 0, j = 0; i < newNodes.Length; i++)
                 {
                     if (i == firstDiff) continue;
-                    if (j >= oldNodes.Length || !XNode.DeepEquals(oldNodes[j], newNodes[i])) return false;
+                    if (j >= oldNodes.Length || !SameLayoutNode(oldNodes[j], newNodes[i]))
+                    {
+                        // A permitted leaf next to a sibling that really did change: name the
+                        // sibling, because "1 child element added" blamed the wrong node.
+                        var addedKinds = Names(newNodes.Except(oldNodes, StructuralNodeKeyComparer.Instance));
+                        if (addedKinds.Count == 1 && StructuralLayoutRules.IsPermittedKind(addedKinds[0])
+                            && j < oldNodes.Length && oldNodes[j] is XElement sibling)
+                        {
+                            Reject("PatternStructureChangeUnsupported",
+                                "Structural layout edit at " + path + ": a <" + addedKinds[0] + "> was added,"
+                                + " but the existing <" + sibling.Name.LocalName + "> at index " + j
+                                + " also changed. A structural edit must leave every other child of the"
+                                + " container as it was; add the element alone and edit the sibling in a"
+                                + " separate import.");
+                            return true;
+                        }
+                        return false;
+                    }
                     j++;
                 }
 
@@ -308,7 +382,7 @@ namespace GxMcp.Worker.Helpers
             for (int i = 0, j = 0; i < oldNodes.Length; i++)
             {
                 if (i == firstDiff) continue;
-                if (j >= newNodes.Length || !XNode.DeepEquals(newNodes[j], oldNodes[i])) return false;
+                if (j >= newNodes.Length || !SameLayoutNode(newNodes[j], oldNodes[i])) return false;
                 j++;
             }
 
@@ -325,12 +399,50 @@ namespace GxMcp.Worker.Helpers
                 ["index"] = firstDiff,
                 ["ordering"] = OrderingNote
             });
-            _removedIdentities[removedIdentity] = removedKind;
+            // Issue #545: ReportIdentity is null for a leaf that predates its identity
+            // attribute, and a null key throws out of the plan instead of planning the
+            // removal.
+            if (removedIdentity != null) _removedIdentities[removedIdentity] = removedKind;
             return true;
         }
 
         private const string OrderingNote =
             "childrenOrderedList is not authored; the SDK rebuilds it from document order";
+
+        /// <summary>
+        /// Whether an untouched sibling is the same sibling: same element name, the same
+        /// attributes in any order, and the same significant children compared the same
+        /// way; other node types fall back to <see cref="XNode.DeepEquals"/>.
+        ///
+        /// <para>
+        /// Issue #551. The reporter added one well-formed textBlock and was told
+        /// "1 child element added. Added: textBlock" - the structural handler had declined
+        /// silently because <see cref="XNode.DeepEquals"/> is order-sensitive on attributes
+        /// and counts insignificant whitespace, so a sibling the client had merely
+        /// re-serialised failed the "everything else untouched" check. Attribute order and
+        /// indentation mean nothing to the SDK that deserialises the payload, and the
+        /// property-change path already compares attributes by name, so this is the same
+        /// notion of "unchanged" applied to the structural path.
+        /// </para>
+        /// </summary>
+        private static bool SameLayoutNode(XNode left, XNode right)
+        {
+            if (!(left is XElement a) || !(right is XElement b)) return XNode.DeepEquals(left, right);
+            if (a.Name != b.Name) return false;
+            var attributes = a.Attributes().Where(x => !x.IsNamespaceDeclaration).ToList();
+            if (attributes.Count != b.Attributes().Count(x => !x.IsNamespaceDeclaration)) return false;
+            foreach (var attribute in attributes)
+            {
+                var other = b.Attribute(attribute.Name);
+                if (other == null || !string.Equals(attribute.Value, other.Value, StringComparison.Ordinal)) return false;
+            }
+            var leftChildren = a.Nodes().Where(Significant).ToArray();
+            var rightChildren = b.Nodes().Where(Significant).ToArray();
+            if (leftChildren.Length != rightChildren.Length) return false;
+            for (int i = 0; i < leftChildren.Length; i++)
+                if (!SameLayoutNode(leftChildren[i], rightChildren[i])) return false;
+            return true;
+        }
 
         /// <summary>
         /// Collapses a matched Insert + Remove of the same element identity into one
@@ -621,9 +733,23 @@ namespace GxMcp.Worker.Helpers
             public ElementPosition(XElement element, int index) { Element = element; Index = index; }
         }
 
+        /// <summary>
+        /// Same-size container whose children were reordered: match them by identity
+        /// and report a <c>Reorder</c> per displaced child.
+        ///
+        /// <para>
+        /// Issue #545. <paramref name="blocker"/> is set when the container is one this
+        /// handles and a child cannot be matched (no identity, or an identity shared
+        /// with a sibling). The caller does not reject on it - a property edit next to
+        /// an unnamed group table must keep working - but uses it to explain a refused
+        /// move instead of reporting a positional identity change.
+        /// </para>
+        /// </summary>
         private bool TryCompareContainerReorder(
-            XElement container, XNode[] oldNodes, XNode[] newNodes, string path, bool allowGridStructure)
+            XElement container, XNode[] oldNodes, XNode[] newNodes, string path, bool allowGridStructure,
+            out string blocker)
         {
+            blocker = null;
             if (oldNodes.Length != newNodes.Length || oldNodes.Length <= 1) return false;
 
             string containerName = container.Name.LocalName;
@@ -642,7 +768,19 @@ namespace GxMcp.Worker.Helpers
             for (int i = 0; i < oldElements.Count; i++)
             {
                 string id = GetElementCompositeKey(oldElements[i]);
-                if (string.IsNullOrWhiteSpace(id) || oldMap.ContainsKey(id)) return false;
+                if (id == null)
+                {
+                    blocker = "child <" + oldElements[i].Name.LocalName + "> at index " + i
+                        + " has no identity attribute (name, controlName, attribute or variable;"
+                        + " an unnamed <table> may be addressed by a unique title)";
+                    return false;
+                }
+                if (oldMap.TryGetValue(id, out var duplicate))
+                {
+                    blocker = "children at index " + duplicate.Index + " and index " + i
+                        + " share the identity '" + id + "'";
+                    return false;
+                }
                 oldMap[id] = new ElementPosition(oldElements[i], i);
             }
 
@@ -678,7 +816,7 @@ namespace GxMcp.Worker.Helpers
 
                 if (newIdx != oldIdx)
                 {
-                    string id = StructuralLayoutRules.Identity(newEl.Name.LocalName, newEl) ?? kvp.Key;
+                    string id = ElementIdentity(newEl);
                     Changes.Add(new JObject
                     {
                         ["path"] = path + newEl.Name.LocalName + "[@" + id + "]",
@@ -700,15 +838,62 @@ namespace GxMcp.Worker.Helpers
 
         private static string GetElementCompositeKey(XElement element)
         {
+            string id = ElementIdentity(element);
+            return id == null ? null : element.Name.LocalName + ":" + id;
+        }
+
+        /// <summary>
+        /// The identity a sibling is matched by when reordering, or null.
+        ///
+        /// <para>
+        /// Issue #545. The lookup is case-insensitive because WorkWithPlus writes
+        /// <c>ControlName</c> on tab elements and <c>controlName</c> on text blocks, and
+        /// an <c>XName</c> lookup on the wrong spelling made every tab reorder fall back
+        /// to the positional comparison. An unnamed group table is addressed by its
+        /// title, the same weak identifier <c>PatternChildOrderReconciler</c> derives for
+        /// it; uniqueness is enforced by the caller's map, not here.
+        /// </para>
+        /// </summary>
+        private static string ElementIdentity(XElement element)
+        {
             if (element == null) return null;
             string kind = element.Name.LocalName;
-            string id = StructuralLayoutRules.Identity(kind, element);
-            if (!string.IsNullOrWhiteSpace(id)) return kind + ":" + id;
-            id = (string)element.Attribute("attribute")
-                ?? (string)element.Attribute("controlName")
-                ?? (string)element.Attribute("name")
-                ?? (string)element.Attribute("variable");
-            return string.IsNullOrWhiteSpace(id) ? null : kind + ":" + id.Trim();
+            string id = StructuralLayoutRules.Identity(kind, element)
+                ?? AttributeIgnoreCase(element, "attribute")
+                ?? AttributeIgnoreCase(element, "controlName")
+                ?? AttributeIgnoreCase(element, "name")
+                ?? AttributeIgnoreCase(element, "variable");
+            if (id == null && string.Equals(kind, "table", StringComparison.OrdinalIgnoreCase))
+                id = AttributeIgnoreCase(element, "title") ?? AttributeIgnoreCase(element, "caption");
+            return id?.Trim();
+        }
+
+        private static string AttributeIgnoreCase(XElement element, string localName)
+        {
+            foreach (var attribute in element.Attributes())
+            {
+                if (attribute.IsNamespaceDeclaration) continue;
+                if (!string.Equals(attribute.Name.LocalName, localName, StringComparison.OrdinalIgnoreCase)) continue;
+                return string.IsNullOrWhiteSpace(attribute.Value) ? null : attribute.Value;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// True when the element now at this position carries the identity of a sibling
+        /// that was elsewhere, or the old occupant's identity turns up elsewhere: a move,
+        /// not a rename. A rename to an identity no sibling had stays a protected
+        /// attribute change and keeps its own message.
+        /// </summary>
+        private static bool IsMovedSibling(XNode[] oldNodes, XNode[] newNodes, XElement oldElement, XElement newElement)
+        {
+            string oldKey = GetElementCompositeKey(oldElement);
+            string newKey = GetElementCompositeKey(newElement);
+            if (string.Equals(oldKey, newKey, StringComparison.OrdinalIgnoreCase)) return false;
+            return (newKey != null && oldNodes.OfType<XElement>().Any(e =>
+                        string.Equals(GetElementCompositeKey(e), newKey, StringComparison.OrdinalIgnoreCase)))
+                || (oldKey != null && newNodes.OfType<XElement>().Any(e =>
+                        string.Equals(GetElementCompositeKey(e), oldKey, StringComparison.OrdinalIgnoreCase)));
         }
 
         private bool TryAllowMultipleLayoutRemovals(XNode[] oldNodes, XNode[] newNodes, string path)
@@ -766,67 +951,177 @@ namespace GxMcp.Worker.Helpers
             return true;
         }
 
+        /// <summary>
+        /// Issue #560: the DVelop Combo insert prompt, a <c>&lt;prompt&gt;</c> child of an
+        /// <c>&lt;attribute&gt;</c> carrying a target and a <c>&lt;parameters&gt;</c> list.
+        /// Accepts adding it, removing it, or replacing it in place (target changed, a
+        /// <c>&lt;parameter&gt;</c> added or removed) as one <c>Insert</c> / <c>Remove</c> /
+        /// <c>Update</c>, provided every other child of the attribute is untouched.
+        ///
+        /// <para>
+        /// A new or changed prompt outside the documented shape is rejected with the
+        /// offending item named. An unchanged prompt is left to the positional comparison,
+        /// so an instance whose prompt carries an attribute this gate does not know still
+        /// takes unrelated property edits.
+        /// </para>
+        /// </summary>
         private bool TryAllowAttributePromptEdit(XElement before, XElement after, XNode[] oldNodes, XNode[] newNodes, string path)
         {
             if (!string.Equals(before.Name.LocalName, "attribute", StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            var oldPrompt = oldNodes.OfType<XElement>().FirstOrDefault(e => string.Equals(e.Name.LocalName, "prompt", StringComparison.OrdinalIgnoreCase));
-            var newPrompt = newNodes.OfType<XElement>().FirstOrDefault(e => string.Equals(e.Name.LocalName, "prompt", StringComparison.OrdinalIgnoreCase));
+            var oldPrompt = oldNodes.OfType<XElement>().FirstOrDefault(IsPrompt);
+            var newPrompt = newNodes.OfType<XElement>().FirstOrDefault(IsPrompt);
 
             if (oldPrompt == null && newPrompt == null) return false;
+            if (oldPrompt != null && newPrompt != null && XNode.DeepEquals(oldPrompt, newPrompt)) return false;
 
-            if (newPrompt != null && !ValidatePromptElement(newPrompt)) return false;
+            if (newPrompt != null)
+            {
+                string violation = PromptViolation(newPrompt, path);
+                if (violation != null)
+                {
+                    Reject("PatternStructureChangeUnsupported", violation);
+                    return true;
+                }
+            }
 
             var oldOther = oldNodes.Where(n => n != oldPrompt).ToArray();
             var newOther = newNodes.Where(n => n != newPrompt).ToArray();
             if (!SameNodeSequence(oldOther, newOther)) return false;
 
-            if (oldPrompt == null && newPrompt != null)
+            var change = new JObject
             {
-                string promptTarget = (string)newPrompt.Attribute("prompt") ?? (string)newPrompt.Attribute("gxobject") ?? (string)newPrompt.Attribute("name");
-                Changes.Add(new JObject
-                {
-                    ["path"] = path + "prompt",
-                    ["operation"] = "Insert",
-                    ["element"] = "prompt",
-                    ["prompt"] = promptTarget
-                });
-                return true;
-            }
+                ["path"] = path + "prompt",
+                ["operation"] = oldPrompt == null ? "Insert" : newPrompt == null ? "Remove" : "Update",
+                ["element"] = "prompt"
+            };
+            if (newPrompt != null) change["prompt"] = PromptTarget(newPrompt);
+            Changes.Add(change);
+            return true;
+        }
+        /// <summary>
+        /// Issue #551: the parameter list of a WorkWithPlus selection, prompt or user action
+        /// is a flat list of <c>&lt;parameter name value/&gt;</c> leaves. A caller may add
+        /// or remove such leaves inside an existing <c>&lt;parameters&gt;</c>, and may add
+        /// (or remove) the list itself directly under <c>&lt;selection&gt;</c>, which has no
+        /// list until one is authored. Everything else about the list - a parameter outside
+        /// it, an unknown attribute, a nested child, a list under any other parent - stays
+        /// with the structural gate, so the one shape accepted is the one WorkWithPlus
+        /// already serialises. Persistence of a selection list is unverified against the
+        /// SDK on this host.
+        /// </summary>
+        private bool TryAllowParameterListEdit(XElement before, XNode[] oldNodes, XNode[] newNodes, string path)
+        {
+            if (IsNamed(before, "parameters")
+                && (IsNamed(before.Parent, "selection") || IsNamed(before.Parent, "prompt") || IsNamed(before.Parent, "userAction")))
+                return TryAllowParameterLeafEdit(oldNodes, newNodes, path);
 
-            if (oldPrompt != null && newPrompt == null)
-            {
-                Changes.Add(new JObject
-                {
-                    ["path"] = path + "prompt",
-                    ["operation"] = "Remove",
-                    ["element"] = "prompt"
-                });
-                return true;
-            }
+            if (!IsNamed(before, "selection") || Math.Abs(newNodes.Length - oldNodes.Length) != 1) return false;
+            bool insertion = newNodes.Length > oldNodes.Length;
+            XNode[] longer = insertion ? newNodes : oldNodes;
+            XNode[] shorter = insertion ? oldNodes : newNodes;
+            int index = 0;
+            while (index < shorter.Length && XNode.DeepEquals(longer[index], shorter[index])) index++;
+            if (!(longer[index] is XElement list) || !IsNamed(list, "parameters")
+                || list.Attributes().Any(a => !a.IsNamespaceDeclaration)) return false;
+            for (int i = index + 1; i < longer.Length; i++)
+                if (!XNode.DeepEquals(longer[i], shorter[i - 1])) return false;
 
-            if (oldPrompt != null && newPrompt != null)
+            var leaves = list.Nodes().Where(Significant).ToArray();
+            if (!leaves.All(leaf => leaf is XElement element && IsNamed(element, "parameter"))) return false;
+            if (insertion)
             {
-                if (!XNode.DeepEquals(oldPrompt, newPrompt))
+                foreach (XElement leaf in leaves)
                 {
-                    string promptTarget = (string)newPrompt.Attribute("prompt") ?? (string)newPrompt.Attribute("gxobject") ?? (string)newPrompt.Attribute("name");
-                    Changes.Add(new JObject
-                    {
-                        ["path"] = path + "prompt",
-                        ["operation"] = "Update",
-                        ["element"] = "prompt",
-                        ["prompt"] = promptTarget
-                    });
+                    string problem = ParameterLeafProblem(leaf);
+                    if (problem == null) continue;
+                    Reject("PatternStructureChangeUnsupported", problem + " at " + path + "parameters/.");
+                    return true;
                 }
-                return true;
             }
-
-            return false;
+            Changes.Add(new JObject
+            {
+                ["path"] = path + "parameters",
+                ["operation"] = insertion ? "Insert" : "Remove",
+                ["element"] = "parameters",
+                ["index"] = index,
+                ["parameters"] = leaves.Length
+            });
+            return true;
         }
 
-        private static bool ValidatePromptElement(XElement prompt)
+        private bool TryAllowParameterLeafEdit(XNode[] oldNodes, XNode[] newNodes, string path)
         {
+            if (!oldNodes.All(n => n is XElement e && IsNamed(e, "parameter"))
+                || !newNodes.All(n => n is XElement e && IsNamed(e, "parameter"))) return false;
+            bool insertion = newNodes.Length > oldNodes.Length;
+            XNode[] longer = insertion ? newNodes : oldNodes;
+            XNode[] shorter = insertion ? oldNodes : newNodes;
+            // The shorter side must survive in order; whatever is left over is the edit.
+            var changed = new List<int>();
+            int kept = 0;
+            for (int i = 0; i < longer.Length; i++)
+            {
+                if (kept < shorter.Length && XNode.DeepEquals(longer[i], shorter[kept])) kept++;
+                else changed.Add(i);
+            }
+            if (kept != shorter.Length) return false;
+            foreach (int index in changed)
+            {
+                var leaf = (XElement)longer[index];
+                string problem = insertion ? ParameterLeafProblem(leaf) : null;
+                if (problem != null)
+                {
+                    Reject("PatternStructureChangeUnsupported", problem + " at " + path + ".");
+                    return true;
+                }
+                Changes.Add(new JObject
+                {
+                    ["path"] = path,
+                    ["operation"] = insertion ? "Insert" : "Remove",
+                    ["element"] = "parameter",
+                    ["identity"] = (string)leaf.Attribute("name"),
+                    ["index"] = index
+                });
+            }
+            return true;
+        }
+
+        private static string ParameterLeafProblem(XElement leaf)
+        {
+            if (leaf.HasElements) return "A <parameter> may not carry child elements";
+            var offender = leaf.Attributes().FirstOrDefault(a => !a.IsNamespaceDeclaration
+                && !a.Name.LocalName.Equals("name", StringComparison.OrdinalIgnoreCase)
+                && !a.Name.LocalName.Equals("value", StringComparison.OrdinalIgnoreCase));
+            if (offender != null)
+                return "Attribute '" + offender.Name.LocalName + "' is not permitted on a <parameter>. Permitted: name, value";
+            if (string.IsNullOrWhiteSpace((string)leaf.Attribute("name"))) return "A <parameter> needs a name";
+            return null;
+        }
+
+        private static bool IsNamed(XElement element, string name)
+            => element != null && string.Equals(element.Name.LocalName, name, StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsPrompt(XElement element)
+            => string.Equals(element.Name.LocalName, "prompt", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>The object the prompt opens (<c>prompt</c>, else <c>gxobject</c>), or null when it has none.</summary>
+        private static string PromptTarget(XElement prompt)
+        {
+            string target = (string)prompt.Attribute("prompt") ?? (string)prompt.Attribute("gxobject");
+            return string.IsNullOrWhiteSpace(target) ? null : target.Trim();
+        }
+
+        /// <summary>
+        /// Why a <c>&lt;prompt&gt;</c> is outside the documented shape, or null when it is
+        /// inside it: a non-empty target, no attribute beyond <c>prompt</c> /
+        /// <c>gxobject</c> / <c>name</c>, and at most a <c>&lt;parameters&gt;</c> child made
+        /// of leaf <c>&lt;parameter name|value&gt;</c> elements.
+        /// </summary>
+        private static string PromptViolation(XElement prompt, string path)
+        {
+            string where = " on the <prompt> at " + path + "prompt.";
             foreach (var attr in prompt.Attributes())
             {
                 if (attr.IsNamespaceDeclaration) continue;
@@ -834,27 +1129,29 @@ namespace GxMcp.Worker.Helpers
                 if (!name.Equals("prompt", StringComparison.OrdinalIgnoreCase)
                     && !name.Equals("gxobject", StringComparison.OrdinalIgnoreCase)
                     && !name.Equals("name", StringComparison.OrdinalIgnoreCase))
-                    return false;
+                    return "Attribute '" + name + "' is not permitted" + where + " Permitted: gxobject, name, prompt.";
             }
+            if (PromptTarget(prompt) == null)
+                return "A non-empty prompt (or gxobject) target is required" + where;
             foreach (var child in prompt.Elements())
             {
                 if (!child.Name.LocalName.Equals("parameters", StringComparison.OrdinalIgnoreCase))
-                    return false;
+                    return "Element <" + child.Name.LocalName + "> is not permitted" + where + " Only <parameters> is.";
                 foreach (var param in child.Elements())
                 {
-                    if (!param.Name.LocalName.Equals("parameter", StringComparison.OrdinalIgnoreCase))
-                        return false;
+                    if (!param.Name.LocalName.Equals("parameter", StringComparison.OrdinalIgnoreCase) || param.HasElements)
+                        return "Only leaf <parameter> elements are permitted under <parameters>" + where;
                     foreach (var pAttr in param.Attributes())
                     {
                         if (pAttr.IsNamespaceDeclaration) continue;
                         string pName = pAttr.Name.LocalName;
                         if (!pName.Equals("name", StringComparison.OrdinalIgnoreCase)
                             && !pName.Equals("value", StringComparison.OrdinalIgnoreCase))
-                            return false;
+                            return "Attribute '" + pName + "' is not permitted on a <parameter>" + where + " Permitted: name, value.";
                     }
                 }
             }
-            return true;
+            return null;
         }
     }
 }

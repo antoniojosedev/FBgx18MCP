@@ -775,7 +775,7 @@ namespace GxMcp.Worker.Services
             XElement action = new XElement(container.GetDefaultNamespace() + "userAction",
                 new XAttribute("name", actionName),
                 new XAttribute("caption", caption));
-            container.Add(action);
+            InsertFormAction(container, action, args?["position"]?.ToObject<int?>());
             ApplyProperties(action, args, procedureResolver);
             if (callsObject) ApplyCallObjectXml(action, args);
 
@@ -785,6 +785,7 @@ namespace GxMcp.Worker.Services
                 ["actionName"] = actionName,
                 ["caption"] = caption,
                 ["containerName"] = containerName,
+                ["position"] = container.Elements().Where(IsFormAction).ToList().IndexOf(action),
                 ["event"] = callsObject ? JValue.CreateNull() : new JValue("Do" + actionName),
                 ["eventBinding"] = callsObject ? "opens-object" : "derived-from-user-action-name"
             };
@@ -947,15 +948,17 @@ namespace GxMcp.Worker.Services
 
         internal static string ContainerPath(XElement container) => string.Join("/", ContainerPathSegments(container));
 
-        // A bare name matches the container's own name/controlName; "A/B/C" matches when the
-        // container's named ancestors end with exactly those segments.
+        // A bare name matches the container's own label (name, controlName, or the synthetic
+        // "Grid" of an unnamed grid, #551); "A/B/C" matches when the container's named
+        // ancestors end with exactly those segments. An unnamed table never inherits its
+        // parent's name: that made a bare "TableMain" ambiguous whenever TableMain held an
+        // anonymous responsive table.
         internal static bool ContainerPathMatches(IList<string> segments, string own, string controlName, string requested)
         {
             if (string.IsNullOrWhiteSpace(requested)) return false;
             if (requested.IndexOf('/') < 0)
                 return string.Equals(own, requested, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(controlName, requested, StringComparison.OrdinalIgnoreCase)
-                    || (segments.Count > 0 && string.Equals(segments[segments.Count - 1], requested, StringComparison.OrdinalIgnoreCase));
+                    || string.Equals(controlName, requested, StringComparison.OrdinalIgnoreCase);
             string[] wanted = requested.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
             if (wanted.Length == 0 || wanted.Length > segments.Count) return false;
             for (int i = 0; i < wanted.Length; i++)
@@ -968,7 +971,7 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrWhiteSpace(name)) return Enumerable.Empty<XElement>();
             return GetFormActionContainers(document).Where(e =>
-                ContainerPathMatches(ContainerPathSegments(e), Attr(e, "name"), Attr(e, "controlName"), name.Trim()));
+                ContainerPathMatches(ContainerPathSegments(e), ContainerLabel(e), Attr(e, "controlName"), name.Trim()));
         }
 
         private static JObject DescribeFormContainer(XElement container) => new JObject
@@ -991,6 +994,17 @@ namespace GxMcp.Worker.Services
             element.Remove();
             int index = Math.Max(0, Math.Min(position.Value, peers.Count));
             if (index == peers.Count) parent.Add(element); else peers[index].AddBeforeSelf(element);
+        }
+        // A form container (table or grid) holds standard and user actions side by side, so
+        // `position` is the zero-based index among those actions as `list` reports them
+        // (#551): 0 in a grid puts the row action before its standardActions. Omitted or past
+        // the end appends to the container, as before.
+        private static bool IsFormAction(XElement e) => Is(e, "userAction") || Is(e, "standardAction");
+        private static void InsertFormAction(XElement container, XElement action, int? position)
+        {
+            var actions = container.Elements().Where(IsFormAction).ToList();
+            if (!position.HasValue || position.Value >= actions.Count) container.Add(action);
+            else actions[Math.Max(0, position.Value)].AddBeforeSelf(action);
         }
         private static JObject Error(string code, string message) => new JObject { ["code"] = code, ["error"] = message };
         private static bool IsSuccess(JObject response) => string.Equals(response?["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase)

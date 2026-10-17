@@ -5,8 +5,24 @@ use crate::{
     catalog::{Catalog, ObjectId, ObjectKind, ReferenceKind},
     model::{DataType, Project},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum RawCatalogType {
+    Concrete(DataType),
+    BasedOnShort {
+        #[serde(rename = "based_on")]
+        target: String,
+    },
+    BasedOnTagged {
+        #[serde(rename = "kind")]
+        kind: String,
+        #[serde(rename = "target")]
+        target: String,
+    },
+}
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,7 +30,191 @@ struct Signature {
     #[serde(default)]
     params: Vec<String>,
     #[serde(default)]
-    return_type: Option<DataType>,
+    return_type: Option<RawCatalogType>,
+}
+
+fn deserialize_raw_variables<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, RawCatalogType>, D::Error> {
+    struct Variables;
+    impl<'de> serde::de::Visitor<'de> for Variables {
+        type Value = BTreeMap<String, RawCatalogType>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a map of unique variable declarations")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut variables = BTreeMap::new();
+            while let Some((name, raw_type)) = access.next_entry::<String, RawCatalogType>()? {
+                if variables.insert(name, raw_type).is_some() {
+                    return Err(serde::de::Error::custom("duplicate variable declaration"));
+                }
+                if variables.len() > 1024 {
+                    return Err(serde::de::Error::custom(
+                        "exceeds 1024 variable declarations",
+                    ));
+                }
+            }
+            Ok(variables)
+        }
+    }
+    deserializer.deserialize_map(Variables)
+}
+
+pub(crate) fn resolve_domain_or_attribute_data_type(
+    catalog: &Catalog,
+    target_name: &str,
+    visited: &mut BTreeSet<String>,
+    depth: usize,
+) -> Result<DataType, String> {
+    if depth > 16 {
+        return Err("domain based_on chain exceeds maximum depth of 16".into());
+    }
+    let canonical = target_name.to_ascii_uppercase();
+    if !visited.insert(canonical.clone()) {
+        return Err(format!(
+            "cycle detected in based_on reference: {target_name}"
+        ));
+    }
+    let object = catalog
+        .objects()
+        .find(|obj| obj.name.eq_ignore_ascii_case(target_name))
+        .ok_or_else(|| {
+            format!(
+                "referenced Domain or Attribute '{}' was not found in catalog",
+                target_name
+            )
+        })?;
+    if object.kind != ObjectKind::Domain && object.kind != ObjectKind::Attribute {
+        return Err(format!(
+            "referenced object '{}' is not a Domain or Attribute",
+            target_name
+        ));
+    }
+    let type_part = object
+        .source_parts
+        .iter()
+        .find(|p| p.name == "TYPE")
+        .ok_or_else(|| format!("{:?} '{}' has no Type part", object.kind, object.name))?;
+    let raw_type: RawCatalogType = serde_json::from_str(&type_part.source)
+        .map_err(|e| format!("invalid Type part in {}: {e}", object.name))?;
+    match raw_type {
+        RawCatalogType::Concrete(data_type) => {
+            crate::model::validate_data_type(&data_type)?;
+            Ok(data_type)
+        }
+        RawCatalogType::BasedOnShort { target } | RawCatalogType::BasedOnTagged { target, .. } => {
+            let target_obj = catalog
+                .objects()
+                .find(|obj| obj.name.eq_ignore_ascii_case(&target))
+                .ok_or_else(|| format!("chained based_on target '{}' was not found", target))?;
+            if object.kind == ObjectKind::Domain && target_obj.kind != ObjectKind::Domain {
+                return Err(format!(
+                    "domain '{}' cannot be based on non-domain '{}'",
+                    object.name, target
+                ));
+            }
+            if !object
+                .references
+                .iter()
+                .any(|r| r.kind == ReferenceKind::BasedOn && r.target == target_obj.id)
+            {
+                return Err(format!(
+                    "{:?} '{}' is based on '{}' without an explicit BasedOn reference",
+                    object.kind, object.name, target
+                ));
+            }
+            resolve_domain_or_attribute_data_type(catalog, &target, visited, depth + 1)
+        }
+    }
+}
+
+fn resolve_catalog_variables(
+    raw_vars: BTreeMap<String, RawCatalogType>,
+    catalog: &Catalog,
+    based_on_targets: &BTreeSet<String>,
+    used_schemas: &BTreeSet<String>,
+    owner: &str,
+    is_field: bool,
+) -> Result<BTreeMap<String, DataType>, String> {
+    let mut resolved = BTreeMap::new();
+    for (name, raw_type) in raw_vars {
+        let concrete_type = match raw_type {
+            RawCatalogType::Concrete(data_type) => {
+                require_explicit_schema_use(&data_type, used_schemas, owner)?;
+                data_type
+            }
+            RawCatalogType::BasedOnShort { target }
+            | RawCatalogType::BasedOnTagged { target, .. } => {
+                if !based_on_targets.contains(&target.to_ascii_uppercase()) {
+                    let kind_desc = if is_field { "field" } else { "variable" };
+                    return Err(format!(
+                        "{} {} in {} is based on {} without an explicit direct BasedOn reference",
+                        kind_desc, name, owner, target
+                    ));
+                }
+                let concrete = resolve_domain_or_attribute_data_type(
+                    catalog,
+                    &target,
+                    &mut BTreeSet::new(),
+                    0,
+                )?;
+                require_explicit_schema_use(&concrete, used_schemas, owner)?;
+                concrete
+            }
+        };
+        resolved.insert(name, concrete_type);
+    }
+    Ok(resolved)
+}
+
+fn project_transaction_level_schemas(
+    transaction_name: &str,
+    level: &crate::transaction::TransactionLevel,
+    catalog: &Catalog,
+    record_types: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut fields: BTreeMap<String, DataType> = BTreeMap::new();
+    for attr in &level.attributes {
+        let data_type = if let Some(ref dt) = attr.data_type {
+            dt.clone()
+        } else {
+            resolve_domain_or_attribute_data_type(catalog, &attr.name, &mut BTreeSet::new(), 0)
+                .map_err(|e| {
+                    format!(
+                        "cannot resolve data type for Transaction attribute '{}' in level '{}': {e}",
+                        attr.name, level.name
+                    )
+                })?
+        };
+        fields.insert(attr.name.clone(), data_type);
+    }
+    for child in &level.levels {
+        let child_schema_name = format!("{}_{}", transaction_name, child.name);
+        fields.insert(
+            child.name.clone(),
+            DataType::Collection {
+                schema: child_schema_name.clone(),
+            },
+        );
+        project_transaction_level_schemas(transaction_name, child, catalog, record_types)?;
+    }
+    let schema_name = if level.name.eq_ignore_ascii_case(transaction_name) {
+        transaction_name.to_string()
+    } else {
+        format!("{}_{}", transaction_name, level.name)
+    };
+    record_types.push(format!(
+        "{{\"name\":{},\"fields\":{}}}",
+        serde_json::to_string(&schema_name).map_err(|e| e.to_string())?,
+        serde_json::to_string(&fields).map_err(|e| e.to_string())?
+    ));
+    if record_types.len() > 128 {
+        return Err("catalog compile exceeds 128 record schemas".into());
+    }
+    Ok(())
 }
 
 /// Converts the reachable Procedure/Calls graph and explicit Uses SDT schemas. Unsupported
@@ -43,38 +243,156 @@ pub fn project_from_catalog(
             return Err("catalog compile exceeds 1024 procedures plus 128 record schemas".into());
         }
         let object = catalog.get(&id).ok_or("catalog reference was not found")?;
+        if object.kind == ObjectKind::Domain || object.kind == ObjectKind::Attribute {
+            if object.source_parts.len() != 1 || object.source_parts[0].name != "TYPE" {
+                return Err(format!(
+                    "portable {:?} requires only a Type part",
+                    object.kind
+                ));
+            }
+            for reference in &object.references {
+                let target = catalog
+                    .get(&reference.target)
+                    .ok_or("catalog reference was not found")?;
+                if reference.kind != ReferenceKind::BasedOn
+                    || (target.kind != ObjectKind::Domain && target.kind != ObjectKind::Attribute)
+                {
+                    return Err(
+                        "Domain/Attribute dependencies must be BasedOn references to Domains or Attributes"
+                            .into(),
+                    );
+                }
+                queue.push_back(reference.target.clone());
+            }
+            continue;
+        }
         if object.kind == ObjectKind::StructuredDataType {
             if object.source_parts.len() != 1 || object.source_parts[0].name != "FIELDS" {
                 return Err("portable SDT requires only a Fields part".into());
             }
             let mut used_schemas = BTreeSet::new();
+            let mut based_on_targets = BTreeSet::new();
             for reference in &object.references {
                 let target = catalog
                     .get(&reference.target)
                     .ok_or("catalog reference was not found")?;
-                if reference.kind != ReferenceKind::Uses
-                    || target.kind != ObjectKind::StructuredDataType
-                {
-                    return Err("portable SDT dependencies must be Uses references to SDTs".into());
+                if !matches!(
+                    (&reference.kind, target.kind),
+                    (ReferenceKind::Uses, ObjectKind::StructuredDataType)
+                        | (ReferenceKind::BasedOn, ObjectKind::Domain)
+                        | (ReferenceKind::BasedOn, ObjectKind::Attribute)
+                ) {
+                    return Err(
+                        "portable SDT dependencies must be Uses references to SDTs or BasedOn to Domains/Attributes"
+                            .into(),
+                    );
                 }
-                used_schemas.insert(target.name.to_ascii_uppercase());
+                if reference.kind == ReferenceKind::Uses {
+                    used_schemas.insert(target.name.to_ascii_uppercase());
+                } else {
+                    based_on_targets.insert(target.name.to_ascii_uppercase());
+                }
                 queue.push_back(reference.target.clone());
             }
-            let fields: std::collections::BTreeMap<String, DataType> =
+            let raw_fields: std::collections::BTreeMap<String, RawCatalogType> =
                 serde_json::from_str(&object.source_parts[0].source)
                     .map_err(|e| format!("invalid portable Fields part: {e}"))?;
-            for data_type in fields.values() {
-                require_explicit_schema_use(data_type, &used_schemas, &object.name)?;
-            }
-            // Keep raw field JSON so Project can reject duplicate declarations.
+            let has_based_on = raw_fields.values().any(|t| {
+                matches!(
+                    t,
+                    RawCatalogType::BasedOnShort { .. } | RawCatalogType::BasedOnTagged { .. }
+                )
+            });
+            let field_source = if has_based_on {
+                let resolved = resolve_catalog_variables(
+                    raw_fields,
+                    catalog,
+                    &based_on_targets,
+                    &used_schemas,
+                    &object.name,
+                    true,
+                )?;
+                serde_json::to_string(&resolved).map_err(|e| e.to_string())?
+            } else {
+                for data_type in raw_fields.values() {
+                    if let RawCatalogType::Concrete(dt) = data_type {
+                        require_explicit_schema_use(dt, &used_schemas, &object.name)?;
+                    }
+                }
+                object.source_parts[0].source.clone()
+            };
             record_types.push(format!(
                 "{{\"name\":{},\"fields\":{}}}",
                 serde_json::to_string(&object.name).map_err(|e| e.to_string())?,
-                object.source_parts[0].source
+                field_source
             ));
             if record_types.len() > 128 {
                 return Err("catalog compile exceeds 128 record schemas".into());
             }
+            continue;
+        }
+        if object.kind == ObjectKind::Transaction {
+            let structure_part = object
+                .source_parts
+                .iter()
+                .find(|p| p.name == "STRUCTURE")
+                .ok_or_else(|| {
+                    format!(
+                        "portable Transaction '{}' requires a STRUCTURE part",
+                        object.name
+                    )
+                })?;
+            let structure: crate::transaction::TransactionStructure =
+                serde_json::from_str(&structure_part.source).map_err(|e| {
+                    format!(
+                        "invalid portable Transaction STRUCTURE part on '{}': {e}",
+                        object.name
+                    )
+                })?;
+            structure.validate()?;
+
+            for part in &object.source_parts {
+                match part.name.as_str() {
+                    "STRUCTURE" => {}
+                    "RULES" | "Rules" => {
+                        crate::rules::parse_rules(&part.source)
+                            .map_err(|e| format!("Transaction '{}': {e}", object.name))?;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unsupported Transaction source part '{other}' on '{}'",
+                            object.name
+                        ));
+                    }
+                }
+            }
+
+            for reference in &object.references {
+                let target = catalog
+                    .get(&reference.target)
+                    .ok_or("catalog reference was not found")?;
+                if !matches!(
+                    (&reference.kind, target.kind),
+                    (ReferenceKind::Uses, ObjectKind::Attribute)
+                        | (ReferenceKind::Uses, ObjectKind::Domain)
+                        | (ReferenceKind::Uses, ObjectKind::Transaction)
+                        | (ReferenceKind::BasedOn, ObjectKind::Attribute)
+                        | (ReferenceKind::BasedOn, ObjectKind::Domain)
+                ) {
+                    return Err(format!(
+                        "Transaction '{}' references must be Uses or BasedOn to Attributes, Domains, or Transactions",
+                        object.name
+                    ));
+                }
+                queue.push_back(reference.target.clone());
+            }
+
+            project_transaction_level_schemas(
+                &object.name,
+                &structure.root,
+                catalog,
+                &mut record_types,
+            )?;
             continue;
         }
         if object.kind != ObjectKind::Procedure {
@@ -85,6 +403,7 @@ pub fn project_from_catalog(
         }
         let mut used_schemas = BTreeSet::new();
         let mut referenced_procedures = BTreeSet::new();
+        let mut based_on_targets = BTreeSet::new();
         for reference in &object.references {
             let target = catalog
                 .get(&reference.target)
@@ -93,13 +412,21 @@ pub fn project_from_catalog(
                 (&reference.kind, target.kind),
                 (ReferenceKind::Calls, ObjectKind::Procedure)
                     | (ReferenceKind::Uses, ObjectKind::StructuredDataType)
+                    | (ReferenceKind::Uses, ObjectKind::Transaction)
+                    | (ReferenceKind::BasedOn, ObjectKind::Domain)
+                    | (ReferenceKind::BasedOn, ObjectKind::Attribute)
             ) {
-                return Err("catalog compiler requires Calls to Procedures or Uses to SDTs".into());
+                return Err(
+                    "catalog compiler requires Calls to Procedures, Uses to SDTs/Transactions, or BasedOn to Domains/Attributes"
+                        .into(),
+                );
             }
             if reference.kind == ReferenceKind::Uses {
                 used_schemas.insert(target.name.to_ascii_uppercase());
-            } else {
+            } else if reference.kind == ReferenceKind::Calls {
                 referenced_procedures.insert(target.name.to_ascii_uppercase());
+            } else if reference.kind == ReferenceKind::BasedOn {
+                based_on_targets.insert(target.name.to_ascii_uppercase());
             }
             queue.push_back(reference.target.clone());
         }
@@ -126,28 +453,58 @@ pub fn project_from_catalog(
             if has_signature {
                 return Err("Procedure cannot supply both Rules and Signature parts".into());
             }
-            signature.params = crate::rules::parameters(rules)
+            signature.params = crate::rules::extract_procedure_parameters(rules)
                 .map_err(|e| format!("Procedure {}: {e}", object.name))?;
         }
         let source =
             source.ok_or_else(|| format!("Procedure {} has no Source part", object.name))?;
-        let variable_types: std::collections::BTreeMap<String, DataType> =
-            serde_json::from_str(variables)
-                .map_err(|e| format!("invalid portable Variables part: {e}"))?;
-        for data_type in variable_types.values() {
-            require_explicit_schema_use(data_type, &used_schemas, &object.name)?;
-        }
-        if let Some(data_type) = signature.return_type.as_ref() {
-            require_explicit_schema_use(data_type, &used_schemas, &object.name)?;
-        }
-        // Preserve raw Variables JSON until Project's duplicate-name rejecting
-        // deserializer sees it; serde_json::Value would silently collapse duplicates.
+        let raw_variables: std::collections::BTreeMap<String, RawCatalogType> = {
+            let mut deserializer = serde_json::Deserializer::from_str(variables);
+            deserialize_raw_variables(&mut deserializer)
+                .map_err(|e| format!("invalid portable Variables part: {e}"))?
+        };
+        let resolved_variables = resolve_catalog_variables(
+            raw_variables,
+            catalog,
+            &based_on_targets,
+            &used_schemas,
+            &object.name,
+            false,
+        )?;
+        let resolved_return_type = match signature.return_type {
+            Some(RawCatalogType::Concrete(data_type)) => {
+                require_explicit_schema_use(&data_type, &used_schemas, &object.name)?;
+                Some(data_type)
+            }
+            Some(
+                RawCatalogType::BasedOnShort { target }
+                | RawCatalogType::BasedOnTagged { target, .. },
+            ) => {
+                if !based_on_targets.contains(&target.to_ascii_uppercase()) {
+                    return Err(format!(
+                        "return type in {} is based on {} without an explicit direct BasedOn reference",
+                        object.name, target
+                    ));
+                }
+                let concrete = resolve_domain_or_attribute_data_type(
+                    catalog,
+                    &target,
+                    &mut BTreeSet::new(),
+                    0,
+                )?;
+                require_explicit_schema_use(&concrete, &used_schemas, &object.name)?;
+                Some(concrete)
+            }
+            None => None,
+        };
+        let variables_json =
+            serde_json::to_string(&resolved_variables).map_err(|e| e.to_string())?;
         procedures.push(format!(
             "{{\"name\":{},\"params\":{},\"variables\":{},\"return_type\":{},\"source\":{}}}",
             serde_json::to_string(&object.name).map_err(|e| e.to_string())?,
             serde_json::to_string(&signature.params).map_err(|e| e.to_string())?,
-            variables,
-            serde_json::to_string(&signature.return_type).map_err(|e| e.to_string())?,
+            variables_json,
+            serde_json::to_string(&resolved_return_type).map_err(|e| e.to_string())?,
             serde_json::to_string(source).map_err(|e| e.to_string())?
         ));
         if procedures.len() > 1024 {

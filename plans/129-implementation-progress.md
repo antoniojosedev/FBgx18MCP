@@ -1347,3 +1347,467 @@ Owner-reported implementation and native observations:
 - Verification: 262 passed / 0 failed in `gx-engine` (3 new tests, 83 oracle assertions), Clippy and rustfmt clean.
 - Registry: new `calendar_operations` capability at `Parity` (no consumers).
 
+## Local Subroutine Control Flow Core Parity (2026-10-16)
+
+- Native Decompilation & Codegen Analysis: Inspected generated C# in `C:\KBs\KBTeste\NetModel\web\general\ui\listprograms.cs` and REA (`C:\Projetos\rea`):
+  - GeneXus extracts each `Sub 'Name' ... EndSub` block into a dedicated method (`protected void S111()`), never executing subroutines on sequential fallthrough from the main body.
+  - All procedure variables are shared across the main procedure body and all subroutines.
+  - When `Return` is executed inside a subroutine, GeneXus sets `returnInSub = true; return;`, and every caller checks `if (returnInSub) return;` immediately after invoking the subroutine, exiting the entire enclosing procedure.
+  - Subroutine names accept single quotes (`'Name'`), double quotes (`"Name"`), and bare identifiers (`Name`), resolved case-insensitively.
+- Engine Implementation:
+  - `src/gx-engine/src/frontend.rs`: Extended `Lexer` to lex single-quoted and double-quoted strings; added `BlockEnd::EndSub`, `Stmt::DoSub(String)`, and `Stmt::Sub(String, Vec<Stmt>)`; implemented `parse_sub` (enforcing top-level `nesting == 0`) and extended `parse_do` to dispatch `Do 'SubName'`.
+  - `src/gx-engine/src/dependencies.rs` & `src/gx-engine/src/backend.rs`: Traversed `Stmt::Sub` bodies for dependency analysis; rejected subroutines in legacy format version 1 (`subroutines require format_version 2`).
+  - `src/gx-engine/src/typed_backend.rs`: Implemented compile-time validation of subroutine calls (`validate_subroutine_calls`) and duplicate definitions; emitted zero-allocation `struct P{index}Sub<'a>` holding mutable references (`&'a mut`) to all procedure-scoped variables, shared execution `steps` budget, `depth`, `sub_depth` (bounded at 128), `return_in_sub` flag, and optional `return_value` for value-returning helper procedures.
+  - `src/gx-engine/tests/subroutines.rs`: Added 13 end-to-end tests covering variable mutation, case-insensitive resolution, quote styles, cooperative chaining (`SubA` -> `SubB` -> `SubC`), early `Return` propagation (including nested subroutines and value-returning helpers), fallthrough isolation, recursion depth limit, loops/collections/procedure calls inside subroutines, and compile-time error checks.
+- Verification: 275 passed / 0 failed in `gx-engine` (13 new subroutine tests), Gateway `EngineBackendTests` 40/40 passed, Clippy and rustfmt clean.
+- Registry: new `subroutine_control_flow` capability at `Parity` (no consumers).
+
+## Conditional, Empty/Null State & String Formatting Core Parity (2026-10-16)
+
+- Native Decompilation & Codegen Analysis: Extracted `GeneXus.Utils.StringUtil` semantics from `genexus.classes.core` 1.30.0 runtime via ILSpy and inspected generated C# in `C:\KBs\KBTeste\NetModel\web\gx0010.cs` and `Artech.Genexus.Common.AST.ASTNodesHelpers`:
+  - `Iif(condition, trueExpr, falseExpr)`: Short-circuit conditional expression (`(cond ? a : b)`), evaluating only the taken branch.
+  - Universal `.IsEmpty()` and `IsEmpty(expr)`: `Numeric` compares equal to `0`; `Text` checks `String.IsNullOrEmpty(StringUtil.RTrim(s))` (`trim_end_spaces().utf16_length() == 0`); `Boolean` checks `!b`; `Date`, `DateTime`, and `Collection` check `.is_empty()`.
+  - Universal `.SetEmpty()`: Resets `Numeric` to `0`, `Text` to `""`, `Boolean` to `false`, `Date`/`DateTime` to empty sentinels, `Collection` to empty list, `Record` to fresh default record, and supports record member targets (`&rec.Field.SetEmpty()`).
+  - `Nullvalue(&var)`: Returns the typed empty sentinel for `&var` or `&rec.Field` without requiring `&var` to be previously assigned.
+  - `Proc.UDP(...)`: Invokes value-returning (or out-parameter) procedures identically to `Proc(...)`.
+  - `StringUtil.Format(pattern, v1..v9)`: Replaces `%1`..`%9` (supporting `\%` escape and preserving non-`%` backslashes) or `{0}`..`{8}` when no `%N` replacement occurs.
+  - `StringUtil.Replicate(str, size)`: Repeats `str` `size` times (`size <= 0` returns `""`).
+  - `StringUtil.CharAt(str, idx)`: 1-based character extraction (`idx <= 0` or `idx > Length` returns `""`).
+  - `StringUtil.StringSearchRev(s1, s2, start)`: 1-based reverse search (`s1.LastIndexOf(s2, start - 1) + 1`, searching within `s1[..start]`).
+  - `StringUtil.BoolToStr(b)` (`"true"` / `"false"`), `StringUtil.StrToBool(s)` (true iff `"true"` case-insensitive or `"1"`), and `StringUtil.NewLine()` (`"\r\n"`).
+- Fixture & Evidence: Generated `tests/fixtures/conditional_state_native.tsv` (57 rows) directly from official runtime via `generate-conditional-state` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/text.rs`: Added `format_template`, `replicate`, `char_at`, `str_search_rev`, `bool_to_str`, `to_boolean`, and `newline`.
+  - `src/gx-engine/src/frontend.rs`: Added builtins `IIF`, `ISEMPTY`, `NULLVALUE`, `FORMAT`, `NEWLINE`, `REPLICATE`, `CHARAT`, `STRSEARCHREV`, `BOOLTOSTR`, `TOBOOLEAN`, `STRTOBOOL`; generalized `.SetEmpty()` to variables and record fields; added `.CharAt()`, `.LastIndexOf()` / `.StrSearchRev()`, `.ToBoolean()`, and `.UDP(...)` call support.
+  - `src/gx-engine/src/typed_backend.rs`: Emitted short-circuit lowering for `IIF`, universal `ISEMPTY` and `SetEmpty` across all types and container assignments, `NULLVALUE`, and string formatting/search/boolean builtins.
+  - `src/gx-engine/tests/conditional_state.rs`: Added 57-row native oracle test and end-to-end compiled Procedure tests.
+- Verification: 280 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
+- Registry: new `conditional_and_state_operations` capability at `Parity` (no consumers). **Control Flow & Procedure Pipeline** reaches **100.0% parity (6/6 areas)**.
+
+## Structured Data & Collection JSON Serialization Parity (2026-10-16)
+
+- Native Decompilation & Runtime Oracle: Analyzed `GxUserType.ToJSonString(includeState)` / `FromJSonString(s)` and `GXBaseCollection<T>.ToJSonString(includeState)` / `FromJSonString(s)` from `genexus.classes.core` and generated C# SDTs (`type_Sdt*.cs`):
+  - `&sdt.ToJson()` / `&col.ToJson()`: Compact JSON string format, escaped strings, boolean `true`/`false`, empty sentinels (`"0000-00-00"` for Date, `"0000-00-00T00:00:00"` for DateTime, 0 for Numeric, `""` for Text).
+  - `&sdt.FromJson(json)` / `&col.FromJson(json)`: Case-insensitive property mapping, partial updates (preserving unmentioned fields), array item repopulation, and fail-closed false return on invalid/non-container JSON.
+- Fixture & Evidence: Generated `tests/fixtures/sdt_json_native.tsv` (32 rows) directly from official runtime via `generate-sdt-json` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/record_runtime.rs`: Added pure-Rust `SimpleJson` parser and `Record::to_json`, `Record::from_json`, `Collection::to_json`, `Collection::from_json`.
+  - `src/gx-engine/src/frontend.rs`: Added AST support for `TOJSON` and `FROMJSON` expressions and statement forms (`&sdt.FromJson(...)`).
+  - `src/gx-engine/src/typed_backend.rs`: Emitted lowerings for `TOJSON`, `FROMJSON`, and `Stmt::FromJson`.
+  - `src/gx-engine/tests/sdt_json.rs`: Added 32-row native oracle verification and end-to-end compiled executable tests.
+- Verification: 283 passed / 0 failed in `gx-engine`.
+- Registry: new `sdt_and_collection_json` capability at `Parity` (no consumers).
+
+## Structured Data & Collection XML Serialization Parity (2026-10-16)
+
+- Native Decompilation & Runtime Oracle: Analyzed `GxUserType.ToXml(sdt, rootName)` / `FromXml(sdt, xml, rootName)` and `GXBaseCollection<T>.ToXml(col, rootName)` / `FromXml(col, xml, rootName)` from `genexus.classes.core` 1.30.0 and generated C# SDTs (`type_Sdt*.cs`):
+  - `&sdt.ToXml([root])` / `&col.ToXml([root])`: Indented multi-line XML with root tag (defaults to schema name or `"Collection"` for collections), self-closing tags for empty strings (`<Tag />`), XML entity escaping (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;`), ISO date/datetime format (`yyyy-MM-ddT00:00:00`), booleans as `true`/`false`.
+  - `&sdt.FromXml(xml, [root])` / `&col.FromXml(xml, [root])`: Case-insensitive element name matching, nested child SDT and collection deserialization, resetting missing fields to empty defaults (matching GeneXus SDK behavior), and returning `false` on malformed XML or mismatched root.
+- Fixture & Evidence: Generated `tests/fixtures/sdt_xml_native.tsv` (40 rows) directly from official runtime via `generate-sdt-xml` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/record_runtime.rs`: Added pure-Rust `SimpleXmlElement` parser and `Record::to_xml`, `Record::from_xml`, `Collection::to_xml`, `Collection::from_xml`.
+  - `src/gx-engine/src/frontend.rs`: Added AST support for `TOXML` and `FROMXML` expressions, `Stmt::FromXml(Box<FromXmlStmt>)`, and stack-frame-optimized statement parsing (`parse_variable_statement`, `parse_call_statement`).
+  - `src/gx-engine/src/typed_backend.rs`: Emitted lowerings for `TOXML`, `FROMXML`, and `Stmt::FromXml`.
+  - `src/gx-engine/tests/sdt_xml.rs`: Added 40-row native oracle verification and end-to-end compiled executable tests.
+- Verification: 285+ passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
+- Registry: new `sdt_and_collection_xml` capability at `Parity` (no consumers).
+- Milestone: **Structured Data & Collections** reaches **100.0% parity (5/5 areas)**. All 3 core language subsystems (**Language & Runtime Core 8/8**, **Control Flow & Procedure Pipeline 6/6**, **Structured Data & Collections 5/5**) now at **100.0% Native Parity (19/19 areas)**. Overall SDK replacement reaches **37.0%**.
+
+## Domain and Attribute Projection & Resolution in Portable Catalog and SDK XML (2026-10-16)
+
+- Native Contract & Object Class Analysis:
+  - Official GeneXus GUIDs from `Artech.Genexus.Common.ObjClass`:
+    - Domain: `00972a17-9975-449e-aab1-d26165d51393`
+    - Attribute: `adbb33c9-0906-4971-833c-998de27e0676`
+  - Semantic Rules:
+    - Domains can only be based on other Domains (never on Attributes).
+    - Attributes can be based on Domains.
+    - Procedures and SDTs reference Domains and Attributes via `ReferenceKind::BasedOn`.
+    - Variable declarations, parameter signatures, and return types resolve to concrete `DataType`s before compilation.
+    - Bounded resolution: max depth 16, strict cycle detection, visited set tracking.
+- Engine Implementation:
+  - `src/gx-engine/src/kb.rs`:
+    - Added `RawCatalogType` (`Concrete(DataType)`, `BasedOnShort { target }`, `BasedOnTagged { kind, target }`).
+    - Added `resolve_domain_or_attribute_data_type` and `deserialize_raw_variables` rejecting duplicate declarations.
+    - Updated `project_from_catalog`: admits `ObjectKind::Domain` and `ObjectKind::Attribute` with `TYPE` source parts, resolves `BasedOn` references on Procedures and SDTs before lowering.
+  - `src/gx-engine/src/exchange.rs`:
+    - Added `DOMAIN` and `ATTRIBUTE` GUID constants.
+    - Added `ParsedTypeDefinition` (`Concrete(DataType)`, `BasedOn(String)`) and `parse_type_definition`.
+    - Updated `project_level` and `parse_sdt` to support `BasedOn` domain/attribute references on SDT items.
+    - Updated `catalog_from_xml` to parse Domain and Attribute objects, extract definitions from properties/parts, and wire explicit `BasedOn` references.
+  - `src/gx-engine/tests/domain_attribute.rs`: Added 10 end-to-end integration tests covering procedure variables based on Domain/Attribute, chained Domains, SDT items based on Domain, cyclic dependency detection, domain-cannot-be-based-on-attribute enforcement, and end-to-end `xml-run`.
+- Verification: 306 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean. 40/40 `EngineBackendTests` passed in .NET.
+- Registry: new `domain_attribute_projection` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Portable KB Catalog & XML Projection** advances from **33.3% to 66.7% (4/6 areas: Procedures, SDTs, Domains, Attributes)**. Overall weighted SDK replacement advances from **37.0% to 40.7% (31/56 areas touched: 55.4%)**.
+
+## Transaction Structure, Keys & Business Component Record Lowering in Portable Catalog & XML (2026-10-16)
+
+- Native Contract & Object Class Analysis:
+  - Official GeneXus GUIDs from `Artech.Genexus.Common.ObjClass`:
+    - Transaction: `1db606f2-af09-4cf9-a3b5-b481519d28f6`
+    - Transaction Structure: `1608677c-a7a2-4a00-8809-6d2466085a5a`
+  - Semantic Rules:
+    - Root level and nested child levels require at least one primary key attribute (`IsKey = true`).
+    - Level names must be valid identifiers and unique within the transaction hierarchy.
+    - Attribute names must be unique within their level.
+    - Transaction levels lower into Business Component `RecordType` schemas for procedure manipulation.
+    - Attribute types are resolved against catalog `Attribute` and `Domain` objects when not specified inline.
+    - Bounded recursion: max depth 16, strict cycle detection, visited set tracking.
+- Engine Implementation:
+  - `src/gx-engine/src/transaction.rs`:
+    - Defined `TransactionAttributeRef`, `TransactionLevel`, and `TransactionStructure`.
+    - Implemented `validate` checking primary keys, bounded recursion depth (16), unique names, and valid identifiers.
+    - Implemented `root_primary_key()` and `all_attributes()`.
+  - `src/gx-engine/src/kb.rs`:
+    - Added `project_transaction_level_schemas` lowering Transaction levels to `RecordType` schemas.
+    - Updated `project_from_catalog` to admit `ObjectKind::Transaction` with `"STRUCTURE"` source part and wire references to Attributes and Domains.
+    - Updated `Procedure` dependency checking to permit `ReferenceKind::Uses` targeting `ObjectKind::Transaction`.
+  - `src/gx-engine/src/exchange.rs`:
+    - Added `TRANSACTION` and `TRANSACTION_STRUCTURE` GUID constants.
+    - Added empty metadata part admission for Transaction Layout, Events, and Help.
+    - Implemented `parse_transaction_structure` and `parse_transaction_level` extracting `<Level>`, `<Attribute>`, `IsKey`, `Formula`, `Nullable`, `IsForeignKey`.
+    - Updated `catalog_from_xml` to parse Transaction objects and wire references to referenced Attributes/Domains.
+    - Updated XML variable declaration check to admit `ObjectKind::Transaction` for `Record` schemas.
+  - `src/gx-engine/tests/transaction_structure.rs`:
+    - Added 10/10 end-to-end integration tests covering nested levels, primary key validation, attribute referencing, cycle/depth limits, XML parsing, procedure interoperability.
+- Verification: 316 passed / 0 failed across all 30 test binaries in `gx-engine`, Clippy and rustfmt clean. 40/40 `EngineBackendTests` passed in .NET.
+- Registry: new `transaction_structure_projection` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Portable KB Catalog & XML Projection** advances from **66.7% to 83.3% (5/6 areas: Procedures, SDTs, Domains, Attributes, Transactions)**. Overall weighted SDK replacement advances from **40.7% to 42.5% (33/56 areas touched: 58.9%)**.
+
+## Rules Grammar Parser, AST & Parm Interface Parity in Portable Catalog & XML (2026-10-16)
+
+- Native Contract & Rules Grammar Analysis:
+  - Official GeneXus Rules Part GUID from `Artech.Genexus.Common.ObjClass`:
+    - Rules: `9b0a32a3-de6d-4be1-a4dd-1b85d3741534`
+  - Semantic Rules:
+    - Structured AST for GeneXus Rules parts: `Parm`, `Error`, `Msg`, `Default`, `NoAccept`, `Accept`, `Order`, `Prompt`, `Serial`, `Hidden`.
+    - Comment stripping: clean single-line (`//`) and multi-line (`/* */`) comments.
+    - String literals: preserve internal semicolons and escaped quotes (`''`, `\"`).
+    - Scope enforcement: Procedures require Parm arguments to be `&variables` (attributes in procedure Parm are rejected) and prohibit Transaction-only rules (`Default`, `Serial`, `Hidden`, `NoAccept`).
+    - Fail-closed diagnostics: reject `Unique` with `src0295` and index guidance, reject duplicate `Parm`, reject unclosed comments/strings, reject missing semicolons.
+- Engine Implementation:
+  - `src/gx-engine/src/rules.rs`:
+    - Implemented `tokenize_statements` with comment stripping and string preservation.
+    - Implemented `split_comma_args` and `split_condition`.
+    - Implemented `parse_rules` and `extract_procedure_parameters`.
+  - `src/gx-engine/src/lib.rs`:
+    - Exported `pub mod rules;`.
+  - `src/gx-engine/src/kb.rs`:
+    - Wired `crate::rules::extract_procedure_parameters` in Procedure catalog projection.
+    - Admitted and validated `"RULES"` source part in Transaction catalog projection.
+  - `src/gx-engine/src/exchange.rs`:
+    - Updated Procedure XML exchange to parse and validate rules via `extract_procedure_parameters(&rules)?`.
+    - Updated Transaction XML exchange to parse and validate rules via `parse_rules(&rules)?`.
+  - `src/gx-engine/tests/rules_parity.rs`:
+    - Added 10/10 end-to-end integration tests covering all rule variants, comments, string literals, fail-closed diagnostics, procedure scoping, and catalog + XML exchange integration.
+- Verification: 326 passed / 0 failed across all 31 test binaries in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
+- Milestone: **Portable KB Catalog & XML Projection** reaches **100.0% parity (6/6 areas: Procedures, SDTs, Domains, Attributes, Transactions, Rules)**. Overall weighted SDK replacement advances from **42.5% to 44.6% (33/56 areas touched: 58.9%)**.
+
+## Database Transaction Control Procedural Statements (Commit and Rollback) Parity (2026-10-16)
+
+- Native Procedural Grammar Analysis:
+  - In GeneXus Procedures, `Commit` and `Rollback` control database transactions:
+    - `Commit` / `commit()`: commits current transaction state.
+    - `Rollback` / `rollback()`: rolls back current transaction state.
+    - Valid inside standard statement contexts: top-level procedure bodies, conditional blocks (`If ... Else ... EndIf`), loops (`For`, `For In`, `Do While`), and local subroutines (`Sub ... EndSub`).
+    - Format 1 fail-closed rejection: legacy format_version 1 rejects modern control statements explicitly.
+- Engine Implementation:
+  - `src/gx-engine/src/frontend.rs`:
+    - Added `Stmt::Commit` and `Stmt::Rollback`.
+    - Added parsing in `parse_statement` supporting both bare keywords (`Commit`, `Rollback`) and call-syntax forms (`Commit()`, `Rollback()`) with optional semicolons.
+  - `src/gx-engine/src/dependencies.rs`:
+    - Handled `Stmt::Commit` and `Stmt::Rollback` as terminal non-calling statements.
+  - `src/gx-engine/src/backend.rs`:
+    - Admitted `Stmt::Commit` and `Stmt::Rollback` into format_version 1 validation/collection guards.
+  - `src/gx-engine/src/typed_backend.rs`:
+    - Emitted comment markers `// commit;` and `// rollback;` in typed code generator, preserving control flow and procedure return analysis.
+  - `src/gx-engine/tests/transaction_control.rs`:
+    - Added 7/7 end-to-end integration tests covering statement variants, conditionals, loops, subroutines, while loops, format_version 1 fail-closed rejection, and SDK ExportFile XML exchange.
+- Verification: 333 passed / 0 failed across all 32 test binaries in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
+- Registry: new `transaction_control` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Control Flow & Procedure Pipeline** expands with full transaction control statements. Overall weighted SDK replacement advances to **45.2%**.
+
+## Physical Table Schema Normalization & Multi-Dialect SQL DDL Generation (2026-10-16)
+
+- Native Database Architecture Analysis:
+  - In GeneXus, Transaction levels map directly to physical database tables (1 Transaction = 1 or more relational tables).
+  - Child levels inherit the parent level's full primary key, which serves both as part of the child's composite primary key and as a foreign key constraint referencing the parent table.
+  - Formula attributes (e.g. `formula: Some(...)`) are virtual/calculated fields and are strictly excluded from physical table columns.
+  - Secondary indexes are generated for foreign keys to optimize relational integrity and join performance.
+  - Cross-transaction foreign key inference: non-key attributes whose name matches another table's singular primary key (e.g. `Invoice.CustomerId` matching `Customer.CustomerId`) establish relational foreign key constraints.
+  - Multi-dialect SQL DDL generation: supports ANSI SQL, Microsoft SQL Server (`[Identifier]`, `INT`/`BIGINT`/`NVARCHAR`/`BIT`/`DATETIME2`), PostgreSQL (`"Identifier"`, `INTEGER`/`BIGINT`/`VARCHAR`/`BOOLEAN`/`TIMESTAMP`), and Oracle (unquoted uppercase, `NUMBER(p, s)`/`VARCHAR2`/`NUMBER(1)`/`TIMESTAMP`).
+- Engine Implementation:
+  - `src/gx-engine/src/table.rs`:
+    - Implemented `SqlDialect` (`Ansi`, `SqlServer`, `PostgreSql`, `Oracle`).
+    - Implemented relational schema structures: `TableColumn`, `TableKey`, `TableForeignKey`, `TableIndex`, `Table`.
+    - Implemented `derive_tables_from_transaction`: normalizes root and nested levels, propagates parent primary keys to child levels, excludes formula attributes, and generates parent-child foreign keys and indexes.
+    - Implemented `derive_tables_from_catalog`: resolves attribute data types against catalog attributes and domains, infers cross-transaction foreign keys and indexes.
+    - Implemented `generate_table_ddl` and `generate_database_ddl`: generates dialect-specific `CREATE TABLE`, `ALTER TABLE ... ADD CONSTRAINT PRIMARY KEY`, and `ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY`.
+  - `src/gx-engine/src/lib.rs`:
+    - Exported `pub mod table;`.
+  - `src/gx-engine/src/kb.rs`:
+    - Exposed `pub(crate) fn resolve_domain_or_attribute_data_type` and reused it within `derive_tables_from_catalog`.
+  - `src/gx-engine/tests/table_ddl.rs`:
+    - Added 9/9 end-to-end integration tests covering:
+      1. SQL dialect type mapping across all 4 supported dialects.
+      2. Dialect identifier quoting rules.
+      3. Single-level Transaction lowering into a physical relational table.
+      4. Multi-level hierarchy with inherited compound primary keys and parent foreign key constraints.
+      5. Deep 3-level hierarchy (`Order -> Line -> Detail`).
+      6. Catalog attribute and domain resolution with formulas excluded from physical columns.
+      7. Cross-transaction foreign key inference and secondary index generation.
+      8. Complete database DDL script generation across all 4 dialects.
+      9. Full SDK `ExportFile` XML exchange interoperability.
+- Verification: 342 passed / 0 failed across all 33 test binaries in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
+- Registry: new `physical_table_ddl` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Specifier & SQL Navigation** subsystem reaches **25.0% parity (2/8 areas: Table Schema Normalization, Multi-Dialect SQL DDL)**. Overall weighted SDK replacement advances from **45.2% to 47.0% (36/56 areas touched: 64.3%)**.
+
+## Specifier Base Table Inference, Navigation Query Plan, and For Each Data Access (2026-10-16)
+
+- Native Specifier & Navigation Architecture Analysis:
+  - In GeneXus Procedures and data access routines, data queries are expressed through declarative `For Each` loops.
+  - The GeneXus Specifier analyzes referenced attributes within each `For Each` block (including loop body, Where clauses, Order items, and Defined By attribute).
+  - Extended Table (Tabela Estendida): The relational reachability closure of a table along 1-N foreign key relationships (depth limit 16).
+  - Candidate Base Table Inference: Tables whose extended table contains 100% of the referenced attributes.
+    - If multiple candidates exist, tables containing 100% of referenced attributes in their direct columns are prioritized over tables that reach them only through FK joins (preventing child tables like Invoice from becoming the base table when a query only references Customer attributes).
+    - Subordination rules: when attributes from both parent and child are referenced, parent cannot reach child, so child is selected and an INNER JOIN is generated.
+    - Explicit `Defined By` attribute disambiguates between sibling or ambiguous candidates.
+  - Fail-closed diagnostics matching official GeneXus specifier codes:
+    - `spc0004`: "No relationship between attributes: ..." when no candidate table can reach all referenced attributes.
+    - `spc0005`: "Ambiguous base table: multiple tables qualify (...). Use 'Defined by' to specify the intended table."
+  - Automatic Correlation: In nested `For Each` loops, matching key attributes between outer and inner loops automatically generate equality correlation conditions (`inner.Attr = outer.Attr`).
+  - Index Selection: Orders matching primary keys or secondary indexes select the optimal index; descending orders mark `is_descending: true`.
+  - Multi-Dialect SQL Generation: Generates read-only SELECT queries with proper JOIN clauses and WHERE filters for ANSI, SQL Server (`[...]`), PostgreSQL (`"..."`), and Oracle (unquoted), preserving canonical column casing and adhering strictly to zero SQL writes.
+  - `When None` block preservation: parsed and retained in the navigation IR.
+- Engine Implementation:
+  - `src/gx-engine/src/frontend.rs`:
+    - Added AST types: `ForEachOrder`, `ForEachStmt`, `Stmt::ForEach(Box<ForEachStmt>)`, `Stmt::AssignAttribute(String, Expr)`, and `Expr::Attribute(String)`.
+    - Added scoped `allow_attributes: bool` parser mode: attributes are admitted inside `For Each` loops, while bare identifiers outside `For Each` continue to fail closed with `"bare identifier {name} is not an expression; use a variable or call"`.
+    - Implemented `parse_for_each`: parses attributes, explicit `Order` items with `DESC`/`NONE`, multiple `Where` clauses, `Defined By` attribute, loop body, and `When None` block ending in `EndFor`.
+    - Unit tests: 13/13 frontend unit tests pass.
+  - `src/gx-engine/src/dependencies.rs`:
+    - Added recursive visitor for `Stmt::ForEach`, traversing loop body, wheres, orders, when_none, and attribute expressions alongside procedure calls.
+  - `src/gx-engine/src/backend.rs` & `src/gx-engine/src/typed_backend.rs`:
+    - Standalone offline binary compilers reject `Stmt::ForEach`, `Stmt::AssignAttribute`, and `Expr::Attribute` fail-closed (database data access is handled by the Specifier/Navigation layer).
+  - `src/gx-engine/src/navigation.rs`:
+    - Created specifier engine exporting `NavigationFilter`, `NavigationJoin`, `NavigationLevel`, `NavigationReport`, `compute_extended_tables`, `infer_base_table`, `select_index`, `resolve_joins`, `generate_navigation_sql`, `specify_for_each`, `specify_statements`, `specify_procedure`, and `specify_catalog`.
+    - Implemented relational extended table foreign key paths up to depth 16.
+    - Candidate base table inference with direct-matching candidate prioritization and ancestor subordination pruning.
+    - Fail-closed diagnostics: `spc0004` and `spc0005`.
+    - Multi-dialect SQL query generation with canonical column casing.
+  - `src/gx-engine/src/lib.rs`:
+    - Exported `pub mod navigation;`.
+  - `src/gx-engine/tests/navigation_specifier.rs`:
+    - Added 10/10 end-to-end integration tests:
+      1. `test_single_table_base_table_inference`
+      2. `test_extended_table_join_resolution`
+      3. `test_defined_by_disambiguation`
+      4. `test_fail_closed_unrelated_attributes_spc0004`
+      5. `test_fail_closed_ambiguous_base_table_spc0005`
+      6. `test_order_and_secondary_index_selection`
+      7. `test_multi_dialect_sql_generation`
+      8. `test_nested_for_each_automatic_correlation`
+      9. `test_when_none_block_preservation`
+      10. `test_end_to_end_specify_procedure_and_catalog`
+- Verification: 352 passed / 0 failed across all 35 test suites in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
+- Registry: promoted `sql_navigation` capability to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Specifier & SQL Navigation** subsystem reaches **75.0% parity (6/8 areas: C1, C2, D1, D2, D3, D4)**. Overall weighted SDK replacement advances from **47.0% to 50.0% (38/56 areas touched: 69.6%)**.
+
+## Formula Specification & Aggregate Navigation (2026-10-17)
+
+- Scope & Authorization: Formula evaluation and aggregate navigation query planning (Rows B7, D2, D5, H2) under the authorized independent Rust engine plan ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Aggregate Formulas: Implemented `Sum`, `Count`, `Max`, `Min`, `Find`, and `Average` / `Avg` specification with target attribute/expression, conditional filters, and default values.
+  - Automatic Context Correlation: Formulas nested inside `For Each` blocks automatically correlate with the enclosing query's base and extended tables via foreign keys (direct, reverse, or transitive extended table paths), selecting optimal secondary or primary indexes for correlation columns.
+  - Standalone Formulas: Outside `For Each` loops, formulas resolve independent base tables and produce un-correlated SELECT queries.
+  - Horizontal Formulas: Evaluates intra-row calculations (e.g. `DetailPrice * DetailQuantity` or across extended table joins such as `DetailQuantity * ProductPrice`), validating that all referenced attributes are reachable from the base table.
+  - Fail-Closed Diagnostics: Emits canonical `spc0004` (no relationship between attributes) and `spc0005` (ambiguous base table) diagnostics when reachability or disambiguation fails.
+  - Multi-Dialect SQL Generation: Renders clean, read-only SELECT queries with proper aggregate functions (`SUM`, `COUNT`, `MAX`, `MIN`, `AVG`, `TOP 1`, `LIMIT 1`, `ROWNUM = 1`) across ANSI, SQL Server, PostgreSQL, and Oracle dialects, adhering strictly to zero SQL writes.
+  - Transaction Attribute Formulas: Specifies formula attributes defined on Transaction levels (`TransactionAttributeRef.formula`).
+- Engine Implementation:
+  - `src/gx-engine/src/frontend.rs`:
+    - Admitted attributes inside call arguments for aggregate functions (`Sum`, `Count`, `Max`, `Min`, `Find`, `Average`, `Avg`).
+    - Added `TokenKind::Star` support for `Count(*)`.
+    - Exported public helpers: `parse_expression(&str)` and `parse_expression_with_attributes(&str)`.
+  - `src/gx-engine/src/dependencies.rs`:
+    - Filtered database aggregate formula calls from procedural callee dependency tracking while continuing AST expression traversal.
+  - `src/gx-engine/src/navigation.rs`:
+    - Added `NavigationFormula` struct: `formula_type`, `target_attribute`, `base_table`, `index`, `conditions`, `correlations`, `sql`, and `default_value`.
+    - Connected `formulas: Vec<NavigationFormula>` to `NavigationLevel` and `standalone_formulas` to `NavigationReport`.
+    - Implemented `specify_aggregate_formula`, `specify_horizontal_formula`, and `specify_transaction_attribute_formula`.
+    - Implemented `select_index_for_columns` matching primary and secondary indexes.
+    - Enhanced base table candidate disambiguation to prefer least subordinate (ancestor) candidate tables when multiple candidates directly satisfy all attributes.
+  - `src/gx-engine/tests/formula_navigation.rs`:
+    - Added 11/11 end-to-end integration tests:
+      1. `test_correlated_aggregate_sum_formula_in_for_each`
+      2. `test_multi_aggregate_formulas_in_for_each`
+      3. `test_standalone_aggregate_formula_outside_for_each`
+      4. `test_find_formula_multi_dialect_sql`
+      5. `test_conditional_count_formula`
+      6. `test_average_formula_with_default`
+      7. `test_formula_fails_closed_spc0004_unrelated_attributes`
+      8. `test_formula_fails_closed_spc0005_ambiguous_base_table`
+      9. `test_horizontal_formula_evaluation_and_joins`
+      10. `test_transaction_attribute_formula_specification`
+      11. `test_full_procedure_navigation_report_with_formulas`
+- Verification: 363 passed / 0 failed across all 36 test suites in `gx-engine` (352 existing + 11 new tests). Clippy (`--all-targets`) and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `formula_navigation` capability to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Specifier & SQL Navigation** subsystem reaches **87.5% parity (7/8 areas: C1, C2, D1, D2, D3, D4, H2)**. Overall weighted SDK replacement advances from **50.0% to 51.8% (39/56 areas touched: 71.4%)**.
+
+## Relational DML Query Planning & DataSelector Composition (2026-10-17)
+
+- Scope & Authorization: Relational DML query planning and DataSelector query composition (Rows B9, C2, D2, H2) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Relational DML Planning (`src/gx-engine/src/dml.rs`):
+    - Updates inside `For Each`: scans procedure body for attribute assignments, validates that primary key attributes are not mutated (fail-closed `spc0034`), and generates multi-dialect `UPDATE TargetTable SET col = val WHERE pk = :pk` (ANSI, SQL Server, PostgreSQL, Oracle).
+    - Deletes inside `For Each`: plans `DELETE FROM TargetTable WHERE pk = :pk` keyed by base table primary key.
+    - Insertions (`new ... [when duplicate ...] endnew`): infers target table from assigned attributes, enforces complete primary key specification (fail-closed `spc0023`), and generates multi-dialect SQL with conflict handling (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, `MERGE`).
+    - Multi-dialect DML plans serialized cleanly with zero SQL writes.
+  - DataSelector Composition (`src/gx-engine/src/dataselector.rs`):
+    - Grammar parser and AST for `DataSelector` objects covering `parm(...)` rules, `order ...` clauses, and `where ...` conditions.
+    - Procedure syntax support for `For Each using DataSelectorName(&args...)` with explicit attributes, orders, and conditions.
+    - Parameter substitution engine: replaces parameter variables with argument expressions across AST expression trees.
+    - Query composition: merges DataSelector filters and orders into `ForEachStmt`, preserving order precedence and enabling base table re-inference and index selection.
+  - Catalog Integration:
+    - Admitted `ObjectKind::DataSelector` in portable catalog.
+    - Added `dml_plans` and `using_data_selector` to `NavigationLevel`, and `standalone_dml` to `NavigationReport`.
+  - Integration Tests:
+    - `src/gx-engine/tests/dml_navigation.rs`: 10/10 tests passing.
+    - `src/gx-engine/tests/data_selector.rs`: 9/9 tests passing.
+- Verification: 382 passed / 0 failed across all 38 test suites in `gx-engine` (363 existing + 19 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `dml_navigation` and `dataselector_composition` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Specifier & SQL Navigation** subsystem reaches **100% parity (8/8 areas: C1, C2, D1, D2, D3, D4, H1, H2)**. Overall weighted SDK replacement advances from **51.8% to 55.4% (41/56 areas touched: 73.2%)**.
+
+## Database Reorganization & Hierarchical Module Namespaces (2026-10-17)
+
+- Scope & Authorization: Schema reorganization impact analysis, alteration planning, and hierarchical module name resolution (Rows A4, D3, H1) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Database Reorganization & Schema Diffing (`src/gx-engine/src/reorg.rs`):
+    - Multi-table schema diffing engine: compares previous and current schema definitions to detect added, dropped, altered, or unchanged tables.
+    - Column alteration detection: tracks column additions, removals, data type changes, and nullability modifications (`is_nullable` toggles).
+    - Index & Foreign Key lifecycle: identifies added and dropped secondary indexes and foreign key constraints.
+    - Multi-dialect DDL migration scripts: generates dialect-accurate `ALTER TABLE ... ADD/DROP/MODIFY/ALTER COLUMN`, `CREATE/DROP TABLE`, `ADD/DROP CONSTRAINT`, and `CREATE/DROP INDEX` scripts across ANSI, SQL Server, PostgreSQL, and Oracle dialects.
+    - Data Loss Risk Warnings: detects destructive operations (dropped tables, dropped columns) and generates explicit warning diagnostics.
+    - Read-only migration plan generation with zero SQL execution against live databases.
+  - Hierarchical Modules & Qualified Name Resolution (`src/gx-engine/src/module.rs`):
+    - `QualifiedName` parser and validator: parses hierarchical dot-separated identifiers (e.g. `Sales.Invoicing.Invoice` or bare `Customer`), validates character constraints, and provides display formatting and root detection.
+    - Module hierarchy DAG (`ModuleTree`): manages parent-child module relationships, supports automatic parent hierarchy creation, enforces maximum depth 16 limit, and detects cycle anomalies.
+    - Name resolution engine (`resolve_object_name`): implements GeneXus standard resolution precedence:
+      1. Local module precedence: unqualified identifiers match objects belonging to the current module first.
+      2. Exact qualified name match: explicitly qualified identifiers match the corresponding module namespace.
+      3. Global fallback: unambiguous identifiers across all modules resolve cleanly.
+      4. Fail-closed `spc0006` diagnostics: ambiguous references matching multiple homonyms across distinct modules fail closed with an explicit diagnostic naming all candidate qualified names.
+  - Integration Tests:
+    - `src/gx-engine/tests/reorg_impact.rs`: 9/9 tests passing (table creation/drop, column add/drop/modify, nullability, foreign keys, secondary indexes, data loss warnings, multi-dialect DDL scripts).
+    - `src/gx-engine/tests/module_resolution.rs`: 10/10 tests passing (qualified name parsing, module tree hierarchy, cycle detection, depth limit, local module precedence, cross-module resolution, spc0006 ambiguous homonyms, serialization).
+- Verification: 401 passed / 0 failed across all 40 test suites in `gx-engine` (382 existing + 19 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `database_reorganization` and `module_namespaces` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **KB Storage & Namespaces (Row A4)** and **Database Reorganization (Row D3, H1)** promoted to Parity. Overall weighted SDK replacement advances from **55.4% to 58.9% (43/56 areas touched: 76.8%)**.
+
+## DataProvider Declarative Engine & Object Impact Analysis (2026-10-17)
+
+- Scope & Authorization: Declarative DataProvider specification/evaluation and catalog-wide object cross-reference & impact analysis (Rows B5, D4) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - DataProvider Declarative Engine (`src/gx-engine/src/dataprovider.rs`):
+    - Full grammar parser and AST: parses `parm(...)` interface rules, bracketed properties (`[Count = 10]`, `[Paging = 20]`), nested group hierarchies (`{ ... }`), and item assignments (`Field = expr`).
+    - Comment stripping: cleanly removes single-line (`//`) and block (`/* */`) comments while strictly preserving string literals containing semicolons, slashes, and escaped quotes.
+    - Runtime evaluation to JSON: evaluates DataProvider definitions against parameter values to produce clean JSON objects and arrays matching target SDT schemas.
+    - SDT Schema Validation: validates assigned fields against target SDT definitions in the catalog, failing closed on unknown attributes or fields.
+    - AST serialization and catalog integration under `ObjectKind::DataProvider`.
+  - Object Cross-Reference & Impact Analysis Engine (`src/gx-engine/src/impact.rs`):
+    - Multi-kind dependency tracking: records `CallsProcedure`, `UsesSdt`, `ReferencesAttribute`, `ReadsTable`, `UpdatesTable`, `InsertsTable`, `DeletesTable` edges.
+    - Catalog-wide indexing: crawls catalog procedures (calls, attribute reads, For Each table queries, DML table updates/inserts/deletes) and transactions (level attributes, base tables).
+    - Reverse dependency traversal: computes direct and transitive dependents/callers using cycle-safe BFS with a hard limit of 16 depth levels (`MAX_TRANSITIVE_DEPTH`).
+    - Attribute impact queries: case-insensitively locates all objects referencing a given attribute.
+    - Table impact queries: case-insensitively locates all objects reading or modifying a given physical table.
+    - Blast Radius & Risk Assessment: computes direct/transitive caller counts and downstream affected artifacts, assigning `RiskLevel` (`Low`, `Medium`, `High`, `Critical`).
+  - Integration Tests:
+    - `src/gx-engine/tests/data_provider.rs`: 10/10 tests passing (scalar assignments, nested groups, collections, parameter substitution, parm rules, comment preservation, SDT validation, fail-closed unknown fields, AST serialization, catalog integration).
+    - `src/gx-engine/tests/impact_analysis.rs`: 10/10 tests passing (direct procedure calls, transitive callers, cycle safety in recursion, attribute impact queries, table CRUD queries, mixed dependency kinds, catalog-wide indexing, blast radius risk calculation, depth 16 limit, JSON serialization).
+- Verification: 421 passed / 0 failed across all 42 test suites in `gx-engine` (401 existing + 20 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `dataprovider_specification` and `object_impact_analysis` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **DataProvider (Row B5)** and **Dependency Graph & Impact (Row D4)** promoted to Parity. Overall weighted SDK replacement advances from **58.9% to 62.5% (45/56 areas touched: 80.4%)**.
+
+## Extended Primitive Types (GUID & Math) & Design System Objects (2026-10-17)
+
+- Scope & Authorization: Extended primitive types (GUID, math operations) and Design System Object (DSO) styling/tokens engine (Rows B8, G9, J1) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Extended Primitive Types & Math Utilities (`src/gx-engine/src/extended_types.rs`):
+    - 128-bit RFC 4122 v4 `GuidValue`: case-insensitive parsing for 36-character hyphenated and 32-character unhyphenated hex representations.
+    - Standard GUID operations: `Guid.NewGuid()`, deterministic `Guid.new_v4(seed)`, `Guid.FromString(s)`, `.IsEmpty()`, `.SetEmpty()`, and lowercase 36-char `.ToString()`.
+    - Mathematical utility functions: `math_mod` (division remainder matching GeneXus `Mod(n1, n2)` and `&n1.Mod(&n2)` with fail-safe zero divisor handling and `-0.0` normalization), `math_pow` (`&base.Pow(&exp)`), `math_sqrt` (`&n.Sqrt()`, failing closed on negative numbers), `math_abs` (`&n.Abs()`), and `math_random` (pseudo-random float strictly in `[0.0, 1.0)`).
+    - Simulated method dispatch: `ExtendedVariable` matching GeneXus object method dispatch rules.
+  - Design System Object (DSO) Engine (`src/gx-engine/src/design_system.rs`):
+    - Full grammar parser and AST: parses `@import` / `styles(ParentDSO)`, `tokens [TokenSet] { #group { name: value; } }`, and CSS style rules (`.Class { property: $token; }`).
+    - Comment stripping: cleanly removes single-line (`//`) and block (`/* */`) comments while strictly preserving string literals.
+    - Scoped token resolution: resolves group-scoped (`$colors.primary`), flat (`$primary`), and parent-inherited tokens with cycle-safe fallback.
+    - CSS Stylesheet Renderer: substitutes all `$token` references into concrete values and emits clean, valid CSS stylesheets, failing closed if any token reference cannot be resolved.
+    - Admitted `ObjectKind::DesignSystem` in the portable KB catalog.
+  - Integration Tests:
+    - `src/gx-engine/tests/extended_types.rs`: 10/10 tests passing (v4 generation and RFC 4122 bit compliance, valid format parsing, invalid format fail-closed rejection, empty state and set_empty, equality and hashing, JSON serialization, math modulo, math power/sqrt, math abs/random, method dispatch).
+    - `src/gx-engine/tests/design_system.rs`: 10/10 tests passing (token parsing, style rule parsing, comment stripping, token resolution and CSS rendering, fail-closed unresolved tokens, DSO import and inheritance, pseudo-classes, AST serialization, font/media query tokens, catalog integration).
+- Verification: 441 passed / 0 failed across all 44 test suites in `gx-engine` (421 existing + 20 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `guid_and_extended_math` and `design_system_tokens_styles` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Extended Types (Row G9)** and **Design System Objects (Row B8, J1)** promoted to Parity. Overall weighted SDK replacement advances from **62.5% to 66.1% (47/56 areas touched: 83.9%)**.
+
+## Structured Diagnostics Model & Text Tree Interoperability (2026-10-17)
+
+- Scope & Authorization: Official GeneXus diagnostic codes catalog, terminal rendering, and text-tree catalog export/import engine (Rows C4, I3; resolving Issue #499) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Structured Diagnostics Catalog & Location Model (`src/gx-engine/src/diagnostics_catalog.rs`):
+    - Comprehensive GeneXus error codes catalog: `spc0004` (Unrelated attributes), `spc0005` (Ambiguous base table), `spc0006` (Ambiguous object reference), `spc0009` (Type mismatch), `spc0010` (Cannot convert), `spc0023` (Incomplete primary key), `spc0034` (Primary key cannot be updated), `spc0051` (Variable not defined), `spc0216` (Circular definition), `src0295` (Unique rule unsupported).
+    - Source location tracking: captures `file`, `line`, `column`, `length` coordinates for exact error pinning.
+    - Diagnostics bag: manages error and warning collections, provides fail-closed `has_errors()`, and categorizes diagnostics (`Syntax`, `TypeCheck`, `Specification`, `Database`, `Reorganization`, `Naming`, `Security`).
+    - Clang/Rust-style terminal renderer: formats diagnostics with file path, line/col numbers, source line extraction, and caret (`^`) pointing to the offending token with optional multi-character span.
+    - Machine-readable JSON export/import for IDE and MCP integration.
+  - Text Tree Export & Import Engine (`src/gx-engine/src/text_tree.rs`):
+    - Multi-object filesystem tree serialization: exports entire Knowledge Base catalogs into clean, readable text files with dedicated extensions:
+      - `Objects/Procedures/<name>.prc` (Rules, Variables, Source parts with section markers)
+      - `Objects/Transactions/<name>.trn` (Structure, attributes, primary/foreign keys)
+      - `Definitions/SDTs/<name>.sdt` (Schema fields and nested records)
+      - `Definitions/Domains/<name>.dom` and `Definitions/Attributes/<name>.att` (Type, BasedOn)
+      - `Objects/DataProviders/<name>.dp` and `Objects/DataSelectors/<name>.ds` (Authored grammar)
+      - `Objects/DesignSystems/<name>.dso` (Tokens and style rules)
+    - Full Catalog Round-Trip: parses filesystem snapshots, infers object kinds from file extensions, reconnects source parts, and validates the reconstructed `Catalog` with zero loss.
+    - Resolves Issue #499: provides the standard text-tree folder layout required for GxWire call-graph indexing without needing a native GeneXus installation or live database.
+  - Integration Tests:
+    - `src/gx-engine/tests/diagnostics_catalog.rs`: 10/10 tests passing (catalog metadata, error/warning counting, fail-closed error checks, terminal rendering with line/caret, rendering without location, JSON serialization, severity filtering, category grouping, spc0004/spc0005, and spc0006/spc0034 instantiation).
+    - `src/gx-engine/tests/text_tree.rs`: 10/10 tests passing (procedure export, transaction export, domain/attribute export, SDT export, dataprovider/dataselector export, design system export, full catalog round-trip export/import, filesystem directory write/read roundtrip, fail-closed corrupted extension rejection, JSON snapshot serialization).
+- Verification: 461 passed / 0 failed across all 46 test suites in `gx-engine` (441 existing + 20 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `structured_diagnostics_catalog` and `text_tree_roundtrip` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Diagnostics Model (Row C4)** and **Text Tree Exchange (Row I3)** promoted to Parity. Overall weighted SDK replacement advances from **66.1% to 69.6% (49/56 areas touched: 87.5%)**.
+
+## Data Views External Table Mapping & Output Channels Streaming Buffers (2026-10-17)
+
+- Scope & Authorization: External database table mapping via Data Views and structured execution output buffer routing across channels (Rows H4, G11) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Data Views & External Table Mapping (`src/gx-engine/src/dataview.rs`):
+    - Models GeneXus Data Views mapping internal Knowledge Base attributes and tables to external DBMS tables, views, and columns.
+    - Full DSL grammar parser: parses `dataview <Name> { table = ...; external_name = ...; platform = ...; datastore = ...; fields { Att => col : Type; } index Name { external = ...; primary/unique = true; Att; } }` with comment stripping (`//`, `/* */`) and JSON fallback.
+    - Bidirectional mapping: case-insensitive attribute-to-column (`map_attribute_to_column`) and column-to-attribute (`map_column_to_attribute`) resolution.
+    - External index management: preserves primary (`is_primary`) and unique (`is_unique`) index keys and external index names.
+    - Dialect-accurate external SQL query renderer: generates `SELECT` queries across ANSI, SQL Server (`[col]`, `[table]`), PostgreSQL (`"col"`, `"table"`), and Oracle (`"col"`, `"table"`), with external table name binding and optional `WHERE` clause.
+    - Fail-closed validation: rejects duplicate attribute mappings, duplicate external columns, empty external table name, multiple primary indexes, and index keys referencing unmapped attributes.
+    - Admitted `ObjectKind::DataView` in portable catalog and text-tree interop (`.dv` files).
+  - Output Channels & Streaming Buffers (`src/gx-engine/src/output_channel.rs`):
+    - Multi-channel message routing: models `Console`, `WebBuffer`, `Log`, and `StatusLine` output channels matching GeneXus execution environments.
+    - Status reporting: supports `msg(&text, status)` with integer status codes and `latest_status()` inspection.
+    - Buffered string flushes: newline-separated console flushes (`flush_console_to_string`), continuous web stream flushes (`flush_web_to_string`), and channel filtering.
+    - Streaming chunk partitioner: splits buffered output into bounded UTF-8 character chunks (`render_streaming_chunks`) for real-time MCP tool streaming and progress notifications.
+    - Clean state management: message counting, clearing, and JSON serialization round-trip.
+  - Integration Tests:
+    - `src/gx-engine/tests/data_view.rs`: 10/10 tests passing (basic DSL parsing, bidirectional mapping, primary/unique index inspection, SQL Server SELECT, PostgreSQL SELECT, Oracle SELECT, WHERE clause rendering, duplicate field validation, unknown attribute index validation, JSON roundtrip and catalog admission).
+    - `src/gx-engine/tests/output_channel.rs`: 10/10 tests passing (empty buffer, console write/flush, status with status codes, web buffer flush, channel filtering, interleaved channel ordering, streaming chunks partitioning, buffer clear/reuse, JSON serialization, procedure runtime output simulation).
+- Verification: 481 passed / 0 failed across all 48 test suites in `gx-engine` (461 existing + 20 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `dataview_external_table_mapping` and `output_channels_streaming_buffers` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Data Views (Row H4)** and **Output Channels (Row G11)** promoted to Parity. Overall weighted SDK replacement advances from **69.6% to 73.2% (50/56 areas touched: 89.3%)**.
+
+
+
+
+
+
+
+
+
+

@@ -55,6 +55,21 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
             | "ENDOFMONTH"
             | "RESETTIME"
             | "TOSTRING"
+            | "IIF"
+            | "ISEMPTY"
+            | "NULLVALUE"
+            | "FORMAT"
+            | "NEWLINE"
+            | "REPLICATE"
+            | "CHARAT"
+            | "STRSEARCHREV"
+            | "BOOLTOSTR"
+            | "TOBOOLEAN"
+            | "STRTOBOOL"
+            | "TOJSON"
+            | "FROMJSON"
+            | "TOXML"
+            | "FROMXML"
     )
 }
 
@@ -71,12 +86,52 @@ pub struct Procedure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FromXmlStmt {
+    pub target: Box<Expr>,
+    pub xml: Expr,
+    pub root: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForEachOrder {
+    pub attribute: String,
+    pub descending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataSelectorRef {
+    pub name: String,
+    pub arguments: Vec<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewStmt {
+    pub body: Vec<Stmt>,
+    pub when_duplicate: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForEachStmt {
+    pub explicit_attributes: Vec<String>,
+    pub using: Option<DataSelectorRef>,
+    pub wheres: Vec<Expr>,
+    pub orders: Vec<ForEachOrder>,
+    pub defined_by: Option<String>,
+    pub body: Vec<Stmt>,
+    pub when_none: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Assign(String, Expr),
     AssignField(Box<Expr>, String, Expr),
     CollectionAdd(Box<Expr>, Expr, Option<Expr>),
     CollectionRemove(Box<Expr>, Expr),
     CollectionClear(Box<Expr>),
+    /// Deserializes JSON string into a Record or Collection: `&target.FromJson(&str)`
+    FromJson(Box<Expr>, Expr),
+    /// Deserializes XML string into a Record or Collection: `&target.FromXml(&str, [opt_root])`
+    FromXml(Box<FromXmlStmt>),
     Print(Expr),
     MsgStatus(Expr),
     Return(Expr),
@@ -87,10 +142,26 @@ pub enum Stmt {
     For(String, Expr, Expr, i64, Vec<Stmt>),
     /// For &Item in &Collection
     ForIn(String, Expr, Vec<Stmt>),
+    /// GeneXus data access loop: `For Each ... EndFor` with optional When None
+    ForEach(Box<ForEachStmt>),
+    /// Attribute assignment inside For Each: `Attribute = expr`
+    AssignAttribute(String, Expr),
+    /// Delete current row in For Each: `delete`
+    Delete,
+    /// Insert row block: `new ... [when duplicate ...] endnew`
+    New(Box<NewStmt>),
     /// Loop break statement
     Exit,
     /// `Proc(args)` or `Proc.Call(args)` as a statement; always holds an `Expr::Call`.
     Call(Expr),
+    /// Call subroutine: `Do 'SubName'` or `Do SubName`
+    DoSub(String),
+    /// Subroutine definition: `Sub 'SubName' ... EndSub`
+    Sub(String, Vec<Stmt>),
+    /// Commit database transaction: `Commit` or `Commit()`
+    Commit,
+    /// Rollback database transaction: `Rollback` or `Rollback()`
+    Rollback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +179,7 @@ pub enum Expr {
     EmptyDate,
     Not(Box<Expr>),
     Variable(String),
+    Attribute(String),
     Call(String, Vec<Expr>),
     Binary(Box<Expr>, BinOp, Box<Expr>),
     Negate(Box<Expr>),
@@ -280,12 +352,12 @@ impl<'a> Lexer<'a> {
                     };
                     self.push(kind, start)?;
                 }
-                '"' => {
-                    self.bump();
+                '"' | '\'' => {
+                    let quote = self.bump().unwrap();
                     let mut value = String::new();
                     loop {
                         match self.bump() {
-                            Some('"') => break,
+                            Some(ch) if ch == quote => break,
                             Some('\n') | None => {
                                 return Err(start.error("unterminated text literal"));
                             }
@@ -376,6 +448,10 @@ enum BlockEnd {
     EndDo,
     EndCase,
     EndFor,
+    EndSub,
+    WhenNone,
+    WhenDuplicate,
+    EndNew,
     Eof,
 }
 
@@ -387,11 +463,16 @@ struct CaseSections {
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
+    allow_attributes: bool,
 }
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, cursor: 0 }
+        Self {
+            tokens,
+            cursor: 0,
+            allow_attributes: false,
+        }
     }
 
     fn current(&self) -> &Token {
@@ -496,6 +577,18 @@ impl Parser {
                 Some(BlockEnd::EndCase)
             } else if self.at_keyword("ENDFOR") {
                 Some(BlockEnd::EndFor)
+            } else if self.at_keyword("ENDSUB") {
+                Some(BlockEnd::EndSub)
+            } else if self.at_keyword("WHEN") && self.next_is_keyword("NONE") {
+                self.take();
+                self.take();
+                Some(BlockEnd::WhenNone)
+            } else if self.at_keyword("WHEN") && self.next_is_keyword("DUPLICATE") {
+                self.take();
+                self.take();
+                Some(BlockEnd::WhenDuplicate)
+            } else if self.at_keyword("ENDNEW") {
+                Some(BlockEnd::EndNew)
             } else if self.at(&TokenKind::Eof) {
                 Some(BlockEnd::Eof)
             } else {
@@ -514,61 +607,149 @@ impl Parser {
         }
     }
 
+    #[inline(never)]
+    fn parse_variable_statement(&mut self) -> Result<Stmt, String> {
+        let location = self.current().location;
+        let mut nodes = 0;
+        let target = self.parse_primary(1, &mut nodes)?;
+        if let Expr::Call(ref name, ref args) = target
+            && matches!(name.as_str(), "FROMJSON" | "FROMJSONSTRING")
+            && args.len() == 2
+        {
+            return Ok(Stmt::FromJson(Box::new(args[0].clone()), args[1].clone()));
+        }
+        if let Expr::Call(ref name, ref args) = target
+            && name == "FROMXML"
+            && (args.len() == 2 || args.len() == 3)
+        {
+            return Ok(Stmt::FromXml(Box::new(FromXmlStmt {
+                target: Box::new(args[0].clone()),
+                xml: args[1].clone(),
+                root: if args.len() == 3 {
+                    Some(args[2].clone())
+                } else {
+                    None
+                },
+            })));
+        }
+        if self.at(&TokenKind::Dot) {
+            self.take();
+            if self.at_keyword("SETEMPTY") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after SetEmpty")?;
+                self.expect(TokenKind::RightParen, "')' after SetEmpty(")?;
+                return match target {
+                    Expr::Variable(name) => Ok(Stmt::Assign(name, Expr::EmptyDate)),
+                    Expr::Member(receiver, field) => {
+                        Ok(Stmt::AssignField(receiver, field, Expr::EmptyDate))
+                    }
+                    _ => Err(location.error("SetEmpty target must be a variable or record member")),
+                };
+            }
+            if self.at_keyword("ADD") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after Add")?;
+                let value = self.parse_expression()?;
+                let opt_idx = if self.at(&TokenKind::Comma) {
+                    self.take();
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                self.expect(TokenKind::RightParen, "')' after Add argument")?;
+                return Ok(Stmt::CollectionAdd(Box::new(target), value, opt_idx));
+            }
+            if self.at_keyword("REMOVE") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after Remove")?;
+                let idx = self.parse_expression()?;
+                self.expect(TokenKind::RightParen, "')' after Remove argument")?;
+                return Ok(Stmt::CollectionRemove(Box::new(target), idx));
+            }
+            if self.at_keyword("CLEAR") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after Clear")?;
+                self.expect(TokenKind::RightParen, "')' after Clear()")?;
+                return Ok(Stmt::CollectionClear(Box::new(target)));
+            }
+            if self.at_keyword("FROMJSON") || self.at_keyword("FROMJSONSTRING") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after FromJson")?;
+                let json_expr = self.parse_expression()?;
+                self.expect(TokenKind::RightParen, "')' after FromJson argument")?;
+                return Ok(Stmt::FromJson(Box::new(target), json_expr));
+            }
+            if self.at_keyword("FROMXML") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after FromXml")?;
+                let xml_expr = self.parse_expression()?;
+                let opt_root = if self.current().kind == TokenKind::Comma {
+                    self.take();
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                self.expect(TokenKind::RightParen, "')' after FromXml argument")?;
+                return Ok(Stmt::FromXml(Box::new(FromXmlStmt {
+                    target: Box::new(target),
+                    xml: xml_expr,
+                    root: opt_root,
+                })));
+            }
+            return Err(location.error("unsupported statement method on target"));
+        }
+        self.expect(TokenKind::Equals, "'=' in an assignment")?;
+        let value = self.parse_expression()?;
+        match target {
+            Expr::Variable(name) => Ok(Stmt::Assign(name, value)),
+            Expr::Member(receiver, field) => Ok(Stmt::AssignField(receiver, field, value)),
+            _ => Err(location.error("assignment target must be a variable or record member")),
+        }
+    }
+
+    #[inline(never)]
+    fn parse_call_statement(&mut self, name: String) -> Result<Stmt, String> {
+        let location = self.take().location;
+        if self.at(&TokenKind::Dot) {
+            self.take();
+            if self.at_keyword("UDP") {
+                self.take();
+            } else {
+                self.expect_keyword("CALL")?;
+            }
+        }
+        if !self.at(&TokenKind::LeftParen) {
+            return Err(location.error(format_args!(
+                "unsupported statement starting with {name}; a call statement needs '('"
+            )));
+        }
+        self.take();
+        let mut nodes = 0;
+        Ok(Stmt::Call(self.parse_call(name, 1, &mut nodes, location)?))
+    }
+
     fn parse_statement(&mut self, nesting: usize) -> Result<Stmt, String> {
         match &self.current().kind {
-            TokenKind::Variable(name) => {
-                if self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Dot)
-                    && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Identifier(name) if name == "SETEMPTY")) {
-                    let name = name.clone();
-                    self.take(); self.take(); self.take();
-                    self.expect(TokenKind::LeftParen, "'(' after SetEmpty")?;
-                    self.expect(TokenKind::RightParen, "')' after SetEmpty(")?;
-                    return Ok(Stmt::Assign(name, Expr::EmptyDate));
-                }
-                let location = self.current().location;
-                let mut nodes = 0;
-                let target = self.parse_primary(1, &mut nodes)?;
-                if self.at(&TokenKind::Dot) {
-                    self.take();
-                    if self.at_keyword("ADD") {
-                        self.take();
-                        self.expect(TokenKind::LeftParen, "'(' after Add")?;
-                        let value = self.parse_expression()?;
-                        let opt_idx = if self.at(&TokenKind::Comma) {
-                            self.take();
-                            Some(self.parse_expression()?)
-                        } else {
-                            None
-                        };
-                        self.expect(TokenKind::RightParen, "')' after Add argument")?;
-                        return Ok(Stmt::CollectionAdd(Box::new(target), value, opt_idx));
-                    }
-                    if self.at_keyword("REMOVE") {
-                        self.take();
-                        self.expect(TokenKind::LeftParen, "'(' after Remove")?;
-                        let idx = self.parse_expression()?;
-                        self.expect(TokenKind::RightParen, "')' after Remove argument")?;
-                        return Ok(Stmt::CollectionRemove(Box::new(target), idx));
-                    }
-                    if self.at_keyword("CLEAR") {
-                        self.take();
-                        self.expect(TokenKind::LeftParen, "'(' after Clear")?;
-                        self.expect(TokenKind::RightParen, "')' after Clear()")?;
-                        return Ok(Stmt::CollectionClear(Box::new(target)));
-                    }
-                    return Err(location.error("unsupported statement method on target"));
-                }
-                self.expect(TokenKind::Equals, "'=' in an assignment")?;
-                let value = self.parse_expression()?;
-                match target {
-                    Expr::Variable(name) => Ok(Stmt::Assign(name, value)),
-                    Expr::Member(receiver, field) => Ok(Stmt::AssignField(receiver, field, value)),
-                    _ => Err(location.error("assignment target must be a variable or record member")),
-                }
-            }
+            TokenKind::Variable(_) => self.parse_variable_statement(),
             TokenKind::Identifier(keyword) if keyword == "EXIT" => {
                 self.take();
                 Ok(Stmt::Exit)
+            }
+            TokenKind::Identifier(keyword) if keyword == "COMMIT" => {
+                self.take();
+                if matches!(self.current().kind, TokenKind::LeftParen) {
+                    self.take();
+                    self.expect(TokenKind::RightParen, "')' after Commit")?;
+                }
+                Ok(Stmt::Commit)
+            }
+            TokenKind::Identifier(keyword) if keyword == "ROLLBACK" => {
+                self.take();
+                if matches!(self.current().kind, TokenKind::LeftParen) {
+                    self.take();
+                    self.expect(TokenKind::RightParen, "')' after Rollback")?;
+                }
+                Ok(Stmt::Rollback)
             }
             TokenKind::Identifier(keyword) if keyword == "PRINT" => self.parse_print(),
             TokenKind::Identifier(keyword) if keyword == "MSG" => self.parse_msg_status(),
@@ -584,13 +765,19 @@ impl Parser {
                     Ok(Stmt::Return(value))
                 }
             }
+            TokenKind::Identifier(keyword) if keyword == "NEW" => self.parse_new(nesting),
+            TokenKind::Identifier(keyword) if keyword == "DELETE" => {
+                self.take();
+                Ok(Stmt::Delete)
+            }
             TokenKind::Identifier(keyword) if keyword == "FOR" => self.parse_for(nesting),
             TokenKind::Identifier(keyword) if keyword == "IF" => self.parse_if(nesting),
             TokenKind::Identifier(keyword) if keyword == "DO" => self.parse_do(nesting),
+            TokenKind::Identifier(keyword) if keyword == "SUB" => self.parse_sub(nesting),
             TokenKind::Identifier(keyword)
                 if matches!(
                     keyword.as_str(),
-                    "ELSE" | "CASE" | "OTHERWISE" | "ENDIF" | "ENDDO" | "ENDCASE" | "WHILE"
+                    "ELSE" | "CASE" | "OTHERWISE" | "ENDIF" | "ENDDO" | "ENDCASE" | "ENDFOR" | "ENDSUB" | "WHILE" | "WHEN" | "ENDNEW"
                 ) =>
             {
                 Err(self
@@ -598,22 +785,20 @@ impl Parser {
                     .location
                     .error(format_args!("unexpected keyword {keyword}")))
             }
-            TokenKind::Identifier(name) => {
-                let name = name.clone();
-                let location = self.take().location;
-                if self.at(&TokenKind::Dot) {
-                    self.take();
-                    self.expect_keyword("CALL")?;
-                }
-                if !self.at(&TokenKind::LeftParen) {
-                    return Err(location.error(format_args!(
-                        "unsupported statement starting with {name}; a call statement needs '('"
-                    )));
-                }
+            TokenKind::Identifier(name)
+                if self.allow_attributes
+                    && self
+                        .tokens
+                        .get(self.cursor + 1)
+                        .is_some_and(|t| t.kind == TokenKind::Equals) =>
+            {
+                let att_name = name.clone();
                 self.take();
-                let mut nodes = 0;
-                Ok(Stmt::Call(self.parse_call(name, 1, &mut nodes, location)?))
+                self.expect(TokenKind::Equals, "'=' in attribute assignment")?;
+                let expression = self.parse_expression()?;
+                Ok(Stmt::AssignAttribute(att_name, expression))
             }
+            TokenKind::Identifier(name) => self.parse_call_statement(name.clone()),
             _ => Err(self
                 .current()
                 .location
@@ -678,9 +863,54 @@ impl Parser {
     fn parse_do(&mut self, nesting: usize) -> Result<Stmt, String> {
         if self.next_is_keyword("CASE") {
             self.parse_do_case(nesting)
-        } else {
+        } else if self.next_is_keyword("WHILE") {
             self.parse_while(nesting)
+        } else {
+            self.expect_keyword("DO")?;
+            let name = match &self.current().kind {
+                TokenKind::Text(name) => name.clone(),
+                TokenKind::Identifier(name) => name.clone(),
+                _ => {
+                    return Err(self
+                        .current()
+                        .location
+                        .error("expected subroutine name, While, or Case after Do"));
+                }
+            };
+            self.take();
+            Ok(Stmt::DoSub(name.to_ascii_uppercase()))
         }
+    }
+
+    fn parse_sub(&mut self, nesting: usize) -> Result<Stmt, String> {
+        if nesting > 0 {
+            return Err(self
+                .current()
+                .location
+                .error("subroutines cannot be nested inside blocks"));
+        }
+        self.take();
+        let name = match &self.current().kind {
+            TokenKind::Text(name) => name.clone(),
+            TokenKind::Identifier(name) => name.clone(),
+            _ => {
+                return Err(self
+                    .current()
+                    .location
+                    .error("expected subroutine name after Sub"));
+            }
+        };
+        self.take();
+        self.require_statement_end()?;
+        let (sub_body, end) = self.parse_block(nesting + 1)?;
+        if end != BlockEnd::EndSub {
+            return Err(self.current().location.error(format_args!(
+                "expected EndSub, found {}",
+                self.block_end_name(end)
+            )));
+        }
+        self.expect_keyword("ENDSUB")?;
+        Ok(Stmt::Sub(name.to_ascii_uppercase(), sub_body))
     }
 
     fn parse_do_case(&mut self, nesting: usize) -> Result<Stmt, String> {
@@ -785,9 +1015,7 @@ impl Parser {
         let start = self.expect_keyword("FOR")?;
         self.ensure_nesting(nesting, start.location)?;
         if self.at_keyword("EACH") {
-            return Err(start
-                .location
-                .error("unsupported statement For Each: data access is not implemented"));
+            return self.parse_for_each(nesting, start);
         }
         let token = self.take();
         let TokenKind::Variable(variable) = token.kind else {
@@ -847,6 +1075,185 @@ impl Parser {
         Ok(Stmt::For(variable, initial, limit, step, body))
     }
 
+    fn parse_for_each(&mut self, nesting: usize, _start: Token) -> Result<Stmt, String> {
+        self.expect_keyword("EACH")?;
+
+        let prev_allow_attributes = self.allow_attributes;
+        self.allow_attributes = true;
+
+        let mut explicit_attributes = Vec::new();
+        let mut using = None;
+        while !self.at(&TokenKind::Newline)
+            && !self.at(&TokenKind::Semicolon)
+            && !self.at(&TokenKind::Eof)
+        {
+            if self.at_keyword("WHERE")
+                || self.at_keyword("ORDER")
+                || self.at_keyword("DEFINED")
+                || self.at_keyword("USING")
+            {
+                break;
+            }
+            if let TokenKind::Identifier(name) = &self.current().kind {
+                explicit_attributes.push(name.clone());
+                self.take();
+                if self.at(&TokenKind::Comma) {
+                    self.take();
+                }
+            } else {
+                break;
+            }
+        }
+        self.skip_separators();
+
+        let mut wheres = Vec::new();
+        let mut orders = Vec::new();
+        let mut defined_by = None;
+
+        loop {
+            self.skip_separators();
+            if self.at_keyword("USING") {
+                self.take();
+                if let TokenKind::Identifier(name) = &self.current().kind {
+                    let ds_name = name.clone();
+                    self.take();
+                    let mut args = Vec::new();
+                    if self.at(&TokenKind::LeftParen) {
+                        self.take();
+                        while !self.at(&TokenKind::RightParen) && !self.at(&TokenKind::Eof) {
+                            let arg = self.parse_expression()?;
+                            args.push(arg);
+                            if self.at(&TokenKind::Comma) {
+                                self.take();
+                            } else {
+                                break;
+                            }
+                        }
+                        self.expect(TokenKind::RightParen, "')' after DataSelector arguments")?;
+                    }
+                    using = Some(DataSelectorRef {
+                        name: ds_name,
+                        arguments: args,
+                    });
+                } else {
+                    self.allow_attributes = prev_allow_attributes;
+                    return Err(self
+                        .current()
+                        .location
+                        .error("expected DataSelector name after Using"));
+                }
+                self.skip_separators();
+            } else if self.at_keyword("WHERE") {
+                self.take();
+                let cond = self.parse_expression()?;
+                wheres.push(cond);
+                self.skip_separators();
+            } else if self.at_keyword("ORDER") {
+                self.take();
+                loop {
+                    self.skip_separators();
+                    if let TokenKind::Identifier(att) = &self.current().kind {
+                        let att_name = att.clone();
+                        self.take();
+                        let mut descending = false;
+                        if self.at_keyword("DESC") {
+                            self.take();
+                            descending = true;
+                        } else if self.at_keyword("NONE") {
+                            self.take();
+                        }
+                        orders.push(ForEachOrder {
+                            attribute: att_name,
+                            descending,
+                        });
+                        if self.at(&TokenKind::Comma) {
+                            self.take();
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                self.skip_separators();
+            } else if self.at_keyword("DEFINED") {
+                self.take();
+                self.expect_keyword("BY")?;
+                if let TokenKind::Identifier(att) = &self.current().kind {
+                    defined_by = Some(att.clone());
+                    self.take();
+                } else {
+                    self.allow_attributes = prev_allow_attributes;
+                    return Err(self
+                        .current()
+                        .location
+                        .error("expected attribute after Defined By"));
+                }
+                self.skip_separators();
+            } else {
+                break;
+            }
+        }
+
+        let (body, end) = self.parse_block(nesting + 1)?;
+        let (when_none, final_end) = if end == BlockEnd::WhenNone {
+            let (wn_body, wn_end) = self.parse_block(nesting + 1)?;
+            (wn_body, wn_end)
+        } else {
+            (Vec::new(), end)
+        };
+
+        if final_end != BlockEnd::EndFor {
+            self.allow_attributes = prev_allow_attributes;
+            return Err(self.current().location.error(format_args!(
+                "expected EndFor, found {}",
+                self.block_end_name(final_end)
+            )));
+        }
+        self.expect_keyword("ENDFOR")?;
+        self.allow_attributes = prev_allow_attributes;
+
+        Ok(Stmt::ForEach(Box::new(ForEachStmt {
+            explicit_attributes,
+            using,
+            wheres,
+            orders,
+            defined_by,
+            body,
+            when_none,
+        })))
+    }
+
+    fn parse_new(&mut self, nesting: usize) -> Result<Stmt, String> {
+        self.expect_keyword("NEW")?;
+        let prev_allow_attributes = self.allow_attributes;
+        self.allow_attributes = true;
+        self.skip_separators();
+
+        let (body, end) = self.parse_block(nesting + 1)?;
+        let (when_duplicate, final_end) = if end == BlockEnd::WhenDuplicate {
+            let (wd_body, wd_end) = self.parse_block(nesting + 1)?;
+            (wd_body, wd_end)
+        } else {
+            (Vec::new(), end)
+        };
+
+        if final_end != BlockEnd::EndNew {
+            self.allow_attributes = prev_allow_attributes;
+            return Err(self.current().location.error(format_args!(
+                "expected EndNew, found {}",
+                self.block_end_name(final_end)
+            )));
+        }
+        self.expect_keyword("ENDNEW")?;
+        self.allow_attributes = prev_allow_attributes;
+
+        Ok(Stmt::New(Box::new(NewStmt {
+            body,
+            when_duplicate,
+        })))
+    }
+
     fn parse_while(&mut self, nesting: usize) -> Result<Stmt, String> {
         let start = self.expect_keyword("DO")?;
         self.ensure_nesting(nesting, start.location)?;
@@ -884,6 +1291,10 @@ impl Parser {
             BlockEnd::EndDo => "EndDo",
             BlockEnd::EndCase => "EndCase",
             BlockEnd::EndFor => "EndFor",
+            BlockEnd::EndSub => "EndSub",
+            BlockEnd::WhenNone => "When None",
+            BlockEnd::WhenDuplicate => "When Duplicate",
+            BlockEnd::EndNew => "EndNew",
             BlockEnd::Eof => "end of input",
         }
     }
@@ -1012,15 +1423,17 @@ impl Parser {
         let mut value = self.parse_atom(depth, nodes)?;
         let mut methods = 0;
         while self.at(&TokenKind::Dot) {
-            // Add, Remove, and Clear are statement-only mutators, consumed by parse_statement.
-            if self
+            // Add, Remove, Clear, and SetEmpty are statement-only mutators, consumed by parse_statement.
+            if self.tokens.get(self.cursor + 1).is_some_and(|t| {
+                matches!(
+                    &t.kind,
+                    TokenKind::Identifier(name)
+                        if matches!(name.as_str(), "ADD" | "REMOVE" | "CLEAR" | "SETEMPTY")
+                )
+            }) && self
                 .tokens
-                .get(self.cursor + 1)
-                .is_some_and(|t| matches!(&t.kind, TokenKind::Identifier(name) if matches!(name.as_str(), "ADD" | "REMOVE" | "CLEAR")))
-                && self
-                    .tokens
-                    .get(self.cursor + 2)
-                    .is_some_and(|t| t.kind == TokenKind::LeftParen)
+                .get(self.cursor + 2)
+                .is_some_and(|t| t.kind == TokenKind::LeftParen)
             {
                 break;
             }
@@ -1137,6 +1550,69 @@ impl Parser {
             self.expect(TokenKind::RightParen, "')' after IndexOf arguments")?;
             self.count_expression_node(nodes, location)?;
             return Ok(Expr::Call("INDEXOF".into(), args));
+        }
+        if matches!(name, "LASTINDEXOF" | "STRSEARCHREV") {
+            self.expect(TokenKind::LeftParen, "'(' after LastIndexOf(")?;
+            let find = self.parse_or(depth, nodes)?;
+            let mut args = vec![value, find];
+            if self.current().kind == TokenKind::Comma {
+                self.take();
+                let start = self.parse_or(depth, nodes)?;
+                args.push(start);
+            }
+            self.expect(TokenKind::RightParen, "')' after LastIndexOf arguments")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("STRSEARCHREV".into(), args));
+        }
+        if name == "CHARAT" {
+            self.expect(TokenKind::LeftParen, "'(' after CharAt(")?;
+            let idx = self.parse_or(depth, nodes)?;
+            self.expect(TokenKind::RightParen, "')' after CharAt argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("CHARAT".into(), vec![value, idx]));
+        }
+        if name == "TOBOOLEAN" {
+            self.expect(TokenKind::LeftParen, "'(' after ToBoolean(")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument ToBoolean()")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("TOBOOLEAN".into(), vec![value]));
+        }
+        if matches!(name, "TOJSON" | "TOJSONSTRING") {
+            self.expect(TokenKind::LeftParen, "'(' after ToJson(")?;
+            self.expect(TokenKind::RightParen, "')' after zero-argument ToJson()")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("TOJSON".into(), vec![value]));
+        }
+        if matches!(name, "FROMJSON" | "FROMJSONSTRING") {
+            self.expect(TokenKind::LeftParen, "'(' after FromJson(")?;
+            let json_arg = self.parse_or(depth, nodes)?;
+            self.expect(TokenKind::RightParen, "')' after FromJson argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("FROMJSON".into(), vec![value, json_arg]));
+        }
+        if matches!(name, "TOXML") {
+            self.expect(TokenKind::LeftParen, "'(' after ToXml(")?;
+            let mut args = vec![value];
+            if !matches!(self.current().kind, TokenKind::RightParen) {
+                let root_arg = self.parse_or(depth, nodes)?;
+                args.push(root_arg);
+            }
+            self.expect(TokenKind::RightParen, "')' after ToXml argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("TOXML".into(), args));
+        }
+        if matches!(name, "FROMXML") {
+            self.expect(TokenKind::LeftParen, "'(' after FromXml(")?;
+            let xml_arg = self.parse_or(depth, nodes)?;
+            let mut args = vec![value, xml_arg];
+            if self.current().kind == TokenKind::Comma {
+                self.take();
+                let root_arg = self.parse_or(depth, nodes)?;
+                args.push(root_arg);
+            }
+            self.expect(TokenKind::RightParen, "')' after FromXml arguments")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("FROMXML".into(), args));
         }
         if name == "CLONE" {
             self.take();
@@ -1314,9 +1790,25 @@ impl Parser {
             }
             TokenKind::Identifier(name) => {
                 self.take();
+                if self.at(&TokenKind::Dot)
+                    && self
+                        .tokens
+                        .get(self.cursor + 1)
+                        .is_some_and(|t| matches!(&t.kind, TokenKind::Identifier(m) if m == "UDP"))
+                    && self
+                        .tokens
+                        .get(self.cursor + 2)
+                        .is_some_and(|t| t.kind == TokenKind::LeftParen)
+                {
+                    self.take();
+                    self.take();
+                }
                 if self.at(&TokenKind::LeftParen) {
                     self.take();
                     self.parse_call(name, depth + 1, nodes, token.location)
+                } else if self.allow_attributes {
+                    self.count_expression_node(nodes, token.location)?;
+                    Ok(Expr::Attribute(name))
                 } else {
                     Err(token.location.error(format_args!(
                         "bare identifier {name} is not an expression; use a variable or call"
@@ -1343,11 +1835,38 @@ impl Parser {
         location: Location,
     ) -> Result<Expr, String> {
         self.ensure_expression_depth(depth)?;
+        let is_formula = matches!(
+            name.to_ascii_uppercase().as_str(),
+            "SUM" | "COUNT" | "MAX" | "MIN" | "FIND" | "AVERAGE" | "AVG"
+        );
+        let prev_allow_attributes = self.allow_attributes;
+        if is_formula {
+            self.allow_attributes = true;
+        }
+
+        let result = self.parse_call_inner(name, depth, nodes, location);
+        self.allow_attributes = prev_allow_attributes;
+        result
+    }
+
+    fn parse_call_inner(
+        &mut self,
+        name: String,
+        depth: usize,
+        nodes: &mut usize,
+        location: Location,
+    ) -> Result<Expr, String> {
         let mut arguments = Vec::new();
         if self.at(&TokenKind::RightParen) {
             self.count_expression_node(nodes, location)?;
             self.take();
             return Ok(Expr::Call(name, arguments));
+        }
+        if self.at(&TokenKind::Star) {
+            self.count_expression_node(nodes, location)?;
+            self.take();
+            self.expect(TokenKind::RightParen, "')' after '*' in call")?;
+            return Ok(Expr::Call(name, vec![Expr::Attribute("*".into())]));
         }
 
         loop {
@@ -1402,6 +1921,25 @@ impl Parser {
 pub fn parse_body(source: &str) -> Result<Vec<Stmt>, String> {
     let tokens = Lexer::new(source)?.lex()?;
     Parser::new(tokens).parse_body()
+}
+
+/// Parse an individual expression into the shared portable-engine AST.
+pub fn parse_expression(source: &str) -> Result<Expr, String> {
+    let tokens = Lexer::new(source)?.lex()?;
+    let mut parser = Parser::new(tokens);
+    let expr = parser.parse_expression()?;
+    parser.expect(TokenKind::Eof, "end of input after expression")?;
+    Ok(expr)
+}
+
+/// Parse an individual expression with attributes admitted (for formula strings).
+pub fn parse_expression_with_attributes(source: &str) -> Result<Expr, String> {
+    let tokens = Lexer::new(source)?.lex()?;
+    let mut parser = Parser::new(tokens);
+    parser.allow_attributes = true;
+    let expr = parser.parse_expression()?;
+    parser.expect(TokenKind::Eof, "end of input after expression")?;
+    Ok(expr)
 }
 
 #[cfg(test)]
@@ -1536,7 +2074,7 @@ mod tests {
     #[test]
     fn rejects_unsupported_constructs_and_malformed_statements_with_locations() {
         for (source, expected) in [
-            ("For Each", "unsupported statement"),
+            ("For Each", "expected EndFor"),
             ("&x = \"text", "unterminated text literal"),
             ("&x = 1.", "decimal point requires fractional digits"),
             ("&x = unknown", "bare identifier"),
@@ -1672,5 +2210,38 @@ mod tests {
                 .unwrap_err()
                 .contains("node limit")
         );
+    }
+
+    #[test]
+    fn parses_for_each_with_wheres_orders_defined_by_and_when_none() {
+        let source = r#"
+            For Each CustomerId, CustomerName
+                Where CustomerActive = true
+                Where CustomerId >= 100
+                Order CustomerName Desc, CustomerId
+                Defined By CustomerId
+                &Total = &Total + 1
+            When None
+                &Total = 0
+            EndFor
+        "#;
+        let stmts = parse_body(source).unwrap();
+        assert_eq!(stmts.len(), 1);
+        let Stmt::ForEach(for_each) = &stmts[0] else {
+            panic!("expected ForEach statement");
+        };
+        assert_eq!(
+            for_each.explicit_attributes,
+            vec!["CUSTOMERID", "CUSTOMERNAME"]
+        );
+        assert_eq!(for_each.wheres.len(), 2);
+        assert_eq!(for_each.orders.len(), 2);
+        assert_eq!(for_each.orders[0].attribute, "CUSTOMERNAME");
+        assert!(for_each.orders[0].descending);
+        assert_eq!(for_each.orders[1].attribute, "CUSTOMERID");
+        assert!(!for_each.orders[1].descending);
+        assert_eq!(for_each.defined_by.as_deref(), Some("CUSTOMERID"));
+        assert_eq!(for_each.body.len(), 1);
+        assert_eq!(for_each.when_none.len(), 1);
     }
 }

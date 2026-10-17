@@ -325,7 +325,8 @@ namespace GxMcp.Gateway.Tests
                     // after initialize.
                     if (line.IndexOf("[Warmup] Worker warmup failed: No Knowledge Base is open", StringComparison.OrdinalIgnoreCase) >= 0)
                         continue;
-                    if (line.IndexOf("[INFO]", StringComparison.OrdinalIgnoreCase) >= 0
+                    if ((line.IndexOf("[INFO]", StringComparison.OrdinalIgnoreCase) >= 0
+                        || line.IndexOf("[DEBUG]", StringComparison.OrdinalIgnoreCase) >= 0)
                         && line.IndexOf("[ERROR]", StringComparison.OrdinalIgnoreCase) < 0
                         && line.IndexOf("[FATAL]", StringComparison.OrdinalIgnoreCase) < 0)
                         continue;

@@ -130,12 +130,17 @@ namespace GxMcp.Worker.Helpers
             @"(?is)\b(?:Event\b.*?EndEvent|Sub\b.*?EndSub|For\s+each\b.*?EndFor|Do\s+case\b.*?EndCase|Do\s+while\b.*?EndDo)\b",
             RegexOptions.Compiled);
 
+        // Only continuation lines are treated as statements: the first line of a legitimate
+        // SDK/Worker message may start with a keyword ("Event 'Start' is not defined ...")
+        // and must survive. Opened blocks on the first line are still caught by GeneXusBlockRegex.
         private static readonly Regex GeneXusStatementRegex = new Regex(
-            @"(?im)^\s*(?:Event|EndEvent|Sub|EndSub|For\s+each|EndFor|Do\s+case|EndCase|Do\s+while|EndDo)\b[^\r\n]*",
+            @"(?i)(?<=\n)[ \t]*(?:Event|EndEvent|Sub|EndSub|For\s+each|EndFor|Do\s+case|EndCase|Do\s+while|EndDo)\b[^\r\n]*",
             RegexOptions.Compiled);
 
+        // The parenthesis must follow the command name directly (or ".Call") so prose such as
+        // "call (RPC)" is preserved; one level of nested parentheses is consumed.
         private static readonly Regex GeneXusCommandRegex = new Regex(
-            @"(?i)\b(?:msg|call|prc)\s*\([^)]*\)",
+            @"(?i)(?:\b(?:msg|call|prc)|\.call\s*)\((?:[^()]|\([^()]*\))*\)",
             RegexOptions.Compiled);
 
         public static string SanitizeText(string text, out bool truncated)
@@ -173,6 +178,13 @@ namespace GxMcp.Worker.Helpers
             return sanitized;
         }
 
+        /// <summary>
+        /// Redacts a stack trace and enforces both size bounds under a hard ceiling (issue #550):
+        /// at most <see cref="MaxStackTraceFrames"/> frames are kept, and the returned string,
+        /// truncation markers included, never exceeds <see cref="MaxStackTraceLength"/> characters.
+        /// When both bounds are exceeded the kept frames are cut to fit and the output ends with
+        /// the length marker followed by the frame marker, so each truncation stays recognizable.
+        /// </summary>
         public static string SanitizeStackTrace(string stackTrace, out bool truncated)
         {
             truncated = false;
@@ -180,24 +192,26 @@ namespace GxMcp.Worker.Helpers
 
             string sanitized = LogRedaction.Redact(stackTrace);
 
-            // 1. Cap frames
+            // 1. Cap frames; the marker is appended after the length check so it is never cut off
             var lines = sanitized.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+            string frameSuffix = string.Empty;
             if (lines.Length > MaxStackTraceFrames)
             {
                 truncated = true;
-                sanitized = string.Join(Environment.NewLine, lines.Take(MaxStackTraceFrames))
-                    + Environment.NewLine + "... [TRUNCATED: max stack frames exceeded]";
+                sanitized = string.Join(Environment.NewLine, lines.Take(MaxStackTraceFrames));
+                frameSuffix = Environment.NewLine + "... [TRUNCATED: max stack frames exceeded]";
             }
 
-            // 2. Cap character length (both limits must be enforced, issue #550)
-            if (sanitized.Length > MaxStackTraceLength)
+            // 2. Cap character length; both markers count towards the ceiling (issue #550)
+            if (sanitized.Length + frameSuffix.Length > MaxStackTraceLength)
             {
                 truncated = true;
-                sanitized = sanitized.Substring(0, MaxStackTraceLength)
-                    + " ... [TRUNCATED: max stack length exceeded]";
+                const string lengthMarker = " ... [TRUNCATED: max stack length exceeded]";
+                sanitized = sanitized.Substring(0, MaxStackTraceLength - lengthMarker.Length - frameSuffix.Length)
+                    + lengthMarker;
             }
 
-            return sanitized;
+            return sanitized + frameSuffix;
         }
 
         public static JObject SanitizeException(Exception ex, int currentDepth = 1)
@@ -342,23 +356,29 @@ namespace GxMcp.Worker.Helpers
                 var backfillState = SourceStoreBackfillService.Instance.GetState();
                 if (backfillState != null)
                 {
-                    snapshot["sourceStore"] = new JObject
-                    {
-                        ["state"] = backfillState.State ?? "unknown",
-                        ["processedCount"] = backfillState.ProcessedObjects,
-                        ["totalCount"] = backfillState.TotalObjects,
-                        ["retryCount"] = backfillState.RetryCount,
-                        ["failedCount"] = backfillState.FailedObjects,
-                        ["readFailedObjects"] = new JArray(backfillState.ReadFailedObjects ?? new List<string>()),
-                        ["lastError"] = backfillState.LastError != null
-                            ? LogRedaction.Redact(backfillState.LastError)
-                            : null
-                    };
+                    snapshot["sourceStore"] = BuildSourceStoreSnapshot(backfillState);
                 }
             }
             catch { }
 
             return snapshot;
+        }
+
+        internal static JObject BuildSourceStoreSnapshot(SourceStoreBackfillState backfillState)
+        {
+            return new JObject
+            {
+                ["state"] = backfillState.State ?? "unknown",
+                ["processedCount"] = backfillState.ProcessedObjects,
+                ["totalCount"] = backfillState.TotalObjects,
+                ["retryCount"] = backfillState.RetryCount,
+                ["failedCount"] = backfillState.FailedObjects,
+                ["readFailedObjects"] = new JArray((backfillState.ReadFailedObjects ?? new List<string>())
+                    .Take(SourceStoreBackfillState.MaxReportedReadFailedObjects)),
+                ["lastError"] = backfillState.LastError != null
+                    ? LogRedaction.Redact(backfillState.LastError)
+                    : null
+            };
         }
 
         public static string CreateFailureEnvelope(ReadDiagnosticContext context, Exception ex, KbService kbService)
@@ -386,7 +406,10 @@ namespace GxMcp.Worker.Helpers
                 ["exception"] = sanitizedException,
                 ["context"] = workerContext,
                 ["stateSnapshot"] = stateSnapshot,
-                ["persisted"] = false,
+                // Persistence contract (issue #548): the logger writes the file asynchronously and never
+                // reports back, so `persisted` stays null (unconfirmed) once the entry is enqueued, becomes
+                // false only when the hand-off itself failed (`persistenceError` present), and is never true here.
+                ["persisted"] = JValue.CreateNull(),
                 ["enqueued"] = false
             };
 
@@ -401,7 +424,6 @@ namespace GxMcp.Worker.Helpers
                 string exType = sanitizedException?["type"]?.ToString() ?? "Exception";
                 string exMsg = sanitizedException?["message"]?.ToString() ?? "Unknown error";
                 Logger.Error($"[READ-DIAGNOSTIC] [cid:{correlationId}] stage={stage} target={target} part={part} durationMs={durationMs} exType={exType} msg={exMsg}");
-                diagnosticPayload["persisted"] = false;
                 diagnosticPayload["enqueued"] = true;
             }
             catch (Exception logEx)

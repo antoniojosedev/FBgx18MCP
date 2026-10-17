@@ -236,7 +236,10 @@ namespace GxMcp.Gateway.Tests
             // Combined schema measures ~36759 tokens; existing guidance remains available.
             // PR #459 introduces GxWire native architectural discovery tool (genexus_wire). Measured ~37302 tokens.
             // Issue #455 introduces standard WorkWith tool (genexus_workwith). Measured ~38041 tokens.
-            Assert.True(approxTokens < 38500, $"tool_definitions.json is ~{approxTokens} tokens; budget 38500.");
+            // Issues #541, #551, #552, #559: 38500 -> 39000 for genexus_workwith filter authoring,
+            // genexus_create attribute typing (dataType/length/decimals/basedOn), and genexus_wwp
+            // tabs/userAction layout parameter enhancements. Measured ~38783 tokens; ~217 headroom.
+            Assert.True(approxTokens < 39000, $"tool_definitions.json is ~{approxTokens} tokens; budget 39000.");
         }
 
         [Theory]

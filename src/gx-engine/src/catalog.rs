@@ -45,10 +45,14 @@ impl ObjectId {
 pub enum ObjectKind {
     Attribute,
     DataProvider,
+    DataSelector,
+    DataView,
+    DesignSystem,
     Domain,
     Module,
     Procedure,
     StructuredDataType,
+    Table,
     Transaction,
     WebPanel,
 }

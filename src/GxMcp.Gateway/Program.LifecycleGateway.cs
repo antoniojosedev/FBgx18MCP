@@ -191,22 +191,18 @@ namespace GxMcp.Gateway
                 bool specify = action == "specify";
                 bool compileCheck = action == "build"
                     && string.Equals(args?["mode"]?.ToString(), "compile_check", StringComparison.OrdinalIgnoreCase);
-                // Issue #359: `rebuild` with a target used to be mapped to the Worker's
-                // "RebuildAll", and the Worker's buildAll branch builds the whole KB and
-                // never reads `targets`. So `action=rebuild target=X` silently ran a
-                // KB-wide Rebuild All and echoed `Action: RebuildAll` back - the caller
-                // asked for one object and paid for the entire Knowledge Base, with
-                // nothing in the response saying so.
-                //
-                // The Worker's plan builder already emits `SpecifyOneOnly` +
-                // `ForceRebuild=true` for a targeted "Rebuild"; it was simply never asked
-                // to. Targetless `rebuild` stays RebuildAll, which is what the tool
-                // description promises.
-                bool rebuildHasTarget = rebuild
-                    && !string.IsNullOrWhiteSpace(args?["target"]?.ToString());
+                // Issue #546 (supersedes the #359 targeted-rebuild mapping): `rebuild`
+                // is always the Worker's KB-wide "RebuildAll". A `rebuild` carrying a
+                // target never reaches this factory - HandleLifecycleGatewayInterceptsAsync
+                // refuses it with TargetNotSupported before any dispatch, on every
+                // transport and for dryRun - and the Worker refuses a "RebuildAll" that
+                // carries a target as defense in depth, which is why `target` is still
+                // forwarded below. The directed path is `action=build target=<object>`;
+                // the Worker's targeted "Rebuild" action stays reachable only through the
+                // legacy `genexus_build` route.
                 workerAction = specify ? "Specify"
                     : compileCheck ? "CompileCheck"
-                    : rebuild ? (rebuildHasTarget ? "Rebuild" : "RebuildAll")
+                    : rebuild ? "RebuildAll"
                     : buildAll ? "BuildAll"
                     : "Build";
             }

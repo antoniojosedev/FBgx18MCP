@@ -21,12 +21,17 @@ namespace GxMcp.Gateway.Tests
         private static string EditHelp() => ToolHelpCatalog.Get("genexus_edit") ?? string.Empty;
 
         [Fact]
-        public void Help_Still_States_The_Raw_Property_Only_Restriction()
+        public void Help_States_What_Raw_PatternInstance_Xml_Accepts_And_Refuses()
         {
             string help = EditHelp();
-            // The restriction itself is correct and must survive the example fix: it is
-            // what protects the SDK-owned structure.
-            Assert.Contains("limited to existing property changes", help, StringComparison.OrdinalIgnoreCase);
+            // Issue #545: "limited to existing property changes" stopped being true when
+            // #349 opened single-leaf structural edits, and the reporter was told the
+            // edit the preflight accepts was impossible. The help now states both sides
+            // of the contract; the refusal codes still protect the SDK-owned structure.
+            Assert.DoesNotContain("limited to existing property changes", help, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("cannot add a node", help, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("one leaf element", help, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("reordered by identity", help, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("PatternStructureChangeUnsupported", help, StringComparison.OrdinalIgnoreCase);
         }
 
@@ -126,6 +131,29 @@ namespace GxMcp.Gateway.Tests
             string desc = workWithTool["description"]?.ToString() ?? string.Empty;
             Assert.DoesNotContain("optimistic concurrency", desc, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Supports dryRun", desc);
+        }
+
+        /// <summary>
+        /// Issue #559: the filter actions must state how they read (native first, XML
+        /// read-only otherwise), that they write only through the native SDK, that filter
+        /// conditions are not compiled, how the receipt verifies, and the `&amp;` convention.
+        /// </summary>
+        [Fact]
+        public void WorkWith_Help_DeclaresFilterReadPolicyAndNativeOnlyWrite()
+        {
+            string help = ToolHelpCatalog.Get("genexus_workwith") ?? string.Empty;
+
+            Assert.Contains("Read policy", help, StringComparison.Ordinal);
+            Assert.Contains("PatternInstance XML is read instead (read-only)", help, StringComparison.Ordinal);
+            Assert.Contains("no XML fallback for filter writes", help, StringComparison.Ordinal);
+            Assert.Contains("WorkWithSdkUnavailable", help, StringComparison.Ordinal);
+            Assert.Contains("WorkWithFilterAuthoringFailed", help, StringComparison.Ordinal);
+            Assert.Contains("Filter conditions are not compiled or evaluated", help, StringComparison.Ordinal);
+            Assert.Contains("FilterConditionDuplicate", help, StringComparison.Ordinal);
+            Assert.Contains("FilterLevelAmbiguous", help, StringComparison.Ordinal);
+            Assert.Contains("in_memory_instance_reread", help, StringComparison.Ordinal);
+            Assert.Contains("always `native-sdk` for filters", help, StringComparison.Ordinal);
+            Assert.Contains("optionally prefixed with `&`", help, StringComparison.Ordinal);
         }
     }
 }

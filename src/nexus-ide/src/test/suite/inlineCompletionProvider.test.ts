@@ -26,14 +26,16 @@ const AI_SETTING = "inlineCompletion.ai";
 
 // #324: the AI tests below are the only ones in the suite that do real
 // configuration I/O, and they target the Global store, so they depend on a
-// disk-backed settings.json under the (cwd-derived) .vscode-test user-data-dir.
+// disk-backed settings.json under the per-run --user-data-dir that runTest.ts
+// creates in .vscode-test (removed after a green run, #556).
 // Two consequences, both fixed here rather than by raising a timeout:
 //
 //  1. A mocha timeout does not cancel a pending async function. If the write of
 //     `true` lands after the test already timed out, the paired restore can run
 //     out of order, or never run at all if the host exits first, and
 //     `inlineCompletion.ai = true` persists into the profile and breaks the
-//     "disabled" test on every later run.
+//     "disabled" test later in the same run (and, while the profile was shared
+//     across runs, on every later run).
 //  2. A test whose precondition is "the profile happens to be clean" is not a
 //     test. Each test below now writes the value it needs before asserting, and
 //     the hooks neutralize whatever a previous or leaked run left behind, so the

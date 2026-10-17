@@ -276,12 +276,16 @@ namespace GxMcp.Worker.Services
             SetNativeAttribute(created, "caption", caption);
             ApplyNativeFormActionProperties(created, args);
             if (callObject != null) ApplyCallObjectNative(created, args, callObject);
+            int? insertIndex = NativeFormActionInsertIndex(container, args?["position"]?.ToObject<int?>());
 
             MethodInfo executeUpdate = part.GetType().GetMethod("ExecuteUpdate",
                 BindingFlags.Public | BindingFlags.Instance, null, new[] { typeof(string), typeof(Action) }, null);
             Action mutation = () =>
             {
-                ExecuteElementCommand(container, created, "AddElementCommand", null);
+                if (insertIndex.HasValue)
+                    ExecuteElementCommand(container, created, "InsertElementCommand", insertIndex.Value);
+                else
+                    ExecuteElementCommand(container, created, "AddElementCommand", null);
                 if (newContainerParent != null)
                     ExecuteElementCommand(newContainerParent, container, "AddElementCommand", null);
             };
@@ -296,8 +300,24 @@ namespace GxMcp.Worker.Services
                 ["containerName"] = containerName,
                 ["actionName"] = actionName,
                 ["event"] = callObject == null ? new JValue("Do" + actionName) : JValue.CreateNull(),
-                ["sdkOperation"] = "CreateChildElement(userAction) + AddElementCommand"
+                ["sdkOperation"] = "CreateChildElement(userAction) + "
+                    + (insertIndex.HasValue ? "InsertElementCommand" : "AddElementCommand")
             };
+        }
+
+        // Mirrors InsertFormAction on the XML side (#551): `position` counts the container's
+        // standard and user actions, and the child index of the action at that position is
+        // what InsertElementCommand takes. Null means append, including a position past the end.
+        private static int? NativeFormActionInsertIndex(object container, int? position)
+        {
+            if (!position.HasValue) return null;
+            List<object> children = NativeChildren(container);
+            List<object> actions = children.Where(child =>
+                NativeType(child).Equals("userAction", StringComparison.OrdinalIgnoreCase)
+                || NativeType(child).Equals("standardAction", StringComparison.OrdinalIgnoreCase)
+                || NativeElementXml(child)?.Name.LocalName.Equals("standardAction", StringComparison.OrdinalIgnoreCase) == true).ToList();
+            if (position.Value >= actions.Count) return null;
+            return children.IndexOf(actions[Math.Max(0, position.Value)]);
         }
 
         private static void ApplyNativeFormActionProperties(object action, JObject args)

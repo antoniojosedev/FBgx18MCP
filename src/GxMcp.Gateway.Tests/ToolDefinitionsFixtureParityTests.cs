@@ -64,6 +64,40 @@ namespace GxMcp.Gateway.Tests
                 "Regenerate the fixture (GXMCP_UPDATE_GOLDEN=1) or fix the schema.");
         }
 
+        // Issue #559: genexus_workwith's schema example used `description` while the
+        // property was not declared, so schema-driven clients could not offer it. The
+        // runtime only flags undeclared keys within edit distance 2 of a declared one, so
+        // nothing failed. Every example key must be a declared property or a cross-cutting
+        // argument the gateway honours on every tool.
+        [Fact]
+        public void EveryExampleKeyIsDeclaredInProperties()
+        {
+            var path = FindUp("src", "GxMcp.Gateway", "tool_definitions.json");
+            var tools = JArray.Parse(File.ReadAllText(path));
+            var undeclared = new System.Collections.Generic.List<string>();
+
+            foreach (var tool in tools.OfType<JObject>())
+            {
+                var schema = tool["inputSchema"] as JObject;
+                var properties = schema?["properties"] as JObject;
+                var examples = schema?["examples"] as JArray;
+                if (properties == null || examples == null) continue;
+
+                for (int i = 0; i < examples.Count; i++)
+                {
+                    if (examples[i] is not JObject example) continue;
+                    foreach (var key in example.Properties().Select(p => p.Name))
+                    {
+                        if (properties.ContainsKey(key) || GatewayArgsValidator.CrossCuttingArgs.Contains(key)) continue;
+                        undeclared.Add($"{tool["name"]}.examples[{i}].{key}");
+                    }
+                }
+            }
+
+            Assert.True(undeclared.Count == 0,
+                "example keys not declared in inputSchema.properties:\n  " + string.Join("\n  ", undeclared));
+        }
+
         [Fact]
         public void GoldenFixtureIsAlphabeticallySorted()
         {

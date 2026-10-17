@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Xml.Serialization;
+using GeneXus.Application;
 using GeneXus.Utils;
 
 namespace SdkOracle;
@@ -46,9 +48,27 @@ internal static class Program
             return 0;
         }
 
+        if (args.Length > 0 && args[0] == "generate-conditional-state")
+        {
+            GenerateConditionalState();
+            return 0;
+        }
+
+        if (args.Length > 0 && args[0] == "generate-sdt-json")
+        {
+            GenerateSdtJson();
+            return 0;
+        }
+
+        if (args.Length > 0 && args[0] == "generate-sdt-xml")
+        {
+            GenerateSdtXml();
+            return 0;
+        }
+
         if (args.Length < 3 || args[0] != "bench-str")
         {
-            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops | generate-calendar-ops");
+            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops | generate-calendar-ops | generate-conditional-state | generate-sdt-json");
             return 2;
         }
 
@@ -590,5 +610,431 @@ internal static class Program
         }
     }
 
+    private static void GenerateConditionalState()
+    {
+        // 1. StringUtil.Format(value, v1..v9)
+        (string pattern, string[] args)[] formatCases = [
+            ("Selection List %1", ["Customer"]),
+            ("Order %1 for %2: %3", ["1001", "Alice", "$250.00"]),
+            ("%1-%2-%3-%4-%5-%6-%7-%8-%9", ["A", "B", "C", "D", "E", "F", "G", "H", "I"]),
+            ("Repeated %1 and %2 and %1", ["X", "Y"]),
+            ("Missing %2 with only %1", ["One"]),
+            ("Escaped \\%1 and real %1", ["Value"]),
+            ("Backslash \\not_pct and %1", ["Val"]),
+            ("No placeholders here", ["Ignored"]),
+            ("", ["Ignored"]),
+            ("DotNet {0} and {1}", ["First", "Second"]),
+        ];
+        foreach (var (pattern, args) in formatCases)
+        {
+            string[] padded = new string[9];
+            for (int i = 0; i < 9; i++)
+            {
+                padded[i] = i < args.Length ? args[i] : "";
+            }
+            string res = StringUtil.Format(
+                pattern,
+                padded[0], padded[1], padded[2],
+                padded[3], padded[4], padded[5],
+                padded[6], padded[7], padded[8]);
+            string joinedArgs = string.Join(",", args.Select(Escape));
+            Console.WriteLine($"format|{Escape(pattern)}|{joinedArgs}=[{Escape(res)}]");
+        }
+
+        // 2. StringUtil.Replicate
+        (string str, int count)[] replicateCases = [
+            ("ab", 3),
+            ("x", 5),
+            ("abc", 0),
+            ("abc", -2),
+            ("", 4),
+            ("Gx", 1),
+        ];
+        foreach (var (str, count) in replicateCases)
+        {
+            string res = StringUtil.Replicate(str, count);
+            Console.WriteLine($"replicate|{Escape(str)}|{count}=[{Escape(res)}]");
+        }
+
+        // 3. StringUtil.CharAt
+        (string str, int idx)[] charAtCases = [
+            ("GeneXus", 1),
+            ("GeneXus", 4),
+            ("GeneXus", 7),
+            ("GeneXus", 0),
+            ("GeneXus", -1),
+            ("GeneXus", 8),
+            ("", 1),
+        ];
+        foreach (var (str, idx) in charAtCases)
+        {
+            string res = StringUtil.CharAt(str, idx);
+            Console.WriteLine($"charat|{Escape(str)}|{idx}=[{Escape(res)}]");
+        }
+
+        // 4. StringUtil.StringSearchRev
+        (string s1, string s2, int start)[] searchRevCases = [
+            ("ababa", "aba", -1),
+            ("ababa", "aba", 5),
+            ("ababa", "aba", 4),
+            ("ababa", "aba", 3),
+            ("ababa", "aba", 2),
+            ("ababa", "aba", 0),
+            ("hello world hello", "hello", -1),
+            ("hello world hello", "hello", 10),
+            ("hello world hello", "xyz", -1),
+            ("abc", "abc", 100),
+        ];
+        foreach (var (s1, s2, start) in searchRevCases)
+        {
+            int res = StringUtil.StringSearchRev(s1, s2, start);
+            Console.WriteLine($"strsearchrev|{Escape(s1)}|{Escape(s2)}|{start}=[{res}]");
+        }
+
+        // 5. BoolToStr and StrToBool
+        Console.WriteLine($"booltostr|true=[{StringUtil.BoolToStr(true)}]");
+        Console.WriteLine($"booltostr|false=[{StringUtil.BoolToStr(false)}]");
+        string[] strToBoolInputs = ["true", "TRUE", "True", "1", "false", "FALSE", "0", "", "yes"];
+        foreach (var s in strToBoolInputs)
+        {
+            bool res = StringUtil.StrToBool(s);
+            Console.WriteLine($"strtobool|{Escape(s)}=[{(res ? "true" : "false")}]");
+        }
+
+        // 6. NewLine
+        Console.WriteLine($"newline|=[{Escape(StringUtil.NewLine())}]");
+
+        // 7. IsEmpty across types (matching GeneXus C# generated expressions)
+        string[] textIsEmptyInputs = ["", "   ", " a ", "abc", "\t"];
+        foreach (var s in textIsEmptyInputs)
+        {
+            bool isEmpty = string.IsNullOrEmpty(StringUtil.RTrim(s));
+            Console.WriteLine($"isempty_text|{Escape(s)}=[{(isEmpty ? "true" : "false")}]");
+        }
+        decimal[] numIsEmptyInputs = [0m, 0.00m, 1m, -0.01m, 42.5m];
+        foreach (var n in numIsEmptyInputs)
+        {
+            bool isEmpty = (n == 0m);
+            Console.WriteLine($"isempty_num|{n.ToString(CultureInfo.InvariantCulture)}=[{(isEmpty ? "true" : "false")}]");
+        }
+        bool[] boolIsEmptyInputs = [false, true];
+        foreach (var b in boolIsEmptyInputs)
+        {
+            bool isEmpty = !b;
+            Console.WriteLine($"isempty_bool|{(b ? "true" : "false")}=[{(isEmpty ? "true" : "false")}]");
+        }
+    }
+
+    private static void GenerateSdtJson()
+    {
+        // 1. Empty SDT ToJson
+        var sdtEmpty = new TestItemSdt();
+        Console.WriteLine($"sdt_empty_to_json|=[{Escape(sdtEmpty.ToJSonString())}]");
+
+        // 2. Populated scalar SDT ToJson
+        var sdt = new TestItemSdt();
+        sdt.gxTpr_Amount = 42;
+        sdt.gxTpr_Label = "Hello \"world\"";
+        sdt.gxTpr_Fixed = "ABC";
+        sdt.gxTpr_Flag = true;
+        sdt.gxTpr_Day = new DateTime(2026, 3, 29);
+        sdt.gxTpr_Stamp = new DateTime(2026, 3, 29, 14, 30, 45);
+        string sdtJson = sdt.ToJSonString();
+        Console.WriteLine($"sdt_to_json|=[{Escape(sdtJson)}]");
+
+        // 3. FromJson roundtrip
+        var sdtRound = new TestItemSdt();
+        bool okRound = sdtRound.FromJSonString(sdtJson);
+        Console.WriteLine($"sdt_from_json_ok|=[{okRound}]");
+        Console.WriteLine($"sdt_round_amount|=[{sdtRound.gxTpr_Amount}]");
+        Console.WriteLine($"sdt_round_label|=[{Escape(sdtRound.gxTpr_Label)}]");
+        Console.WriteLine($"sdt_round_fixed|=[{Escape(sdtRound.gxTpr_Fixed)}]");
+        Console.WriteLine($"sdt_round_flag|=[{sdtRound.gxTpr_Flag}]");
+        Console.WriteLine($"sdt_round_day|=[{DateTimeUtil.Year(sdtRound.gxTpr_Day):D4}-{DateTimeUtil.Month(sdtRound.gxTpr_Day):D2}-{DateTimeUtil.Day(sdtRound.gxTpr_Day):D2}]");
+        Console.WriteLine($"sdt_round_stamp|=[{DateTimeUtil.Year(sdtRound.gxTpr_Stamp):D4}-{DateTimeUtil.Month(sdtRound.gxTpr_Stamp):D2}-{DateTimeUtil.Day(sdtRound.gxTpr_Stamp):D2}T{DateTimeUtil.Hour(sdtRound.gxTpr_Stamp):D2}:{DateTimeUtil.Minute(sdtRound.gxTpr_Stamp):D2}:{DateTimeUtil.Second(sdtRound.gxTpr_Stamp):D2}]");
+
+        // 4. Case-insensitive keys and partial update
+        var sdtPartial = new TestItemSdt();
+        sdtPartial.gxTpr_Amount = 100;
+        sdtPartial.gxTpr_Label = "Initial";
+        bool okPartial = sdtPartial.FromJSonString("{\"label\":\"Updated\",\"flag\":true,\"unknown\":\"ignored\"}");
+        Console.WriteLine($"sdt_partial_ok|=[{okPartial}]");
+        Console.WriteLine($"sdt_partial_amount_preserved|=[{sdtPartial.gxTpr_Amount}]");
+        Console.WriteLine($"sdt_partial_label_updated|=[{Escape(sdtPartial.gxTpr_Label)}]");
+        Console.WriteLine($"sdt_partial_flag_updated|=[{sdtPartial.gxTpr_Flag}]");
+
+        // 5. Invalid JSON handling
+        var sdtInvalid = new TestItemSdt();
+        bool okEmpty = sdtInvalid.FromJSonString("");
+        bool okMalformed = sdtInvalid.FromJSonString("{invalid");
+        bool okNotObj = sdtInvalid.FromJSonString("123");
+        Console.WriteLine($"sdt_from_json_empty|=[{okEmpty}]");
+        Console.WriteLine($"sdt_from_json_malformed|=[{okMalformed}]");
+        Console.WriteLine($"sdt_from_json_not_obj|=[{okNotObj}]");
+
+        // 6. Nested SDT ToJson and FromJson
+        var parent = new TestParentSdt();
+        parent.gxTpr_Code = "P01";
+        parent.gxTpr_Child.gxTpr_Amount = 10;
+        parent.gxTpr_Child.gxTpr_Label = "Sub";
+        var parentItem = new TestItemSdt();
+        parentItem.gxTpr_Amount = 100;
+        parentItem.gxTpr_Label = "Row1";
+        parent.gxTpr_Items.Add(parentItem);
+        string parentJson = parent.ToJSonString();
+        Console.WriteLine($"parent_to_json|=[{Escape(parentJson)}]");
+
+        var parentRound = new TestParentSdt();
+        bool okParent = parentRound.FromJSonString(parentJson);
+        Console.WriteLine($"parent_from_json_ok|=[{okParent}]");
+        Console.WriteLine($"parent_round_code|=[{Escape(parentRound.gxTpr_Code)}]");
+        Console.WriteLine($"parent_round_child_amount|=[{parentRound.gxTpr_Child.gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_child_label|=[{Escape(parentRound.gxTpr_Child.gxTpr_Label)}]");
+        Console.WriteLine($"parent_round_items_count|=[{parentRound.gxTpr_Items.Count}]");
+        Console.WriteLine($"parent_round_item1_amount|=[{parentRound.gxTpr_Items[0].gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_item1_label|=[{Escape(parentRound.gxTpr_Items[0].gxTpr_Label)}]");
+
+        // 7. Collection of SDTs ToJson and FromJson
+        var col = new GXBaseCollection<TestItemSdt>();
+        Console.WriteLine($"col_empty_to_json|=[{Escape(col.ToJSonString())}]");
+
+        var item1 = new TestItemSdt();
+        item1.gxTpr_Amount = 1;
+        item1.gxTpr_Label = "One";
+        var item2 = new TestItemSdt();
+        item2.gxTpr_Amount = 2;
+        item2.gxTpr_Label = "Two";
+        col.Add(item1);
+        col.Add(item2);
+        string colJson = col.ToJSonString();
+        Console.WriteLine($"col_to_json|=[{Escape(colJson)}]");
+
+        var colRound = new GXBaseCollection<TestItemSdt>();
+        bool okCol = colRound.FromJSonString(colJson);
+        Console.WriteLine($"col_from_json_ok|=[{okCol}]");
+        Console.WriteLine($"col_round_count|=[{colRound.Count}]");
+        Console.WriteLine($"col_round_item1_amount|=[{colRound[0].gxTpr_Amount}]");
+        Console.WriteLine($"col_round_item1_label|=[{Escape(colRound[0].gxTpr_Label)}]");
+        Console.WriteLine($"col_round_item2_amount|=[{colRound[1].gxTpr_Amount}]");
+        Console.WriteLine($"col_round_item2_label|=[{Escape(colRound[1].gxTpr_Label)}]");
+
+        // 8. Collection invalid JSON
+        bool okColEmpty = colRound.FromJSonString("");
+        bool okColNotArray = colRound.FromJSonString("{\"Amount\":1}");
+        Console.WriteLine($"col_from_json_empty|=[{okColEmpty}]");
+        Console.WriteLine($"col_from_json_not_array|=[{okColNotArray}]");
+    }
+
     private static string Escape(string s) => s.Replace("\t", "\\t").Replace("\n", "\\n").Replace("\r", "\\r");
+
+    private static void GenerateSdtXml()
+    {
+        var context = new GxContext();
+
+        // 1. Empty item ToXml
+        var emptyItem = new TestItemSdt(context);
+        string emptyItemXml = emptyItem.ToXml("TestItem");
+        Console.WriteLine($"sdt_empty_to_xml|=[{Escape(emptyItemXml)}]");
+
+        // 2. Filled item ToXml
+        var item = new TestItemSdt(context);
+        item.gxTpr_Amount = 42;
+        item.gxTpr_Label = "Hello World";
+        item.gxTpr_Fixed = "ABC";
+        item.gxTpr_Flag = true;
+        item.gxTpr_Day = new DateTime(2026, 3, 29);
+        item.gxTpr_Stamp = new DateTime(2026, 3, 29, 14, 30, 45);
+        string filledItemXml = item.ToXml("TestItem");
+        Console.WriteLine($"sdt_filled_to_xml|=[{Escape(filledItemXml)}]");
+
+        // 3. Special characters XML escaping (<, >, &, ', ")
+        var specialItem = new TestItemSdt(context);
+        specialItem.gxTpr_Amount = 10;
+        specialItem.gxTpr_Label = "<xml & 'special' \"test\">";
+        specialItem.gxTpr_Fixed = "X&Y";
+        string specialItemXml = specialItem.ToXml("TestItem");
+        Console.WriteLine($"sdt_special_to_xml|=[{Escape(specialItemXml)}]");
+
+        // 4. FromXml roundtrip
+        var itemRound = new TestItemSdt(context);
+        bool okFromXml = itemRound.FromXml(filledItemXml, "TestItem");
+        Console.WriteLine($"sdt_from_xml_roundtrip_ok|=[{okFromXml}]");
+        Console.WriteLine($"sdt_round_amount|=[{itemRound.gxTpr_Amount}]");
+        Console.WriteLine($"sdt_round_label|=[{Escape(itemRound.gxTpr_Label)}]");
+        Console.WriteLine($"sdt_round_fixed|=[{Escape(itemRound.gxTpr_Fixed)}]");
+        Console.WriteLine($"sdt_round_flag|=[{itemRound.gxTpr_Flag}]");
+        Console.WriteLine($"sdt_round_day|=[{itemRound.gxTpr_Day:yyyy-MM-dd}]");
+        Console.WriteLine($"sdt_round_stamp|=[{itemRound.gxTpr_Stamp:yyyy-MM-ddTHH:mm:ss}]");
+
+        // 5. FromXml special characters roundtrip
+        var specialRound = new TestItemSdt(context);
+        bool okSpecial = specialRound.FromXml(specialItemXml, "TestItem");
+        Console.WriteLine($"sdt_special_from_xml_ok|=[{okSpecial}]");
+        Console.WriteLine($"sdt_special_round_label|=[{Escape(specialRound.gxTpr_Label)}]");
+        Console.WriteLine($"sdt_special_round_fixed|=[{Escape(specialRound.gxTpr_Fixed)}]");
+
+        // 6. Partial FromXml
+        var partialItem = new TestItemSdt(context);
+        partialItem.gxTpr_Amount = 5;
+        partialItem.gxTpr_Label = "Initial";
+        bool okPartial = partialItem.FromXml("<TestItem><Amount>99</Amount></TestItem>", "TestItem");
+        Console.WriteLine($"sdt_from_xml_partial_ok|=[{okPartial}]");
+        Console.WriteLine($"sdt_partial_amount|=[{partialItem.gxTpr_Amount}]");
+        Console.WriteLine($"sdt_partial_label|=[{Escape(partialItem.gxTpr_Label)}]");
+
+        // 7. Malformed / Mismatch / Empty FromXml
+        var badItem = new TestItemSdt(context);
+        bool okMalformed = badItem.FromXml("not xml", "TestItem");
+        bool okMismatch = badItem.FromXml("<WrongRoot><Amount>1</Amount></WrongRoot>", "TestItem");
+        bool okEmpty = badItem.FromXml("", "TestItem");
+        Console.WriteLine($"sdt_from_xml_malformed|=[{okMalformed}]");
+        Console.WriteLine($"sdt_from_xml_mismatch_root|=[{okMismatch}]");
+        Console.WriteLine($"sdt_from_xml_empty|=[{okEmpty}]");
+
+        // 8. Nested parent SDT
+        var parent = new TestParentSdt(context);
+        parent.gxTpr_Code = "P100";
+        parent.gxTpr_Child.gxTpr_Amount = 55;
+        parent.gxTpr_Child.gxTpr_Label = "ChildLabel";
+
+        var childItem1 = new TestItemSdt(context);
+        childItem1.gxTpr_Amount = 11;
+        childItem1.gxTpr_Label = "FirstItem";
+        var childItem2 = new TestItemSdt(context);
+        childItem2.gxTpr_Amount = 22;
+        childItem2.gxTpr_Label = "SecondItem";
+        parent.gxTpr_Items.Add(childItem1);
+        parent.gxTpr_Items.Add(childItem2);
+
+        string parentXml = parent.ToXml("TestParent");
+        Console.WriteLine($"parent_filled_to_xml|=[{Escape(parentXml)}]");
+
+        var parentRound = new TestParentSdt(context);
+        bool okParent = parentRound.FromXml(parentXml, "TestParent");
+        Console.WriteLine($"parent_from_xml_ok|=[{okParent}]");
+        Console.WriteLine($"parent_round_code|=[{Escape(parentRound.gxTpr_Code)}]");
+        Console.WriteLine($"parent_round_child_amount|=[{parentRound.gxTpr_Child.gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_child_label|=[{Escape(parentRound.gxTpr_Child.gxTpr_Label)}]");
+        Console.WriteLine($"parent_round_items_count|=[{parentRound.gxTpr_Items.Count}]");
+        Console.WriteLine($"parent_round_item1_amount|=[{parentRound.gxTpr_Items[0].gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_item1_label|=[{Escape(parentRound.gxTpr_Items[0].gxTpr_Label)}]");
+        Console.WriteLine($"parent_round_item2_amount|=[{parentRound.gxTpr_Items[1].gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_item2_label|=[{Escape(parentRound.gxTpr_Items[1].gxTpr_Label)}]");
+
+        // 9. Collections ToXml & FromXml
+        var col = new GXBaseCollection<TestItemSdt>(context, "TestItem", "");
+        string emptyColXml = col.ToXml("TestItems");
+        Console.WriteLine($"col_empty_to_xml|=[{Escape(emptyColXml)}]");
+
+        col.Add(childItem1);
+        col.Add(childItem2);
+        string colXml = col.ToXml("TestItems");
+        Console.WriteLine($"col_filled_to_xml|=[{Escape(colXml)}]");
+
+        var colRound = new GXBaseCollection<TestItemSdt>(context, "TestItem", "");
+        bool okCol = colRound.FromXml(colXml, "TestItems");
+        Console.WriteLine($"col_from_xml_ok|=[{okCol}]");
+        Console.WriteLine($"col_round_count|=[{colRound.Count}]");
+        Console.WriteLine($"col_round_item1_amount|=[{colRound[0].gxTpr_Amount}]");
+        Console.WriteLine($"col_round_item1_label|=[{Escape(colRound[0].gxTpr_Label)}]");
+        Console.WriteLine($"col_round_item2_amount|=[{colRound[1].gxTpr_Amount}]");
+        Console.WriteLine($"col_round_item2_label|=[{Escape(colRound[1].gxTpr_Label)}]");
+
+        // 10. Collection empty FromXml and malformed
+        var colEmptyRound = new GXBaseCollection<TestItemSdt>(context, "TestItem", "");
+        bool okColEmpty = colEmptyRound.FromXml("<TestItems />", "TestItems");
+        bool okColBad = colEmptyRound.FromXml("not xml", "TestItems");
+        Console.WriteLine($"col_from_xml_empty|=[{okColEmpty}]");
+        Console.WriteLine($"col_empty_round_count|=[{colEmptyRound.Count}]");
+        Console.WriteLine($"col_from_xml_malformed|=[{okColBad}]");
+    }
 }
+
+[XmlRoot(ElementName = "TestItem")]
+[XmlType(TypeName = "TestItem", Namespace = "")]
+[Serializable]
+public class TestItemSdt : GxUserType
+{
+    private short gxTv_Amount;
+    private string gxTv_Label = "";
+    private string gxTv_Fixed = "";
+    private bool gxTv_Flag;
+    private DateTime gxTv_Day = DateTime.MinValue;
+    private DateTime gxTv_Stamp = DateTime.MinValue;
+
+    public TestItemSdt() { }
+    public TestItemSdt(IGxContext? context) { this.context = context; }
+
+    [XmlElement(ElementName = "Amount")]
+    public short gxTpr_Amount { get => gxTv_Amount; set { gxTv_Amount = value; SetDirty("Amount"); } }
+
+    [XmlElement(ElementName = "Day")]
+    public DateTime gxTpr_Day { get => gxTv_Day; set { gxTv_Day = value; SetDirty("Day"); } }
+
+    [XmlElement(ElementName = "Fixed")]
+    public string gxTpr_Fixed { get => gxTv_Fixed; set { gxTv_Fixed = value; SetDirty("Fixed"); } }
+
+    [XmlElement(ElementName = "Flag")]
+    public bool gxTpr_Flag { get => gxTv_Flag; set { gxTv_Flag = value; SetDirty("Flag"); } }
+
+    [XmlElement(ElementName = "Label")]
+    public string gxTpr_Label { get => gxTv_Label; set { gxTv_Label = value; SetDirty("Label"); } }
+
+    [XmlElement(ElementName = "Stamp")]
+    public DateTime gxTpr_Stamp { get => gxTv_Stamp; set { gxTv_Stamp = value; SetDirty("Stamp"); } }
+
+    public override void ToJSON(bool includeState)
+    {
+        AddObjectProperty("Amount", gxTpr_Amount, false);
+        AddObjectProperty("Label", gxTpr_Label, false);
+        AddObjectProperty("Fixed", gxTpr_Fixed, false);
+        AddObjectProperty("Flag", gxTpr_Flag, false);
+
+        string sDateCnv = $"{DateTimeUtil.Year(gxTpr_Day):D4}-{DateTimeUtil.Month(gxTpr_Day):D2}-{DateTimeUtil.Day(gxTpr_Day):D2}";
+        AddObjectProperty("Day", sDateCnv, false);
+
+        string sStampCnv = $"{DateTimeUtil.Year(gxTpr_Stamp):D4}-{DateTimeUtil.Month(gxTpr_Stamp):D2}-{DateTimeUtil.Day(gxTpr_Stamp):D2}T{DateTimeUtil.Hour(gxTpr_Stamp):D2}:{DateTimeUtil.Minute(gxTpr_Stamp):D2}:{DateTimeUtil.Second(gxTpr_Stamp):D2}";
+        AddObjectProperty("Stamp", sStampCnv, false);
+    }
+
+    public override void ToJSON(bool includeState, bool includeNoInitialized)
+    {
+        ToJSON(includeState);
+    }
+}
+
+[XmlRoot(ElementName = "TestParent")]
+[XmlType(TypeName = "TestParent", Namespace = "")]
+[Serializable]
+public class TestParentSdt : GxUserType
+{
+    private string gxTv_Code = "";
+    private TestItemSdt? gxTv_Child;
+    private GXBaseCollection<TestItemSdt>? gxTv_Items;
+
+    public TestParentSdt() { }
+    public TestParentSdt(IGxContext? context) { this.context = context; }
+
+    [XmlElement(ElementName = "Child")]
+    public TestItemSdt gxTpr_Child { get => gxTv_Child ??= new TestItemSdt(context); set { gxTv_Child = value; SetDirty("Child"); } }
+
+    [XmlElement(ElementName = "Code")]
+    public string gxTpr_Code { get => gxTv_Code; set { gxTv_Code = value; SetDirty("Code"); } }
+
+    [XmlArray(ElementName = "Items")]
+    [XmlArrayItem(ElementName = "TestItem", IsNullable = false)]
+    public GXBaseCollection<TestItemSdt> gxTpr_Items { get => gxTv_Items ??= new GXBaseCollection<TestItemSdt>(context, "TestItem", ""); set { gxTv_Items = value; SetDirty("Items"); } }
+
+    public override void ToJSON(bool includeState)
+    {
+        AddObjectProperty("Code", gxTpr_Code, false);
+        if (gxTv_Child != null) AddObjectProperty("Child", gxTv_Child, false);
+        if (gxTv_Items != null) AddObjectProperty("Items", gxTv_Items, false);
+    }
+
+    public override void ToJSON(bool includeState, bool includeNoInitialized)
+    {
+        ToJSON(includeState);
+    }
+}
+

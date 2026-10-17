@@ -281,8 +281,16 @@ fn collect_block(
             | Stmt::CollectionAdd(..)
             | Stmt::CollectionRemove(..)
             | Stmt::CollectionClear(..)
+            | Stmt::FromJson(..)
+            | Stmt::FromXml(..)
             | Stmt::ForIn(..)
-            | Stmt::Exit => {
+            | Stmt::Exit
+            | Stmt::Commit
+            | Stmt::Rollback
+            | Stmt::ForEach(..)
+            | Stmt::AssignAttribute(..)
+            | Stmt::Delete
+            | Stmt::New(..) => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {
@@ -290,6 +298,9 @@ fn collect_block(
             }
             Stmt::MsgStatus(_) => {
                 return Err("Msg status requires format_version 2".into());
+            }
+            Stmt::DoSub(_) | Stmt::Sub(..) => {
+                return Err("subroutines require format_version 2".into());
             }
             Stmt::If(condition, then_body, else_body) => {
                 collect_expr(condition, 0, budget)?;
@@ -318,7 +329,10 @@ fn collect_expr(expression: &Expr, depth: usize, budget: &mut AstBudget) -> Resu
         | Expr::Text(_)
         | Expr::Boolean(_)
         | Expr::EmptyDate => {}
-        Expr::Member(_, _) | Expr::CloneRecord(_) | Expr::CollectionItem(_, _) => {
+        Expr::Member(_, _)
+        | Expr::CloneRecord(_)
+        | Expr::CollectionItem(_, _)
+        | Expr::Attribute(_) => {
             return Err("record expressions require format_version 2".into());
         }
         Expr::Variable(name) | Expr::Call(name, _) => {
@@ -383,7 +397,15 @@ fn validate_block(
             | Stmt::CollectionRemove(..)
             | Stmt::CollectionClear(..)
             | Stmt::ForIn(..)
-            | Stmt::Exit => {
+            | Stmt::FromJson(..)
+            | Stmt::FromXml(..)
+            | Stmt::Exit
+            | Stmt::Commit
+            | Stmt::Rollback
+            | Stmt::ForEach(..)
+            | Stmt::AssignAttribute(..)
+            | Stmt::Delete
+            | Stmt::New(..) => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {
@@ -391,6 +413,9 @@ fn validate_block(
             }
             Stmt::MsgStatus(_) => {
                 return Err("Msg status requires format_version 2".into());
+            }
+            Stmt::DoSub(_) | Stmt::Sub(..) => {
+                return Err("subroutines require format_version 2".into());
             }
             Stmt::Assign(name, expression) => {
                 validate_expr(
@@ -545,7 +570,8 @@ fn validate_expr(
         | Expr::Member(_, _)
         | Expr::CollectionItem(_, _)
         | Expr::CloneRecord(_)
-        | Expr::DateShift(_, _, _) => Err("typed literals require format_version 2".into()),
+        | Expr::DateShift(_, _, _)
+        | Expr::Attribute(_) => Err("typed literals require format_version 2".into()),
         Expr::Variable(name) => {
             let key = identifier_key(name, "variable")?;
             let Some(&slot) = infos[procedure_index].variables.get(&key) else {
@@ -691,7 +717,15 @@ fn emit_block(
             | Stmt::CollectionRemove(..)
             | Stmt::CollectionClear(..)
             | Stmt::ForIn(..)
-            | Stmt::Exit => {
+            | Stmt::FromJson(..)
+            | Stmt::FromXml(..)
+            | Stmt::Exit
+            | Stmt::Commit
+            | Stmt::Rollback
+            | Stmt::ForEach(..)
+            | Stmt::AssignAttribute(..)
+            | Stmt::Delete
+            | Stmt::New(..) => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {
@@ -699,6 +733,9 @@ fn emit_block(
             }
             Stmt::MsgStatus(_) => {
                 return Err("Msg status requires format_version 2".into());
+            }
+            Stmt::DoSub(_) | Stmt::Sub(..) => {
+                return Err("subroutines require format_version 2".into());
             }
             Stmt::Assign(name, expression) => {
                 let key = identifier_key(name, "variable")?;
@@ -795,7 +832,8 @@ fn rust_expr(
         | Expr::Member(_, _)
         | Expr::CollectionItem(_, _)
         | Expr::CloneRecord(_)
-        | Expr::DateShift(_, _, _) => Err("typed literals require format_version 2".into()),
+        | Expr::DateShift(_, _, _)
+        | Expr::Attribute(_) => Err("typed literals require format_version 2".into()),
         Expr::Not(value) => Ok(format!(
             "i64::from({} == 0)",
             rust_expr(value, procedure_index, procedure_indices, infos, depth + 1)?

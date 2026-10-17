@@ -644,7 +644,7 @@
             "type": "string"
           },
           "basedOn": {
-            "description": "object Domain.",
+            "description": "object Domain/Attribute: existing…",
             "type": "string"
           },
           "content": {
@@ -656,11 +656,11 @@
             "type": "string"
           },
           "dataType": {
-            "description": "object Domain.",
+            "description": "object Domain/Attribute: primitive…",
             "type": "string"
           },
           "decimals": {
-            "description": "object Domain.",
+            "description": "object Domain/Attribute.",
             "type": "integer"
           },
           "description": {
@@ -703,7 +703,7 @@
             "type": "string"
           },
           "length": {
-            "description": "object Domain.",
+            "description": "object Domain/Attribute.",
             "type": "integer"
           },
           "mode": {
@@ -1589,8 +1589,7 @@
             "type": "boolean"
           },
           "verifyMode": {
-            "default": "normalized",
-            "description": "Post-save text comparison. Full exact…",
+            "description": "Omitted: semantic for Structure,…",
             "enum": [
               "semantic",
               "normalized",
@@ -5082,7 +5081,7 @@
             "type": "string"
           },
           "attribute": {
-            "description": "Attribute name to filter on (required…",
+            "description": "Filter attribute name (required for…",
             "type": "string"
           },
           "caption": {
@@ -5094,14 +5093,18 @@
             "type": "string"
           },
           "conditions": {
-            "description": "Conditions associated with the filter…",
+            "description": "Filter conditions added with the…",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
+          "description": {
+            "description": "Optional description of the filter…",
+            "type": "string"
+          },
           "domain": {
-            "description": "Optional Domain name or reference for…",
+            "description": "Optional Domain name for the filter…",
             "type": "string"
           },
           "dryRun": {
@@ -5218,6 +5221,10 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "attribute": {
+                  "description": "type=attribute: name or…",
+                  "type": "string"
+                },
                 "basicType": {
                   "type": "string"
                 },
@@ -5267,7 +5274,8 @@
                   "enum": [
                     "variable",
                     "userAction",
-                    "table"
+                    "table",
+                    "attribute"
                   ],
                   "type": "string"
                 }
@@ -5407,7 +5415,7 @@
             "type": "boolean"
           },
           "position": {
-            "description": "Zero-based action or tab index.",
+            "description": "Zero-based action or tab index.…",
             "minimum": 0,
             "type": "integer"
           },

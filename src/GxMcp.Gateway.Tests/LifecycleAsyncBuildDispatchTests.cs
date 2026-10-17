@@ -7,21 +7,25 @@ namespace GxMcp.Gateway.Tests
     public class LifecycleAsyncBuildDispatchTests
     {
         /// <summary>
-        /// Issue #359. This used to assert <c>RebuildAll</c> for
-        /// <c>rebuild target=Customer</c> — encoding the defect as the expectation.
-        /// The Worker's whole-KB branch emits <c>&lt;BuildAll/&gt;</c> without reading
-        /// <c>targets</c>, so a targeted rebuild silently rebuilt the entire Knowledge
-        /// Base and answered <c>Action: RebuildAll</c>.
+        /// Issue #546, superseding the #359 contract this test used to pin (a
+        /// <c>rebuild target=Customer</c> routed to the Worker's targeted <c>Rebuild</c>).
+        /// A <c>rebuild</c> carrying a target is now refused by the Gateway intercept with
+        /// <c>TargetNotSupported</c> before this factory runs (see
+        /// <c>LifecycleRouterTests</c>), so the targeted mapping was unreachable and was
+        /// removed. Should the intercept ever be bypassed, the factory must still hand the
+        /// Worker a KB-wide <c>RebuildAll</c> that carries the target, so the Worker's own
+        /// guard refuses it instead of a targeted rebuild quietly taking a route
+        /// <c>genexus_lifecycle</c> no longer publishes.
         /// </summary>
         [Fact]
-        public void BuildCommandFactory_UsesTargetedRebuild_WhenRebuildHasATarget()
+        public void BuildCommandFactory_MapsRebuildToRebuildAll_AndPreservesTargetForWorkerRefusal()
         {
             var command = Program.BuildAsyncLifecycleCommand(
                 "rebuild",
                 new JObject { ["target"] = "Customer" },
                 "job-2");
 
-            Assert.Equal("Rebuild", command["action"]!.ToString());
+            Assert.Equal("RebuildAll", command["action"]!.ToString());
             Assert.Equal("Customer", command["target"]!.ToString());
             Assert.Equal("job-2", command["cancelToken"]!.ToString());
         }

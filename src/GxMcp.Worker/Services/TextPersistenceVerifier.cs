@@ -211,6 +211,25 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
+        /// True when a Structure part differs from the request only by the attribute
+        /// description GeneXus derives from the attribute name: once that description
+        /// is dropped from both texts, the normalized lines are identical. Lets a
+        /// receipt label a textual mismatch the caller opted into (<c>normalized</c>
+        /// or <c>exact</c>) so it is not mistaken for a lost write (#557).
+        /// </summary>
+        internal static bool OnlySdkGeneratedAttributeDescriptionDiffers(string partName, string requested, string persisted)
+        {
+            if (!string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase)) return false;
+            string nr = Normalize(requested);
+            string np = Normalize(persisted);
+            if (string.Equals(nr, np, StringComparison.Ordinal)) return false;
+            return string.Equals(
+                StripSdkGeneratedAttributeDescriptions(nr),
+                StripSdkGeneratedAttributeDescriptions(np),
+                StringComparison.Ordinal);
+        }
+
+        /// <summary>
         /// Recognises an attribute declaration whose trailing comment is only the
         /// description GeneXus derives from the attribute name. Returns the
         /// declaration with that description removed.
@@ -273,9 +292,20 @@ namespace GxMcp.Worker.Services
 
         /// <summary>
         /// True when <paramref name="description"/> is what GeneXus would derive
-        /// from <paramref name="name"/>: the name split on camel-case boundaries
-        /// and joined with spaces, compared case-insensitively and ignoring
-        /// punctuation the derivation also drops.
+        /// from <paramref name="name"/>. Two renderings are accepted:
+        ///
+        /// - the name split on camel-case boundaries and joined with spaces
+        ///   (<c>CustomerId</c> → "Customer Id"), compared case-insensitively and
+        ///   ignoring punctuation the derivation also drops;
+        /// - the same letters and digits in the same order, wherever the spaces
+        ///   fall. The SDK keeps a leading run of capitals as one word
+        ///   (<c>ZTstMcpArq</c> → "ZTst Mcp Arq", observed live in #541), where
+        ///   the split above yields "Z Tst Mcp Arq". A description rebuilt from
+        ///   the name cannot contain other letters, so comparing the alphanumeric
+        ///   skeleton tells generated from caller-supplied without guessing the
+        ///   SDK's exact word boundaries. A caller-supplied description that merely
+        ///   re-spells the name (<c>"CUSTOMERID"</c>) is dropped as well; it carries
+        ///   nothing the name does not.
         /// </summary>
         private static bool DescriptionMatchesName(string description, string name)
         {

@@ -73,7 +73,8 @@ has no prior stream identity; clients cancel by closing the response stream.
 ### KB lifecycle build modes
 
 `genexus_lifecycle action=build` remains the directed or incremental build
-contract, while `action=rebuild` remains the forced Rebuild All contract.
+contract, while `action=rebuild` remains the forced Rebuild All contract; like
+`build_all` it is KB-global and rejects `target` with `TargetNotSupported`.
 `action=build_all` is an explicit KB-global incremental Build All: it omits
 `target`, invokes the SDK `BuildAll` task in-process when the installed
 GeneXus version exposes it, and otherwise runs an equivalent temporary MSBuild

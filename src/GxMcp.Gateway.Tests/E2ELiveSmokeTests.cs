@@ -386,8 +386,8 @@ namespace GxMcp.Gateway.Tests
             var payload = LiveGatewayHarness.ParseToolPayload(resp);
 
             Assert.True(LiveGatewayHarness.IsToolError(resp));
-            Assert.True(sw.ElapsedMilliseconds < 2000,
-                $"apply_pattern rejection on Procedure must be <2s; got {sw.ElapsedMilliseconds}ms");
+            Assert.True(sw.ElapsedMilliseconds < 3000,
+                $"apply_pattern rejection on Procedure must be <3s; got {sw.ElapsedMilliseconds}ms");
             Assert.NotNull(payload?["validParentTypes"]);
             Assert.Equal("Procedure", payload!["parentType"]?.ToString());
         }

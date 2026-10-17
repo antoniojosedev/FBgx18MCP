@@ -160,6 +160,7 @@ namespace GxMcp.Worker.Services
                 string ownedWriteVersion = null;
                 int applied = 0;
                 bool isCollection = false;
+                string stagedMismatch = null;
                 using (var sdkTrans = obj.Model.KB.BeginTransaction())
                 {
                     try
@@ -184,12 +185,11 @@ namespace GxMcp.Worker.Services
                         locked.Save();
                         ownedWriteVersion = WriteService.ComputeVersionToken(locked);
                         JObject staged = ReadStructure(locked);
-                        if (!MatchesPlan(beforeChildren, children, (JArray)staged["children"], add, out string stagedMismatch)
+                        if (!MatchesPlan(beforeChildren, children, (JArray)staged["children"], add, out stagedMismatch)
                             || !MatchesMetadata(before, json, staged))
                         {
-                            string msg = "The saved SDT structure did not match the requested plan.";
-                            if (!string.IsNullOrEmpty(stagedMismatch)) msg += " Detail: " + stagedMismatch;
-                            throw new InvalidOperationException(msg);
+                            if (string.IsNullOrEmpty(stagedMismatch)) stagedMismatch = "isCollection/collectionItemName metadata mismatch";
+                            throw new InvalidOperationException(BuildStagedPlanMismatchMessage(stagedMismatch));
                         }
                         if (!snapshot.CompareParts(locked, "SDTStructure").Equal)
                             throw new InvalidOperationException("The SDT save changed another object part.");
@@ -206,7 +206,8 @@ namespace GxMcp.Worker.Services
                 }
                 if (writeFailure != null)
                     return ReconcileFailedWrite(obj, beforeRevision, snapshot, before,
-                        writeFailure, writeStarted, saveStarted, committed, ownedWriteVersion);
+                        writeFailure, writeStarted, saveStarted, committed, ownedWriteVersion,
+                        mismatchDetail: stagedMismatch);
 
                 KBObject persistedObj = null;
                 JObject persisted = null;
@@ -257,7 +258,7 @@ namespace GxMcp.Worker.Services
 
         private string ReconcileFailedWrite(KBObject seed, KBObject revision, ObjectMoveSnapshot snapshot,
             JObject before, Exception failure, bool writeStarted, bool saveStarted, bool committed,
-            string ownedWriteVersion, string errorCode = "StructureUpdateFailed")
+            string ownedWriteVersion, string errorCode = "StructureUpdateFailed", string mismatchDetail = null)
         {
             string target = seed.Name;
             if (!writeStarted)
@@ -279,18 +280,22 @@ namespace GxMcp.Worker.Services
             bool rolledBack = false;
             if (!unchanged && (saveStarted || committed))
                 rolledBack = RestoreFromRevision(seed, revision, snapshot, before, ownedWriteVersion);
+            var extra = new JObject
+            {
+                ["persisted"] = unchanged || rolledBack ? (JToken)new JValue(false)
+                    : persisted == null ? JValue.CreateNull() : new JValue(true),
+                ["persistedStructure"] = persisted,
+                ["rollback"] = unchanged ? "transaction-verified" : rolledBack ? "verified" : "unverified",
+                ["implicitLifecycleActions"] = new JArray()
+            };
+            // issue #542: the staged plan check names the member and field the SDK
+            // rejected; expose it as a field, not only inside the message.
+            if (!string.IsNullOrEmpty(mismatchDetail)) extra["mismatchDetail"] = mismatchDetail;
             return Models.McpResponse.Err(code: errorCode,
                 message: failure?.InnerException?.Message ?? failure?.Message ?? "SDT update failed.",
                 hint: unchanged || rolledBack ? "The prior SDT structure was verified after the failure."
                     : "The persisted state could not be reconciled. Read get_visual before another write.",
-                target: target, extra: new JObject
-                {
-                    ["persisted"] = unchanged || rolledBack ? (JToken)new JValue(false)
-                        : persisted == null ? JValue.CreateNull() : new JValue(true),
-                    ["persistedStructure"] = persisted,
-                    ["rollback"] = unchanged ? "transaction-verified" : rolledBack ? "verified" : "unverified",
-                    ["implicitLifecycleActions"] = new JArray()
-                });
+                target: target, extra: extra);
         }
 
         private bool RestoreFromRevision(KBObject seed, KBObject revision, ObjectMoveSnapshot snapshot, JObject expected, string ownedWriteVersion)
@@ -359,6 +364,15 @@ namespace GxMcp.Worker.Services
         internal static bool MatchesPlan(JArray before, JArray requested, JArray persisted, bool add)
         {
             return MatchesPlan(before, requested, persisted, add, out _);
+        }
+
+        // issue #542: the staged-save failure must name the member and the
+        // expected/observed field, otherwise the caller cannot correct the plan.
+        internal static string BuildStagedPlanMismatchMessage(string mismatchDetail)
+        {
+            string msg = "The saved SDT structure did not match the requested plan.";
+            if (!string.IsNullOrEmpty(mismatchDetail)) msg += " Detail: " + mismatchDetail;
+            return msg;
         }
 
         internal static bool MatchesPlan(JArray before, JArray requested, JArray persisted, bool add, out string mismatchDetail)
@@ -676,28 +690,12 @@ namespace GxMcp.Worker.Services
                     try { target = addItem.Invoke((object)node, new object[] { name, baseType }); }
                     catch (Exception ex) { throw new InvalidOperationException("AddItem failed for '" + name + "'.", ex); }
                 }
-                else
-                {
-                    try
-                    {
-                        var setType = target.GetType().GetProperty("Type");
-                        if (setType != null && setType.CanWrite)
-                        {
-                            object curType = setType.GetValue(target, null);
-                            if (!Equals(curType, baseType))
-                            {
-                                setType.SetValue(target, baseType, null);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Debug("[SDT WRITE] Updating target.Type failed: " + ex.Message);
-                    }
-                }
                 if (target == null) throw new InvalidOperationException("AddItem returned no member for '" + name + "'.");
 
                 try { target.IsCollection = isColl; } catch { }
+                // issue #542: on an existing member the primitive type is written only
+                // after the domain/attribute/ATTCUSTOMTYPE bindings are cleared (a BasedOn
+                // setter may re-derive Type) and through the unambiguous Type property.
                 if (attributeObj != null)
                 {
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ClearDomainBasedOn((object)target);
@@ -705,6 +703,7 @@ namespace GxMcp.Worker.Services
                         var setProp = target.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
                         setProp?.Invoke(target, new object[] { "ATTCUSTOMTYPE", null });
                     } catch { }
+                    SetMemberType((object)target, baseType);
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ApplyAttributeBasedOn((object)target, attributeObj);
                 }
                 else if (domainObj != null)
@@ -714,12 +713,14 @@ namespace GxMcp.Worker.Services
                         var setProp = target.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
                         setProp?.Invoke(target, new object[] { "ATTCUSTOMTYPE", null });
                     } catch { }
+                    SetMemberType((object)target, baseType);
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ApplyDomainBasedOn((object)target, domainObj);
                 }
                 else if (sdtObj != null)
                 {
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ClearAttributeBasedOn((object)target);
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ClearDomainBasedOn((object)target);
+                    SetMemberType((object)target, baseType);
                     GxMcp.Worker.Helpers.VariableInjector.BindSdtItemToSdt((object)target, sdtObj);
                 }
                 else
@@ -730,6 +731,7 @@ namespace GxMcp.Worker.Services
                         var setProp = target.GetType().GetMethod("SetPropertyValue", new[] { typeof(string), typeof(object) });
                         setProp?.Invoke(target, new object[] { "ATTCUSTOMTYPE", null });
                     } catch { }
+                    SetMemberType((object)target, baseType);
 
                     var spec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(typeStr);
                     if (child["length"] != null) { try { SetIntProperty((object)target, "Length", child["length"].ToObject<int>()); } catch { } }
@@ -741,6 +743,26 @@ namespace GxMcp.Worker.Services
                 applied++;
             }
             return applied;
+        }
+
+        // issue #542: the Artech SDTItem hierarchy shadows `Type`, so a plain
+        // GetProperty("Type") throws AmbiguousMatchException and the member silently
+        // kept its old type. No-op when the member already carries the requested type.
+        private static void SetMemberType(object target, object baseType)
+        {
+            if (target == null || baseType == null) return;
+            try
+            {
+                var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "Type");
+                if (p == null || !p.CanWrite)
+                {
+                    Logger.Debug("[SDT WRITE] No writable Type property on " + target.GetType().Name);
+                    return;
+                }
+                object curType = p.GetValue(target, null);
+                if (!Equals(curType, baseType)) p.SetValue(target, baseType, null);
+            }
+            catch (Exception ex) { Logger.Debug("[SDT WRITE] Updating member Type failed: " + ex.Message); }
         }
 
         private static void SetIntProperty(object target, string propName, int value)

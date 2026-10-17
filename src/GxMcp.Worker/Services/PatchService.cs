@@ -591,13 +591,14 @@ namespace GxMcp.Worker.Services
                     if (patchPlan.ErrorCode != null)
                     {
                         var matchedPattern = _patternAnalysisService?.MatchInstancePattern(resolvedPatternObject ?? patchObjectForTarget);
+                        // Issue #545: the scope sentence lives on the plan, which is what decides it.
                         string rejectionHint = (matchedPattern != null && matchedPattern.IsWorkWith)
-                            ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; raw PatternInstance XML is limited to existing property changes."
+                            ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; " + Helpers.PatternXmlEditPlan.RawXmlEditScopeHint
                             : (matchedPattern != null && matchedPattern.IsWorkWithPlus)
-                            ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
+                            ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; " + Helpers.PatternXmlEditPlan.RawXmlEditScopeHint
                             : matchedPattern != null
-                            ? $"{matchedPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes."
-                            : "Structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
+                            ? $"{matchedPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; " + Helpers.PatternXmlEditPlan.RawXmlEditScopeHint
+                            : "Structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; " + Helpers.PatternXmlEditPlan.RawXmlEditScopeHint;
 
                         return AttachTimings(
                             Models.McpResponse.Err(
@@ -939,7 +940,12 @@ namespace GxMcp.Worker.Services
                 bool writeServiceRolledBack =
                     string.Equals(writePayload["commitState"]?.ToString(), "RolledBack", StringComparison.OrdinalIgnoreCase)
                     || writePayload["rollback"]?["rolledBack"]?.Value<bool?>() == true;
+                // issue #542: a Structure write that WriteService already rolled back (or
+                // tried to) reports plain `rollbackAttempted`/`rolledBack` fields; never
+                // stack a second textual rollback on that object.
+                bool writerRollbackReported = IsWriterRollbackReported(writePayload);
                 bool writeServiceRollbackHandled = writeServiceRolledBack
+                    || writerRollbackReported
                     || (WebFormXmlHelper.IsVisualPart(partName) && writePayload["rollback"] != null);
                 bool writeReportedVisualCommit =
                     WebFormXmlHelper.IsVisualPart(partName)
@@ -1084,7 +1090,18 @@ namespace GxMcp.Worker.Services
                         }
                         else
                         {
-                            PatchPersistenceReceipt.MarkNotPersisted(writePayload, saveReported, verifyError, commentOnlyChange);
+                            PatchPersistenceReceipt.MarkNotPersisted(
+                                writePayload,
+                                saveReported,
+                                verifyError,
+                                commentOnlyChange,
+                                PatchPersistenceReceipt.NormalizedMatches(verification, finalCode, confirmedPersistedSource, partName));
+                            if (writerRollbackReported)
+                                PatchPersistenceReceipt.MarkWriterRollback(
+                                    writePayload,
+                                    writePayload["rolledBack"]?.Value<bool?>() == true,
+                                    writePayload["rollbackError"]?.ToString(),
+                                    writePayload["unappliedMembers"] as JArray);
                             PreserveCommittedVisualEvidence(writePayload);
                             if (confirmedPersistedSource != null
                                 && originalSource != null
@@ -1282,19 +1299,17 @@ namespace GxMcp.Worker.Services
                     string writeCode = writePayload["code"]?.ToString();
                     string errCode = !string.IsNullOrWhiteSpace(writeCode) ? writeCode : "PatchWriteFailed";
                     bool objectSaveIncomplete = string.Equals(errCode, "ObjectSaveIncomplete", StringComparison.OrdinalIgnoreCase);
-                    bool verificationUnavailable = string.Equals(errCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
                     bool saveAttemptedOrReported = resultObj["saveAttempted"]?.ToObject<bool>() == true
                         || resultObj["objectSaved"]?.ToObject<bool>() == true
                         || string.Equals(resultObj["outcome"]?.ToString(), "SavedUnverified", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(errCode, "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
 
-                    string recoveryHint = objectSaveIncomplete
-                        ? writePayload["manualRecovery"]?.ToString()
-                        : verificationUnavailable
-                            ? writePayload["hint"]?.ToString()
-                        : saveAttemptedOrReported
-                            ? "Re-read the object source and verify whether the persisted state matches your requirement before attempting any further changes. Do not retry blindly."
-                        : "Re-read the object source and verify the part is writable, then retry.";
+                    string recoveryHint = SelectRecoveryHint(
+                        errCode,
+                        saveAttemptedOrReported,
+                        resultObj["mismatchKind"]?.ToString(),
+                        writePayload["manualRecovery"]?.ToString(),
+                        writePayload["hint"]?.ToString());
                     var canonical = JObject.Parse(Models.McpResponse.Err(
                         code: errCode,
                         message: writeMsg,
@@ -1319,6 +1334,42 @@ namespace GxMcp.Worker.Services
                 Logger.Error($"[PATCH] Error applying patch: {ex.Message}");
                 return BuildPatchResult("Error", partName, NormalizeOperation(operation), expectedCount, 0, ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Picks the recovery hint for a failed patch. A write the SDK already
+        /// saved is never steered into a retry: a <c>normalization</c> mismatch
+        /// only needs a re-read (or a tolerant verifyMode) to be confirmed, and a
+        /// <c>content</c> mismatch needs a re-read and comparison before any
+        /// further edit (#547).
+        /// </summary>
+        internal static string SelectRecoveryHint(
+            string errCode,
+            bool saveAttemptedOrReported,
+            string mismatchKind,
+            string manualRecovery,
+            string writeHint)
+        {
+            if (string.Equals(errCode, "ObjectSaveIncomplete", StringComparison.OrdinalIgnoreCase))
+                return manualRecovery;
+            if (string.Equals(errCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase))
+                return writeHint;
+            if (!saveAttemptedOrReported)
+                return "Re-read the object source and verify the part is writable, then retry.";
+            if (string.Equals(mismatchKind, PatchPersistenceReceipt.MismatchKindNormalization, StringComparison.OrdinalIgnoreCase))
+                return "The SDK save completed; the persisted text differs from the request only by formatting or normalization. Re-read the part, or verify it with verifyMode=normalized or semantic, to confirm it matches your requirement. Do not retry the patch.";
+            if (string.Equals(mismatchKind, PatchPersistenceReceipt.MismatchKindContent, StringComparison.OrdinalIgnoreCase))
+                return "The SDK save completed, but the persisted text differs from the request in content. Re-read the part and compare it with the requested change before deciding on another edit. Do not retry blindly.";
+            return "Re-read the object source and verify whether the persisted state matches your requirement before attempting any further changes. Do not retry blindly.";
+        }
+
+        // issue #542: WriteService's Structure branch reports its own rollback attempt as
+        // plain top-level fields (no `rollback` object). Recognize that shape so the patch
+        // receipt reflects it and no second textual rollback runs on the same object.
+        internal static bool IsWriterRollbackReported(JObject writePayload)
+        {
+            if (writePayload == null || writePayload["rollback"] != null) return false;
+            return writePayload["rollbackAttempted"]?.Value<bool?>() == true;
         }
 
         private static void PreserveCommittedVisualEvidence(JObject payload)

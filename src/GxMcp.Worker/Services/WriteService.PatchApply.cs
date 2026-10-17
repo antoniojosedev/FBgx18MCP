@@ -12,6 +12,20 @@ namespace GxMcp.Worker.Services
     // plans/007-decompose-writeservice.md.
     public partial class WriteService
     {
+        /// <summary>
+        /// Effective <c>verifyMode</c> for a semantic-ops write. An omitted mode on a
+        /// Structure part is <c>semantic</c>, so the attribute description the SDK
+        /// derives from the attribute name does not fail the comparison (#525, #557);
+        /// an explicit value, <c>normalized</c> included, is honoured as sent.
+        /// </summary>
+        internal static string ResolveOpsVerifyMode(string partName, string requestedVerifyMode)
+        {
+            if (string.IsNullOrWhiteSpace(requestedVerifyMode)
+                && string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
+                return "semantic";
+            return requestedVerifyMode;
+        }
+
         public string ApplySemanticOps(JObject req)
         {
             string target = req?["target"]?.ToString();
@@ -55,10 +69,7 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrEmpty(partName))
                     partName = "Structure";
 
-                if (string.IsNullOrWhiteSpace(verifyMode) && string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
-                {
-                    verifyMode = "semantic";
-                }
+                verifyMode = ResolveOpsVerifyMode(partName, verifyMode);
 
                 // Pre-flight: reject immediately when no KB is open, before JIT-loading GeneXus types.
                 if (!_objectService.GetKbService().IsOpen)
@@ -327,17 +338,7 @@ namespace GxMcp.Worker.Services
             {
                 writeJson["opResults"] = opResultsJson;
                 writeJson["opsAttempted"] = ops.Count;
-                bool saved = writeJson["saved"]?.ToObject<bool?>() == true
-                    || writeJson["sdkSaveCompleted"]?.ToObject<bool?>() == true
-                    || writeJson["partialPersistenceDetected"]?.ToObject<bool?>() == true;
-                if (saved)
-                {
-                    writeJson["note"] = "The ops parsed cleanly and changes were saved, but post-write verification or rollback failed. See details above. If attribute removal was refused, try genexus_structure action=remove_attribute.";
-                }
-                else
-                {
-                    writeJson["note"] = "The ops parsed cleanly but the persist step failed — nothing was persisted. See code/message above; opResults reflect the in-memory DSL edit only. If attribute removal was refused, try genexus_structure action=remove_attribute.";
-                }
+                writeJson["note"] = BuildOpsPersistFailureNote(writeJson);
                 return writeJson.ToString(Newtonsoft.Json.Formatting.None);
             }
 
@@ -396,6 +397,22 @@ namespace GxMcp.Worker.Services
             if (returnPostState)
                 resp["post_state"] = JsonPatchService.BuildPostState(currentDsl, newDsl, verbose, persistedAfter);
             return resp.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        /// <summary>
+        /// The note for a mode=ops envelope whose write did not succeed. Once the
+        /// SDK save happened, the failure lies in verification or rollback and the
+        /// changes are in the KB, so the note must not say nothing was persisted
+        /// (issue #558).
+        /// </summary>
+        internal static string BuildOpsPersistFailureNote(JObject writeJson)
+        {
+            bool saved = writeJson["saved"]?.ToObject<bool?>() == true
+                || writeJson["sdkSaveCompleted"]?.ToObject<bool?>() == true
+                || writeJson["partialPersistenceDetected"]?.ToObject<bool?>() == true;
+            return saved
+                ? "The ops parsed cleanly and changes were saved, but post-write verification or rollback failed. See details above. If attribute removal was refused, try genexus_structure action=remove_attribute."
+                : "The ops parsed cleanly but the persist step failed — nothing was persisted. See code/message above; opResults reflect the in-memory DSL edit only. If attribute removal was refused, try genexus_structure action=remove_attribute.";
         }
 
         public string ApplyJsonPatch(JObject req)
