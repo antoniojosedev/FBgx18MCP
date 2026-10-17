@@ -279,7 +279,11 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("ok", jo["status"]?.ToString());
             var preview = jo["result"]?["preview"];
             Assert.Equal("RebuildAll", preview?["action"]?.ToString());
-            Assert.Empty(preview?["wouldBuild"]?.ToObject<string[]>() ?? Array.Empty<string>());
+            // No call-graph expansion for a KB-wide action: the plan is the sentinel
+            // alone, never a list of objects (issue #546 keeps it at parity with BuildAll).
+            Assert.Equal(
+                new[] { "<entire selected Knowledge Base>" },
+                preview?["wouldBuild"]?.ToObject<string[]>() ?? Array.Empty<string>());
         }
 
         // ── GetStatus() ──────────────────────────────────────────────────────
@@ -1587,9 +1591,12 @@ namespace GxMcp.Worker.Tests
             Assert.NotNull(preview);
             Assert.Equal("RebuildAll", preview["action"]?.ToString());
             Assert.True(preview["kbWide"]?.Value<bool>());
+            // Issue #546: the preview must say what a Rebuild All actually covers, at
+            // parity with build_all. An empty list read as "nothing will be built".
             var wouldBuild = preview["wouldBuild"] as JArray;
             Assert.NotNull(wouldBuild);
-            Assert.Empty(wouldBuild);
+            Assert.Equal("<entire selected Knowledge Base>", Assert.Single(wouldBuild).ToString());
+            Assert.Equal("ignored for Rebuild All", preview["includeCallees"]?.ToString());
         }
     }
 }

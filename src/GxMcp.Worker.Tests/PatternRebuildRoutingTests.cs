@@ -16,6 +16,15 @@ namespace GxMcp.Worker.Tests
     /// <c>SpecifyOneOnly</c> + <c>ForceRebuild=true</c> for a targeted <c>Rebuild</c>; it
     /// was simply never asked to.
     /// </para>
+    ///
+    /// <para>
+    /// Issue #546 superseded the Gateway half of that fix: <c>genexus_lifecycle
+    /// action=rebuild</c> now refuses a target with <c>TargetNotSupported</c> before any
+    /// dispatch, so the targeted <c>Rebuild</c> mapping was unreachable and was removed.
+    /// The Worker guards below are unchanged: <c>RebuildAll</c> with a target is still
+    /// refused as defense in depth, and the targeted <c>Rebuild</c> action remains
+    /// reachable through the legacy <c>genexus_build</c> route.
+    /// </para>
     /// </summary>
     public class RebuildTargetRoutingTests
     {
@@ -26,13 +35,16 @@ namespace GxMcp.Worker.Tests
             "src", "GxMcp.Worker", "Services", "BuildService.cs");
 
         [Fact]
-        public void A_Targeted_Rebuild_Is_Routed_To_The_Workers_Targeted_Rebuild()
+        public void A_Targeted_Rebuild_Is_Refused_By_The_Gateway_Instead_Of_Being_Routed()
         {
+            // Issue #546: the intercept refuses the target before dispatch, and the dead
+            // targeted mapping that #359 added to the async command factory is gone.
             string source = LifecycleGateway();
 
-            Assert.Contains("rebuildHasTarget", source, StringComparison.Ordinal);
-            Assert.Contains("rebuild ? (rebuildHasTarget ? \"Rebuild\" : \"RebuildAll\")",
+            Assert.DoesNotContain("rebuildHasTarget", source, StringComparison.Ordinal);
+            Assert.Contains("string.Equals(lifecycleAction, \"rebuild\", StringComparison.OrdinalIgnoreCase)",
                 source, StringComparison.Ordinal);
+            Assert.Contains("[\"code\"] = \"TargetNotSupported\"", source, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -41,8 +53,7 @@ namespace GxMcp.Worker.Tests
             // What the tool description promises, and what the reporter relied on when
             // they did not pass a target.
             string source = LifecycleGateway();
-            Assert.Contains("!string.IsNullOrWhiteSpace(args?[\"target\"]?.ToString())",
-                source, StringComparison.Ordinal);
+            Assert.Contains("rebuild ? \"RebuildAll\"", source, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -85,8 +96,9 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void A_Targeted_Action_Is_Not_Refused()
         {
-            // This is the path a targeted rebuild now takes, so refusing it would close
-            // the very route the Gateway was corrected to use.
+            // "Rebuild" is the targeted action the legacy genexus_build route still sends
+            // (issue #546 closed it only for genexus_lifecycle); refusing it here would
+            // close that route as well.
             foreach (var action in new[] { "Rebuild", "Build", "Specify", "CompileCheck" })
             {
                 Assert.True(
