@@ -1318,6 +1318,39 @@ impl Emitter<'_> {
                     ),
                 )
             }
+            Expr::Call(name, args) if name == "CTOD" => {
+                if args.len() != 1 {
+                    return Err("CToD expects exactly one Character argument".into());
+                }
+                let value = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                (
+                    Kind::Date,
+                    format!(
+                        "Date::parse_cto_d(({value}).trim_str(), {:?})",
+                        self.date_two_digit_year_max
+                    ),
+                )
+            }
+            Expr::Call(name, args) if name == "DTOC" => {
+                if args.len() != 1 {
+                    return Err("DToC expects exactly one Date argument".into());
+                }
+                let (kind, value) = self.lower(&args[0], assigned, prelude)?;
+                if kind != Kind::Date {
+                    return Err("DToC argument must be Date".into());
+                }
+                (Kind::Text, format!("Text::new(&({value}).to_iso_text())?"))
+            }
+            Expr::Call(name, args) if name == "TTOC" => {
+                if args.len() != 1 {
+                    return Err("TToC expects exactly one DateTime argument".into());
+                }
+                let (kind, value) = self.lower(&args[0], assigned, prelude)?;
+                if kind != Kind::DateTime {
+                    return Err("TToC argument must be DateTime".into());
+                }
+                (Kind::Text, format!("Text::new(&({value}).to_iso_text())?"))
+            }
             Expr::Call(name, args) if name == "IIF" => {
                 if args.len() != 3 {
                     return Err(

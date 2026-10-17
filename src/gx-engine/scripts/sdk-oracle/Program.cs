@@ -66,22 +66,68 @@ internal static class Program
             return 0;
         }
 
-        if (args.Length < 3 || args[0] != "bench-str")
+        if (args.Length > 0 && args[0] == "generate-date-conversions")
         {
-            Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | generate-text-extended | generate-numeric-math | generate-collection-ops | generate-calendar-ops | generate-conditional-state | generate-sdt-json");
-            return 2;
+            GenerateDateConversions();
+            return 0;
         }
 
-        var iterations = int.Parse(args[2], CultureInfo.InvariantCulture);
-        if (iterations <= 0)
+        if (args.Length >= 2 && args[0] == "bench-text")
         {
-            Console.Error.WriteLine("iterations must be positive");
-            return 2;
+            var iters = int.Parse(args[1], CultureInfo.InvariantCulture);
+            var report = BenchText(iters);
+            Console.WriteLine(JsonSerializer.Serialize(report, Json));
+            return report.ExpectedMismatches == 0 ? 0 : 1;
         }
 
-        var report = BenchStr(ReadCorpus(args[1]), iterations);
-        Console.WriteLine(JsonSerializer.Serialize(report, Json));
-        return report.ExpectedMismatches == 0 ? 0 : 1;
+        if (args.Length >= 2 && args[0] == "bench-math")
+        {
+            var iters = int.Parse(args[1], CultureInfo.InvariantCulture);
+            var report = BenchMath(iters);
+            Console.WriteLine(JsonSerializer.Serialize(report, Json));
+            return report.ExpectedMismatches == 0 ? 0 : 1;
+        }
+
+        if (args.Length >= 2 && args[0] == "bench-calendar")
+        {
+            var iters = int.Parse(args[1], CultureInfo.InvariantCulture);
+            var report = BenchCalendar(iters);
+            Console.WriteLine(JsonSerializer.Serialize(report, Json));
+            return report.ExpectedMismatches == 0 ? 0 : 1;
+        }
+
+        if (args.Length >= 2 && args[0] == "bench-collection")
+        {
+            var iters = int.Parse(args[1], CultureInfo.InvariantCulture);
+            var report = BenchCollection(iters);
+            Console.WriteLine(JsonSerializer.Serialize(report, Json));
+            return report.ExpectedMismatches == 0 ? 0 : 1;
+        }
+
+        if (args.Length >= 2 && args[0] == "bench-sdt")
+        {
+            var iters = int.Parse(args[1], CultureInfo.InvariantCulture);
+            var report = BenchSdt(iters);
+            Console.WriteLine(JsonSerializer.Serialize(report, Json));
+            return report.ExpectedMismatches == 0 ? 0 : 1;
+        }
+
+        if (args.Length >= 3 && args[0] == "bench-str")
+        {
+            var iterations = int.Parse(args[2], CultureInfo.InvariantCulture);
+            if (iterations <= 0)
+            {
+                Console.Error.WriteLine("iterations must be positive");
+                return 2;
+            }
+
+            var report = BenchStr(ReadCorpus(args[1]), iterations);
+            Console.WriteLine(JsonSerializer.Serialize(report, Json));
+            return report.ExpectedMismatches == 0 ? 0 : 1;
+        }
+
+        Console.Error.WriteLine("usage: sdk-oracle bench-str <corpus.tsv> <iterations> | bench-text <iterations> | bench-math <iterations> | bench-calendar <iterations> | bench-collection <iterations> | bench-sdt <iterations> | generate-*");
+        return 2;
     }
 
     private static BenchReport BenchStr(Row[] rows, int iterations)
@@ -120,6 +166,374 @@ internal static class Program
             HashUnits: "utf16",
             ExpectedMismatches: expectedMismatches,
             Errors: 0);
+    }
+
+    private static BenchReport BenchText(int iterations)
+    {
+        var warmupMs = MeasureText(out _, out _);
+        var passMs = new double[iterations];
+        long chars = 0;
+        ulong hash = 0;
+        for (var pass = 0; pass < iterations; pass++)
+        {
+            passMs[pass] = MeasureText(out chars, out hash);
+        }
+
+        var sorted = (double[])passMs.Clone();
+        Array.Sort(sorted);
+        var medianMs = Median(sorted);
+        const int ops = 500;
+        return new BenchReport(
+            Impl: "gxclasses-text",
+            Version: ProductVersion(),
+            Rows: ops,
+            Iters: iterations,
+            Warmup: 1,
+            WarmupMs: warmupMs,
+            PassMs: passMs,
+            MedianMs: medianMs,
+            MinMs: sorted[0],
+            MaxMs: sorted[^1],
+            NsPerRow: medianMs * 1_000_000.0 / ops,
+            Chars: chars,
+            Hash: $"0x{hash:x16}",
+            HashUnits: "utf16",
+            ExpectedMismatches: 0,
+            Errors: 0);
+    }
+
+    private static double MeasureText(out long chars, out ulong hash)
+    {
+        chars = 0;
+        hash = FnvOffset;
+        var watch = Stopwatch.StartNew();
+        for (var loop = 0; loop < 25; loop++)
+        {
+            var t1 = StringUtil.Trim("   GeneXus 18 Standard Classes   ");
+            var t2 = StringUtil.LTrim("   Leading spaces to trim");
+            var t3 = StringUtil.RTrim("Trailing spaces to trim   ");
+            var p1 = StringUtil.PadL("12345", 10, "0");
+            var p2 = StringUtil.PadR("GeneXus", 15, " ");
+            var c1 = StringUtil.Concat("Header_", "Payload_", "Trailer");
+            var c2 = StringUtil.Concat("Left", "Right");
+            var s1 = StringUtil.Substring("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 5, 10);
+            var s2 = StringUtil.Left("Hello GeneXus World", 5);
+            var s3 = StringUtil.Right("Hello GeneXus World", 5);
+            var b1 = StringUtil.StartsWith("GeneXus Standard Classes", "GeneXus").ToString();
+            var b2 = StringUtil.EndsWith("GeneXus Standard Classes", "Classes").ToString();
+            var b3 = StringUtil.Contains("GeneXus Standard Classes", "Standard").ToString();
+            var pos = StringUtil.StringSearch("The quick brown fox jumps over the lazy dog", "fox", 1).ToString();
+            var u1 = StringUtil.Upper("mixed CASE text for BENCHMARKING");
+            var l1 = StringUtil.Lower("mixed CASE text for BENCHMARKING");
+
+            string[] results = [t1, t2, t3, p1, p2, c1, c2, s1, s2, s3, b1, b2, b3, pos, u1, l1];
+            foreach (var r in results)
+            {
+                chars += r.Length;
+                foreach (var ch in r)
+                {
+                    hash ^= ch;
+                    hash *= FnvPrime;
+                }
+            }
+        }
+        watch.Stop();
+        return watch.Elapsed.TotalMilliseconds;
+    }
+
+    private static BenchReport BenchMath(int iterations)
+    {
+        var warmupMs = MeasureMath(out _, out _);
+        var passMs = new double[iterations];
+        long chars = 0;
+        ulong hash = 0;
+        for (var pass = 0; pass < iterations; pass++)
+        {
+            passMs[pass] = MeasureMath(out chars, out hash);
+        }
+
+        var sorted = (double[])passMs.Clone();
+        Array.Sort(sorted);
+        var medianMs = Median(sorted);
+        const int ops = 500;
+        return new BenchReport(
+            Impl: "gxclasses-math",
+            Version: ProductVersion(),
+            Rows: ops,
+            Iters: iterations,
+            Warmup: 1,
+            WarmupMs: warmupMs,
+            PassMs: passMs,
+            MedianMs: medianMs,
+            MinMs: sorted[0],
+            MaxMs: sorted[^1],
+            NsPerRow: medianMs * 1_000_000.0 / ops,
+            Chars: chars,
+            Hash: $"0x{hash:x16}",
+            HashUnits: "utf16",
+            ExpectedMismatches: 0,
+            Errors: 0);
+    }
+
+    private static double MeasureMath(out long chars, out ulong hash)
+    {
+        chars = 0;
+        hash = FnvOffset;
+        var watch = Stopwatch.StartNew();
+        for (var loop = 0; loop < 25; loop++)
+        {
+            var i1 = NumberUtil.Int(12345.6789m);
+            var i2 = NumberUtil.Int(-9876.5432m);
+            var i3 = NumberUtil.Int(0.9999m);
+            var r1 = NumberUtil.Round(12345.6789m, 2);
+            var r2 = NumberUtil.Round(-9876.5432m, 1);
+            var r3 = NumberUtil.Round(3.555m, 2);
+            var u1 = NumberUtil.Trunc(12345.6789m, 2);
+            var u2 = NumberUtil.Trunc(-9876.5432m, 0);
+            var a1 = (12345.67m * 89.12m) + 456.78m - (12.34m / 5.0m);
+            var v1 = NumberUtil.Val("123456.789");
+            var v2 = NumberUtil.Val("-98765.432");
+
+            decimal[] values = [i1, i2, i3, r1, r2, r3, u1, u2, a1, v1, v2];
+            foreach (var val in values)
+            {
+                var s = val.ToString(CultureInfo.InvariantCulture);
+                chars += s.Length;
+                foreach (var ch in s)
+                {
+                    hash ^= ch;
+                    hash *= FnvPrime;
+                }
+            }
+        }
+        watch.Stop();
+        return watch.Elapsed.TotalMilliseconds;
+    }
+
+    private static BenchReport BenchCalendar(int iterations)
+    {
+        var warmupMs = MeasureCalendar(out _, out _);
+        var passMs = new double[iterations];
+        long chars = 0;
+        ulong hash = 0;
+        for (var pass = 0; pass < iterations; pass++)
+        {
+            passMs[pass] = MeasureCalendar(out chars, out hash);
+        }
+
+        var sorted = (double[])passMs.Clone();
+        Array.Sort(sorted);
+        var medianMs = Median(sorted);
+        const int ops = 500;
+        return new BenchReport(
+            Impl: "gxclasses-calendar",
+            Version: ProductVersion(),
+            Rows: ops,
+            Iters: iterations,
+            Warmup: 1,
+            WarmupMs: warmupMs,
+            PassMs: passMs,
+            MedianMs: medianMs,
+            MinMs: sorted[0],
+            MaxMs: sorted[^1],
+            NsPerRow: medianMs * 1_000_000.0 / ops,
+            Chars: chars,
+            Hash: $"0x{hash:x16}",
+            HashUnits: "utf16",
+            ExpectedMismatches: 0,
+            Errors: 0);
+    }
+
+    private static double MeasureCalendar(out long chars, out ulong hash)
+    {
+        chars = 0;
+        hash = FnvOffset;
+        var watch = Stopwatch.StartNew();
+        var dtBase = new DateTime(2024, 2, 29, 14, 30, 45);
+        var dtTarget = new DateTime(2023, 1, 1, 0, 0, 0);
+        var birth = new DateTime(2000, 5, 15);
+        var current = new DateTime(2024, 5, 15);
+
+        for (var loop = 0; loop < 25; loop++)
+        {
+            var y = DateTimeUtil.Year(dtBase);
+            var m = DateTimeUtil.Month(dtBase);
+            var d = DateTimeUtil.Day(dtBase);
+            var dow = DateTimeUtil.Dow(dtBase);
+            var addYr = DateTimeUtil.AddYr(dtBase, 1);
+            var addMth = DateTimeUtil.AddMth(dtBase, 1);
+            var dadd = DateTimeUtil.DAdd(dtBase, 10);
+            var ddiff = (int)DateTimeUtil.DDiff(dtBase, dtTarget);
+            var age = DateTimeUtil.Age(birth, current);
+            var eom = DateTimeUtil.EndOfMonth(dtBase);
+
+            int[] values = [y, m, d, dow, DateTimeUtil.Year(addYr), DateTimeUtil.Month(addMth), DateTimeUtil.Day(dadd), ddiff, age, DateTimeUtil.Day(eom)];
+            foreach (var val in values)
+            {
+                var s = val.ToString(CultureInfo.InvariantCulture);
+                chars += s.Length;
+                foreach (var ch in s)
+                {
+                    hash ^= ch;
+                    hash *= FnvPrime;
+                }
+            }
+        }
+        watch.Stop();
+        return watch.Elapsed.TotalMilliseconds;
+    }
+
+    private static BenchReport BenchCollection(int iterations)
+    {
+        var warmupMs = MeasureCollection(out _, out _);
+        var passMs = new double[iterations];
+        long chars = 0;
+        ulong hash = 0;
+        for (var pass = 0; pass < iterations; pass++)
+        {
+            passMs[pass] = MeasureCollection(out chars, out hash);
+        }
+
+        var sorted = (double[])passMs.Clone();
+        Array.Sort(sorted);
+        var medianMs = Median(sorted);
+        const int ops = 500;
+        return new BenchReport(
+            Impl: "gxclasses-collection",
+            Version: ProductVersion(),
+            Rows: ops,
+            Iters: iterations,
+            Warmup: 1,
+            WarmupMs: warmupMs,
+            PassMs: passMs,
+            MedianMs: medianMs,
+            MinMs: sorted[0],
+            MaxMs: sorted[^1],
+            NsPerRow: medianMs * 1_000_000.0 / ops,
+            Chars: chars,
+            Hash: $"0x{hash:x16}",
+            HashUnits: "utf16",
+            ExpectedMismatches: 0,
+            Errors: 0);
+    }
+
+    private static double MeasureCollection(out long chars, out ulong hash)
+    {
+        chars = 0;
+        hash = FnvOffset;
+        var watch = Stopwatch.StartNew();
+        for (var loop = 0; loop < 25; loop++)
+        {
+            var col = new GxSimpleCollection<string>();
+            for (var i = 0; i < 20; i++)
+            {
+                col.Add($"item_{i}");
+            }
+            var item1 = (string)col.Item(1);
+            var item10 = (string)col.Item(10);
+            var item20 = (string)col.Item(20);
+            var idx = col.IndexOf("item_10").ToString();
+            col.RemoveItem(1);
+            col.RemoveItem(col.Count);
+            var count = col.Count.ToString();
+            col.Clear();
+
+            string[] items = [item1, item10, item20, idx, count];
+            foreach (var s in items)
+            {
+                chars += s.Length;
+                foreach (var ch in s)
+                {
+                    hash ^= ch;
+                    hash *= FnvPrime;
+                }
+            }
+        }
+        watch.Stop();
+        return watch.Elapsed.TotalMilliseconds;
+    }
+
+    private static BenchReport BenchSdt(int iterations)
+    {
+        var warmupMs = MeasureSdt(out _, out _);
+        var passMs = new double[iterations];
+        long chars = 0;
+        ulong hash = 0;
+        for (var pass = 0; pass < iterations; pass++)
+        {
+            passMs[pass] = MeasureSdt(out chars, out hash);
+        }
+
+        var sorted = (double[])passMs.Clone();
+        Array.Sort(sorted);
+        var medianMs = Median(sorted);
+        const int ops = 500;
+        return new BenchReport(
+            Impl: "gxclasses-sdt",
+            Version: ProductVersion(),
+            Rows: ops,
+            Iters: iterations,
+            Warmup: 1,
+            WarmupMs: warmupMs,
+            PassMs: passMs,
+            MedianMs: medianMs,
+            MinMs: sorted[0],
+            MaxMs: sorted[^1],
+            NsPerRow: medianMs * 1_000_000.0 / ops,
+            Chars: chars,
+            Hash: $"0x{hash:x16}",
+            HashUnits: "utf16",
+            ExpectedMismatches: 0,
+            Errors: 0);
+    }
+
+    private static double MeasureSdt(out long chars, out ulong hash)
+    {
+        chars = 0;
+        hash = FnvOffset;
+        var watch = Stopwatch.StartNew();
+        for (var loop = 0; loop < 25; loop++)
+        {
+            var parent = new TestParentSdt();
+            parent.gxTpr_Code = "PAR_001";
+            parent.gxTpr_Child.gxTpr_Amount = 42;
+            parent.gxTpr_Child.gxTpr_Label = "Child Item";
+            parent.gxTpr_Child.gxTpr_Flag = true;
+            parent.gxTpr_Child.gxTpr_Day = new DateTime(2026, 3, 29);
+
+            var item1 = new TestItemSdt { gxTpr_Amount = 101, gxTpr_Label = "Line 1", gxTpr_Fixed = "A" };
+            var item2 = new TestItemSdt { gxTpr_Amount = 102, gxTpr_Label = "Line 2", gxTpr_Fixed = "B" };
+            var item3 = new TestItemSdt { gxTpr_Amount = 103, gxTpr_Label = "Line 3", gxTpr_Fixed = "C" };
+            parent.gxTpr_Items.Add(item1);
+            parent.gxTpr_Items.Add(item2);
+            parent.gxTpr_Items.Add(item3);
+
+            string json = parent.ToJSonString();
+            chars += json.Length;
+            foreach (var ch in json)
+            {
+                hash ^= ch;
+                hash *= FnvPrime;
+            }
+
+            var round = new TestParentSdt();
+            round.FromJSonString(json);
+            var code = round.gxTpr_Code;
+            var amount = round.gxTpr_Child.gxTpr_Amount.ToString();
+            var count = round.gxTpr_Items.Count.ToString();
+            string[] check = [code, amount, count];
+            foreach (var s in check)
+            {
+                chars += s.Length;
+                foreach (var ch in s)
+                {
+                    hash ^= ch;
+                    hash *= FnvPrime;
+                }
+            }
+        }
+        watch.Stop();
+        return watch.Elapsed.TotalMilliseconds;
     }
 
     private static string ProductVersion()
@@ -610,6 +1024,76 @@ internal static class Program
         }
     }
 
+    private static void GenerateDateConversions()
+    {
+        // Date/Time <-> Character conversions exposed by the GeneXus runtime
+        // (`CToD`, `DToC` and `TToC` resolve to these helpers in generated code).
+        //
+        // Deliberately outside this corpus, because they cannot be characterized
+        // without a live Knowledge Base: `CToT` (the context-less helper attaches
+        // the current date), the millisecond `TToC3` variant, timezone-offset
+        // forms such as `2024-02-29-01`, and the two-digit-year boundary that the
+        // helper resolves by century instead of by the measured environment
+        // window. See VALIDATION.md.
+        string[] ctodInputs = [
+            "2024-02-29", "20240229", "02/29/24", "2/29/2024", "29/02/2024", "2024/02/29",
+            "2024-2-9", "2024-02-29 14:30:45", "2024-02-30", "2024-13-01", "24-02-29",
+            "0000-00-00", "00010101", "9999-12-31", "not a date", "1", "12345",
+            "", "   ", " 2024-02-29 ", "2024-02-29T14:30:45",
+            "2024-02/29", "2024.02.29", "02-29-2024", "02.29.2024", "2024-02-29x",
+            "x2024-02-29", "2/9/24", "13/45/2024", "2024-02-29 14:30",
+            "01/01/00", "12/31/39",
+            "2024-02-29 zzz", "2024-02-29 25:00", "2024-02-29T", "2024-02-29 ",
+            "2024-02-29.5", "2024-02-29 14:30:45.123", "2024-02-29T14:30:45.123"
+        ];
+        foreach (var value in ctodInputs)
+        {
+            try
+            {
+                var parsed = DateTimeUtil.CToD2(value);
+                string shown = parsed == DateTimeUtil.NullDate()
+                    ? "empty"
+                    : parsed.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                Console.WriteLine($"ctod|{EscapeSpaces(value)}=[{shown}]");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ctod|{EscapeSpaces(value)}=[ERR:{ex.GetType().Name}]");
+            }
+        }
+
+        DateTime[] dateOutputs = [
+            new DateTime(2024, 2, 29, 0, 0, 0),
+            new DateTime(1999, 12, 31, 0, 0, 0),
+            new DateTime(2000, 1, 1, 0, 0, 0),
+            new DateTime(1970, 1, 1, 0, 0, 0),
+            new DateTime(2099, 12, 31, 0, 0, 0),
+            DateTimeUtil.NullDate()
+        ];
+        foreach (var dt in dateOutputs)
+        {
+            string label = dt == DateTimeUtil.NullDate()
+                ? "empty"
+                : dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            Console.WriteLine($"dtoc|{label}=[{Escape(DateTimeUtil.DToC2(dt))}]");
+        }
+
+        DateTime[] timeOutputs = [
+            new DateTime(2024, 2, 29, 14, 30, 45),
+            new DateTime(2024, 2, 29, 0, 0, 0),
+            new DateTime(2024, 2, 29, 23, 59, 59),
+            new DateTime(2024, 2, 29, 9, 5, 3),
+            DateTimeUtil.NullDate()
+        ];
+        foreach (var dt in timeOutputs)
+        {
+            string label = dt == DateTimeUtil.NullDate()
+                ? "empty"
+                : dt.ToString("yyyy-MM-dd_HH:mm:ss", CultureInfo.InvariantCulture);
+            Console.WriteLine($"ttoc|{label}=[{Escape(DateTimeUtil.TToC2(dt))}]");
+        }
+    }
+
     private static void GenerateConditionalState()
     {
         // 1. StringUtil.Format(value, v1..v9)
@@ -826,6 +1310,10 @@ internal static class Program
     }
 
     private static string Escape(string s) => s.Replace("\t", "\\t").Replace("\n", "\\n").Replace("\r", "\\r");
+
+    // Date-conversion rows encode spaces so trimming cases survive
+    // whitespace-insensitive storage and editors.
+    private static string EscapeSpaces(string s) => Escape(s).Replace(" ", "\\s");
 
     private static void GenerateSdtXml()
     {

@@ -7,11 +7,22 @@
 
 ### Added
 
+- Experimental Rust `gx-engine` adds the measured native date/character conversions `CToD`/`DToC`/`TToC` and closes the Language & Runtime Core date surface (`src/gx-engine/src/date.rs`, `src/gx-engine/src/datetime.rs`, `src/gx-engine/src/typed_backend.rs`, `src/gx-engine/src/frontend.rs`):
+  - Measured `CToD` grammar (`Date::parse_cto_d`): three numeric components joined by any mix of `-`, `/` or `.`; `yyyy`-first when the first component has four digits and `M/d/[yy]yy` otherwise; trimmed input; a trailing `H[:mm[:ss]][.fraction][ AM|PM]` part accepted only after a space or `T` and only when the time itself is valid; empty output for out-of-range components and for compact or single-token forms; two-digit years resolve through the project's measured environment window (`date_two_digit_year_max`).
+  - `DToC` renders the ISO exchange picture `yyyy-MM-dd` with the empty sentinel `"0000-00-00"`, and `TToC` renders `yyyy-MM-ddTHH:mm:ss` with `"0000-00-00T00:00:00"` - both deliberately distinct from the `MM/dd/yy` display picture of `&var.ToString()`. `TToC` accepts a DateTime only, so `TToC(&date)` stays a typed rejection.
+  - New oracle mode `generate-date-conversions` (`src/gx-engine/scripts/sdk-oracle/Program.cs`) records 50 `DateTimeUtil` rows in `src/gx-engine/tests/fixtures/date_conversions_native.tsv`; `src/gx-engine/tests/date_conversions.rs` runs the fixture differential, a build/run end-to-end stdout comparison and the arity/type rejection set. Mutation-checked (trailing-time validation, `yyyy`-first detection, `TToC` Date admission).
+  - Outside the claim, recorded in `src/gx-engine/VALIDATION.md`: `CToT` (its context-less native helper substitutes the current date), the millisecond `TToC3` variant, timezone-offset forms (`2024-02-29-01` is 2024-02-28 natively) and the two-digit-year boundary `01/01/40`.
+  - Promoted `calendar_values`, `numeric_core`, `text_core`, `records_collections`, `procedure_pipeline`, `xml_projection` and `kb_catalog` to Parity in `EngineCapabilityRegistry`, citing the native corpora and portable suites that exist for each, and reconciled the README's foundational capability row and `calendar_operations` evidence with that state. Arm gate: 476 tests passed / 0 failed / 2 ignored; Clippy (`--all-targets`) and rustfmt clean; Gateway `EngineBackendTests` 40/40.
+
 ### Changed
 
 ### Fixed
 
 ### Internal
+
+- Removed 11 Clippy warnings (`collapsible_if`, redundant casts, elidable lifetime, manual `Range::contains`) from the portable numeric/date runtime so the arm gate stays warning-free.
+- Added the `rust (gx-engine)` CI lane (`.github/workflows/ci.yml`): Clippy with warnings denied, `rustfmt --check`, the full portable suite and the release artifact build, so the four Native Parity subsystems are guarded on every pull request.
+- Re-scoped the `EngineCapabilityRegistry` and README capability claims to the four Native Parity subsystems: no entry cites a module or test outside this change, and each cited repository path exists (enforced by `Registry_EveryCapabilityCitesAnExistingRepositoryPath`).
 
 ## v3.16.0 - 2026-10-17
 

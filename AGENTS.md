@@ -138,6 +138,9 @@ python -m unittest discover -s scripts\tests
 python scripts/validate-tool-contracts.py
 python scripts/generate-operation-contract-inventory.py --check
 python scripts/verify-release-metadata.py --root . --version <package.json version>
+cargo test --manifest-path src\gx-engine\Cargo.toml
+cargo clippy --manifest-path src\gx-engine\Cargo.toml --all-targets -- -D warnings
+cargo fmt --manifest-path src\gx-engine\Cargo.toml --check
 npm test
 npm run lint
 npm run test:one -- "test name pattern"

@@ -32,6 +32,29 @@ impl DateTime {
     pub fn is_empty(self) -> bool {
         self.date.is_empty() && self.seconds == 0
     }
+    /// Render as the measured `TToC` exchange picture: `yyyy-MM-ddTHH:mm:ss`.
+    /// The empty sentinel renders `"0000-00-00T00:00:00"`, and a time-only value
+    /// keeps the empty date (`"0000-00-00T14:30:45"`); the context-less native
+    /// helper substitutes the current date there, which this timezone-free
+    /// engine deliberately does not model.
+    pub fn to_iso_text(self) -> String {
+        let (year, month, day) = self.date.components();
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+            self.hour(),
+            self.minute(),
+            self.second()
+        )
+    }
+    #[inline(always)]
+    pub fn components(self) -> (i64, i64, i64) {
+        if self.date.is_empty() && !self.is_empty() {
+            (1, 1, 1)
+        } else {
+            self.date.components()
+        }
+    }
+    #[inline(always)]
     pub fn year(self) -> i64 {
         if self.date.is_empty() && !self.is_empty() {
             1
@@ -39,6 +62,7 @@ impl DateTime {
             self.date.year()
         }
     }
+    #[inline(always)]
     pub fn month(self) -> i64 {
         if self.date.is_empty() && !self.is_empty() {
             1
@@ -46,6 +70,7 @@ impl DateTime {
             self.date.month()
         }
     }
+    #[inline(always)]
     pub fn day(self) -> i64 {
         if self.date.is_empty() && !self.is_empty() {
             1
@@ -53,15 +78,19 @@ impl DateTime {
             self.date.day()
         }
     }
+    #[inline(always)]
     pub fn hour(self) -> i64 {
         i64::from(self.seconds / 3600)
     }
+    #[inline(always)]
     pub fn minute(self) -> i64 {
         i64::from(self.seconds % 3600 / 60)
     }
+    #[inline(always)]
     pub fn second(self) -> i64 {
         i64::from(self.seconds % 60)
     }
+    #[inline(always)]
     pub fn day_of_week(self) -> i64 {
         if self.is_empty() {
             0
@@ -69,16 +98,10 @@ impl DateTime {
             self.date.day_of_week()
         }
     }
+    #[inline(always)]
     pub fn end_of_month(self) -> Self {
-        if self.is_empty() {
-            return self;
-        }
-        let year = self.year();
-        let month = self.month();
-        let last_day = crate::date::month_days(year, month);
-        let date = Date::ymd(year, month, last_day).unwrap_or(self.date);
         Self {
-            date,
+            date: self.date.end_of_month(),
             seconds: self.seconds,
         }
     }
@@ -88,17 +111,12 @@ impl DateTime {
             seconds: 0,
         }
     }
+    #[inline(always)]
     pub fn age(self, current: Self) -> i64 {
         if self.is_empty() || current.is_empty() {
             return 0;
         }
-        let mut age = current.year() - self.year();
-        if current.month() < self.month()
-            || (current.month() == self.month() && current.day() < self.day())
-        {
-            age -= 1;
-        }
-        age
+        self.date.age(current.date)
     }
     pub fn add_days(self, days: i64) -> Result<Self, String> {
         Ok(Self {
