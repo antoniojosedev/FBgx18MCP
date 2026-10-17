@@ -791,7 +791,8 @@ namespace GxMcp.Worker.Services
                         ScheduleFlush();
                         return attrVerifyErr;
                     }
-                    var objectVerifyErr = VerifyObjectReferencesPersisted(target, objectBound);
+                    var objectBindingEvidence = new JArray();
+                    var objectVerifyErr = VerifyObjectReferencesPersisted(target, objectBound, objectBindingEvidence);
                     if (objectVerifyErr != null)
                     {
                         foreach (var addedName in addedNames)
@@ -825,7 +826,14 @@ namespace GxMcp.Worker.Services
                             outcome["reason"] = verifyError;
                             added--; failed++;
                         }
-                        else outcome["persisted"] = true;
+                        else
+                        {
+                            outcome["persisted"] = true;
+                            // issue #543: name the evidence behind a verified SDT/BC binding.
+                            var verifiedObjectBinding = objectBindingEvidence.OfType<JObject>().FirstOrDefault(e =>
+                                string.Equals(e["name"]?.ToString()?.TrimStart('&'), persistedName, StringComparison.OrdinalIgnoreCase));
+                            if (verifiedObjectBinding != null) outcome["objectBinding"] = verifiedObjectBinding.DeepClone();
+                        }
                     }
                     var dimensionErr = VerifyBatchVariableDimensionsPersisted(target, variables, addedNames);
                     if (dimensionErr != null)
@@ -1390,7 +1398,8 @@ namespace GxMcp.Worker.Services
                 // SDT / Business Component bindings get the same treatment: a
                 // binding the SDK drops at save must surface as
                 // VariableTypeNotPersisted, never as a silent primitive.
-                var objectVerifyErr = VerifyObjectReferencesPersisted(target, objectBound);
+                var objectBindingEvidence = new JArray();
+                var objectVerifyErr = VerifyObjectReferencesPersisted(target, objectBound, objectBindingEvidence);
                 if (objectVerifyErr != null)
                 {
                     var addedVariable = varPart.Variables.FirstOrDefault(v =>
@@ -1431,6 +1440,9 @@ namespace GxMcp.Worker.Services
                     ["saved"] = true,
                     ["reReadConfirmed"] = true
                 };
+                // issue #543: name the evidence behind a verified SDT/BC binding.
+                var verifiedObjectBinding = objectBindingEvidence.OfType<JObject>().FirstOrDefault();
+                if (verifiedObjectBinding != null) addedResult["objectBinding"] = verifiedObjectBinding.DeepClone();
                 if (dimensions.HasValue)
                 {
                     addedResult["dimensions"] = dimensions;
@@ -1875,8 +1887,12 @@ namespace GxMcp.Worker.Services
         // can accept the structural reference in memory and drop it at save,
         // leaving a bare primitive behind. Re-resolve the persisted variable to
         // its bound KB object and compare the GUID plus the binding kind.
+        // issue #543: each verified binding is appended to bindingEvidence (when given)
+        // with the resolutionPath that found it, so a receipt can tell a native
+        // reference from a by-name hit; a failed binding carries the same path plus
+        // the bounded ATTCUSTOMTYPE text the SDK actually persisted.
         private string VerifyObjectReferencesPersisted(string target,
-            System.Collections.Generic.List<ExpectedObjectBinding> expected)
+            System.Collections.Generic.List<ExpectedObjectBinding> expected, JArray bindingEvidence = null)
         {
             if (expected == null || expected.Count == 0) return null;
             var invalid = new JArray();
@@ -1889,10 +1905,11 @@ namespace GxMcp.Worker.Services
                     var variable = persistedPart?.Variables.FirstOrDefault(v =>
                         string.Equals(v.Name, binding.VarName.TrimStart('&'), StringComparison.OrdinalIgnoreCase));
                     global::Artech.Architecture.Common.Objects.KBObject bound = null;
+                    string resolutionPath = VariableInjector.ResolutionPathNone;
                     try
                     {
                         if (variable != null)
-                            bound = VariableInjector.ResolveBoundTypeObject(variable, persistedPart?.Model);
+                            bound = VariableInjector.ResolveBoundTypeObject(variable, persistedPart?.Model, out resolutionPath);
                     }
                     catch { bound = null; }
                     string actualKind = null;
@@ -1920,6 +1937,18 @@ namespace GxMcp.Worker.Services
                             ["reason"] = variable == null
                                 ? "Variable is missing after save."
                                 : failure,
+                            ["resolutionPath"] = resolutionPath,
+                            ["customType"] = DescribeCustomType(variable)
+                        });
+                    }
+                    else
+                    {
+                        bindingEvidence?.Add(new JObject
+                        {
+                            ["name"] = binding.VarName,
+                            ["object"] = binding.ObjectName,
+                            ["kind"] = binding.BindingKind,
+                            ["resolutionPath"] = resolutionPath
                         });
                     }
                 }
@@ -1936,6 +1965,20 @@ namespace GxMcp.Worker.Services
             return VariableTypeNotPersisted(target, invalid,
                 "The SDK did not persist the requested SDT/Business Component as a native object reference.",
                 "Verify the object belongs to the active KB, or edit variables directly via genexus_edit part=Variables.");
+        }
+
+        // The raw ATTCUSTOMTYPE text of a persisted variable, bounded, so a failed
+        // read-back shows the reference shape the SDK stored (issue #543 could not be
+        // confirmed without it). Null when the variable or the property is absent.
+        private static string DescribeCustomType(global::Artech.Genexus.Common.Variable variable)
+        {
+            try
+            {
+                string text = variable?.GetPropertyValue("ATTCUSTOMTYPE")?.ToString();
+                if (string.IsNullOrEmpty(text)) return null;
+                return text.Length <= 200 ? text : text.Substring(0, 200) + "...";
+            }
+            catch { return null; }
         }
 
         // Reconstruct a removed variable instead of reusing the detached SDK instance. This is
@@ -2605,10 +2648,12 @@ namespace GxMcp.Worker.Services
                         ScheduleFlush();
                         return attrVerifyError;
                     }
+                    var objectBindingEvidence = new JArray();
                     var objectVerifyError = VerifyObjectReferencesPersisted(target,
                         expectedObjectBinding == null
                             ? new System.Collections.Generic.List<ExpectedObjectBinding>()
-                            : new System.Collections.Generic.List<ExpectedObjectBinding> { expectedObjectBinding });
+                            : new System.Collections.Generic.List<ExpectedObjectBinding> { expectedObjectBinding },
+                        objectBindingEvidence);
                     if (objectVerifyError != null)
                     {
                         bindingNotRestored = RestoreVariableSnapshot(
@@ -2640,6 +2685,9 @@ namespace GxMcp.Worker.Services
                         ? resolution.CanonicalType
                         : boundTypeName;
                     var resultPayload = new JObject { ["requestedType"] = requestedDisplay };
+                    // issue #543: name the evidence behind a verified SDT/BC binding.
+                    var verifiedObjectBinding = objectBindingEvidence.OfType<JObject>().FirstOrDefault();
+                    if (verifiedObjectBinding != null) resultPayload["objectBinding"] = verifiedObjectBinding.DeepClone();
                     if (effectiveDimensions.HasValue)
                     {
                         resultPayload["dimensions"] = effectiveDimensions.Value;

@@ -1392,65 +1392,121 @@ namespace GxMcp.Worker.Helpers
             return true;
         }
 
+        // issue #543: how ResolveBoundTypeObject found the object. Every path keeps the
+        // verdict it had (a by-name hit is still accepted), but a name is weaker evidence
+        // than a native key, so the post-save receipt reports which one it was.
+        public const string ResolutionPathNativeReference = "native-reference";
+        public const string ResolutionPathCustomTypeName = "custom-type-name";
+        public const string ResolutionPathDataTypeName = "data-type-name";
+        public const string ResolutionPathNone = "none";
+
         /// <summary>Returns the KB object referenced by a persisted structural variable.</summary>
         public static KBObject ResolveBoundTypeObject(global::Artech.Genexus.Common.Variable variable, KBModel model)
         {
+            return ResolveBoundTypeObject(variable, model, out _);
+        }
+
+        /// <summary>
+        /// Returns the KB object referenced by a persisted structural variable and the evidence
+        /// that found it: <c>native-reference</c> (an entity key, or the EntityKey pair persisted
+        /// in ATTCUSTOMTYPE), <c>custom-type-name</c> (the ATTCUSTOMTYPE token resolved by name),
+        /// <c>data-type-name</c> (DataTypeString resolved by name) or <c>none</c>.
+        /// </summary>
+        public static KBObject ResolveBoundTypeObject(global::Artech.Genexus.Common.Variable variable, KBModel model,
+            out string resolutionPath)
+        {
+            resolutionPath = ResolutionPathNone;
             if (variable == null || model == null) return null;
+            string variableType = null;
+            try { variableType = variable.Type.ToString(); } catch { }
+            string ownerModule = null;
+            try { ownerModule = variable.KBObject?.Module?.Name; } catch { }
+            return ResolveBoundTypeObjectCore(
+                property => { try { return variable.GetPropertyValue(property); } catch { return null; } },
+                variableType,
+                ownerModule,
+                new BoundTypeLookups<KBObject>
+                {
+                    FromKey = key => TryGetObjectFromKey(model, key),
+                    FromEntityKey = (typeGuid, id) =>
+                    {
+                        try { return model.Objects.Get(new global::Artech.Udm.Framework.EntityKey(typeGuid, id)); }
+                        catch { return null; }
+                    },
+                    ByTypeName = name => ResolveTypeObject(model, name),
+                    BusinessComponentByName = (name, module) => ResolveBusinessComponent(model, name, module, out _)
+                },
+                out resolutionPath);
+        }
+
+        // The KB lookups ResolveBoundTypeObjectCore needs, injected so the resolution order
+        // and the evidence it reports can be exercised without an SDK model.
+        internal sealed class BoundTypeLookups<T> where T : class
+        {
+            public Func<object, T> FromKey { get; set; }
+            public Func<Guid, int, T> FromEntityKey { get; set; }
+            public Func<string, T> ByTypeName { get; set; }
+            public Func<string, string, T> BusinessComponentByName { get; set; }
+        }
+
+        // Resolution order, from the strongest evidence down: entity-key properties, the
+        // ATTCUSTOMTYPE token as a key, the persisted EntityKey pair inside ATTCUSTOMTYPE,
+        // the ATTCUSTOMTYPE token as a name, then DataTypeString by name.
+        internal static T ResolveBoundTypeObjectCore<T>(Func<string, object> getProperty, string variableType,
+            string ownerModule, BoundTypeLookups<T> lookups, out string resolutionPath) where T : class
+        {
+            resolutionPath = ResolutionPathNone;
             string[] keyProperties = { "DataType", "DataTypeKey", "BasedOnKey", "TypeKey", "ObjectKey" };
             foreach (string property in keyProperties)
             {
                 try
                 {
-                    var resolved = TryGetObjectFromKey(model, variable.GetPropertyValue(property));
-                    if (resolved != null) return resolved;
+                    var resolved = lookups.FromKey(getProperty(property));
+                    if (resolved != null) { resolutionPath = ResolutionPathNativeReference; return resolved; }
                 }
                 catch { }
             }
             try
             {
-                object custom = variable.GetPropertyValue("ATTCUSTOMTYPE");
+                object custom = getProperty("ATTCUSTOMTYPE");
                 if (custom != null)
                 {
                     string token = custom.GetType().GetProperty("Guid")?.GetValue(custom) as string
                         ?? custom.GetType().GetField("m_guid", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string;
-                    var resolved = TryGetObjectFromKey(model, token);
-                    if (resolved != null) return resolved;
+                    var resolved = lookups.FromKey(token);
+                    if (resolved != null) { resolutionPath = ResolutionPathNativeReference; return resolved; }
 
-                    string customStr = custom.ToString();
-                    if (!string.IsNullOrEmpty(customStr))
+                    // issue #543: the persisted StructureTypeReference is an EntityKey pair; the
+                    // shared parser accepts both element orders, so the token and the full text
+                    // are both tried.
+                    if (CustomTypeReferenceParser.TryParse(token, out Guid typeGuid, out int id)
+                        || CustomTypeReferenceParser.TryParse(custom.ToString(), out typeGuid, out id))
                     {
-                        var m = System.Text.RegularExpressions.Regex.Match(customStr, @"<Id>(\d+)<\/Id><Type>([a-fA-F0-9-]+)<\/Type>");
-                        if (m.Success && int.TryParse(m.Groups[1].Value, out int id) && Guid.TryParse(m.Groups[2].Value, out Guid typeGuid))
-                        {
-                            try
-                            {
-                                var obj = model.Objects.Get(new global::Artech.Udm.Framework.EntityKey(typeGuid, id));
-                                if (obj != null) return obj;
-                            }
-                            catch { }
-                        }
+                        resolved = lookups.FromEntityKey(typeGuid, id);
+                        if (resolved != null) { resolutionPath = ResolutionPathNativeReference; return resolved; }
+                    }
+                    // Before save (and on builds that keep it) the token is the SDT name, the
+                    // same convention the Variables reader resolves by name.
+                    if (!string.IsNullOrWhiteSpace(token) && token.IndexOf('<') < 0)
+                    {
+                        resolved = lookups.ByTypeName(token.Trim());
+                        if (resolved != null) { resolutionPath = ResolutionPathCustomTypeName; return resolved; }
                     }
                 }
             }
             catch { }
 
+            // Name-only evidence. Kept for GX_SDT so a build that drops the key but keeps
+            // the string still resolves; the receipt reports it as data-type-name.
             try
             {
-                if (variable.Type.ToString().Equals("GX_SDT", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(variableType, "GX_SDT", StringComparison.OrdinalIgnoreCase))
                 {
-                    try
-                    {
-                        var dtVal = variable.GetPropertyValue("DataType");
-                        var resolved = TryGetObjectFromKey(model, dtVal);
-                        if (resolved != null) return resolved;
-                    }
-                    catch { }
-
-                    string typeName = variable.GetPropertyValue("DataTypeString") as string;
+                    string typeName = getProperty("DataTypeString") as string;
                     if (!string.IsNullOrWhiteSpace(typeName))
                     {
-                        var resolved = ResolveTypeObject(model, typeName);
-                        if (resolved != null) return resolved;
+                        var resolved = lookups.ByTypeName(typeName);
+                        if (resolved != null) { resolutionPath = ResolutionPathDataTypeName; return resolved; }
                     }
                 }
             }
@@ -1461,8 +1517,7 @@ namespace GxMcp.Worker.Helpers
             // variable owner's module, which is the same native scope used by GeneXus.
             try
             {
-                string typeName = variable.GetPropertyValue("DataTypeString") as string;
-                string ownerModule = variable.KBObject?.Module?.Name;
+                string typeName = getProperty("DataTypeString") as string;
                 int comma = typeName?.LastIndexOf(',') ?? -1;
                 if (comma > 0)
                 {
@@ -1472,8 +1527,8 @@ namespace GxMcp.Worker.Helpers
                 else if (typeName?.IndexOf('.') >= 0) ownerModule = null;
                 if (!string.IsNullOrWhiteSpace(typeName))
                 {
-                    var resolved = ResolveBusinessComponent(model, typeName, ownerModule, out _);
-                    if (resolved != null) return resolved;
+                    var resolved = lookups.BusinessComponentByName(typeName, ownerModule);
+                    if (resolved != null) { resolutionPath = ResolutionPathDataTypeName; return resolved; }
                 }
             }
             catch { }
