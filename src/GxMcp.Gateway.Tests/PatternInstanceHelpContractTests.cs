@@ -21,12 +21,17 @@ namespace GxMcp.Gateway.Tests
         private static string EditHelp() => ToolHelpCatalog.Get("genexus_edit") ?? string.Empty;
 
         [Fact]
-        public void Help_Still_States_The_Raw_Property_Only_Restriction()
+        public void Help_States_What_Raw_PatternInstance_Xml_Accepts_And_Refuses()
         {
             string help = EditHelp();
-            // The restriction itself is correct and must survive the example fix: it is
-            // what protects the SDK-owned structure.
-            Assert.Contains("limited to existing property changes", help, StringComparison.OrdinalIgnoreCase);
+            // Issue #545: "limited to existing property changes" stopped being true when
+            // #349 opened single-leaf structural edits, and the reporter was told the
+            // edit the preflight accepts was impossible. The help now states both sides
+            // of the contract; the refusal codes still protect the SDK-owned structure.
+            Assert.DoesNotContain("limited to existing property changes", help, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("cannot add a node", help, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("one leaf element", help, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("reordered by identity", help, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("PatternStructureChangeUnsupported", help, StringComparison.OrdinalIgnoreCase);
         }
 

@@ -114,6 +114,19 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void Get_EditPatternInstance_DoesNotClaimAPropertyOnlyRestriction()
+        {
+            // Issue #545: the pitfall said raw PatternInstance XML "is limited to existing
+            // property changes" and that moving a node is rejected, after the preflight
+            // had started accepting single-leaf edits and reordering by identity.
+            var raw = RecipeCatalog.Get("edit_pattern_instance").ToString(Newtonsoft.Json.Formatting.None);
+
+            Assert.DoesNotContain("limited to existing property changes", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("reordered by identity", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("PatternStructureChangeUnsupported", raw, StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void Get_EditPatternInstance_StatesThatSavingDoesNotRegenerateDerivedObjects()
         {
             var raw = RecipeCatalog.Get("edit_pattern_instance").ToString(Newtonsoft.Json.Formatting.None)
