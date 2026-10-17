@@ -663,17 +663,8 @@ namespace GxMcp.Worker.Services
                 // A WriteNotPersisted/verification-unavailable response can still
                 // have performed the physical restore. Do not trust that envelope
                 // alone; the forced read below is the deciding evidence.
-                if (restoreEnvelope != null)
-                {
-                    string restoreStatus = restoreEnvelope["status"]?.ToString();
-                    string restoreCode = restoreEnvelope["code"]?.ToString();
-                    bool knownRestoreFailure = !string.Equals(restoreStatus, "ok", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(restoreStatus, "success", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(restoreCode, "WriteNotPersisted", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(restoreCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
-                    if (knownRestoreFailure && restoreError == null)
-                        restoreError = restoreEnvelope["error"]?["message"]?.ToString() ?? restoreEnvelope["message"]?.ToString() ?? "Rollback write failed.";
-                }
+                if (restoreEnvelope != null && restoreError == null)
+                    restoreError = DescribeRollbackWriteFailure(restoreEnvelope);
             }
             catch (Exception ex)
             {
@@ -748,6 +739,38 @@ namespace GxMcp.Worker.Services
             }
             return response.ToString(Newtonsoft.Json.Formatting.None);
         }
+
+        /// <summary>
+        /// The rollback error for a restore writer envelope, or null when that
+        /// envelope is not a known failure (ok/success, or a verification outcome
+        /// the forced re-read decides).
+        ///
+        /// Prefixed so it reads as the rollback write's own failure: the restore
+        /// reuses WriteObject, whose Structure abort message landed verbatim in
+        /// rollback.error beside saved:true and read as if the original write had
+        /// not been saved either (issue #558).
+        /// </summary>
+        internal static string DescribeRollbackWriteFailure(JObject restoreEnvelope)
+        {
+            string restoreStatus = restoreEnvelope["status"]?.ToString();
+            string restoreCode = restoreEnvelope["code"]?.ToString();
+            bool knownRestoreFailure = !string.Equals(restoreStatus, "ok", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(restoreStatus, "success", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(restoreCode, "WriteNotPersisted", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(restoreCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
+            if (!knownRestoreFailure) return null;
+            string message = restoreEnvelope["error"]?["message"]?.ToString() ?? restoreEnvelope["message"]?.ToString();
+            return string.IsNullOrWhiteSpace(message) ? "Rollback write failed." : "Rollback write failed: " + message;
+        }
+
+        /// <summary>
+        /// Error text for a Structure write aborted by a refused attribute
+        /// removal. It speaks only about this write: the same envelope is also
+        /// the rollback writer's reply, where "nothing was persisted" contradicted
+        /// the saved:true of the original write (issue #558).
+        /// </summary>
+        internal static string BuildStructureRemovalAbortMessage(string removalFailure)
+            => removalFailure + ". This write was aborted before its save step.";
 
         private static bool ContentEqualsForRollback(string actual, string expected, string partName)
         {

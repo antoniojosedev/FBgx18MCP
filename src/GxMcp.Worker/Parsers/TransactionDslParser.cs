@@ -31,6 +31,12 @@ namespace GxMcp.Worker.Parsers
         // ParseFromText call (StructureParser.GetParser), so this is never shared.
         private readonly List<string> _removalFailures = new List<string>();
 
+        /// <summary>
+        /// Attributes this parse dropped from the Transaction's levels. Read by
+        /// <see cref="Parse"/> to flag the Structure part as changed (issue #558).
+        /// </summary>
+        internal int RemovedAttributeCount { get; private set; }
+
         public void Serialize(KBObject obj, StringBuilder sb)
         {
             if (obj is Transaction trn)
@@ -180,6 +186,14 @@ namespace GxMcp.Worker.Parsers
 
                     if (_removalFailures.Count > 0)
                         throw new StructureRemovalException(_removalFailures.AsReadOnly());
+
+                    // issue #558 — a removal through the level's native Items storage
+                    // (TryRemoveAttribute step 5) bypasses the SDK bookkeeping that flags
+                    // the part as changed, so the caller's EnsureSave could skip it and
+                    // the re-read would still show the attribute. Mark the part the way
+                    // genexus_structure action=remove_attribute does before its save.
+                    if (RemovedAttributeCount > 0)
+                        trn.Structure.Dirty = true;
                 }
                 catch
                 {
@@ -434,7 +448,7 @@ namespace GxMcp.Worker.Parsers
                     {
                         if (((string)a.Name).Equals(deadName, StringComparison.OrdinalIgnoreCase)) { stillPresent = true; break; }
                     }
-                    if (removed && !stillPresent) continue;
+                    if (removed && !stillPresent) { RemovedAttributeCount++; continue; }
 
                     if (apiMissing)
                         _removalFailures.Add(deadName + " (SDK-API-UNSUPPORTED: this GeneXus SDK build exposes no attribute-removal method on the transaction structure — use genexus_structure action=remove_attribute or remove it in the GeneXus IDE)");
@@ -452,7 +466,8 @@ namespace GxMcp.Worker.Parsers
         // Tries, in order: collection.Remove(item), collection.Remove(name),
         // collection.RemoveAt(index), item.Remove()/Delete(), and native sdkLevel.Items m_Inner.
         // Sets apiMissing=true only when NONE of these members exist on the types involved.
-        private static bool TryRemoveAttribute(object attrsColl, object sdkLevel, object dead, string deadName,
+        // Internal so the Items path can be asserted with fakes (issue #558).
+        internal static bool TryRemoveAttribute(object attrsColl, object sdkLevel, object dead, string deadName,
             out bool apiMissing, out string error)
         {
             apiMissing = false;
@@ -530,12 +545,16 @@ namespace GxMcp.Worker.Parsers
                             {
                                 if (object.ReferenceEquals(inner[i], dead)) { itemIndex = i; break; }
                             }
-                            if (itemIndex < 0)
+                            if (itemIndex < 0 && dead != null)
                             {
+                                // Items also holds the sub-levels, and a TransactionLevel has a
+                                // Name too: only an item of the dead attribute's own kind may
+                                // match by name, or a homonym level would be dropped instead.
+                                var deadType = dead.GetType();
                                 for (int i = 0; i < inner.Count; i++)
                                 {
                                     var item = inner[i];
-                                    if (item != null)
+                                    if (item != null && deadType.IsInstanceOfType(item))
                                     {
                                         var nameProp = item.GetType().GetProperty("Name");
                                         var itemName = nameProp?.GetValue(item, null)?.ToString();

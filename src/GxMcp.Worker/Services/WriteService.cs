@@ -1831,7 +1831,7 @@ namespace GxMcp.Worker.Services
                             bool apiUnsupported = remEx.Message?.IndexOf("SDK-API-UNSUPPORTED", StringComparison.OrdinalIgnoreCase) >= 0;
                             return Models.McpResponse.Err(
                                 code: apiUnsupported ? "StructureAttributeRemovalUnsupported" : "StructureAttributeNotRemoved",
-                                message: remEx.Message + ". The write was aborted; nothing was persisted.",
+                                message: BuildStructureRemovalAbortMessage(remEx.Message),
                                 hint: apiUnsupported
                                     ? "Removing an attribute from a Transaction is not writable through the standard SDK collection in this build. Try genexus_structure action=remove_attribute, or remove the attribute from the KB Explorer / Transaction Structure editor in the GeneXus IDE. (Renaming and adding attributes ARE supported via the MCP.)"
                                     : "mode:full and remove_attribute are authoritative — they will not silently keep an attribute. The SDK refused to drop the attribute(s) above, usually because a key is still referenced by a foreign key, relation, or index elsewhere. Try genexus_structure action=remove_attribute, or remove those usages first (or rename the attribute instead of replacing it), then retry.",
