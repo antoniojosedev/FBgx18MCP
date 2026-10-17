@@ -19,17 +19,46 @@ namespace GxMcp.Worker.Helpers
         public string ElementName { get; set; }
     }
 
+    public sealed class XmlEquivalenceOptions
+    {
+        public static readonly XmlEquivalenceOptions Strict = new XmlEquivalenceOptions(ignoreControlIds: false);
+
+        // Issue #544: WebForm/Report layout projections only. The SDK strips leaf
+        // control ids and regenerates the rest on persist, so `id` carries no
+        // requested content there. Pattern instances, transfers and no-change
+        // detection keep `id` significant.
+        public static readonly XmlEquivalenceOptions Layout = new XmlEquivalenceOptions(ignoreControlIds: true);
+
+        private XmlEquivalenceOptions(bool ignoreControlIds)
+        {
+            IgnoreControlIds = ignoreControlIds;
+        }
+
+        public bool IgnoreControlIds { get; }
+    }
+
     public static class XmlEquivalence
     {
         public static bool AreEquivalent(string a, string b, out string diffSummary)
         {
-            return AreEquivalent(a, b, out diffSummary, out _);
+            return AreEquivalent(a, b, XmlEquivalenceOptions.Strict, out diffSummary, out _);
+        }
+
+        public static bool AreEquivalent(string a, string b, XmlEquivalenceOptions options, out string diffSummary)
+        {
+            return AreEquivalent(a, b, options, out diffSummary, out _);
         }
 
         public static bool AreEquivalent(string a, string b, out string diffSummary, out XmlEquivalenceDiff structuredDiff)
         {
+            return AreEquivalent(a, b, XmlEquivalenceOptions.Strict, out diffSummary, out structuredDiff);
+        }
+
+        public static bool AreEquivalent(string a, string b, XmlEquivalenceOptions options, out string diffSummary, out XmlEquivalenceDiff structuredDiff)
+        {
             diffSummary = null;
             structuredDiff = null;
+            if (options == null) options = XmlEquivalenceOptions.Strict;
             if (ReferenceEquals(a, b)) return true;
             if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b)) return true;
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
@@ -44,6 +73,12 @@ namespace GxMcp.Worker.Helpers
             catch (Exception ex) { diffSummary = "Left parse error: " + ex.Message; structuredDiff = new XmlEquivalenceDiff { Summary = diffSummary }; return false; }
             try { db = XDocument.Parse(b, LoadOptions.PreserveWhitespace); }
             catch (Exception ex) { diffSummary = "Right parse error: " + ex.Message; structuredDiff = new XmlEquivalenceDiff { Summary = diffSummary }; return false; }
+
+            if (options.IgnoreControlIds)
+            {
+                StripControlIds(da.Root);
+                StripControlIds(db.Root);
+            }
 
             var ok = ElementsEqual(da.Root, db.Root, "/", out diffSummary, out structuredDiff);
             // WorkWithPlus materializes an empty Parameters node for a
@@ -70,6 +105,17 @@ namespace GxMcp.Worker.Helpers
             if (!ok && structuredDiff == null)
                 structuredDiff = new XmlEquivalenceDiff { Summary = diffSummary };
             return ok;
+        }
+
+        private static void StripControlIds(XElement root)
+        {
+            if (root == null) return;
+            foreach (var element in root.DescendantsAndSelf())
+            {
+                element.Attributes()
+                    .Where(a => string.Equals(a.Name.LocalName, "id", StringComparison.OrdinalIgnoreCase))
+                    .Remove();
+            }
         }
 
         private static bool WwpEmptyWebComponentParametersEquivalent(XElement persisted, XElement requested)
@@ -112,7 +158,7 @@ namespace GxMcp.Worker.Helpers
         /// <summary>
         /// Subset equivalence for &lt;Report&gt; roots: every attribute requested on an
         /// element must exist with the same value in the persisted element (matched by
-        /// ControlName for controls, Name for print blocks), but the persisted side may
+        /// ControlName or the requested reference for controls, Name for print blocks), but the persisted side may
         /// carry additional SDK-default attributes. Child order may differ.
         /// </summary>
         private static bool ReportRootSubsetEquivalent(XElement requestedRoot, XElement persistedRoot)
@@ -128,19 +174,16 @@ namespace GxMcp.Worker.Helpers
         private static bool ReportElementsSubset(XElement requested, XElement persisted)
         {
             if (requested.Name.LocalName != persisted.Name.LocalName) return false;
-            if (requested.Name.LocalName == "Control")
-            {
-                string reqId = AttrValue(requested, "ControlName") ?? AttrValue(requested, "Name");
-                string perId = AttrValue(persisted, "ControlName") ?? AttrValue(persisted, "Name");
-                if (!string.Equals(reqId, perId, StringComparison.OrdinalIgnoreCase)) return false;
-            }
+            if (requested.Name.LocalName == "Control" && !ReportControlIdentityMatches(requested, persisted))
+                return false;
 
             foreach (var attr in requested.Attributes())
             {
                 if (attr.Name.LocalName == "TypeName") continue; // projection-only hint
                 var match = persisted.Attributes().FirstOrDefault(a => a.Name.LocalName == attr.Name.LocalName);
                 if (match == null) return false;
-                if (!string.Equals(NormalizeNumber(attr.Value), NormalizeNumber(match.Value), StringComparison.Ordinal))
+                if (!string.Equals(NormalizeNumber(attr.Value), NormalizeNumber(match.Value), StringComparison.Ordinal)
+                    && !IsControlNameReferencedNameMatch(attr.Name.LocalName, match.Value, attr.Value, persisted, requested))
                     return false;
             }
 
@@ -148,15 +191,8 @@ namespace GxMcp.Worker.Helpers
             {
                 if (reqChild.Name.LocalName == "Control")
                 {
-                    string reqId = AttrValue(reqChild, "ControlName") ?? AttrValue(reqChild, "Name");
-                    XElement perChild = null;
-                    if (reqId != null)
-                    {
-                        perChild = persisted.Elements()
-                            .FirstOrDefault(c => string.Equals(
-                                AttrValue(c, "ControlName") ?? AttrValue(c, "Name"),
-                                reqId, StringComparison.OrdinalIgnoreCase));
-                    }
+                    var perChild = persisted.Elements()
+                        .FirstOrDefault(c => c.Name.LocalName == "Control" && ReportControlIdentityMatches(reqChild, c));
                     if (perChild == null) return false;
                     if (!ReportElementsSubset(reqChild, perChild)) return false;
                 }
@@ -176,6 +212,20 @@ namespace GxMcp.Worker.Helpers
                 }
             }
             return true;
+        }
+
+        // Issue #544: GeneXus names a bound report control after its reference, so the
+        // requested reference identifies the persisted control too (same rule as
+        // ReportLayoutHelper.WriteLayout uses to find an existing control).
+        private static bool ReportControlIdentityMatches(XElement requested, XElement persisted)
+        {
+            string reqId = AttrValue(requested, "ControlName") ?? AttrValue(requested, "Name");
+            if (reqId == null) return false;
+            string perId = AttrValue(persisted, "ControlName") ?? AttrValue(persisted, "Name");
+            if (string.Equals(reqId, perId, StringComparison.OrdinalIgnoreCase)) return true;
+            string reference = AttrValue(requested, "AttributeReference") ?? AttrValue(requested, "ControlSource");
+            if (string.IsNullOrWhiteSpace(reference) || reference == "(none)") return false;
+            return string.Equals(perId, reference, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string AttrValue(XElement e, string localName)
@@ -204,36 +254,21 @@ namespace GxMcp.Worker.Helpers
                 var rSet = new HashSet<string>(rNames, StringComparer.Ordinal);
                 var rejected = rNames.Where(n => !lSet.Contains(n)).ToArray(); // requested but missing after save → SDK rejected
                 var added = lNames.Where(n => !rSet.Contains(n)).ToArray();    // SDK injected on persist
-
-                // If the only rejected/added attribute is 'id' or 'Id' (control IDs stripped or generated by SDK), filter them out and continue
-                bool onlyIdDiff = (rejected.Length == 0 || rejected.All(n => string.Equals(n, "id", StringComparison.OrdinalIgnoreCase)))
-                               && (added.Length == 0 || added.All(n => string.Equals(n, "id", StringComparison.OrdinalIgnoreCase)));
-                if (onlyIdDiff)
+                diff = "Attribute count differs at " + path + x.Name + " (" + ax.Count + " vs " + ay.Count + ")"
+                       + ": left=[" + string.Join(",", lNames) + "] right=[" + string.Join(",", rNames) + "]"
+                       + (rejected.Length > 0 ? "; rejectedByPersist=[" + string.Join(",", rejected) + "]" : "")
+                       + (added.Length > 0 ? "; addedByPersist=[" + string.Join(",", added) + "]" : "");
+                structured = new XmlEquivalenceDiff
                 {
-                    ax = ax.Where(a => !string.Equals(a.Name.LocalName, "id", StringComparison.OrdinalIgnoreCase)).ToList();
-                    ay = ay.Where(a => !string.Equals(a.Name.LocalName, "id", StringComparison.OrdinalIgnoreCase)).ToList();
-                    lNames = ax.Select(a => a.Name.LocalName).ToArray();
-                    rNames = ay.Select(a => a.Name.LocalName).ToArray();
-                }
-
-                if (ax.Count != ay.Count)
-                {
-                    diff = "Attribute count differs at " + path + x.Name + " (" + ax.Count + " vs " + ay.Count + ")"
-                           + ": left=[" + string.Join(",", lNames) + "] right=[" + string.Join(",", rNames) + "]"
-                           + (rejected.Length > 0 ? "; rejectedByPersist=[" + string.Join(",", rejected) + "]" : "")
-                           + (added.Length > 0 ? "; addedByPersist=[" + string.Join(",", added) + "]" : "");
-                    structured = new XmlEquivalenceDiff
-                    {
-                        Path = path + x.Name,
-                        ElementName = x.Name.LocalName,
-                        Summary = diff,
-                        LeftAttributes = lNames,
-                        RightAttributes = rNames,
-                        RejectedAttributes = rejected,
-                        AddedAttributes = added
-                    };
-                    return false;
-                }
+                    Path = path + x.Name,
+                    ElementName = x.Name.LocalName,
+                    Summary = diff,
+                    LeftAttributes = lNames,
+                    RightAttributes = rNames,
+                    RejectedAttributes = rejected,
+                    AddedAttributes = added
+                };
+                return false;
             }
             for (int i = 0; i < ax.Count; i++)
             {
@@ -394,10 +429,12 @@ namespace GxMcp.Worker.Helpers
         private static bool IsVariableRefAttribute(string localName)
             => VariableRefAttrs.Contains(localName);
 
-        // Ampersand-name form: &VarName or &amp;VarName (variable) — letters/digits/underscore after &.
+        // Ampersand-name form: &VarName (variable) — letters/digits/underscore after &.
+        // Attribute values are already entity-decoded by XDocument.Parse, so "&amp;"
+        // never reaches this matcher.
         private static readonly System.Text.RegularExpressions.Regex AmpVarRefRx =
-            new System.Text.RegularExpressions.Regex(@"^(?:&|&amp;)[A-Za-z_][A-Za-z0-9_]*$",
-                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            new System.Text.RegularExpressions.Regex(@"^&[A-Za-z_][A-Za-z0-9_]*$",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
 
         // SDK-resolved variable form: var:N or att:N (decimal integer).
         private static readonly System.Text.RegularExpressions.Regex VarNumericRefRx =
@@ -428,7 +465,9 @@ namespace GxMcp.Worker.Helpers
                 return false;
             }
 
-            string[] refKeys = { "Attribute", "attribute", "Variable", "variable", "att", "var", "AttID" };
+            // Issue #544: Report controls project the reference as AttributeReference
+            // (ControlSource is its write-side alias in ReportLayoutHelper).
+            string[] refKeys = { "Attribute", "attribute", "Variable", "variable", "att", "var", "AttID", "AttributeReference", "ControlSource" };
             foreach (var key in refKeys)
             {
                 string leftRef = leftElem.Attribute(key)?.Value ?? leftElem.Attribute(XName.Get(key))?.Value;

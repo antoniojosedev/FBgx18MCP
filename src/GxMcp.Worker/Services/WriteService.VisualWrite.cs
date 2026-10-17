@@ -522,7 +522,7 @@ namespace GxMcp.Worker.Services
                     {
                         var refreshedObj = _objectService.FindObject(target);
                         string persistedXml = WebFormXmlHelper.ReadEditableXml(refreshedObj ?? obj);
-                        if (!XmlEquivalence.AreEquivalent(persistedXml, normalizedInput, out var visualDiff, out var visualStructured))
+                        if (!XmlEquivalence.AreEquivalent(persistedXml, normalizedInput, XmlEquivalenceOptions.Layout, out var visualDiff, out var visualStructured))
                         {
                             if (webFormPartSaveError != null)
                                 Logger.Info("[VisualWrite] webFormPart.Save() error captured during verification failure: " + webFormPartSaveError.ToString(Newtonsoft.Json.Formatting.None));
