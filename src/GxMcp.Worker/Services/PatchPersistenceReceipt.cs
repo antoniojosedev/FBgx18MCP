@@ -252,6 +252,45 @@ namespace GxMcp.Worker.Services
             payload["rolledBack"] = false;
         }
 
+        /// <summary>
+        /// Issue #542: WriteService already attempted a structural rollback before it
+        /// returned WriteNotPersisted. The receipt says what was reverted (or why the
+        /// revert failed) instead of labelling the mismatch a normalization difference,
+        /// and carries the rollback as evidence so no textual rollback is stacked on it.
+        /// </summary>
+        internal static void MarkWriterRollback(JObject payload, bool rolledBack, string rollbackError, JArray unappliedMembers)
+        {
+            if (payload == null) return;
+            string unapplied = string.Empty;
+            if (unappliedMembers != null && unappliedMembers.Count > 0)
+            {
+                var lines = new string[unappliedMembers.Count];
+                for (int i = 0; i < lines.Length; i++) lines[i] = unappliedMembers[i]?.ToString();
+                unapplied = " Not applied: " + string.Join("; ", lines) + ".";
+            }
+            const string head = "The SDK save completed, but the post-save re-read did not contain the requested content.";
+            string cause = (string.IsNullOrWhiteSpace(rollbackError) ? "unknown cause" : rollbackError.Trim().TrimEnd('.')) + ".";
+            payload["message"] = rolledBack
+                ? head + unapplied + " The write was reverted to the pre-write structure and the revert was verified by re-read."
+                : head + unapplied + " The revert to the pre-write structure could not be verified: " + cause
+                    + " Stop writing this object until its persisted state is confirmed.";
+            payload["rollback"] = new JObject
+            {
+                ["attempted"] = true,
+                ["saveAttempted"] = true,
+                ["verified"] = rolledBack,
+                ["rolledBack"] = rolledBack,
+                ["source"] = "write-service",
+                ["error"] = rolledBack ? JValue.CreateNull() : (JToken)(rollbackError ?? "Rollback could not be verified.")
+            };
+            payload["rolledBack"] = rolledBack;
+            if (unappliedMembers != null) payload["unappliedMembers"] = unappliedMembers;
+            if (!rolledBack) return;
+            payload["stateRestored"] = true;
+            payload["commitState"] = "RolledBack";
+            payload["persistenceState"] = "Restored";
+        }
+
         internal static void AttachOutcome(JObject payload, bool saved, bool verified)
         {
             payload["persistedVerified"] = verified;
