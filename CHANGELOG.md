@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Internal
+
+## v3.16.0 - 2026-10-17
+
+
+### Tracked issues
+
+- [#541](https://github.com/lennix1337/Genexus18MCP/issues/541) — [Bug] genexus_create descarta description, firstItemType (SDT) e dataType/length (Attribute) e responde sucesso; atributo nasce NUMERIC(4) sem conserto pelo MCP
+- [#542](https://github.com/lennix1337/Genexus18MCP/issues/542) — [Bug][Integridade] SDT: trocar o tipo de membro existente - update_visual falha sem dizer o campo; genexus_edit part=Structure grava pela metade (VARCHAR(40) -> VARCHAR(7)) e nao desfaz
+- [#543](https://github.com/lennix1337/Genexus18MCP/issues/543) — [Bug] genexus_variable add typeName=<SDT> em objeto existente: VariableTypeNotPersisted, enquanto o patch da parte Variables grava a mesma linha
+- [#544](https://github.com/lennix1337/Genexus18MCP/issues/544) — [Bug] WriteNotPersisted falso em Layout (WebForm e Report) que persistiu: id de folha descartado, &var -> var:N, ControlName segue o AttributeReference
+- [#545](https://github.com/lennix1337/Genexus18MCP/issues/545) — [Bug/Feature] WorkWithPlus em Transaction: mover atributo do form e recusado como "identity changed" (contradiz o hint); remocao so uma por import; sem acao tipada
+- [#546](https://github.com/lennix1337/Genexus18MCP/issues/546) — [Bug/DX] genexus_lifecycle rebuild aceita target e o dryRun mostra wouldBuild:[target] junto com action RebuildAll
+- [#547](https://github.com/lennix1337/Genexus18MCP/issues/547) — [Bug][Follow-up #448] Patch de Variables sobrepõe semânticas de saved e orienta retry após Save confirmado
+- [#548](https://github.com/lennix1337/Genexus18MCP/issues/548) — [Bug][Follow-up #479] Diagnóstico marca persisted=true ao enfileirar e aponta detalhes que não estão no log
+- [#549](https://github.com/lennix1337/Genexus18MCP/issues/549) — [Bug][Follow-up #479] Fonte simples em exceção sintética atravessa a sanitização do diagnóstico de leitura
+- [#550](https://github.com/lennix1337/Genexus18MCP/issues/550) — [Bug][Follow-up #479] SanitizeStackTrace pula o limite de caracteres quando também limita frames
+- [#551](https://github.com/lennix1337/Genexus18MCP/issues/551) — WWP Transaction: cannot add textBlock (or grid row userAction / selection parameters) via import_part or genexus_wwp
+- [#552](https://github.com/lennix1337/Genexus18MCP/issues/552) — WWP Transaction: cannot create tabs (add_tab -> TabsContainerNotFound) nor move attributes into a tab
+- [#553](https://github.com/lennix1337/Genexus18MCP/issues/553) — [Bug][Follow-up #522] Uma falha de leitura por objeto trava o backfill do source store em error: tolerar como falha por objeto, não como fatia fatal
+- [#554](https://github.com/lennix1337/Genexus18MCP/issues/554) — [Bug][Follow-up #522] Os contadores do backfill do source store somam acumuladores locais a cada iteração: processed/stored/stale crescem triangular e o removido ganha contagem extra
+- [#555](https://github.com/lennix1337/Genexus18MCP/issues/555) — [DX][Minor][Follow-up #527] A mensagem AmbiguousName de genexus_impact/genexus_object_context não sugere type quando ele reduz a lista a um único candidato
+- [#556](https://github.com/lennix1337/Genexus18MCP/issues/556) — Nexus IDE checks: aborta cedo com Error mutex already exists (user-data-dir de single-instance compartilhado) e trunca a suite no lote paralelo do release-preflight
+- [#557](https://github.com/lennix1337/Genexus18MCP/issues/557) — [Bug][Follow-up #525] add_attribute sem descrição em mode=ops responde WriteNotPersisted quando verifyMode é omitido; com verifyMode:"semantic" a mesma gravação passa
+- [#558](https://github.com/lennix1337/Genexus18MCP/issues/558) — [Bug][Follow-up #217] A reversão de uma gravação de Structure em mode=ops falha com SDK-API-UNSUPPORTED, embora genexus_structure remove_attribute remova o mesmo atributo
+- [#559](https://github.com/lennix1337/Genexus18MCP/issues/559) — [Feature] genexus_workwith: autoria tipada de filtro de Selection (filterAttribute + conditions) no WorkWith padrão
+- [#560](https://github.com/lennix1337/Genexus18MCP/issues/560) — [Feature] WWP Transaction: prompt de inserção do DVelop Combo (<prompt><parameters>) e reposicionar userAction/contêiner — hoje só pela IDE
+
+
 - Experimental integral-second Rust DateTime path matches 42 native outputs; Date month/year shifts match another 18. Timezone/millisecond/general SDK compatibility remain open.
 
 

@@ -1,13 +1,13 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.15.0",
-  "tag": "v3.15.0",
-  "collectedAtUtc": "2026-10-14T02:33:30.2504961Z",
+  "version": "3.16.0",
+  "tag": "v3.16.0",
+  "collectedAtUtc": "2026-10-17T13:00:11.6682721Z",
   "issues": [
     {
-      "number": 495,
-      "title": "[Bug] genexus_edit síncrono em part=Events: gravação persistida reportada como WriteVerificationUnavailable (readFailure), de forma intermitente, sem o motivo da falha de leitura",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/495",
+      "number": 541,
+      "title": "[Bug] genexus_create descarta description, firstItemType (SDT) e dataType/length (Attribute) e responde sucesso; atributo nasce NUMERIC(4) sem conserto pelo MCP",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/541",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -15,9 +15,189 @@
       "milestone": null
     },
     {
-      "number": 496,
-      "title": "[Docs/DX] genexus_edit part=Events: o modo estrito recusa por falta de isolamento o object-level save que o patch comum faz sem aviso; a descrição de requireObjectSave reforça a confusão",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/496",
+      "number": 542,
+      "title": "[Bug][Integridade] SDT: trocar o tipo de membro existente - update_visual falha sem dizer o campo; genexus_edit part=Structure grava pela metade (VARCHAR(40) -> VARCHAR(7)) e nao desfaz",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/542",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 543,
+      "title": "[Bug] genexus_variable add typeName=<SDT> em objeto existente: VariableTypeNotPersisted, enquanto o patch da parte Variables grava a mesma linha",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/543",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 544,
+      "title": "[Bug] WriteNotPersisted falso em Layout (WebForm e Report) que persistiu: id de folha descartado, &var -> var:N, ControlName segue o AttributeReference",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/544",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 545,
+      "title": "[Bug/Feature] WorkWithPlus em Transaction: mover atributo do form e recusado como \"identity changed\" (contradiz o hint); remocao so uma por import; sem acao tipada",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/545",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 546,
+      "title": "[Bug/DX] genexus_lifecycle rebuild aceita target e o dryRun mostra wouldBuild:[target] junto com action RebuildAll",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/546",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 547,
+      "title": "[Bug][Follow-up #448] Patch de Variables sobrepõe semânticas de saved e orienta retry após Save confirmado",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/547",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 548,
+      "title": "[Bug][Follow-up #479] Diagnóstico marca persisted=true ao enfileirar e aponta detalhes que não estão no log",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/548",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 549,
+      "title": "[Bug][Follow-up #479] Fonte simples em exceção sintética atravessa a sanitização do diagnóstico de leitura",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/549",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 550,
+      "title": "[Bug][Follow-up #479] SanitizeStackTrace pula o limite de caracteres quando também limita frames",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/550",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 551,
+      "title": "WWP Transaction: cannot add textBlock (or grid row userAction / selection parameters) via import_part or genexus_wwp",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/551",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 552,
+      "title": "WWP Transaction: cannot create tabs (add_tab -> TabsContainerNotFound) nor move attributes into a tab",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/552",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 553,
+      "title": "[Bug][Follow-up #522] Uma falha de leitura por objeto trava o backfill do source store em error: tolerar como falha por objeto, não como fatia fatal",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/553",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 554,
+      "title": "[Bug][Follow-up #522] Os contadores do backfill do source store somam acumuladores locais a cada iteração: processed/stored/stale crescem triangular e o removido ganha contagem extra",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/554",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 555,
+      "title": "[DX][Minor][Follow-up #527] A mensagem AmbiguousName de genexus_impact/genexus_object_context não sugere type quando ele reduz a lista a um único candidato",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/555",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 556,
+      "title": "Nexus IDE checks: aborta cedo com Error mutex already exists (user-data-dir de single-instance compartilhado) e trunca a suite no lote paralelo do release-preflight",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/556",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 557,
+      "title": "[Bug][Follow-up #525] add_attribute sem descrição em mode=ops responde WriteNotPersisted quando verifyMode é omitido; com verifyMode:\"semantic\" a mesma gravação passa",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/557",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 558,
+      "title": "[Bug][Follow-up #217] A reversão de uma gravação de Structure em mode=ops falha com SDK-API-UNSUPPORTED, embora genexus_structure remove_attribute remova o mesmo atributo",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/558",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 559,
+      "title": "[Feature] genexus_workwith: autoria tipada de filtro de Selection (filterAttribute + conditions) no WorkWith padrão",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/559",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 560,
+      "title": "[Feature] WWP Transaction: prompt de inserção do DVelop Combo (<prompt><parameters>) e reposicionar userAction/contêiner — hoje só pela IDE",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/560",
       "state": "open",
       "labels": [
         "fixed-pending-release"
