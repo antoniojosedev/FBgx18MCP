@@ -1413,3 +1413,30 @@ Owner-reported implementation and native observations:
 - Registry: new `sdt_and_collection_xml` capability at `Parity` (no consumers).
 - Milestone: **Structured Data & Collections** reaches **100.0% parity (5/5 areas)**. All 3 core language subsystems (**Language & Runtime Core 8/8**, **Control Flow & Procedure Pipeline 6/6**, **Structured Data & Collections 5/5**) now at **100.0% Native Parity (19/19 areas)**. Overall SDK replacement reaches **37.0%**.
 
+## Domain and Attribute Projection & Resolution in Portable Catalog and SDK XML (2026-10-16)
+
+- Native Contract & Object Class Analysis:
+  - Official GeneXus GUIDs from `Artech.Genexus.Common.ObjClass`:
+    - Domain: `00972a17-9975-449e-aab1-d26165d51393`
+    - Attribute: `adbb33c9-0906-4971-833c-998de27e0676`
+  - Semantic Rules:
+    - Domains can only be based on other Domains (never on Attributes).
+    - Attributes can be based on Domains.
+    - Procedures and SDTs reference Domains and Attributes via `ReferenceKind::BasedOn`.
+    - Variable declarations, parameter signatures, and return types resolve to concrete `DataType`s before compilation.
+    - Bounded resolution: max depth 16, strict cycle detection, visited set tracking.
+- Engine Implementation:
+  - `src/gx-engine/src/kb.rs`:
+    - Added `RawCatalogType` (`Concrete(DataType)`, `BasedOnShort { target }`, `BasedOnTagged { kind, target }`).
+    - Added `resolve_domain_or_attribute_data_type` and `deserialize_raw_variables` rejecting duplicate declarations.
+    - Updated `project_from_catalog`: admits `ObjectKind::Domain` and `ObjectKind::Attribute` with `TYPE` source parts, resolves `BasedOn` references on Procedures and SDTs before lowering.
+  - `src/gx-engine/src/exchange.rs`:
+    - Added `DOMAIN` and `ATTRIBUTE` GUID constants.
+    - Added `ParsedTypeDefinition` (`Concrete(DataType)`, `BasedOn(String)`) and `parse_type_definition`.
+    - Updated `project_level` and `parse_sdt` to support `BasedOn` domain/attribute references on SDT items.
+    - Updated `catalog_from_xml` to parse Domain and Attribute objects, extract definitions from properties/parts, and wire explicit `BasedOn` references.
+  - `src/gx-engine/tests/domain_attribute.rs`: Added 10 end-to-end integration tests covering procedure variables based on Domain/Attribute, chained Domains, SDT items based on Domain, cyclic dependency detection, domain-cannot-be-based-on-attribute enforcement, and end-to-end `xml-run`.
+- Verification: 306 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean. 40/40 `EngineBackendTests` passed in .NET.
+- Registry: new `domain_attribute_projection` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Portable KB Catalog & XML Projection** advances from **33.3% to 66.7% (4/6 areas: Procedures, SDTs, Domains, Attributes)**. Overall weighted SDK replacement advances from **37.0% to 40.7% (31/56 areas touched: 55.4%)**.
+

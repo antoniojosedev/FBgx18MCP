@@ -223,11 +223,20 @@ namespace GxMcp.Gateway
                 notes: "Bounded reachability (1,024 Procedures); no Rules/Events beyond standalone Parm."),
 
             new EngineCapability(
+                id: "domain_attribute_projection",
+                title: "Domain and Attribute projection, chained dependency resolution and BasedOn typing in KB Catalog and XML",
+                engineSurface: "kb catalog resolver + exchange ExportFile XML projection + BasedOn reference wiring",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/domain_attribute.rs (10/10 tests: Procedure variables based on Domain/Attribute, chained Domains, SDT items based on Domain, cyclic dependency detection, domain-cannot-be-based-on-attribute enforcement, and end-to-end xml-run)",
+                consumers: Array.Empty<string>(),
+                notes: "Resolves GeneXus Domain (00972a17-9975-449e-aab1-d26165d51393) and Attribute (adbb33c9-0906-4971-833c-998de27e0676) objects in the portable catalog and SDK ExportFile XML into concrete DataTypes at procedure and SDT boundaries. Enforces GeneXus rules: domains cannot be based on attributes, bounded recursion depth of 16, strict cycle detection, and explicit BasedOn reference validation. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "xml_projection",
                 title: "SDK ExportFile XML to portable catalog projection",
                 engineSurface: "gx-engine xml-check/xml-emit/xml-build/xml-run",
                 status: EngineCapabilityStatus.Partial,
-                evidence: "src/gx-engine/README.md (read-only SDK XML compilation projection); exchange suite 16/16; one fresh disposable-KB export ran unchanged",
+                evidence: "src/gx-engine/README.md (read-only SDK XML compilation projection); exchange suite 16/16; domain_attribute suite 10/10; fresh disposable-KB exports run unchanged",
                 consumers: Array.Empty<string>(),
                 notes: "Bounded depth and item-alias rules; a compilation projection, not a lossless importer."),
 
