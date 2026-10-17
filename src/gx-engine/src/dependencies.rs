@@ -83,10 +83,40 @@ fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
     }
 }
 
+fn is_aggregate_formula_call(name: &str, arguments: &[Expr]) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if !matches!(
+        upper.as_str(),
+        "SUM" | "COUNT" | "MAX" | "MIN" | "FIND" | "AVERAGE" | "AVG"
+    ) {
+        return false;
+    }
+    if arguments.is_empty() {
+        return true;
+    }
+    arguments.iter().any(has_attribute_ref)
+}
+
+fn has_attribute_ref(expr: &Expr) -> bool {
+    match expr {
+        Expr::Attribute(_) => true,
+        Expr::Binary(l, _, r) => has_attribute_ref(l) || has_attribute_ref(r),
+        Expr::Not(e) | Expr::Negate(e) | Expr::TextLength(e) => has_attribute_ref(e),
+        Expr::Member(e, _) | Expr::CloneRecord(e) => has_attribute_ref(e),
+        Expr::CollectionItem(r, i) => has_attribute_ref(r) || has_attribute_ref(i),
+        Expr::DateMethod(_, e) => has_attribute_ref(e),
+        Expr::DateShift(_, a, b) => has_attribute_ref(a) || has_attribute_ref(b),
+        Expr::Call(_, args) => args.iter().any(has_attribute_ref),
+        _ => false,
+    }
+}
+
 fn collect_expression_calls(expression: &Expr, callees: &mut HashSet<String>) {
     match expression {
         Expr::Call(name, arguments) => {
-            callees.insert(name.clone());
+            if !is_aggregate_formula_call(name, arguments) {
+                callees.insert(name.clone());
+            }
             for argument in arguments {
                 collect_expression_calls(argument, callees);
             }

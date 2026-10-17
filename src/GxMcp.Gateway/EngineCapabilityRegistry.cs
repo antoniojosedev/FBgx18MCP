@@ -304,6 +304,15 @@ namespace GxMcp.Gateway
                 notes: "Adheres strictly to official GeneXus specifier semantics and error diagnostics (spc0004, spc0005). Computes relational extended table (Tabela Estendida) foreign key paths up to depth 16, infers minimal base tables, selects primary and secondary indexes, resolves foreign key joins, correlates nested loops automatically, and generates read-only multi-dialect SELECT queries with zero external dependencies and zero SQL writes. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "formula_navigation",
+                title: "Formula specification, aggregate calculation navigation (Sum, Count, Max, Min, Find, Average), horizontal formulas, and context correlation",
+                engineSurface: "navigation engine + aggregate formula specifier + horizontal formula evaluator + multi-dialect SQL query generator",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/formula_navigation.rs (11/11 tests: correlated aggregate Sum in For Each, multi-aggregate formulas Count/Max/Min, standalone formulas outside For Each, Find formula with multi-dialect SQL TOP 1 / LIMIT 1 / ROWNUM = 1, conditional Count formulas, Average with default value, fail-closed spc0004 unrelated attributes, fail-closed spc0005 ambiguous base table, horizontal formulas over direct and extended table attributes, transaction attribute formulas, and full catalog procedure navigation report with formulas); frontend expression attribute and Star token support",
+                consumers: Array.Empty<string>(),
+                notes: "Implements GeneXus aggregate (Sum, Count, Max, Min, Find, Average/Avg) and horizontal formula specification. Automatically correlates aggregate formulas with enclosing query context tables via foreign keys and extended table paths, selects optimal secondary indexes for correlation columns, enforces reachability in horizontal formulas, validates fail-closed diagnostics (spc0004, spc0005), and generates read-only multi-dialect SELECT queries (ANSI, SQL Server, PostgreSQL, Oracle) with zero SQL writes. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "general_gx_surface",
                 title: "General GeneXus objects, Rules, Events and forms",
                 engineSurface: "none",

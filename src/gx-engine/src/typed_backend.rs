@@ -503,7 +503,18 @@ impl Emitter<'_> {
             .procedures
             .iter()
             .position(|p| p.name == name)
-            .ok_or_else(|| format!("unknown typed procedure {name}"))?;
+            .ok_or_else(|| {
+                if matches!(
+                    name.to_ascii_uppercase().as_str(),
+                    "SUM" | "COUNT" | "MAX" | "MIN" | "FIND" | "AVERAGE" | "AVG"
+                ) {
+                    format!(
+                        "database aggregate formula {name} requires the navigation/specifier engine and is not supported in standalone typed offline binaries"
+                    )
+                } else {
+                    format!("unknown typed procedure {name}")
+                }
+            })?;
         let procedure = &self.procedures[index];
         let params = parameters(procedure);
         // GeneXus allows the last out parameter to be omitted at a function call;

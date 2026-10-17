@@ -1736,11 +1736,38 @@ impl Parser {
         location: Location,
     ) -> Result<Expr, String> {
         self.ensure_expression_depth(depth)?;
+        let is_formula = matches!(
+            name.to_ascii_uppercase().as_str(),
+            "SUM" | "COUNT" | "MAX" | "MIN" | "FIND" | "AVERAGE" | "AVG"
+        );
+        let prev_allow_attributes = self.allow_attributes;
+        if is_formula {
+            self.allow_attributes = true;
+        }
+
+        let result = self.parse_call_inner(name, depth, nodes, location);
+        self.allow_attributes = prev_allow_attributes;
+        result
+    }
+
+    fn parse_call_inner(
+        &mut self,
+        name: String,
+        depth: usize,
+        nodes: &mut usize,
+        location: Location,
+    ) -> Result<Expr, String> {
         let mut arguments = Vec::new();
         if self.at(&TokenKind::RightParen) {
             self.count_expression_node(nodes, location)?;
             self.take();
             return Ok(Expr::Call(name, arguments));
+        }
+        if self.at(&TokenKind::Star) {
+            self.count_expression_node(nodes, location)?;
+            self.take();
+            self.expect(TokenKind::RightParen, "')' after '*' in call")?;
+            return Ok(Expr::Call(name, vec![Expr::Attribute("*".into())]));
         }
 
         loop {
@@ -1795,6 +1822,25 @@ impl Parser {
 pub fn parse_body(source: &str) -> Result<Vec<Stmt>, String> {
     let tokens = Lexer::new(source)?.lex()?;
     Parser::new(tokens).parse_body()
+}
+
+/// Parse an individual expression into the shared portable-engine AST.
+pub fn parse_expression(source: &str) -> Result<Expr, String> {
+    let tokens = Lexer::new(source)?.lex()?;
+    let mut parser = Parser::new(tokens);
+    let expr = parser.parse_expression()?;
+    parser.expect(TokenKind::Eof, "end of input after expression")?;
+    Ok(expr)
+}
+
+/// Parse an individual expression with attributes admitted (for formula strings).
+pub fn parse_expression_with_attributes(source: &str) -> Result<Expr, String> {
+    let tokens = Lexer::new(source)?.lex()?;
+    let mut parser = Parser::new(tokens);
+    parser.allow_attributes = true;
+    let expr = parser.parse_expression()?;
+    parser.expect(TokenKind::Eof, "end of input after expression")?;
+    Ok(expr)
 }
 
 #[cfg(test)]

@@ -1613,5 +1613,47 @@ Owner-reported implementation and native observations:
 - Registry: promoted `sql_navigation` capability to `Parity` in `EngineCapabilityRegistry.cs`.
 - Milestone: **Specifier & SQL Navigation** subsystem reaches **75.0% parity (6/8 areas: C1, C2, D1, D2, D3, D4)**. Overall weighted SDK replacement advances from **47.0% to 50.0% (38/56 areas touched: 69.6%)**.
 
+## Formula Specification & Aggregate Navigation (2026-10-17)
+
+- Scope & Authorization: Formula evaluation and aggregate navigation query planning (Rows B7, D2, D5, H2) under the authorized independent Rust engine plan ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Aggregate Formulas: Implemented `Sum`, `Count`, `Max`, `Min`, `Find`, and `Average` / `Avg` specification with target attribute/expression, conditional filters, and default values.
+  - Automatic Context Correlation: Formulas nested inside `For Each` blocks automatically correlate with the enclosing query's base and extended tables via foreign keys (direct, reverse, or transitive extended table paths), selecting optimal secondary or primary indexes for correlation columns.
+  - Standalone Formulas: Outside `For Each` loops, formulas resolve independent base tables and produce un-correlated SELECT queries.
+  - Horizontal Formulas: Evaluates intra-row calculations (e.g. `DetailPrice * DetailQuantity` or across extended table joins such as `DetailQuantity * ProductPrice`), validating that all referenced attributes are reachable from the base table.
+  - Fail-Closed Diagnostics: Emits canonical `spc0004` (no relationship between attributes) and `spc0005` (ambiguous base table) diagnostics when reachability or disambiguation fails.
+  - Multi-Dialect SQL Generation: Renders clean, read-only SELECT queries with proper aggregate functions (`SUM`, `COUNT`, `MAX`, `MIN`, `AVG`, `TOP 1`, `LIMIT 1`, `ROWNUM = 1`) across ANSI, SQL Server, PostgreSQL, and Oracle dialects, adhering strictly to zero SQL writes.
+  - Transaction Attribute Formulas: Specifies formula attributes defined on Transaction levels (`TransactionAttributeRef.formula`).
+- Engine Implementation:
+  - `src/gx-engine/src/frontend.rs`:
+    - Admitted attributes inside call arguments for aggregate functions (`Sum`, `Count`, `Max`, `Min`, `Find`, `Average`, `Avg`).
+    - Added `TokenKind::Star` support for `Count(*)`.
+    - Exported public helpers: `parse_expression(&str)` and `parse_expression_with_attributes(&str)`.
+  - `src/gx-engine/src/dependencies.rs`:
+    - Filtered database aggregate formula calls from procedural callee dependency tracking while continuing AST expression traversal.
+  - `src/gx-engine/src/navigation.rs`:
+    - Added `NavigationFormula` struct: `formula_type`, `target_attribute`, `base_table`, `index`, `conditions`, `correlations`, `sql`, and `default_value`.
+    - Connected `formulas: Vec<NavigationFormula>` to `NavigationLevel` and `standalone_formulas` to `NavigationReport`.
+    - Implemented `specify_aggregate_formula`, `specify_horizontal_formula`, and `specify_transaction_attribute_formula`.
+    - Implemented `select_index_for_columns` matching primary and secondary indexes.
+    - Enhanced base table candidate disambiguation to prefer least subordinate (ancestor) candidate tables when multiple candidates directly satisfy all attributes.
+  - `src/gx-engine/tests/formula_navigation.rs`:
+    - Added 11/11 end-to-end integration tests:
+      1. `test_correlated_aggregate_sum_formula_in_for_each`
+      2. `test_multi_aggregate_formulas_in_for_each`
+      3. `test_standalone_aggregate_formula_outside_for_each`
+      4. `test_find_formula_multi_dialect_sql`
+      5. `test_conditional_count_formula`
+      6. `test_average_formula_with_default`
+      7. `test_formula_fails_closed_spc0004_unrelated_attributes`
+      8. `test_formula_fails_closed_spc0005_ambiguous_base_table`
+      9. `test_horizontal_formula_evaluation_and_joins`
+      10. `test_transaction_attribute_formula_specification`
+      11. `test_full_procedure_navigation_report_with_formulas`
+- Verification: 363 passed / 0 failed across all 36 test suites in `gx-engine` (352 existing + 11 new tests). Clippy (`--all-targets`) and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `formula_navigation` capability to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Specifier & SQL Navigation** subsystem reaches **87.5% parity (7/8 areas: C1, C2, D1, D2, D3, D4, H2)**. Overall weighted SDK replacement advances from **50.0% to 51.8% (39/56 areas touched: 71.4%)**.
+
+
 
 

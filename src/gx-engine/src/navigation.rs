@@ -28,6 +28,24 @@ pub struct NavigationJoin {
     pub on_condition: String,
 }
 
+/// Represents an individual aggregate or horizontal formula in the navigation plan.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NavigationFormula {
+    pub formula_type: String, // "Sum", "Count", "Max", "Min", "Find", "Average", "Horizontal"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_attribute: Option<String>,
+    pub base_table: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<NavigationFilter>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub correlations: Vec<String>,
+    pub sql: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+}
+
 /// Represents a single data access navigation level (e.g. `For Each`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NavigationLevel {
@@ -38,6 +56,8 @@ pub struct NavigationLevel {
     pub order: Vec<String>,
     pub filters: Vec<NavigationFilter>,
     pub joins: Vec<NavigationJoin>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formulas: Vec<NavigationFormula>,
     pub sql: String,
     pub has_when_none: bool,
 }
@@ -47,6 +67,8 @@ pub struct NavigationLevel {
 pub struct NavigationReport {
     pub target_name: String,
     pub levels: Vec<NavigationLevel>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub standalone_formulas: Vec<NavigationFormula>,
     pub warnings: Vec<String>,
 }
 
@@ -115,6 +137,50 @@ fn collect_stmt_attributes(stmts: &[Stmt], attrs: &mut BTreeSet<String>) {
     }
 }
 
+/// Returns true if the function name matches a GeneXus aggregate formula keyword.
+pub fn is_aggregate_call(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "SUM" | "COUNT" | "MAX" | "MIN" | "FIND" | "AVERAGE" | "AVG"
+    )
+}
+
+/// Collects all attribute references from an expression unconditionally.
+pub fn collect_all_expr_attributes(expr: &Expr, attrs: &mut BTreeSet<String>) {
+    match expr {
+        Expr::Attribute(name) => {
+            attrs.insert(name.to_ascii_uppercase());
+        }
+        Expr::Binary(left, _, right) => {
+            collect_all_expr_attributes(left, attrs);
+            collect_all_expr_attributes(right, attrs);
+        }
+        Expr::Not(inner) | Expr::Negate(inner) | Expr::TextLength(inner) => {
+            collect_all_expr_attributes(inner, attrs);
+        }
+        Expr::Member(inner, _) | Expr::CloneRecord(inner) => {
+            collect_all_expr_attributes(inner, attrs);
+        }
+        Expr::CollectionItem(receiver, idx) => {
+            collect_all_expr_attributes(receiver, attrs);
+            collect_all_expr_attributes(idx, attrs);
+        }
+        Expr::DateMethod(_, inner) => {
+            collect_all_expr_attributes(inner, attrs);
+        }
+        Expr::DateShift(_, a, b) => {
+            collect_all_expr_attributes(a, attrs);
+            collect_all_expr_attributes(b, attrs);
+        }
+        Expr::Call(_, args) => {
+            for arg in args {
+                collect_all_expr_attributes(arg, attrs);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_expr_attributes(expr: &Expr, attrs: &mut BTreeSet<String>) {
     match expr {
         Expr::Attribute(name) => {
@@ -141,9 +207,13 @@ fn collect_expr_attributes(expr: &Expr, attrs: &mut BTreeSet<String>) {
             collect_expr_attributes(a, attrs);
             collect_expr_attributes(b, attrs);
         }
-        Expr::Call(_, args) => {
-            for arg in args {
-                collect_expr_attributes(arg, attrs);
+        Expr::Call(name, args) => {
+            // Aggregate formula attributes belong to the formula's own query plan;
+            // do not mix their attributes into the enclosing query's base table!
+            if !is_aggregate_call(name) {
+                for arg in args {
+                    collect_expr_attributes(arg, attrs);
+                }
             }
         }
         _ => {}
@@ -260,13 +330,13 @@ pub fn compute_extended_tables(tables: &[Table]) -> BTreeMap<String, ExtendedTab
     result
 }
 
-/// Infers the unique Base Table for a `ForEachStmt` according to GeneXus specifier rules (Matrix D1).
-pub fn infer_base_table<'a>(
-    for_each: &ForEachStmt,
+/// Infers the unique Base Table from a set of referenced attributes according to GeneXus specifier rules (Matrix D1).
+pub fn infer_base_table_from_attributes<'a>(
+    referenced_attrs: &BTreeSet<String>,
+    defined_by: Option<&str>,
     tables: &'a [Table],
     extended_tables: &BTreeMap<String, ExtendedTable>,
 ) -> Result<&'a Table, String> {
-    let referenced_attrs = extract_for_each_attributes(for_each);
     if referenced_attrs.is_empty() && tables.len() == 1 {
         return Ok(&tables[0]);
     }
@@ -278,7 +348,7 @@ pub fn infer_base_table<'a>(
         let upper_name = table.name.to_ascii_uppercase();
         if let Some(ext) = extended_tables.get(&upper_name) {
             // Check defined_by constraint
-            if let Some(ref def_by) = for_each.defined_by
+            if let Some(def_by) = defined_by
                 && !ext.direct_attributes.contains(&def_by.to_ascii_uppercase())
             {
                 continue;
@@ -295,7 +365,11 @@ pub fn infer_base_table<'a>(
     }
 
     if candidates.is_empty() {
-        let attr_list = referenced_attrs.into_iter().collect::<Vec<_>>().join(", ");
+        let attr_list = referenced_attrs
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(format!(
             "spc0004: No relationship between attributes: [{attr_list}]"
         ));
@@ -327,7 +401,7 @@ pub fn infer_base_table<'a>(
             .filter(|t| {
                 let upper = t.name.to_ascii_uppercase();
                 if let Some(ext) = extended_tables.get(&upper) {
-                    if let Some(ref def_by) = for_each.defined_by
+                    if let Some(def_by) = defined_by
                         && ext.direct_attributes.contains(&def_by.to_ascii_uppercase())
                     {
                         return true;
@@ -353,28 +427,29 @@ pub fn infer_base_table<'a>(
     }
 
     // Disambiguate when multiple candidates exist:
-    // In GeneXus, if table A has table B in its extended table (A -> B),
-    // then A is the more detailed/subordinate table (child) and is chosen as the base table.
+    // In GeneXus, prefer the least subordinate (ancestor) candidate among those that satisfy all attributes.
+    // A candidate table that reaches another candidate table in its extended table is subordinate to it
+    // and would unnecessarily multiply rows.
     let mut non_subordinate_candidates = Vec::new();
 
     for candidate in &candidates {
         let cand_upper = candidate.name.to_ascii_uppercase();
-        let mut is_ancestor_of_another = false;
+        let mut is_subordinate_to_another = false;
 
         for other in &candidates {
             if candidate.name == other.name {
                 continue;
             }
             let other_upper = other.name.to_ascii_uppercase();
-            if let Some(other_ext) = extended_tables.get(&other_upper)
-                && other_ext.reachable_tables.contains_key(&cand_upper)
+            if let Some(cand_ext) = extended_tables.get(&cand_upper)
+                && cand_ext.reachable_tables.contains_key(&other_upper)
             {
-                is_ancestor_of_another = true;
+                is_subordinate_to_another = true;
                 break;
             }
         }
 
-        if !is_ancestor_of_another {
+        if !is_subordinate_to_another {
             non_subordinate_candidates.push(*candidate);
         }
     }
@@ -389,10 +464,29 @@ pub fn infer_base_table<'a>(
         .map(|t| t.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    let attr_list = referenced_attrs.into_iter().collect::<Vec<_>>().join(", ");
+    let attr_list = referenced_attrs
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
     Err(format!(
         "spc0005: Ambiguous base table for attributes [{attr_list}]; candidate tables: [{candidate_names}]. Disambiguate with 'Defined By' or explicit For Each attribute."
     ))
+}
+
+/// Infers the unique Base Table for a `ForEachStmt` according to GeneXus specifier rules (Matrix D1).
+pub fn infer_base_table<'a>(
+    for_each: &ForEachStmt,
+    tables: &'a [Table],
+    extended_tables: &BTreeMap<String, ExtendedTable>,
+) -> Result<&'a Table, String> {
+    let referenced_attrs = extract_for_each_attributes(for_each);
+    infer_base_table_from_attributes(
+        &referenced_attrs,
+        for_each.defined_by.as_deref(),
+        tables,
+        extended_tables,
+    )
 }
 
 /// Selects the best index for the base table matching the `Order` clause (Matrix D3).
@@ -426,6 +520,32 @@ pub fn select_index(base_table: &Table, orders: &[ForEachOrder]) -> (String, Vec
     }
 
     ("NONE".to_string(), order_cols)
+}
+
+/// Selects the best index for the base table matching the given columns.
+pub fn select_index_for_columns(base_table: &Table, columns: &[String]) -> Option<String> {
+    if columns.is_empty() {
+        return None;
+    }
+    let cols_upper: Vec<String> = columns.iter().map(|c| c.to_ascii_uppercase()).collect();
+
+    let pk_upper: Vec<String> = base_table
+        .primary_key
+        .iter()
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if pk_upper.starts_with(&cols_upper) || cols_upper.starts_with(&pk_upper) {
+        return Some(format!("PK_{}", base_table.name));
+    }
+
+    for idx in &base_table.indexes {
+        let idx_upper: Vec<String> = idx.columns.iter().map(|c| c.to_ascii_uppercase()).collect();
+        if idx_upper.starts_with(&cols_upper) || cols_upper.starts_with(&idx_upper) {
+            return Some(idx.name.clone());
+        }
+    }
+
+    None
 }
 
 /// Resolves the minimum set of joins needed to satisfy attributes outside the base table (Matrix D5).
@@ -552,6 +672,582 @@ fn format_expr_value(expr: &Expr, dialect: SqlDialect) -> String {
     }
 }
 
+/// Recursively collects filters from an AST `Expr`, handling multiple AND conditions.
+pub fn collect_filter_expressions(
+    expr: &Expr,
+    dialect: SqlDialect,
+    filters: &mut Vec<NavigationFilter>,
+) {
+    if let Expr::Binary(left, BinOp::And, right) = expr {
+        collect_filter_expressions(left, dialect, filters);
+        collect_filter_expressions(right, dialect, filters);
+    } else if let Some(f) = format_filter_expression(expr, dialect) {
+        filters.push(f);
+    }
+}
+
+/// Helper to resolve column and table names with dialect quoting across base and joined tables.
+pub fn resolve_column_sql(
+    attr: &str,
+    base_table: &Table,
+    joins: &[NavigationJoin],
+    tables: &[Table],
+    dialect: SqlDialect,
+) -> (String, String) {
+    if let Some(c) = base_table
+        .columns
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case(attr))
+    {
+        return (
+            dialect.quote_identifier(&base_table.name),
+            dialect.quote_identifier(&c.name),
+        );
+    }
+    for join in joins {
+        if let Some(t) = tables
+            .iter()
+            .find(|t| t.name.eq_ignore_ascii_case(&join.table))
+            && let Some(c) = t.columns.iter().find(|c| c.name.eq_ignore_ascii_case(attr))
+        {
+            return (
+                dialect.quote_identifier(&t.name),
+                dialect.quote_identifier(&c.name),
+            );
+        }
+    }
+    (
+        dialect.quote_identifier(&base_table.name),
+        dialect.quote_identifier(attr),
+    )
+}
+
+/// Specifies an individual aggregate formula, inferring its base table, correlation, index, and multi-dialect SQL.
+pub fn specify_aggregate_formula(
+    call_name: &str,
+    args: &[Expr],
+    context_table: Option<&str>,
+    tables: &[Table],
+    dialect: SqlDialect,
+) -> Result<NavigationFormula, String> {
+    let formula_type = match call_name.to_ascii_uppercase().as_str() {
+        "SUM" => "Sum",
+        "COUNT" => "Count",
+        "MAX" => "Max",
+        "MIN" => "Min",
+        "FIND" => "Find",
+        "AVERAGE" | "AVG" => "Average",
+        other => return Err(format!("unrecognized aggregate formula kind: {other}")),
+    };
+
+    // 1. Target attribute or expression
+    let (target_attribute, target_expression): (Option<String>, Option<&Expr>) = if formula_type
+        == "Count"
+    {
+        if args.is_empty() {
+            (None, None)
+        } else {
+            match &args[0] {
+                Expr::Attribute(att) => {
+                    if att == "*" {
+                        (None, None)
+                    } else {
+                        (Some(att.to_ascii_uppercase()), None)
+                    }
+                }
+                _ => {
+                    return Err(
+                        "Count formula expects an attribute name as first argument or no arguments"
+                            .into(),
+                    );
+                }
+            }
+        }
+    } else {
+        if args.is_empty() {
+            return Err(format!(
+                "formula {formula_type} requires at least 1 target attribute argument"
+            ));
+        }
+        match &args[0] {
+            Expr::Attribute(att) => (Some(att.to_ascii_uppercase()), None),
+            other_expr if matches!(formula_type, "Sum" | "Average") => {
+                let mut expr_attrs = BTreeSet::new();
+                collect_all_expr_attributes(other_expr, &mut expr_attrs);
+                if expr_attrs.is_empty() {
+                    return Err(format!(
+                        "formula {formula_type} requires an attribute or expression containing attributes"
+                    ));
+                }
+                (None, Some(other_expr))
+            }
+            _ => {
+                return Err(format!(
+                    "formula {formula_type} requires an attribute as its first argument"
+                ));
+            }
+        }
+    };
+
+    // 2. Conditions
+    let mut conditions = Vec::new();
+    let mut cond_attrs = BTreeSet::new();
+    if args.len() >= 2 {
+        collect_filter_expressions(&args[1], dialect, &mut conditions);
+        collect_all_expr_attributes(&args[1], &mut cond_attrs);
+    }
+
+    // 3. Default value
+    let default_value = if args.len() >= 3 {
+        Some(format_expr_value(&args[2], dialect))
+    } else {
+        None
+    };
+
+    // 4. Base table inference for formula
+    let mut referenced_attributes = BTreeSet::new();
+    if let Some(ref att) = target_attribute {
+        referenced_attributes.insert(att.clone());
+    }
+    if let Some(expr) = target_expression {
+        collect_all_expr_attributes(expr, &mut referenced_attributes);
+    }
+    for att in &cond_attrs {
+        referenced_attributes.insert(att.clone());
+    }
+
+    if referenced_attributes.is_empty() {
+        if let Some(ctx) = context_table {
+            let base_table = tables
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(ctx))
+                .ok_or_else(|| format!("context table {ctx} not found"))?;
+            let sql = match dialect {
+                SqlDialect::SqlServer => format!("SELECT COUNT(*) FROM [{}]", base_table.name),
+                SqlDialect::Oracle => format!("SELECT COUNT(*) FROM {}", base_table.name),
+                _ => format!("SELECT COUNT(*) FROM \"{}\"", base_table.name),
+            };
+            return Ok(NavigationFormula {
+                formula_type: formula_type.into(),
+                target_attribute: None,
+                base_table: base_table.name.clone(),
+                index: None,
+                conditions,
+                correlations: Vec::new(),
+                sql,
+                default_value,
+            });
+        } else {
+            return Err(
+                "spc0005: Ambiguous base table for Count(): target attribute is required to identify the table to count".into(),
+            );
+        }
+    }
+
+    let extended_tables = compute_extended_tables(tables);
+    let base_table =
+        infer_base_table_from_attributes(&referenced_attributes, None, tables, &extended_tables)?;
+
+    let joins = if let Some(ext) = extended_tables.get(&base_table.name.to_ascii_uppercase()) {
+        resolve_joins(base_table, &referenced_attributes, ext, dialect)
+    } else {
+        Vec::new()
+    };
+
+    // 5. Automatic correlation with context table
+    let mut correlations = Vec::new();
+    let mut correlation_cols = Vec::new();
+    if let Some(ctx) = context_table
+        && !ctx.eq_ignore_ascii_case(&base_table.name)
+    {
+        // Check direct FK from base_table to context
+        for fk in &base_table.foreign_keys {
+            if fk.referenced_table.eq_ignore_ascii_case(ctx) {
+                for (fk_col, pk_col) in fk.columns.iter().zip(&fk.referenced_columns) {
+                    correlations.push(format!(
+                        "{}.{} = {}.{}",
+                        dialect.quote_identifier(&base_table.name),
+                        dialect.quote_identifier(fk_col),
+                        dialect.quote_identifier(ctx),
+                        dialect.quote_identifier(pk_col)
+                    ));
+                    correlation_cols.push(fk_col.clone());
+                }
+            }
+        }
+        // Check if context has FK to base_table (e.g. 1-to-1 or lookup)
+        if correlations.is_empty()
+            && let Some(ctx_tbl) = tables.iter().find(|t| t.name.eq_ignore_ascii_case(ctx))
+        {
+            for fk in &ctx_tbl.foreign_keys {
+                if fk.referenced_table.eq_ignore_ascii_case(&base_table.name) {
+                    for (fk_col, pk_col) in fk.columns.iter().zip(&fk.referenced_columns) {
+                        correlations.push(format!(
+                            "{}.{} = {}.{}",
+                            dialect.quote_identifier(&base_table.name),
+                            dialect.quote_identifier(pk_col),
+                            dialect.quote_identifier(ctx),
+                            dialect.quote_identifier(fk_col)
+                        ));
+                        correlation_cols.push(pk_col.clone());
+                    }
+                }
+            }
+        }
+        // Check if context is in extended table of base_table (depth > 1)
+        if correlations.is_empty()
+            && let Some(ext) = extended_tables.get(&base_table.name.to_ascii_uppercase())
+        {
+            for (ext_name, node) in &ext.reachable_tables {
+                if ext_name.eq_ignore_ascii_case(ctx) {
+                    for (fk_col, pk_col) in node
+                        .foreign_key
+                        .columns
+                        .iter()
+                        .zip(&node.foreign_key.referenced_columns)
+                    {
+                        correlations.push(format!(
+                            "{}.{} = {}.{}",
+                            dialect.quote_identifier(&base_table.name),
+                            dialect.quote_identifier(fk_col),
+                            dialect.quote_identifier(ctx),
+                            dialect.quote_identifier(pk_col)
+                        ));
+                        correlation_cols.push(fk_col.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Index selection
+    let index_name = if !correlation_cols.is_empty() {
+        select_index_for_columns(base_table, &correlation_cols)
+    } else {
+        None
+    };
+
+    // 7. Multi-dialect SQL generation
+    let canonical_target = if let Some(ref att) = target_attribute {
+        let (tbl_q, col_q) = resolve_column_sql(att, base_table, &joins, tables, dialect);
+        Some(format!("{tbl_q}.{col_q}"))
+    } else if let Some(expr) = target_expression {
+        let formatted = format_horizontal_expr(expr, base_table, &joins, tables, dialect)?;
+        Some(formatted)
+    } else {
+        None
+    };
+
+    let select_expr = match formula_type {
+        "Sum" => format!("SELECT SUM({})", canonical_target.as_deref().unwrap_or("*")),
+        "Count" => format!(
+            "SELECT COUNT({})",
+            canonical_target.as_deref().unwrap_or("*")
+        ),
+        "Max" => format!("SELECT MAX({})", canonical_target.as_deref().unwrap_or("*")),
+        "Min" => format!("SELECT MIN({})", canonical_target.as_deref().unwrap_or("*")),
+        "Average" => format!("SELECT AVG({})", canonical_target.as_deref().unwrap_or("*")),
+        "Find" => match dialect {
+            SqlDialect::SqlServer => {
+                format!(
+                    "SELECT TOP 1 {}",
+                    canonical_target.as_deref().unwrap_or("*")
+                )
+            }
+            _ => format!("SELECT {}", canonical_target.as_deref().unwrap_or("*")),
+        },
+        _ => unreachable!(),
+    };
+
+    let from_clause = format!("FROM {}", dialect.quote_identifier(&base_table.name));
+    let mut joins_clause = String::new();
+    for join in &joins {
+        joins_clause.push_str(&format!(
+            " INNER JOIN {} ON {}",
+            dialect.quote_identifier(&join.table),
+            join.on_condition
+        ));
+    }
+
+    let mut all_where = Vec::new();
+    for corr in &correlations {
+        all_where.push(corr.clone());
+    }
+    for cond in &conditions {
+        let (tbl_q, col_q) =
+            resolve_column_sql(&cond.attribute, base_table, &joins, tables, dialect);
+        all_where.push(format!("{tbl_q}.{col_q} {} {}", cond.op, cond.expression));
+    }
+
+    if formula_type == "Find" && dialect == SqlDialect::Oracle {
+        all_where.push("ROWNUM = 1".into());
+    }
+
+    let where_clause = if !all_where.is_empty() {
+        format!(" WHERE {}", all_where.join(" AND "))
+    } else {
+        String::new()
+    };
+
+    let mut sql = format!("{select_expr} {from_clause}{joins_clause}{where_clause}");
+    if formula_type == "Find" && (dialect == SqlDialect::Ansi || dialect == SqlDialect::PostgreSql)
+    {
+        sql.push_str(" LIMIT 1");
+    }
+
+    Ok(NavigationFormula {
+        formula_type: formula_type.into(),
+        target_attribute,
+        base_table: base_table.name.clone(),
+        index: index_name,
+        conditions,
+        correlations,
+        sql,
+        default_value,
+    })
+}
+
+/// Specifies a horizontal formula, verifying that all attributes belong to the table's extended table.
+pub fn specify_horizontal_formula(
+    formula_expr: &Expr,
+    base_table_name: &str,
+    tables: &[Table],
+    dialect: SqlDialect,
+) -> Result<NavigationFormula, String> {
+    let mut attrs = BTreeSet::new();
+    collect_all_expr_attributes(formula_expr, &mut attrs);
+
+    let extended_tables = compute_extended_tables(tables);
+    let ext = extended_tables
+        .get(&base_table_name.to_ascii_uppercase())
+        .ok_or_else(|| format!("base table {base_table_name} not found in catalog tables"))?;
+
+    for att in &attrs {
+        if !ext.contains_attribute(att) {
+            return Err(format!(
+                "spc0004: No relationship between attributes: attribute '{att}' cannot be reached from base table '{base_table_name}'"
+            ));
+        }
+    }
+
+    let base_table = tables
+        .iter()
+        .find(|t| t.name.eq_ignore_ascii_case(base_table_name))
+        .ok_or_else(|| format!("base table {base_table_name} not found"))?;
+
+    let joins = resolve_joins(base_table, &attrs, ext, dialect);
+    let expr_sql = format_horizontal_expr(formula_expr, base_table, &joins, tables, dialect)?;
+
+    Ok(NavigationFormula {
+        formula_type: "Horizontal".into(),
+        target_attribute: None,
+        base_table: base_table.name.clone(),
+        index: None,
+        conditions: Vec::new(),
+        correlations: Vec::new(),
+        sql: expr_sql,
+        default_value: None,
+    })
+}
+
+fn format_horizontal_expr(
+    expr: &Expr,
+    base_table: &Table,
+    joins: &[NavigationJoin],
+    tables: &[Table],
+    dialect: SqlDialect,
+) -> Result<String, String> {
+    match expr {
+        Expr::Integer(val) => Ok(val.to_string()),
+        Expr::Decimal(val) => Ok(val.clone()),
+        Expr::Text(val) => Ok(format!("'{}'", val.replace('\'', "''"))),
+        Expr::Boolean(val) => Ok(match dialect {
+            SqlDialect::Ansi | SqlDialect::PostgreSql => {
+                if *val {
+                    "TRUE".into()
+                } else {
+                    "FALSE".into()
+                }
+            }
+            SqlDialect::SqlServer | SqlDialect::Oracle => {
+                if *val {
+                    "1".into()
+                } else {
+                    "0".into()
+                }
+            }
+        }),
+        Expr::Variable(var) => Ok(match dialect {
+            SqlDialect::SqlServer => format!("@{var}"),
+            _ => format!(":{var}"),
+        }),
+        Expr::Attribute(att) => {
+            let (tbl_q, col_q) = resolve_column_sql(att, base_table, joins, tables, dialect);
+            Ok(format!("{tbl_q}.{col_q}"))
+        }
+        Expr::Binary(left, op, right) => {
+            let l = format_horizontal_expr(left, base_table, joins, tables, dialect)?;
+            let r = format_horizontal_expr(right, base_table, joins, tables, dialect)?;
+            let op_str = match op {
+                BinOp::Add => "+",
+                BinOp::Subtract => "-",
+                BinOp::Multiply => "*",
+                BinOp::Divide => "/",
+                BinOp::Equal => "=",
+                BinOp::NotEqual => "<>",
+                BinOp::Less => "<",
+                BinOp::LessEqual => "<=",
+                BinOp::Greater => ">",
+                BinOp::GreaterEqual => ">=",
+                BinOp::And => "AND",
+                BinOp::Or => "OR",
+            };
+            Ok(format!("({l} {op_str} {r})"))
+        }
+        Expr::Negate(inner) => {
+            let inner_str = format_horizontal_expr(inner, base_table, joins, tables, dialect)?;
+            Ok(format!("(-{inner_str})"))
+        }
+        Expr::Call(name, args) if is_aggregate_call(name) => {
+            let formula =
+                specify_aggregate_formula(name, args, Some(&base_table.name), tables, dialect)?;
+            Ok(format!("({})", formula.sql))
+        }
+        _ => Err("unsupported expression in horizontal formula".into()),
+    }
+}
+
+/// Specifies a Transaction attribute formula (from TransactionAttributeRef.formula).
+pub fn specify_transaction_attribute_formula(
+    attr_name: &str,
+    formula_source: &str,
+    transaction_tables: &[Table],
+    all_tables: &[Table],
+    dialect: SqlDialect,
+) -> Result<NavigationFormula, String> {
+    let parsed_expr = crate::frontend::parse_expression_with_attributes(formula_source)?;
+
+    let owning_table = transaction_tables
+        .iter()
+        .find(|t| {
+            t.columns
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case(attr_name))
+        })
+        .or_else(|| transaction_tables.first())
+        .ok_or_else(|| {
+            format!("cannot determine owning table for formula attribute '{attr_name}'")
+        })?;
+
+    match &parsed_expr {
+        Expr::Call(name, args) if is_aggregate_call(name) => {
+            let mut formula = specify_aggregate_formula(
+                name,
+                args,
+                Some(&owning_table.name),
+                all_tables,
+                dialect,
+            )?;
+            formula.target_attribute = Some(attr_name.to_string());
+            Ok(formula)
+        }
+        _ => {
+            let mut formula =
+                specify_horizontal_formula(&parsed_expr, &owning_table.name, all_tables, dialect)?;
+            formula.target_attribute = Some(attr_name.to_string());
+            Ok(formula)
+        }
+    }
+}
+
+fn extract_formulas_from_stmts(
+    stmts: &[Stmt],
+    context_table: Option<&str>,
+    tables: &[Table],
+    dialect: SqlDialect,
+    formulas: &mut Vec<NavigationFormula>,
+) -> Result<(), String> {
+    for stmt in stmts {
+        extract_formulas_from_stmt(stmt, context_table, tables, dialect, formulas)?;
+    }
+    Ok(())
+}
+
+fn extract_formulas_from_stmt(
+    stmt: &Stmt,
+    context_table: Option<&str>,
+    tables: &[Table],
+    dialect: SqlDialect,
+    formulas: &mut Vec<NavigationFormula>,
+) -> Result<(), String> {
+    match stmt {
+        Stmt::Assign(_, expr)
+        | Stmt::AssignAttribute(_, expr)
+        | Stmt::Print(expr)
+        | Stmt::MsgStatus(expr)
+        | Stmt::Return(expr)
+        | Stmt::Call(expr) => {
+            extract_formulas_from_expr(expr, context_table, tables, dialect, formulas)?;
+        }
+        Stmt::If(cond, yes, no) => {
+            extract_formulas_from_expr(cond, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_stmts(yes, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_stmts(no, context_table, tables, dialect, formulas)?;
+        }
+        Stmt::While(cond, body) => {
+            extract_formulas_from_expr(cond, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_stmts(body, context_table, tables, dialect, formulas)?;
+        }
+        Stmt::For(_, init, limit, _, body) => {
+            extract_formulas_from_expr(init, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_expr(limit, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_stmts(body, context_table, tables, dialect, formulas)?;
+        }
+        Stmt::ForIn(_, col, body) => {
+            extract_formulas_from_expr(col, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_stmts(body, context_table, tables, dialect, formulas)?;
+        }
+        Stmt::ForEach(fe) => {
+            extract_formulas_from_stmts(&fe.body, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_stmts(&fe.when_none, context_table, tables, dialect, formulas)?;
+        }
+        Stmt::Sub(_, body) => {
+            extract_formulas_from_stmts(body, context_table, tables, dialect, formulas)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn extract_formulas_from_expr(
+    expr: &Expr,
+    context_table: Option<&str>,
+    tables: &[Table],
+    dialect: SqlDialect,
+    formulas: &mut Vec<NavigationFormula>,
+) -> Result<(), String> {
+    match expr {
+        Expr::Call(name, args) if is_aggregate_call(name) => {
+            let formula = specify_aggregate_formula(name, args, context_table, tables, dialect)?;
+            formulas.push(formula);
+        }
+        Expr::Binary(left, _, right) => {
+            extract_formulas_from_expr(left, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_expr(right, context_table, tables, dialect, formulas)?;
+        }
+        Expr::Not(inner) | Expr::Negate(inner) | Expr::TextLength(inner) => {
+            extract_formulas_from_expr(inner, context_table, tables, dialect, formulas)?;
+        }
+        Expr::Call(_, args) => {
+            for arg in args {
+                extract_formulas_from_expr(arg, context_table, tables, dialect, formulas)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Generates clean, read-only SQL for the navigation level (Matrix D2 & H1).
 pub fn generate_navigation_sql(
     base_table: &Table,
@@ -566,32 +1262,7 @@ pub fn generate_navigation_sql(
     sql.push_str("SELECT ");
 
     let resolve_column = |attr: &str| -> (String, String) {
-        if let Some(c) = base_table
-            .columns
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(attr))
-        {
-            return (
-                dialect.quote_identifier(&base_table.name),
-                dialect.quote_identifier(&c.name),
-            );
-        }
-        for join in joins {
-            if let Some(t) = tables
-                .iter()
-                .find(|t| t.name.eq_ignore_ascii_case(&join.table))
-                && let Some(c) = t.columns.iter().find(|c| c.name.eq_ignore_ascii_case(attr))
-            {
-                return (
-                    dialect.quote_identifier(&t.name),
-                    dialect.quote_identifier(&c.name),
-                );
-            }
-        }
-        (
-            dialect.quote_identifier(&base_table.name),
-            dialect.quote_identifier(attr),
-        )
+        resolve_column_sql(attr, base_table, joins, tables, dialect)
     };
 
     let quoted_base = dialect.quote_identifier(&base_table.name);
@@ -693,9 +1364,7 @@ pub fn specify_for_each(
 
     // Where filters
     for where_expr in &for_each.wheres {
-        if let Some(f) = format_filter_expression(where_expr, dialect) {
-            filters.push(f);
-        }
+        collect_filter_expressions(where_expr, dialect, &mut filters);
     }
 
     let order_names: Vec<String> = if !for_each.orders.is_empty() {
@@ -718,6 +1387,15 @@ pub fn specify_for_each(
         dialect,
     );
 
+    let mut formulas = Vec::new();
+    extract_formulas_from_stmts(
+        &for_each.body,
+        Some(&base_table.name),
+        tables,
+        dialect,
+        &mut formulas,
+    )?;
+
     Ok(NavigationLevel {
         number: level_num,
         level_type: "For Each".to_string(),
@@ -726,6 +1404,7 @@ pub fn specify_for_each(
         order: order_names,
         filters,
         joins,
+        formulas,
         sql,
         has_when_none: !for_each.when_none.is_empty(),
     })
@@ -873,9 +1552,17 @@ pub fn specify_procedure(
         dialect,
     )?;
 
+    let mut standalone_formulas = Vec::new();
+    for stmt in &stmts {
+        if !matches!(stmt, Stmt::ForEach(_)) {
+            extract_formulas_from_stmt(stmt, None, &tables, dialect, &mut standalone_formulas)?;
+        }
+    }
+
     Ok(NavigationReport {
         target_name: proc_obj.name.clone(),
         levels,
+        standalone_formulas,
         warnings: Vec::new(),
     })
 }
