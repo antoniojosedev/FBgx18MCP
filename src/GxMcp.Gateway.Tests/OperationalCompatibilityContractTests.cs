@@ -83,7 +83,8 @@ namespace GxMcp.Gateway.Tests
             JObject childrenItems = (JObject)schema["properties"]!["children"]!["items"]!;
             Assert.Equal("object", childrenItems["type"]!.ToString());
             Assert.Equal("type", childrenItems["required"]![0]!.ToString());
-            Assert.Equal(new[] { "variable", "userAction", "table" },
+            // "attribute" moves an attribute already on the form into the tab (issue #552).
+            Assert.Equal(new[] { "variable", "userAction", "table", "attribute" },
                 ((JArray)childrenItems["properties"]!["type"]!["enum"]!).Select(value => value.ToString()));
             Assert.Null(schema["$defs"]);
         }

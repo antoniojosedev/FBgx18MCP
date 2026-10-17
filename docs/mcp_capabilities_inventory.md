@@ -127,6 +127,8 @@ For SDTs, `genexus_structure update_visual` accepts `payload.mode=add|replace` a
 
 `genexus_wwp add_grid` supports both SDT collections and basic-typed variable grids without a collection. Variable columns use `{variable, basicType, length, decimals, description, readOnly}`; `gridName` defaults to `Grid`. `add_user_action` creates a missing `TableActions` under exactly one `TableMain`, including Empty-template WebPanels; `containerName: Grid` targets the unnamed WorkWith grid for a row-level action and `position` is the index among the container's existing standard and user actions. Both operations retain dry-run, optimistic version, native snapshots, independent reread, projection and rollback guards; neither runs KB lifecycle operations.
 
+`genexus_wwp add_tab` on a form without `<tabs>` creates the container under the unique `TableContent` (then `TableMain`, or an explicit `containerName` path) and refuses any other layout (`TabsContainerNotFound` with `availablePaths`, `TabsContainerAmbiguous`). `children[].type` accepts `attribute`: an attribute already in a form table is moved into the tab, element and XML attributes intact, and reported in `movedAttributes`; one present in several tables is `AttributeAmbiguousOnForm`; the post-save re-read fails closed and rolls back if the attribute is still in its source table. Whether the DVelop package accepts the synthesized `tabs`/`tab` in a Transaction form is not verified against a real WorkWithPlus install.
+
 Real-KB validation gate: `genexus_structure action=get_visual` with a homonymous
 target must be exercised against a KB that contains the relevant Transaction/Table
 or WebPanel collision, using `type=Transaction` (or the other intended type). The

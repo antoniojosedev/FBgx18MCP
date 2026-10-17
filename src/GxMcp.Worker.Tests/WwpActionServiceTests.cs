@@ -426,6 +426,185 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("UnknownWwpActionOperation", (string)invalid["code"]);
         }
 
+        // Issue #552: a WorkWithPlus Transaction form has no <tabs> until add_tab creates one,
+        // and an attribute child moves the existing form attribute instead of duplicating it.
+        private const string TransactionForm =
+            "<instance><transaction><table name='TableMain'><table name='TableContent'>" +
+            "<table name='TableAttributes'>" +
+            "<attribute attribute='adbb33c9-0906-4971-833c-998de27e0676-A' description='A' cellThemeClass='Cell' isRequired='True'/>" +
+            "<attribute attribute='adbb33c9-0906-4971-833c-998de27e0676-B'/>" +
+            "</table></table><table name='TableActions'/></table></transaction></instance>";
+
+        private static JObject AddTab(XDocument doc, params JObject[] children) => WwpActionService.ApplyTabXml(doc, "add_tab", new JObject
+        {
+            ["controlName"] = "TabX", ["title"] = "X", ["children"] = new JArray(children)
+        });
+
+        private static JObject AttributeChild(string attribute) => new JObject { ["type"] = "attribute", ["attribute"] = attribute };
+
+        [Fact]
+        public void AddTab_SynthesizesTabsUnderTableContent()
+        {
+            var doc = XDocument.Parse(TransactionForm);
+            JObject result = AddTab(doc, new JObject { ["type"] = "table", ["name"] = "T1", ["columns"] = 2 });
+
+            Assert.Null(result["error"]);
+            XElement tabs = doc.Descendants("tabs").Single();
+            Assert.Equal("TableContent", (string)tabs.Parent.Attribute("name"));
+            XElement tab = tabs.Elements().Single();
+            Assert.Equal("tab", tab.Name.LocalName);
+            Assert.Equal("TabX", (string)tab.Attribute("ControlName"));
+            Assert.Equal("T1", (string)tab.Element("table").Attribute("name"));
+            Assert.Empty((JArray)result["movedAttributes"]);
+        }
+
+        [Fact]
+        public void AddTab_DoesNotFallBackToAnArbitraryTable()
+        {
+            var doc = XDocument.Parse("<instance><selection><table name='TableFilters'/></selection></instance>");
+            JObject result = AddTab(doc, new JObject { ["type"] = "table", ["name"] = "T1" });
+
+            Assert.Equal("TabsContainerNotFound", (string)result["code"]);
+            Assert.Contains("TableFilters", result["availablePaths"].Values<string>());
+            Assert.Contains("containerName", (string)result["hint"]);
+            Assert.Empty(doc.Descendants("tabs"));
+        }
+
+        [Fact]
+        public void AddTab_ExplicitContainerNameSynthesizesTabsThere()
+        {
+            var doc = XDocument.Parse("<instance><selection><table name='TableFilters'/></selection></instance>");
+            JObject result = WwpActionService.ApplyTabXml(doc, "add_tab", new JObject
+            {
+                ["controlName"] = "TabX", ["title"] = "X", ["containerName"] = "TableFilters"
+            });
+
+            Assert.Null(result["error"]);
+            Assert.Equal("TableFilters", (string)doc.Descendants("tabs").Single().Parent.Attribute("name"));
+        }
+
+        [Fact]
+        public void AddTab_AttributeChild_MovesAttributeOutOfSourceTable()
+        {
+            var doc = XDocument.Parse(TransactionForm);
+            JObject result = AddTab(doc, AttributeChild("A"));
+
+            Assert.Null(result["error"]);
+            XElement source = doc.Descendants("table").Single(t => (string)t.Attribute("name") == "TableAttributes");
+            Assert.Equal(new[] { "adbb33c9-0906-4971-833c-998de27e0676-B" }, source.Elements("attribute").Select(a => (string)a.Attribute("attribute")));
+            XElement moved = doc.Descendants("tab").Single().Element("table").Element("attribute");
+            Assert.Equal("adbb33c9-0906-4971-833c-998de27e0676-A", (string)moved.Attribute("attribute"));
+            Assert.Single(doc.Descendants("attribute"), a => ((string)a.Attribute("attribute")).EndsWith("-A"));
+            JObject entry = (JObject)result["movedAttributes"].Single();
+            Assert.Equal("adbb33c9-0906-4971-833c-998de27e0676-A", (string)entry["attribute"]);
+            Assert.Equal("TableMain/TableContent/TableAttributes", (string)entry["from"]);
+        }
+
+        [Fact]
+        public void AddTab_AttributeChild_PreservesAttributeXmlAttributes()
+        {
+            var doc = XDocument.Parse(TransactionForm);
+            JObject child = AttributeChild("A");
+            child["description"] = "Renamed";
+            Assert.Null(AddTab(doc, child)["error"]);
+
+            XElement moved = doc.Descendants("tab").Single().Descendants("attribute").Single();
+            Assert.Equal("Cell", (string)moved.Attribute("cellThemeClass"));
+            Assert.Equal("True", (string)moved.Attribute("isRequired"));
+            Assert.Equal("Renamed", (string)moved.Attribute("description"));
+            Assert.Equal("Renamed", (string)moved.Attribute("defaultDescription"));
+        }
+
+        [Fact]
+        public void AddTab_AttributeChild_NotOnTheForm_IsCreatedNotMoved()
+        {
+            var doc = XDocument.Parse(TransactionForm);
+            JObject result = AddTab(doc, AttributeChild("Z"));
+
+            Assert.Null(result["error"]);
+            Assert.Equal("Z", (string)doc.Descendants("tab").Single().Descendants("attribute").Single().Attribute("attribute"));
+            Assert.Equal(2, doc.Descendants("table").Single(t => (string)t.Attribute("name") == "TableAttributes").Elements().Count());
+            Assert.Empty((JArray)result["movedAttributes"]);
+        }
+
+        [Fact]
+        public void AddTab_AttributeChild_RequestedTwice_IsRefusedWithoutTouchingTheForm()
+        {
+            var doc = XDocument.Parse(TransactionForm);
+            JObject result = AddTab(doc, AttributeChild("A"), AttributeChild("adbb33c9-0906-4971-833c-998de27e0676-A"));
+
+            Assert.Equal("InvalidWwpChild", (string)result["code"]);
+            Assert.Equal(2, doc.Descendants("table").Single(t => (string)t.Attribute("name") == "TableAttributes").Elements().Count());
+        }
+
+        [Fact]
+        public void AddTab_AttributeChild_AmbiguousSource_IsRefused()
+        {
+            var doc = XDocument.Parse(TransactionForm);
+            doc.Descendants("table").Single(t => (string)t.Attribute("name") == "TableActions")
+                .Add(new XElement("attribute", new XAttribute("attribute", "A")));
+            JObject result = AddTab(doc, AttributeChild("A"));
+
+            Assert.Equal("AttributeAmbiguousOnForm", (string)result["code"]);
+            Assert.Equal(new[] { "TableMain/TableContent/TableAttributes", "TableMain/TableActions" },
+                result["matchingContainers"].Select(c => (string)c["path"]));
+        }
+
+        [Fact]
+        public void AddTab_AttributeChild_OnlyLooksAtTheFormSectionThatOwnsTheTabs()
+        {
+            var doc = XDocument.Parse(TransactionForm);
+            doc.Root.Add(XElement.Parse("<view><table name='TableView'><attribute attribute='A'/></table></view>"));
+            Assert.Null(AddTab(doc, AttributeChild("A"))["error"]);
+
+            Assert.Single(doc.Descendants("view").Descendants("attribute"));
+            Assert.Single(doc.Descendants("transaction").Descendants("attribute"), a => ((string)a.Attribute("attribute")).EndsWith("-A"));
+        }
+
+        [Fact]
+        public void AddTab_PositionCountsEveryTransactionTabKind()
+        {
+            var doc = XDocument.Parse("<transaction><tabs><gridTab ControlName='Lines'/><tabularTab ControlName='Totals'/></tabs></transaction>");
+            JObject result = WwpActionService.ApplyTabXml(doc, "add_tab", new JObject
+            {
+                ["controlName"] = "TabX", ["title"] = "X", ["position"] = 1
+            });
+
+            Assert.Null(result["error"]);
+            Assert.Equal(new[] { "Lines", "TabX", "Totals" }, doc.Descendants("tabs").Single().Elements().Select(e => (string)e.Attribute("ControlName")));
+        }
+
+        [Fact]
+        public void VerifyPatternTabs_AcceptsTheTransactionTabKindsOnReRead()
+        {
+            JObject expected = WwpActionService.ProjectTabsForTests(XDocument.Parse(
+                "<transaction><tabs><gridTab ControlName='Lines' title='Lines'/>" +
+                "<tab ControlName='TabX' title='X'><table type='Responsive'><attribute attribute='A'/></table></tab></tabs></transaction>"));
+            JObject persisted = WwpActionService.ProjectTabsForTests(XDocument.Parse(
+                "<transaction><tabs><gridTab ControlName='Lines' title='Lines' tabClass='Tab'/>" +
+                "<tabularTab ControlName='TabX' title='X'><table type='Responsive'><attribute attribute='A'/></table></tabularTab></tabs></transaction>"));
+
+            Assert.Equal(new[] { "Lines", "TabX" }, expected["tabs"].Select(t => (string)t["controlName"]));
+            Assert.Equal(1, (int)persisted["tabs"][1]["position"]);
+            Assert.True(WwpActionService.VerifyPatternTabsForTests(expected, persisted, "add_tab", "TabX")["confirmed"].Value<bool>());
+        }
+
+        [Fact]
+        public void VerifyMovedAttributes_RefusesACopyLeftInTheSourceTable()
+        {
+            var moved = new JArray { new JObject { ["attribute"] = "adbb33c9-0906-4971-833c-998de27e0676-A", ["from"] = "TableMain/TableContent/TableAttributes" } };
+            const string tabWithA = "<tabs><tab ControlName='TabX' title='X'><table type='Responsive'><attribute attribute='adbb33c9-0906-4971-833c-998de27e0676-A'/></table></tab></tabs>";
+            string onlyInTab = TransactionForm.Replace("<attribute attribute='adbb33c9-0906-4971-833c-998de27e0676-A' description='A' cellThemeClass='Cell' isRequired='True'/>", "")
+                .Replace("</table></table><table name='TableActions'/>", "</table>" + tabWithA + "</table><table name='TableActions'/>");
+            string stillInSource = TransactionForm.Replace("</table></table><table name='TableActions'/>", "</table>" + tabWithA + "</table><table name='TableActions'/>");
+            string lostOnSave = TransactionForm.Replace("</table></table><table name='TableActions'/>", "</table><tabs><tab ControlName='TabX' title='X'/></tabs></table><table name='TableActions'/>");
+
+            Assert.True(WwpActionService.VerifyMovedAttributes(XDocument.Parse(onlyInTab), "TabX", moved)["confirmed"].Value<bool>());
+            Assert.False(WwpActionService.VerifyMovedAttributes(XDocument.Parse(stillInSource), "TabX", moved)["confirmed"].Value<bool>());
+            Assert.False(WwpActionService.VerifyMovedAttributes(XDocument.Parse(lostOnSave), "TabX", moved)["confirmed"].Value<bool>());
+            Assert.True(WwpActionService.VerifyMovedAttributes(XDocument.Parse(lostOnSave), "TabX", new JArray())["confirmed"].Value<bool>());
+        }
+
         [Fact]
         public void WebFormProjectionMatchingIsDelimitedAndStructural()
         {
