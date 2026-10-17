@@ -124,7 +124,8 @@ namespace GxMcp.Worker.Tests
             Assert.True(truncated);
             Assert.DoesNotContain("[TRUNCATED: max stack frames exceeded]", sanitized);
             Assert.Contains("[TRUNCATED: max stack length exceeded]", sanitized);
-            Assert.True(sanitized.Length <= ReadDiagnosticSanitizer.MaxStackTraceLength + " ... [TRUNCATED: max stack length exceeded]".Length);
+            // Hard ceiling: the marker counts towards the limit (issue #550)
+            Assert.True(sanitized.Length <= ReadDiagnosticSanitizer.MaxStackTraceLength);
         }
 
         [Fact]
@@ -138,7 +139,36 @@ namespace GxMcp.Worker.Tests
             Assert.True(truncated);
             // Must enforce character length limit after frame truncation (issue #550)
             Assert.Contains("[TRUNCATED: max stack length exceeded]", sanitized);
-            Assert.True(sanitized.Length <= ReadDiagnosticSanitizer.MaxStackTraceLength + " ... [TRUNCATED: max stack length exceeded]".Length);
+            // Both truncations stay recognizable: the frame marker is kept as the final line
+            Assert.EndsWith("[TRUNCATED: max stack frames exceeded]", sanitized);
+            Assert.True(sanitized.Length <= ReadDiagnosticSanitizer.MaxStackTraceLength);
+        }
+
+        [Fact]
+        public void SanitizeStackTrace_LfOnlyLongLines_RespectsLengthLimit()
+        {
+            // Exact reproduction from issue #550: 20 LF-separated lines of 300 chars (6019 chars in total)
+            string trace = string.Join("\n", Enumerable.Repeat(new string('X', 300), 20));
+
+            string sanitized = ReadDiagnosticSanitizer.SanitizeStackTrace(trace, out bool truncated);
+
+            Assert.True(truncated);
+            Assert.True(sanitized.Length <= ReadDiagnosticSanitizer.MaxStackTraceLength,
+                $"sanitized length {sanitized.Length} exceeds the hard ceiling of {ReadDiagnosticSanitizer.MaxStackTraceLength}");
+            Assert.Contains("[TRUNCATED: max stack length exceeded]", sanitized);
+            Assert.EndsWith("[TRUNCATED: max stack frames exceeded]", sanitized);
+        }
+
+        [Fact]
+        public void SanitizeStackTrace_UnderBothLimits_IsUnchanged()
+        {
+            // 10 short frames: under both the frame and the character limit
+            string trace = string.Join(Environment.NewLine, Enumerable.Range(1, 10).Select(i => $"   at App.Step{i}()"));
+
+            string sanitized = ReadDiagnosticSanitizer.SanitizeStackTrace(trace, out bool truncated);
+
+            Assert.False(truncated);
+            Assert.Equal(trace, sanitized);
         }
     }
 }
