@@ -21,6 +21,7 @@
 ### Internal
 
 - Removed 11 Clippy warnings (`collapsible_if`, redundant casts, elidable lifetime, manual `Range::contains`) from the portable numeric/date runtime so the arm gate stays warning-free.
+- Added the `rust (gx-engine)` CI lane (`.github/workflows/ci.yml`): Clippy with warnings denied, `rustfmt --check`, the full portable suite and the release artifact build, so the four Native Parity subsystems are guarded on every pull request.
 - Re-scoped the `EngineCapabilityRegistry` and README capability claims to the four Native Parity subsystems: no entry cites a module or test outside this change, and each cited repository path exists (enforced by `Registry_EveryCapabilityCitesAnExistingRepositoryPath`).
 
 ## v3.16.0 - 2026-10-17

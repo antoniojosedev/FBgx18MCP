@@ -189,6 +189,46 @@ jobs:
           New-Item -ItemType Directory -Path publish -Force | Out-Null
           Copy-Item src/gxwire/target/release/gxwire.exe -Destination publish/gxwire.exe -Force
 
+  rust-engine:
+    name: rust (gx-engine)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+
+      - name: Identify Rust toolchain
+        id: rust
+        shell: pwsh
+        run: |
+          $version = rustc --version
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain is unavailable.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Cache gx-engine dependencies and build outputs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            src/gx-engine/target
+          key: gx-engine-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('src/gx-engine/Cargo.lock', 'src/gx-engine/Cargo.toml', 'src/gx-engine/**/*.rs', 'src/gx-engine/**/build.rs', '**/.cargo/config*') }}
+          restore-keys: |
+            gx-engine-${{ runner.os }}-${{ steps.rust.outputs.version }}-
+
+      - name: Lint and format gx-engine
+        shell: pwsh
+        run: |
+          cargo clippy --manifest-path src/gx-engine/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path src/gx-engine/Cargo.toml --check
+
+      - name: Build and test gx-engine
+        shell: pwsh
+        run: |
+          cargo test --manifest-path src/gx-engine/Cargo.toml
+          cargo build --release --manifest-path src/gx-engine/Cargo.toml
+          New-Item -ItemType Directory -Path publish -Force | Out-Null
+          Copy-Item src/gx-engine/target/release/gx-engine.exe -Destination publish/gx-engine.exe -Force
+
   contracts:
     name: contracts (python + docs)
     runs-on: windows-latest
