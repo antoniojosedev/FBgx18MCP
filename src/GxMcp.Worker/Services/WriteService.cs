@@ -376,6 +376,42 @@ namespace GxMcp.Worker.Services
             return e.IsSubsetOf(a);
         }
 
+        // issue #542: the requested DSL lines (trimmed, in request order, each once)
+        // whose `Name : Type` token is absent from the persisted DSL. Uses the same
+        // reduction as StructureDslMatches, so the two can never disagree.
+        internal static string[] StructureRoundTripMissingLines(string expected, string persisted)
+        {
+            var missing = new List<string>();
+            if (string.IsNullOrEmpty(expected)) return missing.ToArray();
+            var persistedSet = ExtractStructureLineSet(persisted);
+            var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in expected.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("{") || line.StartsWith("}")) continue;
+                string key = ReduceStructureLine(line);
+                if (persistedSet.Contains(key) || !reported.Add(key)) continue;
+                missing.Add(line);
+            }
+            return missing.ToArray();
+        }
+
+        // issue #542: the post-Save re-read proved the SDK dropped part of a Structure
+        // DSL write. Say what was dropped and whether the pre-write state is back; never
+        // point the caller at a retry or at EntityVersion drift.
+        internal static string BuildStructureRoundTripMessage(string[] unappliedMembers, bool rolledBack, string rollbackError)
+        {
+            string unapplied = unappliedMembers != null && unappliedMembers.Length > 0
+                ? string.Join("; ", unappliedMembers)
+                : "one or more requested members";
+            string head = "Structure DSL was saved but the post-Save re-read did not contain: " + unapplied + ".";
+            if (rolledBack)
+                return head + " The pre-write structure was restored and verified by re-read (rolledBack=true). Do not resend the same payload; the SDK did not accept it.";
+            string cause = string.IsNullOrWhiteSpace(rollbackError) ? "unknown cause" : rollbackError.Trim().TrimEnd('.');
+            return head + " The pre-write structure could not be restored (rolledBack=false): " + cause
+                + ". Stop writing this object and re-read part=Structure before deciding the next step.";
+        }
+
         private static HashSet<string> ExtractStructureLineSet(string text)
         {
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -385,17 +421,22 @@ namespace GxMcp.Worker.Services
                 string line = raw.Trim();
                 if (line.Length == 0) continue;
                 if (line.StartsWith("{") || line.StartsWith("}")) continue;
-                // Reduce "AluCod : NUMERIC(8,0)" → "AluCod : NUMERIC" so length/decimals drift
-                // doesn't cause a false negative when the DSL renderer drops them.
-                int colon = line.IndexOf(':');
-                if (colon < 0) { set.Add(line); continue; }
-                string name = line.Substring(0, colon).Trim();
-                string rest = line.Substring(colon + 1).Trim();
-                int paren = rest.IndexOf('(');
-                if (paren >= 0) rest = rest.Substring(0, paren).Trim();
-                set.Add(name + " : " + rest);
+                set.Add(ReduceStructureLine(line));
             }
             return set;
+        }
+
+        // Reduce "AluCod : NUMERIC(8,0)" → "AluCod : NUMERIC" so length/decimals drift
+        // doesn't cause a false negative when the DSL renderer drops them.
+        private static string ReduceStructureLine(string line)
+        {
+            int colon = line.IndexOf(':');
+            if (colon < 0) return line;
+            string name = line.Substring(0, colon).Trim();
+            string rest = line.Substring(colon + 1).Trim();
+            int paren = rest.IndexOf('(');
+            if (paren >= 0) rest = rest.Substring(0, paren).Trim();
+            return name + " : " + rest;
         }
 
 
@@ -1762,7 +1803,8 @@ namespace GxMcp.Worker.Services
                             // part is in the stale-tree failure mode and the validator on the
                             // next consumer (Procedure that references &Var.Field) will report
                             // `src0216` even though our Success response said otherwise.
-                            string roundTripError = null;
+                            bool roundTripMismatch = false;
+                            string[] unappliedMembers = null;
                             try
                             {
                                 var verifyObj = _objectService.FindObject(target, typeFilter);
@@ -1772,7 +1814,8 @@ namespace GxMcp.Worker.Services
                                     string persisted = GxMcp.Worker.Helpers.StructureParser.SerializeToText(verifyObj);
                                     if (!StructureDslMatches(decodedCode, persisted))
                                     {
-                                        roundTripError = "Structure DSL applied in-memory but post-Save read-back didn't include all items. The SDK may have persisted the prior version. Re-read with genexus_read part=Structure and retry; if still wrong, the SDT's persisted EntityVersion is stale (see WebFormCompositionRepair pattern).";
+                                        roundTripMismatch = true;
+                                        unappliedMembers = StructureRoundTripMissingLines(decodedCode, persisted);
                                         Logger.Warn("[DEBUG-SAVE] SDT Structure round-trip mismatch for " + target + ". expected=\"" + SdkReflection.Truncate(decodedCode, 200) + "\" persisted=\"" + SdkReflection.Truncate(persisted, 200) + "\"");
                                     }
                                 }
@@ -1782,31 +1825,65 @@ namespace GxMcp.Worker.Services
                                 Logger.Debug("[DEBUG-SAVE] SDT round-trip verify threw: " + verEx.Message);
                             }
 
-                            if (!string.IsNullOrEmpty(roundTripError))
+                            if (roundTripMismatch)
                             {
-                                if (preSnapshot != null)
+                                // issue #542: the SDK accepted the Save but dropped part of the
+                                // request (e.g. a member type change, leaving VARCHAR(7) for a
+                                // requested NUMERIC(7)). Restore the pre-write structure and prove
+                                // the restore by re-reading it: `rolledBack` is that evidence, not
+                                // the fact that a snapshot existed.
+                                bool rollbackAttempted = preSnapshot != null;
+                                bool rolledBack = false;
+                                string rollbackError = null;
+                                if (rollbackAttempted)
                                 {
                                     try
                                     {
                                         StructureParser.ParseFromText(objToUpdate, preSnapshot);
                                         objToUpdate.EnsureSave();
                                         ScheduleFlush(force: true);
+                                        _objectService.MarkReadCacheDirty(objToUpdate, partName);
+                                        var restoredObj = _objectService.FindObject(target, typeFilter);
+                                        if (restoredObj == null)
+                                        {
+                                            rollbackError = "The object could not be re-read after the rollback save.";
+                                        }
+                                        else
+                                        {
+                                            _objectService.MarkReadCacheDirty(restoredObj, partName);
+                                            string restored = GxMcp.Worker.Helpers.StructureParser.SerializeToText(restoredObj);
+                                            rolledBack = StructureDslMatches(preSnapshot, restored);
+                                            if (!rolledBack)
+                                                rollbackError = "The rollback save completed but the re-read structure still lacks: "
+                                                    + string.Join("; ", StructureRoundTripMissingLines(preSnapshot, restored)) + ".";
+                                        }
                                     }
                                     catch (Exception rbEx)
                                     {
+                                        rollbackError = rbEx.Message;
                                         Logger.Warn("[DEBUG-SAVE] SDT rollback to preSnapshot failed: " + rbEx.Message);
                                     }
                                 }
+                                else
+                                {
+                                    rollbackError = "No pre-write Structure snapshot was captured for this object type; rollback was not attempted.";
+                                }
+                                string roundTripError = BuildStructureRoundTripMessage(unappliedMembers, rolledBack, rollbackError);
+                                var notPersisted = new JObject
+                                {
+                                    ["persistedVerified"] = false,
+                                    ["persistedVerifyError"] = roundTripError,
+                                    ["unappliedMembers"] = new JArray(unappliedMembers ?? new string[0]),
+                                    ["rollbackAttempted"] = rollbackAttempted,
+                                    ["rolledBack"] = rolledBack
+                                };
+                                if (rollbackError != null) notPersisted["rollbackError"] = rollbackError;
                                 return Models.McpResponse.Err(
                                     code: "WriteNotPersisted",
                                     message: roundTripError,
+                                    hint: "Re-read with genexus_read part=Structure. To change an existing member's type, use genexus_structure action=update_visual mode=replace with expectedVersion; it reports the exact member and field the SDK rejected. If the SDK still refuses the type change, remove the member and add it again with the new type.",
                                     target: target,
-                                    extra: new JObject
-                                    {
-                                        ["persistedVerified"] = false,
-                                        ["persistedVerifyError"] = roundTripError,
-                                        ["rolledBack"] = preSnapshot != null
-                                    });
+                                    extra: notPersisted);
                             }
 
                             var okPayload = new JObject

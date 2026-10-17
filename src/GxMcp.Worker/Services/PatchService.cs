@@ -939,7 +939,12 @@ namespace GxMcp.Worker.Services
                 bool writeServiceRolledBack =
                     string.Equals(writePayload["commitState"]?.ToString(), "RolledBack", StringComparison.OrdinalIgnoreCase)
                     || writePayload["rollback"]?["rolledBack"]?.Value<bool?>() == true;
+                // issue #542: a Structure write that WriteService already rolled back (or
+                // tried to) reports plain `rollbackAttempted`/`rolledBack` fields; never
+                // stack a second textual rollback on that object.
+                bool writerRollbackReported = IsWriterRollbackReported(writePayload);
                 bool writeServiceRollbackHandled = writeServiceRolledBack
+                    || writerRollbackReported
                     || (WebFormXmlHelper.IsVisualPart(partName) && writePayload["rollback"] != null);
                 bool writeReportedVisualCommit =
                     WebFormXmlHelper.IsVisualPart(partName)
@@ -1085,6 +1090,12 @@ namespace GxMcp.Worker.Services
                         else
                         {
                             PatchPersistenceReceipt.MarkNotPersisted(writePayload, saveReported, verifyError, commentOnlyChange);
+                            if (writerRollbackReported)
+                                PatchPersistenceReceipt.MarkWriterRollback(
+                                    writePayload,
+                                    writePayload["rolledBack"]?.Value<bool?>() == true,
+                                    writePayload["rollbackError"]?.ToString(),
+                                    writePayload["unappliedMembers"] as JArray);
                             PreserveCommittedVisualEvidence(writePayload);
                             if (confirmedPersistedSource != null
                                 && originalSource != null
@@ -1319,6 +1330,15 @@ namespace GxMcp.Worker.Services
                 Logger.Error($"[PATCH] Error applying patch: {ex.Message}");
                 return BuildPatchResult("Error", partName, NormalizeOperation(operation), expectedCount, 0, ex.Message);
             }
+        }
+
+        // issue #542: WriteService's Structure branch reports its own rollback attempt as
+        // plain top-level fields (no `rollback` object). Recognize that shape so the patch
+        // receipt reflects it and no second textual rollback runs on the same object.
+        internal static bool IsWriterRollbackReported(JObject writePayload)
+        {
+            if (writePayload == null || writePayload["rollback"] != null) return false;
+            return writePayload["rollbackAttempted"]?.Value<bool?>() == true;
         }
 
         private static void PreserveCommittedVisualEvidence(JObject payload)
