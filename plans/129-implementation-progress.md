@@ -1654,6 +1654,31 @@ Owner-reported implementation and native observations:
 - Registry: promoted `formula_navigation` capability to `Parity` in `EngineCapabilityRegistry.cs`.
 - Milestone: **Specifier & SQL Navigation** subsystem reaches **87.5% parity (7/8 areas: C1, C2, D1, D2, D3, D4, H2)**. Overall weighted SDK replacement advances from **50.0% to 51.8% (39/56 areas touched: 71.4%)**.
 
+## Relational DML Query Planning & DataSelector Composition (2026-10-17)
+
+- Scope & Authorization: Relational DML query planning and DataSelector query composition (Rows B9, C2, D2, H2) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Relational DML Planning (`src/gx-engine/src/dml.rs`):
+    - Updates inside `For Each`: scans procedure body for attribute assignments, validates that primary key attributes are not mutated (fail-closed `spc0034`), and generates multi-dialect `UPDATE TargetTable SET col = val WHERE pk = :pk` (ANSI, SQL Server, PostgreSQL, Oracle).
+    - Deletes inside `For Each`: plans `DELETE FROM TargetTable WHERE pk = :pk` keyed by base table primary key.
+    - Insertions (`new ... [when duplicate ...] endnew`): infers target table from assigned attributes, enforces complete primary key specification (fail-closed `spc0023`), and generates multi-dialect SQL with conflict handling (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, `MERGE`).
+    - Multi-dialect DML plans serialized cleanly with zero SQL writes.
+  - DataSelector Composition (`src/gx-engine/src/dataselector.rs`):
+    - Grammar parser and AST for `DataSelector` objects covering `parm(...)` rules, `order ...` clauses, and `where ...` conditions.
+    - Procedure syntax support for `For Each using DataSelectorName(&args...)` with explicit attributes, orders, and conditions.
+    - Parameter substitution engine: replaces parameter variables with argument expressions across AST expression trees.
+    - Query composition: merges DataSelector filters and orders into `ForEachStmt`, preserving order precedence and enabling base table re-inference and index selection.
+  - Catalog Integration:
+    - Admitted `ObjectKind::DataSelector` in portable catalog.
+    - Added `dml_plans` and `using_data_selector` to `NavigationLevel`, and `standalone_dml` to `NavigationReport`.
+  - Integration Tests:
+    - `src/gx-engine/tests/dml_navigation.rs`: 10/10 tests passing.
+    - `src/gx-engine/tests/data_selector.rs`: 9/9 tests passing.
+- Verification: 382 passed / 0 failed across all 38 test suites in `gx-engine` (363 existing + 19 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `dml_navigation` and `dataselector_composition` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Specifier & SQL Navigation** subsystem reaches **100% parity (8/8 areas: C1, C2, D1, D2, D3, D4, H1, H2)**. Overall weighted SDK replacement advances from **51.8% to 55.4% (41/56 areas touched: 73.2%)**.
+
+
 
 
 

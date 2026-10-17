@@ -45,6 +45,7 @@ impl ObjectId {
 pub enum ObjectKind {
     Attribute,
     DataProvider,
+    DataSelector,
     Domain,
     Module,
     Procedure,

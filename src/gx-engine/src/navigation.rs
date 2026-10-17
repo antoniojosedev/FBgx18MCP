@@ -58,6 +58,10 @@ pub struct NavigationLevel {
     pub joins: Vec<NavigationJoin>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub formulas: Vec<NavigationFormula>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dml_plans: Vec<crate::dml::NavigationDmlPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub using_data_selector: Option<String>,
     pub sql: String,
     pub has_when_none: bool,
 }
@@ -69,6 +73,8 @@ pub struct NavigationReport {
     pub levels: Vec<NavigationLevel>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub standalone_formulas: Vec<NavigationFormula>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub standalone_dml: Vec<crate::dml::NavigationDmlPlan>,
     pub warnings: Vec<String>,
 }
 
@@ -77,6 +83,11 @@ pub fn extract_for_each_attributes(for_each: &ForEachStmt) -> BTreeSet<String> {
     let mut attrs = BTreeSet::new();
     for explicit in &for_each.explicit_attributes {
         attrs.insert(explicit.to_ascii_uppercase());
+    }
+    if let Some(ref using) = for_each.using {
+        for arg in &using.arguments {
+            collect_expr_attributes(arg, &mut attrs);
+        }
     }
     for expr in &for_each.wheres {
         collect_expr_attributes(expr, &mut attrs);
@@ -131,6 +142,10 @@ fn collect_stmt_attributes(stmts: &[Stmt], attrs: &mut BTreeSet<String>) {
                 for explicit in &nested.explicit_attributes {
                     attrs.insert(explicit.to_ascii_uppercase());
                 }
+            }
+            Stmt::New(new_stmt) => {
+                collect_stmt_attributes(&new_stmt.body, attrs);
+                collect_stmt_attributes(&new_stmt.when_duplicate, attrs);
             }
             _ => {}
         }
@@ -1214,6 +1229,16 @@ fn extract_formulas_from_stmt(
         Stmt::Sub(_, body) => {
             extract_formulas_from_stmts(body, context_table, tables, dialect, formulas)?;
         }
+        Stmt::New(new_stmt) => {
+            extract_formulas_from_stmts(&new_stmt.body, context_table, tables, dialect, formulas)?;
+            extract_formulas_from_stmts(
+                &new_stmt.when_duplicate,
+                context_table,
+                tables,
+                dialect,
+                formulas,
+            )?;
+        }
         _ => {}
     }
     Ok(())
@@ -1396,6 +1421,18 @@ pub fn specify_for_each(
         &mut formulas,
     )?;
 
+    let mut dml_plans = Vec::new();
+    if let Some(update_plan) =
+        crate::dml::plan_updates_for_for_each(base_table, &for_each.body, dialect)?
+    {
+        dml_plans.push(update_plan);
+    }
+    let has_delete = for_each.body.iter().any(|s| matches!(s, Stmt::Delete));
+    if has_delete {
+        dml_plans.push(crate::dml::plan_delete_for_for_each(base_table, dialect));
+    }
+    let using_data_selector = for_each.using.as_ref().map(|u| u.name.clone());
+
     Ok(NavigationLevel {
         number: level_num,
         level_type: "For Each".to_string(),
@@ -1405,6 +1442,8 @@ pub fn specify_for_each(
         filters,
         joins,
         formulas,
+        dml_plans,
+        using_data_selector,
         sql,
         has_when_none: !for_each.when_none.is_empty(),
     })
@@ -1553,9 +1592,14 @@ pub fn specify_procedure(
     )?;
 
     let mut standalone_formulas = Vec::new();
+    let mut standalone_dml = Vec::new();
     for stmt in &stmts {
         if !matches!(stmt, Stmt::ForEach(_)) {
             extract_formulas_from_stmt(stmt, None, &tables, dialect, &mut standalone_formulas)?;
+        }
+        if let Stmt::New(new_stmt) = stmt {
+            let plan = crate::dml::plan_insert_for_new(new_stmt, &tables, dialect)?;
+            standalone_dml.push(plan);
         }
     }
 
@@ -1563,6 +1607,7 @@ pub fn specify_procedure(
         target_name: proc_obj.name.clone(),
         levels,
         standalone_formulas,
+        standalone_dml,
         warnings: Vec::new(),
     })
 }

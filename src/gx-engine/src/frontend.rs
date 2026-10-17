@@ -99,8 +99,21 @@ pub struct ForEachOrder {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataSelectorRef {
+    pub name: String,
+    pub arguments: Vec<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewStmt {
+    pub body: Vec<Stmt>,
+    pub when_duplicate: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForEachStmt {
     pub explicit_attributes: Vec<String>,
+    pub using: Option<DataSelectorRef>,
     pub wheres: Vec<Expr>,
     pub orders: Vec<ForEachOrder>,
     pub defined_by: Option<String>,
@@ -133,6 +146,10 @@ pub enum Stmt {
     ForEach(Box<ForEachStmt>),
     /// Attribute assignment inside For Each: `Attribute = expr`
     AssignAttribute(String, Expr),
+    /// Delete current row in For Each: `delete`
+    Delete,
+    /// Insert row block: `new ... [when duplicate ...] endnew`
+    New(Box<NewStmt>),
     /// Loop break statement
     Exit,
     /// `Proc(args)` or `Proc.Call(args)` as a statement; always holds an `Expr::Call`.
@@ -433,6 +450,8 @@ enum BlockEnd {
     EndFor,
     EndSub,
     WhenNone,
+    WhenDuplicate,
+    EndNew,
     Eof,
 }
 
@@ -564,6 +583,12 @@ impl Parser {
                 self.take();
                 self.take();
                 Some(BlockEnd::WhenNone)
+            } else if self.at_keyword("WHEN") && self.next_is_keyword("DUPLICATE") {
+                self.take();
+                self.take();
+                Some(BlockEnd::WhenDuplicate)
+            } else if self.at_keyword("ENDNEW") {
+                Some(BlockEnd::EndNew)
             } else if self.at(&TokenKind::Eof) {
                 Some(BlockEnd::Eof)
             } else {
@@ -740,6 +765,11 @@ impl Parser {
                     Ok(Stmt::Return(value))
                 }
             }
+            TokenKind::Identifier(keyword) if keyword == "NEW" => self.parse_new(nesting),
+            TokenKind::Identifier(keyword) if keyword == "DELETE" => {
+                self.take();
+                Ok(Stmt::Delete)
+            }
             TokenKind::Identifier(keyword) if keyword == "FOR" => self.parse_for(nesting),
             TokenKind::Identifier(keyword) if keyword == "IF" => self.parse_if(nesting),
             TokenKind::Identifier(keyword) if keyword == "DO" => self.parse_do(nesting),
@@ -747,7 +777,7 @@ impl Parser {
             TokenKind::Identifier(keyword)
                 if matches!(
                     keyword.as_str(),
-                    "ELSE" | "CASE" | "OTHERWISE" | "ENDIF" | "ENDDO" | "ENDCASE" | "ENDFOR" | "ENDSUB" | "WHILE" | "WHEN"
+                    "ELSE" | "CASE" | "OTHERWISE" | "ENDIF" | "ENDDO" | "ENDCASE" | "ENDFOR" | "ENDSUB" | "WHILE" | "WHEN" | "ENDNEW"
                 ) =>
             {
                 Err(self
@@ -1052,11 +1082,16 @@ impl Parser {
         self.allow_attributes = true;
 
         let mut explicit_attributes = Vec::new();
+        let mut using = None;
         while !self.at(&TokenKind::Newline)
             && !self.at(&TokenKind::Semicolon)
             && !self.at(&TokenKind::Eof)
         {
-            if self.at_keyword("WHERE") || self.at_keyword("ORDER") || self.at_keyword("DEFINED") {
+            if self.at_keyword("WHERE")
+                || self.at_keyword("ORDER")
+                || self.at_keyword("DEFINED")
+                || self.at_keyword("USING")
+            {
                 break;
             }
             if let TokenKind::Identifier(name) = &self.current().kind {
@@ -1077,7 +1112,38 @@ impl Parser {
 
         loop {
             self.skip_separators();
-            if self.at_keyword("WHERE") {
+            if self.at_keyword("USING") {
+                self.take();
+                if let TokenKind::Identifier(name) = &self.current().kind {
+                    let ds_name = name.clone();
+                    self.take();
+                    let mut args = Vec::new();
+                    if self.at(&TokenKind::LeftParen) {
+                        self.take();
+                        while !self.at(&TokenKind::RightParen) && !self.at(&TokenKind::Eof) {
+                            let arg = self.parse_expression()?;
+                            args.push(arg);
+                            if self.at(&TokenKind::Comma) {
+                                self.take();
+                            } else {
+                                break;
+                            }
+                        }
+                        self.expect(TokenKind::RightParen, "')' after DataSelector arguments")?;
+                    }
+                    using = Some(DataSelectorRef {
+                        name: ds_name,
+                        arguments: args,
+                    });
+                } else {
+                    self.allow_attributes = prev_allow_attributes;
+                    return Err(self
+                        .current()
+                        .location
+                        .error("expected DataSelector name after Using"));
+                }
+                self.skip_separators();
+            } else if self.at_keyword("WHERE") {
                 self.take();
                 let cond = self.parse_expression()?;
                 wheres.push(cond);
@@ -1149,11 +1215,42 @@ impl Parser {
 
         Ok(Stmt::ForEach(Box::new(ForEachStmt {
             explicit_attributes,
+            using,
             wheres,
             orders,
             defined_by,
             body,
             when_none,
+        })))
+    }
+
+    fn parse_new(&mut self, nesting: usize) -> Result<Stmt, String> {
+        self.expect_keyword("NEW")?;
+        let prev_allow_attributes = self.allow_attributes;
+        self.allow_attributes = true;
+        self.skip_separators();
+
+        let (body, end) = self.parse_block(nesting + 1)?;
+        let (when_duplicate, final_end) = if end == BlockEnd::WhenDuplicate {
+            let (wd_body, wd_end) = self.parse_block(nesting + 1)?;
+            (wd_body, wd_end)
+        } else {
+            (Vec::new(), end)
+        };
+
+        if final_end != BlockEnd::EndNew {
+            self.allow_attributes = prev_allow_attributes;
+            return Err(self.current().location.error(format_args!(
+                "expected EndNew, found {}",
+                self.block_end_name(final_end)
+            )));
+        }
+        self.expect_keyword("ENDNEW")?;
+        self.allow_attributes = prev_allow_attributes;
+
+        Ok(Stmt::New(Box::new(NewStmt {
+            body,
+            when_duplicate,
         })))
     }
 
@@ -1196,6 +1293,8 @@ impl Parser {
             BlockEnd::EndFor => "EndFor",
             BlockEnd::EndSub => "EndSub",
             BlockEnd::WhenNone => "When None",
+            BlockEnd::WhenDuplicate => "When Duplicate",
+            BlockEnd::EndNew => "EndNew",
             BlockEnd::Eof => "end of input",
         }
     }

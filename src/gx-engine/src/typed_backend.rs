@@ -2022,6 +2022,16 @@ impl Emitter<'_> {
                         "Attribute assignment requires specifier navigation and is not admitted in standalone typed binaries".into(),
                     );
                 }
+                Stmt::Delete => {
+                    return Err(
+                        "Delete database statement requires specifier navigation and is not admitted in standalone typed binaries".into(),
+                    );
+                }
+                Stmt::New(_) => {
+                    return Err(
+                        "New database statement requires specifier navigation and is not admitted in standalone typed binaries".into(),
+                    );
+                }
             }
         }
         Ok(())

@@ -11,7 +11,12 @@ pub(crate) fn calls(body: &[Stmt]) -> HashSet<String> {
 fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
     for statement in statements {
         match statement {
-            Stmt::ReturnVoid | Stmt::Exit | Stmt::DoSub(_) | Stmt::Commit | Stmt::Rollback => {}
+            Stmt::ReturnVoid
+            | Stmt::Exit
+            | Stmt::DoSub(_)
+            | Stmt::Commit
+            | Stmt::Rollback
+            | Stmt::Delete => {}
             Stmt::Sub(_, body) => {
                 collect_block_calls(body, callees);
             }
@@ -70,6 +75,11 @@ fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
                 collect_block_calls(body, callees);
             }
             Stmt::ForEach(for_each) => {
+                if let Some(ref using) = for_each.using {
+                    for arg in &using.arguments {
+                        collect_expression_calls(arg, callees);
+                    }
+                }
                 for where_expr in &for_each.wheres {
                     collect_expression_calls(where_expr, callees);
                 }
@@ -78,6 +88,10 @@ fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
             }
             Stmt::AssignAttribute(_, expr) => {
                 collect_expression_calls(expr, callees);
+            }
+            Stmt::New(new_stmt) => {
+                collect_block_calls(&new_stmt.body, callees);
+                collect_block_calls(&new_stmt.when_duplicate, callees);
             }
         }
     }

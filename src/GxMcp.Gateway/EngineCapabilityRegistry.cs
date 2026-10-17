@@ -313,6 +313,24 @@ namespace GxMcp.Gateway
                 notes: "Implements GeneXus aggregate (Sum, Count, Max, Min, Find, Average/Avg) and horizontal formula specification. Automatically correlates aggregate formulas with enclosing query context tables via foreign keys and extended table paths, selects optimal secondary indexes for correlation columns, enforces reachability in horizontal formulas, validates fail-closed diagnostics (spc0004, spc0005), and generates read-only multi-dialect SELECT queries (ANSI, SQL Server, PostgreSQL, Oracle) with zero SQL writes. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "dml_navigation",
+                title: "Relational DML query planning, procedural updates, deletes, and row insertions",
+                engineSurface: "dml engine + navigation engine + multi-dialect SQL DML generator + primary key validation + when duplicate conflict handling",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/dml.rs; src/gx-engine/tests/dml_navigation.rs (10/10 tests: update inside For Each, spc0034 PK update rejection, delete inside For Each, basic new insertion, when duplicate multi-dialect conflict handling for ANSI/SqlServer/PostgreSql/Oracle, spc0023 incomplete PK rejection, multi-table nested updates/deletes, expression assignments, JSON serialization, end-to-end procedure DML planning)",
+                consumers: Array.Empty<string>(),
+                notes: "Generates read-only multi-dialect INSERT, UPDATE, and DELETE query plans with primary key validation, foreign key cascade verification, and WHEN DUPLICATE conflict handling. Rejects PK updates in For Each with spc0034 and incomplete PK inserts with spc0023. Zero SQL writes against live databases. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "dataselector_composition",
+                title: "DataSelector object parsing, parameter substitution, and query composition",
+                engineSurface: "dataselector engine + frontend For Each using clause parser + parameter substitution + order/filter composition",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/dataselector.rs; src/gx-engine/tests/data_selector.rs (9/9 tests: parse rules and conditions, parameter substitution, compose with For Each, arity mismatch fail-closed, For Each using syntax parsing, For Each with explicit attributes and using, composed base table inference, multi-dialect SQL query generation with composed filters, ComposedForEach wrapper helpers)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses GeneXus DataSelector rules and conditions, validates parameter arity, performs parameter substitution into filter expressions, and composes DataSelector orders and where conditions seamlessly into For Each navigation query plans. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "general_gx_surface",
                 title: "General GeneXus objects, Rules, Events and forms",
                 engineSurface: "none",

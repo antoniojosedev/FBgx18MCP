@@ -4,10 +4,12 @@
 pub mod backend;
 pub mod build;
 pub mod catalog;
+pub mod dataselector;
 pub mod date;
 pub mod datetime;
 mod dependencies;
 pub mod diagnostics;
+pub mod dml;
 pub mod exchange;
 pub mod frontend;
 pub mod incremental;

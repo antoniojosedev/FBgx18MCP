@@ -288,7 +288,9 @@ fn collect_block(
             | Stmt::Commit
             | Stmt::Rollback
             | Stmt::ForEach(..)
-            | Stmt::AssignAttribute(..) => {
+            | Stmt::AssignAttribute(..)
+            | Stmt::Delete
+            | Stmt::New(..) => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {
@@ -401,7 +403,9 @@ fn validate_block(
             | Stmt::Commit
             | Stmt::Rollback
             | Stmt::ForEach(..)
-            | Stmt::AssignAttribute(..) => {
+            | Stmt::AssignAttribute(..)
+            | Stmt::Delete
+            | Stmt::New(..) => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {
@@ -719,7 +723,9 @@ fn emit_block(
             | Stmt::Commit
             | Stmt::Rollback
             | Stmt::ForEach(..)
-            | Stmt::AssignAttribute(..) => {
+            | Stmt::AssignAttribute(..)
+            | Stmt::Delete
+            | Stmt::New(..) => {
                 return Err("record fields require format_version 2".into());
             }
             Stmt::ReturnVoid => {
