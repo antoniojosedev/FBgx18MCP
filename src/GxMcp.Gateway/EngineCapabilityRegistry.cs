@@ -259,6 +259,15 @@ namespace GxMcp.Gateway
                 notes: "Implements Commit and Rollback transaction control statements in Procedure source bodies with optional parens. Emits runtime transactional lowering hooks, validates nesting within conditionals, loops, and subroutines, and integrates into the portable KB catalog and SDK ExportFile XML exchange. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "physical_table_ddl",
+                title: "Physical Table schema normalization and multi-dialect SQL DDL generation",
+                engineSurface: "table schema + relational normalization + DDL generator + XML exchange",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/table_ddl.rs (9/9 tests: data type mappings for ANSI/SqlServer/PostgreSQL/Oracle, table validation rules, single-level lowering, multi-level hierarchy with inherited primary keys and foreign keys, 3-level depth, catalog dictionary attribute type resolution, cross-transaction foreign keys, full database DDL generation, and ExportFile XML exchange)",
+                consumers: Array.Empty<string>(),
+                notes: "Derives normalized relational database tables from Transaction structures, resolves attribute data types through Domain/Attribute chains, computes primary keys, automatically infers parent-child and cross-transaction foreign keys, generates primary and secondary indexes, and renders multi-dialect SQL DDL (ANSI, SQL Server, PostgreSQL, Oracle) with zero SQL writes. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "xml_projection",
                 title: "SDK ExportFile XML to portable catalog projection",
                 engineSurface: "gx-engine xml-check/xml-emit/xml-build/xml-run",

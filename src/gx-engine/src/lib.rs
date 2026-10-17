@@ -16,6 +16,7 @@ pub mod model;
 pub mod record_runtime;
 pub mod rules;
 pub mod structured;
+pub mod table;
 pub mod text;
 pub mod transaction;
 mod typed_backend;

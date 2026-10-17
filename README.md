@@ -124,7 +124,7 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 Similar to video game decompilation projects, progress is measured capability-by-capability against verified differential runs of the official GeneXus SDK in clean Knowledge Bases.
 
 ```text
-Overall SDK Replacement: [🟩🟩🟩🟩⬜⬜⬜⬜⬜⬜] 45.2% weighted (60.7% total areas touched: 34/56)
+Overall SDK Replacement: [🟩🟩🟩🟩🟩⬜⬜⬜⬜⬜] 47.0% weighted (64.3% total areas touched: 36/56)
 ```
 
 | Subsystem | Progress | Status | Covered / Total |
@@ -133,7 +133,7 @@ Overall SDK Replacement: [🟩🟩🟩🟩⬜⬜⬜⬜⬜⬜] 45.2% weighted (60
 | **Control Flow & Procedure Pipeline** (`If`, `Iif`, `For`, `For In`, `Exit`, `Case`, `Sub`/`Do`, `Call`/`.UDP`, `IsEmpty`/`SetEmpty`/`Nullvalue`) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 6 / 6 areas |
 | **Structured Data & Collections** (SDT, `Add`, `Remove`, `Clear`, `IndexOf`, `Item`, `ToJson`, `FromJson`, `ToXml`, `FromXml`) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 5 / 5 areas |
 | **Portable KB Catalog & XML Projection** (Procedures, SDT, Domain, Attribute, Transaction, Rules in `ExportFile` XML and portable catalog) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 6 / 6 areas |
-| **Specifier & SQL Navigation** (`For Each`, Tables, Navigation) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported | 0 / 8 areas |
+| **Specifier & SQL Navigation** (Physical Tables, DDL, Navigation, `For Each`) | `[🟩🟩⬜⬜⬜⬜⬜⬜⬜⬜]  25.0%` | Bounded DDL & Schema | 2 / 8 areas |
 | **Native KB Database Storage** (`.gxi`, `GXLOCK`, `DATA*`) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported (SDK-only) | 0 / 5 areas |
 | **Full GeneXus Surface** (UI, Events, Generators) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported | 0 / 18 areas |
 
@@ -159,6 +159,9 @@ The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) wh
 | `transaction_structure_projection` | 🟩 **Parity** | Transaction (`1db606f2-af09-4cf9-a3b5-b481519d28f6`) structure, keys, and multi-level hierarchy projection in portable catalog and `ExportFile` XML: 10 native-verified integration tests (nested levels, root and child primary key enforcement, attribute references, recursion depth limit 16, Business Component `RecordType` schema lowering, procedure interoperability). |
 | `rules_and_parm_parity` | 🟩 **Parity** | GeneXus Rules part (`9b0a32a3-de6d-4be1-a4dd-1b85d3741534`) parser and AST with Parm interface parity in portable catalog and SDK `ExportFile` XML: 10 native-verified integration tests (`Parm`, `Error`, `Msg`, `Default`, `NoAccept`, `Accept`, `Order`, `Prompt`, `Serial`, `Hidden`, single/multi-line comments, strings with semicolons/escaped quotes, fail-closed diagnostics, procedure-scope enforcement, catalog and XML exchange integration). |
 | `transaction_control` | 🟩 **Parity** | Database transaction control procedural statements (`Commit` and `Rollback`, bare keywords or call syntax `Commit()`, `Rollback()` with optional semicolons): 7 native-verified integration tests (conditionals, loops, subroutines, while loops, format_version 1 fail-closed rejection, compiled executable execution, and ExportFile XML exchange). |
+| `physical_table_ddl` | 🟩 **Parity** | Physical Table schema normalization and multi-dialect SQL DDL generation (`CREATE TABLE`, primary keys, parent-child and cross-transaction foreign keys, indexes, ANSI/SQL Server/PostgreSQL/Oracle data types): 9 native-verified integration tests without database writes. |
+| `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟨 **Partial** | Independently implemented in portable compiler and tested with synthetic or bounded fixtures; pending full parity claims. |
+| `native_kb_read`, `sql_navigation`, `general_gx_surface` | ⬜ **Unsupported** | Not yet implemented in Rust. Always served 100% by the GeneXus SDK / Worker. |
 | `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟨 **Partial** | Independently implemented in portable compiler and tested with synthetic or bounded fixtures; pending full parity claims. |
 | `native_kb_read`, `sql_navigation`, `general_gx_surface` | ⬜ **Unsupported** | Not yet implemented in Rust. Always served 100% by the GeneXus SDK / Worker. |
 

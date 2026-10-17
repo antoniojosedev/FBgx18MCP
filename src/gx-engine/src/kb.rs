@@ -63,7 +63,7 @@ fn deserialize_raw_variables<'de, D: serde::Deserializer<'de>>(
     deserializer.deserialize_map(Variables)
 }
 
-fn resolve_domain_or_attribute_data_type(
+pub(crate) fn resolve_domain_or_attribute_data_type(
     catalog: &Catalog,
     target_name: &str,
     visited: &mut BTreeSet<String>,

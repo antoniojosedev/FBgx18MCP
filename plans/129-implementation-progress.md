@@ -1527,4 +1527,40 @@ Owner-reported implementation and native observations:
 - Registry: new `transaction_control` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
 - Milestone: **Control Flow & Procedure Pipeline** expands with full transaction control statements. Overall weighted SDK replacement advances to **45.2%**.
 
+## Physical Table Schema Normalization & Multi-Dialect SQL DDL Generation (2026-10-16)
+
+- Native Database Architecture Analysis:
+  - In GeneXus, Transaction levels map directly to physical database tables (1 Transaction = 1 or more relational tables).
+  - Child levels inherit the parent level's full primary key, which serves both as part of the child's composite primary key and as a foreign key constraint referencing the parent table.
+  - Formula attributes (e.g. `formula: Some(...)`) are virtual/calculated fields and are strictly excluded from physical table columns.
+  - Secondary indexes are generated for foreign keys to optimize relational integrity and join performance.
+  - Cross-transaction foreign key inference: non-key attributes whose name matches another table's singular primary key (e.g. `Invoice.CustomerId` matching `Customer.CustomerId`) establish relational foreign key constraints.
+  - Multi-dialect SQL DDL generation: supports ANSI SQL, Microsoft SQL Server (`[Identifier]`, `INT`/`BIGINT`/`NVARCHAR`/`BIT`/`DATETIME2`), PostgreSQL (`"Identifier"`, `INTEGER`/`BIGINT`/`VARCHAR`/`BOOLEAN`/`TIMESTAMP`), and Oracle (unquoted uppercase, `NUMBER(p, s)`/`VARCHAR2`/`NUMBER(1)`/`TIMESTAMP`).
+- Engine Implementation:
+  - `src/gx-engine/src/table.rs`:
+    - Implemented `SqlDialect` (`Ansi`, `SqlServer`, `PostgreSql`, `Oracle`).
+    - Implemented relational schema structures: `TableColumn`, `TableKey`, `TableForeignKey`, `TableIndex`, `Table`.
+    - Implemented `derive_tables_from_transaction`: normalizes root and nested levels, propagates parent primary keys to child levels, excludes formula attributes, and generates parent-child foreign keys and indexes.
+    - Implemented `derive_tables_from_catalog`: resolves attribute data types against catalog attributes and domains, infers cross-transaction foreign keys and indexes.
+    - Implemented `generate_table_ddl` and `generate_database_ddl`: generates dialect-specific `CREATE TABLE`, `ALTER TABLE ... ADD CONSTRAINT PRIMARY KEY`, and `ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY`.
+  - `src/gx-engine/src/lib.rs`:
+    - Exported `pub mod table;`.
+  - `src/gx-engine/src/kb.rs`:
+    - Exposed `pub(crate) fn resolve_domain_or_attribute_data_type` and reused it within `derive_tables_from_catalog`.
+  - `src/gx-engine/tests/table_ddl.rs`:
+    - Added 9/9 end-to-end integration tests covering:
+      1. SQL dialect type mapping across all 4 supported dialects.
+      2. Dialect identifier quoting rules.
+      3. Single-level Transaction lowering into a physical relational table.
+      4. Multi-level hierarchy with inherited compound primary keys and parent foreign key constraints.
+      5. Deep 3-level hierarchy (`Order -> Line -> Detail`).
+      6. Catalog attribute and domain resolution with formulas excluded from physical columns.
+      7. Cross-transaction foreign key inference and secondary index generation.
+      8. Complete database DDL script generation across all 4 dialects.
+      9. Full SDK `ExportFile` XML exchange interoperability.
+- Verification: 342 passed / 0 failed across all 33 test binaries in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
+- Registry: new `physical_table_ddl` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Specifier & SQL Navigation** subsystem reaches **25.0% parity (2/8 areas: Table Schema Normalization, Multi-Dialect SQL DDL)**. Overall weighted SDK replacement advances from **45.2% to 47.0% (36/56 areas touched: 64.3%)**.
+
+
 
