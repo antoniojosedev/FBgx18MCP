@@ -705,3 +705,66 @@ parity. Portable gate: 252 tests passed / 0 failed / 2 ignored; Clippy and
 rustfmt clean. Outside this claim: date/time text concatenation, timezones,
 fractional seconds and `Str`-style width/scale time pictures; no product
 operation consumes the capability yet.
+
+## Date/character conversions (`CToD`, `DToC`, `TToC`)
+
+`DateTimeUtil.CToD2`/`DToC2`/`TToC2` from the same `genexus.classes.core`
+package are the runtime helpers that generated code calls for the language
+`CToD`, `DToC` and `TToC` conversions. `scripts/sdk-oracle` mode
+`generate-date-conversions` prints the checked-in corpus
+(`tests/fixtures/date_conversions_native.tsv`, 50 rows; spaces in inputs are
+encoded as `\s` so trimming rows survive whitespace-insensitive storage) and
+`tests/date_conversions.rs` consumes it through `Date::parse_cto_d`,
+`Date::to_iso_text` and `DateTime::to_iso_text`.
+
+Measured `CToD` grammar (39 rows):
+
+- Three numeric components separated by any mix of `-`, `/` or `.`
+  (`2024-02/29` and `02.29.2024` are accepted). A four-digit first component is
+  read `yyyy`-first; otherwise the order is `M/d/[yy]yy`, so `29/02/2024` is
+  empty while `02-29-2024` is 2024-02-29.
+- Input is trimmed; empty or unparsable input yields the empty date.
+- A trailing part is accepted only after a space or `T`, and only when it is a
+  valid `H[:mm[:ss]][.fraction]` time with an optional case-insensitive
+  `AM`/`PM`: `2024-02-29 14:30`, `... 14:30:45.123` and
+  `2024-02-29T14:30:45` keep the date, while `2024-02-29 zzz`,
+  `... 25:00`, `...T` and `2024-02-29.5` are empty.
+- Out-of-range components are empty (`2024-02-30`, `2024-13-01`, `24-02-29`),
+  and compact or single-token forms are rejected (`20240229`, `00010101`, `1`,
+  `12345`).
+- Two-digit years resolve through the project's measured environment window
+  (`"date_two_digit_year_max":2039`): `02/29/24` is 2024-02-29 and `12/31/39`
+  is 2039-12-31.
+
+`DToC` renders the ISO exchange picture `yyyy-MM-dd` with the empty sentinel
+`"0000-00-00"` - deliberately not the `MM/dd/yy` display picture of
+`&date.ToString()`. `TToC` renders `yyyy-MM-ddTHH:mm:ss` and the empty value
+`"0000-00-00T00:00:00"`; it accepts a DateTime only, so `TToC(&date)` is
+rejected like every other typed mismatch.
+
+Outside this claim, with the reason recorded:
+
+- `CToT` - the context-less native helper attaches the *current* date to the
+  parsed time (`CToT2("14:30:45")` recorded 2026-10-17T14:30:45), so its date
+  part cannot be characterized without a live Knowledge Base environment.
+- The millisecond `TToC3` variant (`"....T14:30:45.000"`) and fractional
+  seconds.
+- Timezone-offset forms (`2024-02-29-01` records 2024-02-28 in the helper, i.e.
+  offset math) and the two-digit-year boundary `01/01/40`, where the
+  context-less helper resolves by century (2040) instead of the measured
+  environment window (1940).
+
+The e2e test builds and runs a project that prints `DToC`/`TToC` results
+through `Print` and compares raw stdout bytes.
+
+Mutation checks: removing the trailing-time validation fails the
+`...zzz`/`...25:00` rows; forcing the first component to be read as `yyyy` fails
+the `02/29/24`, `2/9/24`, `01/01/00` and `12/31/39` rows plus the e2e; relaxing
+`TToC` to accept a Date fails the rejection set (the reject rows assign every
+variable first, so a wrong reason cannot mask a wrong admission). All restored
+green.
+
+Arm gate for this change: 58 test binaries, **476 tests passed / 0 failed /
+2 ignored**; `cargo clippy --all-targets` and `cargo fmt --check` clean. The
+`Portable gate` counts recorded in the earlier sections are the suite sizes at
+the time each section was written, so they are lower by construction.

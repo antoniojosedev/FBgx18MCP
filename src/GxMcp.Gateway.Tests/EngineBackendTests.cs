@@ -178,14 +178,14 @@ namespace GxMcp.Gateway.Tests
                 Engine = new EngineConfig { Backend = "gxengine", Fallback = "sdk" }
             });
 
-            var decision = EngineRouter.Decide("procedure_pipeline", settings);
+            var decision = EngineRouter.Decide("unregistered_capability", settings);
 
             Assert.Equal(EngineRouteTarget.Sdk, decision.Target);
             Assert.Null(decision.Code);
         }
 
         [Theory]
-        [InlineData("procedure_pipeline")]
+        [InlineData("unregistered_capability")]
         [InlineData("unknown_capability")]
         public void Router_NonParityCapability_IsRejected_WhenFallbackIsError(string capabilityId)
         {

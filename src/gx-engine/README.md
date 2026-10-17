@@ -318,7 +318,14 @@ zero. Empty uses the .NET minimum-day sentinel: adding one day yields 0001-01-02
 Arithmetic outside 0001..9999 and fractional offsets fail with controlled errors.
 Date display/conversion: `Print(&date)` renders the measured native
 `&date.ToString()` picture (`MM/dd/yy` with zero padding; empty renders
-`"  /  /  "`). Text concatenation with dates and database dates are not implemented. Unassigned reads remain errors rather than implicit initialization.
+`"  /  /  "`). `CToD(text)` parses the measured native grammar — three numeric
+components joined by any mix of `-`, `/` or `.`; `yyyy`-first when the first
+component has four digits, otherwise `M/d/[yy]yy`; a trailing time after a
+space or `T` is accepted only when the time itself is valid — and yields empty
+for every other form; `DToC(date)` renders the ISO exchange picture
+`yyyy-MM-dd` with the empty sentinel `"0000-00-00"`. `tests/date_conversions.rs`
+runs 39 native `DateTimeUtil.CToD2` rows and 6 `DToC2` rows. Text concatenation
+with dates and database dates are not implemented. Unassigned reads remain errors rather than implicit initialization.
 
 Two-digit years have **no implicit window**. Set project-level
 `"date_two_digit_year_max":2039` only when matching that measured environment;
@@ -338,8 +345,11 @@ and Difference. Typed helper parameters/returns use the same schema. The shared
 explicit year-window setting applies here too. Values are timezone-free and have
 integral-second precision; `Print(&dateTime)` renders the measured native
 `&dateTime.ToString()` picture (`MM/dd/yy hh:mm AM/PM`, 12-hour with seconds
-dropped; empty renders `"  /  /   12:00 AM"`). Fractional components/offsets,
-timezone conversions, `Str`-style time formatting, millisecond storage and
+dropped; empty renders `"  /  /   12:00 AM"`). `TToC(dateTime)` renders the ISO
+exchange picture `yyyy-MM-ddTHH:mm:ss` (empty renders `"0000-00-00T00:00:00"`,
+5 native `TToC2` rows in the same fixture). Fractional components/offsets,
+timezone conversions, `Str`-style time formatting, millisecond storage,
+`CToT` (its context-less native helper substitutes the current date) and
 other calendar methods are not admitted.
 
 Native construction keeps a valid time when the date is invalid (minimum date,
