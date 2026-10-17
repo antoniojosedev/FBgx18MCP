@@ -153,6 +153,7 @@
 - Local cache and durable source store isolation (`DurableSourceStoreRoot`) is scoped per-KB (`GXMCP_KB_ID`), normalized path hash, and host generation, preventing transient path collisions and cleaning up orphaned stores ([#523](https://github.com/lennix1337/Genexus18MCP/issues/523)).
 - Source store backfill service properly detects deleted objects during synchronization, removing stale object records from the persistent store and updating progress metrics ([#524](https://github.com/lennix1337/Genexus18MCP/issues/524)).
 - The experimental Rust engine also includes a transactional incremental parse session and `explain` command: unchanged procedure bodies are reused, affected callers propagate through old/new graphs, and invalid revisions preserve the last accepted state. Full semantic validation and native compilation still run; no executable cache or measured SDK speedup is claimed.
+- Tool definitions schema token budget bumped from 38,500 to 39,000 in `ToolSchemaSizeTests.cs` to accommodate typed Selection filter authoring in `genexus_workwith` ([#559](https://github.com/lennix1337/Genexus18MCP/issues/559)), attribute typing (`dataType`, `length`, `decimals`, `basedOn`) in `genexus_create` ([#541](https://github.com/lennix1337/Genexus18MCP/issues/541)), and `<tabs>`/`<textBlock>`/userAction container parameters in `genexus_wwp` ([#551](https://github.com/lennix1337/Genexus18MCP/issues/551), [#552](https://github.com/lennix1337/Genexus18MCP/issues/552)). Measured ~38,783 tokens (~217 headroom).
 
 ## v3.15.0 - 2026-10-13
 
