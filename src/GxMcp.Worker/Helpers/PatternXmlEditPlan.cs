@@ -110,6 +110,12 @@ namespace GxMcp.Worker.Helpers
             if (allowGridStructure && IsGrid(before)
                 && TryCompareGridReorder(oldNodes, newNodes, path, allowGridStructure))
                 return;
+            // Issue #560: a <prompt> edited in place (target changed, a <parameter> added
+            // or removed) leaves the <attribute> with the same number of children, so it
+            // never reached the handler above and the positional recursion rejected the
+            // <parameters> size change instead. Same handler, same allow-list, one Update.
+            if (TryAllowAttributePromptEdit(before, after, oldNodes, newNodes, path))
+                return;
             if (TryCompareContainerReorder(before, oldNodes, newNodes, path, allowGridStructure))
                 return;
             for (int i = 0; i < oldNodes.Length; i++)
@@ -766,67 +772,75 @@ namespace GxMcp.Worker.Helpers
             return true;
         }
 
+        /// <summary>
+        /// Issue #560: the DVelop Combo insert prompt, a <c>&lt;prompt&gt;</c> child of an
+        /// <c>&lt;attribute&gt;</c> carrying a target and a <c>&lt;parameters&gt;</c> list.
+        /// Accepts adding it, removing it, or replacing it in place (target changed, a
+        /// <c>&lt;parameter&gt;</c> added or removed) as one <c>Insert</c> / <c>Remove</c> /
+        /// <c>Update</c>, provided every other child of the attribute is untouched.
+        ///
+        /// <para>
+        /// A new or changed prompt outside the documented shape is rejected with the
+        /// offending item named. An unchanged prompt is left to the positional comparison,
+        /// so an instance whose prompt carries an attribute this gate does not know still
+        /// takes unrelated property edits.
+        /// </para>
+        /// </summary>
         private bool TryAllowAttributePromptEdit(XElement before, XElement after, XNode[] oldNodes, XNode[] newNodes, string path)
         {
             if (!string.Equals(before.Name.LocalName, "attribute", StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            var oldPrompt = oldNodes.OfType<XElement>().FirstOrDefault(e => string.Equals(e.Name.LocalName, "prompt", StringComparison.OrdinalIgnoreCase));
-            var newPrompt = newNodes.OfType<XElement>().FirstOrDefault(e => string.Equals(e.Name.LocalName, "prompt", StringComparison.OrdinalIgnoreCase));
+            var oldPrompt = oldNodes.OfType<XElement>().FirstOrDefault(IsPrompt);
+            var newPrompt = newNodes.OfType<XElement>().FirstOrDefault(IsPrompt);
 
             if (oldPrompt == null && newPrompt == null) return false;
+            if (oldPrompt != null && newPrompt != null && XNode.DeepEquals(oldPrompt, newPrompt)) return false;
 
-            if (newPrompt != null && !ValidatePromptElement(newPrompt)) return false;
+            if (newPrompt != null)
+            {
+                string violation = PromptViolation(newPrompt, path);
+                if (violation != null)
+                {
+                    Reject("PatternStructureChangeUnsupported", violation);
+                    return true;
+                }
+            }
 
             var oldOther = oldNodes.Where(n => n != oldPrompt).ToArray();
             var newOther = newNodes.Where(n => n != newPrompt).ToArray();
             if (!SameNodeSequence(oldOther, newOther)) return false;
 
-            if (oldPrompt == null && newPrompt != null)
+            var change = new JObject
             {
-                string promptTarget = (string)newPrompt.Attribute("prompt") ?? (string)newPrompt.Attribute("gxobject") ?? (string)newPrompt.Attribute("name");
-                Changes.Add(new JObject
-                {
-                    ["path"] = path + "prompt",
-                    ["operation"] = "Insert",
-                    ["element"] = "prompt",
-                    ["prompt"] = promptTarget
-                });
-                return true;
-            }
-
-            if (oldPrompt != null && newPrompt == null)
-            {
-                Changes.Add(new JObject
-                {
-                    ["path"] = path + "prompt",
-                    ["operation"] = "Remove",
-                    ["element"] = "prompt"
-                });
-                return true;
-            }
-
-            if (oldPrompt != null && newPrompt != null)
-            {
-                if (!XNode.DeepEquals(oldPrompt, newPrompt))
-                {
-                    string promptTarget = (string)newPrompt.Attribute("prompt") ?? (string)newPrompt.Attribute("gxobject") ?? (string)newPrompt.Attribute("name");
-                    Changes.Add(new JObject
-                    {
-                        ["path"] = path + "prompt",
-                        ["operation"] = "Update",
-                        ["element"] = "prompt",
-                        ["prompt"] = promptTarget
-                    });
-                }
-                return true;
-            }
-
-            return false;
+                ["path"] = path + "prompt",
+                ["operation"] = oldPrompt == null ? "Insert" : newPrompt == null ? "Remove" : "Update",
+                ["element"] = "prompt"
+            };
+            if (newPrompt != null) change["prompt"] = PromptTarget(newPrompt);
+            Changes.Add(change);
+            return true;
         }
 
-        private static bool ValidatePromptElement(XElement prompt)
+        private static bool IsPrompt(XElement element)
+            => string.Equals(element.Name.LocalName, "prompt", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>The object the prompt opens (<c>prompt</c>, else <c>gxobject</c>), or null when it has none.</summary>
+        private static string PromptTarget(XElement prompt)
         {
+            string target = (string)prompt.Attribute("prompt") ?? (string)prompt.Attribute("gxobject");
+            return string.IsNullOrWhiteSpace(target) ? null : target.Trim();
+        }
+
+        /// <summary>
+        /// Why a <c>&lt;prompt&gt;</c> is outside the documented shape, or null when it is
+        /// inside it: a non-empty target, no attribute beyond <c>prompt</c> /
+        /// <c>gxobject</c> / <c>name</c>, and at most a <c>&lt;parameters&gt;</c> child made
+        /// of leaf <c>&lt;parameter name|value&gt;</c> elements.
+        /// </summary>
+        private static string PromptViolation(XElement prompt, string path)
+        {
+            string where = " on the <prompt> at " + path + "prompt.";
             foreach (var attr in prompt.Attributes())
             {
                 if (attr.IsNamespaceDeclaration) continue;
@@ -834,27 +848,29 @@ namespace GxMcp.Worker.Helpers
                 if (!name.Equals("prompt", StringComparison.OrdinalIgnoreCase)
                     && !name.Equals("gxobject", StringComparison.OrdinalIgnoreCase)
                     && !name.Equals("name", StringComparison.OrdinalIgnoreCase))
-                    return false;
+                    return "Attribute '" + name + "' is not permitted" + where + " Permitted: gxobject, name, prompt.";
             }
+            if (PromptTarget(prompt) == null)
+                return "A non-empty prompt (or gxobject) target is required" + where;
             foreach (var child in prompt.Elements())
             {
                 if (!child.Name.LocalName.Equals("parameters", StringComparison.OrdinalIgnoreCase))
-                    return false;
+                    return "Element <" + child.Name.LocalName + "> is not permitted" + where + " Only <parameters> is.";
                 foreach (var param in child.Elements())
                 {
-                    if (!param.Name.LocalName.Equals("parameter", StringComparison.OrdinalIgnoreCase))
-                        return false;
+                    if (!param.Name.LocalName.Equals("parameter", StringComparison.OrdinalIgnoreCase) || param.HasElements)
+                        return "Only leaf <parameter> elements are permitted under <parameters>" + where;
                     foreach (var pAttr in param.Attributes())
                     {
                         if (pAttr.IsNamespaceDeclaration) continue;
                         string pName = pAttr.Name.LocalName;
                         if (!pName.Equals("name", StringComparison.OrdinalIgnoreCase)
                             && !pName.Equals("value", StringComparison.OrdinalIgnoreCase))
-                            return false;
+                            return "Attribute '" + pName + "' is not permitted on a <parameter>" + where + " Permitted: name, value.";
                     }
                 }
             }
-            return true;
+            return null;
         }
     }
 }
