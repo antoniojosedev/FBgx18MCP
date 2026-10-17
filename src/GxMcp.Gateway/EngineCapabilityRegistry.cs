@@ -169,6 +169,15 @@ namespace GxMcp.Gateway
                 notes: "Measured against GxUserType.ToJSonString/FromJSonString and GXBaseCollection<T>.ToJSonString/FromJSonString in GxClasses.dll and generated C# (type_Sdt*.cs): ToJson serializes SDTs and collections with native empty representations (\"0000-00-00\" for Date, \"0000-00-00T00:00:00\" for DateTime, 0, \"\", false) and escaped strings; FromJson supports case-insensitive property matching, partial updates (preserving unmentioned fields), array item repopulation, and fail-closed false return on invalid/non-container JSON. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "sdt_and_collection_xml",
+                title: "Structured Data Type (SDT) and Collection XML serialization and deserialization (ToXml/FromXml)",
+                engineSurface: "record_runtime SimpleXmlElement parser/serializer + frontend method/statement parser + typed_backend code emitter",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "plans/129-implementation-progress.md (40 recorded native GxClasses.dll GxUserType/GXBaseCollection XML oracle rows); src/gx-engine/tests/fixtures/sdt_xml_native.tsv; src/gx-engine/tests/sdt_xml.rs",
+                consumers: Array.Empty<string>(),
+                notes: "Measured against GxUserType.ToXml/FromXml and GXBaseCollection<T>.ToXml/FromXml in GxClasses.dll and generated C# (type_Sdt*.cs): ToXml serializes SDTs and collections with native XML formatting (indentation, self-closing tags <Tag />, XML entities &lt; &gt; &amp; &quot; &apos;, dates as yyyy-MM-ddT00:00:00, and booleans as true/false); FromXml supports case-insensitive element matching, resetting missing fields to empty defaults, array repopulation, and fail-closed false return on malformed XML or mismatched root element. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "numeric_core",
                 title: "Signed 64-bit arithmetic, comparisons and checked overflow",
                 engineSurface: "portable Procedure runtime",

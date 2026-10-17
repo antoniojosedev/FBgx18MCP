@@ -68,6 +68,8 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
             | "STRTOBOOL"
             | "TOJSON"
             | "FROMJSON"
+            | "TOXML"
+            | "FROMXML"
     )
 }
 
@@ -84,6 +86,13 @@ pub struct Procedure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FromXmlStmt {
+    pub target: Box<Expr>,
+    pub xml: Expr,
+    pub root: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Assign(String, Expr),
     AssignField(Box<Expr>, String, Expr),
@@ -92,6 +101,8 @@ pub enum Stmt {
     CollectionClear(Box<Expr>),
     /// Deserializes JSON string into a Record or Collection: `&target.FromJson(&str)`
     FromJson(Box<Expr>, Expr),
+    /// Deserializes XML string into a Record or Collection: `&target.FromXml(&str, [opt_root])`
+    FromXml(Box<FromXmlStmt>),
     Print(Expr),
     MsgStatus(Expr),
     Return(Expr),
@@ -536,77 +547,130 @@ impl Parser {
         }
     }
 
+    #[inline(never)]
+    fn parse_variable_statement(&mut self) -> Result<Stmt, String> {
+        let location = self.current().location;
+        let mut nodes = 0;
+        let target = self.parse_primary(1, &mut nodes)?;
+        if let Expr::Call(ref name, ref args) = target
+            && matches!(name.as_str(), "FROMJSON" | "FROMJSONSTRING")
+            && args.len() == 2
+        {
+            return Ok(Stmt::FromJson(Box::new(args[0].clone()), args[1].clone()));
+        }
+        if let Expr::Call(ref name, ref args) = target
+            && name == "FROMXML"
+            && (args.len() == 2 || args.len() == 3)
+        {
+            return Ok(Stmt::FromXml(Box::new(FromXmlStmt {
+                target: Box::new(args[0].clone()),
+                xml: args[1].clone(),
+                root: if args.len() == 3 {
+                    Some(args[2].clone())
+                } else {
+                    None
+                },
+            })));
+        }
+        if self.at(&TokenKind::Dot) {
+            self.take();
+            if self.at_keyword("SETEMPTY") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after SetEmpty")?;
+                self.expect(TokenKind::RightParen, "')' after SetEmpty(")?;
+                return match target {
+                    Expr::Variable(name) => Ok(Stmt::Assign(name, Expr::EmptyDate)),
+                    Expr::Member(receiver, field) => {
+                        Ok(Stmt::AssignField(receiver, field, Expr::EmptyDate))
+                    }
+                    _ => Err(location.error("SetEmpty target must be a variable or record member")),
+                };
+            }
+            if self.at_keyword("ADD") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after Add")?;
+                let value = self.parse_expression()?;
+                let opt_idx = if self.at(&TokenKind::Comma) {
+                    self.take();
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                self.expect(TokenKind::RightParen, "')' after Add argument")?;
+                return Ok(Stmt::CollectionAdd(Box::new(target), value, opt_idx));
+            }
+            if self.at_keyword("REMOVE") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after Remove")?;
+                let idx = self.parse_expression()?;
+                self.expect(TokenKind::RightParen, "')' after Remove argument")?;
+                return Ok(Stmt::CollectionRemove(Box::new(target), idx));
+            }
+            if self.at_keyword("CLEAR") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after Clear")?;
+                self.expect(TokenKind::RightParen, "')' after Clear()")?;
+                return Ok(Stmt::CollectionClear(Box::new(target)));
+            }
+            if self.at_keyword("FROMJSON") || self.at_keyword("FROMJSONSTRING") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after FromJson")?;
+                let json_expr = self.parse_expression()?;
+                self.expect(TokenKind::RightParen, "')' after FromJson argument")?;
+                return Ok(Stmt::FromJson(Box::new(target), json_expr));
+            }
+            if self.at_keyword("FROMXML") {
+                self.take();
+                self.expect(TokenKind::LeftParen, "'(' after FromXml")?;
+                let xml_expr = self.parse_expression()?;
+                let opt_root = if self.current().kind == TokenKind::Comma {
+                    self.take();
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                self.expect(TokenKind::RightParen, "')' after FromXml argument")?;
+                return Ok(Stmt::FromXml(Box::new(FromXmlStmt {
+                    target: Box::new(target),
+                    xml: xml_expr,
+                    root: opt_root,
+                })));
+            }
+            return Err(location.error("unsupported statement method on target"));
+        }
+        self.expect(TokenKind::Equals, "'=' in an assignment")?;
+        let value = self.parse_expression()?;
+        match target {
+            Expr::Variable(name) => Ok(Stmt::Assign(name, value)),
+            Expr::Member(receiver, field) => Ok(Stmt::AssignField(receiver, field, value)),
+            _ => Err(location.error("assignment target must be a variable or record member")),
+        }
+    }
+
+    #[inline(never)]
+    fn parse_call_statement(&mut self, name: String) -> Result<Stmt, String> {
+        let location = self.take().location;
+        if self.at(&TokenKind::Dot) {
+            self.take();
+            if self.at_keyword("UDP") {
+                self.take();
+            } else {
+                self.expect_keyword("CALL")?;
+            }
+        }
+        if !self.at(&TokenKind::LeftParen) {
+            return Err(location.error(format_args!(
+                "unsupported statement starting with {name}; a call statement needs '('"
+            )));
+        }
+        self.take();
+        let mut nodes = 0;
+        Ok(Stmt::Call(self.parse_call(name, 1, &mut nodes, location)?))
+    }
+
     fn parse_statement(&mut self, nesting: usize) -> Result<Stmt, String> {
         match &self.current().kind {
-            TokenKind::Variable(_) => {
-                let location = self.current().location;
-                let mut nodes = 0;
-                let target = self.parse_primary(1, &mut nodes)?;
-                if let Expr::Call(ref name, ref args) = target
-                    && matches!(name.as_str(), "FROMJSON" | "FROMJSONSTRING")
-                    && args.len() == 2
-                {
-                    return Ok(Stmt::FromJson(Box::new(args[0].clone()), args[1].clone()));
-                }
-                if self.at(&TokenKind::Dot) {
-                    self.take();
-                    if self.at_keyword("SETEMPTY") {
-                        self.take();
-                        self.expect(TokenKind::LeftParen, "'(' after SetEmpty")?;
-                        self.expect(TokenKind::RightParen, "')' after SetEmpty(")?;
-                        return match target {
-                            Expr::Variable(name) => Ok(Stmt::Assign(name, Expr::EmptyDate)),
-                            Expr::Member(receiver, field) => {
-                                Ok(Stmt::AssignField(receiver, field, Expr::EmptyDate))
-                            }
-                            _ => Err(
-                                location.error("SetEmpty target must be a variable or record member")
-                            ),
-                        };
-                    }
-                    if self.at_keyword("ADD") {
-                        self.take();
-                        self.expect(TokenKind::LeftParen, "'(' after Add")?;
-                        let value = self.parse_expression()?;
-                        let opt_idx = if self.at(&TokenKind::Comma) {
-                            self.take();
-                            Some(self.parse_expression()?)
-                        } else {
-                            None
-                        };
-                        self.expect(TokenKind::RightParen, "')' after Add argument")?;
-                        return Ok(Stmt::CollectionAdd(Box::new(target), value, opt_idx));
-                    }
-                    if self.at_keyword("REMOVE") {
-                        self.take();
-                        self.expect(TokenKind::LeftParen, "'(' after Remove")?;
-                        let idx = self.parse_expression()?;
-                        self.expect(TokenKind::RightParen, "')' after Remove argument")?;
-                        return Ok(Stmt::CollectionRemove(Box::new(target), idx));
-                    }
-                    if self.at_keyword("CLEAR") {
-                        self.take();
-                        self.expect(TokenKind::LeftParen, "'(' after Clear")?;
-                        self.expect(TokenKind::RightParen, "')' after Clear()")?;
-                        return Ok(Stmt::CollectionClear(Box::new(target)));
-                    }
-                    if self.at_keyword("FROMJSON") || self.at_keyword("FROMJSONSTRING") {
-                        self.take();
-                        self.expect(TokenKind::LeftParen, "'(' after FromJson")?;
-                        let json_expr = self.parse_expression()?;
-                        self.expect(TokenKind::RightParen, "')' after FromJson argument")?;
-                        return Ok(Stmt::FromJson(Box::new(target), json_expr));
-                    }
-                    return Err(location.error("unsupported statement method on target"));
-                }
-                self.expect(TokenKind::Equals, "'=' in an assignment")?;
-                let value = self.parse_expression()?;
-                match target {
-                    Expr::Variable(name) => Ok(Stmt::Assign(name, value)),
-                    Expr::Member(receiver, field) => Ok(Stmt::AssignField(receiver, field, value)),
-                    _ => Err(location.error("assignment target must be a variable or record member")),
-                }
-            }
+            TokenKind::Variable(_) => self.parse_variable_statement(),
             TokenKind::Identifier(keyword) if keyword == "EXIT" => {
                 self.take();
                 Ok(Stmt::Exit)
@@ -640,26 +704,7 @@ impl Parser {
                     .location
                     .error(format_args!("unexpected keyword {keyword}")))
             }
-            TokenKind::Identifier(name) => {
-                let name = name.clone();
-                let location = self.take().location;
-                if self.at(&TokenKind::Dot) {
-                    self.take();
-                    if self.at_keyword("UDP") {
-                        self.take();
-                    } else {
-                        self.expect_keyword("CALL")?;
-                    }
-                }
-                if !self.at(&TokenKind::LeftParen) {
-                    return Err(location.error(format_args!(
-                        "unsupported statement starting with {name}; a call statement needs '('"
-                    )));
-                }
-                self.take();
-                let mut nodes = 0;
-                Ok(Stmt::Call(self.parse_call(name, 1, &mut nodes, location)?))
-            }
+            TokenKind::Identifier(name) => self.parse_call_statement(name.clone()),
             _ => Err(self
                 .current()
                 .location
@@ -1270,6 +1315,30 @@ impl Parser {
             self.expect(TokenKind::RightParen, "')' after FromJson argument")?;
             self.count_expression_node(nodes, location)?;
             return Ok(Expr::Call("FROMJSON".into(), vec![value, json_arg]));
+        }
+        if matches!(name, "TOXML") {
+            self.expect(TokenKind::LeftParen, "'(' after ToXml(")?;
+            let mut args = vec![value];
+            if !matches!(self.current().kind, TokenKind::RightParen) {
+                let root_arg = self.parse_or(depth, nodes)?;
+                args.push(root_arg);
+            }
+            self.expect(TokenKind::RightParen, "')' after ToXml argument")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("TOXML".into(), args));
+        }
+        if matches!(name, "FROMXML") {
+            self.expect(TokenKind::LeftParen, "'(' after FromXml(")?;
+            let xml_arg = self.parse_or(depth, nodes)?;
+            let mut args = vec![value, xml_arg];
+            if self.current().kind == TokenKind::Comma {
+                self.take();
+                let root_arg = self.parse_or(depth, nodes)?;
+                args.push(root_arg);
+            }
+            self.expect(TokenKind::RightParen, "')' after FromXml arguments")?;
+            self.count_expression_node(nodes, location)?;
+            return Ok(Expr::Call("FROMXML".into(), args));
         }
         if name == "CLONE" {
             self.take();

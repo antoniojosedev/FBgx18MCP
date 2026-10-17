@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Xml.Serialization;
 using GeneXus.Application;
 using GeneXus.Utils;
 
@@ -56,6 +57,12 @@ internal static class Program
         if (args.Length > 0 && args[0] == "generate-sdt-json")
         {
             GenerateSdtJson();
+            return 0;
+        }
+
+        if (args.Length > 0 && args[0] == "generate-sdt-xml")
+        {
+            GenerateSdtXml();
             return 0;
         }
 
@@ -819,8 +826,133 @@ internal static class Program
     }
 
     private static string Escape(string s) => s.Replace("\t", "\\t").Replace("\n", "\\n").Replace("\r", "\\r");
+
+    private static void GenerateSdtXml()
+    {
+        var context = new GxContext();
+
+        // 1. Empty item ToXml
+        var emptyItem = new TestItemSdt(context);
+        string emptyItemXml = emptyItem.ToXml("TestItem");
+        Console.WriteLine($"sdt_empty_to_xml|=[{Escape(emptyItemXml)}]");
+
+        // 2. Filled item ToXml
+        var item = new TestItemSdt(context);
+        item.gxTpr_Amount = 42;
+        item.gxTpr_Label = "Hello World";
+        item.gxTpr_Fixed = "ABC";
+        item.gxTpr_Flag = true;
+        item.gxTpr_Day = new DateTime(2026, 3, 29);
+        item.gxTpr_Stamp = new DateTime(2026, 3, 29, 14, 30, 45);
+        string filledItemXml = item.ToXml("TestItem");
+        Console.WriteLine($"sdt_filled_to_xml|=[{Escape(filledItemXml)}]");
+
+        // 3. Special characters XML escaping (<, >, &, ', ")
+        var specialItem = new TestItemSdt(context);
+        specialItem.gxTpr_Amount = 10;
+        specialItem.gxTpr_Label = "<xml & 'special' \"test\">";
+        specialItem.gxTpr_Fixed = "X&Y";
+        string specialItemXml = specialItem.ToXml("TestItem");
+        Console.WriteLine($"sdt_special_to_xml|=[{Escape(specialItemXml)}]");
+
+        // 4. FromXml roundtrip
+        var itemRound = new TestItemSdt(context);
+        bool okFromXml = itemRound.FromXml(filledItemXml, "TestItem");
+        Console.WriteLine($"sdt_from_xml_roundtrip_ok|=[{okFromXml}]");
+        Console.WriteLine($"sdt_round_amount|=[{itemRound.gxTpr_Amount}]");
+        Console.WriteLine($"sdt_round_label|=[{Escape(itemRound.gxTpr_Label)}]");
+        Console.WriteLine($"sdt_round_fixed|=[{Escape(itemRound.gxTpr_Fixed)}]");
+        Console.WriteLine($"sdt_round_flag|=[{itemRound.gxTpr_Flag}]");
+        Console.WriteLine($"sdt_round_day|=[{itemRound.gxTpr_Day:yyyy-MM-dd}]");
+        Console.WriteLine($"sdt_round_stamp|=[{itemRound.gxTpr_Stamp:yyyy-MM-ddTHH:mm:ss}]");
+
+        // 5. FromXml special characters roundtrip
+        var specialRound = new TestItemSdt(context);
+        bool okSpecial = specialRound.FromXml(specialItemXml, "TestItem");
+        Console.WriteLine($"sdt_special_from_xml_ok|=[{okSpecial}]");
+        Console.WriteLine($"sdt_special_round_label|=[{Escape(specialRound.gxTpr_Label)}]");
+        Console.WriteLine($"sdt_special_round_fixed|=[{Escape(specialRound.gxTpr_Fixed)}]");
+
+        // 6. Partial FromXml
+        var partialItem = new TestItemSdt(context);
+        partialItem.gxTpr_Amount = 5;
+        partialItem.gxTpr_Label = "Initial";
+        bool okPartial = partialItem.FromXml("<TestItem><Amount>99</Amount></TestItem>", "TestItem");
+        Console.WriteLine($"sdt_from_xml_partial_ok|=[{okPartial}]");
+        Console.WriteLine($"sdt_partial_amount|=[{partialItem.gxTpr_Amount}]");
+        Console.WriteLine($"sdt_partial_label|=[{Escape(partialItem.gxTpr_Label)}]");
+
+        // 7. Malformed / Mismatch / Empty FromXml
+        var badItem = new TestItemSdt(context);
+        bool okMalformed = badItem.FromXml("not xml", "TestItem");
+        bool okMismatch = badItem.FromXml("<WrongRoot><Amount>1</Amount></WrongRoot>", "TestItem");
+        bool okEmpty = badItem.FromXml("", "TestItem");
+        Console.WriteLine($"sdt_from_xml_malformed|=[{okMalformed}]");
+        Console.WriteLine($"sdt_from_xml_mismatch_root|=[{okMismatch}]");
+        Console.WriteLine($"sdt_from_xml_empty|=[{okEmpty}]");
+
+        // 8. Nested parent SDT
+        var parent = new TestParentSdt(context);
+        parent.gxTpr_Code = "P100";
+        parent.gxTpr_Child.gxTpr_Amount = 55;
+        parent.gxTpr_Child.gxTpr_Label = "ChildLabel";
+
+        var childItem1 = new TestItemSdt(context);
+        childItem1.gxTpr_Amount = 11;
+        childItem1.gxTpr_Label = "FirstItem";
+        var childItem2 = new TestItemSdt(context);
+        childItem2.gxTpr_Amount = 22;
+        childItem2.gxTpr_Label = "SecondItem";
+        parent.gxTpr_Items.Add(childItem1);
+        parent.gxTpr_Items.Add(childItem2);
+
+        string parentXml = parent.ToXml("TestParent");
+        Console.WriteLine($"parent_filled_to_xml|=[{Escape(parentXml)}]");
+
+        var parentRound = new TestParentSdt(context);
+        bool okParent = parentRound.FromXml(parentXml, "TestParent");
+        Console.WriteLine($"parent_from_xml_ok|=[{okParent}]");
+        Console.WriteLine($"parent_round_code|=[{Escape(parentRound.gxTpr_Code)}]");
+        Console.WriteLine($"parent_round_child_amount|=[{parentRound.gxTpr_Child.gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_child_label|=[{Escape(parentRound.gxTpr_Child.gxTpr_Label)}]");
+        Console.WriteLine($"parent_round_items_count|=[{parentRound.gxTpr_Items.Count}]");
+        Console.WriteLine($"parent_round_item1_amount|=[{parentRound.gxTpr_Items[0].gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_item1_label|=[{Escape(parentRound.gxTpr_Items[0].gxTpr_Label)}]");
+        Console.WriteLine($"parent_round_item2_amount|=[{parentRound.gxTpr_Items[1].gxTpr_Amount}]");
+        Console.WriteLine($"parent_round_item2_label|=[{Escape(parentRound.gxTpr_Items[1].gxTpr_Label)}]");
+
+        // 9. Collections ToXml & FromXml
+        var col = new GXBaseCollection<TestItemSdt>(context, "TestItem", "");
+        string emptyColXml = col.ToXml("TestItems");
+        Console.WriteLine($"col_empty_to_xml|=[{Escape(emptyColXml)}]");
+
+        col.Add(childItem1);
+        col.Add(childItem2);
+        string colXml = col.ToXml("TestItems");
+        Console.WriteLine($"col_filled_to_xml|=[{Escape(colXml)}]");
+
+        var colRound = new GXBaseCollection<TestItemSdt>(context, "TestItem", "");
+        bool okCol = colRound.FromXml(colXml, "TestItems");
+        Console.WriteLine($"col_from_xml_ok|=[{okCol}]");
+        Console.WriteLine($"col_round_count|=[{colRound.Count}]");
+        Console.WriteLine($"col_round_item1_amount|=[{colRound[0].gxTpr_Amount}]");
+        Console.WriteLine($"col_round_item1_label|=[{Escape(colRound[0].gxTpr_Label)}]");
+        Console.WriteLine($"col_round_item2_amount|=[{colRound[1].gxTpr_Amount}]");
+        Console.WriteLine($"col_round_item2_label|=[{Escape(colRound[1].gxTpr_Label)}]");
+
+        // 10. Collection empty FromXml and malformed
+        var colEmptyRound = new GXBaseCollection<TestItemSdt>(context, "TestItem", "");
+        bool okColEmpty = colEmptyRound.FromXml("<TestItems />", "TestItems");
+        bool okColBad = colEmptyRound.FromXml("not xml", "TestItems");
+        Console.WriteLine($"col_from_xml_empty|=[{okColEmpty}]");
+        Console.WriteLine($"col_empty_round_count|=[{colEmptyRound.Count}]");
+        Console.WriteLine($"col_from_xml_malformed|=[{okColBad}]");
+    }
 }
 
+[XmlRoot(ElementName = "TestItem")]
+[XmlType(TypeName = "TestItem", Namespace = "")]
+[Serializable]
 public class TestItemSdt : GxUserType
 {
     private short gxTv_Amount;
@@ -833,11 +965,22 @@ public class TestItemSdt : GxUserType
     public TestItemSdt() { }
     public TestItemSdt(IGxContext? context) { this.context = context; }
 
+    [XmlElement(ElementName = "Amount")]
     public short gxTpr_Amount { get => gxTv_Amount; set { gxTv_Amount = value; SetDirty("Amount"); } }
-    public string gxTpr_Label { get => gxTv_Label; set { gxTv_Label = value; SetDirty("Label"); } }
-    public string gxTpr_Fixed { get => gxTv_Fixed; set { gxTv_Fixed = value; SetDirty("Fixed"); } }
-    public bool gxTpr_Flag { get => gxTv_Flag; set { gxTv_Flag = value; SetDirty("Flag"); } }
+
+    [XmlElement(ElementName = "Day")]
     public DateTime gxTpr_Day { get => gxTv_Day; set { gxTv_Day = value; SetDirty("Day"); } }
+
+    [XmlElement(ElementName = "Fixed")]
+    public string gxTpr_Fixed { get => gxTv_Fixed; set { gxTv_Fixed = value; SetDirty("Fixed"); } }
+
+    [XmlElement(ElementName = "Flag")]
+    public bool gxTpr_Flag { get => gxTv_Flag; set { gxTv_Flag = value; SetDirty("Flag"); } }
+
+    [XmlElement(ElementName = "Label")]
+    public string gxTpr_Label { get => gxTv_Label; set { gxTv_Label = value; SetDirty("Label"); } }
+
+    [XmlElement(ElementName = "Stamp")]
     public DateTime gxTpr_Stamp { get => gxTv_Stamp; set { gxTv_Stamp = value; SetDirty("Stamp"); } }
 
     public override void ToJSON(bool includeState)
@@ -860,6 +1003,9 @@ public class TestItemSdt : GxUserType
     }
 }
 
+[XmlRoot(ElementName = "TestParent")]
+[XmlType(TypeName = "TestParent", Namespace = "")]
+[Serializable]
 public class TestParentSdt : GxUserType
 {
     private string gxTv_Code = "";
@@ -869,9 +1015,15 @@ public class TestParentSdt : GxUserType
     public TestParentSdt() { }
     public TestParentSdt(IGxContext? context) { this.context = context; }
 
+    [XmlElement(ElementName = "Child")]
+    public TestItemSdt gxTpr_Child { get => gxTv_Child ??= new TestItemSdt(context); set { gxTv_Child = value; SetDirty("Child"); } }
+
+    [XmlElement(ElementName = "Code")]
     public string gxTpr_Code { get => gxTv_Code; set { gxTv_Code = value; SetDirty("Code"); } }
-    public TestItemSdt gxTpr_Child { get => gxTv_Child ??= new TestItemSdt(); set { gxTv_Child = value; SetDirty("Child"); } }
-    public GXBaseCollection<TestItemSdt> gxTpr_Items { get => gxTv_Items ??= new GXBaseCollection<TestItemSdt>(); set { gxTv_Items = value; SetDirty("Items"); } }
+
+    [XmlArray(ElementName = "Items")]
+    [XmlArrayItem(ElementName = "TestItem", IsNullable = false)]
+    public GXBaseCollection<TestItemSdt> gxTpr_Items { get => gxTv_Items ??= new GXBaseCollection<TestItemSdt>(context, "TestItem", ""); set { gxTv_Items = value; SetDirty("Items"); } }
 
     public override void ToJSON(bool includeState)
     {

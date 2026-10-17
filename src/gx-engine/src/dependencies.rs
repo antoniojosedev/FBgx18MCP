@@ -33,6 +33,13 @@ fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
                 collect_expression_calls(receiver, callees);
                 collect_expression_calls(json_expr, callees);
             }
+            Stmt::FromXml(from_xml) => {
+                collect_expression_calls(&from_xml.target, callees);
+                collect_expression_calls(&from_xml.xml, callees);
+                if let Some(ref root_expr) = from_xml.root {
+                    collect_expression_calls(root_expr, callees);
+                }
+            }
             Stmt::ForIn(_, collection, body) => {
                 collect_expression_calls(collection, callees);
                 collect_block_calls(body, callees);

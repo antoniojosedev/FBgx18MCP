@@ -1479,6 +1479,50 @@ impl Emitter<'_> {
                     format!("({target}).from_json(({json}).as_str())"),
                 )
             }
+            Expr::Call(name, args) if matches!(name.as_str(), "TOXML") => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err("ToXml expects 1 or 2 arguments".into());
+                }
+                let data_type = self.expression_type(&args[0])?;
+                let k = kind(&data_type);
+                if !matches!(k, Kind::Record | Kind::Collection) {
+                    return Err("ToXml argument must be a record or collection".into());
+                }
+                let target = self.lower_expect(&args[0], assigned, k, prelude)?;
+                if args.len() == 2 {
+                    let root = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                    (
+                        Kind::Text,
+                        format!("Text::new(&({target}).to_xml(Some(({root}).as_str())))?"),
+                    )
+                } else {
+                    (Kind::Text, format!("Text::new(&({target}).to_xml(None))?"))
+                }
+            }
+            Expr::Call(name, args) if matches!(name.as_str(), "FROMXML") => {
+                if args.len() < 2 || args.len() > 3 {
+                    return Err("FromXml expects 2 or 3 arguments (target, xml, [opt_root])".into());
+                }
+                let data_type = self.expression_type(&args[0])?;
+                let k = kind(&data_type);
+                if !matches!(k, Kind::Record | Kind::Collection) {
+                    return Err("FromXml target must be a record or collection".into());
+                }
+                let target = self.lower_expect(&args[0], assigned, k, prelude)?;
+                let xml = self.lower_expect(&args[1], assigned, Kind::Text, prelude)?;
+                if args.len() == 3 {
+                    let root = self.lower_expect(&args[2], assigned, Kind::Text, prelude)?;
+                    (
+                        Kind::Boolean,
+                        format!("({target}).from_xml(({xml}).as_str(), Some(({root}).as_str()))"),
+                    )
+                } else {
+                    (
+                        Kind::Boolean,
+                        format!("({target}).from_xml(({xml}).as_str(), None)"),
+                    )
+                }
+            }
             Expr::Call(name, args) => {
                 let (result, value) = self.lower_call(name, args, assigned, prelude, false)?;
                 (result.expect("function calls return a value"), value)
@@ -1920,6 +1964,29 @@ impl Emitter<'_> {
                     writeln!(
                         output,
                         "let _ = ({receiver_code}).from_json(({json_code}).as_str());"
+                    )
+                    .unwrap();
+                }
+                Stmt::FromXml(from_xml) => {
+                    let data_type = self.expression_type(&from_xml.target)?;
+                    let kind_type = kind(&data_type);
+                    if !matches!(kind_type, Kind::Record | Kind::Collection) {
+                        return Err("FromXml receiver must be a record or collection".into());
+                    }
+                    let receiver_code = self.expect(&from_xml.target, assigned, kind_type)?;
+                    let xml_code = self.expect(&from_xml.xml, assigned, Kind::Text)?;
+                    let opt_root_code = if let Some(ref root_expr) = from_xml.root {
+                        let root_code = self.expect(root_expr, assigned, Kind::Text)?;
+                        format!("Some(({root_code}).as_str())")
+                    } else {
+                        "None".to_string()
+                    };
+                    if let Expr::Variable(name) = from_xml.target.as_ref() {
+                        assigned.insert(name.clone());
+                    }
+                    writeln!(
+                        output,
+                        "let _ = ({receiver_code}).from_xml(({xml_code}).as_str(), {opt_root_code});"
                     )
                     .unwrap();
                 }

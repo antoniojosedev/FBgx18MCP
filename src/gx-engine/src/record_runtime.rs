@@ -170,6 +170,180 @@ impl Record {
         self.from_json(json_str)
     }
 
+    /// Serializes this record to formatted XML matching GeneXus GxUserType.ToXml().
+    pub fn to_xml(&self, root_name: Option<&str>) -> String {
+        let root = root_name.filter(|s| !s.is_empty()).unwrap_or(self.schema);
+        let fields_xml = self.serialize_xml_fields(1);
+        format!("<{root}>\r\n{fields_xml}</{root}>")
+    }
+
+    pub fn serialize_xml_fields(&self, depth: usize) -> String {
+        let indent = "\t".repeat(depth);
+        let fields = self.fields.borrow();
+        let mut out = String::new();
+        for (name, field) in fields.iter() {
+            match field {
+                Field::Numeric(d) => {
+                    out.push_str(&format!("{indent}<{name}>{d}</{name}>\r\n"));
+                }
+                Field::Text(t) => {
+                    if t.as_str().is_empty() {
+                        out.push_str(&format!("{indent}<{name} />\r\n"));
+                    } else {
+                        out.push_str(&format!(
+                            "{indent}<{name}>{}</{name}>\r\n",
+                            escape_xml(t.as_str())
+                        ));
+                    }
+                }
+                Field::Boolean(b) => {
+                    out.push_str(&format!(
+                        "{indent}<{name}>{}</{name}>\r\n",
+                        if *b { "true" } else { "false" }
+                    ));
+                }
+                Field::Date(d) => {
+                    if d.is_empty() {
+                        out.push_str(&format!("{indent}<{name}>0001-01-01T00:00:00</{name}>\r\n"));
+                    } else {
+                        out.push_str(&format!(
+                            "{indent}<{name}>{:04}-{:02}-{:02}T00:00:00</{name}>\r\n",
+                            d.year(),
+                            d.month(),
+                            d.day()
+                        ));
+                    }
+                }
+                Field::DateTime(dt) => {
+                    if dt.is_empty() {
+                        out.push_str(&format!("{indent}<{name}>0001-01-01T00:00:00</{name}>\r\n"));
+                    } else {
+                        out.push_str(&format!(
+                            "{indent}<{name}>{:04}-{:02}-{:02}T{:02}:{:02}:{:02}</{name}>\r\n",
+                            dt.year(),
+                            dt.month(),
+                            dt.day(),
+                            dt.hour(),
+                            dt.minute(),
+                            dt.second()
+                        ));
+                    }
+                }
+                Field::Record(r) => {
+                    out.push_str(&format!("{indent}<{name}>\r\n"));
+                    out.push_str(&r.serialize_xml_fields(depth + 1));
+                    out.push_str(&format!("{indent}</{name}>\r\n"));
+                }
+                Field::Collection(c) => {
+                    if c.is_empty() {
+                        out.push_str(&format!("{indent}<{name} />\r\n"));
+                    } else {
+                        out.push_str(&format!("{indent}<{name}>\r\n"));
+                        out.push_str(&c.serialize_xml_items(depth + 1));
+                        out.push_str(&format!("{indent}</{name}>\r\n"));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Deserializes XML string into this record matching GeneXus GxUserType.FromXml().
+    pub fn from_xml(&self, xml_str: &str, root_name: Option<&str>) -> bool {
+        let Some(root) = parse_xml(xml_str) else {
+            return false;
+        };
+        if let Some(expected_root) = root_name.filter(|s| !s.is_empty())
+            && !root.tag.eq_ignore_ascii_case(expected_root)
+        {
+            return false;
+        }
+        let empty = self.empty_clone();
+        *self.fields.borrow_mut() = empty.fields.borrow().clone();
+        self.apply_xml_element(&root);
+        true
+    }
+
+    fn apply_xml_element(&self, elem: &SimpleXmlElement) {
+        for child in &elem.children {
+            let mut fields = self.fields.borrow_mut();
+            let matching_key = fields
+                .keys()
+                .copied()
+                .find(|k| k.eq_ignore_ascii_case(&child.tag));
+            let Some(key) = matching_key else {
+                continue;
+            };
+            let Some(field) = fields.get_mut(key) else {
+                continue;
+            };
+            match field {
+                Field::Numeric(d) => {
+                    let text = child.text.trim();
+                    if let Ok(parsed) = text.parse::<Decimal>() {
+                        *d = parsed;
+                    }
+                }
+                Field::Text(t) => {
+                    if let Ok(new_t) = Text::new(&child.text) {
+                        *t = new_t;
+                    }
+                }
+                Field::Boolean(b) => {
+                    let text = child.text.trim();
+                    *b = text.eq_ignore_ascii_case("true") || text == "1";
+                }
+                Field::Date(d) => {
+                    let text = child.text.trim();
+                    if !text.is_empty()
+                        && !text.starts_with("0001-01-01")
+                        && !text.starts_with("0000-00-00")
+                        && text.len() >= 10
+                        && let (Ok(y), Ok(m), Ok(day)) = (
+                            text[0..4].parse::<i64>(),
+                            text[5..7].parse::<i64>(),
+                            text[8..10].parse::<i64>(),
+                        )
+                        && let Ok(parsed_date) = Date::ymd(y, m, day)
+                    {
+                        *d = parsed_date;
+                    }
+                }
+                Field::DateTime(dt) => {
+                    let text = child.text.trim();
+                    if !text.is_empty()
+                        && !text.starts_with("0001-01-01")
+                        && !text.starts_with("0000-00-00")
+                        && text.len() >= 10
+                    {
+                        let y = text[0..4].parse::<i64>().unwrap_or(0);
+                        let m = text[5..7].parse::<i64>().unwrap_or(0);
+                        let day = text[8..10].parse::<i64>().unwrap_or(0);
+                        let mut hour = 0;
+                        let mut min = 0;
+                        let mut sec = 0;
+                        if text.len() >= 19 && text.as_bytes()[10] == b'T' {
+                            hour = text[11..13].parse::<i64>().unwrap_or(0);
+                            min = text[14..16].parse::<i64>().unwrap_or(0);
+                            sec = text[17..19].parse::<i64>().unwrap_or(0);
+                        }
+                        if let Ok(parsed_dt) =
+                            DateTime::from_parts([y, m, day, hour, min, sec], None)
+                        {
+                            *dt = parsed_dt;
+                        }
+                    }
+                }
+                Field::Record(r) => {
+                    r.apply_xml_element(child);
+                }
+                Field::Collection(c) => {
+                    c.apply_xml_element(child);
+                }
+            }
+        }
+    }
+
     fn apply_json_object(&self, entries: &[(String, SimpleJson)]) -> bool {
         let mut fields = self.fields.borrow_mut();
         for (key, val) in entries {
@@ -392,6 +566,59 @@ impl Collection {
         self.from_json(json_str)
     }
 
+    /// Serializes this collection to formatted XML matching GeneXus GXBaseCollection.ToXml().
+    pub fn to_xml(&self, root_name: Option<&str>) -> String {
+        let root = root_name
+            .filter(|s| !s.is_empty())
+            .unwrap_or(self.item_schema);
+        if self.is_empty() {
+            format!("<{root} />")
+        } else {
+            let items_xml = self.serialize_xml_items(1);
+            format!("<{root}>\r\n{items_xml}</{root}>")
+        }
+    }
+
+    pub fn serialize_xml_items(&self, depth: usize) -> String {
+        let indent = "\t".repeat(depth);
+        let items = self.items.borrow();
+        let mut out = String::new();
+        for item in items.iter() {
+            let item_tag = item.schema;
+            out.push_str(&format!("{indent}<{item_tag}>\r\n"));
+            out.push_str(&item.serialize_xml_fields(depth + 1));
+            out.push_str(&format!("{indent}</{item_tag}>\r\n"));
+        }
+        out
+    }
+
+    /// Deserializes XML into this collection matching GeneXus GXBaseCollection.FromXml().
+    pub fn from_xml(&self, xml_str: &str, root_name: Option<&str>) -> bool {
+        let Some(root) = parse_xml(xml_str) else {
+            return false;
+        };
+        if let Some(expected_root) = root_name.filter(|s| !s.is_empty())
+            && !root.tag.eq_ignore_ascii_case(expected_root)
+        {
+            return false;
+        }
+        self.clear();
+        self.apply_xml_element(&root);
+        true
+    }
+
+    fn apply_xml_element(&self, elem: &SimpleXmlElement) {
+        self.clear();
+        let proto = self.prototype.borrow().clone();
+        for child in &elem.children {
+            if let Some(ref p) = proto {
+                let rec = p.empty_clone();
+                rec.apply_xml_element(child);
+                self.items.borrow_mut().push(rec);
+            }
+        }
+    }
+
     fn apply_json_array(&self, items: &[SimpleJson]) -> bool {
         self.clear();
         let proto = self.prototype.borrow().clone();
@@ -496,6 +723,215 @@ fn escape_json(s: &str) -> String {
         }
     }
     out
+}
+
+fn escape_xml(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn unescape_xml(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            let mut entity = String::new();
+            while let Some(&next) = chars.peek() {
+                chars.next();
+                if next == ';' {
+                    break;
+                }
+                entity.push(next);
+            }
+            match entity.as_str() {
+                "lt" => out.push('<'),
+                "gt" => out.push('>'),
+                "amp" => out.push('&'),
+                "quot" => out.push('"'),
+                "apos" => out.push('\''),
+                _ => {
+                    out.push('&');
+                    out.push_str(&entity);
+                    out.push(';');
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct SimpleXmlElement {
+    pub tag: String,
+    pub text: String,
+    pub children: Vec<SimpleXmlElement>,
+}
+
+struct XmlParser<'a> {
+    input: &'a str,
+    cursor: usize,
+}
+
+impl<'a> XmlParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, cursor: 0 }
+    }
+
+    fn skip_whitespace_and_misc(&mut self) {
+        while self.cursor < self.input.len() {
+            let remaining = &self.input[self.cursor..];
+            if remaining.starts_with("<!--") {
+                if let Some(pos) = remaining.find("-->") {
+                    self.cursor += pos + 3;
+                    continue;
+                } else {
+                    self.cursor = self.input.len();
+                    return;
+                }
+            }
+            if remaining.starts_with("<?") {
+                if let Some(pos) = remaining.find("?>") {
+                    self.cursor += pos + 2;
+                    continue;
+                } else {
+                    self.cursor = self.input.len();
+                    return;
+                }
+            }
+            let c = remaining.chars().next().unwrap();
+            if c.is_whitespace() {
+                self.cursor += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn parse_element(&mut self) -> Option<SimpleXmlElement> {
+        self.skip_whitespace_and_misc();
+        if self.cursor >= self.input.len() {
+            return None;
+        }
+        if !self.input[self.cursor..].starts_with('<') {
+            return None;
+        }
+        self.cursor += 1; // skip '<'
+
+        // Read tag name
+        let start_tag = self.cursor;
+        while self.cursor < self.input.len() {
+            let b = self.input.as_bytes()[self.cursor];
+            if b.is_ascii_whitespace() || b == b'/' || b == b'>' {
+                break;
+            }
+            self.cursor += 1;
+        }
+        if self.cursor == start_tag {
+            return None;
+        }
+        let tag = self.input[start_tag..self.cursor].to_string();
+
+        // Skip attributes until '>' or '/>'
+        let mut self_closing = false;
+        while self.cursor < self.input.len() {
+            let b = self.input.as_bytes()[self.cursor];
+            if b == b'>' {
+                self.cursor += 1;
+                break;
+            }
+            if self.input[self.cursor..].starts_with("/>") {
+                self.cursor += 2;
+                self_closing = true;
+                break;
+            }
+            if b == b'"' || b == b'\'' {
+                let quote = b;
+                self.cursor += 1;
+                while self.cursor < self.input.len() && self.input.as_bytes()[self.cursor] != quote
+                {
+                    self.cursor += 1;
+                }
+                if self.cursor < self.input.len() {
+                    self.cursor += 1;
+                }
+                continue;
+            }
+            self.cursor += 1;
+        }
+
+        if self_closing {
+            return Some(SimpleXmlElement {
+                tag,
+                text: String::new(),
+                children: Vec::new(),
+            });
+        }
+
+        let mut children = Vec::new();
+        let mut text = String::new();
+
+        loop {
+            self.skip_whitespace_and_misc();
+            if self.cursor >= self.input.len() {
+                return None; // unclosed tag
+            }
+            if self.input[self.cursor..].starts_with("</") {
+                self.cursor += 2;
+                let close_start = self.cursor;
+                while self.cursor < self.input.len() {
+                    let b = self.input.as_bytes()[self.cursor];
+                    if b.is_ascii_whitespace() || b == b'>' {
+                        break;
+                    }
+                    self.cursor += 1;
+                }
+                let close_tag = &self.input[close_start..self.cursor];
+                while self.cursor < self.input.len() && self.input.as_bytes()[self.cursor] != b'>' {
+                    self.cursor += 1;
+                }
+                if self.cursor < self.input.len() {
+                    self.cursor += 1; // skip '>'
+                }
+                if !close_tag.eq_ignore_ascii_case(&tag) {
+                    return None; // tag mismatch
+                }
+                break;
+            } else if self.input[self.cursor..].starts_with('<') {
+                let child = self.parse_element()?;
+                children.push(child);
+            } else {
+                let text_start = self.cursor;
+                while self.cursor < self.input.len() && self.input.as_bytes()[self.cursor] != b'<' {
+                    self.cursor += 1;
+                }
+                let raw_text = &self.input[text_start..self.cursor];
+                text.push_str(&unescape_xml(raw_text));
+            }
+        }
+
+        Some(SimpleXmlElement {
+            tag,
+            text: text.trim().to_string(),
+            children,
+        })
+    }
+}
+
+pub fn parse_xml(input: &str) -> Option<SimpleXmlElement> {
+    let mut parser = XmlParser::new(input);
+    let elem = parser.parse_element()?;
+    parser.skip_whitespace_and_misc();
+    Some(elem)
 }
 
 #[derive(Debug, PartialEq, Clone)]

@@ -1384,3 +1384,32 @@ Owner-reported implementation and native observations:
 - Verification: 280 passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
 - Registry: new `conditional_and_state_operations` capability at `Parity` (no consumers). **Control Flow & Procedure Pipeline** reaches **100.0% parity (6/6 areas)**.
 
+## Structured Data & Collection JSON Serialization Parity (2026-10-16)
+
+- Native Decompilation & Runtime Oracle: Analyzed `GxUserType.ToJSonString(includeState)` / `FromJSonString(s)` and `GXBaseCollection<T>.ToJSonString(includeState)` / `FromJSonString(s)` from `genexus.classes.core` and generated C# SDTs (`type_Sdt*.cs`):
+  - `&sdt.ToJson()` / `&col.ToJson()`: Compact JSON string format, escaped strings, boolean `true`/`false`, empty sentinels (`"0000-00-00"` for Date, `"0000-00-00T00:00:00"` for DateTime, 0 for Numeric, `""` for Text).
+  - `&sdt.FromJson(json)` / `&col.FromJson(json)`: Case-insensitive property mapping, partial updates (preserving unmentioned fields), array item repopulation, and fail-closed false return on invalid/non-container JSON.
+- Fixture & Evidence: Generated `tests/fixtures/sdt_json_native.tsv` (32 rows) directly from official runtime via `generate-sdt-json` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/record_runtime.rs`: Added pure-Rust `SimpleJson` parser and `Record::to_json`, `Record::from_json`, `Collection::to_json`, `Collection::from_json`.
+  - `src/gx-engine/src/frontend.rs`: Added AST support for `TOJSON` and `FROMJSON` expressions and statement forms (`&sdt.FromJson(...)`).
+  - `src/gx-engine/src/typed_backend.rs`: Emitted lowerings for `TOJSON`, `FROMJSON`, and `Stmt::FromJson`.
+  - `src/gx-engine/tests/sdt_json.rs`: Added 32-row native oracle verification and end-to-end compiled executable tests.
+- Verification: 283 passed / 0 failed in `gx-engine`.
+- Registry: new `sdt_and_collection_json` capability at `Parity` (no consumers).
+
+## Structured Data & Collection XML Serialization Parity (2026-10-16)
+
+- Native Decompilation & Runtime Oracle: Analyzed `GxUserType.ToXml(sdt, rootName)` / `FromXml(sdt, xml, rootName)` and `GXBaseCollection<T>.ToXml(col, rootName)` / `FromXml(col, xml, rootName)` from `genexus.classes.core` 1.30.0 and generated C# SDTs (`type_Sdt*.cs`):
+  - `&sdt.ToXml([root])` / `&col.ToXml([root])`: Indented multi-line XML with root tag (defaults to schema name or `"Collection"` for collections), self-closing tags for empty strings (`<Tag />`), XML entity escaping (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;`), ISO date/datetime format (`yyyy-MM-ddT00:00:00`), booleans as `true`/`false`.
+  - `&sdt.FromXml(xml, [root])` / `&col.FromXml(xml, [root])`: Case-insensitive element name matching, nested child SDT and collection deserialization, resetting missing fields to empty defaults (matching GeneXus SDK behavior), and returning `false` on malformed XML or mismatched root.
+- Fixture & Evidence: Generated `tests/fixtures/sdt_xml_native.tsv` (40 rows) directly from official runtime via `generate-sdt-xml` in `src/gx-engine/scripts/sdk-oracle/Program.cs`.
+- Engine Implementation:
+  - `src/gx-engine/src/record_runtime.rs`: Added pure-Rust `SimpleXmlElement` parser and `Record::to_xml`, `Record::from_xml`, `Collection::to_xml`, `Collection::from_xml`.
+  - `src/gx-engine/src/frontend.rs`: Added AST support for `TOXML` and `FROMXML` expressions, `Stmt::FromXml(Box<FromXmlStmt>)`, and stack-frame-optimized statement parsing (`parse_variable_statement`, `parse_call_statement`).
+  - `src/gx-engine/src/typed_backend.rs`: Emitted lowerings for `TOXML`, `FROMXML`, and `Stmt::FromXml`.
+  - `src/gx-engine/tests/sdt_xml.rs`: Added 40-row native oracle verification and end-to-end compiled executable tests.
+- Verification: 285+ passed / 0 failed in `gx-engine`, Clippy and rustfmt clean.
+- Registry: new `sdt_and_collection_xml` capability at `Parity` (no consumers).
+- Milestone: **Structured Data & Collections** reaches **100.0% parity (5/5 areas)**. All 3 core language subsystems (**Language & Runtime Core 8/8**, **Control Flow & Procedure Pipeline 6/6**, **Structured Data & Collections 5/5**) now at **100.0% Native Parity (19/19 areas)**. Overall SDK replacement reaches **37.0%**.
+
