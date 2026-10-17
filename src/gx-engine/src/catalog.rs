@@ -46,6 +46,7 @@ pub enum ObjectKind {
     Attribute,
     DataProvider,
     DataSelector,
+    DataView,
     DesignSystem,
     Domain,
     Module,

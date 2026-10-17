@@ -403,6 +403,24 @@ namespace GxMcp.Gateway
                 notes: "Exports and imports entire GeneXus Knowledge Base catalogs as clean text trees on the filesystem (.prc, .trn, .sdt, .dom, .att, .dp, .ds, .dso). Enables external static analysis and solves Issue #499 by allowing GxWire to parse and index Knowledge Bases without requiring a proprietary SDK or live database. Zero external dependencies. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "dataview_external_table_mapping",
+                title: "Data Views, external table/view mappings, attribute-to-column bidirectional mapping, index mapping, and external multi-dialect SELECT generation",
+                engineSurface: "dataview engine + DataView DSL parser + bidirectional attribute/column mapper + dialect-quoted external SQL renderer",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/dataview.rs; src/gx-engine/tests/data_view.rs (10/10 tests: basic DSL parsing, attribute-to-column bidirectional mapping, primary and unique indexes inspection, external SQL SELECT generation for SqlServer, PostgreSql, and Oracle, WHERE clause filtering, fail-closed duplicate fields and missing tables, and catalog admission with ObjectKind::DataView)",
+                consumers: Array.Empty<string>(),
+                notes: "Implements GeneXus Data Views mapping internal attributes and tables to external database tables, views, and columns across ANSI, SQL Server, PostgreSQL, and Oracle dialects. Enforces fail-closed validation on duplicate attributes/columns, unmapped index keys, and missing external names. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "output_channels_streaming_buffers",
+                title: "Structured output buffering across Console, WebBuffer, Log, and StatusLine channels (msg(..., status)), and bounded streaming chunk rendering",
+                engineSurface: "output channel engine + multi-channel message recorder + status line tracking + channel filtering + bounded streaming chunk partitioner",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/output_channel.rs; src/gx-engine/tests/output_channel.rs (10/10 tests: initial buffer empty, console write and flush, status messages with status code and latest status inspection, web buffer write and flush, channel filtering, interleaved channel ordering, streaming chunks bounded partitioning, buffer clear and reuse, JSON serialization roundtrip, and procedure runtime output collection)",
+                consumers: Array.Empty<string>(),
+                notes: "Provides structured multi-channel message routing matching GeneXus procedure execution semantics: separates console display output from web response buffers, logs, and UI status-line reports (msg(..., status)). Enables bounded streaming chunk partitioning for MCP and real-time streaming interfaces. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "general_gx_surface",
                 title: "General GeneXus objects, Rules, Events and forms",
                 engineSurface: "none",

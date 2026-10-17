@@ -1777,6 +1777,32 @@ Owner-reported implementation and native observations:
 - Registry: promoted `structured_diagnostics_catalog` and `text_tree_roundtrip` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
 - Milestone: **Diagnostics Model (Row C4)** and **Text Tree Exchange (Row I3)** promoted to Parity. Overall weighted SDK replacement advances from **66.1% to 69.6% (49/56 areas touched: 87.5%)**.
 
+## Data Views External Table Mapping & Output Channels Streaming Buffers (2026-10-17)
+
+- Scope & Authorization: External database table mapping via Data Views and structured execution output buffer routing across channels (Rows H4, G11) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Data Views & External Table Mapping (`src/gx-engine/src/dataview.rs`):
+    - Models GeneXus Data Views mapping internal Knowledge Base attributes and tables to external DBMS tables, views, and columns.
+    - Full DSL grammar parser: parses `dataview <Name> { table = ...; external_name = ...; platform = ...; datastore = ...; fields { Att => col : Type; } index Name { external = ...; primary/unique = true; Att; } }` with comment stripping (`//`, `/* */`) and JSON fallback.
+    - Bidirectional mapping: case-insensitive attribute-to-column (`map_attribute_to_column`) and column-to-attribute (`map_column_to_attribute`) resolution.
+    - External index management: preserves primary (`is_primary`) and unique (`is_unique`) index keys and external index names.
+    - Dialect-accurate external SQL query renderer: generates `SELECT` queries across ANSI, SQL Server (`[col]`, `[table]`), PostgreSQL (`"col"`, `"table"`), and Oracle (`"col"`, `"table"`), with external table name binding and optional `WHERE` clause.
+    - Fail-closed validation: rejects duplicate attribute mappings, duplicate external columns, empty external table name, multiple primary indexes, and index keys referencing unmapped attributes.
+    - Admitted `ObjectKind::DataView` in portable catalog and text-tree interop (`.dv` files).
+  - Output Channels & Streaming Buffers (`src/gx-engine/src/output_channel.rs`):
+    - Multi-channel message routing: models `Console`, `WebBuffer`, `Log`, and `StatusLine` output channels matching GeneXus execution environments.
+    - Status reporting: supports `msg(&text, status)` with integer status codes and `latest_status()` inspection.
+    - Buffered string flushes: newline-separated console flushes (`flush_console_to_string`), continuous web stream flushes (`flush_web_to_string`), and channel filtering.
+    - Streaming chunk partitioner: splits buffered output into bounded UTF-8 character chunks (`render_streaming_chunks`) for real-time MCP tool streaming and progress notifications.
+    - Clean state management: message counting, clearing, and JSON serialization round-trip.
+  - Integration Tests:
+    - `src/gx-engine/tests/data_view.rs`: 10/10 tests passing (basic DSL parsing, bidirectional mapping, primary/unique index inspection, SQL Server SELECT, PostgreSQL SELECT, Oracle SELECT, WHERE clause rendering, duplicate field validation, unknown attribute index validation, JSON roundtrip and catalog admission).
+    - `src/gx-engine/tests/output_channel.rs`: 10/10 tests passing (empty buffer, console write/flush, status with status codes, web buffer flush, channel filtering, interleaved channel ordering, streaming chunks partitioning, buffer clear/reuse, JSON serialization, procedure runtime output simulation).
+- Verification: 481 passed / 0 failed across all 48 test suites in `gx-engine` (461 existing + 20 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `dataview_external_table_mapping` and `output_channels_streaming_buffers` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Data Views (Row H4)** and **Output Channels (Row G11)** promoted to Parity. Overall weighted SDK replacement advances from **69.6% to 73.2% (50/56 areas touched: 89.3%)**.
+
+
 
 
 

@@ -75,6 +75,7 @@ pub fn path_for_object(name: &str, kind: ObjectKind) -> String {
         ObjectKind::Attribute => format!("Definitions/Attributes/{name}.att"),
         ObjectKind::DataProvider => format!("Objects/DataProviders/{name}.dp"),
         ObjectKind::DataSelector => format!("Objects/DataSelectors/{name}.ds"),
+        ObjectKind::DataView => format!("Objects/DataViews/{name}.dv"),
         ObjectKind::DesignSystem => format!("Objects/DesignSystems/{name}.dso"),
         ObjectKind::Module => format!("Definitions/Modules/{name}.mod"),
         ObjectKind::Table => format!("Definitions/Tables/{name}.tbl"),
@@ -97,6 +98,7 @@ pub fn infer_kind_from_path(path: &str) -> Result<ObjectKind, String> {
         "att" => Ok(ObjectKind::Attribute),
         "dp" => Ok(ObjectKind::DataProvider),
         "ds" => Ok(ObjectKind::DataSelector),
+        "dv" => Ok(ObjectKind::DataView),
         "dso" => Ok(ObjectKind::DesignSystem),
         "mod" => Ok(ObjectKind::Module),
         "tbl" => Ok(ObjectKind::Table),
@@ -700,7 +702,7 @@ pub fn export_object_to_text(obj: &KbObject) -> Result<String, String> {
                 ))
             }
         }
-        ObjectKind::Module | ObjectKind::Table | ObjectKind::WebPanel => {
+        ObjectKind::Module | ObjectKind::Table | ObjectKind::WebPanel | ObjectKind::DataView => {
             if let Some(src) = obj.source_parts.first() {
                 Ok(src.source.clone())
             } else {
@@ -911,7 +913,10 @@ pub fn import_text_tree_to_catalog(snapshot: &TextTreeSnapshot) -> Result<Catalo
                     }
                 }
             }
-            ObjectKind::Module | ObjectKind::Table | ObjectKind::WebPanel => {
+            ObjectKind::Module
+            | ObjectKind::Table
+            | ObjectKind::WebPanel
+            | ObjectKind::DataView => {
                 obj.source_parts.push(SourcePart {
                     name: "SOURCE".into(),
                     source: file.content.clone(),
