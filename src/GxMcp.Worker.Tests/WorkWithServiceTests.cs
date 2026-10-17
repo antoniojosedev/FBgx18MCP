@@ -517,16 +517,20 @@ namespace GxMcp.Worker.Tests
             Assert.True(validations["arityMatches"]?.ToObject<bool>());
         }
 
+        // Issue #559: the real standard WorkWith nodes are `filterAttribute` under
+        // `attributes` and `condition` under `conditions`, in the document namespace -
+        // the same shape PatternInstancePatchPreflightTests pins. The first version of
+        // the XML reader looked for `attribute` and read every populated filter as empty.
         private const string SampleWorkWithXmlWithFilter = @"<?xml version=""1.0"" encoding=""utf-8""?>
-<WorkWithInstance xmlns=""http://schemas.genexus.com/Patterns/WorkWith/v1.0"">
+<instance xmlns=""http://schemas.genexus.com/Patterns/WorkWith/v1.0"">
   <level id=""Root"">
     <selection>
       <filter>
         <attributes>
-          <attribute name=""CustomerName"" description=""Customer Name"" domain=""CustomerName"" variableName=""&amp;CustomerName"" />
+          <filterAttribute name=""TemExistente"" description=""Tem Existente"" domain=""11111111-1111-1111-1111-111111111111-SimOuNao"" />
         </attributes>
         <conditions>
-          <condition value=""CustomerName like &amp;CustomerName when not &amp;CustomerName.IsEmpty()"" />
+          <condition value=""DocumentoId.IsEmpty() when &amp;TemExistente = SimOuNao.Nao;"" />
         </conditions>
       </filter>
       <actions>
@@ -534,14 +538,38 @@ namespace GxMcp.Worker.Tests
       </actions>
     </selection>
   </level>
-</WorkWithInstance>";
+</instance>";
+
+        private const string SampleWorkWithXmlWithTwoFilteredLevels = @"<?xml version=""1.0"" encoding=""utf-8""?>
+<instance xmlns=""http://schemas.genexus.com/Patterns/WorkWith/v1.0"">
+  <level id=""Root"">
+    <selection>
+      <filter>
+        <attributes>
+          <filterAttribute name=""CustomerName"" description=""Customer Name"" />
+        </attributes>
+        <conditions />
+      </filter>
+    </selection>
+    <level id=""Orders"">
+      <selection>
+        <filter>
+          <attributes>
+            <filterAttribute name=""OrderDate"" description=""Order Date"" />
+          </attributes>
+          <conditions />
+        </filter>
+      </selection>
+    </level>
+  </level>
+</instance>";
 
         [Fact]
-        public void TryListFiltersFromXml_WithFilters_ReturnsAttributesAndConditions()
+        public void TryListFiltersFromXml_RealSchemaShape_ReadsFilterAttributeNodes()
         {
-            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithFilter, "Root", out var filters, out var error);
+            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithFilter, "Root", out var filters, out var error, out var errorMessage);
 
-            Assert.True(success, error);
+            Assert.True(success, errorMessage);
             Assert.Null(error);
             Assert.NotNull(filters);
             Assert.Equal("Root", filters["level"]?.ToString());
@@ -549,142 +577,240 @@ namespace GxMcp.Worker.Tests
             var attrs = filters["attributes"] as JArray;
             Assert.NotNull(attrs);
             Assert.Single(attrs);
-            Assert.Equal("CustomerName", attrs[0]["name"]?.ToString());
-            Assert.Equal("Customer Name", attrs[0]["description"]?.ToString());
-            Assert.Equal("CustomerName", attrs[0]["domain"]?.ToString());
+            Assert.Equal("TemExistente", attrs[0]["name"]?.ToString());
+            Assert.Equal("Tem Existente", attrs[0]["description"]?.ToString());
+            Assert.Equal("SimOuNao", attrs[0]["domain"]?.ToString());
 
             var conds = filters["conditions"] as JArray;
             Assert.NotNull(conds);
             Assert.Single(conds);
-            Assert.Contains("CustomerName like &CustomerName", conds[0]?.ToString());
+            Assert.Contains("when &TemExistente = SimOuNao.Nao;", conds[0]?.ToString());
         }
 
         [Fact]
-        public void TryListFiltersFromXml_FilterNotPresent_ReturnsWorkWithFilterNotPresent()
+        public void TryListFiltersFromXml_SingleLevel_ResolvesWithoutLevelArgument()
         {
-            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXml, null, out var filters, out var error);
+            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithFilter, null, out var filters, out _, out var errorMessage);
+
+            Assert.True(success, errorMessage);
+            Assert.Equal("Root", filters["level"]?.ToString());
+        }
+
+        [Fact]
+        public void TryListFiltersFromXml_LevelWithoutSelection_ReturnsWorkWithSelectionMissing()
+        {
+            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXml, null, out var filters, out var error, out var errorMessage);
+
+            Assert.False(success);
+            Assert.Null(filters);
+            Assert.Equal("WorkWithSelectionMissing", error);
+            Assert.Contains("Root", errorMessage);
+        }
+
+        [Fact]
+        public void TryListFiltersFromXml_SelectionWithoutFilter_ReturnsWorkWithFilterNotPresent()
+        {
+            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithDefaultsAndNeighbors, null, out var filters, out var error, out var errorMessage);
 
             Assert.False(success);
             Assert.Null(filters);
             Assert.Equal("WorkWithFilterNotPresent", error);
+            Assert.Contains("GeneXus IDE", errorMessage);
         }
 
         [Fact]
-        public void TryListFiltersFromXml_LevelNotFound_ReturnsLevelNotFound()
+        public void TryListFiltersFromXml_UnknownLevel_ReturnsFilterLevelNotFoundWithCandidates()
         {
-            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithFilter, "NonExistentLevel", out var filters, out var error);
+            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithFilter, "NonExistentLevel", out var filters, out var error, out var errorMessage);
 
             Assert.False(success);
             Assert.Null(filters);
-            Assert.Equal("LevelNotFound", error);
+            Assert.Equal("FilterLevelNotFound", error);
+            Assert.Contains("NonExistentLevel", errorMessage);
+            Assert.Contains("Root", errorMessage);
         }
 
         [Fact]
-        public void TryAddFilterAttributeToXml_Success_AddsAttributeAndPreservesNeighbors()
+        public void TryListFiltersFromXml_TwoLevelsWithoutLevel_ReturnsFilterLevelAmbiguous()
         {
-            bool success = WorkWithSdkAdapter.TryAddFilterAttributeToXml(
-                SampleWorkWithXmlWithFilter,
-                levelId: "Root",
-                attributeName: "CustomerStatus",
-                description: "Customer Status",
-                domain: "StatusDomain",
-                conditions: new[] { "CustomerStatus = &CustomerStatus when not &CustomerStatus.IsEmpty()" },
-                out string updatedXml,
-                out string errorCode,
-                out string errorMessage);
+            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithTwoFilteredLevels, null, out var filters, out var error, out var errorMessage);
+
+            Assert.False(success);
+            Assert.Null(filters);
+            Assert.Equal("FilterLevelAmbiguous", error);
+            Assert.Contains("Root", errorMessage);
+            Assert.Contains("Orders", errorMessage);
+        }
+
+        [Fact]
+        public void TryListFiltersFromXml_TwoLevelsWithExplicitLevel_ReturnsThatLevel()
+        {
+            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithTwoFilteredLevels, "Orders", out var filters, out _, out var errorMessage);
 
             Assert.True(success, errorMessage);
-            Assert.Null(errorCode);
-            Assert.NotNull(updatedXml);
+            Assert.Equal("Orders", filters["level"]?.ToString());
+            var attrs = filters["attributes"] as JArray;
+            Assert.Single(attrs);
+            Assert.Equal("OrderDate", attrs[0]["name"]?.ToString());
+        }
 
-            // Verifies existing attribute preserved
-            Assert.Contains("CustomerName", updatedXml);
-            // Verifies new attribute added
-            Assert.Contains("CustomerStatus", updatedXml);
-            Assert.Contains("StatusDomain", updatedXml);
-            // Verifies condition added
-            Assert.Contains("CustomerStatus = &amp;CustomerStatus", updatedXml);
-            // Verifies neighbor action preserved
-            Assert.Contains(@"<action name=""Export""", updatedXml);
+        [Theory]
+        [InlineData("CustomerName")]
+        [InlineData("&CustomerName")]
+        [InlineData("_tem_existente2")]
+        public void ValidateFilterRequest_AcceptsIdentifierWithOptionalAmpersand(string name)
+        {
+            bool valid = WorkWithSdkAdapter.ValidateFilterRequest(name, new List<string> { "CustomerName like &CustomerName;" }, new JArray(), out var code, out var message);
 
-            // Verifies reading back updated xml
-            bool readBack = WorkWithSdkAdapter.TryListFiltersFromXml(updatedXml, "Root", out var readFilters, out var readError);
-            Assert.True(readBack, readError);
-            var attrs = readFilters["attributes"] as JArray;
-            Assert.Equal(2, attrs.Count);
+            Assert.True(valid, message);
+            Assert.Null(code);
+        }
+
+        [Theory]
+        [InlineData("Customer Name")]
+        [InlineData("1Customer")]
+        [InlineData("&&Customer")]
+        [InlineData("Customer.Name")]
+        [InlineData("")]
+        public void ValidateFilterRequest_InvalidIdentifier_IsRefused(string name)
+        {
+            bool valid = WorkWithSdkAdapter.ValidateFilterRequest(name, null, null, out var code, out _);
+
+            Assert.False(valid);
+            Assert.Equal("InvalidFilterAttributeName", code);
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        [InlineData(null)]
+        public void ValidateFilterRequest_EmptyCondition_IsRefused(string empty)
+        {
+            bool valid = WorkWithSdkAdapter.ValidateFilterRequest("CustomerName", new List<string> { "CustomerId = 1;", empty }, null, out var code, out var message);
+
+            Assert.False(valid);
+            Assert.Equal("FilterConditionEmpty", code);
+            Assert.Contains("conditions[1]", message);
         }
 
         [Fact]
-        public void TryAddFilterAttributeToXml_FilterNotPresent_ReturnsWorkWithFilterNotPresent()
+        public void ValidateFilterRequest_DuplicateConditionInRequest_IsRefused()
         {
-            bool success = WorkWithSdkAdapter.TryAddFilterAttributeToXml(
-                SampleWorkWithXml,
-                levelId: null,
-                attributeName: "CustomerStatus",
-                description: null,
-                domain: null,
-                conditions: null,
-                out string updatedXml,
-                out string errorCode,
-                out string errorMessage);
+            var conditions = new List<string> { "CustomerId = 1;", "CustomerId = 2;", "CustomerId = 1;" };
 
-            Assert.False(success);
-            Assert.Null(updatedXml);
-            Assert.Equal("WorkWithFilterNotPresent", errorCode);
+            bool valid = WorkWithSdkAdapter.ValidateFilterRequest("CustomerName", conditions, null, out var code, out var message);
+
+            Assert.False(valid);
+            Assert.Equal("FilterConditionDuplicate", code);
+            Assert.Contains("conditions[2]", message);
         }
 
         [Fact]
-        public void TryAddFilterAttributeToXml_LevelNotFound_ReturnsLevelNotFound()
+        public void ValidateFilterRequest_ConditionAlreadyPresentOnFilter_IsRefused()
         {
-            bool success = WorkWithSdkAdapter.TryAddFilterAttributeToXml(
-                SampleWorkWithXmlWithFilter,
-                levelId: "NonExistentLevel",
-                attributeName: "CustomerStatus",
-                description: null,
-                domain: null,
-                conditions: null,
-                out string updatedXml,
-                out string errorCode,
-                out string errorMessage);
+            var existing = new JArray("DocumentoId.IsEmpty() when &TemExistente = SimOuNao.Nao;");
 
-            Assert.False(success);
-            Assert.Null(updatedXml);
-            Assert.Equal("LevelNotFound", errorCode);
+            bool valid = WorkWithSdkAdapter.ValidateFilterRequest("Outro", new List<string> { "DocumentoId.IsEmpty() when &TemExistente = SimOuNao.Nao;" }, existing, out var code, out _);
+
+            Assert.False(valid);
+            Assert.Equal("FilterConditionDuplicate", code);
         }
 
         [Fact]
-        public void TryAddFilterAttributeToXml_AttributeAlreadyExists_ReturnsFilterAttributeAlreadyExists()
+        public void BuildFilterPlan_DoesNotInventDescriptionAndReportsNativeRoute()
         {
-            bool success = WorkWithSdkAdapter.TryAddFilterAttributeToXml(
-                SampleWorkWithXmlWithFilter,
-                levelId: "Root",
-                attributeName: "CustomerName",
-                description: null,
-                domain: null,
-                conditions: null,
-                out string updatedXml,
-                out string errorCode,
-                out string errorMessage);
+            var plan = WorkWithSdkAdapter.BuildFilterPlan("WorkWithWebCustomer", "Root", "CustomerName", description: null, domain: null, conditions: new List<string> { "CustomerName like &CustomerName;" });
 
-            Assert.False(success);
-            Assert.Null(updatedXml);
-            Assert.Equal("FilterAttributeAlreadyExists", errorCode);
+            Assert.Equal("native-sdk", plan["route"]?.ToString());
+            Assert.Equal("Root", plan["level"]?.ToString());
+            var filterAttribute = plan["filterAttribute"] as JObject;
+            Assert.Equal("CustomerName", filterAttribute["name"]?.ToString());
+            Assert.Null(filterAttribute["description"]);
+            Assert.Null(filterAttribute["domain"]);
+            Assert.Single(plan["conditions"] as JArray);
+            Assert.NotNull(plan["validations"]);
+            Assert.Contains("not compiled", plan["validationLimits"]?["conditionExpressions"]?.ToString());
+
+            var withDescription = WorkWithSdkAdapter.BuildFilterPlan("WorkWithWebCustomer", "Root", "CustomerName", "Customer Name", "CustomerNameDomain", null);
+            Assert.Equal("Customer Name", withDescription["filterAttribute"]?["description"]?.ToString());
+            Assert.Equal("CustomerNameDomain", withDescription["filterAttribute"]?["domain"]?.ToString());
+            Assert.Empty(withDescription["conditions"] as JArray);
         }
 
         [Fact]
-        public void WorkWithReceipt_DeclaresDerivedObjectRegenerationNotGuaranteed_AndNeverGeneratedObjectsRegenerated()
+        public void VerifyFilterAttributeMatches_ComparesSuppliedFieldsAndRequestedConditions()
         {
-            // Receipt contract guard: WorkWith filter authoring must declare
-            // derivedObjectRegeneration: "not_guaranteed" and must never re-introduce generatedObjectsRegenerated.
-            var receipt = new JObject
-            {
-                ["instance"] = "WorkWithCustomer",
-                ["applied"] = true,
-                ["derivedObjectRegeneration"] = "not_guaranteed"
-            };
+            var observed = new JObject { ["name"] = "customername", ["description"] = "Customer Name", ["domain"] = "CustomerNameDomain" };
+            var observedConditions = new JArray("Existing;", "CustomerName like &CustomerName;");
+            var requested = new List<string> { "CustomerName like &CustomerName;" };
 
+            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", "Customer Name", "customernamedomain", requested, out var detail), detail);
+            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", null, null, requested, out _));
+
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", "Other", null, requested, out detail));
+            Assert.Contains("Description mismatch", detail);
+
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", null, "Missing", requested, out detail));
+            Assert.Contains("Domain mismatch", detail);
+
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, new JArray("Existing;"), "CustomerName", null, null, requested, out detail));
+            Assert.Contains("was not found in the verified filter conditions", detail);
+
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(null, observedConditions, "CustomerName", null, null, requested, out detail));
+        }
+
+        [Fact]
+        public void BuildFilterReceipt_ReportsNativeRouteAndInMemoryRereadScope()
+        {
+            var observed = new JObject { ["name"] = "CustomerName", ["description"] = "Customer Name", ["domain"] = "" };
+            var observedConditions = new JArray("CustomerName like &CustomerName;");
+
+            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, observedConditions, "CustomerName", "Customer Name", null, new List<string> { "CustomerName like &CustomerName;" });
+
+            Assert.Equal("WorkWithWebCustomer", receipt["instance"]?.ToString());
+            Assert.Equal("Root", receipt["level"]?.ToString());
+            Assert.Equal("native-sdk", receipt["route"]?.ToString());
+            Assert.True(receipt["verified"]?.ToObject<bool>());
+            Assert.True(receipt["saved"]?.ToObject<bool>());
+            Assert.NotEmpty(receipt["verificationScope"]?.ToString());
+            Assert.Equal("in_memory_instance_reread", receipt["verification"]?["observedSource"]?.ToString());
+            Assert.Equal(new[] { "name", "description", "conditions" }, (receipt["verification"]?["fieldsCompared"] as JArray).Select(f => f.ToString()).ToArray());
+            Assert.Equal("Customer Name", receipt["filterAttribute"]?["description"]?.ToString());
+            Assert.Equal("CustomerName", receipt["requested"]?["name"]?.ToString());
             Assert.Equal("not_guaranteed", receipt["derivedObjectRegeneration"]?.ToString());
             Assert.Null(receipt["generatedObjectsRegenerated"]);
+            Assert.Null(receipt["applied"]);
+        }
+
+        [Fact]
+        public void TryAddFilterAttributeNative_WithoutNativeSdk_RefusesWorkWithSdkUnavailable()
+        {
+            WorkWithSdkAdapter.AssemblyResolverOverride = () => null;
+            try
+            {
+                bool added = WorkWithSdkAdapter.TryAddFilterAttributeNative(null, "Root", "CustomerName", null, null, new List<string> { "CustomerName like &CustomerName;" }, out var code, out var message);
+
+                Assert.False(added);
+                Assert.Equal("WorkWithSdkUnavailable", code);
+                Assert.Contains("no XML fallback", message);
+            }
+            finally
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+            }
+        }
+
+        [Fact]
+        public void AddFilterAttribute_HasNoXmlWriteFallbackSeam()
+        {
+            // The structural preflight refuses raw-XML filter authoring, so the typed
+            // route must not offer the same write through a WriteService fallback.
+            var add = typeof(WorkWithSdkAdapter).GetMethod("AddFilterAttribute", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            Assert.NotNull(add);
+            Assert.DoesNotContain(add.GetParameters(), p => p.ParameterType == typeof(WriteService));
+
+            var xmlWriter = typeof(WorkWithSdkAdapter).GetMethod("TryAddFilterAttributeToXml", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            Assert.Null(xmlWriter);
         }
     }
 }

@@ -41,15 +41,16 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void WorkWithFilterReceipt_DeclaresDerivedObjectRegenerationNotGuaranteed()
         {
-            var receipt = new JObject
-            {
-                ["instance"] = "WorkWithCustomer",
-                ["applied"] = true,
-                ["derivedObjectRegeneration"] = "not_guaranteed"
-            };
+            // The Worker is net48 and cannot be referenced from here, so this pins the
+            // production receipt builder's source; its behaviour is exercised by
+            // WorkWithServiceTests.BuildFilterReceipt_ReportsNativeRouteAndInMemoryRereadScope.
+            string adapter = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Compatibility", "WorkWithSdkAdapter.cs");
+            int builder = adapter.IndexOf("static JObject BuildFilterReceipt(", StringComparison.Ordinal);
+            Assert.True(builder >= 0, "the filter receipt builder must exist in WorkWithSdkAdapter");
 
-            Assert.Equal("not_guaranteed", receipt["derivedObjectRegeneration"]?.ToString());
-            Assert.Null(receipt["generatedObjectsRegenerated"]);
+            string body = adapter.Substring(builder);
+            Assert.Contains("[\"derivedObjectRegeneration\"] = \"not_guaranteed\"", body, StringComparison.Ordinal);
+            Assert.DoesNotContain("generatedObjectsRegenerated", adapter, StringComparison.Ordinal);
         }
     }
 }
