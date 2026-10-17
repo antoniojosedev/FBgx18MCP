@@ -1704,6 +1704,31 @@ Owner-reported implementation and native observations:
 - Registry: promoted `database_reorganization` and `module_namespaces` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
 - Milestone: **KB Storage & Namespaces (Row A4)** and **Database Reorganization (Row D3, H1)** promoted to Parity. Overall weighted SDK replacement advances from **55.4% to 58.9% (43/56 areas touched: 76.8%)**.
 
+## DataProvider Declarative Engine & Object Impact Analysis (2026-10-17)
+
+- Scope & Authorization: Declarative DataProvider specification/evaluation and catalog-wide object cross-reference & impact analysis (Rows B5, D4) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - DataProvider Declarative Engine (`src/gx-engine/src/dataprovider.rs`):
+    - Full grammar parser and AST: parses `parm(...)` interface rules, bracketed properties (`[Count = 10]`, `[Paging = 20]`), nested group hierarchies (`{ ... }`), and item assignments (`Field = expr`).
+    - Comment stripping: cleanly removes single-line (`//`) and block (`/* */`) comments while strictly preserving string literals containing semicolons, slashes, and escaped quotes.
+    - Runtime evaluation to JSON: evaluates DataProvider definitions against parameter values to produce clean JSON objects and arrays matching target SDT schemas.
+    - SDT Schema Validation: validates assigned fields against target SDT definitions in the catalog, failing closed on unknown attributes or fields.
+    - AST serialization and catalog integration under `ObjectKind::DataProvider`.
+  - Object Cross-Reference & Impact Analysis Engine (`src/gx-engine/src/impact.rs`):
+    - Multi-kind dependency tracking: records `CallsProcedure`, `UsesSdt`, `ReferencesAttribute`, `ReadsTable`, `UpdatesTable`, `InsertsTable`, `DeletesTable` edges.
+    - Catalog-wide indexing: crawls catalog procedures (calls, attribute reads, For Each table queries, DML table updates/inserts/deletes) and transactions (level attributes, base tables).
+    - Reverse dependency traversal: computes direct and transitive dependents/callers using cycle-safe BFS with a hard limit of 16 depth levels (`MAX_TRANSITIVE_DEPTH`).
+    - Attribute impact queries: case-insensitively locates all objects referencing a given attribute.
+    - Table impact queries: case-insensitively locates all objects reading or modifying a given physical table.
+    - Blast Radius & Risk Assessment: computes direct/transitive caller counts and downstream affected artifacts, assigning `RiskLevel` (`Low`, `Medium`, `High`, `Critical`).
+  - Integration Tests:
+    - `src/gx-engine/tests/data_provider.rs`: 10/10 tests passing (scalar assignments, nested groups, collections, parameter substitution, parm rules, comment preservation, SDT validation, fail-closed unknown fields, AST serialization, catalog integration).
+    - `src/gx-engine/tests/impact_analysis.rs`: 10/10 tests passing (direct procedure calls, transitive callers, cycle safety in recursion, attribute impact queries, table CRUD queries, mixed dependency kinds, catalog-wide indexing, blast radius risk calculation, depth 16 limit, JSON serialization).
+- Verification: 421 passed / 0 failed across all 42 test suites in `gx-engine` (401 existing + 20 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `dataprovider_specification` and `object_impact_analysis` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **DataProvider (Row B5)** and **Dependency Graph & Impact (Row D4)** promoted to Parity. Overall weighted SDK replacement advances from **58.9% to 62.5% (45/56 areas touched: 80.4%)**.
+
+
 
 
 

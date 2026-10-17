@@ -50,6 +50,7 @@ pub enum ObjectKind {
     Module,
     Procedure,
     StructuredDataType,
+    Table,
     Transaction,
     WebPanel,
 }

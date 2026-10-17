@@ -4,6 +4,7 @@
 pub mod backend;
 pub mod build;
 pub mod catalog;
+pub mod dataprovider;
 pub mod dataselector;
 pub mod date;
 pub mod datetime;
@@ -12,6 +13,7 @@ pub mod diagnostics;
 pub mod dml;
 pub mod exchange;
 pub mod frontend;
+pub mod impact;
 pub mod incremental;
 pub mod kb;
 pub mod model;

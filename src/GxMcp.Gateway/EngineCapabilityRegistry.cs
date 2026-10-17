@@ -349,6 +349,24 @@ namespace GxMcp.Gateway
                 notes: "Implements hierarchical Module trees up to depth 16 with cycle detection, parsing and serialization of QualifiedName (e.g. 'Sales.Invoicing.Invoice'), and GeneXus standard object resolution rules: local module precedence for bare names, unambiguous cross-module resolution, and fail-closed spc0006 diagnostics on ambiguous homonyms. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "dataprovider_specification",
+                title: "DataProvider declarative specification, parameter substitution, SDT schema validation, and JSON evaluation",
+                engineSurface: "dataprovider engine + group/property grammar parser + comment stripping + SDT schema validation + JSON evaluation",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/dataprovider.rs; src/gx-engine/tests/data_provider.rs (10/10 tests: scalar assignments, nested group hierarchy, collection group repetition, parameter substitution, parm rule parsing, comment preservation and string escaping, SDT schema validation success, fail-closed unknown SDT fields, JSON serialization, and catalog integration)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses GeneXus DataProvider grammar including parm(...) rules, bracketed properties [Count = N], nested groups, and item assignments. Evaluates DataProvider hierarchies to clean JSON matching target SDT schemas, and validates field conformity against catalog SDTs. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "object_impact_analysis",
+                title: "Object cross-reference indexing, call graph traversal, attribute/table impact analysis, and blast radius risk assessment",
+                engineSurface: "impact engine + cross-reference indexer + cycle-safe transitive traversal + attribute/table impact queries + blast radius calculator",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/impact.rs; src/gx-engine/tests/impact_analysis.rs (10/10 tests: direct procedure calls, transitive callers/dependents, cycle safety under mutual recursion, attribute impact queries, table CRUD impact queries, mixed dependency kinds, catalog-wide indexing, blast radius and risk assessment, max depth 16 enforcement, and JSON serialization)",
+                consumers: Array.Empty<string>(),
+                notes: "Indexes catalog-wide object relationships (CallsProcedure, UsesSdt, ReferencesAttribute, ReadsTable, UpdatesTable, InsertsTable, DeletesTable). Calculates cycle-safe transitive callers and dependents up to depth 16, pinpoints all objects affected by attribute or table schema alterations, and computes blast radius with risk classification. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "general_gx_surface",
                 title: "General GeneXus objects, Rules, Events and forms",
                 engineSurface: "none",
