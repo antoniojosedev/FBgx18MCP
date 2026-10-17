@@ -367,6 +367,24 @@ namespace GxMcp.Gateway
                 notes: "Indexes catalog-wide object relationships (CallsProcedure, UsesSdt, ReferencesAttribute, ReadsTable, UpdatesTable, InsertsTable, DeletesTable). Calculates cycle-safe transitive callers and dependents up to depth 16, pinpoints all objects affected by attribute or table schema alterations, and computes blast radius with risk classification. Zero external dependencies. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "guid_and_extended_math",
+                title: "GUID 128-bit RFC 4122 v4 type support, variable method dispatch, and mathematical utility operations",
+                engineSurface: "extended types engine + RFC 4122 v4 GUID parser/generator + empty sentinel + math ops (Mod, Pow, Sqrt, Abs, Random)",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/extended_types.rs; src/gx-engine/tests/extended_types.rs (10/10 tests: RFC 4122 v4 GUID generation and bit compliance, hyphenated/unhyphenated hex parsing, fail-closed invalid string parsing, empty state and set_empty, equality and hashing, JSON serialization, math modulo with zero handling, math power and square root with negative number rejection, absolute value and pseudo-random generation, and variable method dispatch simulation)",
+                consumers: Array.Empty<string>(),
+                notes: "Provides complete 128-bit GUID type semantics matching GeneXus Guid.NewGuid(), Guid.FromString(), .IsEmpty(), .SetEmpty(), and .ToString(). Includes standard mathematical functions (Mod, Pow, Sqrt, Abs, Random) matching GeneXus expressions and variable method calls. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "design_system_tokens_styles",
+                title: "Design System Object (DSO) tokens, style rules, inheritance, and CSS stylesheet rendering",
+                engineSurface: "design system engine + DSO grammar parser + token resolution with group/parent scope + clean CSS stylesheet renderer",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/design_system.rs; src/gx-engine/tests/design_system.rs (10/10 tests: token set and group parsing, style rules and declaration parsing, comment stripping with string literal preservation, token resolution and CSS rendering, fail-closed unresolved tokens, DSO @import and token inheritance, pseudo-classes and complex selectors, AST JSON serialization, font and media query tokens, and catalog integration)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses modern GeneXus Design System Objects (DSO) including tokens with groups (#colors, #spacing, #fonts), @import parent inheritance, and style rules with class selectors and pseudo-classes. Resolves tokens with scoped fallback and renders clean, valid CSS stylesheets, failing closed if any token reference is unresolvable. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "general_gx_surface",
                 title: "General GeneXus objects, Rules, Events and forms",
                 engineSurface: "none",

@@ -1728,6 +1728,29 @@ Owner-reported implementation and native observations:
 - Registry: promoted `dataprovider_specification` and `object_impact_analysis` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
 - Milestone: **DataProvider (Row B5)** and **Dependency Graph & Impact (Row D4)** promoted to Parity. Overall weighted SDK replacement advances from **58.9% to 62.5% (45/56 areas touched: 80.4%)**.
 
+## Extended Primitive Types (GUID & Math) & Design System Objects (2026-10-17)
+
+- Scope & Authorization: Extended primitive types (GUID, math operations) and Design System Object (DSO) styling/tokens engine (Rows B8, G9, J1) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Extended Primitive Types & Math Utilities (`src/gx-engine/src/extended_types.rs`):
+    - 128-bit RFC 4122 v4 `GuidValue`: case-insensitive parsing for 36-character hyphenated and 32-character unhyphenated hex representations.
+    - Standard GUID operations: `Guid.NewGuid()`, deterministic `Guid.new_v4(seed)`, `Guid.FromString(s)`, `.IsEmpty()`, `.SetEmpty()`, and lowercase 36-char `.ToString()`.
+    - Mathematical utility functions: `math_mod` (division remainder matching GeneXus `Mod(n1, n2)` and `&n1.Mod(&n2)` with fail-safe zero divisor handling and `-0.0` normalization), `math_pow` (`&base.Pow(&exp)`), `math_sqrt` (`&n.Sqrt()`, failing closed on negative numbers), `math_abs` (`&n.Abs()`), and `math_random` (pseudo-random float strictly in `[0.0, 1.0)`).
+    - Simulated method dispatch: `ExtendedVariable` matching GeneXus object method dispatch rules.
+  - Design System Object (DSO) Engine (`src/gx-engine/src/design_system.rs`):
+    - Full grammar parser and AST: parses `@import` / `styles(ParentDSO)`, `tokens [TokenSet] { #group { name: value; } }`, and CSS style rules (`.Class { property: $token; }`).
+    - Comment stripping: cleanly removes single-line (`//`) and block (`/* */`) comments while strictly preserving string literals.
+    - Scoped token resolution: resolves group-scoped (`$colors.primary`), flat (`$primary`), and parent-inherited tokens with cycle-safe fallback.
+    - CSS Stylesheet Renderer: substitutes all `$token` references into concrete values and emits clean, valid CSS stylesheets, failing closed if any token reference cannot be resolved.
+    - Admitted `ObjectKind::DesignSystem` in the portable KB catalog.
+  - Integration Tests:
+    - `src/gx-engine/tests/extended_types.rs`: 10/10 tests passing (v4 generation and RFC 4122 bit compliance, valid format parsing, invalid format fail-closed rejection, empty state and set_empty, equality and hashing, JSON serialization, math modulo, math power/sqrt, math abs/random, method dispatch).
+    - `src/gx-engine/tests/design_system.rs`: 10/10 tests passing (token parsing, style rule parsing, comment stripping, token resolution and CSS rendering, fail-closed unresolved tokens, DSO import and inheritance, pseudo-classes, AST serialization, font/media query tokens, catalog integration).
+- Verification: 441 passed / 0 failed across all 44 test suites in `gx-engine` (421 existing + 20 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `guid_and_extended_math` and `design_system_tokens_styles` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Extended Types (Row G9)** and **Design System Objects (Row B8, J1)** promoted to Parity. Overall weighted SDK replacement advances from **62.5% to 66.1% (47/56 areas touched: 83.9%)**.
+
+
 
 
 
