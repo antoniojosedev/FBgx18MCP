@@ -228,6 +228,10 @@ See [Human-in-the-loop elicitation](elicitation.md).
 
 Backfill progress is exposed under `index.sourceStore` (and lifecycle status) as stored/stale/total counts, cursor state and ETA. Each SDK slice is bounded to roughly 50 objects or 250 ms; the Worker never holds the STA while waiting for the next slice.
 
+`index.sourceStore.state` is one of `off` (not started; `triggerState` says `waitingForTrigger` or `disabledByConfig`), `queued`, `running`, `complete`, `completeWithFailures` (every readable object certified; the unreadable ones are listed), `error` (a slice failed and is retried with backoff, at most five times per transient window) or `paused` (stopped with a reason in `lastError`).
+
+An object whose SDK read fails on two consecutive attempts is recorded in `readFailedObjects` and the cursor advances past it. These per-object probes do not consume the five-retry transient budget, which is reserved for slice-level failures (SDK queue rejection, store write or certification). `failedObjects` is the total count; `readFailedObjects` lists at most 50 GUIDs (the read-diagnostic snapshot exposes the same pair as `failedCount`/`readFailedObjects`). Recorded failures survive Worker restarts and re-walks: the object is skipped without an SDK read until the catalogue signature changes (an object added, removed or renamed), which clears the list and retries every object. Both `complete` and `completeWithFailures` lift the in-memory FullSource promotion budget, because an object the backfill cannot read fails the same SDK read a source search would attempt.
+
 
 | Variable | Purpose | Default |
 |----------|---------|---------|

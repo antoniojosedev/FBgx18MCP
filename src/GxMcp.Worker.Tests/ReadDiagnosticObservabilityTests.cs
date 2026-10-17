@@ -47,6 +47,25 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void StateSnapshot_CapsReadFailedObjectsAndKeepsFailedCount()
+        {
+            int total = SourceStoreBackfillState.MaxReportedReadFailedObjects + 10;
+            var state = new SourceStoreBackfillState
+            {
+                State = "completeWithFailures",
+                ReadFailedObjects = Enumerable.Range(1, total).Select(i => Guid.NewGuid().ToString("D")).ToList()
+            };
+
+            var snapshot = ReadDiagnosticHelper.BuildSourceStoreSnapshot(state);
+
+            Assert.Equal("completeWithFailures", snapshot["state"]?.ToString());
+            Assert.Equal(total, snapshot["failedCount"]?.ToObject<int>());
+            Assert.Equal(
+                SourceStoreBackfillState.MaxReportedReadFailedObjects,
+                ((JArray)snapshot["readFailedObjects"]).Count);
+        }
+
+        [Fact]
         public void Sanitizer_EnforcesMessageAndStackTraceAndDepthBounds()
         {
             string longMessage = new string('A', 800);
