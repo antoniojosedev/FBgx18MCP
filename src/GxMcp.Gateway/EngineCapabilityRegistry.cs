@@ -331,6 +331,24 @@ namespace GxMcp.Gateway
                 notes: "Parses GeneXus DataSelector rules and conditions, validates parameter arity, performs parameter substitution into filter expressions, and composes DataSelector orders and where conditions seamlessly into For Each navigation query plans. Zero external dependencies. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "database_reorganization",
+                title: "Database reorganization schema diffing, physical alteration planning, and multi-dialect migration script generation",
+                engineSurface: "reorganization engine + schema diffing + column alteration mapping + index/FK lifecycle + data loss risk analysis",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/reorg.rs; src/gx-engine/tests/reorg_impact.rs (9/9 tests: table creation/drop diffing, column addition/drop/modification, nullability change detection, foreign key addition/removal, secondary index lifecycle, risk warnings on destructive operations, and multi-dialect migration scripts for ANSI, SQL Server, PostgreSQL, Oracle)",
+                consumers: Array.Empty<string>(),
+                notes: "Detects physical table and column differences between previous and current schema snapshots, plans minimal non-destructive changes, highlights potential data loss with risk warnings, and generates dialect-specific DDL scripts (ALTER TABLE ADD/DROP/MODIFY/ALTER COLUMN, CREATE/DROP TABLE, ADD/DROP CONSTRAINT, CREATE/DROP INDEX). Read-only migration plan generation with zero SQL execution against live databases. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "module_namespaces",
+                title: "Hierarchical module DAG, namespace encapsulation, and qualified object name resolution",
+                engineSurface: "module engine + qualified name parser + module hierarchy tree + local precedence resolution + spc0006 ambiguous homonym diagnostics",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/module.rs; src/gx-engine/tests/module_resolution.rs (10/10 tests: qualified name parsing and validation, module hierarchy DAG, parent-child resolution, cycle detection, depth limit guards, local module precedence for unqualified references, root module resolution, spc0006 ambiguous object reference diagnostics across distinct modules, JSON serialization, and catalog integration)",
+                consumers: Array.Empty<string>(),
+                notes: "Implements hierarchical Module trees up to depth 16 with cycle detection, parsing and serialization of QualifiedName (e.g. 'Sales.Invoicing.Invoice'), and GeneXus standard object resolution rules: local module precedence for bare names, unambiguous cross-module resolution, and fail-closed spc0006 diagnostics on ambiguous homonyms. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "general_gx_surface",
                 title: "General GeneXus objects, Rules, Events and forms",
                 engineSurface: "none",

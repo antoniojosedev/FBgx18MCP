@@ -1678,6 +1678,33 @@ Owner-reported implementation and native observations:
 - Registry: promoted `dml_navigation` and `dataselector_composition` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
 - Milestone: **Specifier & SQL Navigation** subsystem reaches **100% parity (8/8 areas: C1, C2, D1, D2, D3, D4, H1, H2)**. Overall weighted SDK replacement advances from **51.8% to 55.4% (41/56 areas touched: 73.2%)**.
 
+## Database Reorganization & Hierarchical Module Namespaces (2026-10-17)
+
+- Scope & Authorization: Schema reorganization impact analysis, alteration planning, and hierarchical module name resolution (Rows A4, D3, H1) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Database Reorganization & Schema Diffing (`src/gx-engine/src/reorg.rs`):
+    - Multi-table schema diffing engine: compares previous and current schema definitions to detect added, dropped, altered, or unchanged tables.
+    - Column alteration detection: tracks column additions, removals, data type changes, and nullability modifications (`is_nullable` toggles).
+    - Index & Foreign Key lifecycle: identifies added and dropped secondary indexes and foreign key constraints.
+    - Multi-dialect DDL migration scripts: generates dialect-accurate `ALTER TABLE ... ADD/DROP/MODIFY/ALTER COLUMN`, `CREATE/DROP TABLE`, `ADD/DROP CONSTRAINT`, and `CREATE/DROP INDEX` scripts across ANSI, SQL Server, PostgreSQL, and Oracle dialects.
+    - Data Loss Risk Warnings: detects destructive operations (dropped tables, dropped columns) and generates explicit warning diagnostics.
+    - Read-only migration plan generation with zero SQL execution against live databases.
+  - Hierarchical Modules & Qualified Name Resolution (`src/gx-engine/src/module.rs`):
+    - `QualifiedName` parser and validator: parses hierarchical dot-separated identifiers (e.g. `Sales.Invoicing.Invoice` or bare `Customer`), validates character constraints, and provides display formatting and root detection.
+    - Module hierarchy DAG (`ModuleTree`): manages parent-child module relationships, supports automatic parent hierarchy creation, enforces maximum depth 16 limit, and detects cycle anomalies.
+    - Name resolution engine (`resolve_object_name`): implements GeneXus standard resolution precedence:
+      1. Local module precedence: unqualified identifiers match objects belonging to the current module first.
+      2. Exact qualified name match: explicitly qualified identifiers match the corresponding module namespace.
+      3. Global fallback: unambiguous identifiers across all modules resolve cleanly.
+      4. Fail-closed `spc0006` diagnostics: ambiguous references matching multiple homonyms across distinct modules fail closed with an explicit diagnostic naming all candidate qualified names.
+  - Integration Tests:
+    - `src/gx-engine/tests/reorg_impact.rs`: 9/9 tests passing (table creation/drop, column add/drop/modify, nullability, foreign keys, secondary indexes, data loss warnings, multi-dialect DDL scripts).
+    - `src/gx-engine/tests/module_resolution.rs`: 10/10 tests passing (qualified name parsing, module tree hierarchy, cycle detection, depth limit, local module precedence, cross-module resolution, spc0006 ambiguous homonyms, serialization).
+- Verification: 401 passed / 0 failed across all 40 test suites in `gx-engine` (382 existing + 19 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `database_reorganization` and `module_namespaces` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **KB Storage & Namespaces (Row A4)** and **Database Reorganization (Row D3, H1)** promoted to Parity. Overall weighted SDK replacement advances from **55.4% to 58.9% (43/56 areas touched: 76.8%)**.
+
+
 
 
 
