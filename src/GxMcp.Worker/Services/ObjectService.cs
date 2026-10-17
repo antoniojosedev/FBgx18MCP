@@ -518,19 +518,20 @@ namespace GxMcp.Worker.Services
 
                     if (type.Equals("Attribute", StringComparison.OrdinalIgnoreCase))
                     {
-                        string rawType = options?["dataType"]?.ToString() ?? options?["type"]?.ToString();
-                        var spec = AttributeTypeApplier.Parse(rawType);
-                        if (spec.Recognized && !string.Equals(spec.CanonicalType, "DomainReference", StringComparison.OrdinalIgnoreCase))
+                        // Issue #541: the preview shows exactly the dataType/length/decimals/
+                        // basedOn the write path will apply. options["type"] is the object
+                        // type and is never read as a data type, and a request the write
+                        // path would refuse is refused here with the same code.
+                        var attrPlan = AttributeCreatePlan.FromOptions(options);
+                        if (attrPlan.Error != null)
                         {
-                            planned["dataType"] = spec.CanonicalType;
-                            planned["length"] = options?["length"]?.ToObject<int?>() ?? spec.Length;
-                            planned["decimals"] = options?["decimals"]?.ToObject<int?>() ?? spec.Decimals;
+                            return McpResponse.Err(code: AttributeCreatePlan.NotAppliedCode, message: attrPlan.Error, target: name,
+                                hint: "Nothing was saved. Supported dataType: " + AttributeCreatePlan.SupportedDataTypes + ", optionally with length/decimals, or basedOn=<existing Domain>.",
+                                errorExtra: new JObject { ["attribute"] = new JObject { ["requested"] = attrPlan.ToJson() } });
                         }
-                        else if (!string.IsNullOrWhiteSpace(rawType))
+                        if (attrPlan.Requested)
                         {
-                            planned["dataType"] = rawType;
-                            if (options?["length"] != null) planned["length"] = options["length"].ToObject<int?>();
-                            if (options?["decimals"] != null) planned["decimals"] = options["decimals"].ToObject<int?>();
+                            foreach (var prop in attrPlan.ToJson().Properties()) planned[prop.Name] = prop.Value;
                         }
                     }
 
@@ -538,7 +539,7 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Ok(target: name, code: "DryRun", result: planned);
                 }
 
-                KBObject newObj = CreateObjectInstance(type, name, options, out string seededDescription, out JObject domainMeta);
+                KBObject newObj = CreateObjectInstance(type, name, options, out string seededDescription, out JObject typedMeta);
 
                 newObj.Save();
 
@@ -552,6 +553,22 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex) { Logger.Error("CreateObject: index UpdateEntry failed for " + name + ": " + ex.Message); }
 
                 Logger.Info(string.Format("Object created successfully in {0}ms", sw.ElapsedMilliseconds));
+
+                // Issue #541: prove the Save kept the requested Attribute metadata by re-reading
+                // the object through a fresh SDK instance. A KB that holds the default instead
+                // cannot be repaired through the MCP (#179), so that is reported as an error
+                // with the object's identity rather than as ObjectCreated.
+                if (typedMeta?["attribute"] is JObject attrMeta)
+                {
+                    string notPersisted = VerifyAttributeMetadataPersisted(newObj, AttributeCreatePlan.FromOptions(options), attrMeta);
+                    if (notPersisted != null)
+                    {
+                        return McpResponse.Err(code: "CreateMetadataNotPersisted", message: notPersisted, target: name,
+                            hint: "The Attribute exists with metadata that differs from the request and its Type cannot be changed through the MCP. Delete it with genexus_delete_object and recreate it, or fix the Type in the GeneXus IDE.",
+                            errorExtra: new JObject { ["attribute"] = attrMeta },
+                            extra: new JObject { ["type"] = type, ["name"] = name, ["persisted"] = true });
+                    }
+                }
 
                 // Honor a requested folder/module placement by moving the just-created
                 // object. If the move fails the object still exists in Root Module, so we
@@ -585,9 +602,9 @@ namespace GxMcp.Worker.Services
                 };
                 if (placementMeta != null) responsePayload["placement"] = placementMeta;
                 JObject metaObj = null;
-                if (domainMeta != null)
+                if (typedMeta != null)
                 {
-                    metaObj = domainMeta;
+                    metaObj = typedMeta;
                 }
                 if (!string.IsNullOrEmpty(seededDescription))
                 {
@@ -645,6 +662,16 @@ namespace GxMcp.Worker.Services
                 if (metaObj != null) responsePayload["_meta"] = metaObj;
                 return McpResponse.Ok(target: name, code: "ObjectCreated", result: responsePayload);
             }
+            catch (AttributeCreateMetadataException ex)
+            {
+                // Issue #541 fail-closed: raised by CreateObjectInstance before Save(), so the
+                // KB is untouched and the caller gets the exact field that did not apply.
+                Logger.Error("CreateObject refused for " + name + ": " + ex.Message);
+                return McpResponse.Err(code: ex.Code, message: ex.Message, target: name,
+                    hint: "Nothing was saved. Supported dataType: " + AttributeCreatePlan.SupportedDataTypes + ", optionally with length/decimals, or basedOn=<existing Domain>.",
+                    errorExtra: new JObject { ["attribute"] = ex.Details },
+                    extra: new JObject { ["persisted"] = false });
+            }
             catch (Exception ex)
             {
                 Logger.Error("CreateObject failed: " + ex.Message);
@@ -652,10 +679,92 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public KBObject CreateObjectInstance(string type, string name, JObject options, out string seededDescription, out JObject domainMeta)
+        /// <summary>
+        /// Issue #541: re-reads a just-saved Attribute through a fresh SDK instance and records
+        /// <c>persisted</c>/<c>persistedVerified</c> on <paramref name="attrMeta"/>. Returns a
+        /// message when the re-read shows metadata that differs from <paramref name="plan"/>;
+        /// null when it matches or when no fresh instance was obtainable (then
+        /// <c>persistedVerified</c> is null and <c>verification</c> says why — unverified is
+        /// never reported as verified).
+        /// </summary>
+        private string VerifyAttributeMetadataPersisted(KBObject saved, AttributeCreatePlan plan, JObject attrMeta)
+        {
+            KBObject fresh = null;
+            try { fresh = FindObjectFreshByIdentity(saved); }
+            catch (Exception ex) { Logger.Warn("CreateObject: fresh re-read of Attribute '" + saved?.Name + "' failed: " + ex.Message); }
+            if (fresh == null)
+            {
+                attrMeta["persistedVerified"] = JValue.CreateNull();
+                attrMeta["verification"] = "unavailable: " + (_lastResolutionDiagnostic?["message"]?.ToString() ?? "no fresh SDK instance was returned after Save");
+                return null;
+            }
+
+            var persisted = AttributeCreatePlan.ReadApplied(fresh);
+            var mismatches = plan.Mismatches(persisted);
+            attrMeta["persisted"] = persisted;
+            attrMeta["persistedVerified"] = mismatches.Count == 0;
+            if (mismatches.Count == 0) return null;
+            return "Attribute '" + saved.Name + "' was saved, but the post-save re-read shows different metadata: " + string.Join("; ", mismatches) + ".";
+        }
+
+        /// <summary>
+        /// Issue #541 fail-closed: applies an <see cref="AttributeCreatePlan"/> to a new
+        /// Attribute and throws <see cref="AttributeCreateMetadataException"/> when any
+        /// requested field did not land in memory, so the caller never reaches Save() with
+        /// the SDK default (NUMERIC(4)) — an Attribute's Type is not editable through the MCP
+        /// afterwards (#179). <paramref name="resolveDomain"/> is the only SDK touch point,
+        /// which keeps every refusal path testable with fakes.
+        /// </summary>
+        /// <returns>
+        /// <c>{requested, applied}</c> for the response's <c>_meta.attribute</c>, or null when
+        /// the plan requested nothing.
+        /// </returns>
+        internal static JObject ApplyAttributeCreatePlan(object attrObj, AttributeCreatePlan plan, Func<string, object> resolveDomain)
+        {
+            if (plan == null || !plan.Requested) return null;
+            if (plan.Error != null)
+                throw new AttributeCreateMetadataException(AttributeCreatePlan.NotAppliedCode, plan.Error, AttributeCreateDetails(plan, null));
+
+            if (plan.IsDomain)
+            {
+                object domainObj = null;
+                try { domainObj = resolveDomain?.Invoke(plan.DomainName); }
+                catch (Exception ex) { Logger.Error("CreateObject: Domain lookup for '" + plan.DomainName + "' failed: " + ex.Message); }
+                if (domainObj == null)
+                    throw new AttributeCreateMetadataException(AttributeCreatePlan.DomainNotFoundCode,
+                        "Domain '" + plan.DomainName + "' not found in KB; the Attribute was not created.", AttributeCreateDetails(plan, null));
+                if (!DomainPropertyApplier.ApplyDomainBasedOn(attrObj, domainObj))
+                    throw new AttributeCreateMetadataException(AttributeCreatePlan.NotAppliedCode,
+                        "DomainBasedOn='" + plan.DomainName + "' could not be applied to the new Attribute; nothing was saved.", AttributeCreateDetails(plan, null));
+            }
+            else if (!AttributeTypeApplier.ApplyPrimitive(attrObj, plan.CanonicalType, plan.Length, plan.Decimals))
+            {
+                throw new AttributeCreateMetadataException(AttributeCreatePlan.NotAppliedCode,
+                    "The SDK exposed no writable Type/Length/Decimals surface for dataType='" + plan.DataType + "'; nothing was saved.", AttributeCreateDetails(plan, null));
+            }
+
+            // The setters returned, but the SDK may keep its own value: compare the read-back
+            // with the plan before the caller saves anything.
+            var applied = AttributeCreatePlan.ReadApplied(attrObj);
+            var mismatches = plan.Mismatches(applied);
+            if (mismatches.Count > 0)
+                throw new AttributeCreateMetadataException(AttributeCreatePlan.NotAppliedCode,
+                    "The requested Attribute metadata did not apply (" + string.Join("; ", mismatches) + "); nothing was saved.", AttributeCreateDetails(plan, applied));
+
+            return AttributeCreateDetails(plan, applied);
+        }
+
+        private static JObject AttributeCreateDetails(AttributeCreatePlan plan, JObject applied)
+        {
+            var details = new JObject { ["requested"] = plan.ToJson() };
+            if (applied != null) details["applied"] = applied;
+            return details;
+        }
+
+        public KBObject CreateObjectInstance(string type, string name, JObject options, out string seededDescription, out JObject typedMeta)
         {
             seededDescription = null;
-            domainMeta = null;
+            typedMeta = null;
 
             var kb = _kbService.GetKB();
             if (kb == null) throw new Exception("KB not opened");
@@ -715,51 +824,15 @@ namespace GxMcp.Worker.Services
             }
             else if (newObj is Artech.Genexus.Common.Objects.Attribute attrObj)
             {
-                string basedOn = options?["basedOn"]?.ToString();
-                string dataType = options?["dataType"]?.ToString() ?? options?["type"]?.ToString();
-                int? length = options?["length"]?.ToObject<int?>();
-                int? decimals = options?["decimals"]?.ToObject<int?>();
-                bool? signed = options?["signed"]?.ToObject<bool?>();
-
-                if (!string.IsNullOrWhiteSpace(basedOn))
-                {
-                    try
-                    {
-                        var domainObj = kb.DesignModel.Objects.GetByName(null, null, basedOn)
-                            ?.OfType<Artech.Genexus.Common.Objects.Domain>()
-                            .FirstOrDefault();
-                        if (domainObj != null)
-                        {
-                            DomainPropertyApplier.ApplyDomainBasedOn(attrObj, domainObj);
-                        }
-                    }
-                    catch { }
-                }
-                else if (!string.IsNullOrWhiteSpace(dataType))
-                {
-                    var spec = AttributeTypeApplier.Parse(dataType);
-                    if (spec.Recognized)
-                    {
-                        if (string.Equals(spec.CanonicalType, "DomainReference", StringComparison.OrdinalIgnoreCase))
-                        {
-                            try
-                            {
-                                var domainObj = kb.DesignModel.Objects.GetByName(null, null, spec.DomainName)
-                                    ?.OfType<Artech.Genexus.Common.Objects.Domain>()
-                                    .FirstOrDefault();
-                                if (domainObj != null)
-                                {
-                                    DomainPropertyApplier.ApplyDomainBasedOn(attrObj, domainObj);
-                                }
-                            }
-                            catch { }
-                        }
-                        else
-                        {
-                            AttributeTypeApplier.ApplyPrimitive(attrObj, spec.CanonicalType, length ?? spec.Length, decimals ?? spec.Decimals);
-                        }
-                    }
-                }
+                // Issue #541: only an explicit dataType/length/decimals/basedOn is applied
+                // (options["type"] is the object type). A requested field that does not land
+                // throws before the caller's Save() instead of persisting NUMERIC(4).
+                var attrPlan = AttributeCreatePlan.FromOptions(options);
+                JObject attrMeta = ApplyAttributeCreatePlan(attrObj, attrPlan, domainName =>
+                    kb.DesignModel.Objects.GetByName(null, null, domainName)
+                        ?.OfType<Artech.Genexus.Common.Objects.Domain>()
+                        .FirstOrDefault());
+                if (attrMeta != null) typedMeta = new JObject { ["attribute"] = attrMeta };
             }
             else if (newObj is Artech.Genexus.Common.Objects.Transaction newTrn)
             {
@@ -769,7 +842,7 @@ namespace GxMcp.Worker.Services
             }
             else if (type.Equals("Domain", StringComparison.OrdinalIgnoreCase))
             {
-                domainMeta = InitializeDomain(newObj, name, options, kb);
+                typedMeta = InitializeDomain(newObj, name, options, kb);
             }
 
             NormalizeIntegratedSecurityLevel(newObj);
@@ -2103,22 +2176,7 @@ namespace GxMcp.Worker.Services
                     foreach (dynamic existing in items) { return seededTypeName; }
                 } catch { }
 
-                // Resolve the requested item type to its canonical eDBType name (VarChar→VARCHAR,
-                // Character→CHARACTER, Numeric→NUMERIC, ...). Falls back to VARCHAR when unknown.
-                string wantedEnumName = "VARCHAR";
-                int? parsedLen = null;
-                int? parsedDec = null;
-                var parsedSpec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(itemTypeName);
-                if (parsedSpec.Recognized && GxMcp.Worker.Helpers.AttributeTypeApplier.CanonicalToEdb.TryGetValue(parsedSpec.CanonicalType, out var mappedEdb))
-                {
-                    wantedEnumName = mappedEdb;
-                    parsedLen = parsedSpec.Length;
-                    parsedDec = parsedSpec.Decimals;
-                }
-                else if (GxMcp.Worker.Helpers.VariableInjector.TryParseDbType(itemTypeName, out var wantedDbType))
-                {
-                    wantedEnumName = wantedDbType.ToString();
-                }
+                string wantedEnumName = ResolveSeedItemType(itemTypeName, out int? parsedLen, out int? parsedDec);
 
                 Type rootType = ((object)root).GetType();
                 var asm = rootType.Assembly;
@@ -2139,14 +2197,7 @@ namespace GxMcp.Worker.Services
                             object added = addItem.Invoke(root, new object[] { itemName, typeVal });
                             if (added != null)
                             {
-                                if (parsedLen.HasValue)
-                                {
-                                    try { var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(added.GetType(), "Length"); p?.SetValue(added, parsedLen.Value, null); } catch { }
-                                }
-                                if (parsedDec.HasValue)
-                                {
-                                    try { var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(added.GetType(), "Decimals"); p?.SetValue(added, parsedDec.Value, null); } catch { }
-                                }
+                                ApplySeedItemSize(added, parsedLen, parsedDec, out int? appliedLen, out int? appliedDec);
                                 Logger.Info("InitializeSDTWithDefaultItem: seeded '" + itemName + "' (" + wantedEnumName + ") into " + sdtName + " via AddItem(string, eDBType)");
                                 // Friction-report 05-13 #2 (the exact trap SdtDslParser documents):
                                 // AddItem mutates the in-memory Items collection, but the
@@ -2156,9 +2207,7 @@ namespace GxMcp.Worker.Services
                                 // report). Force the part dirty exactly like the SDT write path
                                 // (SDTService.UpdateSDTStructure) does before returning.
                                 GxMcp.Worker.Parsers.SdtDslParser.MarkPartDirty((object)structure, sdtName);
-                                string returnType = wantedEnumName;
-                                if (parsedLen.HasValue) returnType += "(" + parsedLen.Value + (parsedDec.HasValue ? "," + parsedDec.Value : "") + ")";
-                                return returnType;
+                                return DescribeSeedItemType(wantedEnumName, appliedLen, appliedDec);
                             }
                         }
                         catch (Exception ex)
@@ -2237,17 +2286,9 @@ namespace GxMcp.Worker.Services
                 {
                     if (eDBTypeT != null) newItem.Type = Enum.Parse(eDBTypeT, wantedEnumName);
                 } catch { }
-                if (parsedLen.HasValue)
-                {
-                    try { var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(newItem.GetType(), "Length"); p?.SetValue(newItem, parsedLen.Value, null); } catch { }
-                }
-                if (parsedDec.HasValue)
-                {
-                    try { var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(newItem.GetType(), "Decimals"); p?.SetValue(newItem, parsedDec.Value, null); } catch { }
-                }
+                ApplySeedItemSize((object)newItem, parsedLen, parsedDec, out int? fallbackLen, out int? fallbackDec);
                 items.Add(newItem);
-                seededTypeName = wantedEnumName;
-                if (parsedLen.HasValue) seededTypeName += "(" + parsedLen.Value + (parsedDec.HasValue ? "," + parsedDec.Value : "") + ")";
+                seededTypeName = DescribeSeedItemType(wantedEnumName, fallbackLen, fallbackDec);
                 // Friction-report 05-13 #2: mark the part dirty here too so the fallback
                 // path persists the item on the next obj.Save() (see AddItem path above).
                 GxMcp.Worker.Parsers.SdtDslParser.MarkPartDirty((object)structure, sdtName);
@@ -2258,6 +2299,72 @@ namespace GxMcp.Worker.Services
                 Logger.Error("InitializeSDTWithDefaultItem failed: " + ex.Message);
             }
             return seededTypeName;
+        }
+
+        /// <summary>
+        /// Resolves the requested SDT seed item type to the eDBType member name the SDK's
+        /// <c>AddItem(string, eDBType)</c> takes (VarChar→VARCHAR, Numeric→NUMERIC, Blob→BINARY)
+        /// plus any inline size ("Numeric(7)" → 7, null). Pure, so the seeded description
+        /// and the executor cannot drift (issue #541). Unknown input falls back to VARCHAR.
+        /// </summary>
+        internal static string ResolveSeedItemType(string itemTypeName, out int? length, out int? decimals)
+        {
+            length = null;
+            decimals = null;
+            var parsedSpec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(itemTypeName);
+            if (parsedSpec.Recognized && GxMcp.Worker.Helpers.AttributeTypeApplier.CanonicalToEdb.TryGetValue(parsedSpec.CanonicalType, out var mappedEdb))
+            {
+                length = parsedSpec.Length;
+                decimals = parsedSpec.Decimals;
+                return mappedEdb;
+            }
+            if (GxMcp.Worker.Helpers.VariableInjector.TryParseDbType(itemTypeName, out var wantedDbType))
+                return wantedDbType.ToString();
+            return "VARCHAR";
+        }
+
+        /// <summary>
+        /// Writes the inline Length/Decimals onto the seeded SDTItem and reads them back, so
+        /// <c>_meta.seeded</c> only claims the size the SDK actually kept (issue #541): a
+        /// setter that is absent, throws or keeps another value yields that value (or none),
+        /// never the requested one. An SDT member stays repairable via update_visual, so a
+        /// dropped size is reported rather than refused.
+        /// </summary>
+        internal static void ApplySeedItemSize(object item, int? length, int? decimals, out int? appliedLength, out int? appliedDecimals)
+        {
+            appliedLength = ApplySeedItemSizeProperty(item, "Length", length);
+            appliedDecimals = ApplySeedItemSizeProperty(item, "Decimals", decimals);
+        }
+
+        private static int? ApplySeedItemSizeProperty(object item, string propertyName, int? wanted)
+        {
+            if (item == null || !wanted.HasValue) return null;
+            try
+            {
+                var p = GxMcp.Worker.Helpers.AttributeTypeApplier.GetPropertyUnambiguous(item.GetType(), propertyName);
+                if (p == null || !p.CanWrite || !p.CanRead)
+                {
+                    Logger.Warn("InitializeSDTWithDefaultItem: SDTItem exposes no writable " + propertyName + "; requested " + wanted.Value + " was not applied.");
+                    return null;
+                }
+                p.SetValue(item, wanted.Value, null);
+                int got = Convert.ToInt32(p.GetValue(item, null));
+                if (got != wanted.Value)
+                    Logger.Warn("InitializeSDTWithDefaultItem: " + propertyName + " requested " + wanted.Value + " but the SDK kept " + got + ".");
+                return got;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("InitializeSDTWithDefaultItem: setting " + propertyName + "=" + wanted.Value + " failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>"NUMERIC(7)" / "NUMERIC(12,2)" / "VARCHAR" from the eDBType name and the applied size.</summary>
+        internal static string DescribeSeedItemType(string edbName, int? length, int? decimals)
+        {
+            if (!length.HasValue) return edbName;
+            return edbName + "(" + length.Value + (decimals.HasValue ? "," + decimals.Value : "") + ")";
         }
 
         private static readonly ConcurrentDictionary<string, Guid> _typeGuidCache =

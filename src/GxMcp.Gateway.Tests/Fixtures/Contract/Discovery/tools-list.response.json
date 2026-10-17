@@ -644,7 +644,7 @@
             "type": "string"
           },
           "basedOn": {
-            "description": "object Domain.",
+            "description": "object Domain/Attribute: existing…",
             "type": "string"
           },
           "content": {
@@ -656,11 +656,11 @@
             "type": "string"
           },
           "dataType": {
-            "description": "object Domain.",
+            "description": "object Domain/Attribute: primitive…",
             "type": "string"
           },
           "decimals": {
-            "description": "object Domain.",
+            "description": "object Domain/Attribute.",
             "type": "integer"
           },
           "description": {
@@ -703,7 +703,7 @@
             "type": "string"
           },
           "length": {
-            "description": "object Domain.",
+            "description": "object Domain/Attribute.",
             "type": "integer"
           },
           "mode": {

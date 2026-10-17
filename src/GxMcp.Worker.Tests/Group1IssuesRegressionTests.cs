@@ -25,18 +25,8 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("Test Procedure Description", spec.Description);
         }
 
-        [Fact]
-        public void Issue541_AttributeTypeApplier_ParsesLengthAndDecimals()
-        {
-            var spec = AttributeTypeApplier.Parse("Numeric(12,2)");
-            Assert.Equal("Numeric", spec.CanonicalType);
-            Assert.Equal(12, spec.Length);
-            Assert.Equal(2, spec.Decimals);
-
-            var specVarChar = AttributeTypeApplier.Parse("VarChar(120)");
-            Assert.Equal("VarChar", specVarChar.CanonicalType);
-            Assert.Equal(120, specVarChar.Length);
-        }
+        // Issue #541 Attribute plan / SDT seed / fail-closed guards live in
+        // Issue541CreateMetadataTests; the parser itself is covered by AttributeTypeApplierTests.
 
         [Fact]
         public void Issue542_MatchesPlan_ReturnsDetailedMismatchWhenFieldsDiffer()
