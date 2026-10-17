@@ -2,6 +2,56 @@
 
 use crate::model::{DataType, ParamMode};
 
+/// Standard imports matching official GeneXus IDE generated code.
+pub const STANDARD_IMPORTS: &[&str] = &[
+    "System",
+    "System.Collections",
+    "GeneXus.Utils",
+    "GeneXus.Resources",
+    "GeneXus.Application",
+    "GeneXus.Metadata",
+    "GeneXus.Cryptography",
+    "com.genexus",
+    "GeneXus.Data.ADO",
+    "GeneXus.Data.NTier",
+    "GeneXus.Data.NTier.ADO",
+    "GeneXus.WebControls",
+    "GeneXus.Http",
+    "GeneXus.Procedure",
+    "GeneXus.XML",
+    "GeneXus.Search",
+    "GeneXus.Encryption",
+    "GeneXus.Http.Client",
+    "System.Threading",
+    "System.Xml.Serialization",
+    "System.Runtime.Serialization",
+];
+
+/// Extended standard imports for Transaction and WebPanel C# classes.
+pub const EXTENDED_DATA_IMPORTS: &[&str] = &[
+    "System",
+    "System.Collections",
+    "GeneXus.Utils",
+    "GeneXus.Resources",
+    "GeneXus.Application",
+    "GeneXus.Metadata",
+    "GeneXus.Cryptography",
+    "System.Data",
+    "GeneXus.Data",
+    "com.genexus",
+    "GeneXus.Data.ADO",
+    "GeneXus.Data.NTier",
+    "GeneXus.Data.NTier.ADO",
+    "GeneXus.WebControls",
+    "GeneXus.Http",
+    "GeneXus.XML",
+    "GeneXus.Search",
+    "GeneXus.Encryption",
+    "GeneXus.Http.Client",
+    "System.Xml.Serialization",
+    "System.Runtime.Serialization",
+];
+
 /// Converts a GeneXus `DataType` to its corresponding C# type name.
 pub fn to_csharp_type(data_type: &DataType) -> String {
     match data_type {

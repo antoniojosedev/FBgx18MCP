@@ -17,29 +17,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 /// Extended imports for WebPanel C# classes.
-pub const WEBPANEL_IMPORTS: &[&str] = &[
-    "System",
-    "System.Collections",
-    "GeneXus.Utils",
-    "GeneXus.Resources",
-    "GeneXus.Application",
-    "GeneXus.Metadata",
-    "GeneXus.Cryptography",
-    "System.Data",
-    "GeneXus.Data",
-    "com.genexus",
-    "GeneXus.Data.ADO",
-    "GeneXus.Data.NTier",
-    "GeneXus.Data.NTier.ADO",
-    "GeneXus.WebControls",
-    "GeneXus.Http",
-    "GeneXus.XML",
-    "GeneXus.Search",
-    "GeneXus.Encryption",
-    "GeneXus.Http.Client",
-    "System.Xml.Serialization",
-    "System.Runtime.Serialization",
-];
+pub use crate::csharp::types::EXTENDED_DATA_IMPORTS as WEBPANEL_IMPORTS;
 
 /// Flattens a hierarchy of layout controls into a flat list.
 fn collect_all_controls<'a>(controls: &'a [LayoutControl], out: &mut Vec<&'a LayoutControl>) {
@@ -313,23 +291,13 @@ impl WebPanelClass {
         Ok(Self::from_webpanel(&wp))
     }
 
-    /// Emits complete C# source code (.cs) for this WebPanel.
-    pub fn emit(&self) -> String {
-        let mut out = String::new();
-
-        // 1. Standard imports
+    fn emit_usings(&self, out: &mut String) {
         for imp in WEBPANEL_IMPORTS {
             let _ = writeln!(out, "using {imp};");
         }
+    }
 
-        // 2. Namespace
-        let _ = writeln!(out, "namespace {} {{", self.namespace);
-
-        // 3. Class declaration
-        let _ = writeln!(out, "   public class {} : {}", self.name, self.base_class);
-        let _ = writeln!(out, "   {{");
-
-        // 4. Constructors
+    fn emit_constructors(&self, out: &mut String) {
         let _ = writeln!(out, "      public {}( )", self.name);
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         context = new GxContext(  );");
@@ -346,8 +314,9 @@ impl WebPanelClass {
         let _ = writeln!(out, "         IsMain = false;");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 5. execute method
+    fn emit_execute_method(&self, out: &mut String) {
         let param_signatures = if self.params.is_empty() {
             String::new()
         } else {
@@ -384,8 +353,9 @@ impl WebPanelClass {
         }
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 6. ExecutePrivate and webExecute
+    fn emit_execution_lifecycle(&self, out: &mut String) {
         let _ = writeln!(out, "      protected override void ExecutePrivate( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         isStatic = false;");
@@ -406,13 +376,22 @@ impl WebPanelClass {
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
 
-        // 7. createObjects
-        let mut flat_controls = Vec::new();
-        collect_all_controls(&self.controls, &mut flat_controls);
+        let _ = writeln!(out, "      protected void INITWEB( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         initialize_properties();");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
 
+        let _ = writeln!(out, "      protected void PA( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+    }
+
+    fn emit_create_objects(&self, flat_controls: &[&LayoutControl], out: &mut String) {
         let _ = writeln!(out, "      protected override void createObjects( )");
         let _ = writeln!(out, "      {{");
-        for c in &flat_controls {
+        for c in flat_controls {
             let ctrl_name = to_csharp_control_name(&c.name, &c.kind);
             match c.kind {
                 ControlKind::Button => {
@@ -435,20 +414,9 @@ impl WebPanelClass {
         }
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 8. INITWEB and PA stubs
-        let _ = writeln!(out, "      protected void INITWEB( )");
-        let _ = writeln!(out, "      {{");
-        let _ = writeln!(out, "         initialize_properties();");
-        let _ = writeln!(out, "      }}");
-        let _ = writeln!(out);
-
-        let _ = writeln!(out, "      protected void PA( )");
-        let _ = writeln!(out, "      {{");
-        let _ = writeln!(out, "      }}");
-        let _ = writeln!(out);
-
-        // 9. cleanup method
+    fn emit_cleanup_and_init(&self, flat_controls: &[&LayoutControl], out: &mut String) {
         let _ = writeln!(out, "      public override void cleanup( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         CloseCursors();");
@@ -459,7 +427,6 @@ impl WebPanelClass {
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
 
-        // 10. initialize method
         let _ = writeln!(out, "      public override void initialize( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         /* GeneXus formulas. */");
@@ -471,10 +438,9 @@ impl WebPanelClass {
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
 
-        // 11. initialize_properties method
         let _ = writeln!(out, "      public void initialize_properties( )");
         let _ = writeln!(out, "      {{");
-        for c in &flat_controls {
+        for c in flat_controls {
             let ctrl_name = to_csharp_control_name(&c.name, &c.kind);
             if let Some(caption) = &c.caption {
                 match c.kind {
@@ -487,8 +453,9 @@ impl WebPanelClass {
         }
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 12. ExecuteUserEvent method
+    fn emit_user_events(&self, out: &mut String) {
         let _ = writeln!(
             out,
             "      public void ExecuteUserEvent( string eventName )"
@@ -539,7 +506,6 @@ impl WebPanelClass {
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
 
-        // 13. Event methods
         for ev in &self.events {
             let clean = clean_ident(&ev.name);
             let method_name = match ev.event_kind() {
@@ -559,7 +525,6 @@ impl WebPanelClass {
             let _ = writeln!(out, "      {{");
             let _ = writeln!(out, "         /* {} Event */", ev.name);
 
-            // Attempt to parse event body as procedure statements
             let trimmed_body = ev.body.trim();
             if !trimmed_body.is_empty() {
                 if let Ok(stmts) = crate::frontend::parse_body(trimmed_body) {
@@ -586,9 +551,10 @@ impl WebPanelClass {
             let _ = writeln!(out, "      }}");
             let _ = writeln!(out);
         }
+    }
 
-        // 14. Private control fields
-        for c in &flat_controls {
+    fn emit_fields(&self, flat_controls: &[&LayoutControl], out: &mut String) {
+        for c in flat_controls {
             let ctrl_name = to_csharp_control_name(&c.name, &c.kind);
             match c.kind {
                 ControlKind::Button => {
@@ -610,20 +576,38 @@ impl WebPanelClass {
             }
         }
 
-        // 15. Private variable fields
         for (var_name, data_type) in &self.variables {
             let cs_type = to_csharp_type(data_type);
             let cs_name = to_csharp_var_name(var_name);
             let _ = writeln!(out, "      private {cs_type} {cs_name} ;");
         }
 
-        // 16. Parameter shadow fields
         for p in &self.params {
             let cs_type = to_csharp_type(&p.data_type);
             let _ = writeln!(out, "      private {cs_type} {} ;", p.param_name);
         }
+    }
 
-        // 17. Close class and namespace
+    /// Emits complete C# source code (.cs) for this WebPanel.
+    pub fn emit(&self) -> String {
+        let mut out = String::new();
+
+        self.emit_usings(&mut out);
+        let _ = writeln!(out, "namespace {} {{", self.namespace);
+        let _ = writeln!(out, "   public class {} : {}", self.name, self.base_class);
+        let _ = writeln!(out, "   {{");
+
+        let mut flat_controls = Vec::new();
+        collect_all_controls(&self.controls, &mut flat_controls);
+
+        self.emit_constructors(&mut out);
+        self.emit_execute_method(&mut out);
+        self.emit_execution_lifecycle(&mut out);
+        self.emit_create_objects(&flat_controls, &mut out);
+        self.emit_cleanup_and_init(&flat_controls, &mut out);
+        self.emit_user_events(&mut out);
+        self.emit_fields(&flat_controls, &mut out);
+
         let _ = writeln!(out, "   }}");
         let _ = writeln!(out);
         let _ = writeln!(out, "}}");

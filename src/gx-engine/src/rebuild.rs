@@ -1,12 +1,9 @@
-//! Parallel Rebuild All Engine and Parallel Specifier.
+//! High-performance parallel Rebuild All pipeline.
 //!
-//! Track C & E of Plan 130:
-//! - Reads KB objects from memory / UDM
-//! - Runs high-throughput parallel specification using standard library scoped threads
-//! - Resolves relational base tables, extended table joins, and formulas
-//! - Emits idiomatic production-grade C# (.cs and .csproj) in parallel
-//! - Drives parallel .NET / Roslyn compilation with `dotnet build -m`
-//! - Complete sub-20s end-to-end pipeline with zero unsafe code.
+//! Replaces the legacy 8-minute GeneXus IDE and MSBuild rebuild workflow by:
+//! 1. Specifying the entire Knowledge Base concurrently with scoped threads.
+//! 2. Emitting idiomatic C# (.NET) source and SDK-compatible project definitions.
+//! 3. Driving multi-core Roslyn builds with structured diagnostic capture.
 
 #![forbid(unsafe_code)]
 
@@ -39,32 +36,31 @@ pub struct RebuildOptions {
     pub clean: bool,
     /// Concurrency level for parallel phases (0 = automatic based on available cores).
     pub concurrency: usize,
-    /// SQL dialect used for navigation query planning and formula resolution.
+    /// SQL dialect for SQL navigation and table schema derivation.
     pub sql_dialect: SqlDialect,
-    /// Whether to skip invoking the `dotnet build` compiler driver.
-    pub skip_compile: bool,
-    /// Optional custom assembly name for the generated project.
-    pub assembly_name: Option<String>,
-    /// Whether to abort on the first failure instead of aggregating all diagnostics.
+    /// Whether to abort on the first encountered error.
     pub fail_fast: bool,
+    /// Whether to skip invoking `dotnet build` compiler after emission.
+    pub skip_compile: bool,
+    /// Optional application assembly name.
+    pub assembly_name: Option<String>,
 }
 
 impl Default for RebuildOptions {
     fn default() -> Self {
         Self {
             target_framework: "net8.0".to_string(),
-            clean: false,
+            clean: true,
             concurrency: 0,
             sql_dialect: SqlDialect::SqlServer,
+            fail_fast: false,
             skip_compile: false,
             assembly_name: None,
-            fail_fast: false,
         }
     }
 }
 
 impl RebuildOptions {
-    /// Creates a new RebuildOptions targeting the specified framework.
     pub fn new(target_framework: impl Into<String>) -> Self {
         Self {
             target_framework: target_framework.into(),
@@ -72,99 +68,78 @@ impl RebuildOptions {
         }
     }
 
-    /// Sets whether to clean the destination directory before code emission.
-    pub fn with_clean(mut self, clean: bool) -> Self {
-        self.clean = clean;
-        self
-    }
-
-    /// Sets the thread concurrency limit.
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency;
         self
     }
 
-    /// Sets the SQL dialect for navigation planning.
     pub fn with_sql_dialect(mut self, dialect: SqlDialect) -> Self {
         self.sql_dialect = dialect;
         self
     }
 
-    /// Sets whether to skip compilation.
+    pub fn with_clean(mut self, clean: bool) -> Self {
+        self.clean = clean;
+        self
+    }
+
+    pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
+        self.fail_fast = fail_fast;
+        self
+    }
+
     pub fn with_skip_compile(mut self, skip: bool) -> Self {
         self.skip_compile = skip;
         self
     }
 
-    /// Sets the main assembly name.
     pub fn with_assembly_name(mut self, name: impl Into<String>) -> Self {
         self.assembly_name = Some(name.into());
         self
     }
-
-    /// Sets fail-fast diagnostic mode.
-    pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
-        self.fail_fast = fail_fast;
-        self
-    }
 }
 
-/// Comprehensive timing and diagnostic report returned by `rebuild_all`.
+/// Structured execution summary and timing report produced by `rebuild_all`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebuildReport {
-    /// Time taken to load / inspect the catalog in milliseconds.
     pub read_ms: u64,
-    /// Time taken for parallel specification in milliseconds.
     pub spec_ms: u64,
-    /// Time taken for parallel C# and project code emission in milliseconds.
     pub emit_ms: u64,
-    /// Time taken for `dotnet build` compilation in milliseconds.
     pub compile_ms: u64,
-    /// Total wall-clock time in milliseconds.
     pub total_ms: u64,
 
-    /// Number of Procedure objects processed.
     pub procedures_count: usize,
-    /// Number of Transaction objects processed.
     pub transactions_count: usize,
-    /// Number of Structured Data Type (SDT) objects processed.
     pub sdts_count: usize,
-    /// Number of WebPanel objects processed.
     pub webpanels_count: usize,
-    /// Total objects processed across all categories.
     pub total_objects: usize,
 
-    /// Errors encountered during specification, emission, or compilation.
     pub errors: Vec<String>,
-    /// Warnings generated by specifier or compiler.
     pub warnings: Vec<String>,
-    /// Relative or absolute paths of all emitted source and project files.
     pub emitted_files: Vec<PathBuf>,
-    /// Navigation reports generated for procedures and queries.
     pub navigation_reports: Vec<NavigationReport>,
 }
 
 impl RebuildReport {
-    /// Returns true if the rebuild finished without any errors.
     pub fn is_success(&self) -> bool {
         self.errors.is_empty()
     }
 
-    /// Alias for `is_success()`.
     pub fn success(&self) -> bool {
         self.errors.is_empty()
     }
 }
 
+/// Categorized catalog objects.
+struct ObjectManifest<'a> {
+    procedures: Vec<&'a KbObject>,
+    transactions: Vec<&'a KbObject>,
+    sdts: Vec<&'a KbObject>,
+    webpanels: Vec<&'a KbObject>,
+    total_objects: usize,
+}
+
 /// Executes the end-to-end parallel Rebuild All pipeline.
-///
-/// Steps:
-/// 1. **Parallel Specification:** Infers base tables, calculates extended tables,
-///    resolves formulas, and generates navigation reports concurrently using `std::thread::scope`.
-/// 2. **Parallel C# Emission:** Generates idiomatic .NET C# source code and project definitions
-///    (.cs and .csproj) writing directly to `output_dir`.
-/// 3. **Compilation Driver:** Invokes `dotnet build -m` with the requested concurrency
-///    and gathers structured diagnostics.
 pub fn rebuild_all(
     catalog: &Catalog,
     output_dir: &Path,
@@ -172,29 +147,8 @@ pub fn rebuild_all(
 ) -> Result<RebuildReport, String> {
     let total_start = Instant::now();
 
-    // -------------------------------------------------------------------------
-    // Phase 0: Object Classification & Read Metrics
-    // -------------------------------------------------------------------------
-    let read_start = Instant::now();
-
-    let mut procedures: Vec<&KbObject> = Vec::new();
-    let mut transactions: Vec<&KbObject> = Vec::new();
-    let mut sdts: Vec<&KbObject> = Vec::new();
-    let mut webpanels: Vec<&KbObject> = Vec::new();
-    let mut total_objects = 0;
-
-    for obj in catalog.objects() {
-        total_objects += 1;
-        match obj.kind {
-            ObjectKind::Procedure => procedures.push(obj),
-            ObjectKind::Transaction => transactions.push(obj),
-            ObjectKind::StructuredDataType => sdts.push(obj),
-            ObjectKind::WebPanel => webpanels.push(obj),
-            _ => {}
-        }
-    }
-
-    let read_ms = read_start.elapsed().as_millis() as u64;
+    // Phase 0: Object Classification
+    let (manifest, read_ms) = classify_objects(catalog);
 
     let worker_concurrency = if options.concurrency == 0 {
         std::thread::available_parallelism()
@@ -207,9 +161,90 @@ pub fn rebuild_all(
     let errors = Mutex::new(Vec::new());
     let warnings = Mutex::new(Vec::new());
 
-    // -------------------------------------------------------------------------
     // Phase 1: Parallel Specification
-    // -------------------------------------------------------------------------
+    let (nav_reports, spec_ms) = specify_phase(
+        &manifest,
+        catalog,
+        worker_concurrency,
+        options,
+        &errors,
+        &warnings,
+    )?;
+
+    if options.fail_fast && !errors.lock().unwrap().is_empty() {
+        return Err(errors.lock().unwrap().join("; "));
+    }
+
+    // Phase 2: Parallel C# & Project Code Emission
+    let (emitted_files, main_csproj_path, emit_ms) =
+        emission_phase(&manifest, output_dir, worker_concurrency, options, &errors)?;
+
+    // Phase 3: Parallel Compilation Driver (`dotnet build`)
+    let compile_ms = if !options.skip_compile {
+        compile_phase(&main_csproj_path, worker_concurrency, &errors, &warnings)
+    } else {
+        0
+    };
+
+    let total_ms = total_start.elapsed().as_millis() as u64;
+    let final_errors = errors.into_inner().unwrap();
+    let final_warnings = warnings.into_inner().unwrap();
+
+    Ok(RebuildReport {
+        read_ms,
+        spec_ms,
+        emit_ms,
+        compile_ms,
+        total_ms,
+        procedures_count: manifest.procedures.len(),
+        transactions_count: manifest.transactions.len(),
+        sdts_count: manifest.sdts.len(),
+        webpanels_count: manifest.webpanels.len(),
+        total_objects: manifest.total_objects,
+        errors: final_errors,
+        warnings: final_warnings,
+        emitted_files,
+        navigation_reports: nav_reports,
+    })
+}
+
+// -----------------------------------------------------------------------------
+// Phase Functions
+// -----------------------------------------------------------------------------
+
+fn classify_objects(catalog: &Catalog) -> (ObjectManifest<'_>, u64) {
+    let read_start = Instant::now();
+    let mut manifest = ObjectManifest {
+        procedures: Vec::new(),
+        transactions: Vec::new(),
+        sdts: Vec::new(),
+        webpanels: Vec::new(),
+        total_objects: 0,
+    };
+
+    for obj in catalog.objects() {
+        manifest.total_objects += 1;
+        match obj.kind {
+            ObjectKind::Procedure => manifest.procedures.push(obj),
+            ObjectKind::Transaction => manifest.transactions.push(obj),
+            ObjectKind::StructuredDataType => manifest.sdts.push(obj),
+            ObjectKind::WebPanel => manifest.webpanels.push(obj),
+            _ => {}
+        }
+    }
+
+    let read_ms = read_start.elapsed().as_millis() as u64;
+    (manifest, read_ms)
+}
+
+fn specify_phase(
+    manifest: &ObjectManifest<'_>,
+    catalog: &Catalog,
+    concurrency: usize,
+    options: &RebuildOptions,
+    errors: &Mutex<Vec<String>>,
+    warnings: &Mutex<Vec<String>>,
+) -> Result<(Vec<NavigationReport>, u64), String> {
     let spec_start = Instant::now();
 
     let tables = match derive_tables_from_catalog(catalog) {
@@ -226,23 +261,21 @@ pub fn rebuild_all(
         }
     };
     let extended_tables = compute_extended_tables(&tables);
-
     let nav_reports: Mutex<Vec<NavigationReport>> = Mutex::new(Vec::new());
 
-    // Run parallel specification across procedures and transactions using scoped threads
     std::thread::scope(|s| {
         // 1. Procedures parallel specification
-        if !procedures.is_empty() {
-            let thread_count = worker_concurrency.min(procedures.len()).max(1);
-            let chunk_size = (procedures.len() + thread_count - 1) / thread_count;
+        if !manifest.procedures.is_empty() {
+            let thread_count = concurrency.min(manifest.procedures.len()).max(1);
+            let chunk_size = (manifest.procedures.len() + thread_count - 1) / thread_count;
 
-            for chunk in procedures.chunks(chunk_size) {
+            for chunk in manifest.procedures.chunks(chunk_size) {
                 let tables_ref = &tables;
                 let ext_ref = &extended_tables;
                 let dialect = options.sql_dialect;
                 let reports_ref = &nav_reports;
-                let errors_ref = &errors;
-                let warnings_ref = &warnings;
+                let errors_ref = errors;
+                let warnings_ref = warnings;
 
                 s.spawn(move || {
                     for proc in chunk {
@@ -266,14 +299,14 @@ pub fn rebuild_all(
         }
 
         // 2. Transactions formula specification in parallel
-        if !transactions.is_empty() {
-            let thread_count = worker_concurrency.min(transactions.len()).max(1);
-            let chunk_size = (transactions.len() + thread_count - 1) / thread_count;
+        if !manifest.transactions.is_empty() {
+            let thread_count = concurrency.min(manifest.transactions.len()).max(1);
+            let chunk_size = (manifest.transactions.len() + thread_count - 1) / thread_count;
 
-            for chunk in transactions.chunks(chunk_size) {
+            for chunk in manifest.transactions.chunks(chunk_size) {
                 let all_tables_ref = &tables;
                 let dialect = options.sql_dialect;
-                let errors_ref = &errors;
+                let errors_ref = errors;
 
                 s.spawn(move || {
                     for txn in chunk {
@@ -296,37 +329,7 @@ pub fn rebuild_all(
                                     derive_tables_from_transaction(&structure, resolve_attr)
                                         .unwrap_or_default();
 
-                                fn verify_formulas(
-                                    level: &crate::transaction::TransactionLevel,
-                                    txn_tables: &[Table],
-                                    all_tables: &[Table],
-                                    dialect: SqlDialect,
-                                    errors: &Mutex<Vec<String>>,
-                                ) {
-                                    for attr in &level.attributes {
-                                        if let Some(formula_src) = &attr.formula {
-                                            if let Err(e) = specify_transaction_attribute_formula(
-                                                &attr.name,
-                                                formula_src,
-                                                txn_tables,
-                                                all_tables,
-                                                dialect,
-                                            ) {
-                                                errors.lock().unwrap().push(format!(
-                                                    "Transaction formula error on '{}': {e}",
-                                                    attr.name
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    for sub in &level.levels {
-                                        verify_formulas(
-                                            sub, txn_tables, all_tables, dialect, errors,
-                                        );
-                                    }
-                                }
-
-                                verify_formulas(
+                                verify_level_formulas(
                                     &structure.root,
                                     &txn_tables,
                                     all_tables_ref,
@@ -342,14 +345,45 @@ pub fn rebuild_all(
     });
 
     let spec_ms = spec_start.elapsed().as_millis() as u64;
+    let final_reports = nav_reports.into_inner().unwrap();
+    Ok((final_reports, spec_ms))
+}
 
-    if options.fail_fast && !errors.lock().unwrap().is_empty() {
-        return Err(errors.lock().unwrap().join("; "));
+fn verify_level_formulas(
+    level: &crate::transaction::TransactionLevel,
+    txn_tables: &[Table],
+    all_tables: &[Table],
+    dialect: SqlDialect,
+    errors: &Mutex<Vec<String>>,
+) {
+    for attr in &level.attributes {
+        if let Some(formula_src) = &attr.formula {
+            if let Err(e) = specify_transaction_attribute_formula(
+                &attr.name,
+                formula_src,
+                txn_tables,
+                all_tables,
+                dialect,
+            ) {
+                errors
+                    .lock()
+                    .unwrap()
+                    .push(format!("Transaction formula error on '{}': {e}", attr.name));
+            }
+        }
     }
+    for sub in &level.levels {
+        verify_level_formulas(sub, txn_tables, all_tables, dialect, errors);
+    }
+}
 
-    // -------------------------------------------------------------------------
-    // Phase 2: Parallel C# & Project Code Emission
-    // -------------------------------------------------------------------------
+fn emission_phase(
+    manifest: &ObjectManifest<'_>,
+    output_dir: &Path,
+    concurrency: usize,
+    options: &RebuildOptions,
+    errors: &Mutex<Vec<String>>,
+) -> Result<(Vec<PathBuf>, PathBuf, u64), String> {
     let emit_start = Instant::now();
 
     if options.clean && output_dir.exists() {
@@ -365,15 +399,15 @@ pub fn rebuild_all(
     let emitted_files: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
     std::thread::scope(|s| {
-        // 1. Emit Procedures (.cs and .csproj)
-        if !procedures.is_empty() {
-            let thread_count = worker_concurrency.min(procedures.len()).max(1);
-            let chunk_size = (procedures.len() + thread_count - 1) / thread_count;
+        // 1. Emit Procedures
+        if !manifest.procedures.is_empty() {
+            let thread_count = concurrency.min(manifest.procedures.len()).max(1);
+            let chunk_size = (manifest.procedures.len() + thread_count - 1) / thread_count;
 
-            for chunk in procedures.chunks(chunk_size) {
+            for chunk in manifest.procedures.chunks(chunk_size) {
                 let out_dir = output_dir;
                 let files_ref = &emitted_files;
-                let errors_ref = &errors;
+                let errors_ref = errors;
                 let target_framework = &options.target_framework;
 
                 s.spawn(move || {
@@ -391,7 +425,6 @@ pub fn rebuild_all(
                                     files_ref.lock().unwrap().push(cs_path);
                                 }
 
-                                // Emit individual .csproj matching IDE NetModel layout
                                 let mut cfg = if target_framework.starts_with("net9") {
                                     CsprojConfig::net9(&proc.name, false)
                                 } else {
@@ -421,15 +454,15 @@ pub fn rebuild_all(
             }
         }
 
-        // 2. Emit Transactions (.cs)
-        if !transactions.is_empty() {
-            let thread_count = worker_concurrency.min(transactions.len()).max(1);
-            let chunk_size = (transactions.len() + thread_count - 1) / thread_count;
+        // 2. Emit Transactions
+        if !manifest.transactions.is_empty() {
+            let thread_count = concurrency.min(manifest.transactions.len()).max(1);
+            let chunk_size = (manifest.transactions.len() + thread_count - 1) / thread_count;
 
-            for chunk in transactions.chunks(chunk_size) {
+            for chunk in manifest.transactions.chunks(chunk_size) {
                 let out_dir = output_dir;
                 let files_ref = &emitted_files;
-                let errors_ref = &errors;
+                let errors_ref = errors;
 
                 s.spawn(move || {
                     for txn in chunk {
@@ -458,15 +491,15 @@ pub fn rebuild_all(
             }
         }
 
-        // 3. Emit SDTs (.cs)
-        if !sdts.is_empty() {
-            let thread_count = worker_concurrency.min(sdts.len()).max(1);
-            let chunk_size = (sdts.len() + thread_count - 1) / thread_count;
+        // 3. Emit SDTs
+        if !manifest.sdts.is_empty() {
+            let thread_count = concurrency.min(manifest.sdts.len()).max(1);
+            let chunk_size = (manifest.sdts.len() + thread_count - 1) / thread_count;
 
-            for chunk in sdts.chunks(chunk_size) {
+            for chunk in manifest.sdts.chunks(chunk_size) {
                 let out_dir = output_dir;
                 let files_ref = &emitted_files;
-                let errors_ref = &errors;
+                let errors_ref = errors;
 
                 s.spawn(move || {
                     for sdt in chunk {
@@ -495,15 +528,15 @@ pub fn rebuild_all(
             }
         }
 
-        // 4. Emit WebPanels (.cs)
-        if !webpanels.is_empty() {
-            let thread_count = worker_concurrency.min(webpanels.len()).max(1);
-            let chunk_size = (webpanels.len() + thread_count - 1) / thread_count;
+        // 4. Emit WebPanels
+        if !manifest.webpanels.is_empty() {
+            let thread_count = concurrency.min(manifest.webpanels.len()).max(1);
+            let chunk_size = (manifest.webpanels.len() + thread_count - 1) / thread_count;
 
-            for chunk in webpanels.chunks(chunk_size) {
+            for chunk in manifest.webpanels.chunks(chunk_size) {
                 let out_dir = output_dir;
                 let files_ref = &emitted_files;
-                let errors_ref = &errors;
+                let errors_ref = errors;
 
                 s.spawn(move || {
                     for wp in chunk {
@@ -533,7 +566,7 @@ pub fn rebuild_all(
         }
     });
 
-    // 5. Emit Unified Rebuild Project File (.csproj)
+    // 5. Emit Main Unified Project File (.csproj)
     let main_asm_name = options
         .assembly_name
         .clone()
@@ -545,7 +578,6 @@ pub fn rebuild_all(
         CsprojConfig::net8(&main_asm_name, false)
     };
 
-    // Gather all emitted .cs file names for compile includes
     let mut cs_includes = Vec::new();
     for f in emitted_files.lock().unwrap().iter() {
         if f.extension().and_then(|ext| ext.to_str()) == Some("cs") {
@@ -568,93 +600,69 @@ pub fn rebuild_all(
     emitted_files.lock().unwrap().push(main_csproj_path.clone());
 
     let emit_ms = emit_start.elapsed().as_millis() as u64;
-
-    // -------------------------------------------------------------------------
-    // Phase 3: Parallel Compilation Driver (`dotnet build`)
-    // -------------------------------------------------------------------------
-    let mut compile_ms = 0;
-
-    if !options.skip_compile {
-        let compile_start = Instant::now();
-
-        let dotnet_available = Command::new("dotnet").arg("--version").output().is_ok();
-
-        if dotnet_available {
-            let mut cmd = Command::new("dotnet");
-            cmd.arg("build");
-            cmd.arg(&main_csproj_path);
-            cmd.arg("-c");
-            cmd.arg("Release");
-            cmd.arg("--nologo");
-
-            if worker_concurrency > 0 {
-                cmd.arg(format!("-maxcpucount:{worker_concurrency}"));
-            } else {
-                cmd.arg("-m");
-            }
-
-            match cmd.output() {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    // Extract C# syntax or compilation errors
-                    for line in stdout.lines().chain(stderr.lines()) {
-                        let trimmed = line.trim();
-                        if trimmed.contains("error CS") {
-                            errors.lock().unwrap().push(trimmed.to_string());
-                        } else if trimmed.contains("warning CS") {
-                            warnings.lock().unwrap().push(trimmed.to_string());
-                        }
-                    }
-
-                    if !output.status.success() && errors.lock().unwrap().is_empty() {
-                        // Compilation failed for reasons other than syntax (e.g. offline package restore)
-                        warnings.lock().unwrap().push(format!(
-                            "dotnet build returned exit code {} (check package restore / runtime availability)",
-                            output.status
-                        ));
-                    }
-                }
-                Err(err) => {
-                    warnings
-                        .lock()
-                        .unwrap()
-                        .push(format!("cannot invoke dotnet build: {err}"));
-                }
-            }
-        } else {
-            warnings
-                .lock()
-                .unwrap()
-                .push("dotnet CLI is not installed; skipped compilation driver".to_string());
-        }
-
-        compile_ms = compile_start.elapsed().as_millis() as u64;
-    }
-
-    let total_ms = total_start.elapsed().as_millis() as u64;
-
-    let final_errors = errors.into_inner().unwrap();
-    let final_warnings = warnings.into_inner().unwrap();
     let mut final_emitted = emitted_files.into_inner().unwrap();
     final_emitted.sort();
-    let final_reports = nav_reports.into_inner().unwrap();
 
-    Ok(RebuildReport {
-        read_ms,
-        spec_ms,
-        emit_ms,
-        compile_ms,
-        total_ms,
-        procedures_count: procedures.len(),
-        transactions_count: transactions.len(),
-        sdts_count: sdts.len(),
-        webpanels_count: webpanels.len(),
-        total_objects,
-        errors: final_errors,
-        warnings: final_warnings,
-        emitted_files: final_emitted,
-        navigation_reports: final_reports,
-    })
+    Ok((final_emitted, main_csproj_path, emit_ms))
+}
+
+fn compile_phase(
+    main_csproj_path: &Path,
+    concurrency: usize,
+    errors: &Mutex<Vec<String>>,
+    warnings: &Mutex<Vec<String>>,
+) -> u64 {
+    let compile_start = Instant::now();
+    let dotnet_available = Command::new("dotnet").arg("--version").output().is_ok();
+
+    if dotnet_available {
+        let mut cmd = Command::new("dotnet");
+        cmd.arg("build");
+        cmd.arg(main_csproj_path);
+        cmd.arg("-c");
+        cmd.arg("Release");
+        cmd.arg("--nologo");
+
+        if concurrency > 0 {
+            cmd.arg(format!("-maxcpucount:{concurrency}"));
+        } else {
+            cmd.arg("-m");
+        }
+
+        match cmd.output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                for line in stdout.lines().chain(stderr.lines()) {
+                    let trimmed = line.trim();
+                    if trimmed.contains("error CS") {
+                        errors.lock().unwrap().push(trimmed.to_string());
+                    } else if trimmed.contains("warning CS") {
+                        warnings.lock().unwrap().push(trimmed.to_string());
+                    }
+                }
+
+                if !output.status.success() && errors.lock().unwrap().is_empty() {
+                    warnings.lock().unwrap().push(format!(
+                        "dotnet build returned exit code {} (check package restore / runtime availability)",
+                        output.status
+                    ));
+                }
+            }
+            Err(err) => {
+                warnings
+                    .lock()
+                    .unwrap()
+                    .push(format!("cannot invoke dotnet build: {err}"));
+            }
+        }
+    } else {
+        warnings
+            .lock()
+            .unwrap()
+            .push("dotnet CLI is not installed; skipped compilation driver".to_string());
+    }
+
+    compile_start.elapsed().as_millis() as u64
 }

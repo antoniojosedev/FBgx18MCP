@@ -16,29 +16,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 /// Extended standard imports for Transaction and Business Component classes.
-pub const TRANSACTION_IMPORTS: &[&str] = &[
-    "System",
-    "System.Collections",
-    "GeneXus.Utils",
-    "GeneXus.Resources",
-    "GeneXus.Application",
-    "GeneXus.Metadata",
-    "GeneXus.Cryptography",
-    "System.Data",
-    "GeneXus.Data",
-    "com.genexus",
-    "GeneXus.Data.ADO",
-    "GeneXus.Data.NTier",
-    "GeneXus.Data.NTier.ADO",
-    "GeneXus.WebControls",
-    "GeneXus.Http",
-    "GeneXus.XML",
-    "GeneXus.Search",
-    "GeneXus.Encryption",
-    "GeneXus.Http.Client",
-    "System.Xml.Serialization",
-    "System.Runtime.Serialization",
-];
+pub use crate::csharp::types::EXTENDED_DATA_IMPORTS as TRANSACTION_IMPORTS;
 
 /// Represents an emittable GeneXus C# Transaction / Business Component class (`GXDataComponent`).
 #[derive(Debug, Clone)]
@@ -175,23 +153,13 @@ impl TransactionClass {
         Ok(tc)
     }
 
-    /// Emits complete C# source code (.cs) for this Transaction / Business Component.
-    pub fn emit(&self) -> String {
-        let mut out = String::new();
-
-        // 1. Standard imports
+    fn emit_usings(&self, out: &mut String) {
         for imp in TRANSACTION_IMPORTS {
             let _ = writeln!(out, "using {imp};");
         }
+    }
 
-        // 2. Namespace
-        let _ = writeln!(out, "namespace {} {{", self.namespace);
-
-        // 3. Class declaration
-        let _ = writeln!(out, "   public class {} : {}", self.name, self.base_class);
-        let _ = writeln!(out, "   {{");
-
-        // 4. Constructors
+    fn emit_constructors(&self, out: &mut String) {
         let _ = writeln!(out, "      public {}( )", self.name);
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         context = new GxContext(  );");
@@ -208,8 +176,9 @@ impl TransactionClass {
         let _ = writeln!(out, "         IsMain = false;");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // Standard execution methods
+    fn emit_execution_methods(&self, out: &mut String) {
         let _ = writeln!(out, "      public void execute( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         initialize();");
@@ -222,8 +191,9 @@ impl TransactionClass {
         let _ = writeln!(out, "         cleanup();");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 5. BC Methods: Load, Save, Delete, Success, Fail, GetMessages
+    fn emit_bc_methods(&self, out: &mut String) {
         let key_attrs: Vec<&TransactionAttributeRef> = self
             .structure
             .as_ref()
@@ -273,6 +243,7 @@ impl TransactionClass {
         let _ = writeln!(out, "            {{");
         let _ = writeln!(out, "               ExecuteSave();");
         let _ = writeln!(out, "            }}");
+        let _ = writeln!(out);
         let _ = writeln!(out, "         }}");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
@@ -304,8 +275,9 @@ impl TransactionClass {
         let _ = writeln!(out, "         return LclMsgLst;");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 6. ValidateRules method
+    fn emit_rules(&self, out: &mut String) {
         let _ = writeln!(out, "      public void ValidateRules( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         Errors = 0;");
@@ -368,8 +340,9 @@ impl TransactionClass {
 
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 7. Cursor execution and DB stubs
+    fn emit_db_stubs(&self, out: &mut String) {
         let _ = writeln!(out, "      protected void getByPrimaryKey( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(
@@ -396,8 +369,9 @@ impl TransactionClass {
         let _ = writeln!(out, "         /* Delete record from database */");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 8. cleanup method
+    fn emit_cleanup_and_init(&self, out: &mut String) {
         let _ = writeln!(out, "      public override void cleanup( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         CloseCursors();");
@@ -409,7 +383,6 @@ impl TransactionClass {
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
 
-        // 9. initialize method
         let _ = writeln!(out, "      public override void initialize( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         Errors = 0;");
@@ -441,8 +414,9 @@ impl TransactionClass {
         }
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 10. Attribute Properties
+    fn emit_properties(&self, out: &mut String) {
         if let Some(ref structure) = self.structure {
             for attr in &structure.root.attributes {
                 let attr_field = to_csharp_attr_name(&attr.name);
@@ -491,8 +465,9 @@ impl TransactionClass {
             );
             let _ = writeln!(out);
         }
+    }
 
-        // 11. Nested Levels (child level classes)
+    fn emit_nested_levels(&self, out: &mut String) {
         if let Some(ref structure) = self.structure {
             for child_level in &structure.root.levels {
                 let child_clean = clean_ident(&child_level.name);
@@ -527,8 +502,9 @@ impl TransactionClass {
                 let _ = writeln!(out);
             }
         }
+    }
 
-        // 12. Private attribute fields
+    fn emit_fields(&self, out: &mut String) {
         if let Some(ref structure) = self.structure {
             for attr in &structure.root.attributes {
                 let attr_field = to_csharp_attr_name(&attr.name);
@@ -550,18 +526,36 @@ impl TransactionClass {
             let _ = writeln!(out, "      private {cs_type} {attr_field} ;");
         }
 
-        // 13. Private variable fields
         for (var_name, data_type) in &self.variables {
             let cs_type = to_csharp_type(data_type);
             let cs_name = to_csharp_var_name(var_name);
             let _ = writeln!(out, "      private {cs_type} {cs_name} ;");
         }
 
-        // 14. Error and message support fields
         let _ = writeln!(out, "      private short Errors ;");
         let _ = writeln!(out, "      private msglist LclMsgLst ;");
+    }
 
-        // 15. Close class and namespace
+    /// Emits complete C# source code (.cs) for this Transaction / Business Component.
+    pub fn emit(&self) -> String {
+        let mut out = String::new();
+
+        self.emit_usings(&mut out);
+        let _ = writeln!(out, "namespace {} {{", self.namespace);
+        let _ = writeln!(out, "   public class {} : {}", self.name, self.base_class);
+        let _ = writeln!(out, "   {{");
+
+        self.emit_constructors(&mut out);
+        self.emit_execution_methods(&mut out);
+        self.emit_bc_methods(&mut out);
+        self.emit_rules(&mut out);
+
+        self.emit_db_stubs(&mut out);
+        self.emit_cleanup_and_init(&mut out);
+        self.emit_properties(&mut out);
+        self.emit_nested_levels(&mut out);
+        self.emit_fields(&mut out);
+
         let _ = writeln!(out, "   }}");
         let _ = writeln!(out);
         let _ = writeln!(out, "}}");

@@ -22,6 +22,13 @@
 
 ### Changed
 
+- Refactored `gx-engine` architecture for modularity and safety (zero regressions across all 561 tests):
+  - Decomposed 1,521-line UDM god-file (`src/gx-engine/src/udm/client.rs`) into focused single-responsibility modules: `row.rs` (`UdmValue`, `UdmRow`), `mock.rs` (`InMemoryDatabase`, typed model records), `live.rs` (`execute_sqlcmd`), and `client.rs` (coordinator).
+  - Eliminated brittle 500-line pseudo-SQL interpreter in `UdmClient`, replacing it with direct strongly-typed in-memory queries.
+  - Decomposed 492-line monolithic `rebuild_all` function in `src/gx-engine/src/rebuild.rs` into pure pipeline stages (`classify_objects`, `specify_phase`, `emission_phase`, `compile_phase`).
+  - Decomposed monolithic C# class emitter methods in `procedure.rs`, `webpanel.rs`, and `transaction.rs` into cohesive class-part emitters (`emit_constructors`, `emit_execute_methods`, `emit_bc_methods`, `emit_rules`, `emit_fields`).
+  - Centralized shared C# standard imports and data imports (`STANDARD_IMPORTS`, `EXTENDED_DATA_IMPORTS`) in `src/gx-engine/src/csharp/types.rs`.
+
 ### Fixed
 
 ### Internal

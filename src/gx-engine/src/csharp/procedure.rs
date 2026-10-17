@@ -247,7 +247,7 @@ impl ProcedureClass {
         let mut out = String::new();
 
         // 1. Standard imports
-        for imp in STANDARD_IMPORTS {
+        for imp in crate::csharp::types::STANDARD_IMPORTS {
             let _ = writeln!(out, "using {imp};");
         }
 
@@ -258,42 +258,74 @@ impl ProcedureClass {
         let _ = writeln!(out, "   public class {} : GXProcedure", self.name);
         let _ = writeln!(out, "   {{");
 
-        // 4. Main & Command Line execution if is_main
         if self.is_main {
-            let _ = writeln!(out, "      public static int Main( string[] args )");
-            let _ = writeln!(out, "      {{");
-            let _ = writeln!(out, "         return new {}().MainImpl(args); ;", self.name);
-            let _ = writeln!(out, "      }}");
-            let _ = writeln!(out);
-            let _ = writeln!(out, "      public int executeCmdLine( string[] args )");
-            let _ = writeln!(out, "      {{");
-            let _ = writeln!(out, "         return ExecuteCmdLine(args); ;");
-            let _ = writeln!(out, "      }}");
-            let _ = writeln!(out);
-            let _ = writeln!(
-                out,
-                "      protected override int ExecuteCmdLine( string[] args )"
-            );
-            let _ = writeln!(out, "      {{");
-            if self.params.is_empty() {
-                let _ = writeln!(out, "         execute();");
-            } else {
-                let mut cmd_args = Vec::new();
-                for p in &self.params {
-                    match p.mode {
-                        ParamMode::In => cmd_args.push(p.param_name.clone()),
-                        ParamMode::Out => cmd_args.push(format!("out {}", p.param_name)),
-                        ParamMode::InOut => cmd_args.push(format!("ref {}", p.param_name)),
-                    }
-                }
-                let _ = writeln!(out, "         execute({});", cmd_args.join(", "));
-            }
-            let _ = writeln!(out, "         return GX.GXRuntime.ExitCode ;");
-            let _ = writeln!(out, "      }}");
-            let _ = writeln!(out);
+            self.emit_main_entrypoint(&mut out);
         }
 
-        // 5. Constructors
+        self.emit_constructors(&mut out);
+
+        let param_signatures = if self.params.is_empty() {
+            String::new()
+        } else {
+            let sigs: Vec<String> = self
+                .params
+                .iter()
+                .map(|p| to_csharp_param_signature(p.mode, &p.data_type, &p.param_name))
+                .collect();
+            format!(" {} ", sigs.join(" ,\n                           "))
+        };
+
+        self.emit_execute_methods(&mut out, &param_signatures);
+        self.emit_execute_udp(&mut out);
+
+        let mut emitter = CSharpEmitter::with_vars(&self.variables);
+        self.emit_execute_private(&mut out, &mut emitter);
+        self.emit_cleanup_and_initialize(&mut out);
+        self.emit_subroutines(&mut out, &mut emitter);
+        self.emit_member_fields(&mut out);
+
+        let _ = writeln!(out, "   }}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "}}");
+
+        out
+    }
+
+    fn emit_main_entrypoint(&self, out: &mut String) {
+        let _ = writeln!(out, "      public static int Main( string[] args )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         return new {}().MainImpl(args); ;", self.name);
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "      public int executeCmdLine( string[] args )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         return ExecuteCmdLine(args); ;");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "      protected override int ExecuteCmdLine( string[] args )"
+        );
+        let _ = writeln!(out, "      {{");
+        if self.params.is_empty() {
+            let _ = writeln!(out, "         execute();");
+        } else {
+            let mut cmd_args = Vec::new();
+            for p in &self.params {
+                match p.mode {
+                    ParamMode::In => cmd_args.push(p.param_name.clone()),
+                    ParamMode::Out => cmd_args.push(format!("out {}", p.param_name)),
+                    ParamMode::InOut => cmd_args.push(format!("ref {}", p.param_name)),
+                }
+            }
+            let _ = writeln!(out, "         execute({});", cmd_args.join(", "));
+        }
+        let _ = writeln!(out, "         return GX.GXRuntime.ExitCode ;");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+    }
+
+    fn emit_constructors(&self, out: &mut String) {
         let _ = writeln!(out, "      public {}( )", self.name);
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         context = new GxContext(  );");
@@ -310,19 +342,10 @@ impl ProcedureClass {
         let _ = writeln!(out, "         IsMain = false;");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 6. execute method
-        let param_signatures = if self.params.is_empty() {
-            String::new()
-        } else {
-            let sigs: Vec<String> = self
-                .params
-                .iter()
-                .map(|p| to_csharp_param_signature(p.mode, &p.data_type, &p.param_name))
-                .collect();
-            format!(" {} ", sigs.join(" ,\n                           "))
-        };
-
+    fn emit_execute_methods(&self, out: &mut String, param_signatures: &str) {
+        // execute
         let _ = writeln!(out, "      public void execute({param_signatures})");
         let _ = writeln!(out, "      {{");
         for p in &self.params {
@@ -349,7 +372,34 @@ impl ProcedureClass {
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
 
-        // 7. executeUdp method (if there is a return type or out parameters)
+        // executeSubmit
+        let _ = writeln!(out, "      public void executeSubmit({param_signatures})");
+        let _ = writeln!(out, "      {{");
+        for p in &self.params {
+            match p.mode {
+                ParamMode::In | ParamMode::InOut => {
+                    let _ = writeln!(out, "         this.{} = {};", p.var_name, p.param_name);
+                }
+                ParamMode::Out => {
+                    let default_val = to_csharp_default_value(&p.data_type);
+                    let _ = writeln!(out, "         this.{} = {} ;", p.var_name, default_val);
+                }
+            }
+        }
+        let _ = writeln!(out, "         SubmitImpl();");
+        for p in &self.params {
+            match p.mode {
+                ParamMode::Out | ParamMode::InOut => {
+                    let _ = writeln!(out, "         {} = this.{};", p.param_name, p.var_name);
+                }
+                ParamMode::In => {}
+            }
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+    }
+
+    fn emit_execute_udp(&self, out: &mut String) {
         let udp_target = self
             .params
             .iter()
@@ -416,41 +466,14 @@ impl ProcedureClass {
             let _ = writeln!(out, "      }}");
             let _ = writeln!(out);
         }
+    }
 
-        // 8. executeSubmit method
-        let _ = writeln!(out, "      public void executeSubmit({param_signatures})");
-        let _ = writeln!(out, "      {{");
-        for p in &self.params {
-            match p.mode {
-                ParamMode::In | ParamMode::InOut => {
-                    let _ = writeln!(out, "         this.{} = {};", p.var_name, p.param_name);
-                }
-                ParamMode::Out => {
-                    let default_val = to_csharp_default_value(&p.data_type);
-                    let _ = writeln!(out, "         this.{} = {} ;", p.var_name, default_val);
-                }
-            }
-        }
-        let _ = writeln!(out, "         SubmitImpl();");
-        for p in &self.params {
-            match p.mode {
-                ParamMode::Out | ParamMode::InOut => {
-                    let _ = writeln!(out, "         {} = this.{};", p.param_name, p.var_name);
-                }
-                ParamMode::In => {}
-            }
-        }
-        let _ = writeln!(out, "      }}");
-        let _ = writeln!(out);
-
-        // 9. ExecutePrivate method
+    fn emit_execute_private(&self, out: &mut String, emitter: &mut CSharpEmitter) {
         let _ = writeln!(out, "      protected override void ExecutePrivate( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         /* GeneXus formulas */");
         let _ = writeln!(out, "         /* Output device settings */");
 
-        let mut emitter = CSharpEmitter::with_vars(&self.variables);
-        // Indent level for class method body: 3 tabs/units (9 spaces)
         emitter.indented(|e| {
             e.indented(|e| {
                 e.indented(|e| {
@@ -464,8 +487,9 @@ impl ProcedureClass {
         let _ = writeln!(out, "         cleanup();");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 10. cleanup method
+    fn emit_cleanup_and_initialize(&self, out: &mut String) {
         let _ = writeln!(out, "      public override void cleanup( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         CloseCursors();");
@@ -477,14 +501,14 @@ impl ProcedureClass {
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
 
-        // 11. initialize method
         let _ = writeln!(out, "      public override void initialize( )");
         let _ = writeln!(out, "      {{");
         let _ = writeln!(out, "         /* GeneXus formulas. */");
         let _ = writeln!(out, "      }}");
         let _ = writeln!(out);
+    }
 
-        // 12. Subroutines (if any)
+    fn emit_subroutines(&self, out: &mut String, emitter: &mut CSharpEmitter) {
         for (sub_name, sub_body) in &self.subroutines {
             let clean = clean_ident(sub_name);
             let _ = writeln!(out, "      private void Sub_{clean}( )");
@@ -501,32 +525,23 @@ impl ProcedureClass {
             let _ = writeln!(out, "      }}");
             let _ = writeln!(out);
         }
+    }
 
-        // 13. Private member fields
-        // Variables
+    fn emit_member_fields(&self, out: &mut String) {
         for (var_name, data_type) in &self.variables {
             let cs_type = to_csharp_type(data_type);
             let cs_name = to_csharp_var_name(var_name);
             let _ = writeln!(out, "      private {cs_type} {cs_name} ;");
         }
-        // Result variable if return_type
         if let Some(ref ret_type) = self.return_type {
             if !self.variables.contains_key("Result") {
                 let cs_ret = to_csharp_type(ret_type);
                 let _ = writeln!(out, "      private {cs_ret} AV_Result ;");
             }
         }
-        // Shadow fields for parameters
         for p in &self.params {
             let cs_type = to_csharp_type(&p.data_type);
             let _ = writeln!(out, "      private {cs_type} {} ;", p.param_name);
         }
-
-        // 14. Closing class and namespace
-        let _ = writeln!(out, "   }}");
-        let _ = writeln!(out);
-        let _ = writeln!(out, "}}");
-
-        out
     }
 }

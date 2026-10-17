@@ -7,7 +7,10 @@
 pub mod client;
 pub mod connection;
 pub mod decoder;
+pub mod live;
+pub mod mock;
 pub mod reader;
+pub mod row;
 pub mod writer;
 
 pub use client::{
