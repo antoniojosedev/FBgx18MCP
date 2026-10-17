@@ -190,5 +190,47 @@ namespace GxMcp.Worker.Tests
             var result = TextPersistenceVerifier.Evaluate(requested, persisted, null, "Structure");
             Assert.True(result.Matches, "SDK-generated description 'Mcp Tst R03 A' for 'McpTstR03A' should match when verifyMode is omitted");
         }
+
+        [Fact]
+        public void LeadingCapitalRun_SdkKeepsItAsOneWord_AndTheDescriptionIsStillRecognised()
+        {
+            // #541 recorded the SDK deriving "ZTst Mcp Var" from ZTstMcpVar: a leading run
+            // of capitals stays one word, where a camel-case split gives "Z Tst Mcp Var".
+            // Recognising the generated description must not depend on guessing that rule.
+            var result = TextPersistenceVerifier.Evaluate(
+                "ZTstMcpArq : NUMERIC(4)",
+                "ZTstMcpArq : NUMERIC(4) // \"ZTst Mcp Arq\"",
+                "semantic",
+                "Structure");
+
+            Assert.True(result.Matches, "the SDK's own word boundaries for a leading capital run must be accepted");
+        }
+
+        [Fact]
+        public void LeadingCapitalRun_ADescriptionWithOtherLetters_IsStillACallerDescription()
+        {
+            var result = TextPersistenceVerifier.Evaluate(
+                "ZTstMcpArq : NUMERIC(4)",
+                "ZTstMcpArq : NUMERIC(4) // \"ZTst Mcp Arquivo\"",
+                "semantic",
+                "Structure");
+
+            Assert.False(result.Matches, "letters the name does not contain mean a real description");
+        }
+
+        [Fact]
+        public void OnlyGeneratedDescriptionDiffers_IsRecognisedOnStructureOnly()
+        {
+            const string requested = "McpTstR03A : NUMERIC(4)";
+            const string persisted = "McpTstR03A : NUMERIC(4) // \"Mcp Tst R03 A\"";
+
+            Assert.True(TextPersistenceVerifier.OnlySdkGeneratedAttributeDescriptionDiffers("Structure", requested, persisted));
+            Assert.False(TextPersistenceVerifier.OnlySdkGeneratedAttributeDescriptionDiffers("Structure", persisted, persisted));
+            Assert.False(TextPersistenceVerifier.OnlySdkGeneratedAttributeDescriptionDiffers(
+                "Structure", requested, "McpTstR03A : NUMERIC(6) // \"Mcp Tst R03 A\""));
+            Assert.False(TextPersistenceVerifier.OnlySdkGeneratedAttributeDescriptionDiffers(
+                "Structure", "McpTstR03A : NUMERIC(4) // \"Valor\"", persisted));
+            Assert.False(TextPersistenceVerifier.OnlySdkGeneratedAttributeDescriptionDiffers("Source", requested, persisted));
+        }
     }
 }

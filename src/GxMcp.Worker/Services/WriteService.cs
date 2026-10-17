@@ -986,8 +986,12 @@ namespace GxMcp.Worker.Services
                 content = patchShape["replace"]?.ToString() ?? string.Empty;
             }
 
+            // An omitted verifyMode on a Structure part is semantic, so the attribute
+            // description the SDK derives from the attribute name does not fail the
+            // comparison (#525, #557). The default is keyed on the part only: mode=ops is
+            // routed to ApplySemanticOps and never reaches this facade.
             string verifyMode = args["verifyMode"]?.ToString();
-            if (string.IsNullOrWhiteSpace(verifyMode) && (string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase) || string.Equals(mode, "ops", StringComparison.OrdinalIgnoreCase)))
+            if (string.IsNullOrWhiteSpace(verifyMode) && string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
             {
                 verifyMode = "semantic";
             }

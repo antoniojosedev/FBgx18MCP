@@ -1589,8 +1589,7 @@
             "type": "boolean"
           },
           "verifyMode": {
-            "default": "normalized",
-            "description": "Post-save text comparison. Full exact…",
+            "description": "Omitted: semantic for Structure,…",
             "enum": [
               "semantic",
               "normalized",
