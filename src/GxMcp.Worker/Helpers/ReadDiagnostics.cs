@@ -130,12 +130,17 @@ namespace GxMcp.Worker.Helpers
             @"(?is)\b(?:Event\b.*?EndEvent|Sub\b.*?EndSub|For\s+each\b.*?EndFor|Do\s+case\b.*?EndCase|Do\s+while\b.*?EndDo)\b",
             RegexOptions.Compiled);
 
+        // Only continuation lines are treated as statements: the first line of a legitimate
+        // SDK/Worker message may start with a keyword ("Event 'Start' is not defined ...")
+        // and must survive. Opened blocks on the first line are still caught by GeneXusBlockRegex.
         private static readonly Regex GeneXusStatementRegex = new Regex(
-            @"(?im)^\s*(?:Event|EndEvent|Sub|EndSub|For\s+each|EndFor|Do\s+case|EndCase|Do\s+while|EndDo)\b[^\r\n]*",
+            @"(?i)(?<=\n)[ \t]*(?:Event|EndEvent|Sub|EndSub|For\s+each|EndFor|Do\s+case|EndCase|Do\s+while|EndDo)\b[^\r\n]*",
             RegexOptions.Compiled);
 
+        // The parenthesis must follow the command name directly (or ".Call") so prose such as
+        // "call (RPC)" is preserved; one level of nested parentheses is consumed.
         private static readonly Regex GeneXusCommandRegex = new Regex(
-            @"(?i)\b(?:msg|call|prc)\s*\([^)]*\)",
+            @"(?i)(?:\b(?:msg|call|prc)|\.call\s*)\((?:[^()]|\([^()]*\))*\)",
             RegexOptions.Compiled);
 
         public static string SanitizeText(string text, out bool truncated)
