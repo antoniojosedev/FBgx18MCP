@@ -69,6 +69,16 @@ fn collect_block_calls(statements: &[Stmt], callees: &mut HashSet<String>) {
                 collect_expression_calls(limit, callees);
                 collect_block_calls(body, callees);
             }
+            Stmt::ForEach(for_each) => {
+                for where_expr in &for_each.wheres {
+                    collect_expression_calls(where_expr, callees);
+                }
+                collect_block_calls(&for_each.body, callees);
+                collect_block_calls(&for_each.when_none, callees);
+            }
+            Stmt::AssignAttribute(_, expr) => {
+                collect_expression_calls(expr, callees);
+            }
         }
     }
 }
@@ -98,6 +108,7 @@ fn collect_expression_calls(expression: &Expr, callees: &mut HashSet<String>) {
         | Expr::Text(_)
         | Expr::Boolean(_)
         | Expr::EmptyDate
-        | Expr::Variable(_) => {}
+        | Expr::Variable(_)
+        | Expr::Attribute(_) => {}
     }
 }

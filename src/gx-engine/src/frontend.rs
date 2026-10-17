@@ -93,6 +93,22 @@ pub struct FromXmlStmt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForEachOrder {
+    pub attribute: String,
+    pub descending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForEachStmt {
+    pub explicit_attributes: Vec<String>,
+    pub wheres: Vec<Expr>,
+    pub orders: Vec<ForEachOrder>,
+    pub defined_by: Option<String>,
+    pub body: Vec<Stmt>,
+    pub when_none: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Assign(String, Expr),
     AssignField(Box<Expr>, String, Expr),
@@ -113,6 +129,10 @@ pub enum Stmt {
     For(String, Expr, Expr, i64, Vec<Stmt>),
     /// For &Item in &Collection
     ForIn(String, Expr, Vec<Stmt>),
+    /// GeneXus data access loop: `For Each ... EndFor` with optional When None
+    ForEach(Box<ForEachStmt>),
+    /// Attribute assignment inside For Each: `Attribute = expr`
+    AssignAttribute(String, Expr),
     /// Loop break statement
     Exit,
     /// `Proc(args)` or `Proc.Call(args)` as a statement; always holds an `Expr::Call`.
@@ -142,6 +162,7 @@ pub enum Expr {
     EmptyDate,
     Not(Box<Expr>),
     Variable(String),
+    Attribute(String),
     Call(String, Vec<Expr>),
     Binary(Box<Expr>, BinOp, Box<Expr>),
     Negate(Box<Expr>),
@@ -411,6 +432,7 @@ enum BlockEnd {
     EndCase,
     EndFor,
     EndSub,
+    WhenNone,
     Eof,
 }
 
@@ -422,11 +444,16 @@ struct CaseSections {
 struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
+    allow_attributes: bool,
 }
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, cursor: 0 }
+        Self {
+            tokens,
+            cursor: 0,
+            allow_attributes: false,
+        }
     }
 
     fn current(&self) -> &Token {
@@ -533,6 +560,10 @@ impl Parser {
                 Some(BlockEnd::EndFor)
             } else if self.at_keyword("ENDSUB") {
                 Some(BlockEnd::EndSub)
+            } else if self.at_keyword("WHEN") && self.next_is_keyword("NONE") {
+                self.take();
+                self.take();
+                Some(BlockEnd::WhenNone)
             } else if self.at(&TokenKind::Eof) {
                 Some(BlockEnd::Eof)
             } else {
@@ -716,13 +747,26 @@ impl Parser {
             TokenKind::Identifier(keyword)
                 if matches!(
                     keyword.as_str(),
-                    "ELSE" | "CASE" | "OTHERWISE" | "ENDIF" | "ENDDO" | "ENDCASE" | "ENDFOR" | "ENDSUB" | "WHILE"
+                    "ELSE" | "CASE" | "OTHERWISE" | "ENDIF" | "ENDDO" | "ENDCASE" | "ENDFOR" | "ENDSUB" | "WHILE" | "WHEN"
                 ) =>
             {
                 Err(self
                     .current()
                     .location
                     .error(format_args!("unexpected keyword {keyword}")))
+            }
+            TokenKind::Identifier(name)
+                if self.allow_attributes
+                    && self
+                        .tokens
+                        .get(self.cursor + 1)
+                        .is_some_and(|t| t.kind == TokenKind::Equals) =>
+            {
+                let att_name = name.clone();
+                self.take();
+                self.expect(TokenKind::Equals, "'=' in attribute assignment")?;
+                let expression = self.parse_expression()?;
+                Ok(Stmt::AssignAttribute(att_name, expression))
             }
             TokenKind::Identifier(name) => self.parse_call_statement(name.clone()),
             _ => Err(self
@@ -941,9 +985,7 @@ impl Parser {
         let start = self.expect_keyword("FOR")?;
         self.ensure_nesting(nesting, start.location)?;
         if self.at_keyword("EACH") {
-            return Err(start
-                .location
-                .error("unsupported statement For Each: data access is not implemented"));
+            return self.parse_for_each(nesting, start);
         }
         let token = self.take();
         let TokenKind::Variable(variable) = token.kind else {
@@ -1003,6 +1045,118 @@ impl Parser {
         Ok(Stmt::For(variable, initial, limit, step, body))
     }
 
+    fn parse_for_each(&mut self, nesting: usize, _start: Token) -> Result<Stmt, String> {
+        self.expect_keyword("EACH")?;
+
+        let prev_allow_attributes = self.allow_attributes;
+        self.allow_attributes = true;
+
+        let mut explicit_attributes = Vec::new();
+        while !self.at(&TokenKind::Newline)
+            && !self.at(&TokenKind::Semicolon)
+            && !self.at(&TokenKind::Eof)
+        {
+            if self.at_keyword("WHERE") || self.at_keyword("ORDER") || self.at_keyword("DEFINED") {
+                break;
+            }
+            if let TokenKind::Identifier(name) = &self.current().kind {
+                explicit_attributes.push(name.clone());
+                self.take();
+                if self.at(&TokenKind::Comma) {
+                    self.take();
+                }
+            } else {
+                break;
+            }
+        }
+        self.skip_separators();
+
+        let mut wheres = Vec::new();
+        let mut orders = Vec::new();
+        let mut defined_by = None;
+
+        loop {
+            self.skip_separators();
+            if self.at_keyword("WHERE") {
+                self.take();
+                let cond = self.parse_expression()?;
+                wheres.push(cond);
+                self.skip_separators();
+            } else if self.at_keyword("ORDER") {
+                self.take();
+                loop {
+                    self.skip_separators();
+                    if let TokenKind::Identifier(att) = &self.current().kind {
+                        let att_name = att.clone();
+                        self.take();
+                        let mut descending = false;
+                        if self.at_keyword("DESC") {
+                            self.take();
+                            descending = true;
+                        } else if self.at_keyword("NONE") {
+                            self.take();
+                        }
+                        orders.push(ForEachOrder {
+                            attribute: att_name,
+                            descending,
+                        });
+                        if self.at(&TokenKind::Comma) {
+                            self.take();
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                self.skip_separators();
+            } else if self.at_keyword("DEFINED") {
+                self.take();
+                self.expect_keyword("BY")?;
+                if let TokenKind::Identifier(att) = &self.current().kind {
+                    defined_by = Some(att.clone());
+                    self.take();
+                } else {
+                    self.allow_attributes = prev_allow_attributes;
+                    return Err(self
+                        .current()
+                        .location
+                        .error("expected attribute after Defined By"));
+                }
+                self.skip_separators();
+            } else {
+                break;
+            }
+        }
+
+        let (body, end) = self.parse_block(nesting + 1)?;
+        let (when_none, final_end) = if end == BlockEnd::WhenNone {
+            let (wn_body, wn_end) = self.parse_block(nesting + 1)?;
+            (wn_body, wn_end)
+        } else {
+            (Vec::new(), end)
+        };
+
+        if final_end != BlockEnd::EndFor {
+            self.allow_attributes = prev_allow_attributes;
+            return Err(self.current().location.error(format_args!(
+                "expected EndFor, found {}",
+                self.block_end_name(final_end)
+            )));
+        }
+        self.expect_keyword("ENDFOR")?;
+        self.allow_attributes = prev_allow_attributes;
+
+        Ok(Stmt::ForEach(Box::new(ForEachStmt {
+            explicit_attributes,
+            wheres,
+            orders,
+            defined_by,
+            body,
+            when_none,
+        })))
+    }
+
     fn parse_while(&mut self, nesting: usize) -> Result<Stmt, String> {
         let start = self.expect_keyword("DO")?;
         self.ensure_nesting(nesting, start.location)?;
@@ -1041,6 +1195,7 @@ impl Parser {
             BlockEnd::EndCase => "EndCase",
             BlockEnd::EndFor => "EndFor",
             BlockEnd::EndSub => "EndSub",
+            BlockEnd::WhenNone => "When None",
             BlockEnd::Eof => "end of input",
         }
     }
@@ -1552,6 +1707,9 @@ impl Parser {
                 if self.at(&TokenKind::LeftParen) {
                     self.take();
                     self.parse_call(name, depth + 1, nodes, token.location)
+                } else if self.allow_attributes {
+                    self.count_expression_node(nodes, token.location)?;
+                    Ok(Expr::Attribute(name))
                 } else {
                     Err(token.location.error(format_args!(
                         "bare identifier {name} is not an expression; use a variable or call"
@@ -1771,7 +1929,7 @@ mod tests {
     #[test]
     fn rejects_unsupported_constructs_and_malformed_statements_with_locations() {
         for (source, expected) in [
-            ("For Each", "unsupported statement"),
+            ("For Each", "expected EndFor"),
             ("&x = \"text", "unterminated text literal"),
             ("&x = 1.", "decimal point requires fractional digits"),
             ("&x = unknown", "bare identifier"),
@@ -1907,5 +2065,38 @@ mod tests {
                 .unwrap_err()
                 .contains("node limit")
         );
+    }
+
+    #[test]
+    fn parses_for_each_with_wheres_orders_defined_by_and_when_none() {
+        let source = r#"
+            For Each CustomerId, CustomerName
+                Where CustomerActive = true
+                Where CustomerId >= 100
+                Order CustomerName Desc, CustomerId
+                Defined By CustomerId
+                &Total = &Total + 1
+            When None
+                &Total = 0
+            EndFor
+        "#;
+        let stmts = parse_body(source).unwrap();
+        assert_eq!(stmts.len(), 1);
+        let Stmt::ForEach(for_each) = &stmts[0] else {
+            panic!("expected ForEach statement");
+        };
+        assert_eq!(
+            for_each.explicit_attributes,
+            vec!["CUSTOMERID", "CUSTOMERNAME"]
+        );
+        assert_eq!(for_each.wheres.len(), 2);
+        assert_eq!(for_each.orders.len(), 2);
+        assert_eq!(for_each.orders[0].attribute, "CUSTOMERNAME");
+        assert!(for_each.orders[0].descending);
+        assert_eq!(for_each.orders[1].attribute, "CUSTOMERID");
+        assert!(!for_each.orders[1].descending);
+        assert_eq!(for_each.defined_by.as_deref(), Some("CUSTOMERID"));
+        assert_eq!(for_each.body.len(), 1);
+        assert_eq!(for_each.when_none.len(), 1);
     }
 }

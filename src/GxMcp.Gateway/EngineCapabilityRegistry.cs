@@ -296,12 +296,12 @@ namespace GxMcp.Gateway
 
             new EngineCapability(
                 id: "sql_navigation",
-                title: "Specifier, navigation and SQL planning",
-                engineSurface: "none",
-                status: EngineCapabilityStatus.Unsupported,
-                evidence: "src/gx-engine/README.md (For each and SQL/navigation planning listed as unsupported)",
+                title: "Specifier, base table inference, For Each navigation, and SQL query planning",
+                engineSurface: "navigation engine + base table inference + extended table joins + index selection + multi-dialect SQL query generator",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/navigation_specifier.rs (10/10 tests: single table base table inference, extended table join resolution, Defined By disambiguation, spc0004 unrelated attributes fail-closed, spc0005 ambiguous base table fail-closed, secondary index selection and descending orders, multi-dialect SQL generation for ANSI/SqlServer/PostgreSQL/Oracle, nested For Each automatic correlation, When None block preservation, end-to-end specify_procedure and specify_catalog with NavigationReport JSON serialization); frontend for_each parsing (13/13 unit tests)",
                 consumers: Array.Empty<string>(),
-                notes: "Plan 129 milestone M2 territory."),
+                notes: "Adheres strictly to official GeneXus specifier semantics and error diagnostics (spc0004, spc0005). Computes relational extended table (Tabela Estendida) foreign key paths up to depth 16, infers minimal base tables, selects primary and secondary indexes, resolves foreign key joins, correlates nested loops automatically, and generates read-only multi-dialect SELECT queries with zero external dependencies and zero SQL writes. No product operation consumes it yet."),
 
             new EngineCapability(
                 id: "general_gx_surface",

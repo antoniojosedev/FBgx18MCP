@@ -669,6 +669,11 @@ impl Emitter<'_> {
             Expr::Decimal(text) => (Kind::Numeric, format!("{text:?}.parse::<Decimal>()?")),
             Expr::Boolean(value) => (Kind::Boolean, value.to_string()),
             Expr::Text(value) => (Kind::Text, format!("Text::new({value:?})?")),
+            Expr::Attribute(_) => {
+                return Err(
+                    "Attribute expressions require specifier navigation and are not admitted in standalone typed binaries".into(),
+                );
+            }
             Expr::Member(receiver, field) => {
                 let field_type = self.member_type(receiver, field)?;
                 if matches!(self.expression_type(receiver)?, DataType::Collection { .. }) {
@@ -1995,6 +2000,16 @@ impl Emitter<'_> {
                         "let _ = ({receiver_code}).from_xml(({xml_code}).as_str(), {opt_root_code});"
                     )
                     .unwrap();
+                }
+                Stmt::ForEach(_) => {
+                    return Err(
+                        "For Each database statements require specifier navigation and are not admitted in standalone typed binaries".into(),
+                    );
+                }
+                Stmt::AssignAttribute(_, _) => {
+                    return Err(
+                        "Attribute assignment requires specifier navigation and is not admitted in standalone typed binaries".into(),
+                    );
                 }
             }
         }

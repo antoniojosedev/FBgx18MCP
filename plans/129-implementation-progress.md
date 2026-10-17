@@ -1562,5 +1562,56 @@ Owner-reported implementation and native observations:
 - Registry: new `physical_table_ddl` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
 - Milestone: **Specifier & SQL Navigation** subsystem reaches **25.0% parity (2/8 areas: Table Schema Normalization, Multi-Dialect SQL DDL)**. Overall weighted SDK replacement advances from **45.2% to 47.0% (36/56 areas touched: 64.3%)**.
 
+## Specifier Base Table Inference, Navigation Query Plan, and For Each Data Access (2026-10-16)
+
+- Native Specifier & Navigation Architecture Analysis:
+  - In GeneXus Procedures and data access routines, data queries are expressed through declarative `For Each` loops.
+  - The GeneXus Specifier analyzes referenced attributes within each `For Each` block (including loop body, Where clauses, Order items, and Defined By attribute).
+  - Extended Table (Tabela Estendida): The relational reachability closure of a table along 1-N foreign key relationships (depth limit 16).
+  - Candidate Base Table Inference: Tables whose extended table contains 100% of the referenced attributes.
+    - If multiple candidates exist, tables containing 100% of referenced attributes in their direct columns are prioritized over tables that reach them only through FK joins (preventing child tables like Invoice from becoming the base table when a query only references Customer attributes).
+    - Subordination rules: when attributes from both parent and child are referenced, parent cannot reach child, so child is selected and an INNER JOIN is generated.
+    - Explicit `Defined By` attribute disambiguates between sibling or ambiguous candidates.
+  - Fail-closed diagnostics matching official GeneXus specifier codes:
+    - `spc0004`: "No relationship between attributes: ..." when no candidate table can reach all referenced attributes.
+    - `spc0005`: "Ambiguous base table: multiple tables qualify (...). Use 'Defined by' to specify the intended table."
+  - Automatic Correlation: In nested `For Each` loops, matching key attributes between outer and inner loops automatically generate equality correlation conditions (`inner.Attr = outer.Attr`).
+  - Index Selection: Orders matching primary keys or secondary indexes select the optimal index; descending orders mark `is_descending: true`.
+  - Multi-Dialect SQL Generation: Generates read-only SELECT queries with proper JOIN clauses and WHERE filters for ANSI, SQL Server (`[...]`), PostgreSQL (`"..."`), and Oracle (unquoted), preserving canonical column casing and adhering strictly to zero SQL writes.
+  - `When None` block preservation: parsed and retained in the navigation IR.
+- Engine Implementation:
+  - `src/gx-engine/src/frontend.rs`:
+    - Added AST types: `ForEachOrder`, `ForEachStmt`, `Stmt::ForEach(Box<ForEachStmt>)`, `Stmt::AssignAttribute(String, Expr)`, and `Expr::Attribute(String)`.
+    - Added scoped `allow_attributes: bool` parser mode: attributes are admitted inside `For Each` loops, while bare identifiers outside `For Each` continue to fail closed with `"bare identifier {name} is not an expression; use a variable or call"`.
+    - Implemented `parse_for_each`: parses attributes, explicit `Order` items with `DESC`/`NONE`, multiple `Where` clauses, `Defined By` attribute, loop body, and `When None` block ending in `EndFor`.
+    - Unit tests: 13/13 frontend unit tests pass.
+  - `src/gx-engine/src/dependencies.rs`:
+    - Added recursive visitor for `Stmt::ForEach`, traversing loop body, wheres, orders, when_none, and attribute expressions alongside procedure calls.
+  - `src/gx-engine/src/backend.rs` & `src/gx-engine/src/typed_backend.rs`:
+    - Standalone offline binary compilers reject `Stmt::ForEach`, `Stmt::AssignAttribute`, and `Expr::Attribute` fail-closed (database data access is handled by the Specifier/Navigation layer).
+  - `src/gx-engine/src/navigation.rs`:
+    - Created specifier engine exporting `NavigationFilter`, `NavigationJoin`, `NavigationLevel`, `NavigationReport`, `compute_extended_tables`, `infer_base_table`, `select_index`, `resolve_joins`, `generate_navigation_sql`, `specify_for_each`, `specify_statements`, `specify_procedure`, and `specify_catalog`.
+    - Implemented relational extended table foreign key paths up to depth 16.
+    - Candidate base table inference with direct-matching candidate prioritization and ancestor subordination pruning.
+    - Fail-closed diagnostics: `spc0004` and `spc0005`.
+    - Multi-dialect SQL query generation with canonical column casing.
+  - `src/gx-engine/src/lib.rs`:
+    - Exported `pub mod navigation;`.
+  - `src/gx-engine/tests/navigation_specifier.rs`:
+    - Added 10/10 end-to-end integration tests:
+      1. `test_single_table_base_table_inference`
+      2. `test_extended_table_join_resolution`
+      3. `test_defined_by_disambiguation`
+      4. `test_fail_closed_unrelated_attributes_spc0004`
+      5. `test_fail_closed_ambiguous_base_table_spc0005`
+      6. `test_order_and_secondary_index_selection`
+      7. `test_multi_dialect_sql_generation`
+      8. `test_nested_for_each_automatic_correlation`
+      9. `test_when_none_block_preservation`
+      10. `test_end_to_end_specify_procedure_and_catalog`
+- Verification: 352 passed / 0 failed across all 35 test suites in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
+- Registry: promoted `sql_navigation` capability to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Specifier & SQL Navigation** subsystem reaches **75.0% parity (6/8 areas: C1, C2, D1, D2, D3, D4)**. Overall weighted SDK replacement advances from **47.0% to 50.0% (38/56 areas touched: 69.6%)**.
+
 
 

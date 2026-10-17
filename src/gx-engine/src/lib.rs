@@ -13,6 +13,7 @@ pub mod frontend;
 pub mod incremental;
 pub mod kb;
 pub mod model;
+pub mod navigation;
 pub mod record_runtime;
 pub mod rules;
 pub mod structured;
