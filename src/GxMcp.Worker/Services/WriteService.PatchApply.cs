@@ -12,6 +12,20 @@ namespace GxMcp.Worker.Services
     // plans/007-decompose-writeservice.md.
     public partial class WriteService
     {
+        /// <summary>
+        /// Effective <c>verifyMode</c> for a semantic-ops write. An omitted mode on a
+        /// Structure part is <c>semantic</c>, so the attribute description the SDK
+        /// derives from the attribute name does not fail the comparison (#525, #557);
+        /// an explicit value, <c>normalized</c> included, is honoured as sent.
+        /// </summary>
+        internal static string ResolveOpsVerifyMode(string partName, string requestedVerifyMode)
+        {
+            if (string.IsNullOrWhiteSpace(requestedVerifyMode)
+                && string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
+                return "semantic";
+            return requestedVerifyMode;
+        }
+
         public string ApplySemanticOps(JObject req)
         {
             string target = req?["target"]?.ToString();
@@ -55,10 +69,7 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrEmpty(partName))
                     partName = "Structure";
 
-                if (string.IsNullOrWhiteSpace(verifyMode) && string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
-                {
-                    verifyMode = "semantic";
-                }
+                verifyMode = ResolveOpsVerifyMode(partName, verifyMode);
 
                 // Pre-flight: reject immediately when no KB is open, before JIT-loading GeneXus types.
                 if (!_objectService.GetKbService().IsOpen)

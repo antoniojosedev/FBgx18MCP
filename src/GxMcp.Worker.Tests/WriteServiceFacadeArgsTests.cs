@@ -226,10 +226,13 @@ namespace GxMcp.Worker.Tests
 
         [Theory]
         [InlineData("Structure", null, "semantic")]
-        [InlineData("Source", "ops", "semantic")]
-        [InlineData("Structure", "ops", "semantic")]
+        [InlineData("Structure", "full", "semantic")]
+        [InlineData("Structure", "patch", "semantic")]
         [InlineData("Source", "patch", null)]
-        public void NormalizeFacadeArgs_DefaultsVerifyModeToSemantic_ForStructureOrOps(string part, string mode, string expectedVerifyMode)
+        // mode=ops is routed to ApplySemanticOps and never reaches this facade; the
+        // default is keyed on the part only (#557), so a stray mode value changes nothing.
+        [InlineData("Source", "ops", null)]
+        public void NormalizeFacadeArgs_DefaultsVerifyModeToSemantic_ForStructureOnly(string part, string mode, string expectedVerifyMode)
         {
             var args = new JObject
             {
