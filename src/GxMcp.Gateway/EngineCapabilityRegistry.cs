@@ -385,6 +385,24 @@ namespace GxMcp.Gateway
                 notes: "Parses modern GeneXus Design System Objects (DSO) including tokens with groups (#colors, #spacing, #fonts), @import parent inheritance, and style rules with class selectors and pseudo-classes. Resolves tokens with scoped fallback and renders clean, valid CSS stylesheets, failing closed if any token reference is unresolvable. Zero external dependencies. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "structured_diagnostics_catalog",
+                title: "Official GeneXus diagnostics catalog, source span mapping, categories, severities, and Clang/Rust-style terminal rendering",
+                engineSurface: "diagnostics catalog engine + GeneXus diagnostic codes (spc0004-spc0216, src0295) + source location mapping + caret terminal renderer + JSON bag",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/diagnostics_catalog.rs; src/gx-engine/tests/diagnostics_catalog.rs (10/10 tests: diagnostic code metadata, error and warning counting, fail-closed error checks, terminal rendering with line and caret, rendering without location, JSON serialization/deserialization, severity filtering, category grouping, spc0004/spc0005, and spc0006/spc0034 instantiation)",
+                consumers: Array.Empty<string>(),
+                notes: "Provides an authoritative catalog of official GeneXus error codes (spc0004, spc0005, spc0006, spc0009, spc0010, spc0023, spc0034, spc0051, spc0216, src0295) mapped to categories (Syntax, TypeCheck, Specification, Database, Reorganization, Naming, Security) and severities. Emits Clang/Rust-style terminal diagnostic blocks with line extraction, carets (^), and JSON bags for IDE/MCP consumption. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "text_tree_roundtrip",
+                title: "Text tree export, import, and round-trip catalog serialization for filesystem indexing and GxWire interop (Issue #499)",
+                engineSurface: "text tree engine + directory tree serialization (.prc, .trn, .sdt, .dom, .att, .dp, .ds, .dso) + recursive reader/writer + catalog roundtrip",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/text_tree.rs; src/gx-engine/tests/text_tree.rs (10/10 tests: procedure export, transaction export, domain/attribute export, SDT export, dataprovider/dataselector export, design system export, full catalog round-trip export/import, filesystem directory write/read roundtrip, fail-closed corrupted extension rejection, and JSON snapshot serialization)",
+                consumers: Array.Empty<string>(),
+                notes: "Exports and imports entire GeneXus Knowledge Base catalogs as clean text trees on the filesystem (.prc, .trn, .sdt, .dom, .att, .dp, .ds, .dso). Enables external static analysis and solves Issue #499 by allowing GxWire to parse and index Knowledge Bases without requiring a proprietary SDK or live database. Zero external dependencies. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "general_gx_surface",
                 title: "General GeneXus objects, Rules, Events and forms",
                 engineSurface: "none",

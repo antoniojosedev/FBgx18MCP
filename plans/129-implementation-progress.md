@@ -1750,6 +1750,34 @@ Owner-reported implementation and native observations:
 - Registry: promoted `guid_and_extended_math` and `design_system_tokens_styles` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
 - Milestone: **Extended Types (Row G9)** and **Design System Objects (Row B8, J1)** promoted to Parity. Overall weighted SDK replacement advances from **62.5% to 66.1% (47/56 areas touched: 83.9%)**.
 
+## Structured Diagnostics Model & Text Tree Interoperability (2026-10-17)
+
+- Scope & Authorization: Official GeneXus diagnostic codes catalog, terminal rendering, and text-tree catalog export/import engine (Rows C4, I3; resolving Issue #499) under authorized Plan 129 ([Plan 129](129-independent-rust-toolchain.md)).
+- Functionality Delivered:
+  - Structured Diagnostics Catalog & Location Model (`src/gx-engine/src/diagnostics_catalog.rs`):
+    - Comprehensive GeneXus error codes catalog: `spc0004` (Unrelated attributes), `spc0005` (Ambiguous base table), `spc0006` (Ambiguous object reference), `spc0009` (Type mismatch), `spc0010` (Cannot convert), `spc0023` (Incomplete primary key), `spc0034` (Primary key cannot be updated), `spc0051` (Variable not defined), `spc0216` (Circular definition), `src0295` (Unique rule unsupported).
+    - Source location tracking: captures `file`, `line`, `column`, `length` coordinates for exact error pinning.
+    - Diagnostics bag: manages error and warning collections, provides fail-closed `has_errors()`, and categorizes diagnostics (`Syntax`, `TypeCheck`, `Specification`, `Database`, `Reorganization`, `Naming`, `Security`).
+    - Clang/Rust-style terminal renderer: formats diagnostics with file path, line/col numbers, source line extraction, and caret (`^`) pointing to the offending token with optional multi-character span.
+    - Machine-readable JSON export/import for IDE and MCP integration.
+  - Text Tree Export & Import Engine (`src/gx-engine/src/text_tree.rs`):
+    - Multi-object filesystem tree serialization: exports entire Knowledge Base catalogs into clean, readable text files with dedicated extensions:
+      - `Objects/Procedures/<name>.prc` (Rules, Variables, Source parts with section markers)
+      - `Objects/Transactions/<name>.trn` (Structure, attributes, primary/foreign keys)
+      - `Definitions/SDTs/<name>.sdt` (Schema fields and nested records)
+      - `Definitions/Domains/<name>.dom` and `Definitions/Attributes/<name>.att` (Type, BasedOn)
+      - `Objects/DataProviders/<name>.dp` and `Objects/DataSelectors/<name>.ds` (Authored grammar)
+      - `Objects/DesignSystems/<name>.dso` (Tokens and style rules)
+    - Full Catalog Round-Trip: parses filesystem snapshots, infers object kinds from file extensions, reconnects source parts, and validates the reconstructed `Catalog` with zero loss.
+    - Resolves Issue #499: provides the standard text-tree folder layout required for GxWire call-graph indexing without needing a native GeneXus installation or live database.
+  - Integration Tests:
+    - `src/gx-engine/tests/diagnostics_catalog.rs`: 10/10 tests passing (catalog metadata, error/warning counting, fail-closed error checks, terminal rendering with line/caret, rendering without location, JSON serialization, severity filtering, category grouping, spc0004/spc0005, and spc0006/spc0034 instantiation).
+    - `src/gx-engine/tests/text_tree.rs`: 10/10 tests passing (procedure export, transaction export, domain/attribute export, SDT export, dataprovider/dataselector export, design system export, full catalog round-trip export/import, filesystem directory write/read roundtrip, fail-closed corrupted extension rejection, JSON snapshot serialization).
+- Verification: 461 passed / 0 failed across all 46 test suites in `gx-engine` (441 existing + 20 new tests). Clippy (`--all-targets`) clean with 0 warnings, rustfmt clean. 44/44 `EngineBackendTests` passed in .NET Gateway.
+- Registry: promoted `structured_diagnostics_catalog` and `text_tree_roundtrip` capabilities to `Parity` in `EngineCapabilityRegistry.cs`.
+- Milestone: **Diagnostics Model (Row C4)** and **Text Tree Exchange (Row I3)** promoted to Parity. Overall weighted SDK replacement advances from **66.1% to 69.6% (49/56 areas touched: 87.5%)**.
+
+
 
 
 
