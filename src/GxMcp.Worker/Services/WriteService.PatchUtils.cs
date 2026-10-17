@@ -754,7 +754,7 @@ namespace GxMcp.Worker.Services
             if (actual == null || expected == null) return false;
             if (WebFormXmlHelper.IsVisualPart(partName))
             {
-                try { return XmlEquivalence.AreEquivalent(actual, expected, out _); }
+                try { return XmlEquivalence.AreEquivalent(actual, expected, XmlEquivalenceOptions.Layout, out _); }
                 catch { return false; }
             }
             return string.Equals(actual, expected, StringComparison.Ordinal);
