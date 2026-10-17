@@ -110,6 +110,104 @@ namespace GxMcp.Worker.Tests
             Assert.True(string.IsNullOrEmpty(error["hint"]?.ToString()));
         }
 
+        private static SearchIndex.IndexEntry[] TwoProceduresAndOne(string thirdType)
+            => new[]
+            {
+                new SearchIndex.IndexEntry
+                {
+                    Name = "InvoiceReport",
+                    Type = "Procedure",
+                    Guid = "00000000-0000-0000-0000-000000000021",
+                    Path = "Root Module/Reports/InvoiceReport"
+                },
+                new SearchIndex.IndexEntry
+                {
+                    Name = "InvoiceReport",
+                    Type = "Procedure",
+                    Guid = "00000000-0000-0000-0000-000000000022",
+                    Path = "Root Module/Billing/InvoiceReport"
+                },
+                new SearchIndex.IndexEntry
+                {
+                    Name = "InvoiceReport",
+                    Type = thirdType,
+                    Guid = "00000000-0000-0000-0000-000000000023",
+                    Path = "Root Module/InvoiceReport"
+                }
+            };
+
+        [Fact]
+        public void AmbiguousName_WhenOnlyOneTypeIsUnique_SuggestsThatTypeAndNotTheDuplicatedOne()
+        {
+            var indexCache = BuildIndex(TwoProceduresAndOne("Procedure"));
+            // Objects is a ConcurrentDictionary, so candidate order follows key hashing: make the last
+            // enumerated candidate the unique-typed one so a positional pick (candidates[0]) cannot pass.
+            var ordered = indexCache.TryGetLoadedIndex().FindByName("InvoiceReport");
+            var unique = ordered[ordered.Count - 1];
+            unique.Type = "Transaction";
+            var graphTools = new GraphToolsService(null, null, indexCache, new CallerGraphService(indexCache));
+
+            foreach (string response in new[]
+            {
+                graphTools.Impact(new JObject { ["name"] = "InvoiceReport" }),
+                graphTools.ObjectContext(new JObject { ["name"] = "InvoiceReport" })
+            })
+            {
+                var json = JObject.Parse(response);
+                var error = json["error"] as JObject;
+                Assert.NotNull(error);
+                Assert.Equal("AmbiguousName", error["code"]?.ToString());
+                Assert.Equal("'InvoiceReport' matches 3 objects; select one with guid, path or type.", error["message"]?.ToString());
+                string hint = error["hint"]?.ToString();
+                Assert.NotNull(hint);
+                Assert.Contains("type=Transaction", hint);
+                Assert.Contains("guid=" + unique.Guid, hint);
+                Assert.DoesNotContain("type=Procedure", hint);
+                Assert.Equal(3, (json["candidates"] as JArray)?.Count);
+            }
+        }
+
+        [Fact]
+        public void AmbiguousName_WhenTypeProvidedAndStillAmbiguous_DoesNotSuggestTypeAgain()
+        {
+            var indexCache = BuildIndex(TwoProceduresAndOne("Transaction"));
+            var graphTools = new GraphToolsService(null, null, indexCache, new CallerGraphService(indexCache));
+
+            string response = graphTools.Impact(new JObject { ["name"] = "InvoiceReport", ["type"] = "Procedure" });
+            var json = JObject.Parse(response);
+
+            var error = json["error"] as JObject;
+            Assert.NotNull(error);
+            Assert.Equal("AmbiguousName", error["code"]?.ToString());
+            Assert.Equal("'InvoiceReport' matches 2 objects; select one with guid or path.", error["message"]?.ToString());
+            Assert.True(string.IsNullOrEmpty(error["hint"]?.ToString()));
+
+            var candidates = json["candidates"] as JArray;
+            Assert.NotNull(candidates);
+            Assert.Equal(2, candidates.Count);
+            Assert.All(candidates, c => Assert.Equal("Procedure", c["type"]?.ToString()));
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public void AmbiguousName_WhenOnlyUniqueTypeIsEmpty_KeepsGuidOrPathMessageWithoutTypeHint(string emptyType)
+        {
+            var indexCache = BuildIndex(TwoProceduresAndOne(emptyType));
+            var graphTools = new GraphToolsService(null, null, indexCache, new CallerGraphService(indexCache));
+
+            string response = graphTools.Impact(new JObject { ["name"] = "InvoiceReport" });
+            var json = JObject.Parse(response);
+
+            var error = json["error"] as JObject;
+            Assert.NotNull(error);
+            Assert.Equal("AmbiguousName", error["code"]?.ToString());
+            Assert.Equal("'InvoiceReport' matches 3 objects; select one with guid or path.", error["message"]?.ToString());
+            Assert.True(string.IsNullOrEmpty(error["hint"]?.ToString()));
+            Assert.Equal(3, (json["candidates"] as JArray)?.Count);
+        }
+
         [Fact]
         public void Resolve_WithTypeProvided_DisambiguatesAmbiguousCandidate()
         {

@@ -583,7 +583,7 @@ namespace GxMcp.Gateway
             ["genexus_impact"] =
                 "# genexus_impact\n\n" +
                 "Read-only affected set of an object over the caller/callee graph.\n\n" +
-                "Select the object with `name` (optionally `type`), `guid`, `entityKey` or `path`; a bare name shared by several objects is refused with each guid/path. `direction` up (callers, default) | down | both; `maxDepth` 1-6 (2); `maxNodes` 1-2000 (200); `typeFilter` narrows the report without changing the traversal.\n" +
+                "Select the object with `name` (optionally `type`), `guid`, `entityKey` or `path`; a bare name shared by several objects is refused with each guid/path/type, and the hint names `type` when one type value identifies exactly one candidate. `direction` up (callers, default) | down | both; `maxDepth` 1-6 (2); `maxNodes` 1-2000 (200); `typeFilter` narrows the report without changing the traversal.\n" +
                 "Returns `affected` (with depth), `countsByType`, `order` (a topological sort: an object comes after everything it calls), `hasCycle`/`cycleNodes`, `stats.truncated`/`truncatedBy` naming the cap hit, and `fieldTrust`: callers/callees come from index enrichment, so `partial:<pct>` means part of the graph was not read - an empty set is then not a confirmed zero. No risk score.\n",
 
             ["genexus_object_context"] =
