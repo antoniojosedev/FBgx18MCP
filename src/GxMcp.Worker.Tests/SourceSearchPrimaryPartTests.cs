@@ -94,7 +94,7 @@ namespace GxMcp.Worker.Tests
                 string part = ObjectService.ResolveSearchPartName(type);
                 Seed(loaded, part, "EventOnlyNeedle()");
                 restored.MarkIndexComplete(1);
-                var result = Search(new SourceSearchService(restored, new ObjectService(null, null)), "EventOnlyNeedle", null);
+                var result = Search(new SourceSearchService(restored, new ObjectService(null, null)), "EventOnlyNeedle", null, loaded.Name);
                 Assert.Equal(1, result["count"].Value<int>());
                 Assert.True(restored.FlushNow());
                 var reloaded = new IndexCacheService();
@@ -173,11 +173,19 @@ namespace GxMcp.Worker.Tests
                 new JObject { ["source"] = source }, null, "mcp", false));
         }
 
-        private static JToken Search(SourceSearchService service, string pattern, string scope) =>
-            JObject.Parse(service.SearchAsJson(new SourceSearchCriteria
+        private static JToken Search(SourceSearchService service, string pattern, string scope, string objectName = null)
+        {
+            var raw = service.SearchAsJson(new SourceSearchCriteria
             {
                 Pattern = pattern, Scope = scope == null ? null : new List<string> { scope },
+                ObjectName = objectName,
                 MaxResults = 10, TimeoutMs = 30000
-            }))["result"];
+            });
+            var json = JObject.Parse(raw);
+            var result = json["result"];
+            if (result == null)
+                throw new InvalidOperationException($"SearchAsJson returned non-result payload: {raw}");
+            return result;
+        }
     }
 }
