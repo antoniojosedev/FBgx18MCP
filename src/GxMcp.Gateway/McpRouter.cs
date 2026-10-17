@@ -1977,7 +1977,7 @@ namespace GxMcp.Gateway
                 "retryable", "reconciliationRequired", "verifiedByReadback", "implicitLifecycleOperations",
                 "persistedHash", "normalizedRequestedHash", "normalizedPersistedHash",
                 "persistedMatchCount", "oldContentPresent", "verification", "rollback",
-                "rolledBack", "versionToken", "persistedVerifyError", "replacementPresent",
+                "rolledBack", "versionToken", "persistedVerifyError", "mismatchKind", "replacementPresent",
                 "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
                 "matchedCount", "implicitOperations", "diagnosticContext",
                 // Patch safety evidence: retain the distinction between a save attempt

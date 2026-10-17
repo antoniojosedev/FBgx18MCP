@@ -233,11 +233,13 @@ namespace GxMcp.Worker.Tests
         public void Issue547_PatchPersistenceReceipt_DistinguishesSavedFromUnverified()
         {
             var payloadSaved = new JObject();
-            PatchPersistenceReceipt.MarkNotPersisted(payloadSaved, saved: true, verifyError: "whitespace difference");
+            PatchPersistenceReceipt.MarkNotPersisted(payloadSaved, saved: true, verifyError: "whitespace difference", normalizedMatches: true);
 
             Assert.Equal("WriteNotPersisted", payloadSaved["code"]?.ToString());
-            Assert.Contains("normalization difference", payloadSaved["message"]?.ToString());
+            Assert.Equal("normalization", payloadSaved["mismatchKind"]?.ToString());
+            Assert.Contains("only by formatting or normalization", payloadSaved["message"]?.ToString());
             Assert.True(payloadSaved["saveAttempted"]?.ToObject<bool>());
+            Assert.True(payloadSaved["sdkSaveCompleted"]?.ToObject<bool>());
 
             var payloadUnsaved = new JObject();
             PatchPersistenceReceipt.MarkNotPersisted(payloadUnsaved, saved: false, verifyError: "syntax rejected");

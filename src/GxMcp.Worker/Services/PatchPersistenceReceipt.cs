@@ -114,18 +114,84 @@ namespace GxMcp.Worker.Services
             AttachOutcome(payload, saved, verified: true);
         }
 
-        internal static void MarkNotPersisted(JObject payload, bool saved, string verifyError, bool commentOnly = false)
+        internal const string MismatchKindNormalization = "normalization";
+        internal const string MismatchKindContent = "content";
+
+        /// <summary>
+        /// Marks a write whose fresh post-save read completed but did not match
+        /// the request. <paramref name="normalizedMatches"/> classifies the
+        /// divergence: <c>true</c> when the requested and persisted texts are the
+        /// same content under the verifier's normalized or semantic
+        /// canonicalization (only EOL, BOM, trailing whitespace, blank lines,
+        /// keyword casing or spacing differ), <c>false</c> when the content
+        /// itself differs, <c>null</c> when no such evidence is available. The
+        /// "formatting or normalization" wording is reserved for the first case,
+        /// so lost content is never reported as a rendering difference (#547).
+        /// </summary>
+        internal static void MarkNotPersisted(
+            JObject payload,
+            bool saved,
+            string verifyError,
+            bool commentOnly = false,
+            bool? normalizedMatches = null)
         {
+            string mismatchKind = ClassifyMismatch(normalizedMatches);
             payload["_internalStatus"] = "Error";
             payload["code"] = commentOnly ? "CommentOnlyWriteNotPersisted" : "WriteNotPersisted";
             payload["message"] = commentOnly
                 ? "The SDK save completed, but the forced Source re-read did not contain the requested comment-only change."
-                : (saved
-                    ? "The SDK save completed, but post-save text verification detected a formatting or normalization difference."
-                    : "The post-save re-read does not contain the requested patched content.");
+                : NotPersistedMessage(saved, mismatchKind);
+            if (mismatchKind != null) payload["mismatchKind"] = mismatchKind;
             if (!string.IsNullOrWhiteSpace(verifyError)) payload["persistedVerifyError"] = verifyError;
             payload["saveAttempted"] = saved;
+            // The physical save result stays at the top of the receipt next to the
+            // fail-closed `saved` claim, so a consumer never has to infer it from
+            // nested WriteService evidence. WriteService's own value wins when it
+            // is present; it may be null for an unknown save completion (#547).
+            if (payload["sdkSaveCompleted"] == null || payload["sdkSaveCompleted"].Type == JTokenType.Null)
+                payload["sdkSaveCompleted"] = saved;
             AttachOutcome(payload, saved, verified: false);
+        }
+
+        internal static string ClassifyMismatch(bool? normalizedMatches)
+            => normalizedMatches == null
+                ? null
+                : normalizedMatches.Value ? MismatchKindNormalization : MismatchKindContent;
+
+        /// <summary>
+        /// True when the requested and persisted texts carry the same content and
+        /// differ only by a rendering the SDK is known to apply. The normalized
+        /// hashes cover EOL, BOM, trailing whitespace and blank lines; they keep
+        /// keyword casing, so `Numeric(4)` persisted as `NUMERIC(4)` hashes
+        /// differently although nothing was lost. The semantic canonicalization is
+        /// the verifier's own definition of a harmless casing/spacing rendering and
+        /// is reused here to classify the divergence without changing the verdict
+        /// of the selected verifyMode (#547).
+        /// </summary>
+        internal static bool NormalizedMatches(
+            TextPersistenceVerifier.Result verification,
+            string requested,
+            string persisted,
+            string partName)
+        {
+            if (verification != null
+                && !string.IsNullOrEmpty(verification.NormalizedRequestedHash)
+                && string.Equals(verification.NormalizedRequestedHash, verification.NormalizedPersistedHash, StringComparison.Ordinal))
+                return true;
+            return string.Equals(
+                TextPersistenceVerifier.Canonicalize(requested, "semantic", partName),
+                TextPersistenceVerifier.Canonicalize(persisted, "semantic", partName),
+                StringComparison.Ordinal);
+        }
+
+        private static string NotPersistedMessage(bool saved, string mismatchKind)
+        {
+            if (!saved) return "The post-save re-read does not contain the requested patched content.";
+            if (mismatchKind == MismatchKindNormalization)
+                return "The SDK save completed and the persisted text differs from the request only by formatting or normalization (casing, spacing, line endings or blank lines) that the selected verifyMode does not tolerate. Re-read the part to confirm it; do not retry the patch.";
+            if (mismatchKind == MismatchKindContent)
+                return "The SDK save completed, but the persisted text differs from the request in content: the post-save re-read does not contain the requested patched content. Re-read the part and compare it with the request before deciding on another edit; do not retry blindly.";
+            return "The SDK save completed, but the post-save re-read does not contain the requested patched content.";
         }
 
         internal static void MarkVerificationUnavailable(JObject payload, bool saveAttempted, string reason)

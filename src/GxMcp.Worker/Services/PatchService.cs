@@ -1085,7 +1085,12 @@ namespace GxMcp.Worker.Services
                         }
                         else
                         {
-                            PatchPersistenceReceipt.MarkNotPersisted(writePayload, saveReported, verifyError, commentOnlyChange);
+                            PatchPersistenceReceipt.MarkNotPersisted(
+                                writePayload,
+                                saveReported,
+                                verifyError,
+                                commentOnlyChange,
+                                PatchPersistenceReceipt.NormalizedMatches(verification, finalCode, confirmedPersistedSource, partName));
                             PreserveCommittedVisualEvidence(writePayload);
                             if (confirmedPersistedSource != null
                                 && originalSource != null
@@ -1283,19 +1288,17 @@ namespace GxMcp.Worker.Services
                     string writeCode = writePayload["code"]?.ToString();
                     string errCode = !string.IsNullOrWhiteSpace(writeCode) ? writeCode : "PatchWriteFailed";
                     bool objectSaveIncomplete = string.Equals(errCode, "ObjectSaveIncomplete", StringComparison.OrdinalIgnoreCase);
-                    bool verificationUnavailable = string.Equals(errCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
                     bool saveAttemptedOrReported = resultObj["saveAttempted"]?.ToObject<bool>() == true
                         || resultObj["objectSaved"]?.ToObject<bool>() == true
                         || string.Equals(resultObj["outcome"]?.ToString(), "SavedUnverified", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(errCode, "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
 
-                    string recoveryHint = objectSaveIncomplete
-                        ? writePayload["manualRecovery"]?.ToString()
-                        : verificationUnavailable
-                            ? writePayload["hint"]?.ToString()
-                        : saveAttemptedOrReported
-                            ? "Re-read the object source and verify whether the persisted state matches your requirement before attempting any further changes. Do not retry blindly."
-                        : "Re-read the object source and verify the part is writable, then retry.";
+                    string recoveryHint = SelectRecoveryHint(
+                        errCode,
+                        saveAttemptedOrReported,
+                        resultObj["mismatchKind"]?.ToString(),
+                        writePayload["manualRecovery"]?.ToString(),
+                        writePayload["hint"]?.ToString());
                     var canonical = JObject.Parse(Models.McpResponse.Err(
                         code: errCode,
                         message: writeMsg,
@@ -1320,6 +1323,33 @@ namespace GxMcp.Worker.Services
                 Logger.Error($"[PATCH] Error applying patch: {ex.Message}");
                 return BuildPatchResult("Error", partName, NormalizeOperation(operation), expectedCount, 0, ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Picks the recovery hint for a failed patch. A write the SDK already
+        /// saved is never steered into a retry: a <c>normalization</c> mismatch
+        /// only needs a re-read (or a tolerant verifyMode) to be confirmed, and a
+        /// <c>content</c> mismatch needs a re-read and comparison before any
+        /// further edit (#547).
+        /// </summary>
+        internal static string SelectRecoveryHint(
+            string errCode,
+            bool saveAttemptedOrReported,
+            string mismatchKind,
+            string manualRecovery,
+            string writeHint)
+        {
+            if (string.Equals(errCode, "ObjectSaveIncomplete", StringComparison.OrdinalIgnoreCase))
+                return manualRecovery;
+            if (string.Equals(errCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase))
+                return writeHint;
+            if (!saveAttemptedOrReported)
+                return "Re-read the object source and verify the part is writable, then retry.";
+            if (string.Equals(mismatchKind, PatchPersistenceReceipt.MismatchKindNormalization, StringComparison.OrdinalIgnoreCase))
+                return "The SDK save completed; the persisted text differs from the request only by formatting or normalization. Re-read the part, or verify it with verifyMode=normalized or semantic, to confirm it matches your requirement. Do not retry the patch.";
+            if (string.Equals(mismatchKind, PatchPersistenceReceipt.MismatchKindContent, StringComparison.OrdinalIgnoreCase))
+                return "The SDK save completed, but the persisted text differs from the request in content. Re-read the part and compare it with the requested change before deciding on another edit. Do not retry blindly.";
+            return "Re-read the object source and verify whether the persisted state matches your requirement before attempting any further changes. Do not retry blindly.";
         }
 
         private static void PreserveCommittedVisualEvidence(JObject payload)

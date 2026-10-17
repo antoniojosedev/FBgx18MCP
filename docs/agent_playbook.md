@@ -16,9 +16,18 @@ A missing/freshness-unconfirmed read is unknown evidence, never a text mismatch.
 `verifyMode=exact` compares ordinal text; EOL and module-qualification changes
 remain differences, with typed reasons and bounded expected/read line previews.
 The older patch exact contract still treats CRLF/LF as logically equivalent.
-`sdkSaveCompleted` and `saved` describe physical save completion independently
-from `persisted`/`verified` (requested text confirmed) and `persistedStateKnown`
-(reliable reread). Unknown save completion is null. `postSaveVerification`
+`sdkSaveCompleted` describes physical save completion independently from
+`persisted`/`verified` (requested text confirmed) and `persistedStateKnown`
+(reliable reread). In `mode=full` text writes, `saved` mirrors
+`sdkSaveCompleted`; in `mode=patch`, `saved` is the fail-closed persistence
+claim and stays `false` until the fresh reread confirms the content, while
+`saveAttempted` and `sdkSaveCompleted` keep the physical save visible at the top
+of the receipt (`mutation.saved` is that same physical signal nested in the
+WriteService evidence). A `WriteNotPersisted` patch receipt classifies the
+divergence as `mismatchKind: normalization` (same content under the
+normalized/semantic canonicalization: re-read or verify with a tolerant
+`verifyMode`) or `content` (re-read and compare; never retry blindly).
+Unknown save completion is null. `postSaveVerification`
 identifies `representation=genexus_read`, matches and the observed versionToken.
 Async result polling retains this evidence even on error. Do not retry a write
 because verification failed; obtain a new complete read and version first.
