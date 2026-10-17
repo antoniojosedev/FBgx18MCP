@@ -55,6 +55,7 @@ namespace GxMcp.Worker.Services
                 {
                     ["instance"] = instance.Name,
                     ["typedDiff"] = typedDiff,
+                    ["movedAttributes"] = mutation["movedAttributes"]?.DeepClone() ?? new JArray(),
                     ["versionToken"] = versionToken,
                     ["persisted"] = false,
                     ["patternReReadConfirmed"] = false,
@@ -122,6 +123,14 @@ namespace GxMcp.Worker.Services
                         throw new WwpTabException("WwpTabNotPersisted",
                             patternVerification["message"]?.ToString()
                                 ?? "The SDK save completed, but the typed tab state did not survive the PatternInstance re-read.");
+                    JArray movedAttributes = lockedMutation["movedAttributes"] as JArray ?? new JArray();
+                    JObject moveVerification = string.IsNullOrWhiteSpace(persistedXml) ? null
+                        : VerifyMovedAttributes(XDocument.Parse(persistedXml, LoadOptions.PreserveWhitespace),
+                            args["controlName"].ToString(), movedAttributes);
+                    if (movedAttributes.Count > 0 && moveVerification?["confirmed"]?.ToObject<bool?>() != true)
+                        throw new WwpTabException("WwpTabNotPersisted",
+                            moveVerification?["message"]?.ToString()
+                                ?? "The SDK save completed, but a moved attribute did not leave its source table.");
 
                     string applyOnSaveAfter = ReadObjectProperty(persistedInstance ?? currentInstance,
                         "SDPlus_Editor_Apply_On_Save");
@@ -155,6 +164,7 @@ namespace GxMcp.Worker.Services
                             ["before"] = ProjectTabs(XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace)),
                             ["after"] = persistedTabs
                         },
+                        ["movedAttributes"] = movedAttributes,
                         ["versionToken"] = WriteService.ComputeContentVersionToken(persistedInstance ?? currentInstance, persistedXml),
                         ["persisted"] = true,
                         ["patternReReadConfirmed"] = true,
@@ -199,18 +209,18 @@ namespace GxMcp.Worker.Services
             XElement tabs = document.Descendants().FirstOrDefault(e => Is(e, "tabs"));
             if (tabs == null && operation == "add_tab")
             {
-                XElement container = document.Descendants().FirstOrDefault(e => Is(e, "table") && string.Equals(Attr(e, "name"), "TableContent", StringComparison.OrdinalIgnoreCase))
-                    ?? document.Descendants().FirstOrDefault(e => Is(e, "table") && string.Equals(Attr(e, "name"), "TableMain", StringComparison.OrdinalIgnoreCase))
-                    ?? document.Descendants().FirstOrDefault(e => Is(e, "table"));
-                if (container != null)
-                {
-                    tabs = new XElement(container.Name.Namespace + "tabs");
-                    container.Add(tabs);
-                }
+                // #552: a Transaction form has no <tabs> until one is added. It is synthesized
+                // only under the form content table (or an explicit containerName); picking an
+                // arbitrary <table> could land the tabs inside a popup, a grid or another level.
+                JObject containerError = ResolveTabsSynthesisContainer(document, args, out XElement container);
+                if (containerError != null) return containerError;
+                tabs = new XElement(container.Name.Namespace + "tabs");
+                container.Add(tabs);
             }
             if (tabs == null) return TabError("TabsContainerNotFound", "The PatternInstance has no <tabs> container.");
-            XElement tab = tabs.Elements().FirstOrDefault(e => Is(e, "tab")
+            XElement tab = tabs.Elements().FirstOrDefault(e => IsTabElement(e.Name.LocalName)
                 && string.Equals(Attr(e, "ControlName"), controlName, StringComparison.OrdinalIgnoreCase));
+            var movedAttributes = new JArray();
 
             switch (operation)
             {
@@ -219,7 +229,13 @@ namespace GxMcp.Worker.Services
                     tab = new XElement(tabs.GetDefaultNamespace() + "tab",
                         new XAttribute("ControlName", controlName),
                         new XAttribute("title", args["title"].ToString()));
-                    AddXmlChildren(tab, args?["children"] as JArray);
+                    try
+                    {
+                        AddXmlChildren(tab, args?["children"] as JArray);
+                        JObject moveError = MoveFormAttributesIntoTab(tab, FormScope(tabs), movedAttributes);
+                        if (moveError != null) return moveError;
+                    }
+                    catch (WwpTabException ex) { return TabError(ex.Code, ex.Message); }
                     InsertXmlTab(tabs, tab, args?["position"]?.ToObject<int?>());
                     break;
                 case "move_tab":
@@ -234,7 +250,126 @@ namespace GxMcp.Worker.Services
                 default:
                     return TabError("UnknownWwpActionOperation", "Unknown WorkWithPlus tab action '" + operation + "'.");
             }
-            return new JObject { ["changed"] = true };
+            return new JObject { ["changed"] = true, ["movedAttributes"] = movedAttributes };
+        }
+
+        private static readonly string[] TabsSynthesisContainers = { "TableContent", "TableMain" };
+
+        // The table a synthesized <tabs> goes under: the explicit containerName when given,
+        // otherwise the unique TableContent, otherwise the unique TableMain. Anything else is
+        // refused with the paths the caller can name, never guessed.
+        private static JObject ResolveTabsSynthesisContainer(XDocument document, JObject args, out XElement container)
+        {
+            container = null;
+            string requested = args?["containerName"]?.ToString()?.Trim();
+            foreach (string name in string.IsNullOrWhiteSpace(requested) ? TabsSynthesisContainers : new[] { requested })
+            {
+                // The defaults are matched by their own name; an explicit containerName may be a path.
+                List<XElement> candidates = (string.IsNullOrWhiteSpace(requested)
+                        ? document.Descendants().Where(e => string.Equals(Attr(e, "name"), name, StringComparison.OrdinalIgnoreCase))
+                        : FindFormContainers(document, name))
+                    .Where(e => Is(e, "table")).ToList();
+                if (candidates.Count == 1) { container = candidates[0]; return null; }
+                if (candidates.Count > 1)
+                {
+                    JObject ambiguous = TabError("TabsContainerAmbiguous",
+                        "The PatternInstance has no <tabs> container and '" + name + "' matched more than one table; pass containerName with a path of named ancestors.");
+                    ambiguous["matchingContainers"] = new JArray(candidates.Select(DescribeFormContainer));
+                    return ambiguous;
+                }
+            }
+            JObject notFound = TabError("TabsContainerNotFound",
+                string.IsNullOrWhiteSpace(requested)
+                    ? "The PatternInstance has no <tabs> container and no TableContent or TableMain table to create one under; add_tab does not pick an arbitrary table."
+                    : "The PatternInstance has no <tabs> container and containerName '" + requested + "' matched no table.");
+            notFound["hint"] = "Pass containerName naming the form table (a path of named ancestors is accepted) that should hold the new <tabs>.";
+            notFound["availablePaths"] = new JArray(GetFormActionContainers(document).Where(e => Is(e, "table"))
+                .Select(ContainerPath).Where(p => p.Length > 0).Distinct());
+            return notFound;
+        }
+
+        // The form section that owns a <tabs>: the top-level child of the instance that
+        // contains it (e.g. <transaction>), or the root when <tabs> sits directly under it.
+        private static XElement FormScope(XElement tabs)
+        {
+            XElement scope = tabs;
+            while (scope.Parent != null && scope.Parent.Parent != null) scope = scope.Parent;
+            return scope == tabs ? (tabs.Parent ?? tabs) : scope;
+        }
+
+        // WorkWithPlus references an attribute as "<typeGuid>-<Name>"; callers may pass either form.
+        internal static bool AttributeReferenceMatches(string reference, string requested)
+        {
+            if (string.IsNullOrWhiteSpace(reference) || string.IsNullOrWhiteSpace(requested)) return false;
+            if (string.Equals(reference, requested, StringComparison.OrdinalIgnoreCase)) return true;
+            return reference.EndsWith("-" + requested, StringComparison.OrdinalIgnoreCase)
+                || requested.EndsWith("-" + reference, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<XElement> FormTableAttributes(XElement scope) =>
+            scope.Descendants().Where(e => Is(e, "attribute") && e.Parent != null && Is(e.Parent, "table"));
+
+        // #552: an attribute child names an attribute that is usually already on the form
+        // (in TableAttributes). It is moved, element and XML attributes intact, into the
+        // tab's table; adding a second <attribute> would show the field twice. The new tab is
+        // still detached here, so the scope search cannot see the children being built.
+        private static JObject MoveFormAttributesIntoTab(XElement tab, XElement scope, JArray moved)
+        {
+            var requested = new List<string>();
+            var moves = new List<KeyValuePair<XElement, XElement>>();
+            foreach (XElement placeholder in tab.Descendants().Where(e => Is(e, "attribute")))
+            {
+                string name = Attr(placeholder, "attribute");
+                if (requested.Any(previous => AttributeReferenceMatches(previous, name)))
+                    return TabError("InvalidWwpChild", "Attribute '" + name + "' was requested more than once in the same tab.");
+                requested.Add(name);
+                List<XElement> sources = FormTableAttributes(scope).Where(e => AttributeReferenceMatches(Attr(e, "attribute"), name)).ToList();
+                if (sources.Count > 1)
+                {
+                    JObject ambiguous = TabError("AttributeAmbiguousOnForm",
+                        "Attribute '" + name + "' appears in more than one form table; no tab mutation was applied.");
+                    ambiguous["matchingContainers"] = new JArray(sources.Select(e => DescribeFormContainer(e.Parent)));
+                    return ambiguous;
+                }
+                if (sources.Count == 1) moves.Add(new KeyValuePair<XElement, XElement>(placeholder, sources[0]));
+            }
+            // Every child was validated before the first element moves, so a refusal leaves the form untouched.
+            foreach (var move in moves)
+            {
+                XElement placeholder = move.Key, source = move.Value;
+                string from = ContainerPath(source.Parent);
+                source.Remove();
+                foreach (XAttribute overridden in placeholder.Attributes().Where(a => !a.Name.LocalName.Equals("attribute", StringComparison.OrdinalIgnoreCase)))
+                    source.SetAttributeValue(overridden.Name, overridden.Value);
+                placeholder.ReplaceWith(source);
+                moved.Add(new JObject { ["attribute"] = Attr(source, "attribute"), ["from"] = from });
+            }
+            return null;
+        }
+
+        // After the native save: each moved attribute must be on the form exactly once, inside
+        // the requested tab. A copy left in the source table is a duplicate, not a move.
+        internal static JObject VerifyMovedAttributes(XDocument persisted, string controlName, JArray moved)
+        {
+            if (moved == null || moved.Count == 0) return new JObject { ["confirmed"] = true };
+            XElement tabs = persisted.Descendants().FirstOrDefault(e => Is(e, "tabs"));
+            if (tabs == null) return new JObject { ["confirmed"] = false, ["message"] = "The PatternInstance re-read has no <tabs> container." };
+            XElement tab = tabs.Elements().FirstOrDefault(e => IsTabElement(e.Name.LocalName)
+                && string.Equals(Attr(e, "ControlName"), controlName, StringComparison.OrdinalIgnoreCase));
+            foreach (JObject entry in moved.OfType<JObject>())
+            {
+                string name = entry["attribute"]?.ToString();
+                List<XElement> occurrences = FormTableAttributes(FormScope(tabs))
+                    .Where(e => AttributeReferenceMatches(Attr(e, "attribute"), name)).ToList();
+                if (occurrences.Count != 1 || tab == null || !occurrences[0].Ancestors().Contains(tab))
+                    return new JObject
+                    {
+                        ["confirmed"] = false,
+                        ["message"] = "Attribute '" + name + "' is on the form " + occurrences.Count
+                            + " time(s) after the save instead of once inside tab '" + controlName + "'; the move was rolled back."
+                    };
+            }
+            return new JObject { ["confirmed"] = true };
         }
 
         private static void AddXmlChildren(XElement tab, JArray children)
@@ -309,7 +444,9 @@ namespace GxMcp.Worker.Services
             if (tabs != null)
             {
                 int position = 0;
-                foreach (XElement tab in tabs.Elements().Where(e => Is(e, "tab")))
+                // A Transaction's existing tabs may be gridTab/tabularTab/webComponentTab (#426);
+                // the projection counts every tab kind so order and position survive the re-read.
+                foreach (XElement tab in tabs.Elements().Where(e => IsTabElement(e.Name.LocalName)))
                 {
                     tabsResult.Add(new JObject
                     {
@@ -336,38 +473,41 @@ namespace GxMcp.Worker.Services
             return result;
         }
 
-        private static JObject ApplyNativeTabMutation(KBObjectPart part, string operation, JObject args)
+        internal static JObject ApplyNativeTabMutation(object part, string operation, JObject args)
         {
             object root = GetProperty(part, "RootElement");
             if (root == null) return TabError("WwpNativeRootUnavailable", "PatternInstance RootElement is unavailable.");
             object tabs = Walk(root).FirstOrDefault(e => NativeType(e).Equals("tabs", StringComparison.OrdinalIgnoreCase));
+            object synthesisContainer = null;
             if (tabs == null && operation == "add_tab")
             {
-                object container = Walk(root).FirstOrDefault(e => IsNativeTable(e) && string.Equals(NativeAttribute(e, "name"), "TableContent", StringComparison.OrdinalIgnoreCase))
-                    ?? Walk(root).FirstOrDefault(e => IsNativeTable(e) && string.Equals(NativeAttribute(e, "name"), "TableMain", StringComparison.OrdinalIgnoreCase))
-                    ?? Walk(root).FirstOrDefault(IsNativeTable);
-                if (container != null)
-                {
-                    tabs = CreateNativeChild(container, "tabs");
-                    ExecuteElementCommand(container, tabs, "AddElementCommand", null);
-                }
+                JObject containerError = ResolveNativeTabsSynthesisContainer(root, args, out synthesisContainer);
+                if (containerError != null) return containerError;
             }
-            if (tabs == null) return TabError("TabsContainerNotFound", "The native PatternInstance has no tabs container.");
+            if (tabs == null && synthesisContainer == null) return TabError("TabsContainerNotFound", "The native PatternInstance has no tabs container.");
             string controlName = args["controlName"].ToString();
-            List<object> existingTabs = NativeChildren(tabs).Where(e => NativeType(e).Equals("tab", StringComparison.OrdinalIgnoreCase)).ToList();
+            List<object> existingTabs = tabs == null ? new List<object>() : NativeChildren(tabs).Where(IsNativeTab).ToList();
             object tab = existingTabs.FirstOrDefault(e => string.Equals(NativeAttribute(e, "ControlName"), controlName, StringComparison.OrdinalIgnoreCase));
+            object scope = NativeFormScope(root, tabs ?? synthesisContainer);
 
             MethodInfo executeUpdate = part.GetType().GetMethod("ExecuteUpdate", BindingFlags.Public | BindingFlags.Instance,
                 null, new[] { typeof(string), typeof(Action) }, null);
             Action mutation = () =>
             {
+                if (tabs == null)
+                {
+                    // Synthesized inside the same update as the tab, so a rejected child
+                    // leaves no empty <tabs> behind for the snapshot restore to clean up.
+                    tabs = CreateNativeChild(synthesisContainer, "tabs");
+                    ExecuteElementCommand(synthesisContainer, tabs, "AddElementCommand", null);
+                }
                 if (operation == "add_tab")
                 {
                     if (tab != null) throw new WwpTabException("TabAlreadyExists", "Tab '" + controlName + "' already exists.");
                     object created = CreateNativeChild(tabs, "tab");
                     SetNativeAttribute(created, "ControlName", controlName);
                     SetNativeAttribute(created, "title", args["title"].ToString());
-                    AddNativeChildren(created, args["children"] as JArray);
+                    AddNativeChildren(created, args["children"] as JArray, scope, new List<string>());
                     int index = ClampPosition(args?["position"]?.ToObject<int?>(), existingTabs.Count);
                     ExecuteElementCommand(tabs, created, "InsertElementCommand", index);
                 }
@@ -389,27 +529,108 @@ namespace GxMcp.Worker.Services
             return new JObject { ["changed"] = true };
         }
 
-        private static void AddNativeChildren(object tab, JArray children)
+        private static JObject ResolveNativeTabsSynthesisContainer(object root, JObject args, out object container)
+        {
+            container = null;
+            string requested = args?["containerName"]?.ToString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(requested))
+            {
+                JObject error = ResolveNativeContainer(root, requested, out container);
+                if (error == null && IsNativeTable(container)) return null;
+                container = null;
+                if (error == null) return TabError("TabsContainerNotFound", "containerName '" + requested + "' is not a native table.");
+                error["code"] = error["code"]?.ToString() == "FormActionContainerAmbiguous" ? "TabsContainerAmbiguous" : "TabsContainerNotFound";
+                return error;
+            }
+            foreach (string name in TabsSynthesisContainers)
+            {
+                List<object> candidates = Walk(root).Where(e =>
+                    string.Equals(NativeAttribute(e, "name"), name, StringComparison.OrdinalIgnoreCase) && IsNativeTable(e)).ToList();
+                if (candidates.Count == 1) { container = candidates[0]; return null; }
+                if (candidates.Count > 1)
+                    return TabError("TabsContainerAmbiguous",
+                        "The native PatternInstance has no tabs container and '" + name + "' matched more than one table; pass containerName with a path of named ancestors.");
+            }
+            JObject notFound = TabError("TabsContainerNotFound",
+                "The native PatternInstance has no tabs container and no TableContent or TableMain table to create one under; add_tab does not pick an arbitrary table.");
+            notFound["hint"] = "Pass containerName naming the form table (a path of named ancestors is accepted) that should hold the new tabs.";
+            return notFound;
+        }
+
+        private static bool IsNativeTab(object element) =>
+            IsTabElement(NativeType(element)) || IsTabElement(NativeElementXml(element)?.Name.LocalName);
+
+        private static bool IsNativeAttribute(object element) =>
+            NativeType(element).Equals("attribute", StringComparison.OrdinalIgnoreCase)
+            || NativeElementXml(element)?.Name.LocalName.Equals("attribute", StringComparison.OrdinalIgnoreCase) == true;
+
+        // Native twin of FormScope: the root child whose subtree holds the element.
+        private static object NativeFormScope(object root, object element)
+        {
+            foreach (object section in NativeChildren(root))
+                if (Walk(section).Any(e => ReferenceEquals(e, element))) return section;
+            return root;
+        }
+
+        private static IEnumerable<KeyValuePair<object, object>> WalkWithParent(object element, object parent)
+        {
+            if (element == null) yield break;
+            yield return new KeyValuePair<object, object>(element, parent);
+            foreach (object child in NativeChildren(element))
+                foreach (var descendant in WalkWithParent(child, element)) yield return descendant;
+        }
+
+        private static void AddNativeChildren(object tab, JArray children, object scope, List<string> requestedAttributes)
         {
             if (children == null || children.Count == 0) return;
             List<JObject> typed = children.OfType<JObject>().ToList();
             if (typed.All(c => string.Equals(c["type"]?.ToString(), "table", StringComparison.OrdinalIgnoreCase)))
             {
-                foreach (JObject child in typed) AttachNativeControl(tab, child);
+                foreach (JObject child in typed) AttachNativeControl(tab, child, scope, requestedAttributes);
                 return;
             }
             object table = CreateNativeChild(tab, "table");
             SetNativeAttribute(table, "type", "Responsive");
             SetNativeAttribute(table, "defaultType", "Responsive");
-            foreach (JObject child in typed) AttachNativeControl(table, child);
+            foreach (JObject child in typed) AttachNativeControl(table, child, scope, requestedAttributes);
             ExecuteElementCommand(tab, table, "AddElementCommand", null);
         }
 
-        private static void AttachNativeControl(object parent, JObject control)
+        // Native twin of MoveFormAttributesIntoTab: the existing element is detached from its
+        // table with RemoveElementCommand and re-attached under the tab, so its typed
+        // reference and every other attribute travel with it. Returns false when the
+        // attribute is not on the form yet and a new element has to be created.
+        private static bool MoveNativeFormAttribute(object parent, JObject control, string attName, object scope, List<string> requestedAttributes)
+        {
+            if (requestedAttributes.Any(previous => AttributeReferenceMatches(previous, attName)))
+                throw new WwpTabException("InvalidWwpChild", "Attribute '" + attName + "' was requested more than once in the same tab.");
+            requestedAttributes.Add(attName);
+            List<KeyValuePair<object, object>> sources = WalkWithParent(scope, null)
+                .Where(pair => AttributeReferenceMatches(NativeAttribute(pair.Key, "attribute"), attName)
+                    && IsNativeAttribute(pair.Key) && pair.Value != null && IsNativeTable(pair.Value))
+                .ToList();
+            if (sources.Count > 1)
+                throw new WwpTabException("AttributeAmbiguousOnForm", "Attribute '" + attName + "' appears in more than one native form table.");
+            if (sources.Count == 0) return false;
+            object existing = sources[0].Key;
+            object sourceTable = sources[0].Value;
+            ExecuteElementCommand(sourceTable, existing, "RemoveElementCommand", NativeChildren(sourceTable).IndexOf(existing));
+            SetNativePair(existing, "description", control["description"]);
+            ExecuteElementCommand(parent, existing, "AddElementCommand", null);
+            return true;
+        }
+
+        private static void AttachNativeControl(object parent, JObject control, object scope, List<string> requestedAttributes)
         {
             string type = control?["type"]?.ToString();
             if (type != "variable" && type != "userAction" && type != "table" && type != "attribute")
                 throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table|attribute.");
+            if (type == "attribute")
+            {
+                string attName = control["attribute"]?.ToString() ?? control["name"]?.ToString();
+                if (string.IsNullOrWhiteSpace(attName)) throw new WwpTabException("InvalidWwpChild", "Attribute child requires attribute or name.");
+                if (MoveNativeFormAttribute(parent, control, attName, scope, requestedAttributes)) return;
+            }
             object child = CreateNativeChild(parent, type);
             if (type == "variable")
             {
@@ -446,7 +667,7 @@ namespace GxMcp.Worker.Services
                 SetNativePair(child, "numberOfColumns", control["columns"]);
                 SetNativePair(child, "themeClass", control["themeClass"]);
                 foreach (JObject nested in (control["children"] as JArray ?? new JArray()).OfType<JObject>())
-                    AttachNativeControl(child, nested);
+                    AttachNativeControl(child, nested, scope, requestedAttributes);
             }
             ExecuteElementCommand(parent, child, "AddElementCommand", null);
         }
@@ -801,6 +1022,11 @@ namespace GxMcp.Worker.Services
         internal static JObject VerifyWebFormProjectionForTests(string webForm, JObject expectedTabs, string operation, string controlName)
             => VerifyWebFormProjection(webForm, expectedTabs, operation, controlName);
 
+        internal static JObject ProjectTabsForTests(XDocument document) => ProjectTabs(document);
+
+        internal static JObject VerifyPatternTabsForTests(JObject expected, JObject persisted, string operation, string controlName)
+            => VerifyPatternTabs(expected, persisted, operation, controlName);
+
         internal static bool WebFormContainsEventForTests(string webForm, string actionName)
         {
             try { return WebFormContainsEvent(XDocument.Parse(webForm, LoadOptions.PreserveWhitespace), actionName); }
@@ -844,7 +1070,7 @@ namespace GxMcp.Worker.Services
 
         private static void InsertXmlTab(XElement tabs, XElement tab, int? position)
         {
-            List<XElement> peers = tabs.Elements().Where(e => Is(e, "tab")).ToList();
+            List<XElement> peers = tabs.Elements().Where(e => IsTabElement(e.Name.LocalName)).ToList();
             int index = ClampPosition(position, peers.Count);
             if (index >= peers.Count) tabs.Add(tab); else peers[index].AddBeforeSelf(tab);
         }

@@ -5218,6 +5218,10 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "attribute": {
+                  "description": "type=attribute: name or…",
+                  "type": "string"
+                },
                 "basicType": {
                   "type": "string"
                 },
@@ -5267,7 +5271,8 @@
                   "enum": [
                     "variable",
                     "userAction",
-                    "table"
+                    "table",
+                    "attribute"
                   ],
                   "type": "string"
                 }
