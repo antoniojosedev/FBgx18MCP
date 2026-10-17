@@ -351,6 +351,22 @@ pub fn project_from_catalog(
                 })?;
             structure.validate()?;
 
+            for part in &object.source_parts {
+                match part.name.as_str() {
+                    "STRUCTURE" => {}
+                    "RULES" | "Rules" => {
+                        crate::rules::parse_rules(&part.source)
+                            .map_err(|e| format!("Transaction '{}': {e}", object.name))?;
+                    }
+                    other => {
+                        return Err(format!(
+                            "unsupported Transaction source part '{other}' on '{}'",
+                            object.name
+                        ));
+                    }
+                }
+            }
+
             for reference in &object.references {
                 let target = catalog
                     .get(&reference.target)
@@ -437,7 +453,7 @@ pub fn project_from_catalog(
             if has_signature {
                 return Err("Procedure cannot supply both Rules and Signature parts".into());
             }
-            signature.params = crate::rules::parameters(rules)
+            signature.params = crate::rules::extract_procedure_parameters(rules)
                 .map_err(|e| format!("Procedure {}: {e}", object.name))?;
         }
         let source =

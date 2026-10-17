@@ -241,6 +241,15 @@ namespace GxMcp.Gateway
                 notes: "Validates GeneXus Transaction (1db606f2-af09-4cf9-a3b5-b481519d28f6) structures and keys, enforces root and child primary keys, bounded recursion depth of 16, unique level/attribute names, lowers transaction levels into Business Component RecordType schemas for procedure consumption, and parses <TransactionStructure> from ExportFile XML. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "rules_and_parm_parity",
+                title: "GeneXus Rules grammar parser and AST with Parm interface parity",
+                engineSurface: "rules parser + AST tokenizer + procedure/transaction rules validation + XML exchange",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/rules_parity.rs (10/10 tests: Parm, Error, Msg, Default, NoAccept, Accept, Order, Prompt, Serial, Hidden, single/multi-line comments, strings with semicolons/escaped quotes, fail-closed diagnostics, procedure-scope enforcement, catalog and XML exchange integration)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses GeneXus Rules parts (9b0a32a3-de6d-4be1-a4dd-1b85d3741534) for Procedures and Transactions. Strips // and /* */ comments cleanly, preserves string literals with semicolons and escaped quotes, validates rule signatures, rejects invalid keywords (src0295), rejects duplicate Parm rules, enforces procedure scoping (variables only in Parm, no transaction-only rules in procedures), and integrates with catalog and XML exchange. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "xml_projection",
                 title: "SDK ExportFile XML to portable catalog projection",
                 engineSurface: "gx-engine xml-check/xml-emit/xml-build/xml-run",

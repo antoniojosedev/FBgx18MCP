@@ -1474,3 +1474,33 @@ Owner-reported implementation and native observations:
 - Registry: new `transaction_structure_projection` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
 - Milestone: **Portable KB Catalog & XML Projection** advances from **66.7% to 83.3% (5/6 areas: Procedures, SDTs, Domains, Attributes, Transactions)**. Overall weighted SDK replacement advances from **40.7% to 42.5% (33/56 areas touched: 58.9%)**.
 
+## Rules Grammar Parser, AST & Parm Interface Parity in Portable Catalog & XML (2026-10-16)
+
+- Native Contract & Rules Grammar Analysis:
+  - Official GeneXus Rules Part GUID from `Artech.Genexus.Common.ObjClass`:
+    - Rules: `9b0a32a3-de6d-4be1-a4dd-1b85d3741534`
+  - Semantic Rules:
+    - Structured AST for GeneXus Rules parts: `Parm`, `Error`, `Msg`, `Default`, `NoAccept`, `Accept`, `Order`, `Prompt`, `Serial`, `Hidden`.
+    - Comment stripping: clean single-line (`//`) and multi-line (`/* */`) comments.
+    - String literals: preserve internal semicolons and escaped quotes (`''`, `\"`).
+    - Scope enforcement: Procedures require Parm arguments to be `&variables` (attributes in procedure Parm are rejected) and prohibit Transaction-only rules (`Default`, `Serial`, `Hidden`, `NoAccept`).
+    - Fail-closed diagnostics: reject `Unique` with `src0295` and index guidance, reject duplicate `Parm`, reject unclosed comments/strings, reject missing semicolons.
+- Engine Implementation:
+  - `src/gx-engine/src/rules.rs`:
+    - Implemented `tokenize_statements` with comment stripping and string preservation.
+    - Implemented `split_comma_args` and `split_condition`.
+    - Implemented `parse_rules` and `extract_procedure_parameters`.
+  - `src/gx-engine/src/lib.rs`:
+    - Exported `pub mod rules;`.
+  - `src/gx-engine/src/kb.rs`:
+    - Wired `crate::rules::extract_procedure_parameters` in Procedure catalog projection.
+    - Admitted and validated `"RULES"` source part in Transaction catalog projection.
+  - `src/gx-engine/src/exchange.rs`:
+    - Updated Procedure XML exchange to parse and validate rules via `extract_procedure_parameters(&rules)?`.
+    - Updated Transaction XML exchange to parse and validate rules via `parse_rules(&rules)?`.
+  - `src/gx-engine/tests/rules_parity.rs`:
+    - Added 10/10 end-to-end integration tests covering all rule variants, comments, string literals, fail-closed diagnostics, procedure scoping, and catalog + XML exchange integration.
+- Verification: 326 passed / 0 failed across all 31 test binaries in `gx-engine`, Clippy and rustfmt clean. 44/44 `EngineBackendTests` passed in .NET.
+- Registry: new `rules_and_parm_parity` capability at `Parity` in `EngineCapabilityRegistry` (no consumer).
+- Milestone: **Portable KB Catalog & XML Projection** reaches **100.0% parity (6/6 areas: Procedures, SDTs, Domains, Attributes, Transactions, Rules)**. Overall weighted SDK replacement advances from **42.5% to 44.6% (33/56 areas touched: 58.9%)**.
+

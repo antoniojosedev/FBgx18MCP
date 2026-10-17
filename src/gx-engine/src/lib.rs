@@ -14,7 +14,7 @@ pub mod incremental;
 pub mod kb;
 pub mod model;
 pub mod record_runtime;
-mod rules;
+pub mod rules;
 pub mod structured;
 pub mod text;
 pub mod transaction;

@@ -881,7 +881,13 @@ fn parse_transaction_level(
                 || attr_props.contains_key("TYPE")
                 || attr_props.contains_key("DATATYPESTRING")
             {
-                match parse_type_definition(&attr_props)? {
+                let mut type_props = attr_props.clone();
+                type_props.remove("ISKEY");
+                type_props.remove("ISNULLABLE");
+                type_props.remove("NULLABLE");
+                type_props.remove("ISFOREIGNKEY");
+                type_props.remove("FORMULA");
+                match parse_type_definition(&type_props)? {
                     ParsedTypeDefinition::Concrete(dt) => Some(dt),
                     _ => None,
                 }
@@ -1249,6 +1255,7 @@ pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
                 if let Some(source) = child(rules_part, "Source")? {
                     let rules = text(source)?;
                     if !rules.trim().is_empty() {
+                        crate::rules::parse_rules(&rules)?;
                         object.source_parts.push(SourcePart {
                             name: "Rules".into(),
                             source: rules,
@@ -1328,7 +1335,7 @@ pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
                 if let Some(source) = child(part, "Source")? {
                     let rules = text(source)?;
                     if !rules.trim().is_empty() {
-                        crate::rules::parameters(&rules)?;
+                        crate::rules::extract_procedure_parameters(&rules)?;
                         object.source_parts.push(SourcePart {
                             name: "Rules".into(),
                             source: rules,
