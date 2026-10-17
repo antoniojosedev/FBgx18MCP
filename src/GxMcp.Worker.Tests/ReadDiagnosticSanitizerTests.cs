@@ -25,6 +25,8 @@ namespace GxMcp.Worker.Tests
         [InlineData("Failed at: For each Customer\r\nwhere CustomerId = 1\r\nEndFor")]
         [InlineData("Command failed: msg('SecretPayload123')")]
         [InlineData("Procedure crash: call(PRC_SecretOperation, &Token)")]
+        [InlineData("Nested call: msg(Format('%1', PRC_SecretOperation), status)")]
+        [InlineData("Method call: Customer.Call (PRC_SecretOperation)")]
         public void SanitizeText_RedactsGeneXusStatementsAndCommands(string codePayload)
         {
             string sanitized = ReadDiagnosticSanitizer.SanitizeText(codePayload, out _);
@@ -32,6 +34,51 @@ namespace GxMcp.Worker.Tests
             Assert.DoesNotContain("SecretPayload123", sanitized);
             Assert.DoesNotContain("PRC_SecretOperation", sanitized);
             Assert.Contains("[source code omitted]", sanitized);
+        }
+
+        [Theory]
+        [InlineData("Event 'Start' is not defined in object Customer.")]
+        [InlineData("Sub 'Validate' was called but not implemented.")]
+        [InlineData("For each requested part the SDK returned null.")]
+        [InlineData("Do while loop exceeded the iteration limit.")]
+        [InlineData("The remote procedure call (RPC) failed.")]
+        [InlineData("Object not found in the index.")]
+        [InlineData("The given key was not present in the dictionary.")]
+        [InlineData("Part descriptor missing.")]
+        [InlineData("Failed to locate object metadata in KB index.")]
+        public void SanitizeText_PreservesKnownSafeMessages(string safeMessage)
+        {
+            // Issue #549: keyword-led prose on the first line and "call (...)" in prose are not source code.
+            string sanitized = ReadDiagnosticSanitizer.SanitizeText(safeMessage, out bool truncated);
+
+            Assert.Equal(safeMessage, sanitized);
+            Assert.False(truncated);
+        }
+
+        [Fact]
+        public void SanitizeText_RedactsStatementLinesAfterTheFirstLine()
+        {
+            string rawMessage = "Parse failed at line 3.\r\nEvent Grid.Load\r\n&Total = 100\r\nFor each Customer where CustomerId = SECRET_FILTER_549";
+            string sanitized = ReadDiagnosticSanitizer.SanitizeText(rawMessage, out _);
+
+            Assert.StartsWith("Parse failed at line 3.", sanitized);
+            Assert.DoesNotContain("Grid.Load", sanitized);
+            Assert.DoesNotContain("SECRET_FILTER_549", sanitized);
+            Assert.Contains("[source code omitted]", sanitized);
+        }
+
+        [Theory]
+        [InlineData("Part read failed: <Source>&amp;Total = XML_SOURCE_MARKER_549</Source> (stage=extract_content)")]
+        [InlineData("Part read failed: <Content type=\"text\">XML_SOURCE_MARKER_549</Content> (stage=extract_content)")]
+        public void SanitizeText_RedactsSourceEmbeddedInXmlElements(string rawMessage)
+        {
+            string sanitized = ReadDiagnosticSanitizer.SanitizeText(rawMessage, out bool truncated);
+
+            Assert.DoesNotContain("XML_SOURCE_MARKER_549", sanitized);
+            Assert.Contains("<Source><redacted></Source>", sanitized);
+            Assert.StartsWith("Part read failed: ", sanitized);
+            Assert.EndsWith(" (stage=extract_content)", sanitized);
+            Assert.False(truncated);
         }
 
         [Fact]

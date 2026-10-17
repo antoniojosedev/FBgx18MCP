@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Services;
@@ -8,6 +9,7 @@ using Xunit;
 
 namespace GxMcp.Worker.Tests
 {
+    [Collection("StderrCapture")]
     public class ReadDiagnosticObservabilityTests : IDisposable
     {
         private static void ResetFaultInjector()
@@ -183,6 +185,76 @@ namespace GxMcp.Worker.Tests
             {
                 ReadDiagnosticFaultInjector.PersistenceFailure = false;
             }
+        }
+
+        [Fact]
+        public void Helper_EnvelopeNeverLeaksSourceMarkerFromOuterOrInnerException()
+        {
+            // Issue #549: the synthetic source marker must be absent from every envelope field,
+            // including the inner exception chain and the ring-buffer record derived from it.
+            var context = new ReadDiagnosticContext
+            {
+                CorrelationId = "cid-source-leak-549",
+                Target = "Synthetic549",
+                PartName = "Events",
+                CurrentStage = ReadDiagnosticStages.ExtractContent
+            };
+            var inner = new ApplicationException("Sub 'Validate'\nmsg('INNER_SOURCE_MARKER_549')\nEndSub");
+            var outer = new InvalidOperationException("Event Start\nmsg('OUTER_SOURCE_MARKER_549')\nEndEvent", inner);
+
+            string envelopeJson = ReadDiagnosticHelper.CreateFailureEnvelope(context, outer, null);
+
+            Assert.DoesNotContain("OUTER_SOURCE_MARKER_549", envelopeJson);
+            Assert.DoesNotContain("INNER_SOURCE_MARKER_549", envelopeJson);
+
+            var envelope = JObject.Parse(envelopeJson);
+            var error = envelope["error"] as JObject;
+            Assert.NotNull(error);
+            Assert.Contains("Failed to read object 'Synthetic549'", error["message"]?.ToString());
+            Assert.Equal("cid-source-leak-549", error["correlationId"]?.ToString());
+            Assert.Equal(ReadDiagnosticStages.ExtractContent, error["failedStage"]?.ToString());
+
+            var exception = error["diagnostics"]?["exception"] as JObject;
+            Assert.NotNull(exception);
+            Assert.Equal("System.InvalidOperationException", exception["type"]?.ToString());
+            Assert.Contains("[source code omitted]", exception["message"]?.ToString());
+            Assert.Equal("System.ApplicationException", exception["innerException"]?["type"]?.ToString());
+            Assert.Contains("[source code omitted]", exception["innerException"]?["message"]?.ToString());
+
+            Assert.True(ReadDiagnosticStore.TryGet("cid-source-leak-549", out var stored));
+            Assert.DoesNotContain("OUTER_SOURCE_MARKER_549", stored.ToString());
+            Assert.DoesNotContain("INNER_SOURCE_MARKER_549", stored.ToString());
+        }
+
+        [Fact]
+        public void Helper_StderrSummaryOmitsSourceMarker()
+        {
+            // Logger mirrors every line to Console.Error synchronously before enqueueing the
+            // same string for the file writer, so the stderr capture covers both channels.
+            var context = new ReadDiagnosticContext
+            {
+                CorrelationId = "cid-stderr-549",
+                Target = "Synthetic549",
+                PartName = "Events",
+                CurrentStage = ReadDiagnosticStages.ExtractContent
+            };
+            var ex = new InvalidOperationException("Event Start\nmsg('STDERR_SOURCE_MARKER_549')\nEndEvent");
+
+            var originalErr = Console.Error;
+            var capture = new StringWriter();
+            Console.SetError(capture);
+            try
+            {
+                ReadDiagnosticHelper.CreateFailureEnvelope(context, ex, null);
+            }
+            finally
+            {
+                Console.SetError(originalErr);
+            }
+
+            string stderr = capture.ToString();
+            Assert.Contains("[READ-DIAGNOSTIC] [cid:cid-stderr-549]", stderr);
+            Assert.DoesNotContain("STDERR_SOURCE_MARKER_549", stderr);
         }
 
         [Fact]
