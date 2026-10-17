@@ -929,6 +929,341 @@ fn parse_transaction_level(
     Ok(level)
 }
 
+fn parse_sdt_object(
+    mut object: KbObject,
+    mut parts: BTreeMap<String, Node<'_, '_>>,
+    sdt_projections: &mut BTreeMap<ObjectId, SdtProjection>,
+) -> Result<Vec<Edit>, String> {
+    let mut edits = Vec::new();
+    parts.remove(STRUCTURE).ok_or("XML SDT has no Structure")?;
+    let projection = sdt_projections
+        .remove(&object.id)
+        .ok_or("missing parsed XML SDT projection")?;
+    for target in &projection.direct_uses {
+        object.references.push(Reference {
+            kind: ReferenceKind::Uses,
+            target: target.clone(),
+        });
+    }
+    for target in &projection.direct_based_on {
+        object.references.push(Reference {
+            kind: ReferenceKind::BasedOn,
+            target: target.clone(),
+        });
+    }
+    object.references.sort();
+    object.references.dedup();
+    object.source_parts.push(SourcePart {
+        name: "Fields".into(),
+        source: serde_json::to_string(&projection.fields).map_err(|e| e.to_string())?,
+    });
+    edits.push(Edit::Upsert(object));
+    for nested in projection.nested {
+        let mut nested_object = KbObject::new(
+            nested.id,
+            nested.schema_name,
+            ObjectKind::StructuredDataType,
+        );
+        for target in &nested.uses {
+            nested_object.references.push(Reference {
+                kind: ReferenceKind::Uses,
+                target: target.clone(),
+            });
+        }
+        for target in &nested.based_on {
+            nested_object.references.push(Reference {
+                kind: ReferenceKind::BasedOn,
+                target: target.clone(),
+            });
+        }
+        nested_object.references.sort();
+        nested_object.references.dedup();
+        nested_object.source_parts.push(SourcePart {
+            name: "Fields".into(),
+            source: serde_json::to_string(&nested.fields).map_err(|e| e.to_string())?,
+        });
+        edits.push(Edit::Upsert(nested_object));
+    }
+    Ok(edits)
+}
+
+fn parse_domain_attribute_object(
+    node: Node<'_, '_>,
+    mut object: KbObject,
+    parts: BTreeMap<String, Node<'_, '_>>,
+    identities: &BTreeMap<String, (ObjectId, ObjectKind)>,
+) -> Result<Edit, String> {
+    let mut object_props = properties(node)?;
+    if !object_props.contains_key("ATTCUSTOMTYPE")
+        && !object_props.contains_key("TYPE")
+        && !object_props.contains_key("DATATYPESTRING")
+        && !object_props.contains_key("DOMAINBASEDON")
+        && !object_props.contains_key("BASEDON")
+        && !object_props.contains_key("IDBASEDON")
+        && !object_props.contains_key("ATTRIBUTEBASEDON")
+    {
+        for part in parts.values() {
+            let part_props = properties(*part)?;
+            if part_props.contains_key("ATTCUSTOMTYPE")
+                || part_props.contains_key("TYPE")
+                || part_props.contains_key("DATATYPESTRING")
+                || part_props.contains_key("DOMAINBASEDON")
+                || part_props.contains_key("BASEDON")
+                || part_props.contains_key("IDBASEDON")
+                || part_props.contains_key("ATTRIBUTEBASEDON")
+            {
+                object_props.extend(part_props);
+                break;
+            }
+        }
+    }
+    let parsed_type = parse_type_definition(&object_props)?;
+    let raw_type = match parsed_type {
+        ParsedTypeDefinition::Concrete(data_type) => {
+            if matches!(
+                data_type,
+                DataType::Record { .. } | DataType::Collection { .. }
+            ) {
+                return Err(format!(
+                    "XML {:?} cannot have record or collection data type",
+                    object.kind
+                ));
+            }
+            crate::kb::RawCatalogType::Concrete(data_type)
+        }
+        ParsedTypeDefinition::BasedOn(target_name) => {
+            let key = target_name.to_ascii_uppercase();
+            let (target_id, target_kind) = identities.get(&key).ok_or_else(|| {
+                format!(
+                    "unresolved XML {:?} BasedOn target {target_name}",
+                    object.kind
+                )
+            })?;
+            if object.kind == ObjectKind::Domain && *target_kind != ObjectKind::Domain {
+                return Err(format!(
+                    "XML domain {} cannot be based on non-domain {target_name}",
+                    object.name
+                ));
+            }
+            if *target_kind != ObjectKind::Domain && *target_kind != ObjectKind::Attribute {
+                return Err(format!(
+                    "XML {:?} BasedOn target {target_name} is neither a Domain nor an Attribute",
+                    object.kind
+                ));
+            }
+            object.references.push(Reference {
+                kind: ReferenceKind::BasedOn,
+                target: target_id.clone(),
+            });
+            crate::kb::RawCatalogType::BasedOnShort {
+                target: target_name,
+            }
+        }
+    };
+    for part in parts.values() {
+        empty_metadata_part(*part)?;
+    }
+    object.references.sort();
+    object.references.dedup();
+    object.source_parts.push(SourcePart {
+        name: "TYPE".into(),
+        source: serde_json::to_string(&raw_type).map_err(|e| e.to_string())?,
+    });
+    Ok(Edit::Upsert(object))
+}
+
+fn parse_transaction_object(
+    mut object: KbObject,
+    mut parts: BTreeMap<String, Node<'_, '_>>,
+    identities: &BTreeMap<String, (ObjectId, ObjectKind)>,
+) -> Result<Edit, String> {
+    let part = parts
+        .remove(TRANSACTION_STRUCTURE)
+        .or_else(|| parts.remove(STRUCTURE))
+        .ok_or("XML Transaction has no Structure")?;
+    let (structure, attr_references) = parse_transaction_structure(part, &object.name, identities)?;
+    for target_id in attr_references {
+        object.references.push(Reference {
+            kind: ReferenceKind::Uses,
+            target: target_id,
+        });
+    }
+    if let Some(rules_part) = parts.remove(RULES) {
+        only_children(rules_part, &["Source", "Properties"])?;
+        if let Some(source) = child(rules_part, "Source")? {
+            let rules = text(source)?;
+            if !rules.trim().is_empty() {
+                crate::rules::parse_rules(&rules)?;
+                object.source_parts.push(SourcePart {
+                    name: "Rules".into(),
+                    source: rules,
+                });
+            }
+        }
+    }
+    if let Some(var_part) = parts.remove(VARIABLES) {
+        let raw_variables = declarations(var_part, "Variable", "Name")?;
+        let mut variables: BTreeMap<String, crate::kb::RawCatalogType> = BTreeMap::new();
+        for (name, parsed_type) in raw_variables {
+            match parsed_type {
+                ParsedTypeDefinition::Concrete(data_type) => {
+                    variables.insert(name, crate::kb::RawCatalogType::Concrete(data_type));
+                }
+                ParsedTypeDefinition::BasedOn(target_name) => {
+                    let key = target_name.to_ascii_uppercase();
+                    if let Some((target_id, ObjectKind::Domain | ObjectKind::Attribute)) =
+                        identities.get(&key)
+                    {
+                        object.references.push(Reference {
+                            kind: ReferenceKind::BasedOn,
+                            target: target_id.clone(),
+                        });
+                    }
+                    variables.insert(
+                        name,
+                        crate::kb::RawCatalogType::BasedOnShort {
+                            target: target_name,
+                        },
+                    );
+                }
+            }
+        }
+        object.source_parts.push(SourcePart {
+            name: "Variables".into(),
+            source: serde_json::to_string(&variables).map_err(|e| e.to_string())?,
+        });
+    }
+    for part in parts.values() {
+        empty_metadata_part(*part)?;
+    }
+    object.references.sort();
+    object.references.dedup();
+    object.source_parts.push(SourcePart {
+        name: "STRUCTURE".into(),
+        source: serde_json::to_string(&structure).map_err(|e| e.to_string())?,
+    });
+    Ok(Edit::Upsert(object))
+}
+
+fn parse_procedure_object(
+    mut object: KbObject,
+    mut parts: BTreeMap<String, Node<'_, '_>>,
+    identities: &BTreeMap<String, (ObjectId, ObjectKind)>,
+    projection_context: &SdtProjectionContext<'_>,
+) -> Result<Edit, String> {
+    let part = parts.remove(SOURCE).ok_or("XML Procedure has no Source")?;
+    only_children(part, &["Source", "Properties"])?;
+    let source = text(required(part, "Source")?)?;
+    let body = crate::frontend::parse_body(&source)?;
+    for callee in crate::dependencies::calls(&body) {
+        if crate::frontend::is_typed_builtin(&callee) {
+            continue;
+        }
+        let (target, kind) = identities
+            .get(&callee)
+            .ok_or_else(|| format!("unresolved XML call {callee}"))?;
+        if *kind != ObjectKind::Procedure {
+            return Err("XML call target is not a Procedure".into());
+        }
+        object.references.push(Reference {
+            kind: ReferenceKind::Calls,
+            target: target.clone(),
+        });
+    }
+    object.source_parts.push(SourcePart {
+        name: "Source".into(),
+        source,
+    });
+    if let Some(part) = parts.remove(RULES) {
+        only_children(part, &["Source", "Properties"])?;
+        if let Some(source) = child(part, "Source")? {
+            let rules = text(source)?;
+            if !rules.trim().is_empty() {
+                crate::rules::extract_procedure_parameters(&rules)?;
+                object.source_parts.push(SourcePart {
+                    name: "Rules".into(),
+                    source: rules,
+                });
+            }
+        }
+    }
+    let raw_variables = match parts.remove(VARIABLES) {
+        Some(part) => declarations(part, "Variable", "Name")?,
+        None => BTreeMap::new(),
+    };
+    let mut variables: BTreeMap<String, crate::kb::RawCatalogType> = BTreeMap::new();
+    for (name, parsed_type) in raw_variables {
+        match parsed_type {
+            ParsedTypeDefinition::Concrete(data_type) => {
+                if let DataType::Record { ref schema } = data_type {
+                    let key = schema.to_ascii_uppercase();
+                    let target = if let Some((nested_schema, target)) =
+                        projection_context.nested_aliases.get(&key)
+                    {
+                        variables.insert(
+                            name,
+                            crate::kb::RawCatalogType::Concrete(DataType::Record {
+                                schema: nested_schema.clone(),
+                            }),
+                        );
+                        target.clone()
+                    } else {
+                        let (target, kind) = identities
+                            .get(&key)
+                            .ok_or("unresolved XML SDT declaration")?;
+                        if *kind != ObjectKind::StructuredDataType
+                            && *kind != ObjectKind::Transaction
+                        {
+                            return Err(
+                                "XML SDT declaration targets a non-SDT and non-Transaction".into(),
+                            );
+                        }
+                        variables.insert(name, crate::kb::RawCatalogType::Concrete(data_type));
+                        target.clone()
+                    };
+                    object.references.push(Reference {
+                        kind: ReferenceKind::Uses,
+                        target,
+                    });
+                } else {
+                    variables.insert(name, crate::kb::RawCatalogType::Concrete(data_type));
+                }
+            }
+            ParsedTypeDefinition::BasedOn(target_name) => {
+                let key = target_name.to_ascii_uppercase();
+                let (target_id, kind) = identities.get(&key).ok_or_else(|| {
+                    format!("unresolved XML variable BasedOn target {target_name}")
+                })?;
+                if *kind != ObjectKind::Domain && *kind != ObjectKind::Attribute {
+                    return Err(format!(
+                        "XML variable BasedOn target {target_name} is neither a Domain nor an Attribute"
+                    ));
+                }
+                object.references.push(Reference {
+                    kind: ReferenceKind::BasedOn,
+                    target: target_id.clone(),
+                });
+                variables.insert(
+                    name,
+                    crate::kb::RawCatalogType::BasedOnShort {
+                        target: target_name,
+                    },
+                );
+            }
+        }
+    }
+    object.references.sort();
+    object.references.dedup();
+    object.source_parts.push(SourcePart {
+        name: "Variables".into(),
+        source: serde_json::to_string(&variables).map_err(|e| e.to_string())?,
+    });
+    for part in parts.values() {
+        empty_metadata_part(*part)?;
+    }
+    Ok(Edit::Upsert(object))
+}
+
 pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
     if input.len() > MAX_XML_BYTES {
         return Err("XML exceeds 8 MiB".into());
@@ -1089,8 +1424,8 @@ pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
         sdt_projections.insert(object.id.clone(), projection);
     }
 
-    let mut edits = Vec::new();
-    for (node, mut object) in definitions {
+    let mut edits: Vec<Edit> = Vec::new();
+    for (node, object) in definitions {
         let mut parts = BTreeMap::new();
         for part in node.children().filter(|n| n.is_element()) {
             if part.has_tag_name("Properties") {
@@ -1107,320 +1442,31 @@ pub fn catalog_from_xml(input: &str) -> Result<Catalog, String> {
                 return Err("duplicate XML object part".into());
             }
         }
-        if object.kind == ObjectKind::StructuredDataType {
-            parts.remove(STRUCTURE).ok_or("XML SDT has no Structure")?;
-            let projection = sdt_projections
-                .remove(&object.id)
-                .ok_or("missing parsed XML SDT projection")?;
-            for target in &projection.direct_uses {
-                object.references.push(Reference {
-                    kind: ReferenceKind::Uses,
-                    target: target.clone(),
-                });
+        match object.kind {
+            ObjectKind::StructuredDataType => {
+                edits.extend(parse_sdt_object(object, parts, &mut sdt_projections)?);
             }
-            for target in &projection.direct_based_on {
-                object.references.push(Reference {
-                    kind: ReferenceKind::BasedOn,
-                    target: target.clone(),
-                });
+            ObjectKind::Domain | ObjectKind::Attribute => {
+                edits.push(parse_domain_attribute_object(
+                    node,
+                    object,
+                    parts,
+                    &identities,
+                )?);
             }
-            object.references.sort();
-            object.references.dedup();
-            object.source_parts.push(SourcePart {
-                name: "Fields".into(),
-                source: serde_json::to_string(&projection.fields).map_err(|e| e.to_string())?,
-            });
-            edits.push(Edit::Upsert(object));
-            for nested in projection.nested {
-                let mut nested_object = KbObject::new(
-                    nested.id,
-                    nested.schema_name,
-                    ObjectKind::StructuredDataType,
-                );
-                for target in &nested.uses {
-                    nested_object.references.push(Reference {
-                        kind: ReferenceKind::Uses,
-                        target: target.clone(),
-                    });
-                }
-                for target in &nested.based_on {
-                    nested_object.references.push(Reference {
-                        kind: ReferenceKind::BasedOn,
-                        target: target.clone(),
-                    });
-                }
-                nested_object.references.sort();
-                nested_object.references.dedup();
-                nested_object.source_parts.push(SourcePart {
-                    name: "Fields".into(),
-                    source: serde_json::to_string(&nested.fields).map_err(|e| e.to_string())?,
-                });
-                edits.push(Edit::Upsert(nested_object));
+            ObjectKind::Transaction => {
+                edits.push(parse_transaction_object(object, parts, &identities)?);
             }
-            continue;
-        } else if object.kind == ObjectKind::Domain || object.kind == ObjectKind::Attribute {
-            let mut object_props = properties(node)?;
-            if !object_props.contains_key("ATTCUSTOMTYPE")
-                && !object_props.contains_key("TYPE")
-                && !object_props.contains_key("DATATYPESTRING")
-                && !object_props.contains_key("DOMAINBASEDON")
-                && !object_props.contains_key("BASEDON")
-                && !object_props.contains_key("IDBASEDON")
-                && !object_props.contains_key("ATTRIBUTEBASEDON")
-            {
-                for part in parts.values() {
-                    let part_props = properties(*part)?;
-                    if part_props.contains_key("ATTCUSTOMTYPE")
-                        || part_props.contains_key("TYPE")
-                        || part_props.contains_key("DATATYPESTRING")
-                        || part_props.contains_key("DOMAINBASEDON")
-                        || part_props.contains_key("BASEDON")
-                        || part_props.contains_key("IDBASEDON")
-                        || part_props.contains_key("ATTRIBUTEBASEDON")
-                    {
-                        object_props.extend(part_props);
-                        break;
-                    }
-                }
+            ObjectKind::Procedure => {
+                edits.push(parse_procedure_object(
+                    object,
+                    parts,
+                    &identities,
+                    &projection_context,
+                )?);
             }
-            let parsed_type = parse_type_definition(&object_props)?;
-            let raw_type = match parsed_type {
-                ParsedTypeDefinition::Concrete(data_type) => {
-                    if matches!(
-                        data_type,
-                        DataType::Record { .. } | DataType::Collection { .. }
-                    ) {
-                        return Err(format!(
-                            "XML {:?} cannot have record or collection data type",
-                            object.kind
-                        ));
-                    }
-                    crate::kb::RawCatalogType::Concrete(data_type)
-                }
-                ParsedTypeDefinition::BasedOn(target_name) => {
-                    let key = target_name.to_ascii_uppercase();
-                    let (target_id, target_kind) = identities.get(&key).ok_or_else(|| {
-                        format!(
-                            "unresolved XML {:?} BasedOn target {target_name}",
-                            object.kind
-                        )
-                    })?;
-                    if object.kind == ObjectKind::Domain && *target_kind != ObjectKind::Domain {
-                        return Err(format!(
-                            "XML domain {} cannot be based on non-domain {target_name}",
-                            object.name
-                        ));
-                    }
-                    if *target_kind != ObjectKind::Domain && *target_kind != ObjectKind::Attribute {
-                        return Err(format!(
-                            "XML {:?} BasedOn target {target_name} is neither a Domain nor an Attribute",
-                            object.kind
-                        ));
-                    }
-                    object.references.push(Reference {
-                        kind: ReferenceKind::BasedOn,
-                        target: target_id.clone(),
-                    });
-                    crate::kb::RawCatalogType::BasedOnShort {
-                        target: target_name,
-                    }
-                }
-            };
-            for part in parts.values() {
-                empty_metadata_part(*part)?;
-            }
-            object.references.sort();
-            object.references.dedup();
-            object.source_parts.push(SourcePart {
-                name: "TYPE".into(),
-                source: serde_json::to_string(&raw_type).map_err(|e| e.to_string())?,
-            });
-            edits.push(Edit::Upsert(object));
-            continue;
-        } else if object.kind == ObjectKind::Transaction {
-            let part = parts
-                .remove(TRANSACTION_STRUCTURE)
-                .or_else(|| parts.remove(STRUCTURE))
-                .ok_or("XML Transaction has no Structure")?;
-            let (structure, attr_references) =
-                parse_transaction_structure(part, &object.name, &identities)?;
-            for target_id in attr_references {
-                object.references.push(Reference {
-                    kind: ReferenceKind::Uses,
-                    target: target_id,
-                });
-            }
-            if let Some(rules_part) = parts.remove(RULES) {
-                only_children(rules_part, &["Source", "Properties"])?;
-                if let Some(source) = child(rules_part, "Source")? {
-                    let rules = text(source)?;
-                    if !rules.trim().is_empty() {
-                        crate::rules::parse_rules(&rules)?;
-                        object.source_parts.push(SourcePart {
-                            name: "Rules".into(),
-                            source: rules,
-                        });
-                    }
-                }
-            }
-            if let Some(var_part) = parts.remove(VARIABLES) {
-                let raw_variables = declarations(var_part, "Variable", "Name")?;
-                let mut variables: BTreeMap<String, crate::kb::RawCatalogType> = BTreeMap::new();
-                for (name, parsed_type) in raw_variables {
-                    match parsed_type {
-                        ParsedTypeDefinition::Concrete(data_type) => {
-                            variables.insert(name, crate::kb::RawCatalogType::Concrete(data_type));
-                        }
-                        ParsedTypeDefinition::BasedOn(target_name) => {
-                            let key = target_name.to_ascii_uppercase();
-                            if let Some((target_id, ObjectKind::Domain | ObjectKind::Attribute)) =
-                                identities.get(&key)
-                            {
-                                object.references.push(Reference {
-                                    kind: ReferenceKind::BasedOn,
-                                    target: target_id.clone(),
-                                });
-                            }
-                            variables.insert(
-                                name,
-                                crate::kb::RawCatalogType::BasedOnShort {
-                                    target: target_name,
-                                },
-                            );
-                        }
-                    }
-                }
-                object.source_parts.push(SourcePart {
-                    name: "Variables".into(),
-                    source: serde_json::to_string(&variables).map_err(|e| e.to_string())?,
-                });
-            }
-            for part in parts.values() {
-                empty_metadata_part(*part)?;
-            }
-            object.references.sort();
-            object.references.dedup();
-            object.source_parts.push(SourcePart {
-                name: "STRUCTURE".into(),
-                source: serde_json::to_string(&structure).map_err(|e| e.to_string())?,
-            });
-            edits.push(Edit::Upsert(object));
-            continue;
-        } else {
-            let part = parts.remove(SOURCE).ok_or("XML Procedure has no Source")?;
-            only_children(part, &["Source", "Properties"])?;
-            let source = text(required(part, "Source")?)?;
-            let body = crate::frontend::parse_body(&source)?;
-            for callee in crate::dependencies::calls(&body) {
-                if crate::frontend::is_typed_builtin(&callee) {
-                    continue;
-                }
-                let (target, kind) = identities
-                    .get(&callee)
-                    .ok_or_else(|| format!("unresolved XML call {callee}"))?;
-                if *kind != ObjectKind::Procedure {
-                    return Err("XML call target is not a Procedure".into());
-                }
-                object.references.push(Reference {
-                    kind: ReferenceKind::Calls,
-                    target: target.clone(),
-                });
-            }
-            object.source_parts.push(SourcePart {
-                name: "Source".into(),
-                source,
-            });
-            if let Some(part) = parts.remove(RULES) {
-                only_children(part, &["Source", "Properties"])?;
-                if let Some(source) = child(part, "Source")? {
-                    let rules = text(source)?;
-                    if !rules.trim().is_empty() {
-                        crate::rules::extract_procedure_parameters(&rules)?;
-                        object.source_parts.push(SourcePart {
-                            name: "Rules".into(),
-                            source: rules,
-                        });
-                    }
-                }
-            }
-            let raw_variables = match parts.remove(VARIABLES) {
-                Some(part) => declarations(part, "Variable", "Name")?,
-                None => BTreeMap::new(),
-            };
-            let mut variables: BTreeMap<String, crate::kb::RawCatalogType> = BTreeMap::new();
-            for (name, parsed_type) in raw_variables {
-                match parsed_type {
-                    ParsedTypeDefinition::Concrete(data_type) => {
-                        if let DataType::Record { ref schema } = data_type {
-                            let key = schema.to_ascii_uppercase();
-                            let target = if let Some((nested_schema, target)) =
-                                projection_context.nested_aliases.get(&key)
-                            {
-                                variables.insert(
-                                    name,
-                                    crate::kb::RawCatalogType::Concrete(DataType::Record {
-                                        schema: nested_schema.clone(),
-                                    }),
-                                );
-                                target.clone()
-                            } else {
-                                let (target, kind) = identities
-                                    .get(&key)
-                                    .ok_or("unresolved XML SDT declaration")?;
-                                if *kind != ObjectKind::StructuredDataType
-                                    && *kind != ObjectKind::Transaction
-                                {
-                                    return Err(
-                                        "XML SDT declaration targets a non-SDT and non-Transaction"
-                                            .into(),
-                                    );
-                                }
-                                variables
-                                    .insert(name, crate::kb::RawCatalogType::Concrete(data_type));
-                                target.clone()
-                            };
-                            object.references.push(Reference {
-                                kind: ReferenceKind::Uses,
-                                target,
-                            });
-                        } else {
-                            variables.insert(name, crate::kb::RawCatalogType::Concrete(data_type));
-                        }
-                    }
-                    ParsedTypeDefinition::BasedOn(target_name) => {
-                        let key = target_name.to_ascii_uppercase();
-                        let (target_id, kind) = identities.get(&key).ok_or_else(|| {
-                            format!("unresolved XML variable BasedOn target {target_name}")
-                        })?;
-                        if *kind != ObjectKind::Domain && *kind != ObjectKind::Attribute {
-                            return Err(format!(
-                                "XML variable BasedOn target {target_name} is neither a Domain nor an Attribute"
-                            ));
-                        }
-                        object.references.push(Reference {
-                            kind: ReferenceKind::BasedOn,
-                            target: target_id.clone(),
-                        });
-                        variables.insert(
-                            name,
-                            crate::kb::RawCatalogType::BasedOnShort {
-                                target: target_name,
-                            },
-                        );
-                    }
-                }
-            }
-            object.references.sort();
-            object.references.dedup();
-            object.source_parts.push(SourcePart {
-                name: "Variables".into(),
-                source: serde_json::to_string(&variables).map_err(|e| e.to_string())?,
-            });
+            _ => return Err("unsupported XML object kind in emission".into()),
         }
-        for part in parts.values() {
-            empty_metadata_part(*part)?;
-        }
-        edits.push(Edit::Upsert(object));
     }
     let mut catalog = Catalog::empty();
     catalog.apply(0, &edits)?;

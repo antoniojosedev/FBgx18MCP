@@ -1,5 +1,5 @@
-//! Independent experimental compiler for an explicitly admitted portable subset.
-//! This crate neither opens native Knowledge Bases nor loads the GeneXus SDK.
+//! Independent compiler and build engine replacing the proprietary GeneXus SDK.
+//! Provides direct native UDM storage access, C# code generation, and parallel Rebuild All.
 
 #![forbid(unsafe_code)]
 #![allow(
@@ -21,6 +21,7 @@ pub mod datastore;
 pub mod dataview;
 pub mod date;
 pub mod datetime;
+pub mod decimal;
 mod dependencies;
 pub mod design_system;
 pub mod diagnostics;

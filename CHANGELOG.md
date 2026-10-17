@@ -23,11 +23,16 @@
 ### Changed
 
 - Refactored `gx-engine` architecture for modularity and safety (zero regressions across all 561 tests):
+  - Extracted 96-bit fixed-point `Decimal` arithmetic engine from `types.rs` into `src/gx-engine/src/decimal.rs`, shrinking `types.rs` from 1,525 lines to 135 lines while preserving full backwards compatibility through re-exports.
+  - Decomposed 926-line `lower` expression lowering engine in `src/gx-engine/src/typed_backend.rs` into dedicated helpers (`lower_container_expr`, `lower_date_expr`, `lower_builtin_call`), reducing `lower` to 65 lines and significantly reducing cyclomatic complexity.
+  - Decomposed 498-line `catalog_from_xml` parser loop in `src/gx-engine/src/exchange.rs` into dedicated typed object parsers (`parse_sdt_object`, `parse_domain_attribute_object`, `parse_transaction_object`, `parse_procedure_object`).
+  - Deduplicated parallel chunk spawning and generated file writing in `src/gx-engine/src/rebuild.rs` via generic `spawn_parallel_chunks` and `emit_generated_file`.
   - Decomposed 1,521-line UDM god-file (`src/gx-engine/src/udm/client.rs`) into focused single-responsibility modules: `row.rs` (`UdmValue`, `UdmRow`), `mock.rs` (`InMemoryDatabase`, typed model records), `live.rs` (`execute_sqlcmd`), and `client.rs` (coordinator).
   - Eliminated brittle 500-line pseudo-SQL interpreter in `UdmClient`, replacing it with direct strongly-typed in-memory queries.
   - Decomposed 492-line monolithic `rebuild_all` function in `src/gx-engine/src/rebuild.rs` into pure pipeline stages (`classify_objects`, `specify_phase`, `emission_phase`, `compile_phase`).
   - Decomposed monolithic C# class emitter methods in `procedure.rs`, `webpanel.rs`, and `transaction.rs` into cohesive class-part emitters (`emit_constructors`, `emit_execute_methods`, `emit_bc_methods`, `emit_rules`, `emit_fields`).
   - Centralized shared C# standard imports and data imports (`STANDARD_IMPORTS`, `EXTENDED_DATA_IMPORTS`) in `src/gx-engine/src/csharp/types.rs`.
+  - Aligned root crate documentation in `src/gx-engine/src/lib.rs` with Plan 130 SDK retirement authority.
 
 ### Fixed
 

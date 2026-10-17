@@ -377,6 +377,40 @@ fn verify_level_formulas(
     }
 }
 
+fn emit_generated_file(
+    out_dir: &Path,
+    file_name: &str,
+    content: &str,
+    files_ref: &Mutex<Vec<PathBuf>>,
+    errors_ref: &Mutex<Vec<String>>,
+) {
+    let file_path = out_dir.join(file_name);
+    if let Err(e) = std::fs::write(&file_path, content) {
+        errors_ref
+            .lock()
+            .unwrap()
+            .push(format!("failed to write '{}': {e}", file_path.display()));
+    } else {
+        files_ref.lock().unwrap().push(file_path);
+    }
+}
+
+fn spawn_parallel_chunks<'scope, 'env: 'scope, T: Sync>(
+    items: &'env [T],
+    concurrency: usize,
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    worker: impl Fn(&'env [T]) + Send + Sync + Copy + 'scope,
+) {
+    if items.is_empty() {
+        return;
+    }
+    let thread_count = concurrency.min(items.len()).max(1);
+    let chunk_size = (items.len() + thread_count - 1) / thread_count;
+    for chunk in items.chunks(chunk_size) {
+        scope.spawn(move || worker(chunk));
+    }
+}
+
 fn emission_phase(
     manifest: &ObjectManifest<'_>,
     output_dir: &Path,
@@ -400,170 +434,112 @@ fn emission_phase(
 
     std::thread::scope(|s| {
         // 1. Emit Procedures
-        if !manifest.procedures.is_empty() {
-            let thread_count = concurrency.min(manifest.procedures.len()).max(1);
-            let chunk_size = (manifest.procedures.len() + thread_count - 1) / thread_count;
+        spawn_parallel_chunks(&manifest.procedures, concurrency, s, |chunk| {
+            for proc in chunk {
+                match ProcedureClass::from_kb_object(proc) {
+                    Ok(proc_class) => {
+                        let code = proc_class.emit();
+                        emit_generated_file(
+                            output_dir,
+                            &format!("{}.cs", proc.name),
+                            &code,
+                            &emitted_files,
+                            errors,
+                        );
 
-            for chunk in manifest.procedures.chunks(chunk_size) {
-                let out_dir = output_dir;
-                let files_ref = &emitted_files;
-                let errors_ref = errors;
-                let target_framework = &options.target_framework;
-
-                s.spawn(move || {
-                    for proc in chunk {
-                        match ProcedureClass::from_kb_object(proc) {
-                            Ok(proc_class) => {
-                                let code = proc_class.emit();
-                                let cs_path = out_dir.join(format!("{}.cs", proc.name));
-                                if let Err(e) = std::fs::write(&cs_path, code) {
-                                    errors_ref.lock().unwrap().push(format!(
-                                        "failed to write '{}': {e}",
-                                        cs_path.display()
-                                    ));
-                                } else {
-                                    files_ref.lock().unwrap().push(cs_path);
-                                }
-
-                                let mut cfg = if target_framework.starts_with("net9") {
-                                    CsprojConfig::net9(&proc.name, false)
-                                } else {
-                                    CsprojConfig::net8(&proc.name, false)
-                                };
-                                cfg.compile_includes = vec![format!("{}.cs", proc.name)];
-                                let proj_xml = CsprojEmitter::emit(&cfg);
-                                let csproj_path = out_dir.join(format!("{}.csproj", proc.name));
-                                if let Err(e) = std::fs::write(&csproj_path, proj_xml) {
-                                    errors_ref.lock().unwrap().push(format!(
-                                        "failed to write '{}': {e}",
-                                        csproj_path.display()
-                                    ));
-                                } else {
-                                    files_ref.lock().unwrap().push(csproj_path);
-                                }
-                            }
-                            Err(e) => {
-                                errors_ref.lock().unwrap().push(format!(
-                                    "failed to generate C# for Procedure '{}': {e}",
-                                    proc.name
-                                ));
-                            }
-                        }
+                        let mut cfg = if options.target_framework.starts_with("net9") {
+                            CsprojConfig::net9(&proc.name, false)
+                        } else {
+                            CsprojConfig::net8(&proc.name, false)
+                        };
+                        cfg.compile_includes = vec![format!("{}.cs", proc.name)];
+                        let proj_xml = CsprojEmitter::emit(&cfg);
+                        emit_generated_file(
+                            output_dir,
+                            &format!("{}.csproj", proc.name),
+                            &proj_xml,
+                            &emitted_files,
+                            errors,
+                        );
                     }
-                });
+                    Err(e) => {
+                        errors.lock().unwrap().push(format!(
+                            "failed to generate C# for Procedure '{}': {e}",
+                            proc.name
+                        ));
+                    }
+                }
             }
-        }
+        });
 
         // 2. Emit Transactions
-        if !manifest.transactions.is_empty() {
-            let thread_count = concurrency.min(manifest.transactions.len()).max(1);
-            let chunk_size = (manifest.transactions.len() + thread_count - 1) / thread_count;
-
-            for chunk in manifest.transactions.chunks(chunk_size) {
-                let out_dir = output_dir;
-                let files_ref = &emitted_files;
-                let errors_ref = errors;
-
-                s.spawn(move || {
-                    for txn in chunk {
-                        match TransactionClass::from_kb_object(txn) {
-                            Ok(txn_class) => {
-                                let code = txn_class.emit();
-                                let cs_path = out_dir.join(format!("{}.cs", txn.name));
-                                if let Err(e) = std::fs::write(&cs_path, code) {
-                                    errors_ref.lock().unwrap().push(format!(
-                                        "failed to write '{}': {e}",
-                                        cs_path.display()
-                                    ));
-                                } else {
-                                    files_ref.lock().unwrap().push(cs_path);
-                                }
-                            }
-                            Err(e) => {
-                                errors_ref.lock().unwrap().push(format!(
-                                    "failed to generate C# for Transaction '{}': {e}",
-                                    txn.name
-                                ));
-                            }
-                        }
+        spawn_parallel_chunks(&manifest.transactions, concurrency, s, |chunk| {
+            for txn in chunk {
+                match TransactionClass::from_kb_object(txn) {
+                    Ok(txn_class) => {
+                        emit_generated_file(
+                            output_dir,
+                            &format!("{}.cs", txn.name),
+                            &txn_class.emit(),
+                            &emitted_files,
+                            errors,
+                        );
                     }
-                });
+                    Err(e) => {
+                        errors.lock().unwrap().push(format!(
+                            "failed to generate C# for Transaction '{}': {e}",
+                            txn.name
+                        ));
+                    }
+                }
             }
-        }
+        });
 
         // 3. Emit SDTs
-        if !manifest.sdts.is_empty() {
-            let thread_count = concurrency.min(manifest.sdts.len()).max(1);
-            let chunk_size = (manifest.sdts.len() + thread_count - 1) / thread_count;
-
-            for chunk in manifest.sdts.chunks(chunk_size) {
-                let out_dir = output_dir;
-                let files_ref = &emitted_files;
-                let errors_ref = errors;
-
-                s.spawn(move || {
-                    for sdt in chunk {
-                        match SdtClass::from_kb_object(sdt) {
-                            Ok(sdt_class) => {
-                                let code = sdt_class.emit();
-                                let cs_path = out_dir.join(format!("Sdt{}.cs", sdt.name));
-                                if let Err(e) = std::fs::write(&cs_path, code) {
-                                    errors_ref.lock().unwrap().push(format!(
-                                        "failed to write '{}': {e}",
-                                        cs_path.display()
-                                    ));
-                                } else {
-                                    files_ref.lock().unwrap().push(cs_path);
-                                }
-                            }
-                            Err(e) => {
-                                errors_ref.lock().unwrap().push(format!(
-                                    "failed to generate C# for SDT '{}': {e}",
-                                    sdt.name
-                                ));
-                            }
-                        }
+        spawn_parallel_chunks(&manifest.sdts, concurrency, s, |chunk| {
+            for sdt in chunk {
+                match SdtClass::from_kb_object(sdt) {
+                    Ok(sdt_class) => {
+                        emit_generated_file(
+                            output_dir,
+                            &format!("Sdt{}.cs", sdt.name),
+                            &sdt_class.emit(),
+                            &emitted_files,
+                            errors,
+                        );
                     }
-                });
+                    Err(e) => {
+                        errors
+                            .lock()
+                            .unwrap()
+                            .push(format!("failed to generate C# for SDT '{}': {e}", sdt.name));
+                    }
+                }
             }
-        }
+        });
 
         // 4. Emit WebPanels
-        if !manifest.webpanels.is_empty() {
-            let thread_count = concurrency.min(manifest.webpanels.len()).max(1);
-            let chunk_size = (manifest.webpanels.len() + thread_count - 1) / thread_count;
-
-            for chunk in manifest.webpanels.chunks(chunk_size) {
-                let out_dir = output_dir;
-                let files_ref = &emitted_files;
-                let errors_ref = errors;
-
-                s.spawn(move || {
-                    for wp in chunk {
-                        match WebPanelClass::from_kb_object(wp) {
-                            Ok(wp_class) => {
-                                let code = wp_class.emit();
-                                let cs_path = out_dir.join(format!("{}.cs", wp.name));
-                                if let Err(e) = std::fs::write(&cs_path, code) {
-                                    errors_ref.lock().unwrap().push(format!(
-                                        "failed to write '{}': {e}",
-                                        cs_path.display()
-                                    ));
-                                } else {
-                                    files_ref.lock().unwrap().push(cs_path);
-                                }
-                            }
-                            Err(e) => {
-                                errors_ref.lock().unwrap().push(format!(
-                                    "failed to generate C# for WebPanel '{}': {e}",
-                                    wp.name
-                                ));
-                            }
-                        }
+        spawn_parallel_chunks(&manifest.webpanels, concurrency, s, |chunk| {
+            for wp in chunk {
+                match WebPanelClass::from_kb_object(wp) {
+                    Ok(wp_class) => {
+                        emit_generated_file(
+                            output_dir,
+                            &format!("{}.cs", wp.name),
+                            &wp_class.emit(),
+                            &emitted_files,
+                            errors,
+                        );
                     }
-                });
+                    Err(e) => {
+                        errors.lock().unwrap().push(format!(
+                            "failed to generate C# for WebPanel '{}': {e}",
+                            wp.name
+                        ));
+                    }
+                }
             }
-        }
+        });
     });
 
     // 5. Emit Main Unified Project File (.csproj)

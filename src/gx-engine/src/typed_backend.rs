@@ -193,7 +193,9 @@ pub(crate) fn emit_parsed(
             }
         }
     }
-    let mut output = String::from("#![forbid(unsafe_code)]\n#[allow(dead_code)]\nmod types {\n");
+    let mut output = String::from("#![forbid(unsafe_code)]\n#[allow(dead_code)]\nmod decimal {\n");
+    output.push_str(include_str!("decimal.rs"));
+    output.push_str("\n}\nmod types {\n");
     output.push_str(include_str!("types.rs"));
     output.push_str("\n}\nmod text {\n");
     output.push_str(include_str!("text.rs"));
@@ -665,26 +667,13 @@ impl Emitter<'_> {
         Ok(value)
     }
 
-    fn lower(
+    fn lower_container_expr(
         &self,
         expr: &Expr,
         assigned: &mut BTreeSet<String>,
         prelude: &mut String,
-    ) -> Result<(Kind, String), String> {
+    ) -> Result<Option<(Kind, String)>, String> {
         let result = match expr {
-            Expr::EmptyDate => (Kind::Date, "Date::empty()".into()),
-            Expr::Integer(value) => (
-                Kind::Numeric,
-                format!("{:?}.parse::<Decimal>()?", value.to_string()),
-            ),
-            Expr::Decimal(text) => (Kind::Numeric, format!("{text:?}.parse::<Decimal>()?")),
-            Expr::Boolean(value) => (Kind::Boolean, value.to_string()),
-            Expr::Text(value) => (Kind::Text, format!("Text::new({value:?})?")),
-            Expr::Attribute(_) => {
-                return Err(
-                    "Attribute expressions require specifier navigation and are not admitted in standalone typed binaries".into(),
-                );
-            }
             Expr::Member(receiver, field) => {
                 let field_type = self.member_type(receiver, field)?;
                 if matches!(self.expression_type(receiver)?, DataType::Collection { .. }) {
@@ -740,26 +729,18 @@ impl Emitter<'_> {
                     format!("({value}).utf16_length().to_string().parse::<Decimal>()?"),
                 )
             }
-            Expr::Variable(name) => {
-                let (slot, data_type) = self.variable(name)?;
-                if !assigned.contains(name) && !self.is_sub {
-                    return Err(format!("typed variable {name} read before assignment"));
-                }
-                let target = if self.is_sub {
-                    format!("(*self.v{slot})")
-                } else {
-                    format!("v{slot}")
-                };
-                let value = if matches!(
-                    kind(data_type),
-                    Kind::Text | Kind::Record | Kind::Collection
-                ) {
-                    format!("{target}.clone()")
-                } else {
-                    target
-                };
-                (kind(data_type), value)
-            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    fn lower_date_expr(
+        &self,
+        expr: &Expr,
+        assigned: &mut BTreeSet<String>,
+        prelude: &mut String,
+    ) -> Result<Option<(Kind, String)>, String> {
+        let result = match expr {
             Expr::DateShift(method, receiver, offset) => {
                 let (receiver_kind, receiver) = self.lower(receiver, assigned, prelude)?;
                 if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
@@ -835,6 +816,18 @@ impl Emitter<'_> {
                     )
                 }
             }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    fn lower_builtin_call(
+        &self,
+        expr: &Expr,
+        assigned: &mut BTreeSet<String>,
+        prelude: &mut String,
+    ) -> Result<Option<(Kind, String)>, String> {
+        let result = match expr {
             Expr::Call(name, args) if name == "STR" => {
                 if !(1..=3).contains(&args.len()) {
                     return Err("Str expects one to three arguments".into());
@@ -1572,6 +1565,60 @@ impl Emitter<'_> {
                     )
                 }
             }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    fn lower(
+        &self,
+        expr: &Expr,
+        assigned: &mut BTreeSet<String>,
+        prelude: &mut String,
+    ) -> Result<(Kind, String), String> {
+        if let Some(result) = self.lower_container_expr(expr, assigned, prelude)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.lower_date_expr(expr, assigned, prelude)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.lower_builtin_call(expr, assigned, prelude)? {
+            return Ok(result);
+        }
+        let result = match expr {
+            Expr::EmptyDate => (Kind::Date, "Date::empty()".into()),
+            Expr::Integer(value) => (
+                Kind::Numeric,
+                format!("{:?}.parse::<Decimal>()?", value.to_string()),
+            ),
+            Expr::Decimal(text) => (Kind::Numeric, format!("{text:?}.parse::<Decimal>()?")),
+            Expr::Boolean(value) => (Kind::Boolean, value.to_string()),
+            Expr::Text(value) => (Kind::Text, format!("Text::new({value:?})?")),
+            Expr::Attribute(_) => {
+                return Err(
+                    "Attribute expressions require specifier navigation and are not admitted in standalone typed binaries".into(),
+                );
+            }
+            Expr::Variable(name) => {
+                let (slot, data_type) = self.variable(name)?;
+                if !assigned.contains(name) && !self.is_sub {
+                    return Err(format!("typed variable {name} read before assignment"));
+                }
+                let target = if self.is_sub {
+                    format!("(*self.v{slot})")
+                } else {
+                    format!("v{slot}")
+                };
+                let value = if matches!(
+                    kind(data_type),
+                    Kind::Text | Kind::Record | Kind::Collection
+                ) {
+                    format!("{target}.clone()")
+                } else {
+                    target
+                };
+                (kind(data_type), value)
+            }
             Expr::Call(name, args) => {
                 let (result, value) = self.lower_call(name, args, assigned, prelude, false)?;
                 (result.expect("function calls return a value"), value)
@@ -1587,6 +1634,12 @@ impl Emitter<'_> {
             Expr::Binary(left, operator, right) => {
                 self.binary(left, *operator, right, assigned, prelude)?
             }
+            Expr::Member(..)
+            | Expr::CloneRecord(..)
+            | Expr::CollectionItem(..)
+            | Expr::TextLength(..)
+            | Expr::DateShift(..)
+            | Expr::DateMethod(..) => unreachable!("handled by helper methods"),
         };
         Ok(result)
     }
