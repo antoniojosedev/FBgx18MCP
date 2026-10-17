@@ -892,6 +892,61 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Slice_AdvancesPastPartReadFailure_AfterRetry()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-part-fail-advance-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var eGood1 = Entry("00000000-0000-0000-0000-000000000001", 10);
+                var eBad = Entry("00000000-0000-0000-0000-000000000002", 20);
+                var eGood2 = Entry("00000000-0000-0000-0000-000000000003", 30);
+
+                var service = new SourceStoreBackfillService(store);
+                service.Start(
+                    () => new[] { eGood1, eBad, eGood2 },
+                    e => e.Guid == eBad.Guid
+                        ? new[]
+                        {
+                            new SourceStoreBackfillPart
+                            {
+                                PartName = "Source",
+                                Source = null,
+                                ReadSucceeded = false,
+                                ReadError = "SDK read failed"
+                            }
+                        }
+                        : new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code-" + e.Guid } },
+                    maxObjectsPerSlice: 10,
+                    sliceBudgetMs: 2000,
+                    schedule: false,
+                    requiredPartProvider: e => new[] { "Source" });
+
+                Assert.False(service.RunOneSliceForTest(10, 2000));
+                var afterFail = service.GetState();
+                Assert.Equal("error", afterFail.State);
+                Assert.Equal(1, afterFail.CursorIndex);
+                Assert.Contains("read failure", afterFail.LastError);
+
+                Assert.True(service.RunOneSliceForTest(10, 2000));
+                var final = service.GetState();
+                Assert.Equal("completeWithFailures", final.State);
+                Assert.Equal(3, final.CursorIndex);
+                Assert.Equal(3, final.ProcessedObjects);
+                Assert.Equal(2, final.StoredObjects);
+                Assert.Equal(1, final.FailedObjects);
+                Assert.Contains(eBad.Guid, final.ReadFailedObjects);
+                Assert.False(store.RecordExistsForTest(eBad.Guid + ":Source"));
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
         public void Eta_AfterRestart_IsMeasuredOnlyOverObjectsTimedByThisProcess()
         {
             string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-eta-restart-" + Guid.NewGuid().ToString("N"));
@@ -938,6 +993,196 @@ namespace GxMcp.Worker.Tests
                 Assert.Equal("running", state.State);
                 Assert.Equal(101, state.ProcessedObjects);
                 Assert.Equal(40, state.EtaMs);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void ConsecutiveUnreadableObjects_DoNotExhaustTransientRetryBudget()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-fail-budget-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var unreadable = Enumerable.Range(1, SourceStoreBackfillService.MaxTransientRetries + 1)
+                    .Select(i => Entry($"00000000-0000-0000-0000-0000000000{i:D2}", i))
+                    .ToArray();
+                var readable = Entry("00000000-0000-0000-0000-000000000099", 99);
+                var catalog = unreadable.Concat(new[] { readable }).ToArray();
+
+                var service = new SourceStoreBackfillService(store);
+                service.Start(
+                    () => catalog,
+                    e =>
+                    {
+                        if (e.Guid == readable.Guid)
+                            return new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code" } };
+                        throw new InvalidOperationException("Unreadable object " + e.Guid);
+                    },
+                    maxObjectsPerSlice: 10,
+                    sliceBudgetMs: 2000,
+                    schedule: false);
+
+                Assert.False(service.RunOneSliceForTest(10, 2000));
+                var afterFirstProbe = service.GetState();
+                Assert.Equal("error", afterFirstProbe.State);
+                Assert.Equal(0, afterFirstProbe.RetryCount);
+
+                var state = afterFirstProbe;
+                for (int slice = 0; slice < 14 && !state.IsComplete; slice++)
+                {
+                    service.RunOneSliceForTest(10, 2000);
+                    state = service.GetState();
+                    Assert.True(
+                        state.RetryCount < SourceStoreBackfillService.MaxTransientRetries,
+                        $"slice {slice}: retryCount {state.RetryCount} would park the backfill in error");
+                }
+
+                Assert.Equal("completeWithFailures", state.State);
+                Assert.Equal(unreadable.Length, state.FailedObjects);
+                Assert.Equal(1, state.StoredObjects);
+                Assert.Equal(catalog.Length, state.ProcessedObjects);
+                Assert.Equal(0, state.RetryCount);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void CompletedWithFailures_SameCatalog_DoesNotRetryFailedObjects()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-fail-same-catalog-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var eGood1 = Entry("00000000-0000-0000-0000-000000000001", 10);
+                var eBad = Entry("00000000-0000-0000-0000-000000000002", 20);
+                var eGood2 = Entry("00000000-0000-0000-0000-000000000003", 30);
+                var catalog = new[] { eGood1, eBad, eGood2 };
+                int badReads = 0;
+                Func<SearchIndex.IndexEntry, IReadOnlyList<SourceStoreBackfillPart>> reader = e =>
+                {
+                    if (e.Guid == eBad.Guid)
+                    {
+                        badReads++;
+                        throw new InvalidOperationException("Deterministically unreadable object");
+                    }
+                    return new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code-" + e.Guid } };
+                };
+
+                var first = new SourceStoreBackfillService(store);
+                first.Start(() => catalog, reader, maxObjectsPerSlice: 10, sliceBudgetMs: 2000, schedule: false);
+                Assert.False(first.RunOneSliceForTest(10, 2000));
+                Assert.True(first.RunOneSliceForTest(10, 2000));
+                Assert.Equal("completeWithFailures", first.GetState().State);
+                Assert.Equal(2, badReads);
+
+                // Worker restart: state is reloaded from disk and the exhausted cursor re-walks
+                // the same catalogue to refresh stale parts.
+                var reloaded = new SourceStoreBackfillService(store);
+                Assert.Equal(1, reloaded.GetState().FailedObjects);
+                Assert.True(reloaded.Start(() => catalog, reader, maxObjectsPerSlice: 10, sliceBudgetMs: 2000, schedule: false));
+                Assert.Equal("queued", reloaded.GetState().State);
+                Assert.True(reloaded.RunOneSliceForTest(10, 2000));
+
+                var state = reloaded.GetState();
+                Assert.Equal("completeWithFailures", state.State);
+                Assert.Equal(3, state.CursorIndex);
+                Assert.Equal(3, state.ProcessedObjects);
+                Assert.Equal(1, state.FailedObjects);
+                Assert.Contains(eBad.Guid, state.ReadFailedObjects);
+                Assert.Equal(2, badReads);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void CatalogSignatureChange_ClearsReadFailedObjects()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-fail-catalog-change-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var eGood1 = Entry("00000000-0000-0000-0000-000000000001", 10);
+                var eBad = Entry("00000000-0000-0000-0000-000000000002", 20);
+                var eGood2 = Entry("00000000-0000-0000-0000-000000000003", 30);
+                var eAdded = Entry("00000000-0000-0000-0000-000000000004", 40);
+                int badReads = 0;
+                Func<SearchIndex.IndexEntry, IReadOnlyList<SourceStoreBackfillPart>> reader = e =>
+                {
+                    if (e.Guid == eBad.Guid)
+                    {
+                        badReads++;
+                        throw new InvalidOperationException("Deterministically unreadable object");
+                    }
+                    return new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code-" + e.Guid } };
+                };
+
+                var service = new SourceStoreBackfillService(store);
+                service.Start(() => new[] { eGood1, eBad, eGood2 }, reader, maxObjectsPerSlice: 10, sliceBudgetMs: 2000, schedule: false);
+                Assert.False(service.RunOneSliceForTest(10, 2000));
+                Assert.True(service.RunOneSliceForTest(10, 2000));
+                Assert.Equal(1, service.GetState().FailedObjects);
+
+                service.Start(() => new[] { eGood1, eBad, eGood2, eAdded }, reader, maxObjectsPerSlice: 10, sliceBudgetMs: 2000, schedule: false);
+                var restarted = service.GetState();
+                Assert.Equal("queued", restarted.State);
+                Assert.Equal(0, restarted.CursorIndex);
+                Assert.Equal(0, restarted.FailedObjects);
+                Assert.Empty(restarted.ReadFailedObjects);
+
+                Assert.False(service.RunOneSliceForTest(10, 2000));
+                Assert.True(service.RunOneSliceForTest(10, 2000));
+                Assert.Equal(4, badReads);
+                Assert.Equal("completeWithFailures", service.GetState().State);
+                Assert.Equal(1, service.GetState().FailedObjects);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void StateJson_CapsReportedReadFailedObjects_AndPersistsTheFullList()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-fail-cap-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                int total = SourceStoreBackfillState.MaxReportedReadFailedObjects + 10;
+                var persisted = new SourceStoreBackfillState
+                {
+                    State = "completeWithFailures",
+                    ReadFailedObjects = Enumerable.Range(1, total).Select(i => Guid.NewGuid().ToString("D")).ToList()
+                };
+                Assert.Equal(total, ((Newtonsoft.Json.Linq.JArray)persisted.ToJson()["readFailedObjects"]).Count);
+                File.WriteAllText(Path.Combine(root, "backfill-state.json"), persisted.ToJson().ToString());
+
+                var service = new SourceStoreBackfillService(store);
+                Assert.Equal(total, service.GetState().FailedObjects);
+
+                var json = service.GetStateJson();
+                Assert.Equal(total, json["failedObjects"]?.ToObject<int>());
+                Assert.Equal(
+                    SourceStoreBackfillState.MaxReportedReadFailedObjects,
+                    ((Newtonsoft.Json.Linq.JArray)json["readFailedObjects"]).Count);
             }
             finally
             {
@@ -1001,6 +1246,16 @@ namespace GxMcp.Worker.Tests
             {
                 try { Directory.Delete(root, true); } catch { }
             }
+        }
+
+        [Theory]
+        [InlineData("complete", true)]
+        [InlineData("completeWithFailures", true)]
+        [InlineData("running", false)]
+        [InlineData("error", false)]
+        public void IsComplete_CertifiesCoverageForBothCompleteStates(string state, bool expected)
+        {
+            Assert.Equal(expected, new SourceStoreBackfillState { State = state }.IsComplete);
         }
 
         /// <summary>Deterministic run clock: time only moves when a test calls Advance.</summary>

@@ -342,23 +342,29 @@ namespace GxMcp.Worker.Helpers
                 var backfillState = SourceStoreBackfillService.Instance.GetState();
                 if (backfillState != null)
                 {
-                    snapshot["sourceStore"] = new JObject
-                    {
-                        ["state"] = backfillState.State ?? "unknown",
-                        ["processedCount"] = backfillState.ProcessedObjects,
-                        ["totalCount"] = backfillState.TotalObjects,
-                        ["retryCount"] = backfillState.RetryCount,
-                        ["failedCount"] = backfillState.FailedObjects,
-                        ["readFailedObjects"] = new JArray(backfillState.ReadFailedObjects ?? new List<string>()),
-                        ["lastError"] = backfillState.LastError != null
-                            ? LogRedaction.Redact(backfillState.LastError)
-                            : null
-                    };
+                    snapshot["sourceStore"] = BuildSourceStoreSnapshot(backfillState);
                 }
             }
             catch { }
 
             return snapshot;
+        }
+
+        internal static JObject BuildSourceStoreSnapshot(SourceStoreBackfillState backfillState)
+        {
+            return new JObject
+            {
+                ["state"] = backfillState.State ?? "unknown",
+                ["processedCount"] = backfillState.ProcessedObjects,
+                ["totalCount"] = backfillState.TotalObjects,
+                ["retryCount"] = backfillState.RetryCount,
+                ["failedCount"] = backfillState.FailedObjects,
+                ["readFailedObjects"] = new JArray((backfillState.ReadFailedObjects ?? new List<string>())
+                    .Take(SourceStoreBackfillState.MaxReportedReadFailedObjects)),
+                ["lastError"] = backfillState.LastError != null
+                    ? LogRedaction.Redact(backfillState.LastError)
+                    : null
+            };
         }
 
         public static string CreateFailureEnvelope(ReadDiagnosticContext context, Exception ex, KbService kbService)

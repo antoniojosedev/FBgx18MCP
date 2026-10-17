@@ -2813,7 +2813,8 @@ namespace GxMcp.Worker.Services
         // The old fixed 8 MiB aggregate cap made the index snapshot the bottleneck even
         // after the persistent source store had become complete. Keep a conservative cap
         // while backfill is incomplete, then lift it to a bounded large-KB budget once
-        // the resumable store certifies full coverage.
+        // the resumable store certifies coverage (`complete` or `completeWithFailures`:
+        // the objects it lists as unreadable fail the same SDK read a search would pay).
         private const int PersistedFullSourceMaxChars = 2 * 1024 * 1024;
         private const long PersistedFullSourceBudgetChars = 8L * 1024 * 1024;
         private const long CertifiedFullSourceBudgetChars = 256L * 1024 * 1024;
@@ -2904,7 +2905,7 @@ namespace GxMcp.Worker.Services
             try
             {
                 var backfill = SourceStoreBackfillService.Instance.GetState();
-                if (backfill.State == "complete") sourceBudget = CertifiedFullSourceBudgetChars;
+                if (backfill.IsComplete) sourceBudget = CertifiedFullSourceBudgetChars;
             }
             catch { }
             // Checked inside the same lock as the write, so two concurrent promotions

@@ -58,6 +58,19 @@ namespace GxMcp.Worker.Services
         public List<string> ReadFailedObjects { get; set; } = new List<string>();
         public int FailedObjects => ReadFailedObjects?.Count ?? 0;
 
+        /// <summary>
+        /// Upper bound on the GUIDs reported through whoami and diagnostic snapshots;
+        /// <see cref="FailedObjects"/> always carries the full count.
+        /// </summary>
+        public const int MaxReportedReadFailedObjects = 50;
+
+        /// <summary>
+        /// True once the walk has certified every readable object. Objects listed in
+        /// <see cref="ReadFailedObjects"/> fail the same SDK read a source search would
+        /// attempt, so <c>completeWithFailures</c> certifies coverage like <c>complete</c>.
+        /// </summary>
+        public bool IsComplete => State == "complete" || State == "completeWithFailures";
+
         public string ResolveTriggerState()
         {
             if (string.Equals(State, "error", StringComparison.OrdinalIgnoreCase)
@@ -73,8 +86,11 @@ namespace GxMcp.Worker.Services
             return State;
         }
 
-        public JObject ToJson()
+        public JObject ToJson(int? maxReadFailedObjects = null)
         {
+            var reportedFailures = ReadFailedObjects ?? new List<string>();
+            if (maxReadFailedObjects.HasValue)
+                reportedFailures = reportedFailures.Take(maxReadFailedObjects.Value).ToList();
             return new JObject
             {
                 ["state"] = State,
@@ -88,7 +104,7 @@ namespace GxMcp.Worker.Services
                 ["staleObjects"] = StaleObjects,
                 ["removedObjects"] = RemovedObjects,
                 ["failedObjects"] = FailedObjects,
-                ["readFailedObjects"] = new JArray(ReadFailedObjects ?? new List<string>()),
+                ["readFailedObjects"] = new JArray(reportedFailures),
                 ["retryCount"] = RetryCount,
                 ["etaMs"] = EtaMs == null ? JValue.CreateNull() : new JValue(EtaMs.Value),
                 ["startedAtUtc"] = StartedAtUtc?.ToString("o"),
@@ -191,7 +207,7 @@ namespace GxMcp.Worker.Services
         private readonly Dictionary<string, int> _objectRetries = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private int _scheduled;
         private bool _startedForCurrentIndex;
-        private const int MaxTransientRetries = 5;
+        internal const int MaxTransientRetries = 5;
 
         public SourceStoreBackfillService(SourceStoreService store)
             : this(store, null, null)
@@ -219,7 +235,7 @@ namespace GxMcp.Worker.Services
         public JObject GetStateJson()
         {
             var state = GetState();
-            return state.ToJson();
+            return state.ToJson(SourceStoreBackfillState.MaxReportedReadFailedObjects);
         }
 
         /// <summary>
@@ -277,7 +293,9 @@ namespace GxMcp.Worker.Services
                 }
                 if (_state.CursorIndex >= _entries.Count && _state.CursorIndex > 0)
                 {
-                    // A changed catalogue invalidates a previously exhausted cursor.
+                    // An exhausted cursor restarts the walk so stale parts get refreshed.
+                    // Known read failures are kept: only a changed catalogue signature
+                    // (above) re-tries a deterministically unreadable object.
                     _runClock.Reset();
                     _state.CursorIndex = 0;
                     _state.Cursor = null;
@@ -285,7 +303,6 @@ namespace GxMcp.Worker.Services
                     _state.StoredObjects = 0;
                     _state.StaleObjects = 0;
                     _state.RemovedObjects = 0;
-                    _state.ReadFailedObjects.Clear();
                     _objectRetries.Clear();
                 }
                 _state.State = _state.CursorIndex >= _entries.Count
@@ -412,6 +429,24 @@ namespace GxMcp.Worker.Services
                 {
                     if (watch.ElapsedMilliseconds >= sliceBudgetMs) break;
                     var entry = entries[i];
+                    bool knownReadFailure;
+                    lock (_gate)
+                    {
+                        knownReadFailure = _state.ReadFailedObjects.Contains(entry.Guid, StringComparer.OrdinalIgnoreCase);
+                        if (knownReadFailure)
+                        {
+                            _state.ProcessedObjects++;
+                            _state.CursorIndex = i + 1;
+                            _state.Cursor = EntryIdentity(entry);
+                            _state.UpdatedAtUtc = DateTime.UtcNow;
+                        }
+                    }
+                    if (knownReadFailure)
+                    {
+                        processed++;
+                        continue;
+                    }
+
                     IReadOnlyList<SourceStoreBackfillPart> parts = null;
                     string objectError = null;
                     try { parts = reader(entry); }
@@ -519,7 +554,10 @@ namespace GxMcp.Worker.Services
                         if (attempt < 1)
                         {
                             _objectRetries[entry.Guid] = attempt + 1;
-                            SetSliceError(objectError);
+                            // One probe retry per object. Only slice-level failures (SDK
+                            // queue, store) consume the transient retry budget; otherwise
+                            // a run of unreadable objects would wedge the walk in error.
+                            SetSliceError(objectError, consumesRetryBudget: false);
                             sliceHadError = true;
                             break;
                         }
@@ -648,7 +686,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private void SetSliceError(string message)
+        private void SetSliceError(string message, bool consumesRetryBudget = true)
         {
             lock (_gate)
             {
@@ -656,7 +694,7 @@ namespace GxMcp.Worker.Services
                     ? "The SDK source-part reader failed during source-store backfill."
                     : message;
                 _state.State = "error";
-                _state.RetryCount++;
+                if (consumesRetryBudget) _state.RetryCount++;
                 _state.CompletedAtUtc = null;
                 _state.UpdatedAtUtc = DateTime.UtcNow;
                 PersistStateLocked();
