@@ -337,10 +337,14 @@ namespace GxMcp.Gateway
                 "Aliases accepted: `StructuredDataType`→SDT, `BusinessProcessDiagram`/`BPD`→WorkflowDiagram, `PanelForSD`→SDPanel.\n\n" +
                 "## Defaults that get seeded\n" +
                 "- `Transaction` — gets a default `<Name>Id : Numeric(4) [Key]` attribute so the SDK accepts the empty save; pass `firstItem`/`firstItemType` to choose the initial key.\n" +
-                "- `SDT` — gets a default `Item1 : VARCHAR(40)` item.\n" +
+                "- `SDT` — gets a default `Item1 : VARCHAR(40)` item; pass `firstItem`/`firstItemType` (e.g. `Numeric(7)`) to choose it. `_meta.seeded` reports the type and the size the SDK actually kept.\n" +
                 "- `Procedure` / `DataProvider` — empty source with a `// Procedure: <Name>` header.\n" +
-                "- `Domain` — defaults to `Character(20)` when no `dataType` is supplied.\n\n" +
+                "- `Domain` — defaults to `Character(20)` when no `dataType` is supplied.\n" +
+                "- `Attribute` — the SDK default is `Numeric(4)` unless `dataType`/`basedOn` is passed (see below).\n\n" +
                 "When the response carries `_meta.seeded`, the caller knows what's already there and can decide whether to overwrite (`genexus_edit part=Structure mode=full`).\n\n" +
+                "## Attribute (new)\n" +
+                "Pass `dataType` (optionally with an inline size, e.g. `Numeric(12,2)`) plus `length`/`decimals` overrides, or `basedOn=<existingDomain>`. The write is fail-closed: a type that cannot be applied returns `CreateMetadataNotApplied` (unknown Domain: `DomainNotFound`) and nothing is saved, because an Attribute's Type cannot be changed through the MCP afterwards. " +
+                "`dryRun` previews the same `dataType`/`length`/`decimals`/`basedOn`; the real response's `_meta.attribute` echoes `requested`, `applied` and `persistedVerified` from a post-save re-read (`CreateMetadataNotPersisted` when the KB kept something else).\n\n" +
                 "## Domain (new)\n" +
                 "Pass either a primitive shape (`dataType` + `length`/`decimals`/`signed`) or `basedOn=<existingDomain>`. For an **enumerated domain**, add `enumValues=[{name,value}...]`.\n" +
                 "- The `value` for a Character/VarChar domain must be a quoted literal — e.g. `\"\\\"A\\\"\"` (string `\"A\"`). For Numeric, pass the literal number as a string (`\"1\"`).\n" +
