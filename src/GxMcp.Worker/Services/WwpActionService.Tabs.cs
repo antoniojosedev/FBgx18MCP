@@ -520,13 +520,21 @@ namespace GxMcp.Worker.Services
                 foreach (object descendant in Walk(child)) yield return descendant;
         }
 
+        // The label a container is addressed by: name, controlName, or "Grid" for an unnamed
+        // grid - the same rule as ContainerLabel on the XML side.
+        private static string NativeContainerLabel(object element)
+        {
+            string label = NativeAttribute(element, "name");
+            if (string.IsNullOrWhiteSpace(label)) label = NativeAttribute(element, "controlName");
+            if (string.IsNullOrWhiteSpace(label) && IsNativeGrid(element)) label = "Grid";
+            return label;
+        }
+
         // Walk with the named ancestors of each element (for path-qualified containers).
         private static IEnumerable<KeyValuePair<object, List<string>>> WalkWithPath(object element, List<string> ancestors)
         {
             if (element == null) yield break;
-            string label = NativeAttribute(element, "name");
-            if (string.IsNullOrWhiteSpace(label)) label = NativeAttribute(element, "controlName");
-            if (string.IsNullOrWhiteSpace(label) && IsNativeGrid(element)) label = "Grid";
+            string label = NativeContainerLabel(element);
             var path = new List<string>(ancestors);
             if (!string.IsNullOrWhiteSpace(label)) path.Add(label);
             yield return new KeyValuePair<object, List<string>>(element, path);

@@ -788,7 +788,7 @@ namespace GxMcp.Gateway
                 "## Actions\n" +
                 "- `list` — read the current action groups and ordered actions.\n" +
                 "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n" +
-                "- `add_user_action` — add a form-level UserAction under a named container. A missing `TableActions` is created under the unique `TableMain` (Empty WebPanel); other missing/ambiguous containers are errors. The event is `Do<actionName>`; do not pass a Procedure.\n" +
+                "- `add_user_action` — add a form-level UserAction under a named container. A missing `TableActions` is created under the unique `TableMain` (Empty WebPanel); other missing/ambiguous containers are errors. `containerName: 'Grid'` targets the unnamed WorkWith grid for a row-level action; `position` is the zero-based index among the container's existing standard and user actions (omitted appends). The event is `Do<actionName>`; do not pass a Procedure.\n" +
                 "- `add_tab`, `move_tab`, and `remove_tab` — edit WebPanel tabs and typed nested controls.\n" +
                 "- `set_table_type` — change only an existing WWP table's native `type` (`Regular` or `Responsive`) by path, preserving child identity and metadata with reread/rollback guards.\n" +
                 "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children; pass the PatternInstance `baseVersion` even for dryRun.\n" +

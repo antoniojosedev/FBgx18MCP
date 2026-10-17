@@ -98,6 +98,9 @@ namespace GxMcp.Worker.Helpers
                     return;
                 if (TryAllowAttributePromptEdit(before, after, oldNodes, newNodes, path))
                     return;
+                // Issue #551: <parameter> leaves of a selection, prompt or user action list.
+                if (TryAllowParameterListEdit(before, oldNodes, newNodes, path))
+                    return;
                 // Issue #349: structural layout authoring. Insert / remove / move of a
                 // single leaf layout element inside an existing container.
                 if (TryAllowStructuralLayoutEdit(oldNodes, newNodes, path, allowGridStructure))
@@ -292,7 +295,7 @@ namespace GxMcp.Worker.Helpers
             int firstDiff = limit;
             for (int i = 0; i < limit; i++)
             {
-                if (XNode.DeepEquals(oldNodes[i], newNodes[i])) continue;
+                if (SameLayoutNode(oldNodes[i], newNodes[i])) continue;
                 firstDiff = i;
                 break;
             }
@@ -302,11 +305,31 @@ namespace GxMcp.Worker.Helpers
                 if (firstDiff >= newNodes.Length) return false;
                 if (!(newNodes[firstDiff] is XElement inserted)) return false;
                 // Everything but the inserted node must be untouched and in order, or this
-                // is a rewrite rather than an insertion.
+                // is a rewrite rather than an insertion. Untouched is semantic (#551): a
+                // sibling re-serialised with its attributes in another order, or re-indented,
+                // is the same sibling, and XNode.DeepEquals refused it as if the inserted
+                // element were the problem.
                 for (int i = 0, j = 0; i < newNodes.Length; i++)
                 {
                     if (i == firstDiff) continue;
-                    if (j >= oldNodes.Length || !XNode.DeepEquals(oldNodes[j], newNodes[i])) return false;
+                    if (j >= oldNodes.Length || !SameLayoutNode(oldNodes[j], newNodes[i]))
+                    {
+                        // A permitted leaf next to a sibling that really did change: name the
+                        // sibling, because "1 child element added" blamed the wrong node.
+                        var addedKinds = Names(newNodes.Except(oldNodes, StructuralNodeKeyComparer.Instance));
+                        if (addedKinds.Count == 1 && StructuralLayoutRules.IsPermittedKind(addedKinds[0])
+                            && j < oldNodes.Length && oldNodes[j] is XElement sibling)
+                        {
+                            Reject("PatternStructureChangeUnsupported",
+                                "Structural layout edit at " + path + ": a <" + addedKinds[0] + "> was added,"
+                                + " but the existing <" + sibling.Name.LocalName + "> at index " + j
+                                + " also changed. A structural edit must leave every other child of the"
+                                + " container as it was; add the element alone and edit the sibling in a"
+                                + " separate import.");
+                            return true;
+                        }
+                        return false;
+                    }
                     j++;
                 }
 
@@ -353,7 +376,7 @@ namespace GxMcp.Worker.Helpers
             for (int i = 0, j = 0; i < oldNodes.Length; i++)
             {
                 if (i == firstDiff) continue;
-                if (j >= newNodes.Length || !XNode.DeepEquals(newNodes[j], oldNodes[i])) return false;
+                if (j >= newNodes.Length || !SameLayoutNode(newNodes[j], oldNodes[i])) return false;
                 j++;
             }
 
@@ -379,6 +402,41 @@ namespace GxMcp.Worker.Helpers
 
         private const string OrderingNote =
             "childrenOrderedList is not authored; the SDK rebuilds it from document order";
+
+        /// <summary>
+        /// Whether an untouched sibling is the same sibling: same element name, the same
+        /// attributes in any order, and the same significant children compared the same
+        /// way; other node types fall back to <see cref="XNode.DeepEquals"/>.
+        ///
+        /// <para>
+        /// Issue #551. The reporter added one well-formed textBlock and was told
+        /// "1 child element added. Added: textBlock" - the structural handler had declined
+        /// silently because <see cref="XNode.DeepEquals"/> is order-sensitive on attributes
+        /// and counts insignificant whitespace, so a sibling the client had merely
+        /// re-serialised failed the "everything else untouched" check. Attribute order and
+        /// indentation mean nothing to the SDK that deserialises the payload, and the
+        /// property-change path already compares attributes by name, so this is the same
+        /// notion of "unchanged" applied to the structural path.
+        /// </para>
+        /// </summary>
+        private static bool SameLayoutNode(XNode left, XNode right)
+        {
+            if (!(left is XElement a) || !(right is XElement b)) return XNode.DeepEquals(left, right);
+            if (a.Name != b.Name) return false;
+            var attributes = a.Attributes().Where(x => !x.IsNamespaceDeclaration).ToList();
+            if (attributes.Count != b.Attributes().Count(x => !x.IsNamespaceDeclaration)) return false;
+            foreach (var attribute in attributes)
+            {
+                var other = b.Attribute(attribute.Name);
+                if (other == null || !string.Equals(attribute.Value, other.Value, StringComparison.Ordinal)) return false;
+            }
+            var leftChildren = a.Nodes().Where(Significant).ToArray();
+            var rightChildren = b.Nodes().Where(Significant).ToArray();
+            if (leftChildren.Length != rightChildren.Length) return false;
+            for (int i = 0; i < leftChildren.Length; i++)
+                if (!SameLayoutNode(leftChildren[i], rightChildren[i])) return false;
+            return true;
+        }
 
         /// <summary>
         /// Collapses a matched Insert + Remove of the same element identity into one
@@ -945,6 +1003,109 @@ namespace GxMcp.Worker.Helpers
 
             return false;
         }
+
+        /// <summary>
+        /// Issue #551: the parameter list of a WorkWithPlus selection, prompt or user action
+        /// is a flat list of <c>&lt;parameter name value/&gt;</c> leaves. A caller may add
+        /// or remove such leaves inside an existing <c>&lt;parameters&gt;</c>, and may add
+        /// (or remove) the list itself directly under <c>&lt;selection&gt;</c>, which has no
+        /// list until one is authored. Everything else about the list - a parameter outside
+        /// it, an unknown attribute, a nested child, a list under any other parent - stays
+        /// with the structural gate, so the one shape accepted is the one WorkWithPlus
+        /// already serialises. Persistence of a selection list is unverified against the
+        /// SDK on this host.
+        /// </summary>
+        private bool TryAllowParameterListEdit(XElement before, XNode[] oldNodes, XNode[] newNodes, string path)
+        {
+            if (IsNamed(before, "parameters")
+                && (IsNamed(before.Parent, "selection") || IsNamed(before.Parent, "prompt") || IsNamed(before.Parent, "userAction")))
+                return TryAllowParameterLeafEdit(oldNodes, newNodes, path);
+
+            if (!IsNamed(before, "selection") || Math.Abs(newNodes.Length - oldNodes.Length) != 1) return false;
+            bool insertion = newNodes.Length > oldNodes.Length;
+            XNode[] longer = insertion ? newNodes : oldNodes;
+            XNode[] shorter = insertion ? oldNodes : newNodes;
+            int index = 0;
+            while (index < shorter.Length && XNode.DeepEquals(longer[index], shorter[index])) index++;
+            if (!(longer[index] is XElement list) || !IsNamed(list, "parameters")
+                || list.Attributes().Any(a => !a.IsNamespaceDeclaration)) return false;
+            for (int i = index + 1; i < longer.Length; i++)
+                if (!XNode.DeepEquals(longer[i], shorter[i - 1])) return false;
+
+            var leaves = list.Nodes().Where(Significant).ToArray();
+            if (!leaves.All(leaf => leaf is XElement element && IsNamed(element, "parameter"))) return false;
+            if (insertion)
+            {
+                foreach (XElement leaf in leaves)
+                {
+                    string problem = ParameterLeafProblem(leaf);
+                    if (problem == null) continue;
+                    Reject("PatternStructureChangeUnsupported", problem + " at " + path + "parameters/.");
+                    return true;
+                }
+            }
+            Changes.Add(new JObject
+            {
+                ["path"] = path + "parameters",
+                ["operation"] = insertion ? "Insert" : "Remove",
+                ["element"] = "parameters",
+                ["index"] = index,
+                ["parameters"] = leaves.Length
+            });
+            return true;
+        }
+
+        private bool TryAllowParameterLeafEdit(XNode[] oldNodes, XNode[] newNodes, string path)
+        {
+            if (!oldNodes.All(n => n is XElement e && IsNamed(e, "parameter"))
+                || !newNodes.All(n => n is XElement e && IsNamed(e, "parameter"))) return false;
+            bool insertion = newNodes.Length > oldNodes.Length;
+            XNode[] longer = insertion ? newNodes : oldNodes;
+            XNode[] shorter = insertion ? oldNodes : newNodes;
+            // The shorter side must survive in order; whatever is left over is the edit.
+            var changed = new List<int>();
+            int kept = 0;
+            for (int i = 0; i < longer.Length; i++)
+            {
+                if (kept < shorter.Length && XNode.DeepEquals(longer[i], shorter[kept])) kept++;
+                else changed.Add(i);
+            }
+            if (kept != shorter.Length) return false;
+            foreach (int index in changed)
+            {
+                var leaf = (XElement)longer[index];
+                string problem = insertion ? ParameterLeafProblem(leaf) : null;
+                if (problem != null)
+                {
+                    Reject("PatternStructureChangeUnsupported", problem + " at " + path + ".");
+                    return true;
+                }
+                Changes.Add(new JObject
+                {
+                    ["path"] = path,
+                    ["operation"] = insertion ? "Insert" : "Remove",
+                    ["element"] = "parameter",
+                    ["identity"] = (string)leaf.Attribute("name"),
+                    ["index"] = index
+                });
+            }
+            return true;
+        }
+
+        private static string ParameterLeafProblem(XElement leaf)
+        {
+            if (leaf.HasElements) return "A <parameter> may not carry child elements";
+            var offender = leaf.Attributes().FirstOrDefault(a => !a.IsNamespaceDeclaration
+                && !a.Name.LocalName.Equals("name", StringComparison.OrdinalIgnoreCase)
+                && !a.Name.LocalName.Equals("value", StringComparison.OrdinalIgnoreCase));
+            if (offender != null)
+                return "Attribute '" + offender.Name.LocalName + "' is not permitted on a <parameter>. Permitted: name, value";
+            if (string.IsNullOrWhiteSpace((string)leaf.Attribute("name"))) return "A <parameter> needs a name";
+            return null;
+        }
+
+        private static bool IsNamed(XElement element, string name)
+            => element != null && string.Equals(element.Name.LocalName, name, StringComparison.OrdinalIgnoreCase);
 
         private static bool ValidatePromptElement(XElement prompt)
         {
