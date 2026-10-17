@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use gx_engine::{
     build,
     diagnostics::{Diagnostic, DiagnosticCategory},
@@ -12,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HELP: &str = "gx-engine — experimental independent compiler\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine --version\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nNo native KB access, SDK fallback, SQL, MSBuild, or full GeneXus compatibility.\n";
+const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile]\n  gx-engine --version\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access, full object modeling, C# (.NET) generator, and parallel Rebuild All.\n";
 
 fn load(path: &str) -> Result<Project, String> {
     let file = File::open(path).map_err(|e| format!("cannot open project: {e}"))?;
@@ -76,6 +78,9 @@ fn execute(
         return Ok(());
     }
     let raw_command = args[0].as_str();
+    if raw_command == "rebuild-all" {
+        return execute_rebuild_all(&args[1..], category, json_errors);
+    }
     let from_xml = raw_command.starts_with("xml-");
     let (command, from_objects) = match raw_command
         .strip_prefix("kb-")
@@ -202,6 +207,125 @@ fn execute(
             }
         }
     }
+}
+
+fn execute_rebuild_all(
+    args: &[String],
+    category: &mut DiagnosticCategory,
+    json_errors: bool,
+) -> Result<(), String> {
+    *category = DiagnosticCategory::Input;
+    let mut kb_path: Option<String> = None;
+    let mut output_dir: Option<String> = None;
+    let mut target = "net8.0".to_string();
+    let mut clean = false;
+    let mut concurrency = 0;
+    let mut skip_compile = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--kb" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --kb".into());
+                }
+                kb_path = Some(args[i].clone());
+            }
+            "--output" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --output".into());
+                }
+                output_dir = Some(args[i].clone());
+            }
+            "--target" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --target".into());
+                }
+                target = args[i].clone();
+            }
+            "--clean" => {
+                clean = true;
+            }
+            "--concurrency" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --concurrency".into());
+                }
+                concurrency = args[i]
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid concurrency: {e}"))?;
+            }
+            "--skip-compile" => {
+                skip_compile = true;
+            }
+            other => {
+                return Err(format!("unexpected argument for rebuild-all: {other}"));
+            }
+        }
+        i += 1;
+    }
+
+    let kb = kb_path.ok_or_else(|| "missing required --kb <path>".to_string())?;
+    let out = output_dir.ok_or_else(|| "missing required --output <dir>".to_string())?;
+
+    let catalog = gx_engine::catalog::Catalog::load(&kb)?;
+
+    *category = DiagnosticCategory::Build;
+    let options = gx_engine::rebuild::RebuildOptions::new(target)
+        .with_clean(clean)
+        .with_concurrency(concurrency)
+        .with_skip_compile(skip_compile);
+
+    let report = gx_engine::rebuild::rebuild_all(&catalog, &PathBuf::from(out), &options)?;
+
+    if json_errors || env::var("GXMCP_JSON_REPORT").is_ok() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "Rebuild All completed in {}ms (read: {}ms, spec: {}ms, emit: {}ms, compile: {}ms)",
+            report.total_ms, report.read_ms, report.spec_ms, report.emit_ms, report.compile_ms
+        );
+        println!(
+            "Objects: {} (Procedures: {}, Transactions: {}, SDTs: {}, WebPanels: {})",
+            report.total_objects,
+            report.procedures_count,
+            report.transactions_count,
+            report.sdts_count,
+            report.webpanels_count
+        );
+        println!("Emitted files: {}", report.emitted_files.len());
+        if !report.warnings.is_empty() {
+            println!("Warnings ({}):", report.warnings.len());
+            for w in &report.warnings {
+                println!("  [WARN] {w}");
+            }
+        }
+        if !report.errors.is_empty() {
+            println!("Errors ({}):", report.errors.len());
+            for e in &report.errors {
+                println!("  [ERROR] {e}");
+            }
+            return Err(format!(
+                "rebuild failed with {} error(s)",
+                report.errors.len()
+            ));
+        }
+    }
+
+    if !report.is_success() {
+        return Err(format!(
+            "rebuild failed with {} error(s)",
+            report.errors.len()
+        ));
+    }
+
+    Ok(())
 }
 
 fn main() -> ExitCode {

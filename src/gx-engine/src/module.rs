@@ -487,7 +487,6 @@ pub fn get_object_module(
 
 /// Helper for constructing a `Catalog` containing arbitrary objects, bypassing the flat-name
 /// uniqueness check of single-namespace validation for tests testing modular resolution and homonyms.
-#[allow(clippy::transmute_undefined_repr)]
 pub fn build_catalog_with_objects(
     objects: Vec<crate::catalog::KbObject>,
 ) -> crate::catalog::Catalog {
@@ -495,14 +494,5 @@ pub fn build_catalog_with_objects(
     for obj in objects {
         map.insert(obj.id.clone(), obj);
     }
-    #[allow(dead_code)]
-    struct CatalogLayout {
-        revision: u64,
-        objects: BTreeMap<crate::catalog::ObjectId, crate::catalog::KbObject>,
-    }
-    let layout = CatalogLayout {
-        revision: 1,
-        objects: map,
-    };
-    unsafe { std::mem::transmute(layout) }
+    crate::catalog::Catalog::from_objects_map(map)
 }

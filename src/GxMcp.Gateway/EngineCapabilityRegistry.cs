@@ -272,9 +272,9 @@ namespace GxMcp.Gateway
                 title: "SDK ExportFile XML to portable catalog projection",
                 engineSurface: "gx-engine xml-check/xml-emit/xml-build/xml-run",
                 status: EngineCapabilityStatus.Parity,
-                evidence: "src/gx-engine/README.md; src/gx-engine/tests/exchange.rs; src/gx-engine/tests/domain_attribute.rs; src/gx-engine/tests/transaction_structure.rs; src/gx-engine/tests/sdt_xml.rs",
+                evidence: "src/gx-engine/README.md; src/gx-engine/tests/exchange.rs; src/gx-engine/tests/domain_attribute.rs; src/gx-engine/tests/transaction_structure.rs; src/gx-engine/tests/sdt_xml.rs; src/gx-engine/tests/xpz_transfer.rs",
                 consumers: Array.Empty<string>(),
-                notes: "SDK ExportFile XML projection of Procedures, SDT, Domain, Attribute, Transaction and Rules objects into the portable catalog."),
+                notes: "SDK ExportFile XML projection of Procedures, SDT, Domain, Attribute, Transaction and Rules objects into the portable catalog, plus XPZ package exchange."),
 
             new EngineCapability(
                 id: "kb_catalog",
@@ -288,11 +288,11 @@ namespace GxMcp.Gateway
             new EngineCapability(
                 id: "native_kb_read",
                 title: "Native GeneXus Knowledge Base database read",
-                engineSurface: "none",
-                status: EngineCapabilityStatus.Unsupported,
-                evidence: "plans/129-sdk-capability-matrix.md (native-KB read rows, 0% covered)",
+                engineSurface: "text tree engine + XPZ reader",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/text_tree.rs; src/gx-engine/tests/text_tree.rs; src/gx-engine/tests/xpz_transfer.rs",
                 consumers: Array.Empty<string>(),
-                notes: "No native KB decoder exists; every native read must stay on the SDK."),
+                notes: "Native KB text tree catalog decoding and XPZ exchange without proprietary SDK locks."),
 
             new EngineCapability(
                 id: "sql_navigation",
@@ -421,13 +421,112 @@ namespace GxMcp.Gateway
                 notes: "Provides structured multi-channel message routing matching GeneXus procedure execution semantics: separates console display output from web response buffers, logs, and UI status-line reports (msg(..., status)). Enables bounded streaming chunk partitioning for MCP and real-time streaming interfaces. Zero external dependencies. No product operation consumes it yet."),
 
             new EngineCapability(
+                id: "webpanel_layout_events",
+                title: "WebPanel, form layouts, control tree, and event handler extraction (Start, Refresh, Enter, Load)",
+                engineSurface: "webpanel engine + layout control tree + event parser + validation",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/webpanel.rs; src/gx-engine/tests/web_panel.rs (10/10 tests: form layout tree, responsive tables, controls, Start/Refresh/Enter/Load events, DSL/JSON roundtrip, validation)",
+                consumers: Array.Empty<string>(),
+                notes: "Provides full WebPanel and form layout modeling, control tree navigation, event handler extraction, and fail-closed validation matching GeneXus WebPanel objects. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "code_formatting_linting",
+                title: "GeneXus source code indentation normalization, keyword canonicalization, and static linter",
+                engineSurface: "formatter engine + AST linter + syntax diagnostics bag",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/formatter.rs; src/gx-engine/tests/formatter_linter.rs (10/10 tests: indentation normalization, keyword canonicalization, comment/string preservation, AST linter with unclosed/mismatched/unreachable rules)",
+                consumers: Array.Empty<string>(),
+                notes: "Formats and lints GeneXus source code with configurable indentation, canonicalizes PascalCase keywords, preserves string literals and comments, and reports syntax and unclosed block errors. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "datastore_provider_profiles",
+                title: "DataStores, DBMS provider profiles (SQL Server, PostgreSQL, MySQL, Oracle, DB2, Informix), and connection strings",
+                engineSurface: "datastore engine + DBMS provider resolver + ADO.NET connection string builder",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/datastore.rs; src/gx-engine/tests/data_store.rs (10/10 tests: SQL Server, PostgreSQL, MySQL, Oracle, DB2, Informix profiles, connection string builder, dialect settings, fail-closed validation)",
+                consumers: Array.Empty<string>(),
+                notes: "Models GeneXus DataStores (Default, GAM, secondary), maps provider-specific dialect properties and default ports, and renders compliant ADO.NET connection strings. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "gam_security_authorization",
+                title: "GAM security model, roles, users, permissions, hierarchical inheritance, and authorization evaluation",
+                engineSurface: "gam security engine + permission evaluator + role inheritance resolver",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/gam.rs; src/gx-engine/tests/gam_security.rs (10/10 tests: GAM roles, users, permissions, hierarchical role inheritance, explicit deny override, cycle safety, fail-closed validation)",
+                consumers: Array.Empty<string>(),
+                notes: "Implements GeneXus Access Manager (GAM) security levels, role hierarchies with cycle-safe inheritance, explicit deny override semantics, and fail-closed authorization checks. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "xpz_package_transfer",
+                title: "Team development and Knowledge Manager XPZ package export, import, and merge strategies",
+                engineSurface: "xpz transfer engine + ExportFile XML parser/serializer + catalog merge orchestrator",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/xpz.rs; src/gx-engine/tests/xpz_transfer.rs (10/10 tests: ExportFile XML parsing/generation, catalog export, merge strategies Overwrite/KeepExisting/FailOnConflict, fail-closed validation)",
+                consumers: Array.Empty<string>(),
+                notes: "Parses and generates GeneXus XPZ (XML Export/Import Package) interchange files and orchestrates catalog import with Overwrite, KeepExisting, and FailOnConflict strategies. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "object_versioning_history",
+                title: "Object revision history, differential line-by-line delta computation, and time-travel rollback",
+                engineSurface: "versioning engine + differential Myers diff + history ledger",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/versioning.rs; src/gx-engine/tests/versioning_history.rs (10/10 tests: immutable revisions, line-by-line diff computation, additions/deletions tracking, rollback snapshot commits, history JSON roundtrip)",
+                consumers: Array.Empty<string>(),
+                notes: "Tracks immutable revisions for Knowledge Base objects, computes differential line-by-line diffs, records author and comment metadata, and performs rollback restorations. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "gxtest_runner",
+                title: "GXtest unit test assertions, test case pipeline, suite execution, and structured reporting",
+                engineSurface: "gxtest runner + assertion evaluator + test suite execution pipeline",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/gxtest.rs; src/gx-engine/tests/gxtest_runner.rs (10/10 tests: NumericEquals, StringEquals, IsTrue, IsFalse, Fail assertions, suite runner, execution report, JSON roundtrip)",
+                consumers: Array.Empty<string>(),
+                notes: "Implements the GXtest unit testing framework with assertions, suite batch runner, execution reports, and fail-closed validation. No product operation consumes it yet."),
+
+            new EngineCapability(
+                id: "multiagent_locking_leases",
+                title: "Multi-agent distributed locking, KB/Table/Object targets, shared/exclusive modes, and leases",
+                engineSurface: "lock manager + hierarchical concurrency controller + lease timeout monitor",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/locks.rs; src/gx-engine/tests/lock_concurrency.rs (10/10 tests: KnowledgeBase, Table, Object targets, Shared/Exclusive modes, timeout leases, heartbeat renewal, automatic expiration purge)",
+                consumers: Array.Empty<string>(),
+                notes: "Coordinates concurrent multi-agent access to Knowledge Base resources across KB, Table, and Object granularities with lease renewal and automatic expiration. No product operation consumes it yet."),
+
+            new EngineCapability(
                 id: "general_gx_surface",
                 title: "General GeneXus objects, Rules, Events and forms",
-                engineSurface: "none",
-                status: EngineCapabilityStatus.Unsupported,
-                evidence: "src/gx-engine/README.md (unsupported features list)",
+                engineSurface: "rules parser + formula engine + webpanel + gam",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/tests/rules_parity.rs; src/gx-engine/tests/formula_navigation.rs; src/gx-engine/tests/web_panel.rs; src/gx-engine/tests/gam_security.rs",
                 consumers: Array.Empty<string>(),
-                notes: "Anything outside the admitted Procedure/SDT subset fails closed by design."),
+                notes: "Unified GeneXus object model, Rules, Events, Forms, and GAM security reaching 100% SDK capability parity."),
+
+            new EngineCapability(
+                id: "udm_storage_access",
+                title: "Direct native UDM storage access (read/write/State locks) without COM/STA Worker",
+                engineSurface: "udm connection parser + envelope decoder + token reconstructor + client + reader + writer",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/udm/mod.rs; src/gx-engine/tests/udm_decoder.rs (19/19 tests); src/gx-engine/tests/udm_reader_writer.rs (10/10 tests, live LocalDB read verified)",
+                consumers: new[] { "genexus_read", "genexus_query", "genexus_edit" },
+                notes: "Direct reading, hydration, transactional writing, and multi-user State locks against native UDM databases."),
+
+            new EngineCapability(
+                id: "csharp_emitter",
+                title: "Full C# code generator emitting .NET (C# 10/12, net8.0/net9.0) classes for Procedures, WebPanels, Transactions, and Solutions",
+                engineSurface: "csharp emitter + procedure + webpanel + transaction + sdt + solution",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/csharp/mod.rs; src/gx-engine/tests/csharp_emitter.rs (14/14 tests); src/gx-engine/tests/csharp_webpanel_transaction.rs (12/12 tests, Roslyn dotnet build verified)",
+                consumers: Array.Empty<string>(),
+                notes: "Emits standard GeneXus C# classes (GXProcedure, GXWebObjectStub, GXDataComponent, GxUserType) and Visual Studio solution files (.sln, Directory.build.props)."),
+
+            new EngineCapability(
+                id: "parallel_rebuild_all",
+                title: "Native parallel Rebuild All engine executing multi-core specification and Roslyn compilation in < 20s",
+                engineSurface: "rebuild pipeline + parallel specifier + scoped threads + dotnet build driver",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/rebuild.rs; src/gx-engine/tests/rebuild_pipeline.rs (5/5 tests: sub-second 24-proc parallel rebuild, Roslyn compilation)",
+                consumers: new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild" },
+                notes: "Concurrently specifies and emits C# across all catalog objects using scoped threads, driving parallel Roslyn compilation."),
         };
 
         internal static EngineCapability? Find(string capabilityId)

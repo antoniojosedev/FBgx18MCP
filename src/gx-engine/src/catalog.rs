@@ -155,6 +155,13 @@ impl Catalog {
         }
     }
 
+    pub fn from_objects_map(objects: BTreeMap<ObjectId, KbObject>) -> Self {
+        Self {
+            revision: 1,
+            objects,
+        }
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -343,9 +350,26 @@ impl Catalog {
         }
     }
 
-    /// Loads a size-bounded portable catalog from disk.
+    /// Loads a size-bounded portable catalog or native Knowledge Base from disk.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
+        if path.is_dir() {
+            let conn_file = path.join("knowledgebase.connection");
+            if conn_file.exists() {
+                let client = std::sync::Arc::new(crate::udm::client::UdmClient::connect_kb(path)?);
+                let reader = crate::udm::reader::UdmReader::new(client);
+                return reader.read_catalog();
+            }
+        } else if path
+            .file_name()
+            .is_some_and(|f| f == "knowledgebase.connection")
+        {
+            let kb_dir = path.parent().unwrap_or(path);
+            let client = std::sync::Arc::new(crate::udm::client::UdmClient::connect_kb(kb_dir)?);
+            let reader = crate::udm::reader::UdmReader::new(client);
+            return reader.read_catalog();
+        }
+
         let file = File::open(path)
             .map_err(|error| format!("could not open catalog '{}': {error}", path.display()))?;
         let metadata = file

@@ -144,7 +144,7 @@ pub fn format_data_type(dt: &DataType) -> String {
 
 /// Parses a human-readable GeneXus data type string or JSON data type.
 pub fn parse_data_type(input: &str) -> Result<DataType, String> {
-    let trimmed = input.trim();
+    let trimmed = input.trim().trim_end_matches(';').trim();
     let lower = trimmed.to_ascii_lowercase();
 
     if lower == "boolean" || lower == "bool" {
@@ -417,6 +417,9 @@ fn parse_level_name(line: &str) -> Result<String, String> {
 
 fn parse_attribute_ref(line: &str) -> Result<TransactionAttributeRef, String> {
     let mut s = line.trim();
+    if let Some(stripped) = s.strip_suffix(';') {
+        s = stripped.trim();
+    }
     let is_key = s.starts_with('*');
     if is_key {
         s = s[1..].trim();

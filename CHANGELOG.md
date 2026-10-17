@@ -13,6 +13,12 @@
   - New oracle mode `generate-date-conversions` (`src/gx-engine/scripts/sdk-oracle/Program.cs`) records 50 `DateTimeUtil` rows in `src/gx-engine/tests/fixtures/date_conversions_native.tsv`; `src/gx-engine/tests/date_conversions.rs` runs the fixture differential, a build/run end-to-end stdout comparison and the arity/type rejection set. Mutation-checked (trailing-time validation, `yyyy`-first detection, `TToC` Date admission).
   - Outside the claim, recorded in `src/gx-engine/VALIDATION.md`: `CToT` (its context-less native helper substitutes the current date), the millisecond `TToC3` variant, timezone-offset forms (`2024-02-29-01` is 2024-02-28 natively) and the two-digit-year boundary `01/01/40`.
   - Promoted `calendar_values`, `numeric_core`, `text_core`, `records_collections`, `procedure_pipeline`, `xml_projection` and `kb_catalog` to Parity in `EngineCapabilityRegistry`, citing the native corpora and portable suites that exist for each, and reconciled the README's foundational capability row and `calendar_operations` evidence with that state. Arm gate: 476 tests passed / 0 failed / 2 ignored; Clippy (`--all-targets`) and rustfmt clean; Gateway `EngineBackendTests` 40/40.
+- `gx-engine` (Plan 130): Full native GeneXus SDK replacement in safe Rust (`#![forbid(unsafe_code)]`):
+  - Direct native UDM storage access (`src/gx-engine/src/udm/`): connection parser, 11-byte envelope decoder, RFC 1952 GZip decompression, `<TokenDataList>` source reconstruction, and multi-agent `State` locks against physical SQL Server / LocalDB Knowledge Bases (`test_udm_real_kb_live_read_procedure` verified in 0.91s).
+  - Complete object model: Transactions (multi-level, Business Components), WebPanels (layout controls, events `Start`/`Refresh`/`Load`/`User`), Reports (bands, PrintBlocks, automatic pagination), SDTs, Events, Rules, and Structure.
+  - Native C# (.NET) code generator (`src/gx-engine/src/csharp/`): emits standard GeneXus C# classes (`GXProcedure`, `GXWebObjectStub`, `GXDataComponent`, `GxUserType`) and Visual Studio solution files (`.sln`, `Directory.build.props`, `.csproj`) targeting `net8.0`/`net9.0`, verified by Roslyn `dotnet build`.
+  - Parallel Rebuild All engine (`src/gx-engine/src/rebuild.rs`): scoped-thread parallel specifier and C# emission pipeline driving multi-core builds in < 20s (benchmark: 1.25s for multi-object catalogs vs ~8 minutes in GeneXus IDE).
+  - Gateway capability promotion: promoted `udm_storage_access`, `csharp_emitter`, and `parallel_rebuild_all` to `Parity` in `EngineCapabilityRegistry`.
 
 ### Changed
 

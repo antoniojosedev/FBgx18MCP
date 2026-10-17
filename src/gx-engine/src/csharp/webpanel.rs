@@ -1,0 +1,633 @@
+//! GXWebObjectStub and GXWebPanel C# class generator.
+
+use crate::{
+    catalog::{KbObject, ObjectKind},
+    csharp::{
+        emitter::CSharpEmitter,
+        procedure::CsharpParam,
+        types::{
+            clean_ident, to_csharp_default_value, to_csharp_param_name, to_csharp_param_signature,
+            to_csharp_type, to_csharp_var_name,
+        },
+    },
+    model::{DataType, ParamMode},
+    webpanel::{ControlKind, EventKind, LayoutControl, ScreenVariable, WebPanel, WebPanelEvent},
+};
+use std::collections::BTreeMap;
+use std::fmt::Write;
+
+/// Extended imports for WebPanel C# classes.
+pub const WEBPANEL_IMPORTS: &[&str] = &[
+    "System",
+    "System.Collections",
+    "GeneXus.Utils",
+    "GeneXus.Resources",
+    "GeneXus.Application",
+    "GeneXus.Metadata",
+    "GeneXus.Cryptography",
+    "System.Data",
+    "GeneXus.Data",
+    "com.genexus",
+    "GeneXus.Data.ADO",
+    "GeneXus.Data.NTier",
+    "GeneXus.Data.NTier.ADO",
+    "GeneXus.WebControls",
+    "GeneXus.Http",
+    "GeneXus.XML",
+    "GeneXus.Search",
+    "GeneXus.Encryption",
+    "GeneXus.Http.Client",
+    "System.Xml.Serialization",
+    "System.Runtime.Serialization",
+];
+
+/// Flattens a hierarchy of layout controls into a flat list.
+fn collect_all_controls<'a>(controls: &'a [LayoutControl], out: &mut Vec<&'a LayoutControl>) {
+    for c in controls {
+        out.push(c);
+        collect_all_controls(&c.children, out);
+    }
+}
+
+/// Normalizes a UI control name to GeneXus C# control field convention.
+pub fn to_csharp_control_name(name: &str, kind: &ControlKind) -> String {
+    let clean = clean_ident(name);
+    match kind {
+        ControlKind::TextBlock => {
+            if clean.starts_with("lbl") {
+                clean
+            } else {
+                format!("lbl{clean}")
+            }
+        }
+        ControlKind::Button => {
+            if let Some(rest) = clean.strip_prefix("btn") {
+                format!("btt{rest}")
+            } else if clean.starts_with("btt") {
+                clean
+            } else {
+                format!("btt{clean}")
+            }
+        }
+        ControlKind::Grid => {
+            if clean.starts_with("Grid") {
+                clean
+            } else {
+                format!("Grid{clean}")
+            }
+        }
+        ControlKind::Table | ControlKind::ResponsiveTable => {
+            if clean.starts_with("tbl") {
+                clean
+            } else {
+                format!("tbl{clean}")
+            }
+        }
+        ControlKind::Edit => {
+            if clean.starts_with("edt") {
+                clean
+            } else {
+                format!("edt{clean}")
+            }
+        }
+        _ => clean,
+    }
+}
+
+/// Represents an emittable GeneXus C# WebPanel class (`GXWebPanel` / `GXWebObjectStub`).
+#[derive(Debug, Clone)]
+pub struct WebPanelClass {
+    pub name: String,
+    pub namespace: String,
+    pub theme: Option<String>,
+    pub master_page: Option<String>,
+    pub base_class: String,
+    pub is_main: bool,
+    pub params: Vec<CsharpParam>,
+    pub controls: Vec<LayoutControl>,
+    pub events: Vec<WebPanelEvent>,
+    pub variables: BTreeMap<String, DataType>,
+    pub rules: Vec<String>,
+}
+
+impl WebPanelClass {
+    /// Creates a new empty WebPanelClass with default settings.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            namespace: "GeneXus.Programs".to_string(),
+            theme: Some("KBTeste".to_string()),
+            master_page: None,
+            base_class: "GXWebPanel".to_string(),
+            is_main: false,
+            params: Vec::new(),
+            controls: Vec::new(),
+            events: Vec::new(),
+            variables: BTreeMap::new(),
+            rules: Vec::new(),
+        }
+    }
+
+    /// Sets the application theme.
+    pub fn with_theme(mut self, theme: impl Into<String>) -> Self {
+        self.theme = Some(theme.into());
+        self
+    }
+
+    /// Sets the master page name.
+    pub fn with_master_page(mut self, master_page: impl Into<String>) -> Self {
+        self.master_page = Some(master_page.into());
+        self
+    }
+
+    /// Sets the base class to inherit from (`GXWebPanel`, `GXWebObjectStub`, or `GXDataArea`).
+    pub fn with_base_class(mut self, base_class: impl Into<String>) -> Self {
+        self.base_class = base_class.into();
+        self
+    }
+
+    /// Sets custom namespace.
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace.into();
+        self
+    }
+
+    /// Sets whether this WebPanel is an entry point.
+    pub fn with_is_main(mut self, is_main: bool) -> Self {
+        self.is_main = is_main;
+        self
+    }
+
+    /// Adds a typed parameter.
+    pub fn add_param(mut self, param: CsharpParam) -> Self {
+        self.params.push(param);
+        self
+    }
+
+    /// Adds a layout control.
+    pub fn add_control(mut self, control: LayoutControl) -> Self {
+        self.controls.push(control);
+        self
+    }
+
+    /// Adds an authored event block.
+    pub fn add_event(mut self, event: WebPanelEvent) -> Self {
+        self.events.push(event);
+        self
+    }
+
+    /// Adds a declared screen variable.
+    pub fn add_variable(mut self, name: impl Into<String>, data_type: DataType) -> Self {
+        self.variables.insert(name.into(), data_type);
+        self
+    }
+
+    /// Constructs a WebPanelClass from a portable `WebPanel` AST.
+    pub fn from_webpanel(panel: &WebPanel) -> Self {
+        let mut vars = BTreeMap::new();
+        for v in &panel.variables {
+            let key = v.name.trim_start_matches('&').to_string();
+            vars.insert(key, v.data_type.clone());
+        }
+
+        let mut params = Vec::new();
+        for rule_str in &panel.rules {
+            if let Ok(rules) = crate::rules::parse_rules(rule_str) {
+                for rule in rules {
+                    if let crate::rules::Rule::Parm(args) = rule {
+                        for (i, arg) in args.iter().enumerate() {
+                            let (mode, param_ident) = if arg.mode.is_empty() {
+                                (ParamMode::InOut, arg.name.as_str())
+                            } else {
+                                let mode = match arg.mode.to_ascii_lowercase().as_str() {
+                                    "in" => ParamMode::In,
+                                    "out" => ParamMode::Out,
+                                    _ => ParamMode::InOut,
+                                };
+                                (mode, arg.name.as_str())
+                            };
+
+                            let lookup_key = param_ident.trim_start_matches('&');
+                            let fallback_name = clean_ident(param_ident);
+                            let (matched_name, data_type) = vars
+                                .iter()
+                                .find(|(k, _)| {
+                                    k.eq_ignore_ascii_case(lookup_key)
+                                        || k.eq_ignore_ascii_case(param_ident)
+                                })
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .unwrap_or_else(|| {
+                                    (
+                                        fallback_name,
+                                        DataType::Numeric {
+                                            precision: 10,
+                                            scale: 0,
+                                        },
+                                    )
+                                });
+
+                            let clean = clean_ident(&matched_name);
+                            let param_name = to_csharp_param_name(i, &matched_name);
+                            let var_name = to_csharp_var_name(&matched_name);
+                            params.push(CsharpParam {
+                                name: clean,
+                                data_type,
+                                mode,
+                                param_name,
+                                var_name,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Self {
+            name: panel.name.clone(),
+            namespace: "GeneXus.Programs".to_string(),
+            theme: panel.theme.clone().or_else(|| Some("KBTeste".to_string())),
+            master_page: panel.master_page.clone(),
+            base_class: "GXWebPanel".to_string(),
+            is_main: false,
+            params,
+            controls: panel.controls.clone(),
+            events: panel.events.clone(),
+            variables: vars,
+            rules: panel.rules.clone(),
+        }
+    }
+
+    /// Constructs a WebPanelClass directly from a portable `KbObject`.
+    pub fn from_kb_object(object: &KbObject) -> Result<Self, String> {
+        if object.kind != ObjectKind::WebPanel {
+            return Err(format!("expected WebPanel, found {:?}", object.kind));
+        }
+
+        for part in &object.source_parts {
+            match part.name.as_str() {
+                "WEBPANEL" | "SOURCE" => {
+                    if let Ok(wp) = WebPanel::parse(&object.name, &part.source) {
+                        return Ok(Self::from_webpanel(&wp));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut wp = WebPanel {
+            name: object.name.clone(),
+            ..Default::default()
+        };
+
+        for part in &object.source_parts {
+            match part.name.as_str() {
+                "VARIABLES" => {
+                    if let Ok(vars) = serde_json::from_str::<Vec<ScreenVariable>>(&part.source) {
+                        wp.variables = vars;
+                    } else if let Ok(vars_map) =
+                        serde_json::from_str::<BTreeMap<String, DataType>>(&part.source)
+                    {
+                        wp.variables = vars_map
+                            .into_iter()
+                            .map(|(k, v)| ScreenVariable::new(k, v))
+                            .collect();
+                    }
+                }
+                "EVENTS" => {
+                    if let Ok(events) = serde_json::from_str::<Vec<WebPanelEvent>>(&part.source) {
+                        wp.events = events;
+                    }
+                }
+                "LAYOUT" => {
+                    if let Ok(controls) = serde_json::from_str::<Vec<LayoutControl>>(&part.source) {
+                        wp.controls = controls;
+                    }
+                }
+                "RULES" => {
+                    wp.rules.push(part.source.clone());
+                }
+                _ => {}
+            }
+        }
+
+        Ok(Self::from_webpanel(&wp))
+    }
+
+    /// Emits complete C# source code (.cs) for this WebPanel.
+    pub fn emit(&self) -> String {
+        let mut out = String::new();
+
+        // 1. Standard imports
+        for imp in WEBPANEL_IMPORTS {
+            let _ = writeln!(out, "using {imp};");
+        }
+
+        // 2. Namespace
+        let _ = writeln!(out, "namespace {} {{", self.namespace);
+
+        // 3. Class declaration
+        let _ = writeln!(out, "   public class {} : {}", self.name, self.base_class);
+        let _ = writeln!(out, "   {{");
+
+        // 4. Constructors
+        let _ = writeln!(out, "      public {}( )", self.name);
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         context = new GxContext(  );");
+        let _ = writeln!(out, "         DataStoreUtil.LoadDataStores( context);");
+        let _ = writeln!(out, "         IsMain = true;");
+        if let Some(theme) = &self.theme {
+            let _ = writeln!(out, "         context.SetDefaultTheme(\"{theme}\", true);");
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "      public {}( IGxContext context )", self.name);
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         this.context = context;");
+        let _ = writeln!(out, "         IsMain = false;");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 5. execute method
+        let param_signatures = if self.params.is_empty() {
+            String::new()
+        } else {
+            let sigs: Vec<String> = self
+                .params
+                .iter()
+                .map(|p| to_csharp_param_signature(p.mode, &p.data_type, &p.param_name))
+                .collect();
+            format!(" {} ", sigs.join(" ,\n                           "))
+        };
+
+        let _ = writeln!(out, "      public void execute({param_signatures})");
+        let _ = writeln!(out, "      {{");
+        for p in &self.params {
+            match p.mode {
+                ParamMode::In | ParamMode::InOut => {
+                    let _ = writeln!(out, "         this.{} = {};", p.var_name, p.param_name);
+                }
+                ParamMode::Out => {
+                    let default_val = to_csharp_default_value(&p.data_type);
+                    let _ = writeln!(out, "         this.{} = {} ;", p.var_name, default_val);
+                }
+            }
+        }
+        let _ = writeln!(out, "         initialize();");
+        let _ = writeln!(out, "         ExecuteImpl();");
+        for p in &self.params {
+            match p.mode {
+                ParamMode::Out | ParamMode::InOut => {
+                    let _ = writeln!(out, "         {} = this.{};", p.param_name, p.var_name);
+                }
+                ParamMode::In => {}
+            }
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 6. ExecutePrivate and webExecute
+        let _ = writeln!(out, "      protected override void ExecutePrivate( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         isStatic = false;");
+        let _ = writeln!(out, "         webExecute();");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      protected void webExecute( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         createObjects();");
+        let _ = writeln!(out, "         initialize();");
+        let _ = writeln!(out, "         INITWEB();");
+        let _ = writeln!(out, "         if ( ! isAjaxCallMode( ) )");
+        let _ = writeln!(out, "         {{");
+        let _ = writeln!(out, "            PA();");
+        let _ = writeln!(out, "            Refresh();");
+        let _ = writeln!(out, "         }}");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 7. createObjects
+        let mut flat_controls = Vec::new();
+        collect_all_controls(&self.controls, &mut flat_controls);
+
+        let _ = writeln!(out, "      protected override void createObjects( )");
+        let _ = writeln!(out, "      {{");
+        for c in &flat_controls {
+            let ctrl_name = to_csharp_control_name(&c.name, &c.kind);
+            match c.kind {
+                ControlKind::Button => {
+                    let _ = writeln!(out, "         {ctrl_name} = new GXButton();");
+                }
+                ControlKind::Grid => {
+                    let _ = writeln!(out, "         {ctrl_name} = new GXGrid();");
+                }
+                ControlKind::TextBlock => {
+                    let _ = writeln!(out, "         {ctrl_name} = new GXTextBlock();");
+                }
+                ControlKind::Table | ControlKind::ResponsiveTable => {
+                    let _ = writeln!(out, "         {ctrl_name} = new GXTable();");
+                }
+                ControlKind::Edit => {
+                    let _ = writeln!(out, "         {ctrl_name} = new GXEdit();");
+                }
+                _ => {}
+            }
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 8. INITWEB and PA stubs
+        let _ = writeln!(out, "      protected void INITWEB( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         initialize_properties();");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      protected void PA( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 9. cleanup method
+        let _ = writeln!(out, "      public override void cleanup( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         CloseCursors();");
+        let _ = writeln!(out, "         if ( IsMain )");
+        let _ = writeln!(out, "         {{");
+        let _ = writeln!(out, "            context.CloseConnections();");
+        let _ = writeln!(out, "         }}");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 10. initialize method
+        let _ = writeln!(out, "      public override void initialize( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         /* GeneXus formulas. */");
+        for (var_name, data_type) in &self.variables {
+            let cs_name = to_csharp_var_name(var_name);
+            let default_val = to_csharp_default_value(data_type);
+            let _ = writeln!(out, "         {cs_name} = {default_val} ;");
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 11. initialize_properties method
+        let _ = writeln!(out, "      public void initialize_properties( )");
+        let _ = writeln!(out, "      {{");
+        for c in &flat_controls {
+            let ctrl_name = to_csharp_control_name(&c.name, &c.kind);
+            if let Some(caption) = &c.caption {
+                match c.kind {
+                    ControlKind::TextBlock | ControlKind::Button => {
+                        let _ = writeln!(out, "         {ctrl_name}.Caption = \"{caption}\";");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 12. ExecuteUserEvent method
+        let _ = writeln!(
+            out,
+            "      public void ExecuteUserEvent( string eventName )"
+        );
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(
+            out,
+            "         string upperEvt = StringUtil.Upper( StringUtil.Trim( eventName ) );"
+        );
+
+        let mut first = true;
+        for ev in &self.events {
+            let clean = clean_ident(&ev.name);
+            let ev_upper = ev
+                .name
+                .trim()
+                .trim_matches('\'')
+                .trim_matches('"')
+                .to_ascii_uppercase();
+            let if_stmt = if first {
+                first = false;
+                "if"
+            } else {
+                "else if"
+            };
+
+            let method_call = match ev.event_kind() {
+                EventKind::Start => "E12_Start();".to_string(),
+                EventKind::Refresh => "E11_Refresh();".to_string(),
+                EventKind::Load { grid } => {
+                    if let Some(g) = grid {
+                        format!("E13_{}_Load();", clean_ident(&g))
+                    } else {
+                        "E13_Load();".to_string()
+                    }
+                }
+                EventKind::User(_) => format!("E14_{clean}();"),
+            };
+
+            let _ = writeln!(
+                out,
+                "         {if_stmt} ( StringUtil.StrCmp(upperEvt, \"{ev_upper}\") == 0 )"
+            );
+            let _ = writeln!(out, "         {{");
+            let _ = writeln!(out, "            {method_call}");
+            let _ = writeln!(out, "         }}");
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 13. Event methods
+        for ev in &self.events {
+            let clean = clean_ident(&ev.name);
+            let method_name = match ev.event_kind() {
+                EventKind::Start => "E12_Start".to_string(),
+                EventKind::Refresh => "E11_Refresh".to_string(),
+                EventKind::Load { grid } => {
+                    if let Some(g) = grid {
+                        format!("E13_{}_Load", clean_ident(&g))
+                    } else {
+                        "E13_Load".to_string()
+                    }
+                }
+                EventKind::User(_) => format!("E14_{clean}"),
+            };
+
+            let _ = writeln!(out, "      protected void {method_name}( )");
+            let _ = writeln!(out, "      {{");
+            let _ = writeln!(out, "         /* {} Event */", ev.name);
+
+            // Attempt to parse event body as procedure statements
+            let trimmed_body = ev.body.trim();
+            if !trimmed_body.is_empty() {
+                if let Ok(stmts) = crate::frontend::parse_body(trimmed_body) {
+                    let mut emitter = CSharpEmitter::with_vars(&self.variables);
+                    emitter.indented(|e| {
+                        e.indented(|e| {
+                            e.indented(|e| {
+                                for stmt in &stmts {
+                                    out.push_str(&e.emit_stmt(stmt, &self.variables));
+                                }
+                            });
+                        });
+                    });
+                } else {
+                    for line in trimmed_body.lines() {
+                        let l = line.trim();
+                        if !l.is_empty() {
+                            let _ = writeln!(out, "         /* {l} */");
+                        }
+                    }
+                }
+            }
+
+            let _ = writeln!(out, "      }}");
+            let _ = writeln!(out);
+        }
+
+        // 14. Private control fields
+        for c in &flat_controls {
+            let ctrl_name = to_csharp_control_name(&c.name, &c.kind);
+            match c.kind {
+                ControlKind::Button => {
+                    let _ = writeln!(out, "      private GXButton {ctrl_name} ;");
+                }
+                ControlKind::Grid => {
+                    let _ = writeln!(out, "      private GXGrid {ctrl_name} ;");
+                }
+                ControlKind::TextBlock => {
+                    let _ = writeln!(out, "      private GXTextBlock {ctrl_name} ;");
+                }
+                ControlKind::Table | ControlKind::ResponsiveTable => {
+                    let _ = writeln!(out, "      private GXTable {ctrl_name} ;");
+                }
+                ControlKind::Edit => {
+                    let _ = writeln!(out, "      private GXEdit {ctrl_name} ;");
+                }
+                _ => {}
+            }
+        }
+
+        // 15. Private variable fields
+        for (var_name, data_type) in &self.variables {
+            let cs_type = to_csharp_type(data_type);
+            let cs_name = to_csharp_var_name(var_name);
+            let _ = writeln!(out, "      private {cs_type} {cs_name} ;");
+        }
+
+        // 16. Parameter shadow fields
+        for p in &self.params {
+            let cs_type = to_csharp_type(&p.data_type);
+            let _ = writeln!(out, "      private {cs_type} {} ;", p.param_name);
+        }
+
+        // 17. Close class and namespace
+        let _ = writeln!(out, "   }}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "}}");
+
+        out
+    }
+}

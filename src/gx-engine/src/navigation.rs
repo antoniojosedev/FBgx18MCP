@@ -8,7 +8,7 @@
 //! - `spc0004`: No relationship between attributes.
 //! - `spc0005`: Ambiguous base table for attributes.
 
-use crate::catalog::{Catalog, ObjectKind};
+use crate::catalog::{Catalog, KbObject, ObjectKind};
 use crate::frontend::{BinOp, Expr, ForEachOrder, ForEachStmt, Stmt};
 use crate::table::{SqlDialect, Table, TableForeignKey, derive_tables_from_catalog};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1557,18 +1557,13 @@ pub fn specify_statements<'a>(
 }
 
 /// Generates a comprehensive navigation report for an authored procedure in a catalog (Matrix D2).
-pub fn specify_procedure(
-    catalog: &Catalog,
-    procedure_name: &str,
+/// Generates navigation report for a procedure given precomputed tables and extended tables.
+pub fn specify_procedure_with_tables(
+    proc_obj: &KbObject,
+    tables: &[Table],
+    extended_tables: &BTreeMap<String, ExtendedTable>,
     dialect: SqlDialect,
 ) -> Result<NavigationReport, String> {
-    let proc_obj = catalog
-        .objects()
-        .find(|obj| {
-            obj.name.eq_ignore_ascii_case(procedure_name) && obj.kind == ObjectKind::Procedure
-        })
-        .ok_or_else(|| format!("procedure '{procedure_name}' not found in catalog"))?;
-
     let source = proc_obj
         .source_parts
         .iter()
@@ -1577,15 +1572,13 @@ pub fn specify_procedure(
         .unwrap_or_default();
 
     let stmts = crate::frontend::parse_body(source)?;
-    let tables = derive_tables_from_catalog(catalog)?;
-    let extended_tables = compute_extended_tables(&tables);
 
     let mut levels = Vec::new();
     let mut context_tables = Vec::new();
     specify_statements(
         &stmts,
-        &tables,
-        &extended_tables,
+        tables,
+        extended_tables,
         &mut context_tables,
         &mut levels,
         dialect,
@@ -1595,10 +1588,10 @@ pub fn specify_procedure(
     let mut standalone_dml = Vec::new();
     for stmt in &stmts {
         if !matches!(stmt, Stmt::ForEach(_)) {
-            extract_formulas_from_stmt(stmt, None, &tables, dialect, &mut standalone_formulas)?;
+            extract_formulas_from_stmt(stmt, None, tables, dialect, &mut standalone_formulas)?;
         }
         if let Stmt::New(new_stmt) = stmt {
-            let plan = crate::dml::plan_insert_for_new(new_stmt, &tables, dialect)?;
+            let plan = crate::dml::plan_insert_for_new(new_stmt, tables, dialect)?;
             standalone_dml.push(plan);
         }
     }
@@ -1612,17 +1605,99 @@ pub fn specify_procedure(
     })
 }
 
+/// Generates a comprehensive navigation report for an authored procedure in a catalog (Matrix D2).
+pub fn specify_procedure(
+    catalog: &Catalog,
+    procedure_name: &str,
+    dialect: SqlDialect,
+) -> Result<NavigationReport, String> {
+    let proc_obj = catalog
+        .objects()
+        .find(|obj| {
+            obj.name.eq_ignore_ascii_case(procedure_name) && obj.kind == ObjectKind::Procedure
+        })
+        .ok_or_else(|| format!("procedure '{procedure_name}' not found in catalog"))?;
+
+    let tables = derive_tables_from_catalog(catalog)?;
+    let extended_tables = compute_extended_tables(&tables);
+    specify_procedure_with_tables(proc_obj, &tables, &extended_tables, dialect)
+}
+
 /// Generates navigation reports for all procedures in a catalog.
 pub fn specify_catalog(
     catalog: &Catalog,
     dialect: SqlDialect,
 ) -> Result<Vec<NavigationReport>, String> {
-    let mut reports = Vec::new();
-    for obj in catalog.objects() {
-        if obj.kind == ObjectKind::Procedure {
-            let report = specify_procedure(catalog, &obj.name, dialect)?;
-            reports.push(report);
-        }
+    specify_catalog_parallel(catalog, dialect, 1)
+}
+
+/// Generates navigation reports for all procedures in a catalog concurrently using `std::thread::scope`.
+pub fn specify_catalog_parallel(
+    catalog: &Catalog,
+    dialect: SqlDialect,
+    concurrency: usize,
+) -> Result<Vec<NavigationReport>, String> {
+    let tables = derive_tables_from_catalog(catalog)?;
+    let extended_tables = compute_extended_tables(&tables);
+
+    let procs: Vec<&KbObject> = catalog
+        .objects()
+        .filter(|obj| obj.kind == ObjectKind::Procedure)
+        .collect();
+
+    if procs.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(reports)
+
+    let thread_count = if concurrency == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    } else {
+        concurrency
+    }
+    .min(procs.len())
+    .max(1);
+
+    if thread_count == 1 {
+        let mut reports = Vec::with_capacity(procs.len());
+        for proc in procs {
+            reports.push(specify_procedure_with_tables(
+                proc,
+                &tables,
+                &extended_tables,
+                dialect,
+            )?);
+        }
+        return Ok(reports);
+    }
+
+    let chunk_size = procs.len().div_ceil(thread_count);
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(thread_count);
+        for chunk in procs.chunks(chunk_size) {
+            let tables_ref = &tables;
+            let ext_ref = &extended_tables;
+            handles.push(s.spawn(move || {
+                let mut chunk_reports: Vec<NavigationReport> = Vec::with_capacity(chunk.len());
+                for proc in chunk {
+                    let r = specify_procedure_with_tables(proc, tables_ref, ext_ref, dialect)?;
+                    chunk_reports.push(r);
+                }
+                Ok(chunk_reports)
+            }));
+        }
+
+        let mut reports = Vec::with_capacity(procs.len());
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(chunk_reports)) => reports.extend(chunk_reports),
+                Ok(Err(err)) => return Err(err),
+                Err(_) => {
+                    return Err("parallel specification thread panicked".to_string());
+                }
+            }
+        }
+        Ok(reports)
+    })
 }

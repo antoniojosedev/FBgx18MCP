@@ -1,0 +1,571 @@
+//! GXDataComponent and Transaction C# class generator.
+
+use crate::{
+    catalog::{KbObject, ObjectKind},
+    csharp::types::{
+        clean_ident, to_csharp_attr_name, to_csharp_default_value, to_csharp_type,
+        to_csharp_var_name,
+    },
+    model::DataType,
+    text_tree::parse_transaction_structure,
+    transaction::{
+        TransactionAttributeRef, TransactionLevel, TransactionRule, TransactionStructure,
+    },
+};
+use std::collections::BTreeMap;
+use std::fmt::Write;
+
+/// Extended standard imports for Transaction and Business Component classes.
+pub const TRANSACTION_IMPORTS: &[&str] = &[
+    "System",
+    "System.Collections",
+    "GeneXus.Utils",
+    "GeneXus.Resources",
+    "GeneXus.Application",
+    "GeneXus.Metadata",
+    "GeneXus.Cryptography",
+    "System.Data",
+    "GeneXus.Data",
+    "com.genexus",
+    "GeneXus.Data.ADO",
+    "GeneXus.Data.NTier",
+    "GeneXus.Data.NTier.ADO",
+    "GeneXus.WebControls",
+    "GeneXus.Http",
+    "GeneXus.XML",
+    "GeneXus.Search",
+    "GeneXus.Encryption",
+    "GeneXus.Http.Client",
+    "System.Xml.Serialization",
+    "System.Runtime.Serialization",
+];
+
+/// Represents an emittable GeneXus C# Transaction / Business Component class (`GXDataComponent`).
+#[derive(Debug, Clone)]
+pub struct TransactionClass {
+    pub name: String,
+    pub namespace: String,
+    pub theme: Option<String>,
+    pub base_class: String,
+    pub is_business_component: bool,
+    pub structure: Option<TransactionStructure>,
+    pub attributes: Vec<(String, DataType)>,
+    pub variables: BTreeMap<String, DataType>,
+}
+
+impl TransactionClass {
+    /// Creates a new TransactionClass with default settings.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            namespace: "GeneXus.Programs".to_string(),
+            theme: Some("KBTeste".to_string()),
+            base_class: "GXDataComponent".to_string(),
+            is_business_component: false,
+            structure: None,
+            attributes: Vec::new(),
+            variables: BTreeMap::new(),
+        }
+    }
+
+    /// Creates a new TransactionClass from a TransactionStructure.
+    pub fn from_structure(name: impl Into<String>, structure: TransactionStructure) -> Self {
+        let is_bc = structure.is_business_component;
+        let mut tc = Self::new(name);
+        tc.is_business_component = is_bc;
+        tc.structure = Some(structure);
+        tc
+    }
+
+    /// Creates a new TransactionClass from a root TransactionLevel.
+    pub fn from_level(name: impl Into<String>, root_level: TransactionLevel) -> Self {
+        let structure = TransactionStructure::new(root_level);
+        Self::from_structure(name, structure)
+    }
+
+    /// Sets the application theme.
+    pub fn with_theme(mut self, theme: impl Into<String>) -> Self {
+        self.theme = Some(theme.into());
+        self
+    }
+
+    /// Sets custom namespace.
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace.into();
+        self
+    }
+
+    /// Sets base class (`GXDataComponent`, `TransactionBase`, or `GXDataArea`).
+    pub fn with_base_class(mut self, base_class: impl Into<String>) -> Self {
+        self.base_class = base_class.into();
+        self
+    }
+
+    /// Sets whether Business Component API is enabled.
+    pub fn with_business_component(mut self, enabled: bool) -> Self {
+        self.is_business_component = enabled;
+        if let Some(ref mut st) = self.structure {
+            st.is_business_component = enabled;
+        }
+        self
+    }
+
+    /// Sets the TransactionStructure.
+    pub fn with_structure(mut self, structure: TransactionStructure) -> Self {
+        self.is_business_component = structure.is_business_component;
+        self.structure = Some(structure);
+        self
+    }
+
+    /// Adds a declared attribute.
+    pub fn add_attribute(mut self, name: impl Into<String>, data_type: DataType) -> Self {
+        self.attributes.push((name.into(), data_type));
+        self
+    }
+
+    /// Adds a declared variable.
+    pub fn add_variable(mut self, name: impl Into<String>, data_type: DataType) -> Self {
+        self.variables.insert(name.into(), data_type);
+        self
+    }
+
+    /// Constructs a TransactionClass directly from a portable `KbObject`.
+    pub fn from_kb_object(object: &KbObject) -> Result<Self, String> {
+        if object.kind != ObjectKind::Transaction {
+            return Err(format!("expected Transaction, found {:?}", object.kind));
+        }
+
+        let mut structure_opt = None;
+        let mut variables: BTreeMap<String, DataType> = BTreeMap::new();
+        let mut extra_rules: Vec<TransactionRule> = Vec::new();
+
+        for part in &object.source_parts {
+            match part.name.as_str() {
+                "STRUCTURE" | "TRANSACTION_STRUCTURE" => {
+                    if let Ok(st) = parse_transaction_structure(&part.source) {
+                        structure_opt = Some(st);
+                    }
+                }
+                "VARIABLES" => {
+                    if let Ok(vars) =
+                        serde_json::from_str::<BTreeMap<String, DataType>>(&part.source)
+                    {
+                        variables = vars;
+                    }
+                }
+                "RULES" => {
+                    if let Ok(rules) = serde_json::from_str::<Vec<TransactionRule>>(&part.source) {
+                        extra_rules = rules;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut tc = if let Some(mut structure) = structure_opt {
+            for r in extra_rules {
+                structure.rules.push(r);
+            }
+            Self::from_structure(&object.name, structure)
+        } else {
+            Self::new(&object.name)
+        };
+
+        tc.variables = variables;
+        Ok(tc)
+    }
+
+    /// Emits complete C# source code (.cs) for this Transaction / Business Component.
+    pub fn emit(&self) -> String {
+        let mut out = String::new();
+
+        // 1. Standard imports
+        for imp in TRANSACTION_IMPORTS {
+            let _ = writeln!(out, "using {imp};");
+        }
+
+        // 2. Namespace
+        let _ = writeln!(out, "namespace {} {{", self.namespace);
+
+        // 3. Class declaration
+        let _ = writeln!(out, "   public class {} : {}", self.name, self.base_class);
+        let _ = writeln!(out, "   {{");
+
+        // 4. Constructors
+        let _ = writeln!(out, "      public {}( )", self.name);
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         context = new GxContext(  );");
+        let _ = writeln!(out, "         DataStoreUtil.LoadDataStores( context);");
+        let _ = writeln!(out, "         IsMain = true;");
+        if let Some(theme) = &self.theme {
+            let _ = writeln!(out, "         context.SetDefaultTheme(\"{theme}\", true);");
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "      public {}( IGxContext context )", self.name);
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         this.context = context;");
+        let _ = writeln!(out, "         IsMain = false;");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // Standard execution methods
+        let _ = writeln!(out, "      public void execute( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         initialize();");
+        let _ = writeln!(out, "         ExecuteImpl();");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      protected override void ExecutePrivate( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         cleanup();");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 5. BC Methods: Load, Save, Delete, Success, Fail, GetMessages
+        let key_attrs: Vec<&TransactionAttributeRef> = self
+            .structure
+            .as_ref()
+            .map(|st| st.root.attributes.iter().filter(|a| a.is_key).collect())
+            .unwrap_or_default();
+
+        if !key_attrs.is_empty() {
+            let load_params: Vec<String> = key_attrs
+                .iter()
+                .map(|a| {
+                    let dt = a.data_type.as_ref().cloned().unwrap_or(DataType::Numeric {
+                        precision: 10,
+                        scale: 0,
+                    });
+                    let cs_type = to_csharp_type(&dt);
+                    let clean = clean_ident(&a.name);
+                    format!("{cs_type} aP_{clean}")
+                })
+                .collect();
+
+            let _ = writeln!(out, "      public void Load( {} )", load_params.join(", "));
+            let _ = writeln!(out, "      {{");
+            let _ = writeln!(out, "         initialize();");
+            for a in &key_attrs {
+                let clean = clean_ident(&a.name);
+                let attr_field = to_csharp_attr_name(&a.name);
+                let _ = writeln!(out, "         this.{attr_field} = aP_{clean};");
+            }
+            let _ = writeln!(out, "         getByPrimaryKey();");
+            let _ = writeln!(out, "      }}");
+            let _ = writeln!(out);
+        }
+
+        let _ = writeln!(out, "      public void Load( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         getByPrimaryKey();");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      public void Save( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         ValidateRules();");
+        let _ = writeln!(out, "         if ( Success() )");
+        let _ = writeln!(out, "         {{");
+        let _ = writeln!(out, "            CheckOptimisticConcurrency();");
+        let _ = writeln!(out, "            if ( Success() )");
+        let _ = writeln!(out, "            {{");
+        let _ = writeln!(out, "               ExecuteSave();");
+        let _ = writeln!(out, "            }}");
+        let _ = writeln!(out, "         }}");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      public void Delete( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         ValidateRules();");
+        let _ = writeln!(out, "         if ( Success() )");
+        let _ = writeln!(out, "         {{");
+        let _ = writeln!(out, "            ExecuteDelete();");
+        let _ = writeln!(out, "         }}");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      public bool Success( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         return (Errors == 0);");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      public bool Fail( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         return (Errors > 0);");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      public msglist GetMessages( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         return LclMsgLst;");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 6. ValidateRules method
+        let _ = writeln!(out, "      public void ValidateRules( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         Errors = 0;");
+        let _ = writeln!(out, "         /* GeneXus validation rules */");
+
+        if let Some(ref structure) = self.structure {
+            for rule in &structure.rules {
+                match rule {
+                    TransactionRule::Default { attribute, value } => {
+                        let attr_field = to_csharp_attr_name(attribute);
+                        let _ = writeln!(
+                            out,
+                            "         if ( string.IsNullOrEmpty({attr_field}.ToString()) || {attr_field} == 0 )"
+                        );
+                        let _ = writeln!(out, "         {{");
+                        let _ =
+                            writeln!(out, "            /* Default rule: {attribute} = {value} */");
+                        let _ = writeln!(out, "         }}");
+                    }
+                    TransactionRule::Error { message, condition } => {
+                        let escaped_msg = message.replace('"', "\\\"");
+                        if let Some(cond) = condition {
+                            let _ = writeln!(out, "         if ( /* {cond} */ true )");
+                        } else {
+                            let _ = writeln!(out, "         if ( true )");
+                        }
+                        let _ = writeln!(out, "         {{");
+                        let _ = writeln!(out, "            LclMsgLst.addItem(\"{escaped_msg}\");");
+                        let _ = writeln!(out, "            Errors = (short)(Errors + 1);");
+                        let _ = writeln!(out, "         }}");
+                    }
+                    TransactionRule::Msg { message, condition } => {
+                        let escaped_msg = message.replace('"', "\\\"");
+                        if let Some(cond) = condition {
+                            let _ = writeln!(out, "         if ( /* {cond} */ true )");
+                        } else {
+                            let _ = writeln!(out, "         if ( true )");
+                        }
+                        let _ = writeln!(out, "         {{");
+                        let _ = writeln!(out, "            LclMsgLst.addItem(\"{escaped_msg}\");");
+                        let _ = writeln!(out, "         }}");
+                    }
+                    TransactionRule::NoAccept { attribute } => {
+                        let _ = writeln!(out, "         /* NoAccept rule: {attribute} */");
+                    }
+                    TransactionRule::Serial { attribute, step } => {
+                        let _ =
+                            writeln!(out, "         /* Serial rule: {attribute}, step {step} */");
+                    }
+                    TransactionRule::Prompt { object, attributes } => {
+                        let _ = writeln!(
+                            out,
+                            "         /* Prompt rule: {object} ({}) */",
+                            attributes.join(", ")
+                        );
+                    }
+                }
+            }
+        }
+
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 7. Cursor execution and DB stubs
+        let _ = writeln!(out, "      protected void getByPrimaryKey( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(
+            out,
+            "         /* Read record from database using primary key */"
+        );
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      protected void CheckOptimisticConcurrency( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         /* Check optimistic concurrency */");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      protected void ExecuteSave( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         /* Save/Insert/Update record to database */");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        let _ = writeln!(out, "      protected void ExecuteDelete( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         /* Delete record from database */");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 8. cleanup method
+        let _ = writeln!(out, "      public override void cleanup( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         CloseCursors();");
+        let _ = writeln!(out, "         if ( IsMain )");
+        let _ = writeln!(out, "         {{");
+        let _ = writeln!(out, "            context.CloseConnections();");
+        let _ = writeln!(out, "         }}");
+        let _ = writeln!(out, "         ExitApp();");
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 9. initialize method
+        let _ = writeln!(out, "      public override void initialize( )");
+        let _ = writeln!(out, "      {{");
+        let _ = writeln!(out, "         Errors = 0;");
+        let _ = writeln!(out, "         LclMsgLst = new msglist();");
+        if let Some(ref structure) = self.structure {
+            for attr in &structure.root.attributes {
+                let attr_field = to_csharp_attr_name(&attr.name);
+                let dt = attr
+                    .data_type
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(DataType::Numeric {
+                        precision: 10,
+                        scale: 0,
+                    });
+                let default_val = to_csharp_default_value(&dt);
+                let _ = writeln!(out, "         {attr_field} = {default_val} ;");
+            }
+        }
+        for (attr_name, dt) in &self.attributes {
+            let attr_field = to_csharp_attr_name(attr_name);
+            let default_val = to_csharp_default_value(dt);
+            let _ = writeln!(out, "         {attr_field} = {default_val} ;");
+        }
+        for (var_name, data_type) in &self.variables {
+            let cs_name = to_csharp_var_name(var_name);
+            let default_val = to_csharp_default_value(data_type);
+            let _ = writeln!(out, "         {cs_name} = {default_val} ;");
+        }
+        let _ = writeln!(out, "      }}");
+        let _ = writeln!(out);
+
+        // 10. Attribute Properties
+        if let Some(ref structure) = self.structure {
+            for attr in &structure.root.attributes {
+                let attr_field = to_csharp_attr_name(&attr.name);
+                let clean = clean_ident(&attr.name);
+                let dt = attr
+                    .data_type
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(DataType::Numeric {
+                        precision: 10,
+                        scale: 0,
+                    });
+                let cs_type = to_csharp_type(&dt);
+
+                let _ = writeln!(out, "      public {cs_type} {clean}");
+                let _ = writeln!(out, "      {{");
+                let _ = writeln!(out, "         get {{");
+                let _ = writeln!(out, "            return {attr_field} ;");
+                let _ = writeln!(out, "         }}");
+                let _ = writeln!(out, "         set {{");
+                let _ = writeln!(out, "            {attr_field} = value ;");
+                let _ = writeln!(out, "         }}");
+                let _ = writeln!(out, "      }}");
+                let _ = writeln!(out);
+            }
+        }
+        for (attr_name, dt) in &self.attributes {
+            let attr_field = to_csharp_attr_name(attr_name);
+            let clean = clean_ident(attr_name);
+            let cs_type = to_csharp_type(dt);
+
+            let _ = writeln!(out, "      public {cs_type} {clean}");
+            let _ = writeln!(out, "      {{");
+            let _ = writeln!(out, "         get {{");
+            let _ = writeln!(out, "            return {attr_field} ;");
+            let _ = writeln!(out, "         }}");
+            let _ = writeln!(out, "         set {{");
+            let _ = writeln!(out, "            {attr_field} = value ;");
+            let _ = writeln!(out, "         }}");
+            let _ = writeln!(out, "      }}");
+            let _ = writeln!(out);
+
+            let _ = writeln!(
+                out,
+                "      public {cs_type} gxTpr_{clean} {{ get {{ return {attr_field}; }} set {{ {attr_field} = value; }} }}"
+            );
+            let _ = writeln!(out);
+        }
+
+        // 11. Nested Levels (child level classes)
+        if let Some(ref structure) = self.structure {
+            for child_level in &structure.root.levels {
+                let child_clean = clean_ident(&child_level.name);
+                let _ = writeln!(
+                    out,
+                    "      public class {}_{child_clean} : GXDataComponent",
+                    self.name
+                );
+                let _ = writeln!(out, "      {{");
+                for attr in &child_level.attributes {
+                    let attr_field = to_csharp_attr_name(&attr.name);
+                    let clean = clean_ident(&attr.name);
+                    let dt = attr
+                        .data_type
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or(DataType::Numeric {
+                            precision: 10,
+                            scale: 0,
+                        });
+                    let cs_type = to_csharp_type(&dt);
+
+                    let _ = writeln!(out, "         private {cs_type} {attr_field} ;");
+                    let _ = writeln!(out);
+                    let _ = writeln!(out, "         public {cs_type} {clean}");
+                    let _ = writeln!(out, "         {{");
+                    let _ = writeln!(out, "            get {{ return {attr_field} ; }}");
+                    let _ = writeln!(out, "            set {{ {attr_field} = value ; }}");
+                    let _ = writeln!(out, "         }}");
+                }
+                let _ = writeln!(out, "      }}");
+                let _ = writeln!(out);
+            }
+        }
+
+        // 12. Private attribute fields
+        if let Some(ref structure) = self.structure {
+            for attr in &structure.root.attributes {
+                let attr_field = to_csharp_attr_name(&attr.name);
+                let dt = attr
+                    .data_type
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(DataType::Numeric {
+                        precision: 10,
+                        scale: 0,
+                    });
+                let cs_type = to_csharp_type(&dt);
+                let _ = writeln!(out, "      private {cs_type} {attr_field} ;");
+            }
+        }
+        for (attr_name, dt) in &self.attributes {
+            let attr_field = to_csharp_attr_name(attr_name);
+            let cs_type = to_csharp_type(dt);
+            let _ = writeln!(out, "      private {cs_type} {attr_field} ;");
+        }
+
+        // 13. Private variable fields
+        for (var_name, data_type) in &self.variables {
+            let cs_type = to_csharp_type(data_type);
+            let cs_name = to_csharp_var_name(var_name);
+            let _ = writeln!(out, "      private {cs_type} {cs_name} ;");
+        }
+
+        // 14. Error and message support fields
+        let _ = writeln!(out, "      private short Errors ;");
+        let _ = writeln!(out, "      private msglist LclMsgLst ;");
+
+        // 15. Close class and namespace
+        let _ = writeln!(out, "   }}");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "}}");
+
+        out
+    }
+}

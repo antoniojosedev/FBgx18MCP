@@ -87,7 +87,6 @@ internal static class Program
             Console.WriteLine(JsonSerializer.Serialize(report, Json));
             return report.ExpectedMismatches == 0 ? 0 : 1;
         }
-
         if (args.Length >= 2 && args[0] == "bench-calendar")
         {
             var iters = int.Parse(args[1], CultureInfo.InvariantCulture);

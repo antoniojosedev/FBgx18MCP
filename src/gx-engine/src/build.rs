@@ -187,7 +187,12 @@ pub fn build(project: &Project, output: &Path) -> Result<BuildArtifact, String> 
         Duration::from_secs(120),
     )?;
     if !compiled.status.success() {
-        let detail = &compiled.stderr[..compiled.stderr.len().min(16_384)];
+        let len = compiled.stderr.len();
+        let detail = if len > 16_384 {
+            &compiled.stderr[len - 16_384..]
+        } else {
+            &compiled.stderr[..]
+        };
         return Err(format!(
             "native compilation failed ({}):\n{}",
             compiled.status,

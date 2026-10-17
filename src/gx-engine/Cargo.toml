@@ -9,6 +9,7 @@ description = "Experimental independent portable GeneXus-style compiler and nati
 roxmltree = { version = "0.21", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+flate2 = "1.0"
 
 [[bench]]
 name = "str_format"

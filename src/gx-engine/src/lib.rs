@@ -1,11 +1,23 @@
 //! Independent experimental compiler for an explicitly admitted portable subset.
 //! This crate neither opens native Knowledge Bases nor loads the GeneXus SDK.
 
+#![forbid(unsafe_code)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::manual_range_contains,
+    clippy::needless_lifetimes,
+    clippy::single_match,
+    clippy::unnecessary_cast,
+    clippy::manual_div_ceil
+)]
+
 pub mod backend;
 pub mod build;
 pub mod catalog;
+pub mod csharp;
 pub mod dataprovider;
 pub mod dataselector;
+pub mod datastore;
 pub mod dataview;
 pub mod date;
 pub mod datetime;
@@ -16,16 +28,22 @@ pub mod diagnostics_catalog;
 pub mod dml;
 pub mod exchange;
 pub mod extended_types;
+pub mod formatter;
 pub mod frontend;
+pub mod gam;
+pub mod gxtest;
 pub mod impact;
 pub mod incremental;
 pub mod kb;
+pub mod locks;
 pub mod model;
 pub mod module;
 pub mod navigation;
 pub mod output_channel;
+pub mod rebuild;
 pub mod record_runtime;
 pub mod reorg;
+pub mod report;
 pub mod rules;
 pub mod structured;
 pub mod table;
@@ -34,6 +52,12 @@ pub mod text_tree;
 pub mod transaction;
 mod typed_backend;
 pub mod types;
+pub mod udm;
+pub mod versioning;
+pub mod webpanel;
+pub mod xpz;
+
+pub use rebuild::{RebuildOptions, RebuildReport, rebuild_all};
 
 pub fn compile(project: &model::Project) -> Result<String, String> {
     if project.format_version == 2 {
