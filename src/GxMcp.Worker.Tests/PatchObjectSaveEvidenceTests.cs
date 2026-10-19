@@ -36,6 +36,8 @@ namespace GxMcp.Worker.Tests
             Assert.True(body["patchMatch"]!.Value<bool>());
             Assert.True(body["isolationEligible"]!.Value<bool>());
             Assert.False(body["validationExecuted"]!.Value<bool>());
+            Assert.False(body["semanticValidation"]!["performed"]!.Value<bool>());
+            Assert.Equal(PatchPersistenceReceipt.SemanticValidationNotPerformedReason, body["semanticValidation"]!["reason"]!.ToString());
             Assert.False(body["saveExecuted"]!.Value<bool>());
             // Eligibility is the bundle/pin audit; only a save can prove persistability.
             Assert.False(body["persistabilityVerified"]!.Value<bool>());

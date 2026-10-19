@@ -181,13 +181,218 @@ namespace GxMcp.Worker.Tests
             var failure = Describe(new Exception("Erro"), sources: Source("Events", positioned, textual, bare));
 
             var entries = failure.SdkMessages.Cast<JObject>().ToArray();
-            Assert.Equal(7, entries[0]["line"]?.Value<int>());
+            Assert.Equal(7, entries[0]["rawLine"]?.Value<int>());
             Assert.Equal(3, entries[0]["column"]?.Value<int>());
             Assert.Equal("src0216", entries[1]["code"]?.ToString());
-            Assert.Equal(30, entries[1]["line"]?.Value<int>());
+            Assert.Equal(30, entries[1]["rawLine"]?.Value<int>());
             Assert.Null(entries[1]["column"]);
             Assert.Null(entries[2]["code"]);
-            Assert.Null(entries[2]["line"]);
+            Assert.Null(entries[2]["rawLine"]);
+        }
+
+        [Fact]
+        public void Describe_ReadsPositionsFromAnySdkPositionTypeAndFromThePositionsList()
+        {
+            var plain = new FakeSdkMessage { ErrorCode = "src0001", Text = "a", Position = new FakePosition { Line = 5, Column = 9 } };
+            var listed = new FakeSdkMessage { ErrorCode = "src0002", Text = "b", Positions = new List<object> { new FakePosition { Line = 7, Column = 2 } } };
+
+            var failure = Describe(new Exception("Erro"), sources: Source("Events", plain, listed));
+
+            var entries = failure.SdkMessages.Cast<JObject>().ToArray();
+            Assert.Equal((5, 9), (entries[0]["rawLine"].Value<int>(), entries[0]["column"].Value<int>()));
+            Assert.Equal((7, 2), (entries[1]["rawLine"].Value<int>(), entries[1]["column"].Value<int>()));
+        }
+
+        [Fact]
+        public void Describe_NamesTheObjectThatOwnsThePositionAsTheSdkReportsIt()
+        {
+            // SourceCodePosition(FullName=Web Panel 'SamplePanel' ObjectId=115 Line=8 Char=13)
+            var ex = new FakeValidationException("Erro", new[]
+            {
+                new FakeSdkMessage
+                {
+                    ErrorCode = "src0294", Text = "Unknown function 'SetEmpty'",
+                    Position = new FakePosition { Line = 8, Column = 13, FullName = "Web Panel 'SamplePanel'", ObjectId = 115 }
+                }
+            });
+
+            var failure = IsolatedEventsSaveDiagnostics.Describe(ex, "part-save", null, "SamplePanel");
+
+            var diagnostic = (JObject)failure.Diagnostics.Single();
+            Assert.Equal("Web Panel 'SamplePanel'", diagnostic["locatedIn"]?.ToString());
+            Assert.Equal(115, diagnostic["locatedInObjectId"]?.Value<int>());
+            Assert.Equal("Web Panel 'SamplePanel'", failure.SdkMessages[0]["locatedIn"]?.ToString());
+            Assert.Null(failure.SourceValidationErrors[0]["locatedIn"]);
+        }
+
+        [Fact]
+        public void Describe_ALocationWithoutOwnerNameOmitsIt()
+        {
+            var failure = Describe(new FakeValidationException("Erro", new[]
+            {
+                new FakeSdkMessage { ErrorCode = "src0001", Text = "x", Position = new FakePosition { Line = 1, Column = 1 } }
+            }));
+
+            Assert.Null(failure.Diagnostics[0]["locatedIn"]);
+        }
+
+        [Theory]
+        [InlineData(true, null, true, 0, true, null)]
+        [InlineData(false, null, true, 0, true, "the Events source after the save differs from the requested source")]
+        [InlineData(true, "Rules", false, 0, true, "other parts of the object changed (Rules)")]
+        [InlineData(true, "", false, 0, true, "other parts of the object changed.")]
+        [InlineData(true, "Rules", true, 0, true, null)]
+        [InlineData(true, null, true, 2, true, "2 other object(s) in the Knowledge Base changed")]
+        [InlineData(true, null, true, 0, false, "the object placement changed")]
+        public void PreCommitMismatch_NamesEachFailedCheck(bool sourceMatches, string changedParts, bool partsAllowed, int others, bool placement, string expectedReason)
+        {
+            string message = IsolatedEventsSaveDiagnostics.DescribePreCommitMismatch(sourceMatches, changedParts, partsAllowed, others, placement);
+
+            if (expectedReason == null) { Assert.Null(message); return; }
+            Assert.StartsWith("The pre-commit SDK object state did not match the requested isolated change: ", message);
+            Assert.Contains(expectedReason.TrimEnd('.'), message);
+        }
+
+        [Fact]
+        public void PreCommitMismatch_ListsEveryFailedCheckTogether()
+        {
+            string message = IsolatedEventsSaveDiagnostics.DescribePreCommitMismatch(false, "Rules, WebForm", false, 1, false);
+
+            Assert.Contains("Events source", message);
+            Assert.Contains("(Rules, WebForm)", message);
+            Assert.Contains("1 other object(s)", message);
+            Assert.Contains("placement", message);
+            Assert.EndsWith(".", message);
+        }
+
+        [Fact]
+        public void Describe_KeepsTheSdkLocationExactly_ANegativeLineIsNotNormalized()
+        {
+            // Field report: the IDE showed "Line -1657, Char 49" for a Pattern-generated Events.
+            var ex = new FakeValidationException("Erro", new[]
+            {
+                new FakeSdkMessage { ErrorCode = "src0294", Text = "Unknown function 'SetEmpty'", Position = new FakePosition { Line = -1657, Column = 49 } }
+            });
+
+            var failure = IsolatedEventsSaveDiagnostics.Describe(ex, "part-save", null, "SamplePanel");
+
+            var diagnostic = (JObject)failure.Diagnostics.Single();
+            Assert.Equal(-1657, diagnostic["rawLine"].Value<int>());
+            Assert.Equal(49, diagnostic["column"].Value<int>());
+            Assert.Null(diagnostic["line"]);
+            Assert.Equal(-1657, failure.SdkMessages[0]["rawLine"].Value<int>());
+            Assert.Equal(-1657, failure.SourceValidationErrors[0]["rawLine"].Value<int>());
+            Assert.Equal("src0294: Unknown function 'SetEmpty' (line -1657, column 49)", failure.Detail);
+        }
+
+        [Fact]
+        public void Describe_ReadsTheMessagesTheSdkKeepsOnTheValidationException()
+        {
+            var ex = new FakeValidationException("Erro", new[]
+            {
+                new FakeSdkMessage { ErrorCode = "src0294", Text = "Unknown function 'SetEmpty'", Position = new FakePosition { Line = 2, Column = 16 } }
+            });
+
+            var failure = IsolatedEventsSaveDiagnostics.Describe(ex, "part-save", null, "SamplePanel");
+
+            Assert.Equal("src0294: Unknown function 'SetEmpty' (line 2, column 16)", failure.Detail);
+            var diagnostic = (JObject)failure.Diagnostics.Single();
+            Assert.Equal("src0294", diagnostic["code"]?.ToString());
+            Assert.Equal("SamplePanel", diagnostic["object"]?.ToString());
+            Assert.Equal("Events", diagnostic["part"]?.ToString());
+            Assert.Equal("Erro", failure.OriginalError);
+        }
+
+        [Fact]
+        public void Describe_ReadsTheValidationMessagesOfAnInnerException()
+        {
+            var inner = new FakeValidationException("Erro", new[] { new FakeSdkMessage { ErrorCode = "src0059", Text = "Esperando 'EndFor'" } });
+            var failure = Describe(new InvalidOperationException("Erro", inner));
+
+            Assert.Equal("src0059: Esperando 'EndFor'", failure.Detail);
+            Assert.Single(failure.Diagnostics);
+        }
+
+        [Fact]
+        public void Describe_FullMessageCoversAnOutputThatCannotBeEnumerated()
+        {
+            var ex = new FakeValidationException("Erro", null, "src0294: Unknown function 'SetEmpty'");
+
+            var failure = Describe(ex);
+
+            Assert.Equal("src0294: Unknown function 'SetEmpty'", failure.Detail);
+            Assert.Single(failure.Diagnostics);
+        }
+
+        [Fact]
+        public void Describe_ABareFullMessageDoesNotInventACause()
+        {
+            var failure = Describe(new FakeValidationException("Erro", null, "Erro"));
+
+            Assert.Contains("generic error", failure.Detail);
+            Assert.Empty(failure.Diagnostics);
+        }
+
+        [Fact]
+        public void Describe_ExceptionMessagesAreAttributedToTheEventsPartOnlyWhenThePartIsBeingSaved()
+        {
+            var ex = new FakeValidationException("Erro", new[] { new FakeSdkMessage { ErrorCode = "src0001", Text = "x" } });
+
+            var duringPartSave = IsolatedEventsSaveDiagnostics.Describe(ex, "part-save", null);
+            var duringObjectSave = IsolatedEventsSaveDiagnostics.Describe(ex, "object-save", null);
+
+            Assert.Equal("Events", duringPartSave.Diagnostics[0]["part"]?.ToString());
+            Assert.Single(duringPartSave.SourceValidationErrors);
+            Assert.Equal("Object", duringObjectSave.Diagnostics[0]["part"]?.ToString());
+            Assert.Empty(duringObjectSave.SourceValidationErrors);
+        }
+
+        [Fact]
+        public void Describe_TheSameMessageOnTheExceptionAndOnThePartIsReportedOnce()
+        {
+            var message = new FakeSdkMessage { ErrorCode = "src0294", Text = "Unknown function 'SetEmpty'", Position = new FakePosition { Line = 2, Column = 16 } };
+            var ex = new FakeValidationException("Erro", new[] { message });
+
+            var failure = IsolatedEventsSaveDiagnostics.Describe(ex, "part-save",
+                () => Source("Events", message), "SamplePanel");
+
+            Assert.Single(failure.SdkMessages);
+            Assert.Single(failure.Diagnostics);
+        }
+
+        [Fact]
+        public void Describe_SummarizesAtMostThreeErrorsInTheMessage()
+        {
+            var messages = Enumerable.Range(1, 5)
+                .Select(i => new FakeSdkMessage { ErrorCode = "src0294", Text = "bad " + i }).ToArray();
+
+            var failure = Describe(new FakeValidationException("Erro", messages));
+
+            Assert.Contains("bad 1", failure.Detail);
+            Assert.Contains("bad 3", failure.Detail);
+            Assert.DoesNotContain("bad 4", failure.Detail);
+            Assert.EndsWith("(+2 more)", failure.Detail);
+            Assert.Equal(5, failure.Diagnostics.Count);
+        }
+
+        [Fact]
+        public void Describe_WithoutATargetOmitsTheObjectName()
+        {
+            var failure = Describe(new FakeValidationException("Erro", new[] { new FakeSdkMessage { ErrorCode = "src0001", Text = "x" } }));
+
+            Assert.Null(failure.Diagnostics[0]["object"]);
+        }
+
+        [Fact]
+        public void Trace_NamesItsTargetInTheDiagnostics()
+        {
+            var receipt = new JObject();
+            var trace = new IsolatedEventsSaveTrace(receipt, "SamplePanel");
+            trace.Enter("part-save");
+
+            trace.RecordFailure(new FakeValidationException("Erro", new[] { new FakeSdkMessage { ErrorCode = "src0001", Text = "x" } }), null);
+
+            Assert.Equal("SamplePanel", receipt["diagnostics"][0]["object"]?.ToString());
         }
 
         [Fact]

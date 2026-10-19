@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -192,11 +193,16 @@ namespace GxMcp.Worker.Services
                 _receipt["preCommitChangedPartDeltas"] = _snapshot.DescribeDifferences(_current, "Events");
                 _receipt["unexpectedChangedParts"] = comparison.ChangedParts;
                 _receipt["unexpectedChangedObjects"] = changedOthers;
-                if (_receipt["preCommitSourceMatch"]?.Value<bool>() != true
-                    || (!comparison.Equal && !preCommitPatternProjectionAllowed)
-                    || changedOthers.Count != 0
-                    || EventsSaveIsolation.Placement(_current) != _originalPlacement)
-                    throw new InvalidOperationException("The pre-commit SDK object state did not match the requested isolated change.");
+                string changedParts = comparison.ChangedParts is JArray changedList
+                    ? string.Join(", ", changedList.Select(part => part.ToString()))
+                    : comparison.ChangedParts?.ToString();
+                string mismatch = IsolatedEventsSaveDiagnostics.DescribePreCommitMismatch(
+                    _receipt["preCommitSourceMatch"]?.Value<bool>() == true,
+                    changedParts,
+                    comparison.Equal || preCommitPatternProjectionAllowed,
+                    changedOthers.Count,
+                    EventsSaveIsolation.Placement(_current) == _originalPlacement);
+                if (mismatch != null) throw new InvalidOperationException(mismatch);
             }
 
             public void Commit() => _commit();

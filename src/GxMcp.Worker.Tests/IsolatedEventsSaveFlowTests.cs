@@ -19,14 +19,40 @@ namespace GxMcp.Worker.Tests
             public int Char { get; set; }
         }
 
+        // The shape of the SDK's IPosition when it is not a "TextPosition".
+        internal sealed class FakePosition
+        {
+            public int Line { get; set; }
+            public int Column { get; set; }
+            public string FullName { get; set; }
+            public int ObjectId { get; set; }
+        }
+
         internal sealed class FakeSdkMessage
         {
             public string Text { get; set; }
+            public string ErrorCode { get; set; }
             public string Level { get; set; }
-            public FakeTextPosition Position { get; set; }
+            public object Position { get; set; }
+            public List<object> Positions { get; set; }
 
             // The SDK's messages render as their text, which is what GetSdkMessages joins.
             public override string ToString() => Text;
+        }
+
+        // Shaped like Artech.Common.Diagnostics.ValidationException: the bare "Erro" is its
+        // Message, the validation messages are on Output, and FullMessage renders them as text.
+        internal sealed class FakeValidationException : Exception
+        {
+            public FakeValidationException(string message, IEnumerable<FakeSdkMessage> output, string fullMessage = null)
+                : base(message)
+            {
+                Output = output == null ? null : new List<FakeSdkMessage>(output);
+                FullMessage = fullMessage;
+            }
+
+            public List<FakeSdkMessage> Output { get; }
+            public string FullMessage { get; }
         }
 
         // Shaped like an SDK part for the two things the diagnostics read: a
@@ -116,7 +142,7 @@ namespace GxMcp.Worker.Tests
 
             internal Harness()
             {
-                Trace = new IsolatedEventsSaveTrace(Receipt);
+                Trace = new IsolatedEventsSaveTrace(Receipt, "SamplePanel");
                 Steps = new RecordingSteps(Receipt, Trace);
             }
 
@@ -212,6 +238,7 @@ namespace GxMcp.Worker.Tests
             Assert.Contains(phase, outcome.Message);
             Assert.Contains("synthetic cause", outcome.Message);
             Assert.NotNull(h.Receipt["innerMessages"]);
+            Assert.NotNull(h.Receipt["diagnostics"]);
             Assert.NotNull(h.Receipt["sdkMessages"]);
             Assert.NotNull(h.Receipt["sourceValidationErrors"]);
             if (insideTransaction)
@@ -239,14 +266,14 @@ namespace GxMcp.Worker.Tests
             var outcome = h.Run();
 
             Assert.Equal(IsolatedEventsSaveOutcomeKind.NotConfirmed, outcome.Kind);
-            Assert.Equal("Isolated Events save failed during part-save: src0059: Esperando 'EndFor'", outcome.Message);
+            Assert.Equal("Isolated Events save failed during part-save: src0059: Esperando 'EndFor' (line 12, column 4)", outcome.Message);
             Assert.Equal("part-save", h.Receipt["savePhase"]?.ToString());
             Assert.Equal("Erro", h.Receipt["originalError"]?.ToString());
             Assert.Equal(typeof(Exception).FullName, h.Receipt["exceptionType"]?.ToString());
             var sdk = (JObject)((JArray)h.Receipt["sdkMessages"]).Single();
             Assert.Equal("src0059", sdk["code"]?.ToString());
             Assert.Equal("Events", sdk["part"]?.ToString());
-            Assert.Equal(12, sdk["line"]?.Value<int>());
+            Assert.Equal(12, sdk["rawLine"]?.Value<int>());
             Assert.Equal(4, sdk["column"]?.Value<int>());
             Assert.Equal("Error", sdk["severity"]?.ToString());
             Assert.Equal("src0059: Esperando 'EndFor'", sdk["message"]?.ToString());
@@ -257,6 +284,68 @@ namespace GxMcp.Worker.Tests
             Assert.DoesNotContain("Commit", h.Steps.Calls);
             Assert.Equal(1, h.Steps.Calls.Count(c => c == "SavePart"));
             Assert.Equal(0, h.Steps.Calls.Count(c => c == "SaveObject"));
+        }
+
+        [Fact]
+        public void PartSaveRaisingAValidationExceptionWithOutput_ReturnsTheDiagnosticsOfTheRealFailure()
+        {
+            // What the real SDK does for an unknown function in the Events source: the part save
+            // throws a ValidationException whose Message is the bare "Erro" and whose Output
+            // carries one error per call, with the code apart from the text and a position.
+            var h = new Harness();
+            h.Steps.Verified = false;
+            h.Steps.Faults["SavePart"] = new FakeValidationException("Erro", new[]
+            {
+                new FakeSdkMessage { ErrorCode = "src0294", Text = "Unknown function 'SetEmpty'", Position = new FakePosition { Line = 2, Column = 16 } },
+                new FakeSdkMessage { ErrorCode = "src0294", Text = "Unknown function 'SetEmpty'", Position = new FakePosition { Line = 3, Column = 16 } },
+                new FakeSdkMessage { ErrorCode = "src0294", Text = "Unknown function 'SetEmpty'", Position = new FakePosition { Line = 4, Column = 16 } }
+            });
+
+            var outcome = h.Run();
+
+            Assert.Equal(IsolatedEventsSaveOutcomeKind.NotConfirmed, outcome.Kind);
+            Assert.Equal(
+                "Isolated Events save failed during part-save: src0294: Unknown function 'SetEmpty' (line 2, column 16)"
+                + " | src0294: Unknown function 'SetEmpty' (line 3, column 16)"
+                + " | src0294: Unknown function 'SetEmpty' (line 4, column 16)",
+                outcome.Message);
+            Assert.Equal("Erro", h.Receipt["originalError"]?.ToString());
+            Assert.Equal(typeof(FakeValidationException).FullName, h.Receipt["exceptionType"]?.ToString());
+            var diagnostics = (JArray)h.Receipt["diagnostics"];
+            Assert.Equal(3, diagnostics.Count);
+            Assert.Equal(new[] { 2, 3, 4 }, diagnostics.Select(d => d["rawLine"].Value<int>()).ToArray());
+            Assert.All(diagnostics, d => Assert.Null(d["line"]));
+            Assert.All(diagnostics, d =>
+            {
+                Assert.Equal("src0294", d["code"]?.ToString());
+                Assert.Equal("Unknown function 'SetEmpty'", d["message"]?.ToString());
+                Assert.Equal("SamplePanel", d["object"]?.ToString());
+                Assert.Equal("Events", d["part"]?.ToString());
+                Assert.Equal(16, d["column"]?.Value<int>());
+            });
+            Assert.Equal(3, ((JArray)h.Receipt["sourceValidationErrors"]).Count);
+            Assert.Equal(3, ((JArray)h.Receipt["sdkMessages"]).Count);
+            Assert.True(h.Receipt["transactionRolledBack"]?.Value<bool>());
+            Assert.DoesNotContain("Commit", h.Steps.Calls);
+        }
+
+        [Fact]
+        public void ObjectSaveRaisingAValidationExceptionWithOutput_AttributesTheMessagesToTheObject()
+        {
+            var h = new Harness();
+            h.Steps.Verified = false;
+            h.Steps.Faults["SaveObject"] = new FakeValidationException("Erro", new[]
+            {
+                new FakeSdkMessage { ErrorCode = "spc0001", Text = "Rule is not valid" }
+            });
+
+            h.Run();
+
+            var diagnostic = (JObject)((JArray)h.Receipt["diagnostics"]).Single();
+            Assert.Equal("object-save", h.Receipt["savePhase"]?.ToString());
+            Assert.Equal("Object", diagnostic["part"]?.ToString());
+            Assert.Null(diagnostic["rawLine"]);
+            Assert.Empty((JArray)h.Receipt["sourceValidationErrors"]);
         }
 
         [Fact]

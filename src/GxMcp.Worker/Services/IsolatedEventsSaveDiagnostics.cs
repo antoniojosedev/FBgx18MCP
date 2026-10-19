@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using GxMcp.Worker.Helpers;
 using Newtonsoft.Json.Linq;
@@ -64,6 +65,9 @@ namespace GxMcp.Worker.Services
         internal List<string> InnerMessages { get; } = new List<string>();
         internal List<string> InnerExceptionTypes { get; } = new List<string>();
         internal JArray SdkMessages { get; set; } = new JArray();
+
+        /// <summary>The error-severity SDK messages, each naming the object: what a caller fixes.</summary>
+        internal JArray Diagnostics { get; set; } = new JArray();
         internal JArray SourceValidationErrors { get; set; } = new JArray();
         internal bool SdkMessagesTruncated { get; set; }
         internal string SdkMessagesError { get; set; }
@@ -80,6 +84,7 @@ namespace GxMcp.Worker.Services
             target["exceptionType"] = ExceptionType;
             target["innerMessages"] = new JArray(InnerMessages);
             if (InnerExceptionTypes.Count > 0) target["innerExceptionTypes"] = new JArray(InnerExceptionTypes);
+            target["diagnostics"] = Diagnostics;
             target["sdkMessages"] = SdkMessages;
             target["sourceValidationErrors"] = SourceValidationErrors;
             if (SdkMessagesTruncated) target["sdkMessagesTruncated"] = true;
@@ -96,12 +101,16 @@ namespace GxMcp.Worker.Services
     /// </summary>
     internal sealed class IsolatedEventsSaveTrace
     {
-        internal IsolatedEventsSaveTrace(JObject receipt)
+        internal IsolatedEventsSaveTrace(JObject receipt, string target = null)
         {
             Receipt = receipt ?? throw new ArgumentNullException(nameof(receipt));
+            Target = target;
         }
 
         internal JObject Receipt { get; }
+
+        /// <summary>The object being saved; named in each diagnostic.</summary>
+        internal string Target { get; }
         internal string Phase { get; private set; } = IsolatedEventsSavePhase.Preflight;
 
         /// <summary>The phase of the first recorded failure; null while nothing failed.</summary>
@@ -123,7 +132,7 @@ namespace GxMcp.Worker.Services
         /// </summary>
         internal IsolatedEventsFailure RecordFailure(Exception ex, Func<IEnumerable<KeyValuePair<string, object>>> sdkSources)
         {
-            IsolatedEventsFailure failure = IsolatedEventsSaveDiagnostics.Describe(ex, Phase, sdkSources);
+            IsolatedEventsFailure failure = IsolatedEventsSaveDiagnostics.Describe(ex, Phase, sdkSources, Target);
             try
             {
                 if (!Failed)
@@ -200,12 +209,16 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
-        /// Builds the failure description. <paramref name="sdkSources"/> yields the
-        /// SDK objects whose <c>Messages</c> may explain the failure (label, instance);
-        /// it is evaluated here, guarded, so a broken SDK object cannot mask the failure.
+        /// Builds the failure description. The SDK's own messages come from two places:
+        /// the exception itself (a <c>ValidationException</c> carries them in its
+        /// <c>Output</c>, which is where the real save puts "src0294 Unknown function"),
+        /// and <paramref name="sdkSources"/>, the SDK objects whose <c>Messages</c> may
+        /// explain it (label, instance). The latter is evaluated here, guarded, so a
+        /// broken SDK object cannot mask the failure. <paramref name="target"/> names
+        /// the object in each diagnostic.
         /// </summary>
         internal static IsolatedEventsFailure Describe(
-            Exception ex, string phase, Func<IEnumerable<KeyValuePair<string, object>>> sdkSources)
+            Exception ex, string phase, Func<IEnumerable<KeyValuePair<string, object>>> sdkSources, string target = null)
         {
             var failure = new IsolatedEventsFailure
             {
@@ -227,15 +240,43 @@ namespace GxMcp.Worker.Services
                 Logger.Debug("[ISOLATED-EVENTS] inner exception walk failed: " + chainEx.Message);
             }
 
-            string sdkErrorText = string.Empty;
+            // The exception's own messages first: they are the SDK's verdict on this very
+            // save. The part save validates the Events part; later stages report on the object.
+            var candidates = new List<KeyValuePair<string, object>>();
+            try
+            {
+                string exceptionPart = string.Equals(phase, IsolatedEventsSavePhase.PartSave, StringComparison.Ordinal)
+                    ? "Events" : "Object";
+                foreach (Exception carrier in EnumerateWithInner(ex))
+                    foreach (object message in ReadExceptionOutput(carrier))
+                        candidates.Add(new KeyValuePair<string, object>(exceptionPart, message));
+            }
+            catch (Exception outputEx)
+            {
+                failure.SdkMessagesError = Sanitize(outputEx.Message);
+            }
+
             try
             {
                 if (sdkSources != null)
-                    sdkErrorText = CollectSdkMessages(sdkSources(), failure);
+                    foreach (var source in sdkSources() ?? Enumerable.Empty<KeyValuePair<string, object>>())
+                        if (source.Value != null)
+                            foreach (object message in ReadMessages(source.Value))
+                                candidates.Add(new KeyValuePair<string, object>(source.Key, message));
             }
             catch (Exception sdkEx)
             {
                 failure.SdkMessagesError = Sanitize(sdkEx.Message);
+            }
+
+            string sdkErrorText = string.Empty;
+            try
+            {
+                sdkErrorText = CollectSdkMessages(candidates, failure, target);
+            }
+            catch (Exception collectEx)
+            {
+                failure.SdkMessagesError = Sanitize(collectEx.Message);
             }
 
             string rawMessage = ex?.Message ?? string.Empty;
@@ -289,44 +330,107 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
-        /// Reads the SDK's own messages from <paramref name="sources"/>, fills the
-        /// structured lists on <paramref name="failure"/> and returns the raw text of
-        /// the error-severity ones, the input <see cref="WritePolicy.PreferDetailedMessage"/> needs.
+        /// Structures the SDK messages (label, message), fills the lists on
+        /// <paramref name="failure"/> and returns the readable text of the error-severity
+        /// ones (code, text, position), the input <see cref="WritePolicy.PreferDetailedMessage"/> needs.
         /// </summary>
-        private static string CollectSdkMessages(IEnumerable<KeyValuePair<string, object>> sources, IsolatedEventsFailure failure)
+        private static string CollectSdkMessages(
+            IEnumerable<KeyValuePair<string, object>> candidates, IsolatedEventsFailure failure, string target)
         {
+            const int MessageSummaryEntries = 3;
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var errorTexts = new List<string>();
             var messages = new JArray();
+            var diagnostics = new JArray();
             var sourceErrors = new JArray();
-            foreach (var source in sources ?? Enumerable.Empty<KeyValuePair<string, object>>())
+            foreach (var candidate in candidates)
             {
-                if (source.Value == null) continue;
-                foreach (object message in ReadMessages(source.Value))
+                JObject entry = DescribeMessage(candidate.Value, candidate.Key);
+                string identity = candidate.Key + "|" + entry["code"] + "|" + entry["rawLine"] + "|" + entry["column"] + "|" + entry["message"];
+                if (!seen.Add(identity)) continue;
+                if (messages.Count >= MaxSdkMessages)
                 {
-                    var entry = DescribeMessage(message, source.Key, out string rawText);
-                    string identity = source.Key + "|" + entry["code"] + "|" + entry["line"] + "|" + entry["message"];
-                    if (!seen.Add(identity)) continue;
-                    if (messages.Count >= MaxSdkMessages)
-                    {
-                        failure.SdkMessagesTruncated = true;
-                        continue;
-                    }
-                    messages.Add(entry);
-                    bool isError = string.Equals(entry["severity"]?.ToString(), "Error", StringComparison.Ordinal);
-                    if (isError) errorTexts.Add(rawText);
-                    if (isError && string.Equals(source.Key, "Events", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var sourceError = new JObject();
-                        foreach (string key in new[] { "code", "line", "column", "message" })
-                            if (entry[key] != null) sourceError[key] = entry[key];
-                        sourceErrors.Add(sourceError);
-                    }
+                    failure.SdkMessagesTruncated = true;
+                    continue;
+                }
+                messages.Add(entry);
+                if (!string.Equals(entry["severity"]?.ToString(), "Error", StringComparison.Ordinal)) continue;
+
+                errorTexts.Add(FormatForMessage(entry));
+                var diagnostic = new JObject();
+                foreach (string key in new[] { "code", "message" })
+                    if (entry[key] != null) diagnostic[key] = entry[key];
+                if (!string.IsNullOrEmpty(target)) diagnostic["object"] = target;
+                foreach (string key in new[] { "part", "rawLine", "column", "locatedIn", "locatedInObjectId" })
+                    if (entry[key] != null) diagnostic[key] = entry[key];
+                diagnostics.Add(diagnostic);
+                if (string.Equals(candidate.Key, "Events", StringComparison.OrdinalIgnoreCase))
+                {
+                    var sourceError = new JObject();
+                    foreach (string key in new[] { "code", "rawLine", "column", "message" })
+                        if (entry[key] != null) sourceError[key] = entry[key];
+                    sourceErrors.Add(sourceError);
                 }
             }
             failure.SdkMessages = messages;
+            failure.Diagnostics = diagnostics;
             failure.SourceValidationErrors = sourceErrors;
-            return string.Join(" | ", errorTexts);
+            if (errorTexts.Count <= MessageSummaryEntries) return string.Join(" | ", errorTexts);
+            return string.Join(" | ", errorTexts.Take(MessageSummaryEntries)) + " | (+" + (errorTexts.Count - MessageSummaryEntries) + " more)";
+        }
+
+        // "src0294: Unknown function 'SetEmpty' (line 2, column 24)": the code is added when the
+        // SDK keeps it apart from the text, and the position when the SDK reports one.
+        private static string FormatForMessage(JObject entry)
+        {
+            string code = entry["code"]?.ToString();
+            string text = entry["message"]?.ToString() ?? string.Empty;
+            var summary = new StringBuilder();
+            if (!string.IsNullOrEmpty(code) && text.IndexOf(code, StringComparison.OrdinalIgnoreCase) < 0)
+                summary.Append(code).Append(": ");
+            summary.Append(text);
+            if (entry["rawLine"] != null)
+            {
+                summary.Append(" (line ").Append(entry["rawLine"]);
+                if (entry["column"] != null) summary.Append(", column ").Append(entry["column"]);
+                summary.Append(')');
+            }
+            return summary.ToString();
+        }
+
+        private static IEnumerable<Exception> EnumerateWithInner(Exception ex)
+        {
+            if (ex != null) yield return ex;
+            foreach (Exception inner in EnumerateInner(ex)) yield return inner;
+        }
+
+        // A GeneXus ValidationException keeps the validation messages in Output; its Message
+        // is the bare "Erro". FullMessage (the same messages as text) covers an Output that
+        // cannot be enumerated.
+        private static List<object> ReadExceptionOutput(Exception carrier)
+        {
+            var messages = new List<object>();
+            try
+            {
+                var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance;
+                if (carrier.GetType().GetProperty("Output", flags)?.GetValue(carrier) is IEnumerable output)
+                    foreach (object message in output)
+                        if (message != null) messages.Add(message);
+                if (messages.Count == 0
+                    && carrier.GetType().GetProperty("FullMessage", flags)?.GetValue(carrier) is string full
+                    && full.Trim().Length > 0 && !WritePolicy.IsBareGenericError(full))
+                    messages.Add(new PlainMessage { Text = full });
+            }
+            catch
+            {
+                // An exception whose Output cannot be read still has its own message.
+            }
+            return messages;
+        }
+
+        private sealed class PlainMessage
+        {
+            public string Text { get; set; }
         }
 
         private static List<object> ReadMessages(object owner)
@@ -347,11 +451,16 @@ namespace GxMcp.Worker.Services
             return messages;
         }
 
-        /// <summary>One SDK message as <c>{code?, part, line?, column?, severity, message}</c>.</summary>
-        private static JObject DescribeMessage(object message, string part, out string rawText)
+        /// <summary>
+        /// One SDK message as <c>{code?, part, rawLine?, column?, severity, message}</c>. The position is
+        /// reported exactly as the SDK gives it: no conversion, no clamping. A Pattern-generated source
+        /// can report a negative line (seen as <c>-1657</c> in the IDE), so <c>rawLine</c> is not
+        /// necessarily a line of the Events text.
+        /// </summary>
+        private static JObject DescribeMessage(object message, string part)
         {
             Type type = message.GetType();
-            rawText = SdkDiagnosticsHelper.ReadStringMember(message, type, "Text")
+            string rawText = SdkDiagnosticsHelper.ReadStringMember(message, type, "Text")
                 ?? SdkDiagnosticsHelper.ReadStringMember(message, type, "Description")
                 ?? SdkDiagnosticsHelper.ReadStringMember(message, type, "Message")
                 ?? message.ToString();
@@ -366,13 +475,23 @@ namespace GxMcp.Worker.Services
 
             int? line = null;
             int? column = null;
+            string locatedIn = null;
+            int? locatedInObjectId = null;
             object position = SdkDiagnosticsHelper.ReadMember(message, type, "Position");
-            if (position != null && position.GetType().Name.Contains("TextPosition"))
+            if (position == null && SdkDiagnosticsHelper.ReadMember(message, type, "Positions") is IEnumerable positions)
+                foreach (object first in positions) { position = first; break; }
+            if (position != null)
             {
                 Type positionType = position.GetType();
                 line = ToInt(SdkDiagnosticsHelper.ReadMember(position, positionType, "Line"));
                 column = ToInt(SdkDiagnosticsHelper.ReadMember(position, positionType, "Char")
-                    ?? SdkDiagnosticsHelper.ReadMember(position, positionType, "Column"));
+                    ?? SdkDiagnosticsHelper.ReadMember(position, positionType, "Column")
+                    ?? SdkDiagnosticsHelper.ReadMember(position, positionType, "Col")
+                    ?? SdkDiagnosticsHelper.ReadMember(position, positionType, "Character"));
+                // The SDK's own name for the object that owns the position (a SourceCodePosition
+                // says "Web Panel 'Name'"): where the error is, as distinct from the saved object.
+                locatedIn = SdkDiagnosticsHelper.ReadStringMember(position, positionType, "FullName");
+                locatedInObjectId = ToInt(SdkDiagnosticsHelper.ReadMember(position, positionType, "ObjectId"));
             }
             if (line == null)
             {
@@ -390,11 +509,33 @@ namespace GxMcp.Worker.Services
             var entry = new JObject();
             if (!string.IsNullOrEmpty(code)) entry["code"] = code;
             entry["part"] = part;
-            if (line.HasValue) entry["line"] = line.Value;
+            if (line.HasValue) entry["rawLine"] = line.Value;
             if (column.HasValue) entry["column"] = column.Value;
+            if (!string.IsNullOrEmpty(locatedIn)) entry["locatedIn"] = Sanitize(locatedIn);
+            if (locatedInObjectId.HasValue) entry["locatedInObjectId"] = locatedInObjectId.Value;
             entry["severity"] = severity;
             entry["message"] = Sanitize(rawText);
             return entry;
+        }
+
+        /// <summary>
+        /// Why the in-transaction object state differs from the requested change, or null when it
+        /// does not. Names each failed check so the report says what moved, not only that something did.
+        /// </summary>
+        internal static string DescribePreCommitMismatch(
+            bool eventsSourceMatches, string changedParts, bool partChangesAllowed, int otherObjectsChanged, bool placementMatches)
+        {
+            var reasons = new List<string>();
+            if (!eventsSourceMatches) reasons.Add("the Events source after the save differs from the requested source");
+            if (!partChangesAllowed)
+                reasons.Add(string.IsNullOrWhiteSpace(changedParts)
+                    ? "other parts of the object changed"
+                    : "other parts of the object changed (" + Sanitize(changedParts) + ")");
+            if (otherObjectsChanged != 0) reasons.Add(otherObjectsChanged + " other object(s) in the Knowledge Base changed");
+            if (!placementMatches) reasons.Add("the object placement changed");
+            return reasons.Count == 0
+                ? null
+                : "The pre-commit SDK object state did not match the requested isolated change: " + string.Join("; ", reasons) + ".";
         }
 
         private static int? ToInt(object value)

@@ -26,10 +26,11 @@ namespace GxMcp.Gateway.Tests
                 ""code"":""ObjectSaveIncomplete"",
                 ""message"":""Isolated Events save failed during part-save: src0059: Esperando 'EndFor'"",
                 ""savePhase"":""part-save"",""verificationPhase"":""post-commit-verification"",
+                ""diagnostics"":[{""code"":""src0294"",""message"":""Unknown function 'SetEmpty'"",""object"":""SamplePanel"",""part"":""Events"",""rawLine"":2,""column"":16}],
                 ""exceptionType"":""System.Exception"",
                 ""innerMessages"":[""inner""],""innerExceptionTypes"":[""System.ArgumentException""],
-                ""sdkMessages"":[{""code"":""src0059"",""part"":""Events"",""line"":12,""severity"":""Error"",""message"":""src0059: Esperando 'EndFor'""}],
-                ""sourceValidationErrors"":[{""code"":""src0059"",""line"":12,""message"":""src0059: Esperando 'EndFor'""}],
+                ""sdkMessages"":[{""code"":""src0059"",""part"":""Events"",""rawLine"":12,""severity"":""Error"",""message"":""src0059: Esperando 'EndFor'""}],
+                ""sourceValidationErrors"":[{""code"":""src0059"",""rawLine"":12,""message"":""src0059: Esperando 'EndFor'""}],
                 ""originalError"":""Erro"",""sdkMessagesTruncated"":true,""sdkMessagesError"":""unavailable"",
                 ""verificationFailure"":{""savePhase"":""post-commit-reread"",""exceptionType"":""System.Exception""},
                 ""saveFailureMessage"":""Isolated Events save failed during part-save: x""

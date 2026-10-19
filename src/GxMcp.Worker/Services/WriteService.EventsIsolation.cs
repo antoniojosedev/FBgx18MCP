@@ -153,7 +153,7 @@ namespace GxMcp.Worker.Services
                 // known WWP reapplication path.
                 using (var steps = new SdkIsolatedEventsSaveSteps(kb, guid, target, source, isolation, receipt))
                 {
-                    var trace = new IsolatedEventsSaveTrace(receipt);
+                    var trace = new IsolatedEventsSaveTrace(receipt, target);
                     var outcome = IsolatedEventsSaveFlow.Run(steps, trace, baseVersion, KbWatcherService.AcquireWriteGate);
                     verifiedState = steps.VerifiedState;
                     switch (outcome.Kind)

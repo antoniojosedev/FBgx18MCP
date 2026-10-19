@@ -40,10 +40,16 @@ the Events source and no save, so it cannot say the save will succeed:
 | `validationExecuted` | Always `false`: no SDK validation ran. |
 | `saveExecuted` | Always `false`: nothing was saved. |
 | `persistabilityVerified` | Always `false` for a preview; only a completed, verified save establishes persistence. |
+| `semanticValidation` | `{performed: false, reason}`: the SDK's validation of the Events source (unknown functions, syntax) runs only inside the part save, which a preview must not run. |
 | `previewScope` | The same statement in words. |
 
 A clean preview followed by a failed save is expected when the SDK rejects the
-source only at save time. The failure then says where (see below).
+source only at save time: it validates the Events source in `eventsPart.Save()`.
+The failure then says where and why (see below). Checked on a disposable GeneXus
+18 U16 Knowledge Base: an in-memory `KBObject.Validate(OutputMessages)` on a copy
+of the object returned `false` for such a source but produced no messages, so it
+is not used; and `SkipValidation=true` of the object save does not apply to the
+earlier part save.
 
 ## Failure diagnostics
 
@@ -58,7 +64,8 @@ evidence (`objectSaved`, `partPersisted`, `transactionRolledBack`,
 | `verificationPhase` | The stage reached by the verification that follows a rollback, when a failure came first. |
 | `exceptionType` | Full type name of the exception. |
 | `innerMessages[]`, `innerExceptionTypes[]` | The inner exception chain (at most 5), sanitized. |
-| `sdkMessages[]` | The SDK's own messages read from the object and its parts before the rollback: `code` (for example `src0059`), `part`, `line`, `column`, `severity`, `message`. At most 25; `sdkMessagesTruncated` says more existed. |
+| `diagnostics[]` | The error-severity SDK messages a caller fixes: `code` (for example `src0294`), `message`, `object`, `part`, `rawLine`, `column`. The position is the SDK's own, unconverted: `rawLine` was 1-based on the Events text of a plain WebPanel (calls on lines 2, 3 and 4 reported 2, 3 and 4) and the IDE showed a negative value (`-1657`) for a Pattern-generated source, so it is not necessarily a line of the Events text. There is deliberately no normalized `line`. `locatedIn` (and `locatedInObjectId`) is the SDK's own name for the object that owns the position, e.g. `Web Panel 'Name'`; when it differs from `object`, the error is located in something other than the saved object. |
+| `sdkMessages[]` | Every SDK message (warnings included) with `code`, `part`, `rawLine`, `column`, `severity`, `message`, read before the rollback. At most 25; `sdkMessagesTruncated` says more existed. |
 | `sourceValidationErrors[]` | The error-severity SDK messages on the Events part. |
 | `originalError` | The exception's own message, kept when the reported message replaced a bare `Erro`. |
 | `sdkMessagesError` | Why the SDK messages could not be read, when they could not. |
@@ -72,13 +79,61 @@ evidence (`objectSaved`, `partPersisted`, `transactionRolledBack`,
 `KBObject.Save` and the isolation teardown), `pre-commit-verification`, `commit`,
 `post-commit-reread`, `post-commit-verification`, `completed`.
 
+Where the SDK keeps the messages: the part save throws a
+`ValidationException` whose `Message` is the bare `Erro` and whose `Output` holds
+the validation errors, one per offending call, with code and position (verified on
+a disposable U16 Knowledge Base with three calls to a function that does not exist
+on numeric SDT members: three `src0294` diagnostics at lines 2, 3 and 4, column 16,
+while `Messages` of the parts and of the object stayed empty). The receipt reads
+that `Output` (and `FullMessage` when it cannot be enumerated) as well as the
+`Messages` of the object and its parts. Messages that come from the exception of
+the part save are attributed to the `Events` part; from any later stage, to the
+object.
+
+A failed pre-commit check names what moved instead of a bare mismatch: the Events
+source differs from the request, other parts changed (with their names), other
+objects changed, or the placement changed. Saving a Work With pattern-generated
+WebPanel whose `Rules` is a single newline, for example, is refused there because
+the SDK rewrites that part to empty during the object save (`other parts of the
+object changed (Rules)`); the transaction is rolled back and nothing persists.
+
 The message names the stage and prefers the SDK's own text over a bare `Erro`
 (the same `WritePolicy.PreferDetailedMessage` the normal write path uses), then an
-informative inner exception. With neither, it says the SDK raised a generic error
-and where to look. Every string is sanitized: local paths, credentials, tokens,
+informative inner exception; it lists up to three errors as `code: text (line N,
+column M)` and counts the rest. With nothing readable, it says the SDK raised a
+generic error and where to look. Every string is sanitized: local paths, credentials, tokens,
 connection-string parts and raw GeneXus source are redacted, text is single-line
 and bounded to 500 characters. None of this changes what the save does or how it
 rolls back.
+
+### Failure-path evidence
+
+The failure path was exercised against the real SDK (GeneXus 18 U16, 18.0.16.189595)
+on a disposable Knowledge Base, with synthetic objects only and no Specify,
+Generate or Build, for three kinds of WebPanel: a plain one, one hosting a
+WorkWithPlus instance, and one whose Events the Work With pattern generated. Each
+run read a baseline (parts, variables, properties, version token), previewed the
+patch, ran the real isolated save with three calls to a function that does not
+exist on numeric SDT members, tried the same patch with an outdated `baseVersion`,
+and read everything again.
+
+- The preview passed in all three (`patchMatch`, `isolationEligible`;
+  `semanticValidation.performed=false`): it cannot see the rejection.
+- The real save failed at `part-save` with three `src0294` diagnostics (position and
+  owner as the SDK reports them), `saved=false`, `persisted=false`,
+  `rollbackVerified=true`, `implicitOperations=[]`.
+- The outdated token was refused (`VersionConflict`) before any save was attempted.
+- Afterwards the version tokens, the Events text, the variables and the properties
+  hashed identically to the baseline; no invalid source persisted.
+- A syntax error in the pattern-generated Events was rejected at `part-save` too
+  (eleven `src0102`/`src0051` diagnostics), so the SDK validates that source at save.
+
+Not reproduced: the negative `rawLine` (`-1657`, "by WorkWithPlus") a user saw in the
+IDE. It needs a source generated by a WorkWithPlus instance, which cannot be created
+headless; the receipt passes whatever the SDK reports (unit-tested with `-1657`).
+The installation used for these runs carries a WorkWithPlus build different from the
+audited one, which the isolation correctly refuses, so those runs used a throw-away
+Worker with that single hash comparison relaxed. The shipped Worker was not changed.
 
 ## SDK audit and limitations
 
