@@ -104,7 +104,7 @@ namespace GxMcp.Worker.Services
         private string ExecuteListFilters(string target, KBObject instanceObj, JObject args)
         {
             string level = args?["level"]?.ToString();
-            if (!WorkWithSdkAdapter.ListFilters(instanceObj, _patterns, level, out var filters, out var error, out var errorMessage))
+            if (!WorkWithSdkAdapter.ListFilters(instanceObj, _patterns, level, out var filters, out var source, out var error, out var errorMessage))
             {
                 return McpResponse.Err(code: error ?? "ListFiltersFailed",
                     message: errorMessage ?? $"Failed to list filters for '{instanceObj.Name}': {error}",
@@ -112,11 +112,13 @@ namespace GxMcp.Worker.Services
                     target: target);
             }
 
-            return McpResponse.Ok(target: target, code: "WorkWithFiltersRead", result: new JObject
+            var result = new JObject
             {
                 ["instance"] = instanceObj.Name,
                 ["filters"] = filters
-            });
+            };
+            WorkWithSdkAdapter.DescribeReadSource(result, "observedSource", source);
+            return McpResponse.Ok(target: target, code: "WorkWithFiltersRead", result: result);
         }
 
         private string ExecuteAddFilterAttribute(string target, KBObject instanceObj, JObject args)
@@ -175,18 +177,20 @@ namespace GxMcp.Worker.Services
 
         private string ExecuteListActions(string target, KBObject instanceObj)
         {
-            if (!WorkWithSdkAdapter.ListActions(instanceObj, _patterns, out var tabs, out var error))
+            if (!WorkWithSdkAdapter.ListActions(instanceObj, _patterns, out var tabs, out var source, out var error))
             {
                 return McpResponse.Err(code: error ?? "ListActionsFailed",
                     message: $"Failed to list actions for '{instanceObj.Name}': {error}",
                     target: target);
             }
 
-            return McpResponse.Ok(target: target, code: "WorkWithActionsRead", result: new JObject
+            var result = new JObject
             {
                 ["instance"] = instanceObj.Name,
                 ["tabs"] = tabs
-            });
+            };
+            WorkWithSdkAdapter.DescribeReadSource(result, "observedSource", source);
+            return McpResponse.Ok(target: target, code: "WorkWithActionsRead", result: result);
         }
 
         private string ExecuteAddAction(string target, KBObject instanceObj, JObject args)

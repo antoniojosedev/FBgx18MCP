@@ -155,5 +155,25 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("always `native-sdk` for filters", help, StringComparison.Ordinal);
             Assert.Contains("optionally prefixed with `&`", help, StringComparison.Ordinal);
         }
+
+        /// <summary>
+        /// Issue #589: the help must say that receipts and list responses copy the reader
+        /// actually used (typed instance or PatternInstance XML projection) with the
+        /// fallback cause, instead of documenting a fixed in-memory label.
+        /// </summary>
+        [Fact]
+        public void WorkWith_Help_DeclaresObservedSourceVocabulary()
+        {
+            string help = ToolHelpCatalog.Get("genexus_workwith") ?? string.Empty;
+
+            Assert.Contains("`verification.observedSource` (post-save reread)", help, StringComparison.Ordinal);
+            Assert.Contains("`verification.preCheckSource` (pre-write duplicate check)", help, StringComparison.Ordinal);
+            Assert.Contains("`xml_projection`", help, StringComparison.Ordinal);
+            Assert.Contains("`observedSourceReason` / `preCheckSourceReason`", help, StringComparison.Ordinal);
+            Assert.Contains("`native_sdk_unavailable`, `native_instance_absent`, `native_levels_absent`, `native_read_failed`", help, StringComparison.Ordinal);
+            Assert.Contains("`list_actions` and `list_filters` report `observedSource` the same way", help, StringComparison.Ordinal);
+            Assert.Contains("not proof of persistence", help, StringComparison.Ordinal);
+            Assert.DoesNotContain("`verification.observedSource: in_memory_instance_reread`", help, StringComparison.Ordinal);
+        }
     }
 }
