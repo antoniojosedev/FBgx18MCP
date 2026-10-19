@@ -49,7 +49,13 @@ EXIT CODES
 pwsh -NoProfile -File scripts\workwith_persistence_smoke.ps1 -KbPath C:\KBs\KBTesteWorkWith -Transaction Customer
 
 .EXAMPLE
-pwsh -NoProfile -File scripts\workwith_persistence_smoke.ps1 -Kb kbtesteworkwith -Transaction Customer -Procedure procPrintCustomer -ReloadMode hard -WorkerSourceDir .\src\GxMcp.Worker\bin\Debug
+pwsh -NoProfile -File scripts\workwith_persistence_smoke.ps1 -Kb kbtesteworkwith -Transaction Customer -Procedure procPrintCustomer -ActionParameters CustomerId -ReloadMode hard -WorkerSourceDir .\src\GxMcp.Worker\bin\Debug
+
+.NOTES
+-Procedure enables the optional action lane. genexus_workwith checks the number of
+parameters against the Procedure's parm() rule (ArityMismatch), so pass one
+-ActionParameters entry per parm() argument (attributes, &variables or expressions).
+Without them the lane only works for a Procedure that declares no parameters.
 #>
 param(
     [string]$BaseUrl = 'http://127.0.0.1:5000/mcp',
@@ -60,6 +66,7 @@ param(
     [string]$Attribute = '',
     [string]$Condition = '',
     [string]$Procedure = '',
+    [string[]]$ActionParameters = @(),
     [string]$Tab = 'General',
     [ValidateSet('soft', 'hard')][string]$ReloadMode = 'soft',
     [string]$WorkerSourceDir = '',
@@ -280,7 +287,7 @@ $script:Summary.evidence.filterReceipt = [ordered]@{
 $actionLane = -not [string]::IsNullOrWhiteSpace($Procedure)
 if ($actionLane) {
     Write-Host "[WW-SMOKE] add_action $actionName -> $Procedure on tab $Tab"
-    $addAction = Invoke-Tool -Name 'genexus_workwith' -Arguments @{
+    $addActionArgs = @{
         action     = 'add_action'
         name       = $Transaction
         tab        = $Tab
@@ -288,7 +295,11 @@ if ($actionLane) {
         caption    = 'Smoke action'
         procedure  = $Procedure
         kb         = $Kb
-    } -Label 'add_action'
+    }
+    # The tool refuses a call whose parameter count differs from the Procedure's parm()
+    # rule (ArityMismatch), so a Procedure with parameters needs matching -ActionParameters.
+    if ($ActionParameters.Count -gt 0) { $addActionArgs['parameters'] = @($ActionParameters) }
+    $addAction = Invoke-Tool -Name 'genexus_workwith' -Arguments $addActionArgs -Label 'add_action'
     Assert-Ok -Payload $addAction -Label 'add_action'
     if (-not [bool]$addAction.result.verified) { Exit-Fail 'add_action receipt is not verified.' }
     if ($null -eq $addAction.result.persistenceEvidence) { Exit-Fail 'add_action receipt carries no persistenceEvidence (issue #590 contract).' }

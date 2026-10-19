@@ -25,6 +25,7 @@ $tests = @(
     'test-warning-baseline.ps1',
     'test-line-endings.ps1',
     'test-live-matrix.test.ps1',
+    'test-workwith-persistence-smoke.ps1',
     'test-run-gate.ps1'
 )
 foreach ($name in $tests) {
