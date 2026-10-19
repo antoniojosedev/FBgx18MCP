@@ -111,9 +111,31 @@ struct SourceFile {
     stem: String,
 }
 
+/// Directories whose contents are tooling or build output, never Knowledge Base
+/// sources. They are pruned before the walk descends into them (case-insensitive,
+/// exact directory name, never the analysed root itself).
+///
+/// Without this a text tree that lives next to a repository's working files is
+/// walked through `.git` and `node_modules`, and the `.txt`/`.xml` files in there
+/// become graph nodes that no GeneXus object owns (#593: the walk of a large
+/// folder was also the cost that never finished). Only names that cannot be a
+/// GeneXus export folder are listed: an export nests objects under folders named
+/// after their type or module, never `bin`, `obj` or a VCS metadata directory.
+const PRUNED_DIR_NAMES: &[&str] = &[".git", ".svn", ".hg", ".vs", "node_modules", "bin", "obj"];
+
+fn is_pruned_dir_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    PRUNED_DIR_NAMES.iter().any(|p| p.eq_ignore_ascii_case(&name))
+}
+
 fn collect_source_files(dir: &Path) -> Vec<SourceFile> {
     let mut out = Vec::new();
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    let walker = WalkDir::new(dir).into_iter().filter_entry(|entry| {
+        // The root is analysed whatever it is called; only directories below it
+        // are candidates for pruning, and files are never filtered here.
+        entry.depth() == 0 || !entry.file_type().is_dir() || !is_pruned_dir_name(entry.file_name())
+    });
+    for entry in walker.filter_map(|e| e.ok()) {
         // `file_type()` comes from the directory enumeration itself, whereas
         // `path.is_file()` costs a stat per entry. That stat is the single
         // biggest per-file overhead when indexing a large Knowledge Base.
