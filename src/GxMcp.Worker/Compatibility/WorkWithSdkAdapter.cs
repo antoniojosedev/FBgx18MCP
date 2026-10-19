@@ -1346,8 +1346,10 @@ namespace GxMcp.Worker.Compatibility
                 {
                     string faName = fa.GetType().GetProperty("Name")?.GetValue(fa, null)?.ToString() ?? "";
                     string faDesc = fa.GetType().GetProperty("Description")?.GetValue(fa, null)?.ToString();
+                    // DomainName is the SDK's own plain-name projection of the typed Domain
+                    // reference; the ToString fallback may carry the `{guid}-Name` form.
                     string faDom = fa.GetType().GetProperty("DomainName")?.GetValue(fa, null)?.ToString()
-                        ?? fa.GetType().GetProperty("Domain")?.GetValue(fa, null)?.ToString();
+                        ?? StripObjectReferenceGuid(fa.GetType().GetProperty("Domain")?.GetValue(fa, null)?.ToString());
                     string faVar = fa.GetType().GetProperty("VariableName")?.GetValue(fa, null)?.ToString();
                     string faDefault = fa.GetType().GetProperty("Default")?.GetValue(fa, null)?.ToString();
 
@@ -1539,6 +1541,176 @@ namespace GxMcp.Worker.Compatibility
             return true;
         }
 
+        /// A KB object as the filter authoring path sees it: enough identity to build the
+        /// typed reference, the advisory and the receipt without holding the SDK type in
+        /// hermetic tests.
+        internal sealed class FilterKbObjectRef
+        {
+            public string Name;
+            public Guid Guid;
+            public string Type;
+            public object Instance;
+
+            public static FilterKbObjectRef FromKbObject(KBObject obj)
+            {
+                if (obj == null) return null;
+                return new FilterKbObjectRef
+                {
+                    Name = obj.Name,
+                    Guid = obj.Guid,
+                    Type = obj.TypeDescriptor?.Name,
+                    Instance = obj
+                };
+            }
+        }
+
+        /// Lookup seam: (name or GUID, object type name) -> the KB object, or null.
+        internal delegate FilterKbObjectRef FilterObjectLookup(string nameOrGuid, string typeName);
+
+        internal sealed class FilterDomainResolution
+        {
+            public string Requested;
+            public string Name;
+            public Guid Guid;
+            /// "name" or "guid": which form of the request resolved.
+            public string ResolvedBy;
+            public object Instance;
+        }
+
+        internal const string FilterDomainTypedPersistence =
+            "Applied through the typed FilterAttributeElement.Domain reference: the SDK stores a KBObjectReference (`domainReference`) "
+            + "that serializes as `{guid}-Name` in the PatternInstance XML; list_filters reports the plain Domain name.";
+
+        internal const string FilterDomainStringPersistence =
+            "Applied through the FilterAttributeElement.DomainName string setter: the SDK stores the plain Domain name.";
+
+        /// Resolves `domain` against the KB Domains by name or GUID; the `{guid}-Name`
+        /// form the pattern XML stores is accepted too. A Domain that is given but does
+        /// not resolve is an input error: the typed `Domain` reference cannot be built
+        /// from a name the KB does not know (issue #587).
+        internal static bool TryResolveFilterDomain(
+            string domain,
+            FilterObjectLookup lookup,
+            out FilterDomainResolution resolution,
+            out string errorCode,
+            out string errorMessage)
+        {
+            resolution = null;
+            errorCode = null;
+            errorMessage = null;
+            if (string.IsNullOrWhiteSpace(domain)) return true;
+
+            string requested = domain.Trim();
+            var attempts = new List<KeyValuePair<string, string>>();
+            if (TrySplitObjectReference(requested, out string guidPart, out string namePart))
+            {
+                attempts.Add(new KeyValuePair<string, string>(guidPart, "guid"));
+                attempts.Add(new KeyValuePair<string, string>(namePart, "name"));
+            }
+            else
+            {
+                attempts.Add(new KeyValuePair<string, string>(requested, Guid.TryParse(requested, out _) ? "guid" : "name"));
+            }
+
+            foreach (var attempt in attempts)
+            {
+                var found = lookup?.Invoke(attempt.Key, "Domain");
+                if (found == null) continue;
+                if (!string.IsNullOrEmpty(found.Type) && !string.Equals(found.Type, "Domain", StringComparison.OrdinalIgnoreCase)) continue;
+
+                resolution = new FilterDomainResolution
+                {
+                    Requested = requested,
+                    Name = string.IsNullOrEmpty(found.Name) ? attempt.Key : found.Name,
+                    Guid = found.Guid,
+                    ResolvedBy = attempt.Value,
+                    Instance = found.Instance
+                };
+                return true;
+            }
+
+            string tried = string.Join(" and ", attempts.Select(a => (a.Value == "guid" ? "GUID '" : "name '") + a.Key + "'"));
+            errorCode = "FilterDomainNotFound";
+            errorMessage = $"Domain '{requested}' was not found in the Knowledge Base (looked up by {tried}). Pass the name or GUID of an existing Domain, or omit `domain`.";
+            return false;
+        }
+
+        /// `{guid}-{Name}` is how pattern XML stores object references.
+        private static bool TrySplitObjectReference(string reference, out string guidPart, out string namePart)
+        {
+            guidPart = null;
+            namePart = null;
+            if (string.IsNullOrEmpty(reference)) return false;
+            var parts = reference.Split(new[] { '-' }, 6);
+            if (parts.Length != 6) return false;
+            string candidate = string.Join("-", parts, 0, 5);
+            if (!Guid.TryParse(candidate, out _) || string.IsNullOrWhiteSpace(parts[5])) return false;
+            guidPart = candidate;
+            namePart = parts[5];
+            return true;
+        }
+
+        /// The `&` prefix stays accepted on the filter attribute name but is not a
+        /// discriminator: whether the filter targets a KB Attribute or a variable is
+        /// decided by looking the plain name up as an Attribute (issue #587).
+        internal static FilterKbObjectRef ResolveFilterAttributeTarget(string attributeName, FilterObjectLookup lookup)
+        {
+            if (lookup == null || string.IsNullOrWhiteSpace(attributeName)) return null;
+            string plain = attributeName.Trim().TrimStart('&');
+            if (plain.Length == 0) return null;
+            var match = lookup(plain, "Attribute");
+            if (match != null && !string.IsNullOrEmpty(match.Type) && !string.Equals(match.Type, "Attribute", StringComparison.OrdinalIgnoreCase))
+                return null;
+            return match;
+        }
+
+        /// Same structured shape as add_action's `signatureAdvisory`: the inspected facts,
+        /// one boolean verdict, and `warning` only when the verdict is negative. The schema
+        /// applies `domain` to variables only; a filter attribute that names a KB Attribute
+        /// takes its type from that Attribute, so the Domain is still written but reported
+        /// as advisory rather than refused (issue #587).
+        internal static JObject BuildFilterDomainAdvisory(string attributeName, FilterKbObjectRef attributeTarget, FilterDomainResolution domain)
+        {
+            if (domain == null) return null;
+            bool appliesToVariable = attributeTarget == null;
+            var advisory = new JObject
+            {
+                ["domain"] = domain.Name,
+                ["domainGuid"] = domain.Guid.ToString(),
+                ["filterAttribute"] = attributeName ?? "",
+                ["filterAttributeResolvedAs"] = appliesToVariable ? "Variable" : "Attribute",
+                ["appliesToVariable"] = appliesToVariable
+            };
+            if (!appliesToVariable)
+            {
+                advisory["warning"] = $"Domain '{domain.Name}' was resolved, but filter attribute '{attributeName}' names the KB Attribute '{attributeTarget.Name}'. "
+                    + "The WorkWith schema applies `domain` only to variables (a filter on an Attribute takes its type from the Attribute), "
+                    + "so the Domain is stored on the filter attribute but the pattern may not use it.";
+            }
+            return advisory;
+        }
+
+        private static JObject DescribeDomainResolution(FilterDomainResolution resolution, string appliedThrough)
+        {
+            var described = new JObject
+            {
+                ["requested"] = resolution.Requested,
+                ["name"] = resolution.Name,
+                ["guid"] = resolution.Guid.ToString(),
+                ["resolvedBy"] = resolution.ResolvedBy
+            };
+            if (appliedThrough == null)
+            {
+                described["applyPolicy"] = "typed FilterAttributeElement.Domain reference when the SDK exposes it (GeneXus 18 does); the DomainName string setter only on SDK builds that expose one";
+            }
+            else
+            {
+                described["appliedThrough"] = appliedThrough;
+                described["persistedFormat"] = appliedThrough == "Domain" ? FilterDomainTypedPersistence : FilterDomainStringPersistence;
+            }
+            return described;
+        }
+
         /// Filter authoring writes only through the native WorkWith SDK. Authoring the
         /// filter through raw PatternInstance XML is exactly what the structural preflight
         /// refuses, so there is deliberately no XML write fallback here (issue #559).
@@ -1553,6 +1725,7 @@ namespace GxMcp.Worker.Compatibility
             string domain,
             string defaultValue,
             IList<string> conditions,
+            FilterObjectLookup lookup,
             bool dryRun,
             out JObject result,
             out string errorCode,
@@ -1586,7 +1759,14 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            var plan = BuildFilterPlan(instanceObj.Name, resolvedLevel, attributeName, description, domain, defaultValue, conditions);
+            if (!TryResolveFilterDomain(domain, lookup, out var domainResolution, out errorCode, out errorMessage))
+                return false;
+
+            JObject domainAdvisory = null;
+            if (domainResolution != null)
+                domainAdvisory = BuildFilterDomainAdvisory(attributeName, ResolveFilterAttributeTarget(attributeName, lookup), domainResolution);
+
+            var plan = BuildFilterPlan(instanceObj.Name, resolvedLevel, attributeName, description, domain, defaultValue, conditions, domainResolution, domainAdvisory);
 
             if (GetWorkWithAssembly() == null)
             {
@@ -1602,8 +1782,11 @@ namespace GxMcp.Worker.Compatibility
                 return true;
             }
 
-            if (!TryAddFilterAttributeNative(instanceObj, resolvedLevel, attributeName, description, domain, defaultValue, conditions, out errorCode, out errorMessage))
+            if (!TryAddFilterAttributeNative(instanceObj, resolvedLevel, attributeName, description, domainResolution, defaultValue, conditions, out string domainAppliedThrough, out errorCode, out errorMessage))
+            {
+                result = plan;
                 return false;
+            }
 
             if (!ListFilters(instanceObj, patterns, resolvedLevel, out var verifyFilters, out var observedSource, out _, out _))
             {
@@ -1630,14 +1813,16 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            if (!VerifyFilterAttributeMatches(verifiedAttr, verifiedConditions, attributeName, description, domain, defaultValue, conditions, out string mismatchDetail))
+            // The re-read reports the plain Domain name (DomainName), so a request made
+            // by GUID or `{guid}-Name` is verified against the resolved name.
+            if (!VerifyFilterAttributeMatches(verifiedAttr, verifiedConditions, attributeName, description, domainResolution?.Name, defaultValue, conditions, out string mismatchDetail))
             {
                 errorCode = "VerificationMismatch";
                 errorMessage = $"Filter attribute '{attributeName}' was persisted, but post-save verification failed: {mismatchDetail}";
                 return false;
             }
 
-            result = BuildFilterReceipt(instanceObj.Name, resolvedLevel, verifiedAttr, verifiedConditions, attributeName, description, domain, defaultValue, conditions, preCheckSource, observedSource);
+            result = BuildFilterReceipt(instanceObj.Name, resolvedLevel, verifiedAttr, verifiedConditions, attributeName, description, domain, defaultValue, conditions, preCheckSource, observedSource, domainResolution, domainAdvisory, domainAppliedThrough);
             return true;
         }
 
@@ -1648,39 +1833,53 @@ namespace GxMcp.Worker.Compatibility
             string description,
             string domain,
             string defaultValue,
-            IList<string> conditions)
+            IList<string> conditions,
+            FilterDomainResolution domainResolution = null,
+            JObject domainAdvisory = null)
         {
             var filterAttribute = new JObject { ["name"] = attributeName };
             if (!string.IsNullOrWhiteSpace(description)) filterAttribute["description"] = description;
-            if (!string.IsNullOrWhiteSpace(domain)) filterAttribute["domain"] = domain;
+            string plannedDomain = domainResolution?.Name ?? domain;
+            if (!string.IsNullOrWhiteSpace(plannedDomain)) filterAttribute["domain"] = plannedDomain;
             if (!string.IsNullOrWhiteSpace(defaultValue)) filterAttribute["default"] = defaultValue;
 
-            return new JObject
+            var validations = new JObject
+            {
+                ["targetObjectResolved"] = true,
+                ["workWithInstanceResolved"] = true,
+                ["levelResolved"] = true,
+                ["filterPresent"] = true,
+                ["attributeNameFormatValid"] = true,
+                ["attributeNameUnique"] = true,
+                ["conditionsNonEmptyAndUnique"] = true
+            };
+            if (domainResolution != null)
+            {
+                validations["domainResolved"] = true;
+                validations["domainAppliesToVariable"] = domainAdvisory == null || domainAdvisory["appliesToVariable"]?.ToObject<bool>() != false;
+            }
+
+            var plan = new JObject
             {
                 ["instance"] = instanceName,
                 ["level"] = level,
                 ["filterAttribute"] = filterAttribute,
                 ["conditions"] = new JArray(conditions ?? Array.Empty<string>()),
                 ["route"] = "native-sdk",
-                ["validations"] = new JObject
-                {
-                    ["targetObjectResolved"] = true,
-                    ["workWithInstanceResolved"] = true,
-                    ["levelResolved"] = true,
-                    ["filterPresent"] = true,
-                    ["attributeNameFormatValid"] = true,
-                    ["attributeNameUnique"] = true,
-                    ["conditionsNonEmptyAndUnique"] = true
-                },
+                ["validations"] = validations,
                 ["validationLimits"] = new JObject
                 {
-                    ["attributeName"] = "The filter attribute name is stored as given; it is not resolved against KB attributes or variables.",
-                    ["domain"] = "The Domain is stored as given; it is not resolved against KB Domains.",
+                    ["attributeName"] = "The filter attribute name is stored as given; it is looked up as a KB Attribute only to classify the Domain advisory, not validated.",
+                    ["domain"] = "The Domain is resolved against KB Domains by name or GUID and applied as a typed reference; its fitness for the filter variable's type is not evaluated and the pattern's own resolver is not run.",
                     ["default"] = "The default value is stored as given; it is not compiled or validated against the type of the attribute or variable.",
                     ["conditionExpressions"] = "Filter condition expressions are not compiled or evaluated."
                 },
                 ["defaultNormalization"] = NativeDefaultNormalization
             };
+
+            if (domainResolution != null) plan["domainResolution"] = DescribeDomainResolution(domainResolution, appliedThrough: null);
+            if (domainAdvisory != null) plan["domainAdvisory"] = domainAdvisory;
+            return plan;
         }
 
         internal sealed class NativeFilterSurface
@@ -1691,8 +1890,61 @@ namespace GxMcp.Worker.Compatibility
             public MethodInfo AddFilterAttribute;
             public MethodInfo AddCondition;
             public PropertyInfo Description;
+            /// Typed Domain reference setter (the supported write path on GeneXus 18).
+            public PropertyInfo Domain;
+            /// String setter fallback; GeneXus 18 exposes DomainName read-only, so this is null there.
             public PropertyInfo DomainName;
             public PropertyInfo Default;
+        }
+
+        /// GeneXus 18 exposes `Domain` as a writable Domain reference and `DomainName` as
+        /// a read-only projection of it (`Domain?.Name`), so the typed reference is the
+        /// supported write path; a string setter is kept only as the fallback for SDK
+        /// builds that expose one.
+        internal static void SelectDomainSetters(Type attributeType, out PropertyInfo typedDomain, out PropertyInfo stringDomain)
+        {
+            typedDomain = null;
+            stringDomain = null;
+            if (attributeType == null) return;
+
+            var domain = attributeType.GetProperty("Domain");
+            if (domain != null && domain.CanWrite && domain.PropertyType != typeof(string)) typedDomain = domain;
+            stringDomain = new[] { attributeType.GetProperty("DomainName"), domain }
+                .FirstOrDefault(p => p != null && p.CanWrite && p.PropertyType == typeof(string));
+        }
+
+        /// Applies the resolved Domain to a new filter attribute element: the typed
+        /// reference when the SDK accepts the resolved object, the string setter otherwise.
+        internal static bool TryApplyFilterDomain(
+            PropertyInfo typedDomain,
+            PropertyInfo stringDomain,
+            object attributeElement,
+            FilterDomainResolution domain,
+            out string appliedThrough,
+            out string failure)
+        {
+            appliedThrough = null;
+            failure = null;
+            if (domain == null) return true;
+
+            if (typedDomain != null && domain.Instance != null && typedDomain.PropertyType.IsInstanceOfType(domain.Instance))
+            {
+                typedDomain.SetValue(attributeElement, domain.Instance, null);
+                appliedThrough = "Domain";
+                return true;
+            }
+
+            if (stringDomain != null)
+            {
+                stringDomain.SetValue(attributeElement, domain.Name, null);
+                appliedThrough = "DomainName";
+                return true;
+            }
+
+            failure = typedDomain != null
+                ? $"the resolved Domain '{domain.Name}' ({domain.Instance?.GetType().FullName ?? "null"}) is not accepted by FilterAttributeElement.Domain ({typedDomain.PropertyType.FullName}) and no DomainName string setter exists"
+                : "FilterAttributeElement exposes neither a Domain reference setter nor a DomainName string setter";
+            return false;
         }
 
         internal static bool TryResolveNativeFilterSurface(
@@ -1728,8 +1980,7 @@ namespace GxMcp.Worker.Compatibility
                 };
                 var attributeType = resolved.AddFilterAttribute?.ReturnType;
                 resolved.Description = attributeType?.GetProperty("Description");
-                resolved.DomainName = new[] { attributeType?.GetProperty("DomainName"), attributeType?.GetProperty("Domain") }
-                    .FirstOrDefault(p => p != null && p.CanWrite && p.PropertyType == typeof(string));
+                SelectDomainSetters(attributeType, out resolved.Domain, out resolved.DomainName);
                 var defaultProperty = attributeType?.GetProperty("Default");
                 resolved.Default = defaultProperty != null && defaultProperty.CanWrite && defaultProperty.PropertyType == typeof(string)
                     ? defaultProperty
@@ -1744,7 +1995,7 @@ namespace GxMcp.Worker.Compatibility
                 if (resolved.AddFilterAttribute == null) missing.Add("FilterElement.AddFilterAttribute(string)");
                 if (needsConditions && resolved.AddCondition == null) missing.Add("FilterElement.AddCondition(string)");
                 if (needsDescription && (resolved.Description == null || !resolved.Description.CanWrite)) missing.Add("FilterAttributeElement.Description setter");
-                if (needsDomain && resolved.DomainName == null) missing.Add("FilterAttributeElement.DomainName string setter");
+                if (needsDomain && resolved.Domain == null && resolved.DomainName == null) missing.Add("FilterAttributeElement.Domain reference setter (or DomainName string setter)");
                 if (needsDefault && resolved.Default == null) missing.Add("FilterAttributeElement.Default string setter");
                 if (missing.Count > 0)
                 {
@@ -1769,16 +2020,18 @@ namespace GxMcp.Worker.Compatibility
             string levelId,
             string attributeName,
             string description,
-            string domain,
+            FilterDomainResolution domain,
             string defaultValue,
             IList<string> conditions,
+            out string domainAppliedThrough,
             out string errorCode,
             out string errorMessage)
         {
+            domainAppliedThrough = null;
             errorCode = null;
             errorMessage = null;
             bool hasDescription = !string.IsNullOrWhiteSpace(description);
-            bool hasDomain = !string.IsNullOrWhiteSpace(domain);
+            bool hasDomain = domain != null;
             bool hasDefault = !string.IsNullOrWhiteSpace(defaultValue);
             bool hasConditions = conditions != null && conditions.Count > 0;
 
@@ -1800,7 +2053,7 @@ namespace GxMcp.Worker.Compatibility
                     return false;
                 }
 
-                if (!TryAuthorFilterAttributeOnTypedModel(surface, wwi, levelId, attributeName, description, domain, defaultValue, conditions, out _, out errorCode, out errorMessage))
+                if (!TryAuthorFilterAttributeOnTypedModel(surface, wwi, levelId, attributeName, description, domain, defaultValue, conditions, out _, out domainAppliedThrough, out errorCode, out errorMessage))
                     return false;
 
                 surface.SaveTo.Invoke(wwi, new object[] { instanceObj });
@@ -1830,14 +2083,16 @@ namespace GxMcp.Worker.Compatibility
             string levelId,
             string attributeName,
             string description,
-            string domain,
+            FilterDomainResolution domain,
             string defaultValue,
             IList<string> conditions,
             out object newAttribute,
+            out string domainAppliedThrough,
             out string errorCode,
             out string errorMessage)
         {
             newAttribute = null;
+            domainAppliedThrough = null;
             errorCode = null;
             errorMessage = null;
 
@@ -1855,7 +2110,12 @@ namespace GxMcp.Worker.Compatibility
             }
 
             if (!string.IsNullOrWhiteSpace(description)) surface.Description.SetValue(created, description, null);
-            if (!string.IsNullOrWhiteSpace(domain)) surface.DomainName.SetValue(created, domain, null);
+            if (domain != null && !TryApplyFilterDomain(surface.Domain, surface.DomainName, created, domain, out domainAppliedThrough, out string domainFailure))
+            {
+                errorCode = "WorkWithSdkUnavailable";
+                errorMessage = "Native WorkWith filter authoring is unavailable: " + domainFailure + ". Nothing was saved.";
+                return false;
+            }
             if (!string.IsNullOrWhiteSpace(defaultValue)) surface.Default.SetValue(created, defaultValue, null);
             if (conditions != null)
             {
@@ -1958,7 +2218,10 @@ namespace GxMcp.Worker.Compatibility
             string defaultValue,
             IList<string> conditions,
             WorkWithReadSource preCheckSource,
-            WorkWithReadSource observedSource)
+            WorkWithReadSource observedSource,
+            FilterDomainResolution domainResolution = null,
+            JObject domainAdvisory = null,
+            string domainAppliedThrough = null)
         {
             var verification = new JObject
             {
@@ -1969,7 +2232,7 @@ namespace GxMcp.Worker.Compatibility
             DescribeReadSource(verification, "observedSource", observedSource);
             DescribeReadSource(verification, "preCheckSource", preCheckSource);
 
-            return new JObject
+            var receipt = new JObject
             {
                 ["instance"] = instanceName,
                 ["level"] = level,
@@ -1992,6 +2255,10 @@ namespace GxMcp.Worker.Compatibility
                 ["defaultNormalization"] = NativeDefaultNormalization,
                 ["derivedObjectRegeneration"] = "not_guaranteed"
             };
+
+            if (domainResolution != null) receipt["domainResolution"] = DescribeDomainResolution(domainResolution, domainAppliedThrough ?? "Domain");
+            if (domainAdvisory != null) receipt["domainAdvisory"] = domainAdvisory;
+            return receipt;
         }
 
     }
