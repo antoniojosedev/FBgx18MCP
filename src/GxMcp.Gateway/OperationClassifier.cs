@@ -198,7 +198,7 @@ namespace GxMcp.Gateway
                         "replace_web_component_with_user_action", "settings_edit" }),
                 ["genexus_workwith"] = Contract(
                     readOnly: new[] { "list_actions", "list_filters" },
-                    mutating: new[] { "add_action", "remove_action", "add_filter_attribute" }),
+                    mutating: new[] { "add_action", "remove_action", "add_filter_attribute", "remove_filter_attribute" }),
                 ["genexus_sandbox"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "create", "remove" }),
@@ -285,6 +285,7 @@ namespace GxMcp.Gateway
             "genexus_workwith:add_action",
             "genexus_workwith:remove_action",
             "genexus_workwith:add_filter_attribute",
+            "genexus_workwith:remove_filter_attribute",
             "genexus_generator_reference:add",
             "genexus_generator_reference:remove"
         };

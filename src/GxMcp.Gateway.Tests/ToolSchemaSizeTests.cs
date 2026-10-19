@@ -239,7 +239,10 @@ namespace GxMcp.Gateway.Tests
             // Issues #541, #551, #552, #559: 38500 -> 39000 for genexus_workwith filter authoring,
             // genexus_create attribute typing (dataType/length/decimals/basedOn), and genexus_wwp
             // tabs/userAction layout parameter enhancements. Measured ~38783 tokens; ~217 headroom.
-            Assert.True(approxTokens < 39000, $"tool_definitions.json is ~{approxTokens} tokens; budget 39000.");
+            // Issues #586/#587/#588: 39000 -> 39500 for genexus_workwith remove_filter_attribute
+            // (enum, removeConditions, example), the filter `default` input and the resolved
+            // `domain` contract. Measured ~39082 tokens once all three landed together.
+            Assert.True(approxTokens < 39500, $"tool_definitions.json is ~{approxTokens} tokens; budget 39500.");
         }
 
         [Theory]
@@ -266,6 +269,8 @@ namespace GxMcp.Gateway.Tests
         // Issue #455 adds genexus_workwith: all measured 100907, authoring measured 69808.
         // Issue #588 adds the genexus_workwith `default` filter input: authoring 70500 -> 71000
         // (measured 70527); the other profiles stayed within their budgets.
+        // Issue #586 adds genexus_workwith remove_filter_attribute (enum, removeConditions,
+        // example): authoring 70500 -> 71000, measured 70509 bytes.
         [InlineData("all", 102000)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]

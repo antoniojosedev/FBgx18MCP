@@ -473,6 +473,7 @@ namespace GxMcp.Gateway.Tests
             Assert.True(OperationClassifier.IsReadOnly("genexus_memory", new JObject { ["action"] = "consolidate", ["dryRun"] = true }));
             Assert.True(OperationClassifier.IsReadOnly("genexus_transfer", new JObject { ["action"] = "import", ["dryRun"] = true }));
             Assert.True(OperationClassifier.IsReadOnly("genexus_workwith", new JObject { ["action"] = "add_filter_attribute", ["dryRun"] = true }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_workwith", new JObject { ["action"] = "remove_filter_attribute", ["dryRun"] = true }));
             Assert.True(OperationClassifier.IsReadOnly("genexus_workwith", new JObject { ["action"] = "list_filters" }));
 
             Assert.False(OperationClassifier.IsReadOnly("genexus_properties", new JObject { ["action"] = "move", ["dryRun"] = false }));
@@ -482,6 +483,8 @@ namespace GxMcp.Gateway.Tests
             Assert.False(OperationClassifier.IsReadOnly("genexus_memory", new JObject { ["action"] = "consolidate", ["dryRun"] = false }));
             Assert.False(OperationClassifier.IsReadOnly("genexus_transfer", new JObject { ["action"] = "import", ["dryRun"] = false }));
             Assert.False(OperationClassifier.IsReadOnly("genexus_workwith", new JObject { ["action"] = "add_filter_attribute", ["dryRun"] = false }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_workwith", new JObject { ["action"] = "remove_filter_attribute", ["dryRun"] = false }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_workwith", new JObject { ["action"] = "remove_filter_attribute" }));
         }
 
         [Fact]

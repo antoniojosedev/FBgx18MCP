@@ -1,5 +1,7 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 
 // Hermetic stand-ins for the typed Artech.Patterns.WorkWith surface. The adapter
 // resolves every member by name through reflection, so declaring these types under
@@ -10,31 +12,45 @@ using System.Collections.Generic;
 // string, `DomainName` and `VariableName` are derived read-only values.
 namespace Artech.Patterns.WorkWith
 {
+    // One shared stand-in for the filter tests (#588 typed writer, #589 read source,
+    // #586 native removal): the adapter resolves these types by name in a single
+    // assembly, so the test assembly can hold only one WorkWithInstance.
     public sealed class WorkWithInstance
     {
-        // Issue #589 tests replace Levels with arbitrary shapes (or a throwing enumerable)
-        // through LoadHook; the typed filter tests use the List built by AddLevel.
+        /// Returned by `Load` when no LoadHook is set (#586 removal tests).
+        public static WorkWithInstance Current;
+
+        /// Scripts what the static `Load` returns or throws (#589, #586).
+        public static Func<object, object> LoadHook;
+
+        public static int LoadCalls;
+
+        // The #589 tests replace Levels with arbitrary shapes (or a throwing enumerable);
+        // the typed tests use the List built by AddLevel / LevelList.
         public object Levels { get; set; } = new List<LevelElement>();
 
-        /// Scripts what the static `Load` returns or throws (issue #589); null loads a fresh instance.
-        public static Func<object, object> LoadHook;
+        public List<LevelElement> LevelList => (List<LevelElement>)Levels;
 
         public object SavedTo { get; private set; }
 
+        public int SaveToCalls;
+
         public static object Load(object instance)
         {
-            return LoadHook != null ? LoadHook(instance) : new WorkWithInstance();
+            LoadCalls++;
+            return LoadHook != null ? LoadHook(instance) : Current;
         }
 
         public void SaveTo(object instance)
         {
+            SaveToCalls++;
             SavedTo = instance;
         }
 
         public LevelElement AddLevel(string id)
         {
             var level = new LevelElement { Id = id, Selection = new SelectionElement { Filter = new FilterElement() } };
-            ((List<LevelElement>)Levels).Add(level);
+            LevelList.Add(level);
             return level;
         }
     }
@@ -52,30 +68,52 @@ namespace Artech.Patterns.WorkWith
 
     public sealed class FilterElement
     {
-        public List<FilterAttributeElement> Attributes { get; } = new List<FilterAttributeElement>();
-        public List<ConditionElement> Conditions { get; } = new List<ConditionElement>();
+        public IEnumerable Attributes { get; set; } = new FilterAttributesElement();
+        public IEnumerable Conditions { get; set; } = new ConditionsElement();
 
         public FilterAttributeElement AddFilterAttribute(string name)
         {
             var attribute = new FilterAttributeElement { Name = name };
-            Attributes.Add(attribute);
+            ((IList)Attributes).Add(attribute);
             return attribute;
         }
 
         public ConditionElement AddCondition(string value)
         {
             var condition = new ConditionElement { Value = value };
-            Conditions.Add(condition);
+            ((IList)Conditions).Add(condition);
             return condition;
         }
     }
 
+    public sealed class FilterAttributesElement : List<FilterAttributeElement> { }
+
+    public sealed class ConditionsElement : List<ConditionElement> { }
+
+    /// A collection that enumerates but exposes no Remove member: the "no native
+    /// removal route" shape the adapter must refuse instead of writing XML.
+    public sealed class SealedAttributes : IEnumerable
+    {
+        private readonly List<FilterAttributeElement> _items;
+        public SealedAttributes(IEnumerable<FilterAttributeElement> items) { _items = items.ToList(); }
+        public IEnumerator GetEnumerator() { return _items.GetEnumerator(); }
+    }
+
     public sealed class FilterAttributeElement
     {
+        private string _domainName;
+
         public string Name { get; set; }
         public string Description { get; set; }
         public object Domain { get; set; }
-        public string DomainName => Domain?.ToString();
+
+        /// Derived from Domain as on GeneXus 18; the #586 fixtures set it directly.
+        public string DomainName
+        {
+            get { return _domainName ?? Domain?.ToString(); }
+            set { _domainName = value; }
+        }
+
         public string Default { get; set; }
         public string VariableName => "&" + Name;
     }
