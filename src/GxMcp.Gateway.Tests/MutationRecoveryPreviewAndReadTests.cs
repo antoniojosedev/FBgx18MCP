@@ -38,7 +38,7 @@ namespace GxMcp.Gateway.Tests
 
         private static JObject WorkerPartRead(
             string source, int lines, string name = "SyntheticPanel", string part = "Events",
-            string versionToken = "v-current", bool explicitFull = true, int offset = 0, bool paginated = false)
+            string version = "v1", bool explicitFull = true, int offset = 0, bool paginated = false)
             => new JObject
             {
                 ["name"] = name,
@@ -51,7 +51,7 @@ namespace GxMcp.Gateway.Tests
                 ["truncated"] = paginated,
                 ["isTruncatedByWorker"] = paginated,
                 ["explicitFullRead"] = explicitFull,
-                ["versionToken"] = versionToken
+                ["versionToken"] = version
             };
 
         /// <summary>The wire guards a successful genexus_read passes before the fence decision.</summary>
@@ -240,7 +240,7 @@ namespace GxMcp.Gateway.Tests
                 ["code"] = "FullObjectRead",
                 ["result"] = new JObject
                 {
-                    ["versionToken"] = "v-current",
+                    ["versionToken"] = "v1",
                     ["parts"] = new JObject { ["Events"] = "Event 'Synthetic'\nEndEvent\n" },
                     ["availableParts"] = new JArray("Events", "Rules")
                 }
@@ -265,7 +265,7 @@ namespace GxMcp.Gateway.Tests
                 ["code"] = "FullObjectRead",
                 ["result"] = new JObject
                 {
-                    ["versionToken"] = "v-current",
+                    ["versionToken"] = "v1",
                     ["parts"] = new JObject { ["Events"] = new string('E', 300000) }
                 }
             };
@@ -465,7 +465,7 @@ namespace GxMcp.Gateway.Tests
             registry.RequireRead(Kb, "SyntheticPanel", "Events", "op-1");
             string source = SyntheticEventsSource(out int lines);
             var args = ReadArgs();
-            var unversioned = WorkerPartRead(source, lines, versionToken: "");
+            var unversioned = WorkerPartRead(source, lines, version: "");
 
             Assert.Equal(0, ClearWithRead(registry, args, ThroughWireGuards(unversioned, args)));
             Assert.Equal(1, registry.Count);
