@@ -5,7 +5,7 @@
     "src/GxMcp.Gateway/OperationClassifier.cs"
   ],
   "toolCount": 60,
-  "actionCount": 307,
+  "actionCount": 308,
   "tools": [
     {
       "tool": "genexus_k2b_designer",
@@ -791,6 +791,44 @@
               },
               "kind": "readOnly",
               "effects": "file.read",
+              "execution": "gateway",
+              "retry": "safe",
+              "cache": "never",
+              "invalidation": [],
+              "previewSupported": true
+            },
+            {
+              "selector": {
+                "dryRun": false
+              },
+              "kind": "mutating",
+              "effects": "file.write",
+              "execution": "gateway",
+              "retry": "operation_key",
+              "cache": "never",
+              "invalidation": [
+                "files"
+              ],
+              "previewSupported": true
+            }
+          ]
+        },
+        {
+          "action": "recovery_read_complete",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "gateway",
+          "retry": "safe",
+          "cache": "never",
+          "invalidation": [],
+          "previewSupported": true,
+          "variants": [
+            {
+              "selector": {
+                "dryRun": "not false"
+              },
+              "kind": "readOnly",
+              "effects": "kb.read",
               "execution": "gateway",
               "retry": "safe",
               "cache": "never",

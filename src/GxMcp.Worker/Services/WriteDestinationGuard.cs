@@ -59,7 +59,7 @@ namespace GxMcp.Worker.Services
                 case "doctor": return true; // Handler has no actions and only inspects files/loaded assemblies.
                 case "build": return action == "Status" || action == "Result";
                 case "control": return action == "Cancel";
-                case "read": return action == "ExtractFullObject" || action == "ExtractSource" || action == "ExtractParts" || action == "GetVariables" || action == "GetAttribute";
+                case "read": return action == "ExtractFullObject" || action == "ExtractSource" || action == "ExtractParts" || action == "CertifyRecovery" || action == "GetVariables" || action == "GetAttribute";
                 case "search": return action == "Query" || action == "SearchSource";
                 case "list": return action == "Objects";
                 case "object": return action == "Read" || action == "ReadLogs";

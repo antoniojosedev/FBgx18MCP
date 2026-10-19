@@ -44,6 +44,9 @@ namespace GxMcp.Gateway
         internal static bool IsCompleteMutationRecoveryRead(JToken? result)
             => result is JObject payload
                 && payload["error"] == null
+                // A conditional read that omitted the body proves the caller holds the
+                // part, not that this read saw it: it can never reconcile a write.
+                && payload["notModified"]?.Value<bool?>() != true
                 && !string.IsNullOrWhiteSpace(RecoveryVersionToken(payload))
                 && HasNoRecoveryTruncation(payload)
                 && (payload["offset"]?.Value<int>() ?? 0) == 0
@@ -57,6 +60,12 @@ namespace GxMcp.Gateway
         /// </summary>
         internal static IReadOnlyList<(string Target, string Part, RecoveryRequirement? Observed)> FindCoveredRecoveryReads(
             MutationRecoveryRegistry registry, string? kbScope, JObject? readArgs)
+            => FindCoveredRecoveryReads(registry,
+                string.IsNullOrWhiteSpace(kbScope) ? Array.Empty<string>() : new[] { kbScope! }, readArgs);
+
+        /// <summary>As above, over every scope the KB's fences may have been recorded under.</summary>
+        internal static IReadOnlyList<(string Target, string Part, RecoveryRequirement? Observed)> FindCoveredRecoveryReads(
+            MutationRecoveryRegistry registry, IReadOnlyCollection<string> kbScopes, JObject? readArgs)
         {
             bool ReadCoversPart(string part)
             {
@@ -70,10 +79,14 @@ namespace GxMcp.Gateway
             }
 
             var covered = new List<(string Target, string Part, RecoveryRequirement? Observed)>();
-            foreach (var observed in registry.FindForRead(kbScope, readArgs))
+            foreach (var scope in kbScopes.Where(item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                if (ReadCoversPart(observed.Part))
-                    covered.Add((observed.Target, observed.Part, observed));
+                foreach (var observed in registry.FindForRead(scope, readArgs))
+                {
+                    if (ReadCoversPart(observed.Part))
+                        covered.Add((observed.Target, observed.Part, observed));
+                }
             }
             return covered;
         }
@@ -172,6 +185,8 @@ namespace GxMcp.Gateway
         {
             string action = args?["action"]?.ToString() ?? "recover";
             if (action == "recover") return null;
+            // Needs a resolved KB and a Worker read, so it is not a journal-only action.
+            if (action == RecoveryReadCompletion.ActionName) return null;
             if ((action == "journal_status" || action == "journal_repair")
                 && args?["force"]?.Value<bool>() != true)
             {

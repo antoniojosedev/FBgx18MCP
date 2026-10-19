@@ -88,6 +88,22 @@ namespace GxMcp.Gateway
             => requirement != null && IsKbLevelRecoveryTarget(requirement.Target, requirement.Part);
 
         public bool IsHealthy => _journalHealthy && !_journalBusy;
+        /// <summary>True when fences are committed to a journal file, not only held in memory.</summary>
+        internal bool IsDurable => !string.IsNullOrWhiteSpace(_journalPath);
+
+        /// <summary>
+        /// True while exactly the fence that was observed (same arming time and operation)
+        /// still holds its part: a cleared fence is gone, and a re-armed one is a different
+        /// fence.
+        /// </summary>
+        internal bool IsStillFenced(RecoveryRequirement observed)
+        {
+            string key = Key(observed.OwnerKey, observed.KbAlias, observed.Target, observed.Part,
+                observed.TargetGuid, observed.TargetEntityKey, observed.TargetType, observed.TargetPath);
+            return _pending.TryGetValue(key, out var current)
+                && current.RequiredAtUtc == observed.RequiredAtUtc
+                && string.Equals(current.OperationId, observed.OperationId, StringComparison.Ordinal);
+        }
         public string JournalError => _journalHealthy && _journalBusy ? "Mutation recovery journal busy; retry after the other Gateway finishes." : _journalError;
         public int Count => _pending.Count;
         public IReadOnlyCollection<RecoveryRequirement> Pending => _pending.Values
@@ -418,7 +434,7 @@ namespace GxMcp.Gateway
                     ? "Reconcile the manifest/KB state before retrying. No single object/part read can clear this fence."
                     : string.Equals(requirement.Part, "Properties", StringComparison.OrdinalIgnoreCase)
                     ? "Read the persisted property values with genexus_properties action=get, reconcileTimedOutWrite=true, then retry with its versionToken. Older fences without property names require an unfiltered full properties read."
-                    : "Call genexus_read for the target and part with limit=0. A successful complete read clears this recovery fence; then retry from the returned versionToken.",
+                    : "Call genexus_read for the target and part with limit=0. A successful complete read clears this recovery fence; then retry from the returned versionToken. If the part is too large for one response, genexus_connection_recover action=recovery_read_complete certifies the complete SDK read without returning it (dryRun=true only inspects and says whether the part is still at the version the timed-out write expected; clearing the fence does not say the write landed).",
                 ["retryable"] = false,
                 ["reconciliationRequired"] = true
             };
@@ -452,6 +468,36 @@ namespace GxMcp.Gateway
                         ["why"] = "Confirm whether the timed-out mutation was persisted before retrying."
                     }
                 };
+            if (!kbLevel && !string.Equals(requirement.Part, "Properties", StringComparison.OrdinalIgnoreCase))
+            {
+                var recoverArgs = new JObject
+                {
+                    ["action"] = "recovery_read_complete",
+                    ["kb"] = requirement.KbAlias,
+                    ["name"] = requirement.Target,
+                    ["part"] = requirement.Part,
+                    ["operationId"] = requirement.OperationId,
+                    // Inspect first: the answer says whether the part is at the version the
+                    // timed-out write expected, which is what tells the caller whether that
+                    // write landed. Clearing the fence does not.
+                    ["dryRun"] = true
+                };
+                // Only what the fence recorded: an empty identity field is not an argument.
+                void CopyIdentity(string argument, string recorded)
+                {
+                    if (!string.IsNullOrWhiteSpace(recorded)) recoverArgs[argument] = recorded;
+                }
+                CopyIdentity("guid", requirement.TargetGuid);
+                CopyIdentity("entityKey", requirement.TargetEntityKey);
+                CopyIdentity("type", requirement.TargetType);
+                CopyIdentity("path", requirement.TargetPath);
+                ((JArray)error["nextSteps"]!).Add(new JObject
+                {
+                    ["tool"] = "genexus_connection_recover",
+                    ["args"] = recoverArgs,
+                    ["why"] = "When the part is too large for genexus_read to return whole: the Worker certifies the complete SDK read (identity, hash, version) without returning it. dryRun=true inspects and reports timedOutWrite (notApplied/changed/unknown); verify the write landed or not, then repeat with dryRun=false to clear only this fence."
+                });
+            }
             result["error"] = error;
             return result;
         }

@@ -1802,6 +1802,15 @@ namespace GxMcp.Worker.Services
                 ?? (request?["params"] as JObject)?["correlationId"]?.ToString()
                 ?? ReadDiagnosticContext.CurrentCorrelationId;
 
+            if (action == "CertifyRecovery" && GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                return Models.McpResponse.Err(
+                    code: "UNSUPPORTED_IN_GENEXUS_VERSION",
+                    message: "The COM driver cannot confirm an independent SDK refresh, so it cannot certify a recovery read.",
+                    hint: GxMcp.Worker.Compatibility.DynamicSdkBridge.GetComAlternativeGuidance("genexus_read"),
+                    target: target);
+            }
+
             if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
             {
                 string unsupportedRefresh = ObjectService.FreshReadUnsupportedResponse(
@@ -1868,6 +1877,8 @@ namespace GxMcp.Worker.Services
                 string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter,
                     args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), conditional,
                     args?["refresh"]?.ToObject<bool?>() ?? false, correlationId);
+                if (RequestsRecoveryCertificate(args))
+                    readJson = AttachRecoveryCertificate(readJson, target, typeFilter, args);
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
                 // cache (which stores the pre-attach payload) and (b) doesn't burn
@@ -1889,6 +1900,16 @@ namespace GxMcp.Worker.Services
                     return readJson;
                 }
             }
+            if (action == "CertifyRecovery")
+            {
+                // A recovery re-read that answers with its certificate and no content. It
+                // only reads and hashes: nothing is written, specified or built.
+                return _objectService.CertifyRecoveryRead(
+                    target, args?["part"]?.ToString(),
+                    args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(),
+                    args?["type"]?.ToString() ?? request?["type"]?.ToString(),
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
+            }
             if (action == "ExtractParts")
             {
                 var partsTok = args?["parts"] as JArray;
@@ -1903,6 +1924,39 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
+        /// Internal transport flag the Gateway sets on a read that covers a post-timeout
+        /// fence: the read also answers with the pre-cut certificate of what the SDK holds.
+        /// </summary>
+        internal static bool RequestsRecoveryCertificate(JObject args)
+            => args?["certifyRecovery"]?.ToObject<bool?>() == true;
+
+        /// <summary>
+        /// Adds <c>recoveryCertificate</c> to a single-part read. The certificate is built
+        /// by a separate fresh SDK read of the whole part, so it never depends on the page
+        /// this read returned. When it cannot be produced nothing is added: the Gateway
+        /// treats a missing certificate as "not proven" and falls back to the page itself.
+        /// </summary>
+        private string AttachRecoveryCertificate(string readJson, string target, string typeFilter, JObject args)
+        {
+            try
+            {
+                var read = JObject.Parse(readJson);
+                if (read["error"] != null || read["notModified"]?.Value<bool?>() == true) return readJson;
+                var certified = JObject.Parse(_objectService.CertifyRecoveryRead(
+                    target, args?["part"]?.ToString(),
+                    args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), typeFilter,
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString()));
+                if (!(certified["result"]?["recoveryCertificate"] is JObject certificate)) return readJson;
+                read["recoveryCertificate"] = certificate;
+                return read.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch
+            {
+                return readJson;
+            }
+        }
+
+        /// <summary>
         /// Issue #357 — turns the routed read arguments into a conditional-read
         /// request, or <c>null</c> for an ordinary read.
         /// <para>
@@ -1913,7 +1967,7 @@ namespace GxMcp.Worker.Services
         /// told why in <c>conditional.reason</c>.
         /// </para>
         /// </summary>
-        private static ConditionalReadService.Request BuildConditionalReadRequest(JObject args)
+        internal static ConditionalReadService.Request BuildConditionalReadRequest(JObject args)
         {
             string token = args?["ifUnchangedSince"]?.ToString();
             bool authoritative = args?["requireAuthoritativeRead"]?.ToObject<bool?>() == true;

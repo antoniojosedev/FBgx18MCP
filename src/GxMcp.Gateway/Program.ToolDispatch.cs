@@ -189,13 +189,22 @@ namespace GxMcp.Gateway
             if (isMutating && !IsMutationPreview(tArgs))
             {
                 RecoveryRequirement? recoveryRequirement = null;
+                // Every scope the KB's fences may carry: a fence recorded under the folder
+                // alias by a call that addressed the KB by path still blocks the write.
+                IReadOnlyList<string> fenceScopes = _mutationRecovery.Count > 0
+                    ? CurrentKbScopes()
+                    : Array.Empty<string>();
                 foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName, tArgs))
                 {
-                    if (_mutationRecovery.TryGet(kbScope, recoveryTarget.Target, recoveryTarget.Part, out var found))
+                    foreach (var fenceScope in fenceScopes.Count > 0 ? (IEnumerable<string>)fenceScopes : new[] { kbScope })
                     {
-                        recoveryRequirement = found;
-                        break;
+                        if (_mutationRecovery.TryGet(fenceScope, recoveryTarget.Target, recoveryTarget.Part, out var found))
+                        {
+                            recoveryRequirement = found;
+                            break;
+                        }
                     }
+                    if (recoveryRequirement != null) break;
                 }
                 if (recoveryRequirement != null)
                 {
@@ -257,7 +266,8 @@ namespace GxMcp.Gateway
                 // must not pay an exclusive cross-process lock, a full re-parse and a
                 // directory glob on every call. The mutating branch above keeps the
                 // unconditional Refresh(); the two are deliberately different.
-                recoveryReads.AddRange(FindCoveredRecoveryReads(_mutationRecovery, kbScope, tArgs));
+                if (_mutationRecovery.Count > 0)
+                    recoveryReads.AddRange(FindCoveredRecoveryReads(_mutationRecovery, CurrentKbScopes(), tArgs));
                 requireAuthoritativeRead = recoveryReads.Count > 0;
                 // A cached response cannot reconcile an uncertain persisted write.
                 isLiveTool |= !_mutationRecovery.IsHealthy || _mutationRecovery.Count > 0;
@@ -519,8 +529,11 @@ namespace GxMcp.Gateway
                 // Set on the routed command, not on tArgs: the caller's arguments
                 // must keep describing what they asked for, and no pre-routing
                 // decision (cache key, gateway-served tools, timeouts) may observe
-                // this internal fence.
-                workerCmd["_requireAuthoritativeRead"] = true;
+                // this internal fence. The names are the ones the Worker reads (it
+                // receives the whole routed command as its arguments): the previous
+                // `_requireAuthoritativeRead` spelling was never read, so a
+                // conditional token could still turn a fenced read into "not modified".
+                ApplyRecoveryReadFlags(workerCmd);
             }
             AttachClientRequestIdentity(workerCmd, tArgs);
             int timeoutMs = GetToolTimeoutMs(tName, tArgs);
@@ -560,6 +573,13 @@ namespace GxMcp.Gateway
                     JToken? finalResult = null;
                     var omittedMutationFields = new JArray();
                     JToken? workerPayload = resultObj["result"] ?? resultObj["error"];
+                    // The Worker's pre-cut certificate of what the SDK holds. Taken here,
+                    // before any budget, trim or size guard can touch the payload, so the
+                    // decision to clear a fence does not depend on how much of the part
+                    // the caller is allowed to see.
+                    JObject? recoveryCertificate = recoveryReads.Count > 0
+                        ? ExtractRecoveryCertificate(workerPayload)
+                        : null;
                     bool includePersistedText = IsMutatingTool(tName, tArgs)
                         && (tArgs?["includePersistedText"]?.Value<bool?>() ?? false);
                     JToken shapedPayload = workerPayload ?? JValue.CreateNull();
@@ -642,8 +662,20 @@ namespace GxMcp.Gateway
                     }
 
                     // Reconcile only content that actually survives the wire guards.
-                    if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
-                        ConfirmMutationRecoveryRead(_mutationRecovery, kbScope, finalResult, recoveryReads);
+                    if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase)
+                        && recoveryReads.Count > 0)
+                    {
+                        int fencesCleared = ConfirmRecoveryReadWithCertificate(
+                            _mutationRecovery, kbScope, finalResult, recoveryCertificate, recoveryReads);
+                        if (finalResult is JObject clearedPayload)
+                        {
+                            clearedPayload["recoveryFenceCleared"] = fencesCleared > 0;
+                            // Which fences this read covered, and what the version says about
+                            // the write that timed out (clearing a fence does not say it landed).
+                            clearedPayload["recoveryFences"] = DescribeRecoveryFences(
+                                _mutationRecovery, finalResult, recoveryCertificate, recoveryReads);
+                        }
+                    }
                     if (!isErr && propertiesRecoveryRead && finalResult is JObject propertyPayload)
                     {
                         bool cleared = false;

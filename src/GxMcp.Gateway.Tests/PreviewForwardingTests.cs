@@ -20,7 +20,10 @@ namespace GxMcp.Gateway.Tests
         // into the worker envelope (the genexus_io import_part live bug).
         private static readonly HashSet<string> GatewayOwnedPreviews = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "genexus_connection_recover:journal_repair"
+            "genexus_connection_recover:journal_repair",
+            // The gateway handles dryRun itself (the Worker is only asked to certify a read,
+            // never to preview or apply anything).
+            "genexus_connection_recover:recovery_read_complete"
         };
 
         [Fact]

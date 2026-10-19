@@ -1794,7 +1794,7 @@ namespace GxMcp.Gateway
                 ["pendingCount"] = registry.Count,
                 ["truncated"] = registry.Count > 32,
                 ["automaticRetry"] = false,
-                ["hint"] = "Inspect journal_status; if unhealthy, preview journal_repair then explicitly apply it. Read each fenced part in full before retrying with its versionToken."
+                ["hint"] = "Inspect journal_status; if unhealthy, preview journal_repair then explicitly apply it. Read each fenced part in full before retrying with its versionToken, or use recovery_read_complete when the part is too large for one response."
             };
             if (!registry.IsHealthy)
                 block["journalError"] = registry.JournalError;
