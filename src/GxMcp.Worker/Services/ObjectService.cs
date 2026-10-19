@@ -204,7 +204,13 @@ namespace GxMcp.Worker.Services
         private PatternAnalysisService _patternAnalysisService;
         private WriteService _writeService;
         private int _sourceStoreBackfillStartAttempted;
+        // Catalogue signature the start guard was armed for.  An index pass whose
+        // catalogue hashes differently (object created, deleted or renamed) re-opens
+        // the guard exactly once; a source-only edit keeps the same identities and
+        // therefore the same signature (issue #596).
+        private string _sourceStoreBackfillArmedSignature;
         private readonly object _sourceStoreBackfillStartGate = new object();
+        private SourceStoreBackfillService _sourceStoreBackfill;
 
         public ObjectService(KbService kbService, BuildService buildService)
         {
@@ -219,7 +225,7 @@ namespace GxMcp.Worker.Services
                 var indexCache = _kbService.GetIndexCache();
                 if (indexCache != null)
                 {
-                    indexCache.OnIndexReady += index => StartSourceStoreBackfillIfReady(index);
+                    indexCache.OnIndexReady += OnIndexReadyForSourceStoreBackfill;
                 }
             }
         }
@@ -229,6 +235,11 @@ namespace GxMcp.Worker.Services
         public void SetPatternAnalysisService(PatternAnalysisService patternAnalysisService) { _patternAnalysisService = patternAnalysisService; }
         public void SetWriteService(WriteService writeService) { _writeService = writeService; }
         public KbService GetKbService() { return _kbService; }
+
+        /// <summary>Test seam: routes the backfill start guard to a hermetic service instead of the process singleton.</summary>
+        internal void SetSourceStoreBackfillServiceForTest(SourceStoreBackfillService service) { _sourceStoreBackfill = service; }
+
+        private SourceStoreBackfillService SourceStoreBackfill => _sourceStoreBackfill ?? SourceStoreBackfillService.Instance;
 
         public SearchIndex GetIndex()
         {
@@ -284,6 +295,63 @@ namespace GxMcp.Worker.Services
             return GetSourceStoreRequiredParts(entry.Type, GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj));
         }
 
+        /// <summary>
+        /// Index-ready hook.  The catalogue signature is compared here, once per
+        /// index pass, rather than on the hot-path callers of
+        /// <see cref="StartSourceStoreBackfillIfReady"/>: an index pass is the event
+        /// that publishes a changed catalogue, and hashing the identity set on every
+        /// object resolution or search would charge every tool call for it.
+        /// </summary>
+        internal void OnIndexReadyForSourceStoreBackfill(SearchIndex index)
+        {
+            RearmSourceStoreBackfillIfCatalogChanged(index);
+            StartSourceStoreBackfillIfReady(index);
+        }
+
+        /// <summary>
+        /// Re-opens the one-shot start guard when <paramref name="index"/> no longer
+        /// hashes to the catalogue the guard was armed for, so the next start check
+        /// reaches <see cref="SourceStoreBackfillService.Start"/> and its signature
+        /// reset.  Returns true when the guard was re-armed.
+        /// </summary>
+        internal bool RearmSourceStoreBackfillIfCatalogChanged(SearchIndex index)
+        {
+            if (!Configuration.SourceStoreBackfillEnabled || index?.Objects == null || index.Objects.Count == 0) return false;
+            string armedSignature;
+            lock (_sourceStoreBackfillStartGate)
+            {
+                if (_sourceStoreBackfillStartAttempted == 0) return false;
+                armedSignature = _sourceStoreBackfillArmedSignature;
+            }
+            string signature = TryBuildSourceStoreCatalogSignature(index);
+            if (string.Equals(armedSignature, signature, StringComparison.Ordinal)) return false;
+            lock (_sourceStoreBackfillStartGate)
+            {
+                // Re-check under the lock: a concurrent start may have armed the
+                // guard for this very catalogue while the signature was computed.
+                if (_sourceStoreBackfillStartAttempted == 0) return false;
+                if (string.Equals(_sourceStoreBackfillArmedSignature, signature, StringComparison.Ordinal)) return false;
+                _sourceStoreBackfillStartAttempted = 0;
+                _sourceStoreBackfillArmedSignature = null;
+            }
+            return true;
+        }
+
+        private static string TryBuildSourceStoreCatalogSignature(SearchIndex index)
+        {
+            try { return SourceStoreBackfillService.BuildCatalogSignature(index); }
+            catch { return null; }
+        }
+
+        private void ReleaseSourceStoreBackfillStartGate()
+        {
+            lock (_sourceStoreBackfillStartGate)
+            {
+                _sourceStoreBackfillStartAttempted = 0;
+                _sourceStoreBackfillArmedSignature = null;
+            }
+        }
+
         internal void StartSourceStoreBackfillIfReady(SearchIndex index = null)
         {
             if (index == null)
@@ -292,27 +360,32 @@ namespace GxMcp.Worker.Services
             }
             if (!Configuration.SourceStoreBackfillEnabled || index?.Objects == null || index.Objects.Count == 0) return;
             var indexState = _kbService?.GetIndexCache()?.GetState();
-            var backfillState = SourceStoreBackfillService.Instance.GetState();
+            var backfill = SourceStoreBackfill;
+            var backfillState = backfill.GetState();
             if (string.Equals(backfillState.State, "error", StringComparison.OrdinalIgnoreCase)
                 && backfillState.RetryCount >= 5)
             {
                 // An exhausted transient retry window must not leave the one-shot
                 // start guard permanently wedged; a later index check may start a
                 // fresh bounded window after the SDK queue recovers.
-                lock (_sourceStoreBackfillStartGate) _sourceStoreBackfillStartAttempted = 0;
+                ReleaseSourceStoreBackfillStartGate();
             }
             bool canResume = string.Equals(indexState?.Status, "Ready", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(SourceStoreBackfillService.Instance.GetState().State, "running", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(SourceStoreBackfillService.Instance.GetState().State, "queued", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(SourceStoreBackfillService.Instance.GetState().State, "error", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(backfillState.State, "running", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(backfillState.State, "queued", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(backfillState.State, "error", StringComparison.OrdinalIgnoreCase);
             if (!canResume) return;
             lock (_sourceStoreBackfillStartGate)
             {
                 if (_sourceStoreBackfillStartAttempted != 0) return;
                 _sourceStoreBackfillStartAttempted = 1;
+                // Hashed once per arm, never per call; the index-ready hook compares
+                // later catalogues against it.  Armed under the lock so a concurrent
+                // index-ready check cannot observe an armed guard without a signature.
+                _sourceStoreBackfillArmedSignature = TryBuildSourceStoreCatalogSignature(index);
             }
 
-            var store = SourceStoreService.Instance;
+            var store = backfill.Store;
             var entryProvider = new Func<IReadOnlyList<SearchIndex.IndexEntry>>(() =>
             {
                 var loaded = _kbService?.GetIndexCache()?.TryGetLoadedIndex();
@@ -379,14 +452,11 @@ namespace GxMcp.Worker.Services
             var requiredPartProvider = new Func<SearchIndex.IndexEntry, IReadOnlyList<string>>(
                 entry => entry == null ? null : GetSourceStoreRequiredParts(entry));
 
-            bool started = SourceStoreBackfillService.Instance.Start(
+            bool started = backfill.Start(
                 entryProvider,
                 partReader,
                 requiredPartProvider: requiredPartProvider);
-            if (!started)
-            {
-                lock (_sourceStoreBackfillStartGate) _sourceStoreBackfillStartAttempted = 0;
-            }
+            if (!started) ReleaseSourceStoreBackfillStartGate();
         }
 
         /// <summary>

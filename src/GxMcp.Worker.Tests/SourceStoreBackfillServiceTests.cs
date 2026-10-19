@@ -1248,6 +1248,109 @@ namespace GxMcp.Worker.Tests
             }
         }
 
+        [Fact]
+        public void StaleSlice_CannotOverwriteTheCursorOfARestartedWalk()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-stale-slice-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var e1 = Entry("00000000-0000-0000-0000-000000000061", 1);
+                var e2 = Entry("00000000-0000-0000-0000-000000000062", 2);
+                var e3 = Entry("00000000-0000-0000-0000-000000000063", 3);
+                var inserted = Entry("00000000-0000-0000-0000-000000000064", 0);
+                var service = new SourceStoreBackfillService(store);
+                int restarts = 0;
+                Func<SearchIndex.IndexEntry, IReadOnlyList<SourceStoreBackfillPart>> reader = null;
+                reader = e =>
+                {
+                    if (e.Guid == e2.Guid && restarts == 0)
+                    {
+                        // The catalogue changes while this slice is mid-walk (issue #596):
+                        // the new Start swaps the entry snapshot and zeroes the cursor.
+                        restarts++;
+                        Assert.True(service.Start(
+                            () => new[] { inserted, e1, e2, e3 },
+                            reader,
+                            maxObjectsPerSlice: 10,
+                            sliceBudgetMs: 5000,
+                            schedule: false));
+                    }
+                    return new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code-" + e.Guid } };
+                };
+
+                Assert.True(service.Start(() => new[] { e1, e2, e3 }, reader, maxObjectsPerSlice: 10, sliceBudgetMs: 5000, schedule: false));
+                string firstSignature = service.GetState().CatalogSignature;
+
+                // The slice stored e1 against the old list, then observed the restart
+                // while reading e2: it must abandon without touching the new walk.
+                Assert.False(service.RunOneSliceForTest(10, 5000));
+                Assert.Equal(1, restarts);
+                var restarted = service.GetState();
+                Assert.Equal("queued", restarted.State);
+                Assert.Equal(0, restarted.CursorIndex);
+                Assert.True(string.IsNullOrEmpty(restarted.Cursor));
+                Assert.Equal(0, restarted.ProcessedObjects);
+                Assert.Equal(4, restarted.TotalObjects);
+                Assert.NotEqual(firstSignature, restarted.CatalogSignature);
+                Assert.True(string.IsNullOrEmpty(restarted.LastError));
+
+                // The restarted walk runs its own snapshot from the beginning.
+                Assert.True(service.RunOneSliceForTest(10, 5000));
+                var complete = service.GetState();
+                Assert.Equal("complete", complete.State);
+                Assert.Equal(4, complete.CursorIndex);
+                Assert.Equal(4, complete.ProcessedObjects);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void StaleSlice_DoesNotRecordItsErrorAgainstTheRestartedWalk()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "gxmcp-source-stale-error-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                var store = new SourceStoreService();
+                store.SetStoreDirectoryForTest(root);
+                var e1 = Entry("00000000-0000-0000-0000-000000000071", 1);
+                var e2 = Entry("00000000-0000-0000-0000-000000000072", 2);
+                var inserted = Entry("00000000-0000-0000-0000-000000000073", 0);
+                var service = new SourceStoreBackfillService(store);
+                Func<SearchIndex.IndexEntry, IReadOnlyList<SourceStoreBackfillPart>> healthy =
+                    e => new[] { new SourceStoreBackfillPart { PartName = "Source", Source = "code-" + e.Guid } };
+                Func<SearchIndex.IndexEntry, IReadOnlyList<SourceStoreBackfillPart>> failing = e =>
+                {
+                    // Restart first, then fail: the failure belongs to the replaced walk.
+                    Assert.True(service.Start(() => new[] { inserted, e1, e2 }, healthy, schedule: false));
+                    throw new InvalidOperationException("stale reader failure");
+                };
+
+                Assert.True(service.Start(() => new[] { e1, e2 }, failing, schedule: false));
+                Assert.False(service.RunOneSliceForTest(10, 5000));
+
+                var restarted = service.GetState();
+                Assert.Equal("queued", restarted.State);
+                Assert.Equal(0, restarted.RetryCount);
+                Assert.True(string.IsNullOrEmpty(restarted.LastError));
+                Assert.Empty(restarted.ReadFailedObjects);
+
+                Assert.True(service.RunOneSliceForTest(10, 5000));
+                Assert.Equal("complete", service.GetState().State);
+                Assert.Equal(3, service.GetState().ProcessedObjects);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
         [Theory]
         [InlineData("complete", true)]
         [InlineData("completeWithFailures", true)]
