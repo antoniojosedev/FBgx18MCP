@@ -5183,6 +5183,8 @@
               "move_tab",
               "remove_tab",
               "set_table_type",
+              "add_table",
+              "move_control",
               "add_grid_attribute",
               "move_grid_column",
               "add_grid_variable",
@@ -5198,6 +5200,10 @@
           },
           "actionName": {
             "description": "Action name. add_user_action derives…",
+            "type": "string"
+          },
+          "after": {
+            "description": "add_table/move_control: place after…",
             "type": "string"
           },
           "attribute": {
@@ -5229,7 +5235,7 @@
             "type": "string"
           },
           "children": {
-            "description": "add_tab controls; flat children are…",
+            "description": "add_tab/add_table controls; add_tab…",
             "items": {
               "additionalProperties": false,
               "properties": {
@@ -5257,6 +5263,10 @@
                   "type": "boolean"
                 },
                 "controlEmptyItemText": {
+                  "type": "string"
+                },
+                "controlName": {
+                  "description": "type=textBlock: control name.",
                   "type": "string"
                 },
                 "controlType": {
@@ -5287,7 +5297,8 @@
                     "variable",
                     "userAction",
                     "table",
-                    "attribute"
+                    "attribute",
+                    "textBlock"
                   ],
                   "type": "string"
                 }
@@ -5318,8 +5329,17 @@
             "description": "add_user_action: form-level action…",
             "type": "string"
           },
+          "controlKind": {
+            "description": "move_control: kind of the control when…",
+            "enum": [
+              "textBlock",
+              "variable",
+              "attribute"
+            ],
+            "type": "string"
+          },
           "controlName": {
-            "description": "Tab ControlName.",
+            "description": "Tab ControlName; move_control: the…",
             "type": "string"
           },
           "controlType": {
@@ -5380,6 +5400,10 @@
             "description": "add/update: button icon.",
             "type": "string"
           },
+          "includeInPanel": {
+            "description": "add_table: render the table as a panel.",
+            "type": "boolean"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"
@@ -5411,9 +5435,18 @@
             "description": "Settings node path returned by…",
             "type": "string"
           },
+          "numberOfColumns": {
+            "description": "add_table: columns of the new table…",
+            "minimum": 1,
+            "type": "integer"
+          },
           "offset": {
             "minimum": 0,
             "type": "integer"
+          },
+          "panelTitle": {
+            "description": "add_table: panel title (implies…",
+            "type": "string"
           },
           "parameters": {
             "description": "add_user_action with callObject:…",
@@ -5458,6 +5491,10 @@
           },
           "sourceName": {
             "description": "replace_web_component_with_user_action:…",
+            "type": "string"
+          },
+          "tableName": {
+            "description": "add_table: name of the new table;…",
             "type": "string"
           },
           "tablePath": {

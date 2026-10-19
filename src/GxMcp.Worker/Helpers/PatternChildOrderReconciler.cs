@@ -72,7 +72,7 @@ namespace GxMcp.Worker.Helpers
         // an updated childrenOrderedList, and the IDE renders them correctly.
         // Without this, every PatternInstance edit involving variables
         // emitted a misleading "may not render in the IDE" skip note.
-        private static readonly HashSet<string> NonOrderedKinds =
+        internal static readonly HashSet<string> NonOrderedKinds =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
                 "variable",
@@ -263,7 +263,7 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
-        private static string InheritLevel(XElement element)
+        internal static string InheritLevel(XElement element)
         {
             for (var a = element.Parent; a != null; a = a.Parent)
             {
@@ -273,7 +273,7 @@ namespace GxMcp.Worker.Helpers
             return null;
         }
 
-        private static IEnumerable<string[]> SplitEntries(string list)
+        internal static IEnumerable<string[]> SplitEntries(string list)
         {
             if (string.IsNullOrEmpty(list)) yield break;
             foreach (var raw in list.Split('-'))
@@ -283,7 +283,7 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
-        private static string ExtractLevel(string list)
+        internal static string ExtractLevel(string list)
         {
             foreach (var segs in SplitEntries(list))
             {
@@ -293,13 +293,13 @@ namespace GxMcp.Worker.Helpers
             return null;
         }
 
-        private static string DefaultLevel(string context)
+        internal static string DefaultLevel(string context)
         {
             // Inside selection: 4. Everywhere else inside transaction: 2.
             return string.Equals(context, "selection", StringComparison.OrdinalIgnoreCase) ? "4" : "2";
         }
 
-        private static string GetContext(XElement element)
+        internal static string GetContext(XElement element)
         {
             for (var a = element; a != null; a = a.Parent)
             {
@@ -311,7 +311,7 @@ namespace GxMcp.Worker.Helpers
             return "transaction";
         }
 
-        private static string GetTypeCode(XElement child, string context)
+        internal static string GetTypeCode(XElement child, string context)
         {
             string name = child.Name.LocalName;
 
@@ -329,7 +329,7 @@ namespace GxMcp.Worker.Helpers
             return StaticTypeCodes.TryGetValue(name, out var c) ? c : null;
         }
 
-        private static string GetIdentifier(XElement child, XElement parent)
+        internal static string GetIdentifier(XElement child, XElement parent)
         {
             string name = child.Name.LocalName;
 

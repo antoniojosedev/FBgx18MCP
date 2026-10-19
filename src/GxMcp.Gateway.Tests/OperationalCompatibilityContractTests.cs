@@ -83,9 +83,20 @@ namespace GxMcp.Gateway.Tests
             JObject childrenItems = (JObject)schema["properties"]!["children"]!["items"]!;
             Assert.Equal("object", childrenItems["type"]!.ToString());
             Assert.Equal("type", childrenItems["required"]![0]!.ToString());
-            // "attribute" moves an attribute already on the form into the tab (issue #552).
-            Assert.Equal(new[] { "variable", "userAction", "table", "attribute" },
+            // "attribute" moves an attribute already on the form into the tab (issue #552);
+            // "textBlock" creates a caption for add_tab/add_table (issue #595).
+            Assert.Equal(new[] { "variable", "userAction", "table", "attribute", "textBlock" },
                 ((JArray)childrenItems["properties"]!["type"]!["enum"]!).Select(value => value.ToString()));
+            Assert.NotNull(childrenItems["properties"]!["controlName"]);
+            Assert.Contains("add_table", actions);
+            Assert.Contains("move_control", actions);
+            Assert.NotNull(schema["properties"]!["tableName"]);
+            Assert.NotNull(schema["properties"]!["numberOfColumns"]);
+            Assert.NotNull(schema["properties"]!["includeInPanel"]);
+            Assert.NotNull(schema["properties"]!["panelTitle"]);
+            Assert.NotNull(schema["properties"]!["after"]);
+            Assert.Equal(new[] { "textBlock", "variable", "attribute" },
+                ((JArray)schema["properties"]!["controlKind"]!["enum"]!).Select(value => value.ToString()));
             Assert.Null(schema["$defs"]);
         }
 
