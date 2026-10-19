@@ -98,6 +98,32 @@ namespace GxMcp.Worker
             BackgroundQueue.Enqueue(work);
             try { BackgroundSignal.Set(); } catch { }
         }
+
+        // Issue #594: background jobs (index edge enrichment, post-save index refresh) call
+        // into the same thread-unsafe SDK model as dispatched commands. The dispatcher does
+        // not take SdkGate, so a deep background queue competed with the SdkWorker thread
+        // for the SDK's own internal locks and starved it: a read that had already logged
+        // SUCCESS never got to answer, every later call saw WorkerBusy and the index walk
+        // stalled. The background dispatcher now runs a job only while no command is in
+        // flight or queued; it re-checks after every job, so one job is the most a command
+        // can wait behind. Soft reload sets ShuttingDown and then waits for this queue to
+        // drain from inside its own command, so it must not count as foreground work.
+        internal const int BackgroundYieldPollMs = 25;
+
+        internal static bool IsForegroundSdkWorkPending()
+        {
+            int scheduled;
+            try { scheduled = GxMcp.Worker.Services.StaScheduler.Instance.QueuedCount; }
+            catch { scheduled = 0; }
+            return IsForegroundSdkWorkPending(_sdkBusy == 1, SdkCommandQueue.Count, scheduled, ShuttingDown);
+        }
+
+        // Pure decision behind the overload above; unit-tested without the process queues.
+        internal static bool IsForegroundSdkWorkPending(bool sdkBusy, int legacyQueueDepth, int scheduledDepth, bool shuttingDown)
+        {
+            if (shuttingDown) return false;
+            return sdkBusy || legacyQueueDepth > 0 || scheduledDepth > 0;
+        }
         // Last time a real command was dispatched — drives idle LOH compaction below.
         private static long _lastActivityTicks = DateTime.UtcNow.Ticks;
         internal static void MarkWorkerActivity() => Interlocked.Exchange(ref _lastActivityTicks, DateTime.UtcNow.Ticks);
@@ -581,6 +607,12 @@ namespace GxMcp.Worker
                 var backgroundWorker = new Thread(() => {
                     Logger.Info("Background STA Worker Thread started.");
                     while (!CommandQueue.IsCompleted) {
+                        // Issue #594: yield to in-flight / queued commands before touching the
+                        // SDK from this apartment (see IsForegroundSdkWorkPending).
+                        if (!BackgroundQueue.IsEmpty && IsForegroundSdkWorkPending()) {
+                            BackgroundSignal.WaitOne(BackgroundYieldPollMs);
+                            continue;
+                        }
                         if (BackgroundQueue.TryDequeue(out var action)) {
                             try { action(); }
                             catch (Exception ex) { Logger.Error("Background Task Error: " + ex.Message); }
