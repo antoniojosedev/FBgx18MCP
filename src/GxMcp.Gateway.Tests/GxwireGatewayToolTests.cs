@@ -92,13 +92,22 @@ namespace GxMcp.Gateway.Tests
             Directory.CreateDirectory(tempDir);
             try
             {
+                // Issue #593: status answers from the index and reports
+                // GxwireCacheMissing when there is none, so build it first.
+                var indexResult = await Program.ExecuteGxwireToolAsyncForTest(new JObject
+                {
+                    ["action"] = "index",
+                    ["dir"] = tempDir
+                });
+                if (SkipIfGxwireUnavailable(indexResult)) return;
+                Assert.Equal("ok", indexResult["status"]?.ToString());
+
                 var args = new JObject
                 {
                     ["action"] = "status",
                     ["dir"] = tempDir
                 };
                 var result = await Program.ExecuteGxwireToolAsyncForTest(args);
-                if (SkipIfGxwireUnavailable(result)) return;
 
                 Assert.NotNull(result);
                 Assert.Equal("ok", result["status"]?.ToString());
