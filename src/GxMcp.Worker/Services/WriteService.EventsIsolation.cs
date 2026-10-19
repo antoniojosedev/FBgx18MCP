@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -146,206 +145,27 @@ namespace GxMcp.Worker.Services
                     ["metadataUpdated"] = false, ["metadataStampPersisted"] = false,
                     ["implicitOperations"] = new JArray(), ["retrySafe"] = false
                 });
-                bool committed = false;
-                try
-                {
                 // The audited U16 callback chain must run for a complete object
                 // save; suppressing it prevents the Events source from being
                 // materialized by the SDK. Preflight fingerprints every loaded
                 // callback assembly, while the pattern scope disables only the
                 // known WWP reapplication path.
-                using (KbWatcherService.AcquireWriteGate())
+                using (var steps = new SdkIsolatedEventsSaveSteps(kb, guid, target, source, isolation, receipt))
                 {
-                    var original = EventsSaveIsolation.Fresh(kb, guid);
-                    string originalSource = EventsSaveIsolation.Source(original);
-                    receipt["sourceChanged"] = !string.Equals(originalSource, source, StringComparison.Ordinal);
-                    string originalToken = EventsSaveIsolation.Token(original);
-                    string originalPlacement = EventsSaveIsolation.Placement(original);
-                    var revisionBefore = original.VersionId;
-                    var lastUpdateBefore = original.LastUpdate;
-                    if (string.IsNullOrWhiteSpace(baseVersion) || originalToken != baseVersion)
-                        return McpResponse.Err(code: "VersionConflict", target: target,
-                            message: "The Events version changed; no save was attempted.",
-                            extra: new JObject { ["currentVersion"] = originalToken, ["writeAttempted"] = false });
-                    var snapshot = ObjectMoveSnapshot.Capture(original);
-                    receipt["preservedPartSnapshotBefore"] = snapshot.DescribeParts("Events");
-                    var timings = new JObject();
-                    receipt["isolationTimings"] = timings;
-                    var inventoryWatch = Stopwatch.StartNew();
-                    var inventory = EventsSaveIsolation.Inventory(kb);
-                    timings["inventoryBeforeMs"] = inventoryWatch.ElapsedMilliseconds;
-                    receipt["inventoryCount"] = inventory.Count;
-                    receipt["inventoryComplete"] = true;
-                    receipt["revisionBefore"] = revisionBefore;
-                    receipt["lastUpdateBefore"] = lastUpdateBefore.ToUniversalTime().ToString("o");
-                    string failure = null;
-                    using (var transaction = kb.BeginTransaction())
+                    var outcome = IsolatedEventsSaveFlow.Run(steps, receipt, baseVersion, KbWatcherService.AcquireWriteGate);
+                    verifiedState = steps.VerifiedState;
+                    switch (outcome.Kind)
                     {
-                        try
-                        {
-                            var current = EventsSaveIsolation.Fresh(kb, guid);
-                            if (EventsSaveIsolation.Token(current) != originalToken)
-                            {
-                                transaction.Rollback();
-                                return McpResponse.Err(code: "VersionConflict", target: target,
-                                    message: "The Events version changed at the transaction boundary; no save was attempted.",
-                                    extra: new JObject { ["currentVersion"] = EventsSaveIsolation.Token(current), ["writeAttempted"] = false });
-                            }
-                            EventsSaveIsolation.CheckTarget(current);
-                            receipt["mutationAttempted"] = true;
-                            var eventsPart = GxMcp.Worker.Structure.PartAccessor.GetPart(current, "Events");
-                            if (!(eventsPart is ISource eventsSource)) throw new InvalidOperationException("The audited WebPanel does not expose an Events source part.");
-                            eventsSource.Source = source;
-                            receipt["sourceAfterSetLength"] = (eventsSource.Source ?? string.Empty).Length;
-                            receipt["sourceAfterSetMatch"] = EventsSaveIsolation.SourceEquivalent(eventsSource.Source, source);
-                            receipt["writeAttempted"] = true;
-                            receipt["objectSaveInvoked"] = true;
-                            // Timestamp is independent of dirty classification, as in
-                            // WriteObject. It records the attempt even after rollback.
-                            if (!string.IsNullOrWhiteSpace(target)) _lastWriteAtUtc[target] = DateTime.UtcNow;
-                            PatternSaveIsolationScope patternScope = null;
-                            var saveWatch = Stopwatch.StartNew();
-                            try
-                            {
-                                patternScope = new PatternSaveIsolationScope(current);
-                                receipt["patternSaveIsolation"] = new JObject
-                                {
-                                    ["skipApplyPatternSet"] = true,
-                                    ["wasAlreadySet"] = patternScope.WasAlreadySet
-                                };
-                                // Persist the authored Events part first, then invoke
-                                // the complete object Save in the same transaction.
-                                // U16 can refresh the in-memory Events projection while
-                                // the object save runs, so retain the part-save state
-                                // for the pre-commit assertion and prove persistence
-                                // with the fresh read after commit.
-                                eventsPart.Save();
-                                string sourceAfterPartSave = EventsSaveIsolation.Source(current);
-                                receipt["eventsPartSaveInvoked"] = true;
-                                receipt["sourceAfterPartSaveLength"] = sourceAfterPartSave.Length;
-                                receipt["sourceAfterPartSaveMatch"] = EventsSaveIsolation.SourceEquivalent(sourceAfterPartSave, source);
-                                current.Save(new KBObjectSavePreferences
-                                {
-                                    ForceSave = true, ForceSaveDefaultParts = false,
-                                    SkipValidation = true, UpdateParentModels = false
-                                });
-                                string sourceAfterObjectSave = EventsSaveIsolation.Source(current);
-                                receipt["preCommitPartSourceMatch"] = EventsSaveIsolation.SourceEquivalent(sourceAfterPartSave, source);
-                                receipt["preCommitObjectSourceMatch"] = EventsSaveIsolation.SourceEquivalent(sourceAfterObjectSave, source);
-                            }
-                            finally
-                            {
-                                timings["saveMs"] = saveWatch.ElapsedMilliseconds;
-                                if (patternScope != null)
-                                {
-                                    patternScope.Dispose();
-                                    ((JObject)receipt["patternSaveIsolation"])["skipApplyPatternRestored"] = patternScope.Restored;
-                                }
-                            }
-                            receipt["objectSaveReturned"] = true;
-                            // U16 can expose a new cache instance with an empty
-                            // Events projection until the surrounding SDK
-                            // transaction commits. Verify the object that just
-                            // completed Save before commit; the mandatory fresh
-                            // read after transaction disposal is the persistence
-                            // proof below.
-                            var comparison = snapshot.Compare(current, new[] { "Events" });
-                            inventoryWatch.Restart();
-                            var changedOthers = EventsSaveIsolation.ChangedOthers(inventory, EventsSaveIsolation.Inventory(kb), guid);
-                            timings["inventoryPreCommitMs"] = inventoryWatch.ElapsedMilliseconds;
-                            receipt["preCommitObjectStateVerified"] = true;
-                            receipt["preCommitFreshReadDeferred"] = true;
-                            receipt["preCommitSourceMatch"] = receipt["preCommitObjectSourceMatch"]?.Value<bool>() == true;
-                            receipt["preCommitSourceLength"] = EventsSaveIsolation.Source(current).Length;
-                            receipt["requestedSourceLength"] = source.Length;
-                            receipt["preCommitSourceHash"] = EventsSaveIsolation.ContentHash(EventsSaveIsolation.Source(current));
-                            receipt["requestedSourceHash"] = EventsSaveIsolation.ContentHash(source);
-                            receipt["preCommitOtherPartsIntact"] = comparison.Equal;
-                            bool preCommitPatternProjectionAllowed = isolation["patternPart"]?.Value<bool>() == true
-                                && EventsSaveIsolation.IsExpectedPatternProjection(comparison);
-                            receipt["preCommitPatternProjectionAllowed"] = preCommitPatternProjectionAllowed;
-                            receipt["preCommitPlacementMatch"] = EventsSaveIsolation.Placement(current) == originalPlacement;
-                            receipt["preCommitChangedObjectProperties"] = comparison.ChangedParts;
-                            receipt["preCommitChangedPartKeys"] = new JArray(comparison.ChangedPartKeys);
-                            receipt["preCommitChangedPartDeltas"] = snapshot.DescribeDifferences(current, "Events");
-                            receipt["unexpectedChangedParts"] = comparison.ChangedParts;
-                            receipt["unexpectedChangedObjects"] = changedOthers;
-                            if (receipt["preCommitSourceMatch"]?.Value<bool>() != true
-                                || (!comparison.Equal && !preCommitPatternProjectionAllowed)
-                                || changedOthers.Count != 0
-                                || EventsSaveIsolation.Placement(current) != originalPlacement)
-                                throw new InvalidOperationException("The pre-commit SDK object state did not match the requested isolated change.");
-                            transaction.Commit();
-                            committed = true;
-                        }
-                        catch (Exception ex)
-                        {
-                            failure = ex.Message;
-                            try { transaction.Rollback(); receipt["transactionRolledBack"] = true; }
-                            catch (Exception rollbackEx) { receipt["rollbackError"] = rollbackEx.Message; }
-                        }
+                        case IsolatedEventsSaveOutcomeKind.VersionConflict:
+                            return McpResponse.Err(code: "VersionConflict", target: target,
+                                message: outcome.Message,
+                                extra: new JObject { ["currentVersion"] = outcome.CurrentVersion, ["writeAttempted"] = false });
+                        case IsolatedEventsSaveOutcomeKind.Verified:
+                            return McpResponse.Ok(code: "Applied", target: target, result: receipt);
+                        default:
+                            return McpResponse.Err(code: "ObjectSaveIncomplete", target: target,
+                                message: outcome.Message, extra: receipt);
                     }
-                    // Mandatory fresh verification occurs after transaction disposal,
-                    // while broker suppression remains in force. No compensating Save.
-                    var persisted = EventsSaveIsolation.Fresh(kb, guid);
-                    int postCommitReadAttempts = 1;
-                    if (!EventsSaveIsolation.SourceEquivalent(EventsSaveIsolation.Source(persisted), source))
-                    {
-                        // The first U16 cache refresh can race the transaction's
-                        // post-commit projection. A second fresh SDK instance is
-                        // a read-only reconciliation, never a second write.
-                        persisted = EventsSaveIsolation.Fresh(kb, guid);
-                        postCommitReadAttempts++;
-                    }
-                    var finalComparison = snapshot.Compare(persisted, new[] { "Events" });
-                    receipt["preservedPartSnapshotAfter"] = ObjectMoveSnapshot.Capture(persisted).DescribeParts("Events");
-                    inventoryWatch.Restart();
-                    var finalOthers = EventsSaveIsolation.ChangedOthers(inventory, EventsSaveIsolation.Inventory(kb), guid);
-                    timings["inventoryFinalMs"] = inventoryWatch.ElapsedMilliseconds;
-                    bool partPersisted = EventsSaveIsolation.SourceEquivalent(EventsSaveIsolation.Source(persisted), source);
-                    bool metadataAdvanced = persisted.VersionId > revisionBefore || persisted.LastUpdate > lastUpdateBefore;
-                    bool otherPartsIntact = finalComparison.Equal && EventsSaveIsolation.Placement(persisted) == originalPlacement;
-                    receipt["partPersisted"] = partPersisted;
-                    receipt["objectSaved"] = committed;
-                    receipt["transactionCommitted"] = committed;
-                    receipt["idempotent"] = receipt["sourceChanged"]?.Value<bool>() == false;
-                    receipt["metadataUpdated"] = committed && metadataAdvanced;
-                    receipt["metadataStampPersisted"] = committed && metadataAdvanced;
-                    receipt["metadataEvidence"] = "fresh-sdk-read-after-object-save";
-                    receipt["postCommitReadAttempts"] = postCommitReadAttempts;
-                    receipt["otherPartsIntact"] = otherPartsIntact;
-                    receipt["unexpectedChangedParts"] = finalComparison.ChangedParts;
-                    receipt["unexpectedChangedObjects"] = finalOthers;
-                    receipt["otherObjectMetadataIntact"] = finalOthers.Count == 0;
-                    receipt["revisionAfter"] = persisted.VersionId;
-                    receipt["lastUpdateAfter"] = persisted.LastUpdate.ToUniversalTime().ToString("o");
-                    receipt["versionToken"] = EventsSaveIsolation.Token(persisted);
-                    receipt["persistedHash"] = EventsSaveIsolation.ContentHash(EventsSaveIsolation.Source(persisted));
-                    receipt["verified"] = committed && partPersisted && metadataAdvanced && otherPartsIntact && finalOthers.Count == 0;
-                    receipt["reReadConfirmed"] = partPersisted;
-                    receipt["persisted"] = committed && partPersisted;
-                    receipt["saved"] = committed;
-                    receipt["rollbackVerified"] = !committed && EventsSaveIsolation.SourceEquivalent(EventsSaveIsolation.Source(persisted), originalSource)
-                        && otherPartsIntact && finalOthers.Count == 0
-                        && persisted.VersionId == revisionBefore && persisted.LastUpdate == lastUpdateBefore;
-                    receipt["verificationCompleted"] = true;
-                    verifiedState = persisted;
-                    if (committed && partPersisted && metadataAdvanced && otherPartsIntact && finalOthers.Count == 0)
-                        return McpResponse.Ok(code: "Applied", target: target, result: receipt);
-                    return McpResponse.Err(code: "ObjectSaveIncomplete", target: target,
-                        message: failure ?? "Complete isolated object persistence could not be confirmed. Inspect the returned persistence state; do not retry blindly.",
-                        extra: receipt);
-                }
-                }
-                catch (Exception ex)
-                {
-                    receipt["objectSaved"] = committed;
-                    receipt["verificationCompleted"] = false;
-                    receipt["persistenceUncertain"] = receipt["writeAttempted"]?.Value<bool>() == true;
-                    receipt["partPersisted"] = JValue.CreateNull();
-                    receipt["workerRestartRequired"] = SdkEventSuppressionScope.IsPoisoned;
-                    return McpResponse.Err(code: "ObjectSaveIncomplete", target: target,
-                        message: "SDK persistence or verification was interrupted: " + ex.Message + ". No compensating write was performed.", extra: receipt);
                 }
             }
         }
