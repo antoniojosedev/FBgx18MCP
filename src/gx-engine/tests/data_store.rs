@@ -9,7 +9,7 @@ fn test_datastore_sqlserver_dsl_and_connection_string() {
             database = "ProductionKB";
             port = 1433;
             user = "app_user";
-            password = "secret_password";
+            password = "sql_password";
             integrated_security = false;
             pooling = true;
             timeout = 15;
@@ -29,7 +29,7 @@ fn test_datastore_sqlserver_dsl_and_connection_string() {
     assert!(conn_str.contains("Server=sql.internal.net,1433;"));
     assert!(conn_str.contains("Database=ProductionKB;"));
     assert!(conn_str.contains("User Id=app_user;"));
-    assert!(conn_str.contains("Password=secret_password;"));
+    assert!(conn_str.contains("Password=sql_password;"));
     assert!(conn_str.contains("Pooling=true;"));
 }
 
