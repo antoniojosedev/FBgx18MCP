@@ -72,6 +72,8 @@ namespace GxMcp.Worker.Services
             internal bool Attached;
             internal string HostName;
             internal string Template;
+            /// <summary>How <see cref="Template"/> was chosen: caller, defaultEmpty, firstRegistered or unlisted.</summary>
+            internal string TemplateSource;
             internal string ErrorMessage;
             /// <summary>Envelope code to surface; null falls back to <c>PatternNoOp</c>.</summary>
             internal string ErrorCode;
@@ -915,6 +917,11 @@ namespace GxMcp.Worker.Services
                 return PatternUnavailable(patternKey, "WorkWithPlus pattern not loaded — check license / package install");
             }
 
+            // An explicit template is honoured or refused, never swapped for another one.
+            // Validated before anything touches the KB so a refusal changes nothing.
+            string explicitTemplateRejection = TryResolveExplicitWwpTemplate(obj, settings, objectNameForResponse, out string explicitTemplate);
+            if (explicitTemplateRejection != null) return explicitTemplateRejection;
+
             // Detect existing instance to decide between first-apply and re-apply.
             object existingInstance = _engine.GetPatternInstance(obj, patternId);
 
@@ -941,6 +948,34 @@ namespace GxMcp.Worker.Services
             }
 
             bool wasFirstApply = existingInstance == null;
+
+            // The reapply route below only re-projects the existing instance, so a
+            // requested template that differs from the persisted one would be silently
+            // ignored. Refuse instead of reporting a template the instance does not use.
+            if (explicitTemplate != null && existingInstance != null)
+            {
+                string currentInstanceXml = null;
+                try { currentInstanceXml = Analysis.ReadPatternPartXmlFresh(obj, "PatternInstance", WorkWithPlusPatternId, out _, out _, out _); }
+                catch (Exception ex) { Logger.Debug("Explicit template: fresh PatternInstance read failed: " + ex.Message); }
+                if (!ExplicitTemplateMatches(currentInstanceXml, explicitTemplate))
+                {
+                    string changeTarget = objectNameForResponse ?? obj?.Name ?? "";
+                    var changeExtra = new JObject { ["requestedTemplate"] = explicitTemplate };
+                    string persistedTemplate = ReadPersistedWwpTemplate(currentInstanceXml);
+                    if (persistedTemplate != null) changeExtra["persistedTemplate"] = persistedTemplate;
+                    return McpResponse.Err(
+                        code: "PatternTemplateChangeUnsupported",
+                        message: "'" + changeTarget + "' already has a WorkWithPlus instance that does not use template '" + explicitTemplate +
+                            "'. Changing the template of an existing instance is not supported by this route; no changes were applied.",
+                        hint: "Edit the existing instance with the typed genexus_wwp actions, or apply the template to a fresh object.",
+                        nextSteps: new JArray(McpResponse.NextStep(
+                            tool: "genexus_read",
+                            args: new JObject { ["name"] = changeTarget, ["part"] = "PatternInstance", ["limit"] = 0 },
+                            why: "Read the existing instance and its template before choosing an edit.")),
+                        target: changeTarget,
+                        extra: changeExtra);
+                }
+            }
 
             PatternApplyResult result;
             try
@@ -1331,11 +1366,12 @@ namespace GxMcp.Worker.Services
 
                 if (!targetHasPatternInstance)
                 {
-                    string sett_template = settings != null ? settings["template"]?.ToString() : null;
+                    // explicitTemplate is already resolved to a registered template (or the
+                    // call was refused above); null lets the attach pick the default.
                     WwpAttachResult attach;
                     try
                     {
-                        attach = TryPackageInterfaceAttach(obj, sett_template);
+                        attach = TryPackageInterfaceAttach(obj, explicitTemplate);
                     }
                     catch (Exception ex)
                     {
@@ -1355,6 +1391,7 @@ namespace GxMcp.Worker.Services
                         patternResult["directAttach"] = true;
                         patternResult["directAttachRoute"] = attach.DirectAttachRoute ?? "PatternInstancePackageInterface";
                         patternResult["template"] = usedTemplate;
+                        if (!string.IsNullOrEmpty(attach.TemplateSource)) patternResult["templateSource"] = attach.TemplateSource;
                         patternResult["directAttachNote"] = "Attached via the official WWP package API (CreatePatternInstanceWithTemplate + SetPatternApplyOnSave + ValidateAndSave + IPatternBuildProcess.UpdateParentObject). Host '" + createdHostName + "' is bound through the IDE's canonical lifecycle, so PatternInstance edits trigger regeneration on save.";
                         if (!string.IsNullOrEmpty(createdHostName))
                         {
@@ -1370,6 +1407,37 @@ namespace GxMcp.Worker.Services
                                 }
                             }
                             catch { }
+                        }
+                        // The association check inside the attach proves a host is bound, not
+                        // that it uses the requested template. Confirm it from a fresh read and
+                        // never report another template as success.
+                        if (explicitTemplate != null)
+                        {
+                            string persistedXml = null;
+                            try { persistedXml = Analysis.ReadPatternPartXmlFresh(obj, "PatternInstance", WorkWithPlusPatternId, out _, out _, out _); }
+                            catch (Exception ex) { Logger.Warn("Explicit template: post-attach fresh read failed: " + ex.Message); }
+                            if (!ExplicitTemplateMatches(persistedXml, explicitTemplate))
+                            {
+                                var notPersistedExtra = new JObject
+                                {
+                                    ["saved"] = true,
+                                    ["requestedTemplate"] = explicitTemplate,
+                                    ["patternHost"] = createdHostName
+                                };
+                                string persistedTemplate = ReadPersistedWwpTemplate(persistedXml);
+                                if (persistedTemplate != null) notPersistedExtra["persistedTemplate"] = persistedTemplate;
+                                return McpResponse.Err(
+                                    code: "PatternTemplateNotPersisted",
+                                    message: "The WorkWithPlus host '" + createdHostName + "' was attached, but a fresh read of the PatternInstance does not confirm template '" +
+                                        explicitTemplate + "'.",
+                                    hint: "The attach persisted. Read the PatternInstance before any retry; no other template is reported as success.",
+                                    nextSteps: new JArray(McpResponse.NextStep(
+                                        tool: "genexus_read",
+                                        args: new JObject { ["name"] = targetName, ["part"] = "PatternInstance", ["limit"] = 0 },
+                                        why: "Inspect the persisted instance and its template.")),
+                                    target: targetName,
+                                    extra: notPersistedExtra);
+                            }
                         }
                     }
                     else
@@ -1743,50 +1811,169 @@ namespace GxMcp.Worker.Services
             return names;
         }
 
-        // Discover a usable `WorkWithPlus for Web Template` KBObject in the current
-        // KB to seed `<WPRoot Template="...">`. The validator rejects the save if the
-        // Template attribute doesn't resolve to a real Template object, and the set
-        // of registered templates is KB-specific (BaseXmlObjects.xml references
-        // "Empty" but most KBs ship custom names like "MatIsoTemplate", "TransactionResp2",
-        // "PopoverEmpty", etc.). We prefer the caller-provided value, then a non-Popover
-        // template (Popovers are popup-specific and may have stricter required structure),
-        // then any template, then fall back to "Empty".
-        private string ResolveAvailableWwpTemplate(string preferred)
+        /// <summary>The template WorkWithPlus documents for a blank direct attach (WWP/Resources/BaseXmlObjects.xml).</summary>
+        internal const string DefaultWwpWebTemplate = "Empty";
+
+        // Test seam: the registered `WorkWithPlus for Web Template` names. Unit tests run
+        // without a KB; the live path reads them through ListWwpWebTemplates.
+        internal Func<IReadOnlyList<string>> WwpTemplateLister { get; set; }
+
+        private IReadOnlyList<string> RegisteredWwpWebTemplates()
         {
-            if (_objectService == null) return preferred ?? "Empty";
+            if (WwpTemplateLister != null) return WwpTemplateLister() ?? new List<string>();
+            return ListWwpWebTemplates();
+        }
+
+        /// <summary>
+        /// Picks the `WorkWithPlus for Web Template` a direct attach uses. An explicit name
+        /// must match a registered template (case-insensitive) and comes back with its
+        /// registered spelling; it is never replaced by another template. The candidates are
+        /// templates only: the standard ones (Selection, Transaction, View, Prompt,
+        /// Association, ...) sit in a folder of the same name, and an untyped name lookup
+        /// resolved that folder and fell through to an unrelated template, which
+        /// ValidateAndSave then rejected. Without an explicit name the documented default
+        /// <c>Empty</c> wins, then the first non-Popover template.
+        /// </summary>
+        internal static string SelectWwpWebTemplate(IEnumerable<string> registered, string preferred, out string source)
+        {
+            var names = (registered ?? Enumerable.Empty<string>()).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+            if (!string.IsNullOrWhiteSpace(preferred))
+            {
+                string wanted = preferred.Trim();
+                string exact = names.FirstOrDefault(n => string.Equals(n, wanted, StringComparison.OrdinalIgnoreCase));
+                source = exact != null ? "caller" : "notRegistered";
+                return exact;
+            }
+            string empty = names.FirstOrDefault(n => string.Equals(n, DefaultWwpWebTemplate, StringComparison.OrdinalIgnoreCase));
+            if (empty != null) { source = "defaultEmpty"; return empty; }
+            string first = names.FirstOrDefault(n => !n.StartsWith("Popover", StringComparison.OrdinalIgnoreCase)) ?? names.FirstOrDefault();
+            if (first != null) { source = "firstRegistered"; return first; }
+            source = "unlisted";
+            return DefaultWwpWebTemplate;
+        }
+
+        private string ResolveAvailableWwpTemplate(string preferred) => ResolveAvailableWwpTemplate(preferred, out _);
+
+        // Resolves the template seeded into `<WPRoot Template="...">`. The validator rejects
+        // the save when the name does not resolve to a real Template object in this KB.
+        // Returns null for an explicit name that is not registered: the caller must refuse,
+        // not attach some other template.
+        internal string ResolveAvailableWwpTemplate(string preferred, out string source)
+        {
+            IReadOnlyList<string> registered;
+            try { registered = RegisteredWwpWebTemplates(); }
+            catch (Exception ex)
+            {
+                Logger.Debug("ResolveAvailableWwpTemplate: template listing failed: " + ex.Message);
+                registered = new List<string>();
+            }
+            if (!string.IsNullOrWhiteSpace(preferred)
+                || registered.Any(n => string.Equals(n, DefaultWwpWebTemplate, StringComparison.OrdinalIgnoreCase))
+                || _objectService == null)
+                return SelectWwpWebTemplate(registered, preferred, out source);
+
+            // No explicit name and no `Empty` template: keep the established discovery order
+            // (first non-Popover template in SDK enumeration order).
             try
             {
                 var kb = _objectService.GetKbService()?.GetKB();
-                if (kb == null) return preferred ?? "Empty";
-
-                // Caller hint: if a real Template object exists with the requested name, use it.
-                if (!string.IsNullOrWhiteSpace(preferred))
+                if (kb != null)
                 {
-                    var hit = _objectService.FindObject(preferred);
-                    if (hit != null && string.Equals(hit.TypeDescriptor?.Name, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase))
-                        return hit.Name;
-                }
-
-                string firstNonPopover = null;
-                string anyTemplate = null;
-                foreach (KBObject o in kb.DesignModel.Objects.GetAll())
-                {
-                    if (o == null) continue;
-                    if (!string.Equals(o.TypeDescriptor?.Name, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (anyTemplate == null) anyTemplate = o.Name;
-                    if (firstNonPopover == null && !o.Name.StartsWith("Popover", StringComparison.OrdinalIgnoreCase))
+                    string firstNonPopover = null;
+                    string anyTemplate = null;
+                    foreach (KBObject o in kb.DesignModel.Objects.GetAll())
                     {
-                        firstNonPopover = o.Name;
+                        if (o == null) continue;
+                        if (!string.Equals(o.TypeDescriptor?.Name, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (anyTemplate == null) anyTemplate = o.Name;
+                        if (!o.Name.StartsWith("Popover", StringComparison.OrdinalIgnoreCase)) { firstNonPopover = o.Name; break; }
                     }
-                    if (firstNonPopover != null) break;
+                    string discovered = firstNonPopover ?? anyTemplate;
+                    if (discovered != null) { source = "firstRegistered"; return discovered; }
                 }
-                return firstNonPopover ?? anyTemplate ?? "Empty";
             }
             catch (Exception ex)
             {
                 Logger.Debug("ResolveAvailableWwpTemplate failed: " + ex.Message);
-                return preferred ?? "Empty";
             }
+            return SelectWwpWebTemplate(registered, null, out source);
+        }
+
+        /// <summary>
+        /// Why an explicit settings.template cannot be honoured, or null when it can. A web
+        /// template belongs to the direct attach of a WebPanel, WebComponent or SDPanel; a
+        /// Transaction generates the WorkWithPlus family and does not take one.
+        /// </summary>
+        internal static string ExplicitTemplateUnsupportedReason(string parentType, string requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested))
+                return "settings.template must be a non-empty template name.";
+            if (!IsWwpDirectAttachParentType(parentType))
+                return "settings.template applies only to a WebPanel, WebComponent or SDPanel direct attach; " +
+                    (string.IsNullOrEmpty(parentType) ? "a target of unknown type" : "a " + parentType) + " does not take a web template.";
+            return null;
+        }
+
+        /// <summary>
+        /// Validates settings.template before any SDK work. Returns the refusal envelope, or
+        /// null with <paramref name="explicitTemplate"/> set to the registered spelling (null
+        /// when no template was requested).
+        /// </summary>
+        private string TryResolveExplicitWwpTemplate(KBObject obj, JObject settings, string objectNameForResponse, out string explicitTemplate)
+        {
+            explicitTemplate = null;
+            JToken token = settings?["template"];
+            if (token == null || token.Type == JTokenType.Null) return null;
+            string target = objectNameForResponse ?? obj?.Name ?? "";
+            string parentType = obj?.TypeDescriptor?.Name;
+            string requested = token.Type == JTokenType.String ? (string)token : null;
+
+            string unsupported = ExplicitTemplateUnsupportedReason(parentType, requested);
+            if (unsupported != null)
+            {
+                var unsupportedExtra = new JObject { ["parentType"] = parentType ?? "" };
+                if (requested != null) unsupportedExtra["requestedTemplate"] = requested;
+                return McpResponse.Err(
+                    code: "PatternTemplateUnsupported",
+                    message: unsupported + " No changes were applied.",
+                    hint: "Omit settings.template for a Transaction (it generates the WorkWithPlus family), or pass a registered template name on a WebPanel, WebComponent or SDPanel.",
+                    target: target,
+                    extra: unsupportedExtra);
+            }
+
+            explicitTemplate = ResolveAvailableWwpTemplate(requested, out _);
+            if (!string.IsNullOrEmpty(explicitTemplate)) return null;
+
+            var notFoundExtra = new JObject { ["parentType"] = parentType ?? "", ["requestedTemplate"] = requested };
+            IReadOnlyList<string> available = null;
+            try { available = RegisteredWwpWebTemplates(); } catch { /* the refusal stands without the list */ }
+            if (available != null && available.Count > 0) notFoundExtra["availableTemplates"] = new JArray(available);
+            return McpResponse.Err(
+                code: "PatternTemplateNotFound",
+                message: "Template '" + requested + "' is not a registered `WorkWithPlus for Web Template` in this KB. No changes were applied.",
+                hint: "Pass settings.template equal to one of availableTemplates. The requested template is never replaced by another one.",
+                target: target,
+                extra: notFoundExtra);
+        }
+
+        /// <summary>The Template of the single WPRoot in a PatternInstance XML, or null.</summary>
+        internal static string ReadPersistedWwpTemplate(string persistedXml)
+        {
+            if (string.IsNullOrWhiteSpace(persistedXml)) return null;
+            try
+            {
+                var roots = XDocument.Parse(persistedXml).Descendants()
+                    .Where(e => string.Equals(e.Name.LocalName, "WPRoot", StringComparison.OrdinalIgnoreCase)).ToList();
+                return roots.Count == 1 ? (string)roots[0].Attribute("Template") : null;
+            }
+            catch (System.Xml.XmlException) { return null; }
+        }
+
+        internal static bool ExplicitTemplateMatches(string persistedXml, string requestedTemplate)
+        {
+            if (string.IsNullOrWhiteSpace(requestedTemplate)) return false;
+            string persisted = ReadPersistedWwpTemplate(persistedXml);
+            return persisted != null && string.Equals(persisted, requestedTemplate, StringComparison.OrdinalIgnoreCase);
         }
 
         internal static WwpEnvironmentContext InspectWwpEnvironment(
@@ -2193,7 +2380,15 @@ namespace GxMcp.Worker.Services
                 // it can leave a WorkWithPlus<X> host that the official create then
                 // collides with. Running a known-fragile mutating route ahead of the
                 // verified one cost WebPanel applies their PatternInstance binding (#330).
-                result.Template = ResolveAvailableWwpTemplate(preferredTemplate);
+                result.Template = ResolveAvailableWwpTemplate(preferredTemplate, out var templateSource);
+                result.TemplateSource = templateSource;
+                if (string.IsNullOrEmpty(result.Template))
+                {
+                    result.FailureStage = "template";
+                    result.ErrorCode = "PatternTemplateNotFound";
+                    result.ErrorMessage = "Template '" + preferredTemplate + "' is not a registered `WorkWithPlus for Web Template` in this KB; no other template is substituted.";
+                    return result;
+                }
                 var preflight = WwpAttachPreflight.Run(
                     surface.PackageInterfaceType,
                     surface.WorkWithPatternType,
@@ -3297,6 +3492,20 @@ namespace GxMcp.Worker.Services
                 string typeGateReject = isWwp
                     ? TryBuildTypeGateRejection(objectName, IsWwpKey(patternKey) ? patternKey : "WorkWithPlus", parentType, callerTemplate, availableTemplates)
                     : null;
+                // The apply refuses a template it cannot honour before touching the KB;
+                // diagnose reports the same refusal instead of a green light.
+                if (isWwp && typeGateReject == null && settings?["template"] != null && settings["template"].Type != JTokenType.Null)
+                {
+                    string templateUnsupported = ExplicitTemplateUnsupportedReason(parentType,
+                        settings["template"].Type == JTokenType.String ? (string)settings["template"] : null);
+                    if (templateUnsupported != null)
+                    {
+                        var unsupportedFinding = Finding("templateUnsupported", "critical", templateUnsupported,
+                            "Omit settings.template for a Transaction, or pass a registered template name on a WebPanel, WebComponent or SDPanel.");
+                        unsupportedFinding["stage"] = "template";
+                        findings.Add(unsupportedFinding);
+                    }
+                }
                 // The manifest's ParentObjects gate a first apply only: an existing instance is
                 // regenerated through the reapply route whatever its parent type.
                 if (!isWwp && GetOwnedPatternInstance(obj, pattern) == null)
@@ -3437,7 +3646,7 @@ namespace GxMcp.Worker.Services
                     if (availableTemplates != null && availableTemplates.Count > 0)
                     {
                         findings.Add(Finding("missingRequiredAttribute", "info",
-                            $"No settings.template supplied for {parentType} target. MCP will auto-discover one ({availableTemplates[0]}).",
+                            $"No settings.template supplied for {parentType} target. MCP will auto-discover one ({ResolveAvailableWwpTemplate(null)}).",
                             $"Pass settings.template explicitly to pin the template. Available: {string.Join(", ", availableTemplates)}."));
                     }
                     else
@@ -3478,6 +3687,16 @@ namespace GxMcp.Worker.Services
                         else
                         {
                             var resolvedTemplate = ResolveAvailableWwpTemplate(callerTemplate);
+                            if (string.IsNullOrEmpty(resolvedTemplate))
+                            {
+                                var templateMissing = Finding("templateNotFound", "critical",
+                                    "Template '" + callerTemplate + "' is not a registered `WorkWithPlus for Web Template` in this KB; the apply will refuse it and substitute nothing.",
+                                    "Pass settings.template equal to a registered template name.");
+                                templateMissing["stage"] = "template";
+                                findings.Add(templateMissing);
+                            }
+                            else
+                            {
                             var preflight = WwpAttachPreflight.Run(
                                 surface.PackageInterfaceType,
                                 surface.WorkWithPatternType,
@@ -3496,6 +3715,7 @@ namespace GxMcp.Worker.Services
                                 attachReady["template"] = resolvedTemplate;
                                 attachReady["createOverload"] = FormatMethodSignature(preflight.CreateMethod);
                                 findings.Add(attachReady);
+                            }
                             }
                         }
                     }
