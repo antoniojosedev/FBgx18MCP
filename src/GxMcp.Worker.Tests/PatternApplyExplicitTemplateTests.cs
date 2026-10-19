@@ -203,8 +203,109 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(expected, PatternApplyService.ReadPersistedWwpTemplate(xml));
         }
 
+        // ── The package's own validation reason reaches the caller ─────────────────
+        // A KB whose WorkWithPlus Design System was never imported rejects every first
+        // web attach; the reason only reached the worker log and the response advised
+        // trying another template.
+        private const string DesignSystemError =
+            "Before applying WorkWithPlus for Web Pattern for the first time, a Design System must be imported (WorkWithPlus -> for Web -> Design System Wizard)";
+
+        private static PatternApplyService.WwpAttachResult ValidateFailure(params string[] packageErrors) =>
+            new PatternApplyService.WwpAttachResult
+            {
+                FailureStage = "validateAndSave",
+                ErrorCode = "PatternAttachValidateFailed",
+                ErrorMessage = "ValidateAndSave returned false for host 'WorkWithPlusMyPanel' (template='Empty').",
+                PackageErrors = packageErrors.Length == 0 ? null : new List<string>(packageErrors)
+            };
+
+        [Fact]
+        public void ValidateFailure_DesignSystemNotImported_PointsAtTheWizardNotAtTemplates()
+        {
+            string recommendation = PatternApplyService.BuildAttachRecommendation(
+                ValidateFailure("Error validating WorkWithPlusMyPanel:", DesignSystemError), "WebPanel", "MyPanel");
+            Assert.Contains("Design System Wizard", recommendation);
+            Assert.Contains("a different template will not help", recommendation);
+            Assert.Contains(DesignSystemError, recommendation);
+            Assert.DoesNotContain("Try a different 'WorkWithPlus for Web Template'", recommendation);
+        }
+
+        [Fact]
+        public void ValidateFailure_OtherPackageError_IsReportedInsteadOfTemplateAdvice()
+        {
+            string recommendation = PatternApplyService.BuildAttachRecommendation(
+                ValidateFailure("Property 'Grid' is invalid."), "WebPanel", "MyPanel");
+            Assert.Contains("reported: Property 'Grid' is invalid.", recommendation);
+            Assert.DoesNotContain("Design System Wizard", recommendation);
+            Assert.DoesNotContain("Try a different 'WorkWithPlus for Web Template'", recommendation);
+        }
+
+        [Fact]
+        public void ValidateFailure_WithoutPackageErrors_KeepsTheTemplateAdvice()
+        {
+            Assert.Contains("Try a different 'WorkWithPlus for Web Template'",
+                PatternApplyService.BuildAttachRecommendation(ValidateFailure(), "WebPanel", "MyPanel"));
+        }
+
+        [Fact]
+        public void ValidateFailure_NoHostLeft_DoesNotClaimAnUnremovedOrphan()
+        {
+            var attach = ValidateFailure();
+            attach.OrphanHostAbsent = true;
+            string recommendation = PatternApplyService.BuildAttachRecommendation(attach, "WebPanel", "MyPanel");
+            Assert.Contains("No 'WorkWithPlusMyPanel' host remains in the KB", recommendation);
+            Assert.DoesNotContain("could not be removed automatically", recommendation);
+        }
+
+        [Theory]
+        [InlineData(DesignSystemError, true)]
+        [InlineData("a design system must be imported", true)]
+        [InlineData("Property 'Grid' is invalid.", false)]
+        [InlineData(null, false)]
+        public void DesignSystemRequirement_IsRecognisedFromThePackageMessage(string error, bool expected)
+        {
+            Assert.Equal(expected, PatternApplyService.PackageErrorsRequireDesignSystem(new[] { error }));
+        }
+
+        [Fact]
+        public void NoOpReason_CarriesThePackageErrorsOnlyWhenTheyExist()
+        {
+            string withErrors = PatternApplyService.BuildAttachNoOpReason(ValidateFailure(DesignSystemError), "WebPanel");
+            Assert.StartsWith("Engine ApplyPattern void overload no-op'd on a WebPanel target, and the WorkWithPlus direct-attach route failed at stage 'validateAndSave': ", withErrors);
+            Assert.EndsWith("The WorkWithPlus package reported: " + DesignSystemError, withErrors);
+            string withoutErrors = PatternApplyService.BuildAttachNoOpReason(ValidateFailure(), "WebPanel");
+            Assert.DoesNotContain("package reported", withoutErrors);
+        }
+
+        [Fact]
+        public void AttachResultJson_EmitsPackageErrorsOnlyWhenPresent()
+        {
+            Assert.Equal(DesignSystemError, ValidateFailure(DesignSystemError).ToJson()["packageErrors"]?[0]?.ToString());
+            Assert.Null(ValidateFailure().ToJson()["packageErrors"]);
+        }
+
+        [Fact]
+        public void TaskLogger_KeepsErrorEventsButNotWarnings()
+        {
+            var engine = new PatternApplyService.NullBuildEngine();
+            engine.LogErrorEvent(new Microsoft.Build.Framework.BuildErrorEventArgs("", "", "", 0, 0, 0, 0, "  " + DesignSystemError + "  ", "", "WWP"));
+            engine.LogErrorEvent(new Microsoft.Build.Framework.BuildErrorEventArgs("", "", "", 0, 0, 0, 0, "   ", "", "WWP"));
+            engine.LogWarningEvent(new Microsoft.Build.Framework.BuildWarningEventArgs("", "", "", 0, 0, 0, 0, "Object not found", "", "WWP"));
+            Assert.Equal(new[] { DesignSystemError }, engine.Errors);
+        }
+
         private static string ServiceSource() =>
             RepoSource.WithoutComments("src", "GxMcp.Worker", "Services", "PatternApplyService.cs");
+
+        [Fact]
+        public void LastResortPackageErrors_ReachTheAttachResultAndTheCleanupRecordsAnAbsentHost()
+        {
+            string source = ServiceSource();
+            Assert.Contains("if (packageErrors != null && packageErrors.Count > 0) result.PackageErrors = packageErrors;", source);
+            string cleanup = Between(source, "private void RemoveOrphanHost(KBObject parent, WwpAttachResult result)", "internal static string BuildAttachRecommendation(");
+            Assert.Contains("result.OrphanHostAbsent = true;", cleanup);
+            Assert.Contains("patternResult[\"noOpReason\"] = BuildAttachNoOpReason(attach, parentTypeName);", source);
+        }
 
         private static string Between(string source, string start, string end)
         {
