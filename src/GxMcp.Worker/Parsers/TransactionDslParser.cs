@@ -180,6 +180,8 @@ namespace GxMcp.Worker.Parsers
                 // it is cleared immediately after use and the parser is used
                 // single-threaded on the Worker's STA thread.
                 CreatedGlobals.Clear();
+                PublishCommittedGlobals(null);
+                bool completed = false;
                 try
                 {
                     SyncTransactionNodes(trn.Structure.Root, targetNodes, obj.Model);
@@ -194,6 +196,7 @@ namespace GxMcp.Worker.Parsers
                     // genexus_structure action=remove_attribute does before its save.
                     if (RemovedAttributeCount > 0)
                         trn.Structure.Dirty = true;
+                    completed = true;
                 }
                 catch
                 {
@@ -202,9 +205,41 @@ namespace GxMcp.Worker.Parsers
                 }
                 finally
                 {
+                    // issue #592 — a parse that completed hands its globals over to the
+                    // Transaction save, but that save is still verified afterwards and
+                    // may be rolled back. Keep the identities (never the SDK objects)
+                    // so the caller can undo the globals after a verified rollback.
+                    if (completed)
+                        PublishCommittedGlobals(CreatedGlobals.Select(c => new CreatedGlobalIdentity(c.Name, c.Guid)));
                     CreatedGlobals.Clear();
                 }
             }
+        }
+
+        /// <summary>
+        /// Identities of the globals created by the most recent parse that
+        /// completed, until a caller takes them. Published by <see cref="Parse"/>
+        /// and consumed once by the Structure writer; reset at the start of every
+        /// parse so a stale hand-off can never describe another write.
+        /// </summary>
+        private static IReadOnlyList<CreatedGlobalIdentity> _committedGlobals = new CreatedGlobalIdentity[0];
+
+        internal static void PublishCommittedGlobals(IEnumerable<CreatedGlobalIdentity> identities)
+        {
+            _committedGlobals = identities == null
+                ? new CreatedGlobalIdentity[0]
+                : identities.Where(i => i != null).ToList().AsReadOnly();
+        }
+
+        /// <summary>
+        /// Returns the identities published by the last completed parse and
+        /// clears them, so a second caller sees nothing to undo.
+        /// </summary>
+        internal static IReadOnlyList<CreatedGlobalIdentity> TakeCommittedGlobals()
+        {
+            var taken = _committedGlobals;
+            _committedGlobals = new CreatedGlobalIdentity[0];
+            return taken;
         }
 
         /// <summary>
@@ -310,7 +345,27 @@ namespace GxMcp.Worker.Parsers
         internal sealed class CreatedGlobalAttribute
         {
             internal string Name;
+            /// <summary>GUID the SDK assigned when the global was saved; Empty when unreadable.</summary>
+            internal Guid Guid;
             internal Artech.Genexus.Common.Objects.Attribute Attribute;
+        }
+
+        /// <summary>
+        /// Name plus GUID of a global Attribute created by a completed parse: the
+        /// proof that a later rollback may act on it. The GUID, not the name, is
+        /// what identifies the object again after the post-save verification; a
+        /// homonym created meanwhile by someone else is not this write's global.
+        /// </summary>
+        internal sealed class CreatedGlobalIdentity
+        {
+            internal CreatedGlobalIdentity(string name, Guid guid)
+            {
+                Name = name;
+                Guid = guid;
+            }
+
+            internal string Name { get; }
+            internal Guid Guid { get; }
         }
 
         private void SyncTransactionNodes(dynamic sdkLevel, List<DslParserUtils.ParsedNode> parsedNodes, KBModel model)
@@ -378,9 +433,12 @@ namespace GxMcp.Worker.Parsers
                                         ApplyMetadataFromDsl(globalAttr, pNode);
                                         newAttr.Save();
                                         createdGlobal = true;
+                                        Guid createdGuid = Guid.Empty;
+                                        try { createdGuid = newAttr.Guid; } catch { }
                                         CreatedGlobals.Add(new CreatedGlobalAttribute
                                         {
                                             Name = pNode.Name,
+                                            Guid = createdGuid,
                                             Attribute = globalAttr
                                         });
                                     }

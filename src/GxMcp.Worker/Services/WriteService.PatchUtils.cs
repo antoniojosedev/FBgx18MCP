@@ -404,6 +404,11 @@ namespace GxMcp.Worker.Services
                 ?? (successful && noChange ? (bool?)false : null);
             if (response["metadataStampPersisted"] == null && response["result"]?["metadataStampPersisted"] != null)
                 response["metadataStampPersisted"] = response["result"]["metadataStampPersisted"].DeepClone();
+            // issue #592 — the globals a Structure write created ride on the ok payload;
+            // keep them at the top level like the other save evidence so the rollback
+            // (and the caller) find them whatever the verification outcome.
+            if (response[CreatedGlobalsField] == null && response["result"]?[CreatedGlobalsField] != null)
+                response[CreatedGlobalsField] = response["result"][CreatedGlobalsField].DeepClone();
             var verification = EvaluatePersistedVerification(requested, actual, truncated, readFailure, verifyMode, part);
             bool known = !verification.IsIndeterminate;
             var diff = BuildPersistenceDiff(requested, actual, verification, known);
@@ -616,6 +621,9 @@ namespace GxMcp.Worker.Services
                     response["commitState"] = "RolledBack";
                     response["persistenceState"] = "Restored";
                 }
+                // issue #592 — the part already reads as before, but a global the write
+                // created before its save still needs undoing.
+                FinishCreatedGlobalRollback(response, target, typeFilter);
                 return response.ToString(Newtonsoft.Json.Formatting.None);
             }
 
@@ -740,6 +748,10 @@ namespace GxMcp.Worker.Services
                 response["persistedVerified"] = false;
                 response["verified"] = false;
             }
+            // issue #592 — the restore above only rewrites the part; the globals the
+            // reverted write created are undone here, after the rollback is verified,
+            // and reported under rollback.createdGlobals (kept with a reason otherwise).
+            FinishCreatedGlobalRollback(response, target, typeFilter);
             if (!restored)
             {
                 response["rollbackFailed"] = true;
