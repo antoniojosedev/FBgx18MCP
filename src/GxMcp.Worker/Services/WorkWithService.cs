@@ -130,6 +130,8 @@ namespace GxMcp.Worker.Services
 
             string description = args?["description"]?.ToString();
             string domain = args?["domain"]?.ToString();
+            // Canonical input name is the schema's `default` (issue #588); stored, not compiled.
+            string defaultValue = args?["default"]?.ToString();
             string condition = args?["condition"]?.ToString();
             var conditionsToken = args?["conditions"] as JArray;
             var conditions = conditionsToken != null
@@ -143,7 +145,7 @@ namespace GxMcp.Worker.Services
 
             if (dryRun)
             {
-                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, level, attribute, description, domain, conditions, dryRun: true, out var plan, out var errCode, out var errMsg))
+                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, level, attribute, description, domain, defaultValue, conditions, dryRun: true, out var plan, out var errCode, out var errMsg))
                 {
                     return McpResponse.Err(
                         code: errCode ?? "AddFilterAttributePlanFailed",
@@ -162,7 +164,7 @@ namespace GxMcp.Worker.Services
             lock (WriteService.AcquirePerTargetLock(instanceObj.Name))
             {
                 KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
-                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, level, attribute, description, domain, conditions, dryRun: false, out var receipt, out var errCode, out var errMsg))
+                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, level, attribute, description, domain, defaultValue, conditions, dryRun: false, out var receipt, out var errCode, out var errMsg))
                 {
                     return McpResponse.Err(
                         code: errCode ?? "AddFilterAttributeFailed",

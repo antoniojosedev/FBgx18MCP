@@ -103,6 +103,8 @@ From the shipped `WorkWithInstance.xml`:
   <Attribute Name="name"        Type="code(Expressions)" NotNull="true" />
   <Attribute Name="description" Type="string" />
   <Attribute Name="domain"      Type="reference(Domain)" />
+  <Attribute Name="default"     Type="string" Category="Values" />
+  <!-- allValue, datePicker, displayFlat and prompt omitted here -->
 </ElementType>
 
 <ElementType Name="Condition" KeyAttribute="value">
@@ -111,7 +113,11 @@ From the shipped `WorkWithInstance.xml`:
 ```
 
 `attributes` and `conditions` are both `Optional="false"`, so a `Filter` always carries
-both. The reporter's read snippet has both, and the shape matches node for node — so the
+both. The `default` attribute (described in the schema as "Default value. Must be an
+expression of the same type of the attribute/variable.") is the serialized form of the
+settable `FilterAttributeElement.Default` string listed above; an earlier revision of
+this excerpt left it out, which is what
+[#588](https://github.com/lennix1337/Genexus18MCP/issues/588) corrected. The reporter's read snippet has both, and the shape matches node for node — so the
 typed API and the serialized document are two views of one model, not two contracts.
 
 ## Why this should be a typed action, not a relaxed XML gate
