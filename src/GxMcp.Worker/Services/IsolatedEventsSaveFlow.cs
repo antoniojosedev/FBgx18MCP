@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -44,6 +45,12 @@ namespace GxMcp.Worker.Services
         void EndTransaction();
         void RereadAfterCommit();
         void VerifyAfterCommit(bool committed);
+
+        /// <summary>
+        /// The SDK objects (label, instance) whose <c>Messages</c> may explain a failure:
+        /// the most recent instance of the object and its parts. Empty before any read.
+        /// </summary>
+        IEnumerable<KeyValuePair<string, object>> SdkMessageSources();
     }
 
     internal enum IsolatedEventsSaveOutcomeKind
@@ -56,11 +63,12 @@ namespace GxMcp.Worker.Services
 
     internal sealed class IsolatedEventsSaveOutcome
     {
-        private IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind kind, string message, string currentVersion)
+        private IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind kind, string message, string currentVersion, string phase)
         {
             Kind = kind;
             Message = message;
             CurrentVersion = currentVersion;
+            Phase = phase;
         }
 
         internal IsolatedEventsSaveOutcomeKind Kind { get; }
@@ -70,17 +78,20 @@ namespace GxMcp.Worker.Services
 
         internal string CurrentVersion { get; }
 
-        internal static IsolatedEventsSaveOutcome Conflict(string message, string currentVersion)
-            => new IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind.VersionConflict, message, currentVersion);
+        /// <summary>The stage the save stopped at, or <see cref="IsolatedEventsSavePhase.Completed"/>.</summary>
+        internal string Phase { get; }
+
+        internal static IsolatedEventsSaveOutcome Conflict(string message, string currentVersion, string phase)
+            => new IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind.VersionConflict, message, currentVersion, phase);
 
         internal static IsolatedEventsSaveOutcome Success()
-            => new IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind.Verified, null, null);
+            => new IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind.Verified, null, null, IsolatedEventsSavePhase.Completed);
 
-        internal static IsolatedEventsSaveOutcome NotConfirmed(string message)
-            => new IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind.NotConfirmed, message, null);
+        internal static IsolatedEventsSaveOutcome NotConfirmed(string message, string phase)
+            => new IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind.NotConfirmed, message, null, phase);
 
-        internal static IsolatedEventsSaveOutcome Interrupted(string message)
-            => new IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind.Interrupted, message, null);
+        internal static IsolatedEventsSaveOutcome Interrupted(string message, string phase)
+            => new IsolatedEventsSaveOutcome(IsolatedEventsSaveOutcomeKind.Interrupted, message, null, phase);
     }
 
     /// <summary>
@@ -88,7 +99,8 @@ namespace GxMcp.Worker.Services
     /// transaction, rollback on any failure, and the mandatory fresh read after
     /// the transaction closes. It holds no SDK type, so the failure handling is
     /// testable without a Knowledge Base. A failed save is never retried and no
-    /// compensating write is issued here.
+    /// compensating write is issued here. Every stage is announced to the trace
+    /// before it runs, so a failure always names where it happened.
     /// </summary>
     internal static class IsolatedEventsSaveFlow
     {
@@ -96,58 +108,94 @@ namespace GxMcp.Worker.Services
             "Complete isolated object persistence could not be confirmed. Inspect the returned persistence state; do not retry blindly.";
 
         internal static IsolatedEventsSaveOutcome Run(
-            IIsolatedEventsSaveSteps steps, JObject receipt, string baseVersion, Func<IDisposable> acquireWriteGate)
+            IIsolatedEventsSaveSteps steps, IsolatedEventsSaveTrace trace, string baseVersion, Func<IDisposable> acquireWriteGate)
         {
+            JObject receipt = trace.Receipt;
             bool committed = false;
+            string failureMessage = null;
             try
             {
                 using (acquireWriteGate())
                 {
+                    trace.Enter(IsolatedEventsSavePhase.FreshRead);
                     steps.ReadOriginal();
+                    trace.Enter(IsolatedEventsSavePhase.VersionConflictCheck);
                     if (string.IsNullOrWhiteSpace(baseVersion) || steps.OriginalToken != baseVersion)
                         return IsolatedEventsSaveOutcome.Conflict(
-                            "The Events version changed; no save was attempted.", steps.OriginalToken);
+                            "The Events version changed; no save was attempted.", steps.OriginalToken, trace.Phase);
+                    trace.Enter(IsolatedEventsSavePhase.BaselineCapture);
                     steps.CaptureBaseline();
-                    string failure = null;
                     steps.BeginTransaction();
+                    IsolatedEventsSaveOutcome boundaryConflict = null;
                     try
                     {
+                        trace.Enter(IsolatedEventsSavePhase.TransactionFreshRead);
                         string currentToken = steps.ReadFreshInTransaction();
+                        trace.Enter(IsolatedEventsSavePhase.VersionConflictCheck);
                         if (currentToken != steps.OriginalToken)
                         {
                             steps.Rollback();
-                            return IsolatedEventsSaveOutcome.Conflict(
-                                "The Events version changed at the transaction boundary; no save was attempted.", currentToken);
+                            boundaryConflict = IsolatedEventsSaveOutcome.Conflict(
+                                "The Events version changed at the transaction boundary; no save was attempted.",
+                                currentToken, trace.Phase);
                         }
-                        steps.RecheckTarget();
-                        steps.AssignSource();
-                        try
+                        else
                         {
-                            steps.SavePart();
-                            steps.SaveObject();
+                            trace.Enter(IsolatedEventsSavePhase.TargetRecheck);
+                            steps.RecheckTarget();
+                            trace.Enter(IsolatedEventsSavePhase.SourceAssignment);
+                            steps.AssignSource();
+                            try
+                            {
+                                trace.Enter(IsolatedEventsSavePhase.PartSave);
+                                steps.SavePart();
+                                trace.Enter(IsolatedEventsSavePhase.ObjectSave);
+                                steps.SaveObject();
+                            }
+                            finally
+                            {
+                                steps.EndSaveIsolation();
+                            }
+                            trace.Enter(IsolatedEventsSavePhase.PreCommitVerification);
+                            steps.VerifyPreCommit();
+                            trace.Enter(IsolatedEventsSavePhase.Commit);
+                            steps.Commit();
+                            committed = true;
                         }
-                        finally
-                        {
-                            steps.EndSaveIsolation();
-                        }
-                        steps.VerifyPreCommit();
-                        steps.Commit();
-                        committed = true;
                     }
                     catch (Exception ex)
                     {
-                        failure = ex.Message;
+                        // The SDK's own messages live on the in-memory instance and
+                        // are read before the rollback touches it.
+                        IsolatedEventsFailure failure = trace.RecordFailure(ex, steps.SdkMessageSources);
+                        failureMessage = "Isolated Events save failed during " + failure.Phase + ": " + failure.Detail;
                         try { steps.Rollback(); receipt["transactionRolledBack"] = true; }
-                        catch (Exception rollbackEx) { receipt["rollbackError"] = rollbackEx.Message; }
+                        catch (Exception rollbackEx)
+                        {
+                            receipt["rollbackError"] = IsolatedEventsSaveDiagnostics.Sanitize(rollbackEx.Message);
+                        }
+                    }
+                    if (boundaryConflict != null)
+                    {
+                        // The transaction closes inside the write gate, before the
+                        // conflict is reported; a failing dispose is an interruption.
+                        steps.EndTransaction();
+                        return boundaryConflict;
                     }
                     // Mandatory fresh verification occurs after transaction disposal,
                     // while broker suppression remains in force. No compensating Save.
+                    trace.Enter(IsolatedEventsSavePhase.PostCommitReread);
                     steps.EndTransaction();
                     steps.RereadAfterCommit();
+                    trace.Enter(IsolatedEventsSavePhase.PostCommitVerification);
                     steps.VerifyAfterCommit(committed);
-                    return steps.Verified
-                        ? IsolatedEventsSaveOutcome.Success()
-                        : IsolatedEventsSaveOutcome.NotConfirmed(failure ?? NotConfirmedMessage);
+                    if (steps.Verified)
+                    {
+                        trace.Enter(IsolatedEventsSavePhase.Completed);
+                        return IsolatedEventsSaveOutcome.Success();
+                    }
+                    return IsolatedEventsSaveOutcome.NotConfirmed(
+                        failureMessage ?? NotConfirmedMessage, trace.FailedPhase ?? trace.Phase);
                 }
             }
             catch (Exception ex)
@@ -157,8 +205,14 @@ namespace GxMcp.Worker.Services
                 receipt["persistenceUncertain"] = receipt["writeAttempted"]?.Value<bool>() == true;
                 receipt["partPersisted"] = JValue.CreateNull();
                 receipt["workerRestartRequired"] = steps.WorkerRestartRequired;
+                // The interruption's message replaces the save failure's in the envelope;
+                // when a save failure came first, keep its message beside its diagnostics.
+                if (failureMessage != null) receipt["saveFailureMessage"] = failureMessage;
+                IsolatedEventsFailure failure = trace.RecordFailure(ex, steps.SdkMessageSources);
                 return IsolatedEventsSaveOutcome.Interrupted(
-                    "SDK persistence or verification was interrupted: " + ex.Message + ". No compensating write was performed.");
+                    "SDK persistence or verification was interrupted during " + failure.Phase + ": "
+                        + failure.Detail.TrimEnd('.') + ". No compensating write was performed.",
+                    trace.FailedPhase ?? trace.Phase);
             }
         }
     }

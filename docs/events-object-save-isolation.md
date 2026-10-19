@@ -4,7 +4,8 @@
 [Events save candidate](events-save-u16-candidate.md). Unverified SDK hashes,
 object/part types, direct callbacks, destinations, cache removal, or broker
 suppression return `ObjectSaveIsolationUnverified` before persistence. Dry runs
-include the dynamic preflight result and a `writeBlocker` when ineligible.
+include the dynamic preflight result and a `writeBlocker` when ineligible, and
+say what they did not do (see [Preview scope](#preview-scope)).
 There is no caller-controlled bypass flag. Live candidate validation is pending.
 
 This is separate from the KB/version destination guard. A correct destination
@@ -25,6 +26,59 @@ pure receipt function used in production. Revision advancement requires a
 numeric increase, or a later lastUpdate, and still requires the upstream
 `metadataStampPersisted` evidence. A changed/decreased revision alone is
 insufficient.
+
+## Preview scope
+
+A `requireObjectSave` preview checks the textual patch and the isolation
+preflight (SDK bundle, pins, callbacks, brokers). It runs no SDK validation of
+the Events source and no save, so it cannot say the save will succeed:
+
+| Field | Meaning |
+| :--- | :--- |
+| `patchMatch` | The patch matched the current source. |
+| `isolationEligible` | The preflight accepted the bundle, pins and callbacks (`objectSaveIsolation.verified`). |
+| `validationExecuted` | Always `false`: no SDK validation ran. |
+| `saveExecuted` | Always `false`: nothing was saved. |
+| `persistabilityVerified` | Always `false` for a preview; only a completed, verified save establishes persistence. |
+| `previewScope` | The same statement in words. |
+
+A clean preview followed by a failed save is expected when the SDK rejects the
+source only at save time. The failure then says where (see below).
+
+## Failure diagnostics
+
+A failed isolated save returns `ObjectSaveIncomplete` (or
+`ObjectSaveIsolationUnverified` before any write). Besides the persistence
+evidence (`objectSaved`, `partPersisted`, `transactionRolledBack`,
+`rollbackVerified`, `persistenceUncertain`), the receipt answers where and why:
+
+| Field | Meaning |
+| :--- | :--- |
+| `savePhase` | The stage the save stopped at. Frozen at the failure; `completed` on success. |
+| `verificationPhase` | The stage reached by the verification that follows a rollback, when a failure came first. |
+| `exceptionType` | Full type name of the exception. |
+| `innerMessages[]`, `innerExceptionTypes[]` | The inner exception chain (at most 5), sanitized. |
+| `sdkMessages[]` | The SDK's own messages read from the object and its parts before the rollback: `code` (for example `src0059`), `part`, `line`, `column`, `severity`, `message`. At most 25; `sdkMessagesTruncated` says more existed. |
+| `sourceValidationErrors[]` | The error-severity SDK messages on the Events part. |
+| `originalError` | The exception's own message, kept when the reported message replaced a bare `Erro`. |
+| `sdkMessagesError` | Why the SDK messages could not be read, when they could not. |
+| `verificationFailure` | A second failure while verifying after the rollback; it never overwrites the first. |
+| `saveFailureMessage` | The save failure's message, when an interruption replaced it as `message`. |
+
+`savePhase` values, in order: `preflight`, `fresh-read`, `version-conflict-check`,
+`baseline-capture` (snapshot, whole-KB inventory, transaction start),
+`transaction-fresh-read`, `target-recheck`, `source-assignment`, `part-save`
+(pattern isolation set-up and `eventsPart.Save()`), `object-save` (the complete
+`KBObject.Save` and the isolation teardown), `pre-commit-verification`, `commit`,
+`post-commit-reread`, `post-commit-verification`, `completed`.
+
+The message names the stage and prefers the SDK's own text over a bare `Erro`
+(the same `WritePolicy.PreferDetailedMessage` the normal write path uses), then an
+informative inner exception. With neither, it says the SDK raised a generic error
+and where to look. Every string is sanitized: local paths, credentials, tokens,
+connection-string parts and raw GeneXus source are redacted, text is single-line
+and bounded to 500 characters. None of this changes what the save does or how it
+rolls back.
 
 ## SDK audit and limitations
 

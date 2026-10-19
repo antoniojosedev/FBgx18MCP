@@ -25,6 +25,61 @@ namespace GxMcp.Worker.Tests
             Assert.False(response.SelectToken("$..partPersisted")?.Value<bool>());
         }
 
+        [Fact]
+        public void Preview_EligibleIsolationIsNotAClaimThatTheSaveWillSucceed()
+        {
+            var body = new JObject();
+            var isolation = JObject.Parse("{verified:true,auditedSdkBuild:'18.0.16.189595'}");
+
+            PatchPersistenceReceipt.AttachObjectSavePreviewScope(body, isolation, matchCount: 1);
+
+            Assert.True(body["patchMatch"]!.Value<bool>());
+            Assert.True(body["isolationEligible"]!.Value<bool>());
+            Assert.False(body["validationExecuted"]!.Value<bool>());
+            Assert.False(body["saveExecuted"]!.Value<bool>());
+            // Eligibility is the bundle/pin audit; only a save can prove persistability.
+            Assert.False(body["persistabilityVerified"]!.Value<bool>());
+            Assert.Equal(PatchPersistenceReceipt.ObjectSavePreviewScope, body["previewScope"]!.ToString());
+            Assert.Same(isolation, body["objectSaveIsolation"]);
+            Assert.Null(body["writeBlocker"]);
+        }
+
+        [Fact]
+        public void Preview_IneligibleIsolationKeepsTheBlockerAndSeparatesItFromThePatchMatch()
+        {
+            var body = new JObject();
+            var isolation = JObject.Parse("{verified:false,blocker:'ObjectSaveIsolationUnverified',reason:'pins'}");
+
+            PatchPersistenceReceipt.AttachObjectSavePreviewScope(body, isolation, matchCount: 2);
+
+            Assert.True(body["patchMatch"]!.Value<bool>());
+            Assert.False(body["isolationEligible"]!.Value<bool>());
+            Assert.Equal("ObjectSaveIsolationUnverified", body["writeBlocker"]!.ToString());
+            Assert.False(body["persistabilityVerified"]!.Value<bool>());
+        }
+
+        [Fact]
+        public void Preview_WithoutAnyMatchReportsNoPatchMatch()
+        {
+            var body = new JObject();
+
+            PatchPersistenceReceipt.AttachObjectSavePreviewScope(body, new JObject { ["verified"] = true }, matchCount: 0);
+
+            Assert.False(body["patchMatch"]!.Value<bool>());
+            Assert.True(body["isolationEligible"]!.Value<bool>());
+        }
+
+        [Fact]
+        public void Preview_UnavailableIsolationReportIsIneligible()
+        {
+            var body = new JObject();
+
+            PatchPersistenceReceipt.AttachObjectSavePreviewScope(body, null, matchCount: 1);
+
+            Assert.False(body["isolationEligible"]!.Value<bool>());
+            Assert.False(body["persistabilityVerified"]!.Value<bool>());
+        }
+
         [Theory]
         [InlineData(false, true, true, true)]
         [InlineData(true, false, true, true)]

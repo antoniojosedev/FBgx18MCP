@@ -264,6 +264,17 @@ namespace GxMcp.Worker.Services
                 Verified = committed && partPersisted && metadataAdvanced && otherPartsIntact && finalOthers.Count == 0;
             }
 
+            public IEnumerable<KeyValuePair<string, object>> SdkMessageSources()
+            {
+                var sources = new List<KeyValuePair<string, object>>();
+                KBObject instance = _persisted ?? _current ?? _original;
+                if (instance == null) return sources;
+                foreach (KBObjectPart part in instance.Parts)
+                    sources.Add(new KeyValuePair<string, object>(part.TypeDescriptor?.Name ?? part.GetType().Name, part));
+                sources.Add(new KeyValuePair<string, object>("Object", instance));
+                return sources;
+            }
+
             public void Dispose() => EndTransaction();
         }
     }

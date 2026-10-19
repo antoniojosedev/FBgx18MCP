@@ -132,6 +132,7 @@ namespace GxMcp.Worker.Services
                     failure["writeAttempted"] = false;
                     failure["partPersisted"] = false;
                     failure["objectSaved"] = false;
+                    failure["savePhase"] = IsolatedEventsSavePhase.Preflight;
                     return McpResponse.Err(code: "ObjectSaveIsolationUnverified", target: target,
                         message: ex.Message, extra: failure);
                 }
@@ -152,14 +153,20 @@ namespace GxMcp.Worker.Services
                 // known WWP reapplication path.
                 using (var steps = new SdkIsolatedEventsSaveSteps(kb, guid, target, source, isolation, receipt))
                 {
-                    var outcome = IsolatedEventsSaveFlow.Run(steps, receipt, baseVersion, KbWatcherService.AcquireWriteGate);
+                    var trace = new IsolatedEventsSaveTrace(receipt);
+                    var outcome = IsolatedEventsSaveFlow.Run(steps, trace, baseVersion, KbWatcherService.AcquireWriteGate);
                     verifiedState = steps.VerifiedState;
                     switch (outcome.Kind)
                     {
                         case IsolatedEventsSaveOutcomeKind.VersionConflict:
                             return McpResponse.Err(code: "VersionConflict", target: target,
                                 message: outcome.Message,
-                                extra: new JObject { ["currentVersion"] = outcome.CurrentVersion, ["writeAttempted"] = false });
+                                extra: new JObject
+                                {
+                                    ["currentVersion"] = outcome.CurrentVersion,
+                                    ["writeAttempted"] = false,
+                                    ["savePhase"] = outcome.Phase
+                                });
                         case IsolatedEventsSaveOutcomeKind.Verified:
                             return McpResponse.Ok(code: "Applied", target: target, result: receipt);
                         default:
