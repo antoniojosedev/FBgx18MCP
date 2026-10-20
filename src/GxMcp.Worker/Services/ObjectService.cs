@@ -90,7 +90,7 @@ namespace GxMcp.Worker.Services
         private static readonly ConcurrentDictionary<string, DateTime> _recentDeletions =
             new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan RecentDeletionTtl = TimeSpan.FromMinutes(5);
-        private const int MaxIncomingReferences = 256;
+        internal const int MaxIncomingReferences = 256;
 
         private enum NativeResolutionStatus
         {
@@ -1623,7 +1623,9 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private static JArray CollectIncomingReferences(KBObject obj, KnowledgeBase kb, out bool truncated)
+        // Shared with the Structure rollback's created-global cleanup (issue #592), which
+        // must answer "does anything else use this attribute" the same way delete does.
+        internal static JArray CollectIncomingReferences(KBObject obj, KnowledgeBase kb, out bool truncated)
         {
             var result = new JArray();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

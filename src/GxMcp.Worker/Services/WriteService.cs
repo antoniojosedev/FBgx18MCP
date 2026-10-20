@@ -1759,6 +1759,7 @@ namespace GxMcp.Worker.Services
                     var objToUpdate = _objectService.FindObject(target, typeFilter);
                     if (objToUpdate != null && (objToUpdate is global::Artech.Genexus.Common.Objects.Transaction || objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)))
                     {
+                        IReadOnlyList<GxMcp.Worker.Parsers.TransactionDslParser.CreatedGlobalIdentity> createdGlobals = null;
                         try {
                             string preSnapshot = null;
                             if (objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
@@ -1766,6 +1767,11 @@ namespace GxMcp.Worker.Services
                                 try { preSnapshot = GxMcp.Worker.Helpers.StructureParser.SerializeToText(objToUpdate); } catch { }
                             }
                             StructureParser.ParseFromText(objToUpdate, decodedCode);
+                            // issue #592 — the globals this parse created outlive the parse:
+                            // the Transaction save comes next and is verified afterwards.
+                            // Carry their identities on the receipt so a rollback after a
+                            // failed verification can undo them, and the caller can see them.
+                            createdGlobals = GxMcp.Worker.Parsers.TransactionDslParser.TakeCommittedGlobals();
                             objToUpdate.EnsureSave();
                             StampObjectRevisionDates(objToUpdate, objToUpdate.Model as global::Artech.Architecture.Common.Objects.KBModel);
                             // Friction-report 05-13 #2: a Structure write on an SDT or Transaction
@@ -1884,6 +1890,7 @@ namespace GxMcp.Worker.Services
                                     ["rolledBack"] = rolledBack
                                 };
                                 if (rollbackError != null) notPersisted["rollbackError"] = rollbackError;
+                                AttachCreatedGlobals(notPersisted, createdGlobals);
                                 return Models.McpResponse.Err(
                                     code: "WriteNotPersisted",
                                     message: roundTripError,
@@ -1897,6 +1904,7 @@ namespace GxMcp.Worker.Services
                                 ["details"] = "Structure DSL successfully applied",
                                 ["persistedVerified"] = true
                             };
+                            AttachCreatedGlobals(okPayload, createdGlobals);
                             return Models.McpResponse.Ok(
                                 target: target,
                                 code: "WriteApplied",
@@ -1925,6 +1933,10 @@ namespace GxMcp.Worker.Services
                                 target: target);
                         } catch (Exception ex) {
                             Logger.Error("[DEBUG-SAVE] Error parsing Structure DSL: " + ex.Message);
+                            // A failure after the parse (save step) leaves the parse's globals
+                            // in the KB; keep them on the envelope so the rollback can undo them.
+                            var syntaxExtra = new JObject();
+                            AttachCreatedGlobals(syntaxExtra, createdGlobals);
                             return Models.McpResponse.Err(
                                 code: "StructureSyntaxInvalid",
                                 message: $"Invalid Structure Syntax: {ex.Message}",
@@ -1933,7 +1945,8 @@ namespace GxMcp.Worker.Services
                                     tool: "genexus_read",
                                     args: new JObject { ["name"] = target, ["part"] = "Structure" },
                                     why: "Returns the current Structure DSL so you can diff against your attempted change.")),
-                                target: target);
+                                target: target,
+                                extra: syntaxExtra.HasValues ? syntaxExtra : null);
                         }
                     }
                 }
