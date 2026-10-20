@@ -484,11 +484,42 @@ namespace GxMcp.Worker.Services
         {
             // The batch route now forwards the SDK output, so only claim missing
             // diagnostics when none were itemized.
-            RecordVerificationFailure(status, "NativeBuildFailed",
-                status.ErrorCount > 0
-                    ? "The native SDK build failed; see the diagnostics above. No automatic retry was performed."
-                    : "The native SDK build failed; compiler diagnostics were not captured on this route. No automatic retry was performed.", "native");
+            string message;
+            if (status.ErrorCount > 0)
+            {
+                message = "The native SDK build failed; see the diagnostics above. No automatic retry was performed.";
+            }
+            else
+            {
+                // Issue #608: nothing was itemized, but the output channel (">R") can still hold
+                // the cause (e.g. the compilation launcher that could not be started). Surface it
+                // instead of the generic text; keep the generic text when no such line was captured.
+                string channelDetail = BuildChannelFailureExcerpt.Describe(SnapshotFullOutput(status), out string launcherHint);
+                message = channelDetail != null
+                    ? "The native SDK build failed; the GeneXus build output channel (>R) reported: " + channelDetail
+                        + (launcherHint != null ? " " + launcherHint : "") + " No automatic retry was performed."
+                    : "The native SDK build failed; compiler diagnostics were not captured on this route. No automatic retry was performed.";
+            }
+            RecordVerificationFailure(status, "NativeBuildFailed", message, "native");
             return InProcessBuildOutcome.FailedWithDiagnostics;
+        }
+
+        // Appends the output-channel (">R") cause of a failure that itemized no error to an existing
+        // hint; returns the hint unchanged when the output holds no such line.
+        internal static string AppendChannelDiagnostics(string hint, string fullOutput)
+        {
+            string channelDetail = BuildChannelFailureExcerpt.Describe(fullOutput, out string launcherHint);
+            if (channelDetail == null) return hint;
+            return hint + " The GeneXus build output channel (>R) reported: " + channelDetail
+                + (launcherHint != null ? " " + launcherHint : "");
+        }
+
+        private static string SnapshotFullOutput(BuildTaskStatus status)
+        {
+            lock (status._lock)
+            {
+                return status.FullOutput?.ToString() ?? "";
+            }
         }
 
         internal static bool DidGenerationAndCompilationSucceed(string output)
@@ -4144,6 +4175,10 @@ namespace GxMcp.Worker.Services
             Logger.Info("[BUILD-INPROCESS] taskId=" + status.TaskId
                         + " kb=" + _kbService.GetKbPath()
                         + " targets=" + (targets != null ? string.Join(";", targets) : "<all>"));
+            // Issue #608: the .NET Framework generator starts `gxexec` by bare name and only the IDE has
+            // <GeneXus install>\gxnet on its PATH. Make it resolvable for this process (and the children the
+            // SDK spawns) before the native build starts; idempotent, process-level only, never throws.
+            GxBuildPathEnvironment.EnsureOnProcessPath();
             var sw = Stopwatch.StartNew();
             InProcessBuildOutcome outcome = InProcessBuildOutcome.CouldNotRun;
             try
@@ -4234,6 +4269,8 @@ namespace GxMcp.Worker.Services
                                     };
                             status.Hint = "Build failed in-process with no itemized error list (the SDK signalled failure at the section level). "
                                 + "Run genexus_lifecycle action=specify target=<object> for spc*/gen* diagnostics on a specific object, or open the KB in the IDE to see the full build output.";
+                            // Issue #608: name the cause when the output channel (">R") carried it.
+                            status.Hint = AppendChannelDiagnostics(status.Hint, fullText);
                         }
 
                         status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
