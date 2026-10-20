@@ -264,10 +264,12 @@ namespace GxMcp.Gateway.Tests
         // With genexus_wire added to core/standard/authoring/devops/all and purpose summaries from origin/main:
         // Measured all ~99400, core=26678, standard ~60500, authoring ~68000, devops=52066 bytes.
         // Issue #455 adds genexus_workwith: all measured 100907, authoring measured 69808.
+        // Issue #588 adds the genexus_workwith `default` filter input: authoring 70500 -> 71000
+        // (measured 70527); the other profiles stayed within their budgets.
         [InlineData("all", 102000)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
-        [InlineData("authoring", 70500)]
+        [InlineData("authoring", 71000)]
         [InlineData("devops", 52500)]
         [InlineData("ui", 50000)]
         [InlineData("db", 40000)]

@@ -1331,7 +1331,11 @@ namespace GxMcp.Worker.Compatibility
             return candidates;
         }
 
-        private static JObject ReadNativeFilter(FilterLevelCandidate level)
+        /// Typed reader over the loaded WorkWith model. The filter attribute's `default`
+        /// (schema attribute `default`, typed member `FilterAttributeElement.Default`) is
+        /// always reported as a string, "" when unset, so both readers share one shape
+        /// and verification never compares null with "" (issue #588).
+        internal static JObject ReadNativeFilter(FilterLevelCandidate level)
         {
             object filter = level.Filter;
             var attrsArray = new JArray();
@@ -1345,12 +1349,14 @@ namespace GxMcp.Worker.Compatibility
                     string faDom = fa.GetType().GetProperty("DomainName")?.GetValue(fa, null)?.ToString()
                         ?? fa.GetType().GetProperty("Domain")?.GetValue(fa, null)?.ToString();
                     string faVar = fa.GetType().GetProperty("VariableName")?.GetValue(fa, null)?.ToString();
+                    string faDefault = fa.GetType().GetProperty("Default")?.GetValue(fa, null)?.ToString();
 
                     attrsArray.Add(new JObject
                     {
                         ["name"] = faName,
                         ["description"] = faDesc ?? faName,
                         ["domain"] = faDom ?? "",
+                        ["default"] = faDefault ?? "",
                         ["variableName"] = faVar ?? ("&" + faName)
                     });
                 }
@@ -1403,6 +1409,7 @@ namespace GxMcp.Worker.Compatibility
                             ["name"] = aName,
                             ["description"] = (string)a.Attribute("description") ?? aName,
                             ["domain"] = StripObjectReferenceGuid((string)a.Attribute("domain")) ?? "",
+                            ["default"] = (string)a.Attribute("default") ?? "",
                             ["variableName"] = (string)a.Attribute("variableName") ?? ("&" + aName)
                         });
                     }
@@ -1535,6 +1542,8 @@ namespace GxMcp.Worker.Compatibility
         /// Filter authoring writes only through the native WorkWith SDK. Authoring the
         /// filter through raw PatternInstance XML is exactly what the structural preflight
         /// refuses, so there is deliberately no XML write fallback here (issue #559).
+        /// `defaultValue` is the schema's `default` field: stored as given, never compiled
+        /// (issue #588).
         public static bool AddFilterAttribute(
             KBObject instanceObj,
             PatternAnalysisService patterns,
@@ -1542,6 +1551,7 @@ namespace GxMcp.Worker.Compatibility
             string attributeName,
             string description,
             string domain,
+            string defaultValue,
             IList<string> conditions,
             bool dryRun,
             out JObject result,
@@ -1576,7 +1586,7 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            var plan = BuildFilterPlan(instanceObj.Name, resolvedLevel, attributeName, description, domain, conditions);
+            var plan = BuildFilterPlan(instanceObj.Name, resolvedLevel, attributeName, description, domain, defaultValue, conditions);
 
             if (GetWorkWithAssembly() == null)
             {
@@ -1592,7 +1602,7 @@ namespace GxMcp.Worker.Compatibility
                 return true;
             }
 
-            if (!TryAddFilterAttributeNative(instanceObj, resolvedLevel, attributeName, description, domain, conditions, out errorCode, out errorMessage))
+            if (!TryAddFilterAttributeNative(instanceObj, resolvedLevel, attributeName, description, domain, defaultValue, conditions, out errorCode, out errorMessage))
                 return false;
 
             if (!ListFilters(instanceObj, patterns, resolvedLevel, out var verifyFilters, out var observedSource, out _, out _))
@@ -1620,14 +1630,14 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            if (!VerifyFilterAttributeMatches(verifiedAttr, verifiedConditions, attributeName, description, domain, conditions, out string mismatchDetail))
+            if (!VerifyFilterAttributeMatches(verifiedAttr, verifiedConditions, attributeName, description, domain, defaultValue, conditions, out string mismatchDetail))
             {
                 errorCode = "VerificationMismatch";
                 errorMessage = $"Filter attribute '{attributeName}' was persisted, but post-save verification failed: {mismatchDetail}";
                 return false;
             }
 
-            result = BuildFilterReceipt(instanceObj.Name, resolvedLevel, verifiedAttr, verifiedConditions, attributeName, description, domain, conditions, preCheckSource, observedSource);
+            result = BuildFilterReceipt(instanceObj.Name, resolvedLevel, verifiedAttr, verifiedConditions, attributeName, description, domain, defaultValue, conditions, preCheckSource, observedSource);
             return true;
         }
 
@@ -1637,11 +1647,13 @@ namespace GxMcp.Worker.Compatibility
             string attributeName,
             string description,
             string domain,
+            string defaultValue,
             IList<string> conditions)
         {
             var filterAttribute = new JObject { ["name"] = attributeName };
             if (!string.IsNullOrWhiteSpace(description)) filterAttribute["description"] = description;
             if (!string.IsNullOrWhiteSpace(domain)) filterAttribute["domain"] = domain;
+            if (!string.IsNullOrWhiteSpace(defaultValue)) filterAttribute["default"] = defaultValue;
 
             return new JObject
             {
@@ -1664,13 +1676,14 @@ namespace GxMcp.Worker.Compatibility
                 {
                     ["attributeName"] = "The filter attribute name is stored as given; it is not resolved against KB attributes or variables.",
                     ["domain"] = "The Domain is stored as given; it is not resolved against KB Domains.",
+                    ["default"] = "The default value is stored as given; it is not compiled or validated against the type of the attribute or variable.",
                     ["conditionExpressions"] = "Filter condition expressions are not compiled or evaluated."
                 },
                 ["defaultNormalization"] = NativeDefaultNormalization
             };
         }
 
-        private sealed class NativeFilterSurface
+        internal sealed class NativeFilterSurface
         {
             public MethodInfo Load;
             public PropertyInfo Levels;
@@ -1679,12 +1692,14 @@ namespace GxMcp.Worker.Compatibility
             public MethodInfo AddCondition;
             public PropertyInfo Description;
             public PropertyInfo DomainName;
+            public PropertyInfo Default;
         }
 
-        private static bool TryResolveNativeFilterSurface(
+        internal static bool TryResolveNativeFilterSurface(
             Type instanceType,
             bool needsDescription,
             bool needsDomain,
+            bool needsDefault,
             bool needsConditions,
             out NativeFilterSurface surface,
             out string missingMember)
@@ -1715,6 +1730,10 @@ namespace GxMcp.Worker.Compatibility
                 resolved.Description = attributeType?.GetProperty("Description");
                 resolved.DomainName = new[] { attributeType?.GetProperty("DomainName"), attributeType?.GetProperty("Domain") }
                     .FirstOrDefault(p => p != null && p.CanWrite && p.PropertyType == typeof(string));
+                var defaultProperty = attributeType?.GetProperty("Default");
+                resolved.Default = defaultProperty != null && defaultProperty.CanWrite && defaultProperty.PropertyType == typeof(string)
+                    ? defaultProperty
+                    : null;
 
                 var missing = new List<string>();
                 if (wwiType == null) missing.Add("WorkWithInstance");
@@ -1726,6 +1745,7 @@ namespace GxMcp.Worker.Compatibility
                 if (needsConditions && resolved.AddCondition == null) missing.Add("FilterElement.AddCondition(string)");
                 if (needsDescription && (resolved.Description == null || !resolved.Description.CanWrite)) missing.Add("FilterAttributeElement.Description setter");
                 if (needsDomain && resolved.DomainName == null) missing.Add("FilterAttributeElement.DomainName string setter");
+                if (needsDefault && resolved.Default == null) missing.Add("FilterAttributeElement.Default string setter");
                 if (missing.Count > 0)
                 {
                     missingMember = "unresolved member(s): " + string.Join(", ", missing);
@@ -1750,6 +1770,7 @@ namespace GxMcp.Worker.Compatibility
             string attributeName,
             string description,
             string domain,
+            string defaultValue,
             IList<string> conditions,
             out string errorCode,
             out string errorMessage)
@@ -1758,9 +1779,10 @@ namespace GxMcp.Worker.Compatibility
             errorMessage = null;
             bool hasDescription = !string.IsNullOrWhiteSpace(description);
             bool hasDomain = !string.IsNullOrWhiteSpace(domain);
+            bool hasDefault = !string.IsNullOrWhiteSpace(defaultValue);
             bool hasConditions = conditions != null && conditions.Count > 0;
 
-            if (!TryResolveNativeFilterSurface(instanceObj?.GetType(), hasDescription, hasDomain, hasConditions, out var surface, out string missingMember))
+            if (!TryResolveNativeFilterSurface(instanceObj?.GetType(), hasDescription, hasDomain, hasDefault, hasConditions, out var surface, out string missingMember))
             {
                 errorCode = "WorkWithSdkUnavailable";
                 errorMessage = "Native WorkWith filter authoring is unavailable: " + missingMember + ". Filter writes have no XML fallback.";
@@ -1778,26 +1800,8 @@ namespace GxMcp.Worker.Compatibility
                     return false;
                 }
 
-                var levels = surface.Levels.GetValue(wwi, null) as IEnumerable;
-                var candidates = levels != null ? CollectNativeFilterLevels(levels) : new List<FilterLevelCandidate>();
-                if (!TryResolveFilterLevel(candidates, levelId, out var resolved, out errorCode, out errorMessage))
+                if (!TryAuthorFilterAttributeOnTypedModel(surface, wwi, levelId, attributeName, description, domain, defaultValue, conditions, out _, out errorCode, out errorMessage))
                     return false;
-
-                object newAttribute = surface.AddFilterAttribute.Invoke(resolved.Filter, new object[] { attributeName });
-                if (newAttribute == null)
-                {
-                    errorCode = "WorkWithFilterAuthoringFailed";
-                    errorMessage = "FilterElement.AddFilterAttribute returned null; nothing was saved.";
-                    return false;
-                }
-
-                if (hasDescription) surface.Description.SetValue(newAttribute, description, null);
-                if (hasDomain) surface.DomainName.SetValue(newAttribute, domain, null);
-                if (hasConditions)
-                {
-                    foreach (var condition in conditions)
-                        surface.AddCondition.Invoke(resolved.Filter, new object[] { condition });
-                }
 
                 surface.SaveTo.Invoke(wwi, new object[] { instanceObj });
                 writtenToPart = true;
@@ -1816,11 +1820,62 @@ namespace GxMcp.Worker.Compatibility
             }
         }
 
-        private static string[] ComparedFilterFields(string description, string domain)
+        /// Mutates the loaded typed model only: resolves the Level, adds the filter
+        /// attribute, applies the supplied fields and conditions. The caller owns
+        /// `SaveTo` and the KBObject save, so this step can be exercised without a KB.
+        /// SDK exceptions propagate to the caller's handler.
+        internal static bool TryAuthorFilterAttributeOnTypedModel(
+            NativeFilterSurface surface,
+            object workWith,
+            string levelId,
+            string attributeName,
+            string description,
+            string domain,
+            string defaultValue,
+            IList<string> conditions,
+            out object newAttribute,
+            out string errorCode,
+            out string errorMessage)
+        {
+            newAttribute = null;
+            errorCode = null;
+            errorMessage = null;
+
+            var levels = surface.Levels.GetValue(workWith, null) as IEnumerable;
+            var candidates = levels != null ? CollectNativeFilterLevels(levels) : new List<FilterLevelCandidate>();
+            if (!TryResolveFilterLevel(candidates, levelId, out var resolved, out errorCode, out errorMessage))
+                return false;
+
+            object created = surface.AddFilterAttribute.Invoke(resolved.Filter, new object[] { attributeName });
+            if (created == null)
+            {
+                errorCode = "WorkWithFilterAuthoringFailed";
+                errorMessage = "FilterElement.AddFilterAttribute returned null; nothing was saved.";
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(description)) surface.Description.SetValue(created, description, null);
+            if (!string.IsNullOrWhiteSpace(domain)) surface.DomainName.SetValue(created, domain, null);
+            if (!string.IsNullOrWhiteSpace(defaultValue)) surface.Default.SetValue(created, defaultValue, null);
+            if (conditions != null)
+            {
+                foreach (var condition in conditions)
+                    surface.AddCondition.Invoke(resolved.Filter, new object[] { condition });
+            }
+
+            newAttribute = created;
+            return true;
+        }
+
+        /// Only the fields the request supplied are compared; `default` joins the list
+        /// exactly like description and domain, so an omitted request value is never
+        /// compared against the reader's "" normalization.
+        internal static string[] ComparedFilterFields(string description, string domain, string defaultValue)
         {
             var fields = new List<string> { "name" };
             if (!string.IsNullOrWhiteSpace(description)) fields.Add("description");
             if (!string.IsNullOrWhiteSpace(domain)) fields.Add("domain");
+            if (!string.IsNullOrWhiteSpace(defaultValue)) fields.Add("default");
             fields.Add("conditions");
             return fields.ToArray();
         }
@@ -1831,6 +1886,7 @@ namespace GxMcp.Worker.Compatibility
             string attributeName,
             string description,
             string domain,
+            string defaultValue,
             IList<string> conditions,
             out string mismatchDetail)
         {
@@ -1868,6 +1924,16 @@ namespace GxMcp.Worker.Compatibility
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(defaultValue))
+            {
+                string observedDefault = observedAttribute["default"]?.ToString() ?? "";
+                if (!string.Equals(observedDefault, defaultValue, StringComparison.Ordinal))
+                {
+                    mismatchDetail = $"Default mismatch: expected '{defaultValue}', observed '{observedDefault}'.";
+                    return false;
+                }
+            }
+
             var observed = observedConditions?.Select(c => c.ToString()).ToList() ?? new List<string>();
             foreach (var condition in conditions ?? Array.Empty<string>())
             {
@@ -1889,6 +1955,7 @@ namespace GxMcp.Worker.Compatibility
             string attributeName,
             string description,
             string domain,
+            string defaultValue,
             IList<string> conditions,
             WorkWithReadSource preCheckSource,
             WorkWithReadSource observedSource)
@@ -1896,7 +1963,7 @@ namespace GxMcp.Worker.Compatibility
             var verification = new JObject
             {
                 ["scope"] = "filter_attribute_reread",
-                ["fieldsCompared"] = new JArray(ComparedFilterFields(description, domain)),
+                ["fieldsCompared"] = new JArray(ComparedFilterFields(description, domain, defaultValue)),
                 ["allFieldsMatched"] = true
             };
             DescribeReadSource(verification, "observedSource", observedSource);
@@ -1913,6 +1980,7 @@ namespace GxMcp.Worker.Compatibility
                     ["name"] = attributeName,
                     ["description"] = description ?? "",
                     ["domain"] = domain ?? "",
+                    ["default"] = defaultValue ?? "",
                     ["conditions"] = new JArray(conditions ?? Array.Empty<string>())
                 },
                 ["saved"] = true,

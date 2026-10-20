@@ -528,7 +528,7 @@ namespace GxMcp.Worker.Tests
     <selection>
       <filter>
         <attributes>
-          <filterAttribute name=""TemExistente"" description=""Tem Existente"" domain=""11111111-1111-1111-1111-111111111111-SimOuNao"" />
+          <filterAttribute name=""TemExistente"" description=""Tem Existente"" domain=""11111111-1111-1111-1111-111111111111-SimOuNao"" default=""SimOuNao.Nao"" />
         </attributes>
         <conditions>
           <condition value=""DocumentoId.IsEmpty() when &amp;TemExistente = SimOuNao.Nao;"" />
@@ -581,6 +581,8 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("TemExistente", attrs[0]["name"]?.ToString());
             Assert.Equal("Tem Existente", attrs[0]["description"]?.ToString());
             Assert.Equal("SimOuNao", attrs[0]["domain"]?.ToString());
+            // Issue #588: the schema's `default` field is read by the XML projection.
+            Assert.Equal("SimOuNao.Nao", attrs[0]["default"]?.ToString());
 
             var conds = filters["conditions"] as JArray;
             Assert.NotNull(conds);
@@ -655,6 +657,238 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("OrderDate", attrs[0]["name"]?.ToString());
         }
 
+        [Fact]
+        public void TryListFiltersFromXml_WithoutDefaultAttribute_ReportsEmptyStringNotNull()
+        {
+            bool success = WorkWithSdkAdapter.TryListFiltersFromXml(SampleWorkWithXmlWithTwoFilteredLevels, "Orders", out var filters, out _, out var errorMessage);
+
+            Assert.True(success, errorMessage);
+            var attr = (JObject)((JArray)filters["attributes"])[0];
+            Assert.Equal(JTokenType.String, attr["default"]?.Type);
+            Assert.Equal("", attr["default"]?.ToString());
+        }
+
+        [Fact]
+        public void ReadNativeFilter_ReadsDefaultFromTypedSurfaceAndNormalizesUnsetToEmpty()
+        {
+            var filter = new Artech.Patterns.WorkWith.FilterElement();
+            var withDefault = filter.AddFilterAttribute("OrderDate");
+            withDefault.Description = "Order Date";
+            withDefault.Default = "Today()";
+            filter.AddFilterAttribute("CustomerName");
+            filter.AddCondition("OrderDate >= &OrderDate;");
+
+            var level = new WorkWithSdkAdapter.FilterLevelCandidate { Id = "Root", HasSelection = true, Filter = filter };
+            var filters = WorkWithSdkAdapter.ReadNativeFilter(level);
+
+            Assert.Equal("Root", filters["level"]?.ToString());
+            var attrs = (JArray)filters["attributes"];
+            Assert.Equal(2, attrs.Count);
+            Assert.Equal("OrderDate", attrs[0]["name"]?.ToString());
+            Assert.Equal("Order Date", attrs[0]["description"]?.ToString());
+            Assert.Equal("Today()", attrs[0]["default"]?.ToString());
+            Assert.Equal("&OrderDate", attrs[0]["variableName"]?.ToString());
+            Assert.Equal("CustomerName", attrs[1]["name"]?.ToString());
+            Assert.Equal(JTokenType.String, attrs[1]["default"]?.Type);
+            Assert.Equal("", attrs[1]["default"]?.ToString());
+            Assert.Single((JArray)filters["conditions"]);
+        }
+
+        [Fact]
+        public void TryResolveNativeFilterSurface_ResolvesDefaultSetterFromTypedSurface()
+        {
+            WorkWithSdkAdapter.AssemblyResolverOverride = () => typeof(WorkWithServiceTests).Assembly;
+            try
+            {
+                bool resolved = WorkWithSdkAdapter.TryResolveNativeFilterSurface(null, needsDescription: true, needsDomain: false, needsDefault: true, needsConditions: true, out var surface, out var missing);
+
+                Assert.True(resolved, missing);
+                Assert.NotNull(surface.Default);
+                Assert.Equal("Default", surface.Default.Name);
+                Assert.True(surface.Default.CanWrite);
+                Assert.Equal(typeof(string), surface.Default.PropertyType);
+            }
+            finally
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+            }
+        }
+
+        [Fact]
+        public void TryResolveNativeFilterSurface_WithoutDefaultSetter_NamesTheMissingMember()
+        {
+            // An assembly without the typed WorkWith types stands in for an SDK build whose
+            // FilterAttributeElement has no settable string Default.
+            WorkWithSdkAdapter.AssemblyResolverOverride = () => typeof(object).Assembly;
+            try
+            {
+                bool resolved = WorkWithSdkAdapter.TryResolveNativeFilterSurface(null, needsDescription: false, needsDomain: false, needsDefault: true, needsConditions: false, out var surface, out var missing);
+
+                Assert.False(resolved);
+                Assert.Null(surface);
+                Assert.Contains("FilterAttributeElement.Default string setter", missing);
+
+                bool resolvedWithoutDefault = WorkWithSdkAdapter.TryResolveNativeFilterSurface(null, needsDescription: false, needsDomain: false, needsDefault: false, needsConditions: false, out _, out var missingWithoutDefault);
+                Assert.False(resolvedWithoutDefault);
+                Assert.DoesNotContain("FilterAttributeElement.Default string setter", missingWithoutDefault);
+            }
+            finally
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+            }
+        }
+
+        [Fact]
+        public void TryAuthorFilterAttributeOnTypedModel_WritesDefaultThroughTypedSetter()
+        {
+            WorkWithSdkAdapter.AssemblyResolverOverride = () => typeof(WorkWithServiceTests).Assembly;
+            try
+            {
+                Assert.True(WorkWithSdkAdapter.TryResolveNativeFilterSurface(null, needsDescription: true, needsDomain: false, needsDefault: true, needsConditions: true, out var surface, out var missing), missing);
+
+                var workWith = new Artech.Patterns.WorkWith.WorkWithInstance();
+                var root = workWith.AddLevel("Root");
+                var conditions = new List<string> { "OrderDate >= &OrderDate when not &OrderDate.IsEmpty();" };
+
+                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, "Root", "OrderDate", "Order Date", null, "Today()", conditions, out var created, out var code, out var message);
+
+                Assert.True(authored, message);
+                Assert.Null(code);
+                var attribute = Assert.IsType<Artech.Patterns.WorkWith.FilterAttributeElement>(created);
+                Assert.Equal("OrderDate", attribute.Name);
+                Assert.Equal("Order Date", attribute.Description);
+                Assert.Equal("Today()", attribute.Default);
+                Assert.Same(attribute, Assert.Single(root.Selection.Filter.Attributes));
+                Assert.Equal(conditions[0], Assert.Single(root.Selection.Filter.Conditions).Value);
+
+                // The re-read of the same typed model reports the value the writer set.
+                var reread = WorkWithSdkAdapter.ReadNativeFilter(new WorkWithSdkAdapter.FilterLevelCandidate { Id = "Root", HasSelection = true, Filter = root.Selection.Filter });
+                Assert.Equal("Today()", ((JArray)reread["attributes"])[0]["default"]?.ToString());
+            }
+            finally
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+            }
+        }
+
+        [Fact]
+        public void TryAuthorFilterAttributeOnTypedModel_OmittedDefault_LeavesTypedDefaultUntouched()
+        {
+            WorkWithSdkAdapter.AssemblyResolverOverride = () => typeof(WorkWithServiceTests).Assembly;
+            try
+            {
+                Assert.True(WorkWithSdkAdapter.TryResolveNativeFilterSurface(null, needsDescription: false, needsDomain: false, needsDefault: false, needsConditions: false, out var surface, out var missing), missing);
+
+                var workWith = new Artech.Patterns.WorkWith.WorkWithInstance();
+                var root = workWith.AddLevel("Root");
+
+                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, null, "CustomerName", null, null, "   ", new List<string>(), out var created, out _, out var message);
+
+                Assert.True(authored, message);
+                var attribute = Assert.IsType<Artech.Patterns.WorkWith.FilterAttributeElement>(created);
+                Assert.Null(attribute.Default);
+                Assert.Null(attribute.Description);
+                Assert.Empty(root.Selection.Filter.Conditions);
+            }
+            finally
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+            }
+        }
+
+        [Fact]
+        public void TryAuthorFilterAttributeOnTypedModel_AmbiguousLevel_RefusesBeforeMutating()
+        {
+            WorkWithSdkAdapter.AssemblyResolverOverride = () => typeof(WorkWithServiceTests).Assembly;
+            try
+            {
+                Assert.True(WorkWithSdkAdapter.TryResolveNativeFilterSurface(null, false, false, true, false, out var surface, out var missing), missing);
+
+                var workWith = new Artech.Patterns.WorkWith.WorkWithInstance();
+                var root = workWith.AddLevel("Root");
+                var orders = workWith.AddLevel("Orders");
+
+                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, null, "OrderDate", null, null, "Today()", null, out var created, out var code, out var message);
+
+                Assert.False(authored);
+                Assert.Null(created);
+                Assert.Equal("FilterLevelAmbiguous", code);
+                Assert.Contains("Orders", message);
+                Assert.Empty(root.Selection.Filter.Attributes);
+                Assert.Empty(orders.Selection.Filter.Attributes);
+            }
+            finally
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+            }
+        }
+
+        [Fact]
+        public void ComparedFilterFields_IncludesDefaultOnlyWhenSupplied()
+        {
+            Assert.Equal(new[] { "name", "conditions" }, WorkWithSdkAdapter.ComparedFilterFields(null, null, null));
+            Assert.Equal(new[] { "name", "conditions" }, WorkWithSdkAdapter.ComparedFilterFields(null, null, "  "));
+            Assert.Equal(new[] { "name", "default", "conditions" }, WorkWithSdkAdapter.ComparedFilterFields(null, null, "Today()"));
+            Assert.Equal(new[] { "name", "description", "domain", "default", "conditions" }, WorkWithSdkAdapter.ComparedFilterFields("Order Date", "DateDomain", "Today()"));
+        }
+
+        [Fact]
+        public void VerifyFilterAttributeMatches_Default_MatchesSuppliedValueAndReportsMismatch()
+        {
+            var observed = new JObject { ["name"] = "OrderDate", ["description"] = "Order Date", ["domain"] = "", ["default"] = "Today()" };
+            var observedConditions = new JArray();
+
+            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "OrderDate", null, null, "Today()", null, out var detail), detail);
+
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "OrderDate", null, null, "Now()", null, out detail));
+            Assert.Contains("Default mismatch", detail);
+            Assert.Contains("expected 'Now()', observed 'Today()'", detail);
+
+            var withoutDefault = new JObject { ["name"] = "OrderDate", ["description"] = "Order Date", ["domain"] = "", ["default"] = "" };
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(withoutDefault, observedConditions, "OrderDate", null, null, "Today()", null, out detail));
+            Assert.Contains("Default mismatch", detail);
+        }
+
+        [Fact]
+        public void VerifyFilterAttributeMatches_OmittedDefault_NeverComparesAgainstEmptyOrMissing()
+        {
+            var observedConditions = new JArray();
+            var emptyDefault = new JObject { ["name"] = "OrderDate", ["default"] = "" };
+            var missingDefault = new JObject { ["name"] = "OrderDate" };
+            var populatedDefault = new JObject { ["name"] = "OrderDate", ["default"] = "Today()" };
+
+            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(emptyDefault, observedConditions, "OrderDate", null, null, null, null, out var detail), detail);
+            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(missingDefault, observedConditions, "OrderDate", null, null, "", null, out detail), detail);
+            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(populatedDefault, observedConditions, "OrderDate", null, null, "   ", null, out detail), detail);
+        }
+
+        [Fact]
+        public void BuildFilterPlan_IncludesDefaultWhenSuppliedAndDeclaresItStoredNotValidated()
+        {
+            var plan = WorkWithSdkAdapter.BuildFilterPlan("WorkWithWebOrder", "Root", "OrderDate", null, null, "Today()", null);
+
+            Assert.Equal("Today()", plan["filterAttribute"]?["default"]?.ToString());
+            Assert.Contains("stored as given", plan["validationLimits"]?["default"]?.ToString());
+            Assert.Contains("not compiled", plan["validationLimits"]?["default"]?.ToString());
+
+            var withoutDefault = WorkWithSdkAdapter.BuildFilterPlan("WorkWithWebOrder", "Root", "OrderDate", null, null, "   ", null);
+            Assert.Null(withoutDefault["filterAttribute"]?["default"]);
+        }
+
+        [Fact]
+        public void BuildFilterReceipt_WithDefault_ComparesDefaultAndEchoesRequestedValue()
+        {
+            var observed = new JObject { ["name"] = "OrderDate", ["description"] = "Order Date", ["domain"] = "", ["default"] = "Today()" };
+            var observedConditions = new JArray("OrderDate >= &OrderDate;");
+
+            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebOrder", "Root", observed, observedConditions, "OrderDate", "Order Date", null, "Today()", new List<string> { "OrderDate >= &OrderDate;" }, WorkWithReadSource.NativeInstance, WorkWithReadSource.NativeInstance);
+
+            Assert.Equal(new[] { "name", "description", "default", "conditions" }, (receipt["verification"]?["fieldsCompared"] as JArray).Select(f => f.ToString()).ToArray());
+            Assert.Equal("Today()", receipt["requested"]?["default"]?.ToString());
+            Assert.Equal("Today()", receipt["filterAttribute"]?["default"]?.ToString());
+            Assert.Equal("in_memory_instance_reread", receipt["verification"]?["observedSource"]?.ToString());
+        }
+
         [Theory]
         [InlineData("CustomerName")]
         [InlineData("&CustomerName")]
@@ -720,7 +954,7 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void BuildFilterPlan_DoesNotInventDescriptionAndReportsNativeRoute()
         {
-            var plan = WorkWithSdkAdapter.BuildFilterPlan("WorkWithWebCustomer", "Root", "CustomerName", description: null, domain: null, conditions: new List<string> { "CustomerName like &CustomerName;" });
+            var plan = WorkWithSdkAdapter.BuildFilterPlan("WorkWithWebCustomer", "Root", "CustomerName", description: null, domain: null, defaultValue: null, conditions: new List<string> { "CustomerName like &CustomerName;" });
 
             Assert.Equal("native-sdk", plan["route"]?.ToString());
             Assert.Equal("Root", plan["level"]?.ToString());
@@ -728,11 +962,12 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("CustomerName", filterAttribute["name"]?.ToString());
             Assert.Null(filterAttribute["description"]);
             Assert.Null(filterAttribute["domain"]);
+            Assert.Null(filterAttribute["default"]);
             Assert.Single(plan["conditions"] as JArray);
             Assert.NotNull(plan["validations"]);
             Assert.Contains("not compiled", plan["validationLimits"]?["conditionExpressions"]?.ToString());
 
-            var withDescription = WorkWithSdkAdapter.BuildFilterPlan("WorkWithWebCustomer", "Root", "CustomerName", "Customer Name", "CustomerNameDomain", null);
+            var withDescription = WorkWithSdkAdapter.BuildFilterPlan("WorkWithWebCustomer", "Root", "CustomerName", "Customer Name", "CustomerNameDomain", null, null);
             Assert.Equal("Customer Name", withDescription["filterAttribute"]?["description"]?.ToString());
             Assert.Equal("CustomerNameDomain", withDescription["filterAttribute"]?["domain"]?.ToString());
             Assert.Empty(withDescription["conditions"] as JArray);
@@ -745,19 +980,19 @@ namespace GxMcp.Worker.Tests
             var observedConditions = new JArray("Existing;", "CustomerName like &CustomerName;");
             var requested = new List<string> { "CustomerName like &CustomerName;" };
 
-            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", "Customer Name", "customernamedomain", requested, out var detail), detail);
-            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", null, null, requested, out _));
+            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", "Customer Name", "customernamedomain", null, requested, out var detail), detail);
+            Assert.True(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", null, null, null, requested, out _));
 
-            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", "Other", null, requested, out detail));
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", "Other", null, null, requested, out detail));
             Assert.Contains("Description mismatch", detail);
 
-            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", null, "Missing", requested, out detail));
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, observedConditions, "CustomerName", null, "Missing", null, requested, out detail));
             Assert.Contains("Domain mismatch", detail);
 
-            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, new JArray("Existing;"), "CustomerName", null, null, requested, out detail));
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(observed, new JArray("Existing;"), "CustomerName", null, null, null, requested, out detail));
             Assert.Contains("was not found in the verified filter conditions", detail);
 
-            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(null, observedConditions, "CustomerName", null, null, requested, out detail));
+            Assert.False(WorkWithSdkAdapter.VerifyFilterAttributeMatches(null, observedConditions, "CustomerName", null, null, null, requested, out detail));
         }
 
         [Fact]
@@ -766,7 +1001,7 @@ namespace GxMcp.Worker.Tests
             var observed = new JObject { ["name"] = "CustomerName", ["description"] = "Customer Name", ["domain"] = "" };
             var observedConditions = new JArray("CustomerName like &CustomerName;");
 
-            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, observedConditions, "CustomerName", "Customer Name", null, new List<string> { "CustomerName like &CustomerName;" }, WorkWithReadSource.NativeInstance, WorkWithReadSource.NativeInstance);
+            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, observedConditions, "CustomerName", "Customer Name", null, null, new List<string> { "CustomerName like &CustomerName;" }, WorkWithReadSource.NativeInstance, WorkWithReadSource.NativeInstance);
 
             Assert.Equal("WorkWithWebCustomer", receipt["instance"]?.ToString());
             Assert.Equal("Root", receipt["level"]?.ToString());
@@ -778,9 +1013,11 @@ namespace GxMcp.Worker.Tests
             Assert.Null(receipt["verification"]?["observedSourceReason"]);
             Assert.Equal("in_memory_instance_reread", receipt["verification"]?["preCheckSource"]?.ToString());
             Assert.Null(receipt["verification"]?["preCheckSourceReason"]);
+            // Issue #588: an omitted `default` is not compared, so the pinned list is unchanged.
             Assert.Equal(new[] { "name", "description", "conditions" }, (receipt["verification"]?["fieldsCompared"] as JArray).Select(f => f.ToString()).ToArray());
             Assert.Equal("Customer Name", receipt["filterAttribute"]?["description"]?.ToString());
             Assert.Equal("CustomerName", receipt["requested"]?["name"]?.ToString());
+            Assert.Equal("", receipt["requested"]?["default"]?.ToString());
             Assert.Equal("not_guaranteed", receipt["derivedObjectRegeneration"]?.ToString());
             Assert.Null(receipt["generatedObjectsRegenerated"]);
             Assert.Null(receipt["applied"]);
@@ -792,7 +1029,7 @@ namespace GxMcp.Worker.Tests
             WorkWithSdkAdapter.AssemblyResolverOverride = () => null;
             try
             {
-                bool added = WorkWithSdkAdapter.TryAddFilterAttributeNative(null, "Root", "CustomerName", null, null, new List<string> { "CustomerName like &CustomerName;" }, out var code, out var message);
+                bool added = WorkWithSdkAdapter.TryAddFilterAttributeNative(null, "Root", "CustomerName", null, null, null, new List<string> { "CustomerName like &CustomerName;" }, out var code, out var message);
 
                 Assert.False(added);
                 Assert.Equal("WorkWithSdkUnavailable", code);
@@ -1103,7 +1340,7 @@ namespace GxMcp.Worker.Tests
         {
             var observed = new JObject { ["name"] = "CustomerName", ["description"] = "CustomerName", ["domain"] = "" };
 
-            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, new JArray(), "CustomerName", null, null, null, WorkWithReadSource.NativeInstance, WorkWithReadSource.XmlProjectionNativeReadFailed);
+            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, new JArray(), "CustomerName", null, null, null, null, WorkWithReadSource.NativeInstance, WorkWithReadSource.XmlProjectionNativeReadFailed);
 
             var verification = receipt["verification"] as JObject;
             Assert.NotNull(verification);
@@ -1121,7 +1358,7 @@ namespace GxMcp.Worker.Tests
         {
             var observed = new JObject { ["name"] = "CustomerName", ["description"] = "CustomerName", ["domain"] = "" };
 
-            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, new JArray(), "CustomerName", null, null, null, WorkWithReadSource.XmlProjectionNativeLevelsAbsent, WorkWithReadSource.NativeInstance);
+            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, new JArray(), "CustomerName", null, null, null, null, WorkWithReadSource.XmlProjectionNativeLevelsAbsent, WorkWithReadSource.NativeInstance);
 
             var verification = receipt["verification"] as JObject;
             Assert.NotNull(verification);
@@ -1134,21 +1371,3 @@ namespace GxMcp.Worker.Tests
     }
 }
 
-namespace Artech.Patterns.WorkWith
-{
-    /// Stand-in for the SDK type that WorkWithSdkAdapter resolves by name: the test
-    /// assembly is handed to AssemblyResolverOverride, so this is what
-    /// `GetType("Artech.Patterns.WorkWith.WorkWithInstance")` returns. `LoadHook`
-    /// scripts what the static `Load` returns or throws (issue #589).
-    public sealed class WorkWithInstance
-    {
-        public static Func<object, object> LoadHook;
-
-        public static object Load(object instance)
-        {
-            return LoadHook?.Invoke(instance);
-        }
-
-        public object Levels { get; set; }
-    }
-}

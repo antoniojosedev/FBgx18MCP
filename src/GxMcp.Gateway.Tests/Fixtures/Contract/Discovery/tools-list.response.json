@@ -5099,6 +5099,10 @@
             },
             "type": "array"
           },
+          "default": {
+            "description": "Optional default value expression of…",
+            "type": "string"
+          },
           "description": {
             "description": "Optional description of the filter…",
             "type": "string"
