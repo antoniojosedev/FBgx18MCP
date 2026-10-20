@@ -82,6 +82,8 @@
 
 ### Fixed
 
+- **`genexus_wire` no longer walks native-KB generation folders, and detects a native KB by its `GXLOCK` directory** ([#593](https://github.com/lennix1337/Genexus18MCP/issues/593)). The index walk now also skips `build`, `UserControls`, `Locks` and `OutputLogs` at any depth (it only skips them; nothing is deleted), and the native-KB refusal treats a `GXLOCK` directory (`GXLOCK/LOCKS`, what a real KB has) as decisive instead of only a `GXLOCK` file. The worker `list_tabs` timeouts reported in the same issue are not addressed.
+
 - **`genexus_edit part=PatternInstance` no longer accepts, in its preview, attributes the pattern does not declare.** The pattern deserializer keeps only the attributes its specification declares, so a name such as `controlLoadDataDynamically` was accepted by `dryRun` and then discarded on save, ending in `PatternVerificationMismatch` after the part had been saved. The preview and the write now refuse such attributes up front (`PatternAttributeNotInSdkSpecification`, naming the declared attribute it most resembles, with `sdkAttributeNames` among the verified checks of a passing preview). The check reads the specification the SDK loaded, so it applies to every pattern, and it never blocks a write by failing itself. https://github.com/lennix1337/Genexus18MCP/issues/620
 
 - The direct compiler replay failed (`CS2011`, response file path doubled) when `rebuild-all --output` was a relative path, so every rebuild after the first into the same relative folder failed. The project folder is now resolved to an absolute path.

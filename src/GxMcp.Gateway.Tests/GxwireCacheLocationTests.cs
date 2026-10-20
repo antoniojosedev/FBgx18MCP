@@ -262,6 +262,22 @@ namespace GxMcp.Gateway.Tests
             Assert.Null(NativeKnowledgeBaseEvidence.Describe(dir.Path));
         }
 
+        [Fact]
+        public void GxlockDirectory_IsDecisiveEvenWithRootXmlAndSourceText()
+        {
+            // #593: a real native KB keeps GXLOCK as a directory (GXLOCK/LOCKS),
+            // which a File.Exists check never sees.
+            using var dir = new TempDir();
+            Directory.CreateDirectory(Path.Combine(dir.Path, "GXLOCK", "LOCKS"));
+            File.WriteAllText(Path.Combine(dir.Path, "other.xml"), "<x/>");
+            File.WriteAllText(Path.Combine(dir.Path, "MyProc.txt"), "// source");
+
+            var evidence = NativeKnowledgeBaseEvidence.Describe(dir.Path);
+
+            Assert.NotNull(evidence);
+            Assert.Contains(evidence!, t => t.ToString().Contains("GXLOCK"));
+        }
+
         private static TempDir NativeKb(string name)
         {
             var dir = new TempDir();
