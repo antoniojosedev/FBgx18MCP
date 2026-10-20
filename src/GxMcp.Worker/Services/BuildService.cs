@@ -4343,6 +4343,11 @@ namespace GxMcp.Worker.Services
             reapStart = DateTime.MinValue;
             status.BuildPath = "msbuild-exe";
 
+            // Issue #608: the spawned MSBuild.exe inherits this process's PATH, and the generator starts
+            // `gxexec` by bare name; only the IDE has <GeneXus install>\gxnet on PATH. Same idempotent,
+            // process-level, never-throwing prepend as the in-process route.
+            GxBuildPathEnvironment.EnsureOnProcessPath();
+
             tempFile = Path.Combine(Path.GetTempPath(), "GxBuild_" + Guid.NewGuid().ToString().Substring(0, 8) + ".msbuild");
             string projectXml = BuildExternalProjectXml(
                 Path.Combine(_gxDir, "Genexus.Tasks.targets"), kbPath, action, targets, status);
