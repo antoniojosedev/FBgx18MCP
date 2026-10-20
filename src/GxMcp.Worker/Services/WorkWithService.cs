@@ -143,15 +143,17 @@ namespace GxMcp.Worker.Services
 
             bool dryRun = args?["dryRun"]?.ToObject<bool?>() == true;
 
+            // `domain` (and the Attribute-vs-variable classification behind the advisory)
+            // resolve through the same object lookup every other tool uses: name, GUID
+            // or `Type:Name`, honouring the type filter (issue #587).
+            WorkWithSdkAdapter.FilterObjectLookup lookup = (nameOrGuid, typeName) =>
+                WorkWithSdkAdapter.FilterKbObjectRef.FromKbObject(_objects.FindObject(nameOrGuid, typeName));
+
             if (dryRun)
             {
-                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, level, attribute, description, domain, defaultValue, conditions, dryRun: true, out var plan, out var errCode, out var errMsg))
+                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, level, attribute, description, domain, defaultValue, conditions, lookup, dryRun: true, out var plan, out var errCode, out var errMsg))
                 {
-                    return McpResponse.Err(
-                        code: errCode ?? "AddFilterAttributePlanFailed",
-                        message: errMsg ?? "Failed to create add_filter_attribute plan.",
-                        target: target,
-                        extra: plan != null ? new JObject { ["plan"] = plan, ["dryRun"] = true } : null);
+                    return FilterAttributeError(target, errCode ?? "AddFilterAttributePlanFailed", errMsg ?? "Failed to create add_filter_attribute plan.", plan, dryRun: true, domain);
                 }
 
                 return McpResponse.Ok(target: target, code: "WorkWithFilterPlan", result: new JObject
@@ -164,17 +166,39 @@ namespace GxMcp.Worker.Services
             lock (WriteService.AcquirePerTargetLock(instanceObj.Name))
             {
                 KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
-                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, level, attribute, description, domain, defaultValue, conditions, dryRun: false, out var receipt, out var errCode, out var errMsg))
+                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, level, attribute, description, domain, defaultValue, conditions, lookup, dryRun: false, out var receipt, out var errCode, out var errMsg))
                 {
-                    return McpResponse.Err(
-                        code: errCode ?? "AddFilterAttributeFailed",
-                        message: errMsg ?? "Failed to add filter attribute.",
-                        target: target,
-                        extra: receipt != null ? new JObject { ["plan"] = receipt } : null);
+                    return FilterAttributeError(target, errCode ?? "AddFilterAttributeFailed", errMsg ?? "Failed to add filter attribute.", receipt, dryRun: false, domain);
                 }
 
                 return McpResponse.Ok(target: target, code: "WorkWithFilterAdded", result: receipt);
             }
+        }
+
+        private static string FilterAttributeError(string target, string code, string message, JObject plan, bool dryRun, string domain)
+        {
+            JObject extra = null;
+            if (plan != null)
+            {
+                extra = new JObject { ["plan"] = plan };
+                if (dryRun) extra["dryRun"] = true;
+            }
+
+            bool domainNotFound = string.Equals(code, "FilterDomainNotFound", StringComparison.Ordinal);
+            return McpResponse.Err(
+                code: code,
+                message: message,
+                hint: domainNotFound
+                    ? "Pass the name or GUID of an existing Domain (list_filters reports the plain Domain name of existing filter attributes), or omit `domain`."
+                    : null,
+                nextSteps: domainNotFound
+                    ? new JArray(McpResponse.NextStep("genexus_list_objects",
+                        new JObject { ["type"] = "Domain", ["query"] = domain ?? "" },
+                        "Lists Domains matching the name."))
+                    : null,
+                target: target,
+                extra: extra,
+                errorExtra: plan?["domainAdvisory"] as JObject);
         }
 
         private string ExecuteListActions(string target, KBObject instanceObj)

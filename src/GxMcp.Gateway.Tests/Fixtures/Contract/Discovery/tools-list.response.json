@@ -5108,7 +5108,7 @@
             "type": "string"
           },
           "domain": {
-            "description": "Optional Domain name for the filter…",
+            "description": "Optional Domain for the filter…",
             "type": "string"
           },
           "dryRun": {

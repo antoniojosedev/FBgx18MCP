@@ -750,7 +750,7 @@ namespace GxMcp.Worker.Tests
                 var root = workWith.AddLevel("Root");
                 var conditions = new List<string> { "OrderDate >= &OrderDate when not &OrderDate.IsEmpty();" };
 
-                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, "Root", "OrderDate", "Order Date", null, "Today()", conditions, out var created, out var code, out var message);
+                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, "Root", "OrderDate", "Order Date", null, "Today()", conditions, out var created, out _, out var code, out var message);
 
                 Assert.True(authored, message);
                 Assert.Null(code);
@@ -782,7 +782,7 @@ namespace GxMcp.Worker.Tests
                 var workWith = new Artech.Patterns.WorkWith.WorkWithInstance();
                 var root = workWith.AddLevel("Root");
 
-                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, null, "CustomerName", null, null, "   ", new List<string>(), out var created, out _, out var message);
+                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, null, "CustomerName", null, null, "   ", new List<string>(), out var created, out _, out _, out var message);
 
                 Assert.True(authored, message);
                 var attribute = Assert.IsType<Artech.Patterns.WorkWith.FilterAttributeElement>(created);
@@ -808,7 +808,7 @@ namespace GxMcp.Worker.Tests
                 var root = workWith.AddLevel("Root");
                 var orders = workWith.AddLevel("Orders");
 
-                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, null, "OrderDate", null, null, "Today()", null, out var created, out var code, out var message);
+                bool authored = WorkWithSdkAdapter.TryAuthorFilterAttributeOnTypedModel(surface, workWith, null, "OrderDate", null, null, "Today()", null, out var created, out _, out var code, out var message);
 
                 Assert.False(authored);
                 Assert.Null(created);
@@ -1029,7 +1029,7 @@ namespace GxMcp.Worker.Tests
             WorkWithSdkAdapter.AssemblyResolverOverride = () => null;
             try
             {
-                bool added = WorkWithSdkAdapter.TryAddFilterAttributeNative(null, "Root", "CustomerName", null, null, null, new List<string> { "CustomerName like &CustomerName;" }, out var code, out var message);
+                bool added = WorkWithSdkAdapter.TryAddFilterAttributeNative(null, "Root", "CustomerName", null, null, null, new List<string> { "CustomerName like &CustomerName;" }, out _, out var code, out var message);
 
                 Assert.False(added);
                 Assert.Equal("WorkWithSdkUnavailable", code);
