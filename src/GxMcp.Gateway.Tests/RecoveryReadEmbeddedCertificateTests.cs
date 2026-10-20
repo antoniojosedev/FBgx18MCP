@@ -180,7 +180,7 @@ namespace GxMcp.Gateway.Tests
             // The page came from a Worker cache the fresh certification read has outdated:
             // the caller would edit from a versionToken that is not the one certified.
             string text = SyntheticPart(250000, 5000);
-            var worker = WorkerRead(text, 5000, Certificate(text, 5000, objectToken: "638000000000000009:root"));
+            var worker = WorkerRead(text, 5000, Certificate(text, 5000, revision: "638000000000000009:root"));
             var registry = Fenced();
 
             Assert.Equal(0, Decide(registry, ReadArgs(), worker));
@@ -197,7 +197,7 @@ namespace GxMcp.Gateway.Tests
             // The page is complete and would clear the fence on its own; the fresh certificate
             // says the part is at another version, so the page the caller holds is outdated.
             string text = SyntheticPart(3000, 60);
-            var certificate = Certificate(text, 60, objectToken: "638000000000000009:root");
+            var certificate = Certificate(text, 60, revision: "638000000000000009:root");
             var registry = Fenced();
             var page = ThroughWireGuards(WorkerRead(text, 60, null), ReadArgs());
             Assert.True(Program.IsCompleteMutationRecoveryRead(page));

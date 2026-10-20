@@ -19,6 +19,8 @@ namespace GxMcp.Worker.Tests
     public class RecoveryReadCertificateTests
     {
         private const string Guid1 = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        // The object-revision half of a version token (last-update ticks and parent).
+        private const string RevisionStamp = "638000000000000000:root";
 
         private static string SyntheticPart(int chars, int lines)
         {
@@ -165,7 +167,7 @@ namespace GxMcp.Worker.Tests
         public void PartWithoutTextIsNotComplete()
         {
             var observation = Observe(null);
-            observation.VersionToken = "638000000000000000:root:abc";
+            observation.VersionToken = RevisionStamp + ":abc";
 
             var certificate = RecoveryReadCertificate.Build(observation);
 
@@ -257,7 +259,7 @@ namespace GxMcp.Worker.Tests
             // The part also fails the token/hash check; the race must still be visible so the
             // Gateway can veto every route that would clear a fence from this read.
             var observation = Observe(SyntheticPart(3000, 60));
-            observation.VersionToken = "638000000000000000:root:not-the-hash-of-this-text";
+            observation.VersionToken = RevisionStamp + ":not-the-hash-of-this-text";
             observation.WriteStampAfter = "w200";
 
             var certificate = RecoveryReadCertificate.Build(observation);

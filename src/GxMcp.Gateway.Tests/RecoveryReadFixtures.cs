@@ -52,7 +52,7 @@ namespace GxMcp.Gateway.Tests
             string entityKey = ObjectEntityKey,
             string path = ObjectName,
             string stamp = "w100",
-            string objectToken = "638000000000000000:root")
+            string revision = "638000000000000000:root")
         {
             string sha = Sha256(text);
             return new JObject
@@ -72,7 +72,7 @@ namespace GxMcp.Gateway.Tests
                 ["totalChars"] = text.Length,
                 ["utf8Bytes"] = Encoding.UTF8.GetByteCount(text),
                 ["sha256"] = sha,
-                ["versionToken"] = objectToken + ":" + sha,
+                ["versionToken"] = revision + ":" + sha,
                 ["targetWriteStamp"] = stamp
             };
         }
