@@ -202,6 +202,68 @@ namespace GxMcp.Worker.Tests
             Assert.Contains(caller.Name, target.CalledBy);
         }
 
+        // ── Time budget: a scan that outlives its budget stops, it does not fail ──
+
+        [Fact]
+        public void TextualScan_PartsReadPastTheBudget_AreSkippedWithoutTrippingTheBreaker()
+        {
+            var cache = BuildCache(1, out var searchIndex, out var callers, out var target);
+            cache.TextualScanBudget = TimeSpan.FromMilliseconds(50);
+            var caller = callers[0];
+            IEnumerable<string> SlowParts()
+            {
+                yield return "// nothing callable here";
+                System.Threading.Thread.Sleep(200);
+                yield return "ProcB.Call(&a)";
+            }
+
+            Assert.False(cache.RunTextualCallScan(caller, searchIndex, SlowParts));
+
+            Assert.Equal(1, cache.TextualScanBudgetExceeded);
+            Assert.Equal(0, cache.TextualScanConsecutiveFailures);
+            Assert.False(cache.TextualScanTripped);
+            Assert.True(caller.Calls == null || caller.Calls.Count == 0);
+            Assert.True(target.CalledBy == null || target.CalledBy.Count == 0);
+        }
+
+        [Fact]
+        public void TextualScan_PartsWithinTheBudget_AreAllScanned()
+        {
+            var cache = BuildCache(1, out var searchIndex, out var callers, out var target);
+            var caller = callers[0];
+
+            Assert.True(cache.RunTextualCallScan(caller, searchIndex, () => new[] { "// nothing", "ProcB.Call(&a)" }));
+
+            Assert.Equal(0, cache.TextualScanBudgetExceeded);
+            Assert.Contains(caller.Name, target.CalledBy);
+        }
+
+        // ── One pending edge scan per storage key ──
+
+        [Fact]
+        public void QueueEdgeEnrichment_RepeatedUpdatesOfOneKey_QueueOneJobUntilItStarts()
+        {
+            var cache = new IndexCacheService();
+            var queued = new List<Action>();
+            int ran = 0;
+
+            Assert.True(cache.QueueEdgeEnrichment("Procedure:ProcA", queued.Add, () => ran++));
+            Assert.False(cache.QueueEdgeEnrichment("procedure:proca", queued.Add, () => ran++));
+            Assert.False(cache.QueueEdgeEnrichment("Procedure:ProcA", queued.Add, () => ran++));
+            Assert.True(cache.QueueEdgeEnrichment("Procedure:ProcB", queued.Add, () => ran++));
+
+            Assert.Equal(2, queued.Count);
+            Assert.Equal(2, cache.PendingEdgeEnrichmentCount);
+
+            queued[0]();
+            Assert.Equal(1, ran);
+            Assert.Equal(1, cache.PendingEdgeEnrichmentCount);
+
+            // Once the first job started, a later change queues a fresh scan.
+            Assert.True(cache.QueueEdgeEnrichment("Procedure:ProcA", queued.Add, () => ran++));
+            Assert.Equal(3, queued.Count);
+        }
+
         // ── Background dispatcher yields to foreground SDK work ──
 
         [Theory]
