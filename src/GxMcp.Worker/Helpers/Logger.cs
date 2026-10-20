@@ -105,8 +105,18 @@ namespace GxMcp.Worker.Helpers
         public static void Error(string message) => Enqueue("ERROR", message);
         public static void Debug(string message) => Enqueue("DEBUG", message);
 
+        // Test seam (issue #594): lets a unit test count the lines a code path emits
+        // (level, message) without capturing stderr or the log file. Null in production.
+        internal static Action<string, string> TestSink;
+
         private static void Enqueue(string level, string message)
         {
+            var sink = TestSink;
+            if (sink != null)
+            {
+                try { sink(level, message); } catch { }
+            }
+
             // ISO-8601 with milliseconds + offset so build phase stalls diff
             // cleanly against external clocks; phase tag lets the agent grep
             // a build trace by phase. Phase-empty case avoids the "[" + phase
