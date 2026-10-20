@@ -13,6 +13,24 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Compatibility
 {
+    /// Which reader produced a ListActions/ListFilters result. Read responses and write
+    /// receipts copy this instead of claiming an in-memory instance reread for every
+    /// path: the XML projection is a read of the same in-memory part, not evidence of
+    /// the typed instance state (issue #589).
+    internal enum WorkWithReadSource
+    {
+        /// The typed WorkWithInstance loaded from the in-memory PatternInstance part.
+        NativeInstance,
+        /// XML projection: the Artech.Patterns.WorkWith assembly could not be resolved.
+        XmlProjectionNativeUnavailable,
+        /// XML projection: WorkWithInstance or its Load member was not found, or Load returned null.
+        XmlProjectionNativeInstanceAbsent,
+        /// XML projection: the typed instance exposed no Levels collection.
+        XmlProjectionNativeLevelsAbsent,
+        /// XML projection: the native read threw (logged at Debug).
+        XmlProjectionNativeReadFailed
+    }
+
     /// <summary>
     /// Compatibility adapter for standard GeneXus WorkWith (WorkWith for Web).
     /// Uses Artech.Patterns.WorkWith.WorkWithInstance when available on the STA thread,
@@ -46,6 +64,83 @@ namespace GxMcp.Worker.Compatibility
 
         internal const string FallbackDefaultNormalization =
             "XML fallback preserves existing pattern XML defaults verbatim without normalization.";
+
+        internal const string InMemoryInstanceRereadSource = "in_memory_instance_reread";
+        internal const string XmlProjectionSource = "xml_projection";
+
+        internal static string ReadSourceLabel(WorkWithReadSource source)
+        {
+            return source == WorkWithReadSource.NativeInstance ? InMemoryInstanceRereadSource : XmlProjectionSource;
+        }
+
+        /// Why the XML projection was read instead of the typed instance; null on the native route.
+        internal static string ReadSourceReason(WorkWithReadSource source)
+        {
+            switch (source)
+            {
+                case WorkWithReadSource.XmlProjectionNativeUnavailable: return "native_sdk_unavailable";
+                case WorkWithReadSource.XmlProjectionNativeInstanceAbsent: return "native_instance_absent";
+                case WorkWithReadSource.XmlProjectionNativeLevelsAbsent: return "native_levels_absent";
+                case WorkWithReadSource.XmlProjectionNativeReadFailed: return "native_read_failed";
+                default: return null;
+            }
+        }
+
+        /// Writes `field` with the source label and, on the XML projection, `<field>Reason`.
+        internal static void DescribeReadSource(JObject target, string field, WorkWithReadSource source)
+        {
+            target[field] = ReadSourceLabel(source);
+            string reason = ReadSourceReason(source);
+            if (reason != null) target[field + "Reason"] = reason;
+        }
+
+        private static string DescribeRereadScope(WorkWithReadSource source)
+        {
+            return source == WorkWithReadSource.NativeInstance
+                ? "post-write in-memory instance re-read"
+                : "post-write PatternInstance XML projection re-read";
+        }
+
+        /// Loads the typed WorkWithInstance for a read. When it returns false, `fallback`
+        /// says why the caller must read the XML projection instead; a throwing Load is
+        /// reported, not rethrown.
+        private static bool TryLoadNativeInstance(KBObject instanceObj, string operation, out Type wwiType, out object wwi, out WorkWithReadSource fallback)
+        {
+            wwiType = null;
+            wwi = null;
+            var asm = GetWorkWithAssembly();
+            if (asm == null)
+            {
+                fallback = WorkWithReadSource.XmlProjectionNativeUnavailable;
+                return false;
+            }
+
+            try
+            {
+                wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
+                var loadMethod = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
+                wwi = loadMethod?.Invoke(null, new object[] { instanceObj });
+                if (wwi == null)
+                {
+                    fallback = WorkWithReadSource.XmlProjectionNativeInstanceAbsent;
+                    return false;
+                }
+
+                fallback = WorkWithReadSource.NativeInstance;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogNativeReadFallback(operation, ex);
+                fallback = WorkWithReadSource.XmlProjectionNativeReadFailed;
+                return false;
+            }
+        }
+
+        private static void LogNativeReadFallback(string operation, Exception ex)
+        {
+            Logger.Debug("[WorkWithSdkAdapter] Native " + operation + " failed, falling back to XML: " + ex.Message);
+        }
 
         internal static Assembly GetWorkWithAssembly()
         {
@@ -87,9 +182,10 @@ namespace GxMcp.Worker.Compatibility
 
         internal static bool IsNativeSdkAvailable => GetWorkWithAssembly() != null;
 
-        public static bool ListActions(KBObject instanceObj, PatternAnalysisService patterns, out JArray tabsArray, out string error)
+        public static bool ListActions(KBObject instanceObj, PatternAnalysisService patterns, out JArray tabsArray, out WorkWithReadSource source, out string error)
         {
             tabsArray = null;
+            source = WorkWithReadSource.NativeInstance;
             error = null;
 
             if (instanceObj == null)
@@ -98,98 +194,108 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            var asm = GetWorkWithAssembly();
-            if (asm != null)
+            return ListActionsCore(
+                instanceObj,
+                () => patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _),
+                out tabsArray,
+                out source,
+                out error);
+        }
+
+        /// Native-first read with the XML projection as fallback. `readPatternXml` is the
+        /// seam that lets every path run without a Knowledge Base; `source` names the
+        /// reader that produced `tabsArray`.
+        internal static bool ListActionsCore(KBObject instanceObj, Func<string> readPatternXml, out JArray tabsArray, out WorkWithReadSource source, out string error)
+        {
+            tabsArray = null;
+            error = null;
+
+            if (TryLoadNativeInstance(instanceObj, "ListActions", out var wwiType, out var wwi, out source))
             {
                 try
                 {
-                    var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                    if (wwiType != null)
-                    {
-                        var loadMethod = wwiType.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                        object wwi = loadMethod != null ? loadMethod.Invoke(null, new object[] { instanceObj }) : null;
-                        if (wwi != null)
-                        {
-                            var levelsProp = wwiType.GetProperty("Levels");
-                            var levels = levelsProp?.GetValue(wwi, null) as IEnumerable;
-                            var tabsList = new JArray();
-                            if (levels != null)
-                            {
-                                foreach (var level in levels)
-                                {
-                                    var view = level.GetType().GetProperty("View")?.GetValue(level, null);
-                                    if (view == null) continue;
-                                    var tabs = view.GetType().GetProperty("Tabs")?.GetValue(view, null) as IEnumerable;
-                                    if (tabs == null) continue;
-                                    foreach (var tab in tabs)
-                                    {
-                                        string code = tab.GetType().GetProperty("Code")?.GetValue(tab, null)?.ToString() ?? "";
-                                        string name = tab.GetType().GetProperty("Name")?.GetValue(tab, null)?.ToString() ?? code;
-                                        string type = tab.GetType().GetProperty("Type")?.GetValue(tab, null)?.ToString() ?? "Tabular";
-                                        var tabObj = new JObject
-                                        {
-                                            ["code"] = code,
-                                            ["name"] = name,
-                                            ["type"] = type
-                                        };
-                                        var actions = tab.GetType().GetProperty("Actions")?.GetValue(tab, null) as IEnumerable;
-                                        var actionsArray = new JArray();
-                                        if (actions != null)
-                                        {
-                                            foreach (var act in actions)
-                                            {
-                                                string actName = act.GetType().GetProperty("Name")?.GetValue(act, null)?.ToString() ?? "";
-                                                string caption = act.GetType().GetProperty("Caption")?.GetValue(act, null)?.ToString();
-                                                string procName = act.GetType().GetProperty("GxobjectName")?.GetValue(act, null)?.ToString();
-                                                if (string.IsNullOrEmpty(procName))
-                                                {
-                                                    var gxObj = act.GetType().GetProperty("Gxobject")?.GetValue(act, null) as KBObject;
-                                                    procName = gxObj?.Name;
-                                                }
-                                                string condition = act.GetType().GetProperty("Condition")?.GetValue(act, null)?.ToString();
-                                                var parameters = act.GetType().GetProperty("Parameters")?.GetValue(act, null) as IEnumerable;
-                                                var paramList = new JArray();
-                                                if (parameters != null)
-                                                {
-                                                    foreach (var p in parameters)
-                                                    {
-                                                        string pName = p.GetType().GetProperty("Name")?.GetValue(p, null)?.ToString();
-                                                        if (!string.IsNullOrEmpty(pName)) paramList.Add(pName);
-                                                    }
-                                                }
-                                                actionsArray.Add(new JObject
-                                                {
-                                                    ["name"] = actName,
-                                                    ["caption"] = caption ?? actName,
-                                                    ["procedure"] = procName ?? "",
-                                                    ["condition"] = condition ?? "",
-                                                    ["parameters"] = paramList
-                                                });
-                                            }
-                                        }
-                                        tabObj["actions"] = actionsArray;
-                                        tabsList.Add(tabObj);
-                                    }
-                                }
-                            }
-                            tabsArray = tabsList;
-                            return true;
-                        }
-                    }
+                    tabsArray = ReadNativeTabs(wwiType, wwi);
+                    return true;
                 }
                 catch (Exception ex)
                 {
-                    Logger.Debug("[WorkWithSdkAdapter] Native ListActions failed, falling back to XML: " + ex.Message);
+                    LogNativeReadFallback("ListActions", ex);
+                    source = WorkWithReadSource.XmlProjectionNativeReadFailed;
                 }
             }
 
-            string xml = patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
+            string xml = readPatternXml?.Invoke();
             if (string.IsNullOrWhiteSpace(xml))
             {
                 error = "PatternInstanceXmlEmpty";
                 return false;
             }
             return TryListActionsFromXml(xml, out tabsArray, out error);
+        }
+
+        private static JArray ReadNativeTabs(Type wwiType, object wwi)
+        {
+            var levels = wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable;
+            var tabsList = new JArray();
+            if (levels == null) return tabsList;
+
+            foreach (var level in levels)
+            {
+                var view = level.GetType().GetProperty("View")?.GetValue(level, null);
+                if (view == null) continue;
+                var tabs = view.GetType().GetProperty("Tabs")?.GetValue(view, null) as IEnumerable;
+                if (tabs == null) continue;
+                foreach (var tab in tabs)
+                {
+                    string code = tab.GetType().GetProperty("Code")?.GetValue(tab, null)?.ToString() ?? "";
+                    string name = tab.GetType().GetProperty("Name")?.GetValue(tab, null)?.ToString() ?? code;
+                    string type = tab.GetType().GetProperty("Type")?.GetValue(tab, null)?.ToString() ?? "Tabular";
+                    var tabObj = new JObject
+                    {
+                        ["code"] = code,
+                        ["name"] = name,
+                        ["type"] = type
+                    };
+                    var actions = tab.GetType().GetProperty("Actions")?.GetValue(tab, null) as IEnumerable;
+                    var actionsArray = new JArray();
+                    if (actions != null)
+                    {
+                        foreach (var act in actions)
+                        {
+                            string actName = act.GetType().GetProperty("Name")?.GetValue(act, null)?.ToString() ?? "";
+                            string caption = act.GetType().GetProperty("Caption")?.GetValue(act, null)?.ToString();
+                            string procName = act.GetType().GetProperty("GxobjectName")?.GetValue(act, null)?.ToString();
+                            if (string.IsNullOrEmpty(procName))
+                            {
+                                var gxObj = act.GetType().GetProperty("Gxobject")?.GetValue(act, null) as KBObject;
+                                procName = gxObj?.Name;
+                            }
+                            string condition = act.GetType().GetProperty("Condition")?.GetValue(act, null)?.ToString();
+                            var parameters = act.GetType().GetProperty("Parameters")?.GetValue(act, null) as IEnumerable;
+                            var paramList = new JArray();
+                            if (parameters != null)
+                            {
+                                foreach (var p in parameters)
+                                {
+                                    string pName = p.GetType().GetProperty("Name")?.GetValue(p, null)?.ToString();
+                                    if (!string.IsNullOrEmpty(pName)) paramList.Add(pName);
+                                }
+                            }
+                            actionsArray.Add(new JObject
+                            {
+                                ["name"] = actName,
+                                ["caption"] = caption ?? actName,
+                                ["procedure"] = procName ?? "",
+                                ["condition"] = condition ?? "",
+                                ["parameters"] = paramList
+                            });
+                        }
+                    }
+                    tabObj["actions"] = actionsArray;
+                    tabsList.Add(tabObj);
+                }
+            }
+            return tabsList;
         }
 
         internal static bool TryListActionsFromXml(string xml, out JArray tabsArray, out string error)
@@ -287,7 +393,7 @@ namespace GxMcp.Worker.Compatibility
             }
 
             // Step 1: Pre-check tab existence and duplicate action
-            if (!ListActions(instanceObj, patterns, out var tabs, out var listError))
+            if (!ListActions(instanceObj, patterns, out var tabs, out var preCheckSource, out var listError))
             {
                 errorCode = listError ?? "ListActionsFailed";
                 errorMessage = $"Could not inspect tabs for WorkWith instance '{instanceObj.Name}': {listError}";
@@ -433,7 +539,7 @@ namespace GxMcp.Worker.Compatibility
             }
 
             // Step 4: Verification reread
-            if (!ListActions(instanceObj, patterns, out var verifyTabs, out _))
+            if (!ListActions(instanceObj, patterns, out var verifyTabs, out var observedSource, out _))
             {
                 errorCode = "VerificationReadFailed";
                 errorMessage = "Action was saved, but verification re-read failed.";
@@ -472,6 +578,15 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
+            var verification = new JObject
+            {
+                ["scope"] = "tab_action_reread",
+                ["fieldsCompared"] = new JArray("name", "caption", "procedure", "condition", "parameters"),
+                ["allFieldsMatched"] = true
+            };
+            DescribeReadSource(verification, "observedSource", observedSource);
+            DescribeReadSource(verification, "preCheckSource", preCheckSource);
+
             result = new JObject
             {
                 ["instance"] = instanceObj.Name,
@@ -488,15 +603,9 @@ namespace GxMcp.Worker.Compatibility
                 ["saved"] = true,
                 ["persisted"] = true,
                 ["verified"] = true,
-                ["verification"] = new JObject
-                {
-                    ["scope"] = "tab_action_reread",
-                    ["fieldsCompared"] = new JArray("name", "caption", "procedure", "condition", "parameters"),
-                    ["allFieldsMatched"] = true,
-                    ["observedSource"] = "in_memory_instance_reread"
-                },
+                ["verification"] = verification,
                 ["route"] = nativeSucceeded ? "native-sdk" : "xml-fallback",
-                ["verificationScope"] = "action definition, target tab actions collection, neighbor tabs integrity, and post-write instance re-read",
+                ["verificationScope"] = "action definition, target tab actions collection, neighbor tabs integrity, and " + DescribeRereadScope(observedSource),
                 ["defaultNormalization"] = nativeSucceeded
                     ? NativeDefaultNormalization
                     : FallbackDefaultNormalization,
@@ -786,7 +895,7 @@ namespace GxMcp.Worker.Compatibility
             }
 
             // Step 1: Pre-check tab existence and action existence
-            if (!ListActions(instanceObj, patterns, out var tabs, out var listError))
+            if (!ListActions(instanceObj, patterns, out var tabs, out _, out var listError))
             {
                 errorCode = listError ?? "ListActionsFailed";
                 errorMessage = $"Could not inspect tabs for WorkWith instance '{instanceObj.Name}': {listError}";
@@ -952,7 +1061,7 @@ namespace GxMcp.Worker.Compatibility
             }
 
             // Step 4: Verification reread
-            if (!ListActions(instanceObj, patterns, out var verifyTabs, out _))
+            if (!ListActions(instanceObj, patterns, out var verifyTabs, out _, out _))
             {
                 errorCode = "VerificationReadFailed";
                 errorMessage = "Action was removed, but verification re-read failed.";
@@ -1134,9 +1243,10 @@ namespace GxMcp.Worker.Compatibility
             return true;
         }
 
-        public static bool ListFilters(KBObject instanceObj, PatternAnalysisService patterns, string levelId, out JObject filters, out string error, out string errorMessage)
+        public static bool ListFilters(KBObject instanceObj, PatternAnalysisService patterns, string levelId, out JObject filters, out WorkWithReadSource source, out string error, out string errorMessage)
         {
             filters = null;
+            source = WorkWithReadSource.NativeInstance;
             error = null;
             errorMessage = null;
 
@@ -1147,15 +1257,31 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            var asm = GetWorkWithAssembly();
-            if (asm != null)
+            return ListFiltersCore(
+                instanceObj,
+                () => patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _),
+                levelId,
+                out filters,
+                out source,
+                out error,
+                out errorMessage);
+        }
+
+        /// Native-first read with the XML projection as fallback. `readPatternXml` is the
+        /// seam that lets every path run without a Knowledge Base; `source` names the
+        /// reader that produced `filters`. A Level resolution error on the native route
+        /// is returned as-is: the projection never masks it.
+        internal static bool ListFiltersCore(KBObject instanceObj, Func<string> readPatternXml, string levelId, out JObject filters, out WorkWithReadSource source, out string error, out string errorMessage)
+        {
+            filters = null;
+            error = null;
+            errorMessage = null;
+
+            if (TryLoadNativeInstance(instanceObj, "ListFilters", out var wwiType, out var wwi, out source))
             {
                 try
                 {
-                    var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                    var loadMethod = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                    object wwi = loadMethod?.Invoke(null, new object[] { instanceObj });
-                    var levels = wwi != null ? wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable : null;
+                    var levels = wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable;
                     if (levels != null)
                     {
                         if (!TryResolveFilterLevel(CollectNativeFilterLevels(levels), levelId, out var resolved, out error, out errorMessage))
@@ -1164,14 +1290,17 @@ namespace GxMcp.Worker.Compatibility
                         filters = ReadNativeFilter(resolved);
                         return true;
                     }
+
+                    source = WorkWithReadSource.XmlProjectionNativeLevelsAbsent;
                 }
                 catch (Exception ex)
                 {
-                    Logger.Debug("[WorkWithSdkAdapter] Native ListFilters failed, falling back to XML: " + ex.Message);
+                    LogNativeReadFallback("ListFilters", ex);
+                    source = WorkWithReadSource.XmlProjectionNativeReadFailed;
                 }
             }
 
-            string xml = patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
+            string xml = readPatternXml?.Invoke();
             if (string.IsNullOrWhiteSpace(xml))
             {
                 error = "PatternInstanceXmlEmpty";
@@ -1430,7 +1559,7 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            if (!ListFilters(instanceObj, patterns, levelId, out var existingFilters, out errorCode, out errorMessage))
+            if (!ListFilters(instanceObj, patterns, levelId, out var existingFilters, out var preCheckSource, out errorCode, out errorMessage))
                 return false;
 
             var existingAttrs = existingFilters["attributes"] as JArray ?? new JArray();
@@ -1466,7 +1595,7 @@ namespace GxMcp.Worker.Compatibility
             if (!TryAddFilterAttributeNative(instanceObj, resolvedLevel, attributeName, description, domain, conditions, out errorCode, out errorMessage))
                 return false;
 
-            if (!ListFilters(instanceObj, patterns, resolvedLevel, out var verifyFilters, out _, out _))
+            if (!ListFilters(instanceObj, patterns, resolvedLevel, out var verifyFilters, out var observedSource, out _, out _))
             {
                 errorCode = "VerificationReadFailed";
                 errorMessage = "Filter attribute was saved, but verification re-read failed.";
@@ -1498,7 +1627,7 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            result = BuildFilterReceipt(instanceObj.Name, resolvedLevel, verifiedAttr, verifiedConditions, attributeName, description, domain, conditions);
+            result = BuildFilterReceipt(instanceObj.Name, resolvedLevel, verifiedAttr, verifiedConditions, attributeName, description, domain, conditions, preCheckSource, observedSource);
             return true;
         }
 
@@ -1760,8 +1889,19 @@ namespace GxMcp.Worker.Compatibility
             string attributeName,
             string description,
             string domain,
-            IList<string> conditions)
+            IList<string> conditions,
+            WorkWithReadSource preCheckSource,
+            WorkWithReadSource observedSource)
         {
+            var verification = new JObject
+            {
+                ["scope"] = "filter_attribute_reread",
+                ["fieldsCompared"] = new JArray(ComparedFilterFields(description, domain)),
+                ["allFieldsMatched"] = true
+            };
+            DescribeReadSource(verification, "observedSource", observedSource);
+            DescribeReadSource(verification, "preCheckSource", preCheckSource);
+
             return new JObject
             {
                 ["instance"] = instanceName,
@@ -1778,15 +1918,9 @@ namespace GxMcp.Worker.Compatibility
                 ["saved"] = true,
                 ["persisted"] = true,
                 ["verified"] = true,
-                ["verification"] = new JObject
-                {
-                    ["scope"] = "filter_attribute_reread",
-                    ["fieldsCompared"] = new JArray(ComparedFilterFields(description, domain)),
-                    ["allFieldsMatched"] = true,
-                    ["observedSource"] = "in_memory_instance_reread"
-                },
+                ["verification"] = verification,
                 ["route"] = "native-sdk",
-                ["verificationScope"] = "filter attribute definition, the Level's filter conditions, filter attribute count integrity, and post-write in-memory instance re-read",
+                ["verificationScope"] = "filter attribute definition, the Level's filter conditions, filter attribute count integrity, and " + DescribeRereadScope(observedSource),
                 ["defaultNormalization"] = NativeDefaultNormalization,
                 ["derivedObjectRegeneration"] = "not_guaranteed"
             };

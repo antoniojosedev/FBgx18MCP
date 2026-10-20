@@ -5,6 +5,7 @@ using GxMcp.Worker.Compatibility;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
+using FakeWorkWithInstance = Artech.Patterns.WorkWith.WorkWithInstance;
 
 namespace GxMcp.Worker.Tests
 {
@@ -765,15 +766,18 @@ namespace GxMcp.Worker.Tests
             var observed = new JObject { ["name"] = "CustomerName", ["description"] = "Customer Name", ["domain"] = "" };
             var observedConditions = new JArray("CustomerName like &CustomerName;");
 
-            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, observedConditions, "CustomerName", "Customer Name", null, new List<string> { "CustomerName like &CustomerName;" });
+            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, observedConditions, "CustomerName", "Customer Name", null, new List<string> { "CustomerName like &CustomerName;" }, WorkWithReadSource.NativeInstance, WorkWithReadSource.NativeInstance);
 
             Assert.Equal("WorkWithWebCustomer", receipt["instance"]?.ToString());
             Assert.Equal("Root", receipt["level"]?.ToString());
             Assert.Equal("native-sdk", receipt["route"]?.ToString());
             Assert.True(receipt["verified"]?.ToObject<bool>());
             Assert.True(receipt["saved"]?.ToObject<bool>());
-            Assert.NotEmpty(receipt["verificationScope"]?.ToString());
+            Assert.Contains("post-write in-memory instance re-read", receipt["verificationScope"]?.ToString());
             Assert.Equal("in_memory_instance_reread", receipt["verification"]?["observedSource"]?.ToString());
+            Assert.Null(receipt["verification"]?["observedSourceReason"]);
+            Assert.Equal("in_memory_instance_reread", receipt["verification"]?["preCheckSource"]?.ToString());
+            Assert.Null(receipt["verification"]?["preCheckSourceReason"]);
             Assert.Equal(new[] { "name", "description", "conditions" }, (receipt["verification"]?["fieldsCompared"] as JArray).Select(f => f.ToString()).ToArray());
             Assert.Equal("Customer Name", receipt["filterAttribute"]?["description"]?.ToString());
             Assert.Equal("CustomerName", receipt["requested"]?["name"]?.ToString());
@@ -812,5 +816,339 @@ namespace GxMcp.Worker.Tests
             var xmlWriter = typeof(WorkWithSdkAdapter).GetMethod("TryAddFilterAttributeToXml", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
             Assert.Null(xmlWriter);
         }
+
+        // Issue #589: ListFilters/ListActions report the reader that actually produced
+        // the result and the receipts copy it. The adapter resolves the SDK type by name,
+        // so the test assembly stands in for Artech.Patterns.WorkWith and the XML seam
+        // returns a document whose content differs from the native stand-in: every test
+        // proves which reader was used, not only which label was reported.
+
+        private sealed class FakeNativeSdkScope : IDisposable
+        {
+            public FakeNativeSdkScope(Func<object, object> load)
+            {
+                FakeWorkWithInstance.LoadHook = load;
+                WorkWithSdkAdapter.AssemblyResolverOverride = () => typeof(FakeWorkWithInstance).Assembly;
+            }
+
+            public void Dispose()
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+                FakeWorkWithInstance.LoadHook = null;
+            }
+        }
+
+        private sealed class ThrowingLevels : System.Collections.IEnumerable
+        {
+            public System.Collections.IEnumerator GetEnumerator()
+            {
+                throw new InvalidOperationException("Levels enumeration failed");
+            }
+        }
+
+        private static object NativeFilterLevel(string id, string attributeName, string condition)
+        {
+            return new
+            {
+                Id = id,
+                Selection = new
+                {
+                    Filter = new
+                    {
+                        Attributes = new[] { new { Name = attributeName, Description = attributeName + " (native)", DomainName = "", VariableName = "&" + attributeName } },
+                        Conditions = new[] { new { Value = condition } }
+                    }
+                }
+            };
+        }
+
+        private static FakeWorkWithInstance NativeActionsInstance()
+        {
+            return new FakeWorkWithInstance
+            {
+                Levels = new[]
+                {
+                    new
+                    {
+                        View = new
+                        {
+                            Tabs = new[]
+                            {
+                                new
+                                {
+                                    Code = "General",
+                                    Name = "General",
+                                    Type = "Tabular",
+                                    Actions = new[] { new { Name = "Update", Caption = "Update (native)", GxobjectName = "", Condition = "", Parameters = new object[0] } }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+        }
+
+        [Fact]
+        public void ListFiltersCore_NativeRoute_ReportsInMemoryInstanceReread()
+        {
+            using (new FakeNativeSdkScope(_ => new FakeWorkWithInstance { Levels = new[] { NativeFilterLevel("Root", "CustomerName", "CustomerName like &CustomerName;") } }))
+            {
+                bool success = WorkWithSdkAdapter.ListFiltersCore(null, () => SampleWorkWithXmlWithFilter, null, out var filters, out var source, out var error, out var errorMessage);
+
+                Assert.True(success, errorMessage);
+                Assert.Null(error);
+                Assert.Equal(WorkWithReadSource.NativeInstance, source);
+                Assert.Equal("Root", filters["level"]?.ToString());
+                Assert.Equal("CustomerName", filters["attributes"]?[0]?["name"]?.ToString());
+                Assert.Equal("CustomerName like &CustomerName;", filters["conditions"]?[0]?.ToString());
+            }
+        }
+
+        [Fact]
+        public void ListFiltersCore_NativeLoadThrows_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            using (new FakeNativeSdkScope(_ => throw new InvalidOperationException("WorkWithInstance.Load failed")))
+            {
+                bool success = WorkWithSdkAdapter.ListFiltersCore(null, () => SampleWorkWithXmlWithFilter, null, out var filters, out var source, out _, out var errorMessage);
+
+                Assert.True(success, errorMessage);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeReadFailed, source);
+                Assert.Equal("TemExistente", filters["attributes"]?[0]?["name"]?.ToString());
+            }
+        }
+
+        [Fact]
+        public void ListFiltersCore_NativeLevelsTraversalThrows_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            using (new FakeNativeSdkScope(_ => new FakeWorkWithInstance { Levels = new ThrowingLevels() }))
+            {
+                bool success = WorkWithSdkAdapter.ListFiltersCore(null, () => SampleWorkWithXmlWithFilter, null, out var filters, out var source, out _, out var errorMessage);
+
+                Assert.True(success, errorMessage);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeReadFailed, source);
+                Assert.Equal("TemExistente", filters["attributes"]?[0]?["name"]?.ToString());
+            }
+        }
+
+        [Fact]
+        public void ListFiltersCore_NativeInstanceWithoutLevels_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            using (new FakeNativeSdkScope(_ => new FakeWorkWithInstance { Levels = null }))
+            {
+                bool success = WorkWithSdkAdapter.ListFiltersCore(null, () => SampleWorkWithXmlWithFilter, null, out var filters, out var source, out _, out var errorMessage);
+
+                Assert.True(success, errorMessage);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeLevelsAbsent, source);
+                Assert.Equal("TemExistente", filters["attributes"]?[0]?["name"]?.ToString());
+            }
+        }
+
+        [Fact]
+        public void ListFiltersCore_NativeLoadReturnsNoInstance_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            using (new FakeNativeSdkScope(_ => null))
+            {
+                bool success = WorkWithSdkAdapter.ListFiltersCore(null, () => SampleWorkWithXmlWithFilter, null, out var filters, out var source, out _, out var errorMessage);
+
+                Assert.True(success, errorMessage);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeInstanceAbsent, source);
+                Assert.Equal("TemExistente", filters["attributes"]?[0]?["name"]?.ToString());
+            }
+        }
+
+        [Fact]
+        public void ListFiltersCore_NativeSdkUnavailable_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            WorkWithSdkAdapter.AssemblyResolverOverride = () => null;
+            try
+            {
+                bool success = WorkWithSdkAdapter.ListFiltersCore(null, () => SampleWorkWithXmlWithFilter, null, out var filters, out var source, out _, out var errorMessage);
+
+                Assert.True(success, errorMessage);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeUnavailable, source);
+                Assert.Equal("TemExistente", filters["attributes"]?[0]?["name"]?.ToString());
+            }
+            finally
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+            }
+        }
+
+        [Fact]
+        public void ListFiltersCore_NativeLevelError_IsNotMaskedByTheXmlProjection()
+        {
+            using (new FakeNativeSdkScope(_ => new FakeWorkWithInstance
+            {
+                Levels = new[]
+                {
+                    NativeFilterLevel("Root", "CustomerName", "CustomerName like &CustomerName;"),
+                    NativeFilterLevel("Orders", "OrderDate", "OrderDate = &OrderDate;")
+                }
+            }))
+            {
+                bool xmlRead = false;
+                bool success = WorkWithSdkAdapter.ListFiltersCore(null, () => { xmlRead = true; return SampleWorkWithXmlWithFilter; }, null, out var filters, out var source, out var error, out _);
+
+                Assert.False(success);
+                Assert.Null(filters);
+                Assert.Equal("FilterLevelAmbiguous", error);
+                Assert.Equal(WorkWithReadSource.NativeInstance, source);
+                Assert.False(xmlRead);
+            }
+        }
+
+        [Fact]
+        public void ListFilters_NullInstance_RefusesBeforeReading()
+        {
+            bool success = WorkWithSdkAdapter.ListFilters(null, null, null, out var filters, out _, out var error, out var errorMessage);
+
+            Assert.False(success);
+            Assert.Null(filters);
+            Assert.Equal("NullInstance", error);
+            Assert.NotEmpty(errorMessage);
+        }
+
+        [Fact]
+        public void ListActionsCore_NativeRoute_ReportsInMemoryInstanceReread()
+        {
+            using (new FakeNativeSdkScope(_ => NativeActionsInstance()))
+            {
+                bool success = WorkWithSdkAdapter.ListActionsCore(null, () => SampleWorkWithXml, out var tabs, out var source, out var error);
+
+                Assert.True(success, error);
+                Assert.Equal(WorkWithReadSource.NativeInstance, source);
+                Assert.Single(tabs);
+                var actions = (JArray)tabs[0]["actions"];
+                Assert.Single(actions);
+                Assert.Equal("Update (native)", actions[0]["caption"]?.ToString());
+            }
+        }
+
+        [Fact]
+        public void ListActionsCore_NativeLoadThrows_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            using (new FakeNativeSdkScope(_ => throw new InvalidOperationException("WorkWithInstance.Load failed")))
+            {
+                bool success = WorkWithSdkAdapter.ListActionsCore(null, () => SampleWorkWithXml, out var tabs, out var source, out var error);
+
+                Assert.True(success, error);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeReadFailed, source);
+                Assert.Equal(2, ((JArray)tabs[0]["actions"]).Count);
+            }
+        }
+
+        [Fact]
+        public void ListActionsCore_NativeLevelsTraversalThrows_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            using (new FakeNativeSdkScope(_ => new FakeWorkWithInstance { Levels = new ThrowingLevels() }))
+            {
+                bool success = WorkWithSdkAdapter.ListActionsCore(null, () => SampleWorkWithXml, out var tabs, out var source, out var error);
+
+                Assert.True(success, error);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeReadFailed, source);
+                Assert.Equal(2, ((JArray)tabs[0]["actions"]).Count);
+            }
+        }
+
+        [Fact]
+        public void ListActionsCore_NativeLoadReturnsNoInstance_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            using (new FakeNativeSdkScope(_ => null))
+            {
+                bool success = WorkWithSdkAdapter.ListActionsCore(null, () => SampleWorkWithXml, out var tabs, out var source, out var error);
+
+                Assert.True(success, error);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeInstanceAbsent, source);
+                Assert.Equal(2, ((JArray)tabs[0]["actions"]).Count);
+            }
+        }
+
+        [Fact]
+        public void ListActionsCore_NativeSdkUnavailable_FallsBackToXmlProjectionAndSaysWhy()
+        {
+            WorkWithSdkAdapter.AssemblyResolverOverride = () => null;
+            try
+            {
+                bool success = WorkWithSdkAdapter.ListActionsCore(null, () => SampleWorkWithXml, out var tabs, out var source, out var error);
+
+                Assert.True(success, error);
+                Assert.Equal(WorkWithReadSource.XmlProjectionNativeUnavailable, source);
+                Assert.Equal(2, ((JArray)tabs[0]["actions"]).Count);
+            }
+            finally
+            {
+                WorkWithSdkAdapter.AssemblyResolverOverride = null;
+            }
+        }
+
+        [Theory]
+        [InlineData("NativeInstance", "in_memory_instance_reread", null)]
+        [InlineData("XmlProjectionNativeUnavailable", "xml_projection", "native_sdk_unavailable")]
+        [InlineData("XmlProjectionNativeInstanceAbsent", "xml_projection", "native_instance_absent")]
+        [InlineData("XmlProjectionNativeLevelsAbsent", "xml_projection", "native_levels_absent")]
+        [InlineData("XmlProjectionNativeReadFailed", "xml_projection", "native_read_failed")]
+        public void DescribeReadSource_WritesLabelAndReasonOnlyForTheXmlProjection(string sourceName, string label, string reason)
+        {
+            var source = (WorkWithReadSource)Enum.Parse(typeof(WorkWithReadSource), sourceName);
+            var target = new JObject();
+
+            WorkWithSdkAdapter.DescribeReadSource(target, "observedSource", source);
+
+            Assert.Equal(label, target["observedSource"]?.ToString());
+            Assert.Equal(reason, target["observedSourceReason"]?.ToString());
+        }
+
+        [Fact]
+        public void BuildFilterReceipt_XmlProjectionReread_ReportsProjectionSourceAndReason()
+        {
+            var observed = new JObject { ["name"] = "CustomerName", ["description"] = "CustomerName", ["domain"] = "" };
+
+            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, new JArray(), "CustomerName", null, null, null, WorkWithReadSource.NativeInstance, WorkWithReadSource.XmlProjectionNativeReadFailed);
+
+            var verification = receipt["verification"] as JObject;
+            Assert.NotNull(verification);
+            Assert.Equal("xml_projection", verification["observedSource"]?.ToString());
+            Assert.Equal("native_read_failed", verification["observedSourceReason"]?.ToString());
+            Assert.Equal("in_memory_instance_reread", verification["preCheckSource"]?.ToString());
+            Assert.Null(verification["preCheckSourceReason"]);
+            Assert.Contains("post-write PatternInstance XML projection re-read", receipt["verificationScope"]?.ToString());
+            Assert.DoesNotContain("in-memory instance re-read", receipt["verificationScope"]?.ToString());
+            Assert.Equal("native-sdk", receipt["route"]?.ToString());
+        }
+
+        [Fact]
+        public void BuildFilterReceipt_XmlProjectionPreCheck_ReportsProjectionPreCheckSourceAndReason()
+        {
+            var observed = new JObject { ["name"] = "CustomerName", ["description"] = "CustomerName", ["domain"] = "" };
+
+            var receipt = WorkWithSdkAdapter.BuildFilterReceipt("WorkWithWebCustomer", "Root", observed, new JArray(), "CustomerName", null, null, null, WorkWithReadSource.XmlProjectionNativeLevelsAbsent, WorkWithReadSource.NativeInstance);
+
+            var verification = receipt["verification"] as JObject;
+            Assert.NotNull(verification);
+            Assert.Equal("in_memory_instance_reread", verification["observedSource"]?.ToString());
+            Assert.Null(verification["observedSourceReason"]);
+            Assert.Equal("xml_projection", verification["preCheckSource"]?.ToString());
+            Assert.Equal("native_levels_absent", verification["preCheckSourceReason"]?.ToString());
+            Assert.Contains("post-write in-memory instance re-read", receipt["verificationScope"]?.ToString());
+        }
+    }
+}
+
+namespace Artech.Patterns.WorkWith
+{
+    /// Stand-in for the SDK type that WorkWithSdkAdapter resolves by name: the test
+    /// assembly is handed to AssemblyResolverOverride, so this is what
+    /// `GetType("Artech.Patterns.WorkWith.WorkWithInstance")` returns. `LoadHook`
+    /// scripts what the static `Load` returns or throws (issue #589).
+    public sealed class WorkWithInstance
+    {
+        public static Func<object, object> LoadHook;
+
+        public static object Load(object instance)
+        {
+            return LoadHook?.Invoke(instance);
+        }
+
+        public object Levels { get; set; }
     }
 }
