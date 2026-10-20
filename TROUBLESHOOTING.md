@@ -346,3 +346,46 @@ treated as a partial read and the fence stays. A part returned whole is no
 longer reported as truncated merely because its response envelope exceeds the
 80000-character guideline (an explicit full read keeps up to 200000 characters
 of `source`).
+
+# PostTimeoutReadRequired on a part above 200000 characters
+
+An explicit full read (`limit: 0`) keeps at most 200000 characters of `source`;
+the Gateway cuts the rest, so the page the caller receives is partial. The
+Worker therefore also builds a small certificate of what the SDK holds
+(schema `gx-recovery-read/1`: identity, `totalLines`, `sha256`, `versionToken`,
+per-target write stamp) from a fresh, whole read made before any cut. A
+fence-covered `genexus_read` clears the fence from that certificate and reports
+`recoveryFenceCleared`, with a per-fence `recoveryFences` summary. It does not
+when the read was paginated or default-paged, raced a write, came back as the
+oversize-response sentinel, or certifies a different version than the page the
+caller received.
+
+Clearing a fence does not say the write that timed out landed. `timedOutWrite`
+(`recoveryFences[]` and the action's answer) compares the certified version with
+the `baseVersion` that write carried: `notApplied` (the part is still at it),
+`changed` (the part moved: the write landed, or someone else wrote) or `unknown`
+(no `baseVersion`). Verify the content before repeating the write; paginated
+reads are allowed while the fence stands. `persisted` only says the journal
+change is durable.
+
+To clear a fence without reading the part, use the typed action; the
+`PostTimeoutReadRequired` error carries it as a next step:
+
+```text
+genexus_connection_recover action=recovery_read_complete kb=<alias the fenced write ran under>
+  name=<object> part=<part> [type/guid/entityKey/path as the fence recorded] [operationId=<fence>]
+  dryRun=true     # default: re-reads, reports wouldClear and timedOutWrite, never touches the journal
+  dryRun=false    # clears only this fence; baseVersion=<versionToken inspected> pins the version
+```
+
+The answer is `{complete, totalLines, versionToken, hash, fenceCleared,
+persisted, implicitOperations}` plus the identity that was read; `reason` says
+why a fence stayed (`certificate-incomplete`, `part-mismatch`, `type-mismatch`,
+`base-version-mismatch`, `version-changed-during-recovery`, `fence-rearmed`,
+`worker-timeout`, ...). When no fence matches, `lookup.nearMisses` lists fences
+for the same object recorded under another KB alias, part or identity - the
+usual cause is an alias that differs between the write and the recovery call. A
+`kb` given as the KB's absolute path resolves to the KB the Gateway already has
+open, known or declared at that path, under that KB's alias; fences an earlier
+build recorded under the folder-name alias are still found (and still block
+writes) unless another known KB owns that alias.

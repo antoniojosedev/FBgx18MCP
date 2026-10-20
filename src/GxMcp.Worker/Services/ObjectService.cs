@@ -19,7 +19,7 @@ using GxMcp.Worker.Models;
 
 namespace GxMcp.Worker.Services
 {
-    public class ObjectService
+    public partial class ObjectService
     {
         private sealed class ReadCacheEntry
         {

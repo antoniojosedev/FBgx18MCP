@@ -506,6 +506,24 @@ namespace GxMcp.Worker.Services
             _lastWriteAtUtc[target] = DateTime.UtcNow;
         }
 
+        // Opaque, comparable form of "the newest write this Worker made to any of these
+        // targets". A recovery read samples it before and after reading and records the
+        // first sample: a write that lands later makes the stamp differ, which is how a
+        // certificate learns it describes a version that is no longer current. Several
+        // keys because a write is stamped under the name the caller used, which need not
+        // be the name the SDK resolves.
+        internal static string TargetWriteStamp(params string[] targets)
+        {
+            long newest = 0;
+            foreach (string target in targets ?? Array.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(target)) continue;
+                if (_lastWriteAtUtc.TryGetValue(target, out var writtenAt) && writtenAt.Ticks > newest)
+                    newest = writtenAt.Ticks;
+            }
+            return "w" + newest.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         private static void MarkTargetDirty(string target)
         {
             if (string.IsNullOrWhiteSpace(target)) return;

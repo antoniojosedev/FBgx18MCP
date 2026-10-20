@@ -272,6 +272,22 @@ namespace GxMcp.Gateway
                 $"Multiple KBs open ({string.Join(",", openKbs.Select(k => k.Alias))}); 'kb' parameter is required.");
         }
 
+        private static bool SamePhysicalPath(string? candidate, string kbPath)
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) return false;
+            try
+            {
+                return string.Equals(
+                    Path.GetFullPath(candidate).TrimEnd('\\', '/'),
+                    Path.GetFullPath(kbPath).TrimEnd('\\', '/'),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            {
+                return false;
+            }
+        }
+
         // An explicit alias is matched declared → open → known (issue #26 P3: the known
         // set survives worker recycles) → an existing absolute path. A miss is a state,
         // not an exception, so the caller can report it; the code differs by caller
@@ -300,6 +316,21 @@ namespace GxMcp.Gateway
 
             if (Path.IsPathRooted(kbArg) && Directory.Exists(kbArg))
             {
+                // A path that names a KB this Gateway already knows is that KB, under its
+                // own alias. Minting an ad-hoc alias from the folder name instead split
+                // one physical KB into two scopes: a recovery fence recorded under the
+                // handle's alias could not be found, nor cleared, by a call that
+                // addressed the same KB by its path.
+                var samePhysicalKb = openKbs.FirstOrDefault(k => SamePhysicalPath(k.Path, kbArg))
+                    ?? knownKbs?.FirstOrDefault(k => SamePhysicalPath(k.Path, kbArg));
+                if (samePhysicalKb == null)
+                {
+                    var declaredByPath = _config.Environment?.KBs?.FirstOrDefault(
+                        k => SamePhysicalPath(k.Path, kbArg));
+                    if (declaredByPath != null) samePhysicalKb = KbHandle.FromEntry(declaredByPath);
+                }
+                if (samePhysicalKb != null) return KbSelectionResult.Resolved(samePhysicalKb, selectionSource);
+
                 string alias = Path.GetFileName(kbArg.TrimEnd('\\', '/')).ToLowerInvariant();
                 if (string.IsNullOrEmpty(alias)) alias = "adhoc";
                 return KbSelectionResult.Resolved(new KbHandle(alias, kbArg), selectionSource);
