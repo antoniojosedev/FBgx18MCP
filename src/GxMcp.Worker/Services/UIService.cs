@@ -105,6 +105,15 @@ namespace GxMcp.Worker.Services
                 else if (obj is Transaction trn) part = trn.Parts.Get<WebFormPart>();
                 if (part == null || part.Document == null || part.Document.DocumentElement == null) return arr;
 
+                // A layout form (GxMultiForm type="layout") is a pattern model, not an HTML tag
+                // tree: the walker below finds nothing in it and the gx* scan matches none of its
+                // elements, which is how this used to answer an empty list for every Transaction.
+                if (GxMcp.Worker.Helpers.LayoutFormModel.IsLayoutForm(part.Document))
+                {
+                    AddLayoutControls(obj, part.Document, arr);
+                    return arr;
+                }
+
                 var tree = GxWebFormHelper.GetWebTagTree(obj, part.Document.DocumentElement);
                 if (tree != null && tree.Root != null)
                 {
@@ -165,6 +174,38 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex) { Logger.Debug("GetControlsRepertoire: " + ex.Message); }
             return arr;
+        }
+
+        // The controls of a layout form that a caller can address: those with a control name or
+        // a binding. Anonymous layout/row/cell containers are structure, not controls. A layout
+        // the SDK could not load is reported as unavailable, not as a form with no controls.
+        private static void AddLayoutControls(KBObject obj, System.Xml.XmlDocument document, JArray arr)
+        {
+            var panel = LayoutFormModel.TryLoad(obj, document, out string failure);
+            if (panel == null)
+            {
+                arr.Add(new JObject { ["unavailable"] = true, ["layoutForm"] = true, ["reason"] = failure });
+                return;
+            }
+
+            foreach (var control in panel.Controls)
+            {
+                if (string.IsNullOrEmpty(control.ControlName) && string.IsNullOrEmpty(control.Binding)) continue;
+                var entry = new JObject
+                {
+                    ["name"] = control.ControlName ?? control.Binding,
+                    ["type"] = control.ElementName,
+                    ["specType"] = control.SpecType,
+                    ["dataBinding"] = control.Binding,
+                    ["attributeName"] = control.BindingName,
+                    ["id"] = control.Id,
+                    ["path"] = control.Path,
+                    ["layoutForm"] = true
+                };
+                string controlType = LayoutFormModel.ReadCustomProperty(control, "ControlType");
+                if (!string.IsNullOrEmpty(controlType)) entry["controlType"] = controlType;
+                arr.Add(entry);
+            }
         }
 
         private void CollectControls(GxMcp.Worker.Helpers.Tree<IWebTag> node, JArray arr)

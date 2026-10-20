@@ -3635,7 +3635,7 @@
             "type": "string"
           },
           "control": {
-            "description": "Optional layout control, variable…",
+            "description": "Optional layout control (name, att:<id>…",
             "type": "string"
           },
           "destKind": {
@@ -3657,6 +3657,13 @@
           "expectedVersion": {
             "description": "set: versionToken from an authoritative…",
             "type": "string"
+          },
+          "expressions": {
+            "description": "With control +…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "folder": {
             "description": "move: destination alias with Folder…",

@@ -118,6 +118,22 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Hint_DoesNotClaimTheIdIsAbsent_TheSdkAlsoRefusesAValidIdItLooksUpByName()
+        {
+            // Proven on a real KB: a raw rewrite of a layout form was refused with
+            // "Atributo desconhecido 'att:226'" for an attribute that exists, because the stored att:<id>
+            // was replayed as an attribute NAME. A hint saying the id "does not resolve" sent callers
+            // chasing a wrong id.
+            var evidence = WriteService.BuildVisualSaveErrorEvidence(WrappedSdkRejection("Atributo desconhecido 'att:226'"), "obj.Save(ForceSave)");
+
+            var hint = WriteService.BuildVisualSaveRejectedHint(evidence);
+
+            Assert.DoesNotContain("does not resolve in this KB", hint);
+            Assert.Contains("att:226", hint);
+            Assert.Contains("as an attribute name", hint);
+        }
+
+        [Fact]
         public void Hint_ForAnUnknownAttributeInEnglish_IsRecognisedToo()
         {
             var evidence = WriteService.BuildVisualSaveErrorEvidence(

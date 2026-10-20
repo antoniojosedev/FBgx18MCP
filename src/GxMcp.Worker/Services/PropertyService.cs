@@ -925,6 +925,7 @@ namespace GxMcp.Worker.Services
                 {
                     container = FindControl(obj, controlName);
                     if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
+                    if (IsLayoutControlContainer((object)container)) return LayoutControlWriteUnsupported(target, controlName, propName);
                 }
 
                 // Validate before dispatching. ValidatePropertyWrite already exempts a
@@ -1041,6 +1042,7 @@ namespace GxMcp.Worker.Services
                 {
                     container = FindControl(obj, controlName);
                     if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
+                    if (IsLayoutControlContainer((object)container)) return LayoutControlWriteUnsupported(target, controlName, string.Join(", ", properties.Properties().Select(p => p.Name)));
                 }
 
                 var beforeValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1666,6 +1668,9 @@ namespace GxMcp.Worker.Services
         {
             if (value == null) return string.Empty;
             if (value is string s) return s;
+            // A parameter list (ObjectParametersType and its kin) keeps its source text in Data;
+            // its ToString() is the CLR type name, which told a reader nothing about the value.
+            if (value is global::Artech.Genexus.Common.CustomTypes.ParseableString parseable) return parseable.Data ?? string.Empty;
             if (!IsReferenceShapedType(value.GetType())) return value.ToString() ?? string.Empty;
             var getName = value.GetType().GetMethod("GetName", new[] { typeof(KBModel) });
             if (getName != null && getName.ReturnType == typeof(string))
@@ -2158,6 +2163,16 @@ namespace GxMcp.Worker.Services
                 return FindVariable(obj, trimmed.Substring(1));
             }
 
+            // A layout-form control (GxMultiForm type="layout") is not in the HTML tag tree that
+            // the lookups below walk. An att:<id> or a GUID can only mean one of those controls,
+            // so resolve it first; a bare name keeps its older meaning (variable, structure
+            // attribute) and falls back to the layout at the end.
+            if (LayoutFormModel.IsLayoutOnlyReference(trimmed))
+            {
+                var layoutControl = ResolveLayoutControl(obj, trimmed);
+                if (layoutControl != null) return layoutControl;
+            }
+
             // Support qualified paths: "Documento.DocCod" or "Documento/DocCod"
             var segments = name.Split(new[] { '.', '/' }, StringSplitOptions.RemoveEmptyEntries);
             string leaf = segments[segments.Length - 1];
@@ -2199,8 +2214,43 @@ namespace GxMcp.Worker.Services
                 if (structureAttr != null) return structureAttr;
             }
 
-            return null;
+            // Last: a control of a layout form addressed by its control name or its attribute name.
+            return ResolveLayoutControl(obj, trimmed);
         }
+
+        /// <summary>
+        /// The property bag of the layout-form control that <paramref name="reference"/> names,
+        /// or null when there is no layout form or the reference matches none or several
+        /// controls. The bag belongs to a DETACHED copy of the form: it is for reading, and a
+        /// write through it persists nothing (see <see cref="IsLayoutControlContainer"/>).
+        /// </summary>
+        private static object ResolveLayoutControl(KBObject obj, string reference)
+        {
+            try
+            {
+                var panel = LayoutFormModel.TryLoad(obj, out _);
+                if (panel == null) return null;
+                var matches = LayoutFormModel.Find(panel, reference);
+                return matches.Count == 1 ? matches[0].Attributes : null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[PROPERTY] layout control lookup failed: " + (ex.InnerException ?? ex).Message);
+                return null;
+            }
+        }
+
+        // The property bag of a layout-form control belongs to a DETACHED copy of the form, so a
+        // scalar write through it would "succeed" in memory and persist nothing. Say so instead.
+        private static string LayoutControlWriteUnsupported(string target, string controlName, string propertyNames)
+            => Models.McpResponse.Err(
+                code: "LayoutControlPropertyWriteUnsupported", target: target,
+                message: "'" + controlName + "' is a control of a layout form; its properties are not written through genexus_properties (" + propertyNames + ").",
+                hint: "Only the parameter list of a Dynamic Combo Box can be set here (propertyName=DataProviderParameters with expressions[]). For other control properties edit the WebForm XML with genexus_edit part=WebForm.",
+                extra: new JObject { ["persisted"] = false, ["savePathExercised"] = false });
+
+        internal static bool IsLayoutControlContainer(object container)
+            => container is global::Artech.Packages.Patterns.Objects.PatternInstanceElementAttributes;
 
         // issue #57: recursive name lookup of a TransactionAttribute occurrence in the
         // Transaction structure (all levels).

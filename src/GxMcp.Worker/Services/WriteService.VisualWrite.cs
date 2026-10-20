@@ -87,6 +87,24 @@ namespace GxMcp.Worker.Services
             return result;
         }
 
+        // The validator's own messages are the only account of why it refused a form. They used
+        // to be returned to the caller and nowhere else, so a refusal that never reached the
+        // caller (or was reshaped on the way) left the Worker log with no trace of its cause.
+        private static void LogValidationMessages(string phase, WebFormPreSaveValidator.ValidationReport report)
+        {
+            if (report == null) return;
+            try
+            {
+                Logger.Info("[WebFormValidate] " + phase + " available=" + report.ValidatorAvailable
+                    + " messages=" + (report.Messages?.Count ?? 0) + (string.IsNullOrWhiteSpace(report.Error) ? string.Empty : " error=" + SanitizeVisualSaveText(report.Error)));
+                if (report.Messages == null) return;
+                foreach (var message in report.Messages.Take(20))
+                    Logger.Info("[WebFormValidate]   " + (message.Severity ?? "Information") + ": " + SanitizeVisualSaveText(message.Message)
+                        + (string.IsNullOrWhiteSpace(message.Source) ? string.Empty : " (" + SanitizeVisualSaveText(message.Source) + ")"));
+            }
+            catch { }
+        }
+
         private static void AttachWebFormValidation(JObject payload, WebFormPreSaveValidator.ValidationReport report)
         {
             if (payload == null || report == null) return;
@@ -115,7 +133,9 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         WebFormXmlHelper.ApplyEditableXml(webFormPart, normalizedInput, baselineXml: baselineXml);
-                        return WebFormPreSaveValidator.ValidateDetailed(webFormPart);
+                        var prospective = WebFormPreSaveValidator.ValidateDetailed(webFormPart);
+                        LogValidationMessages("prospective", prospective);
+                        return prospective;
                     }
                     finally
                     {
@@ -868,9 +888,14 @@ namespace GxMcp.Worker.Services
             bool unknown = message.IndexOf("desconhecido", StringComparison.OrdinalIgnoreCase) >= 0
                 || message.IndexOf("unknown", StringComparison.OrdinalIgnoreCase) >= 0;
             if (attribute.Success && unknown)
-                return "The SDK rejected the reference " + attribute.Value + ": that attribute id does not resolve in this KB. "
-                    + "Check the attribute ids in the XML you sent, including PATTERN_ELEMENT_CUSTOM_PROPERTIES and TokenDataList parameters, "
-                    + "against the KB before retrying, and read the part again to confirm what was persisted.";
+                // "Unknown" is what the SDK says when it cannot resolve the reference at that moment. It
+                // is not proof that the id is absent: a valid att:<id> is refused the same way when the
+                // SDK looks it up by NAME (the stored form replayed as if a person had typed it). So the
+                // hint says what to check, not that the id is wrong.
+                return "The SDK rejected the reference " + attribute.Value + " while saving. Either that attribute id does not exist in this KB, "
+                    + "or the SDK resolved a stored att:<id> as an attribute name; check the id against the KB (genexus_structure get_visual) first. "
+                    + "Also check the attribute ids in the XML you sent, including PATTERN_ELEMENT_CUSTOM_PROPERTIES and TokenDataList parameters, "
+                    + "and read the part again to confirm what was persisted.";
 
             return "The SDK rejected the save; the error above is its own message. Read the part again to confirm what was persisted before retrying.";
         }

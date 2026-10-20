@@ -54,6 +54,7 @@ namespace GxMcp.Worker.Services
         private readonly Structure.AuthoringService _authoringService;
         private readonly FormatService _formatService;
         private readonly PropertyService _propertyService;
+        private readonly ControlParametersService _controlParametersService;
         // Issue #62 — atomic create/update (variables + rules + parms + properties + source in one validated op).
         private readonly AtomicCreateService _atomicCreateService;
         private readonly DataViewService _dataViewService;
@@ -237,6 +238,7 @@ namespace GxMcp.Worker.Services
             _writeService.SetStructureService(_structureService);
             _authoringService = new Structure.AuthoringService(_objectService);
             _propertyService = new PropertyService(_objectService);
+            _controlParametersService = new ControlParametersService(_objectService, _writeService);
             _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);
             _atomicCreateService = new AtomicCreateService(_objectService, _writeService, _propertyService, _saveSpecifyOrchestrator, _historyService);
             _dataViewService = new DataViewService(_kbService, _objectService);
@@ -2910,6 +2912,35 @@ namespace GxMcp.Worker.Services
                     batchPropertyNames,
                     args["projection"]?.ToString(),
                     args["query"]?.ToString());
+            }
+
+            // The parameters of a Dynamic Combo Box / Dynamic List Box are a typed parameter list,
+            // not a scalar: they have their own read (ordered expressions) and write (expressions[]).
+            if (!string.IsNullOrWhiteSpace(target) && !string.IsNullOrWhiteSpace(args?["control"]?.ToString()))
+            {
+                bool isSet = string.Equals(action, "Set", StringComparison.OrdinalIgnoreCase) || string.Equals(action, "SetMultiple", StringComparison.OrdinalIgnoreCase);
+                string requestedProperty = args?["propertyName"]?.ToString();
+                if (isSet && args?["expressions"] is JArray requestedExpressions)
+                {
+                    if (!string.IsNullOrWhiteSpace(requestedProperty) && !ControlParametersService.IsParametersProperty(requestedProperty))
+                        return Models.McpResponse.Err(code: "ExpressionsNotApplicable", target: target,
+                            message: "expressions applies only to propertyName=" + ControlParametersService.PropertyName + ".",
+                            hint: "Omit propertyName, or set it to " + ControlParametersService.PropertyName + ".");
+                    return _controlParametersService.Set(
+                        target,
+                        args?["control"]?.ToString(),
+                        requestedExpressions,
+                        args?["expectedVersion"]?.ToString(),
+                        args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                        propType);
+                }
+                if (isSet && ControlParametersService.IsParametersProperty(requestedProperty))
+                    return Models.McpResponse.Err(code: "ExpressionsRequired", target: target,
+                        message: ControlParametersService.PropertyName + " is a parameter list, not a scalar value.",
+                        hint: "Pass expressions:[\"AttributeName\", \"&Variable\", \"'literal'\"]: the complete ordered list, which replaces the current one.");
+                if (!isSet && ControlParametersService.IsParametersProperty(requestedProperty) && !Helpers.JsonUtil.IsSupplied(args?["propertyNames"]))
+                    return _controlParametersService.Get(target, args?["control"]?.ToString(), propType);
             }
 
             if (string.IsNullOrWhiteSpace(target))
