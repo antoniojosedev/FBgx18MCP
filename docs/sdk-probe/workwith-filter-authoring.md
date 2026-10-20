@@ -143,6 +143,18 @@ any regenerated derived objects.
   `SaveTo(patternInstance)` followed by the SDK's instance save persists and re-reads as
   the reporter wants is not executed here: no KB in `C:\KBs` has a standard WorkWith
   applied, and mutating a user's KB is not authorized.
+  Issue [#590](https://github.com/lennix1337/Genexus18MCP/issues/590) keeps this an
+  explicit limit: the write receipts verify by rereading the typed instance from the
+  same in-memory object (`WorkWithInstance.Load(instanceObj)` after `Save`), declare it
+  in `persistenceEvidence` (`independentPersistedReread: false`,
+  `provesDurability: false`), and the restart proof is
+  `scripts/workwith_persistence_smoke.ps1` (write, `genexus_worker_reload`, reread on
+  the new Worker). The existing fresh path (`ObjectService.FindObjectFreshByIdentity`,
+  which invalidates the SDK object cache and refuses to return the same managed
+  instance) is the candidate for an in-process independent reread -
+  `WorkWithInstance.Load(freshInstance)` rather than the XML projection - but it has
+  not been executed against a WorkWith instance and stays a follow-up until that smoke
+  has passed.
 - **Regeneration.** Whether the derived XLS procedure regenerates from the new filter is
   a generator question, separate from authoring — and the issue already scopes that as a
   separate capability.
