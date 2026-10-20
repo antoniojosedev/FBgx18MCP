@@ -56,9 +56,9 @@ namespace GxMcp.Worker.Services
             observation.Name = obj.Name;
             observation.Type = obj.TypeDescriptor?.Name;
             observation.ResolvedPart = resolvedPart;
-            try { observation.Guid = obj.Guid.ToString(); } catch { }
-            try { observation.EntityKey = obj.Key?.ToString(); } catch { }
-            try { observation.Path = BuildObjectIdentity(obj)["path"]?.ToString(); } catch { }
+            observation.Guid = ReadIdentityField(obj, "guid", () => obj.Guid.ToString());
+            observation.EntityKey = ReadIdentityField(obj, "entityKey", () => obj.Key?.ToString());
+            observation.Path = ReadIdentityField(obj, "path", () => BuildObjectIdentity(obj)["path"]?.ToString());
 
             string[] stampKeys = { target, resolvedTarget, obj.Name };
             observation.WriteStampBefore = WriteService.TargetWriteStamp(stampKeys);
@@ -88,6 +88,18 @@ namespace GxMcp.Worker.Services
             observation.WriteStampAfter = WriteService.TargetWriteStamp(stampKeys);
             observation.RevisionAfter = TryComputeRevisionStamp(obj);
             return CertificateEnvelope(obj.Name, observation);
+        }
+
+        // The identity fields are best effort (see RecoveryReadObservation); a field the SDK cannot
+        // answer is left out of the certificate and the reason is logged.
+        private static string ReadIdentityField(KBObject obj, string field, Func<string> read)
+        {
+            try { return read(); }
+            catch (Exception ex)
+            {
+                Logger.Debug("[RecoveryRead] " + field + " of '" + obj.Name + "' unavailable: " + (ex.InnerException ?? ex).Message);
+                return null;
+            }
         }
 
         private static string CertificateEnvelope(string target, RecoveryReadObservation observation)

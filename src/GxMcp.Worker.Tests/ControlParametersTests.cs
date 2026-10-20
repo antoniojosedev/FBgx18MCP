@@ -95,6 +95,26 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ResolveAttributeReferences_ALookupThatFails_IsNotReportedAsAnUnknownAttribute()
+        {
+            var resolved = ParameterListText.ResolveAttributeReferences(
+                new[] { "att:226" }, id => throw new InvalidOperationException("model is closed"), out var unresolved);
+
+            var problem = Assert.Single(unresolved);
+            Assert.Equal("model is closed", problem.LookupFailure);
+            Assert.Contains("could not be looked up: model is closed", problem.Message);
+            Assert.Equal("att:226", resolved[0]);
+        }
+
+        [Fact]
+        public void UnresolvedAttributeReference_WithoutAFailure_SaysTheAttributeDoesNotResolve()
+        {
+            var problem = new UnresolvedAttributeReference { AttributeId = 953 };
+
+            Assert.Equal("att:953 does not resolve in this KB.", problem.Message);
+        }
+
+        [Fact]
         public void ResolveAttributeReferences_LeavesQuotedTextAlone()
         {
             var resolved = ParameterListText.ResolveAttributeReferences(
@@ -466,15 +486,77 @@ namespace GxMcp.Worker.Tests
             Assert.Null(LayoutFormModel.ReadCustomProperty(DataItem("x", null, null), "ControlType"));
         }
 
+        // ------------------------------------------- failures that must not be swallowed
+
+        [Fact]
+        public void TryParseWriteResponse_AnswerThatIsNotJson_IsRefusedWithTheParseFailure()
+        {
+            Assert.False(ControlParametersService.TryParseWriteResponse("<html>502</html>", out var write, out string failure));
+            Assert.Null(write);
+            Assert.False(string.IsNullOrWhiteSpace(failure));
+            Assert.False(ControlParametersService.TryParseWriteResponse(null, out _, out _));
+            Assert.True(ControlParametersService.TryParseWriteResponse("{\"status\":\"ok\"}", out var ok, out _));
+            Assert.Equal("ok", ok["status"]?.ToString());
+        }
+
+        [Fact]
+        public void ReadErrorMessage_OfAnUnreadableEnvelope_SaysItIsNotJson()
+        {
+            Assert.Equal("boom", ControlParametersService.ReadErrorMessage("{\"error\":{\"message\":\"boom\"}}"));
+            Assert.Contains("not valid JSON", ControlParametersService.ReadErrorMessage("garbage"));
+        }
+
+        [Fact]
+        public void DescribeLayoutDifference_OfAnUnparseableForm_ReportsTheParseErrorInsteadOfMaskingIt()
+        {
+            string valid = "<GxMultiForm><Form type=\"layout\"/></GxMultiForm>";
+
+            Assert.Contains("parse error", ControlParametersService.DescribeLayoutDifference("<broken", valid));
+            Assert.Contains("parse error", ControlParametersService.DescribeLayoutDifference(valid, "<broken"));
+        }
+
+        [Fact]
+        public void DescribeStoredDataProvider_ALookupThatFails_IsReportedBesideTheStoredValue()
+        {
+            const string stored = "11111111-2222-3333-4444-555555555555-42";
+
+            var failed = ControlParametersService.DescribeStoredDataProvider(stored, (guid, id) => throw new InvalidOperationException("model is closed"));
+            var found = ControlParametersService.DescribeStoredDataProvider(stored, (guid, id) => id == 42 ? "SampleProvider" : null);
+            var unknown = ControlParametersService.DescribeStoredDataProvider(stored, (guid, id) => null);
+
+            Assert.Equal(stored, failed["stored"]?.ToString());
+            Assert.Equal("model is closed", failed["nameLookupError"]?.ToString());
+            Assert.Null(failed["name"]);
+            Assert.Equal("SampleProvider", found["name"]?.ToString());
+            Assert.Null(found["nameLookupError"]);
+            Assert.Null(unknown["name"]);
+            Assert.Null(unknown["nameLookupError"]);
+        }
+
+        public sealed class FakeVariable
+        {
+            private readonly string _name;
+            public FakeVariable(string name) { _name = name; }
+            public string Name => _name ?? throw new InvalidOperationException("variable name is unreadable");
+        }
+
+        [Fact]
+        public void ReadVariableNames_StripsTheAmpersand_AndRefusesAListWithAnUnreadableName()
+        {
+            var names = ControlParametersService.ReadVariableNames(new[] { new FakeVariable("&Total"), new FakeVariable("Count") });
+
+            Assert.True(names.SetEquals(new[] { "Total", "Count" }));
+            Assert.Throws<InvalidOperationException>(() =>
+                ControlParametersService.ReadVariableNames(new[] { new FakeVariable("Total"), new FakeVariable(null) }));
+        }
+
         // -------------------------------------- the pending EditableToStored flag
 
         private sealed class FakeWebFormPart
         {
-#pragma warning disable CS0649, CS0414
             private bool m_EditableToStoredNeeded = true;
             private string m_EditableContent = "stale editable text";
             private XmlDocument m_Document = Create("<GxMultiForm><Form type=\"layout\"/></GxMultiForm>");
-#pragma warning restore CS0649, CS0414
             public XmlDocument Document => m_Document;
             public bool Needed => m_EditableToStoredNeeded;
             public string Editable => m_EditableContent;
@@ -509,10 +591,9 @@ namespace GxMcp.Worker.Tests
 
         private sealed class FakePartWith
         {
-#pragma warning disable CS0649, CS0414
-            private XmlDocument m_Document;
-#pragma warning restore CS0649, CS0414
+            private readonly XmlDocument m_Document;
             public FakePartWith(XmlDocument document) { m_Document = document; }
+            public XmlDocument Document => m_Document;
         }
 
         [Fact]

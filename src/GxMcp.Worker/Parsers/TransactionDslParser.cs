@@ -434,7 +434,11 @@ namespace GxMcp.Worker.Parsers
                                         newAttr.Save();
                                         createdGlobal = true;
                                         Guid createdGuid = Guid.Empty;
-                                        try { createdGuid = newAttr.Guid; } catch { }
+                                        try { createdGuid = newAttr.Guid; }
+                                        catch (Exception guidEx)
+                                        {
+                                            Logger.Warn("[TransactionDslParser] the GUID of the created global '" + pNode.Name + "' is unreadable; a rollback cannot identify it: " + guidEx.Message);
+                                        }
                                         CreatedGlobals.Add(new CreatedGlobalAttribute
                                         {
                                             Name = pNode.Name,

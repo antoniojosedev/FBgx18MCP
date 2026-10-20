@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Xml;
 using System.Xml.Linq;
 using Artech.Architecture.Common.Objects;
 using Artech.Packages.Patterns.Objects;
@@ -383,14 +384,24 @@ namespace GxMcp.Worker.Services
             }
             XDocument projected;
             try { projected = XDocument.Parse(after, LoadOptions.PreserveWhitespace); }
-            catch (Exception)
+            catch (XmlException)
             {
                 result["message"] = "The projected WebForm is not valid XML.";
                 return result;
             }
             result["wellFormed"] = true;
             XDocument original = null;
-            try { original = string.IsNullOrWhiteSpace(before) ? null : XDocument.Parse(before, LoadOptions.PreserveWhitespace); } catch (Exception) { }
+            if (!string.IsNullOrWhiteSpace(before))
+            {
+                // Without a readable "before" there is nothing to compare the control count with:
+                // counting it as zero would confirm a projection that dropped every control.
+                try { original = XDocument.Parse(before, LoadOptions.PreserveWhitespace); }
+                catch (XmlException)
+                {
+                    result["message"] = "The WebForm before the projection is not valid XML, so the projection cannot be compared with it.";
+                    return result;
+                }
+            }
             if (original?.Root != null && !string.Equals(original.Root.Name.LocalName, projected.Root?.Name.LocalName, StringComparison.Ordinal))
             {
                 result["message"] = "The projected WebForm changed its root element from '" + original.Root.Name.LocalName + "' to '" + projected.Root?.Name.LocalName + "'.";

@@ -464,11 +464,12 @@ namespace GxMcp.Worker.Services
                 if (metadataError == null && objects != null)
                     objectCount = objects.Count;
             }
-            catch
+            catch (Exception ex)
             {
                 // The direct GXPublic operation will surface the provider error;
                 // the readiness flag only prevents the native-index gate from
                 // hiding that more useful error envelope.
+                Logger.Debug("[LegacyIndex] metadata query failed while marking the index ready: " + ex.Message);
             }
 
             _indexCacheService.MarkIndexComplete(objectCount);

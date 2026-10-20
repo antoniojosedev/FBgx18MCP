@@ -51,11 +51,12 @@ namespace GxMcp.Gateway
 
         private static bool SamePath(string left, string right)
         {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
             try
             {
                 return string.Equals(Normalize(left), Normalize(right), StringComparison.OrdinalIgnoreCase);
             }
-            catch
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
             {
                 // A path that cannot be normalised is not the open KB; never claim it is.
                 return false;

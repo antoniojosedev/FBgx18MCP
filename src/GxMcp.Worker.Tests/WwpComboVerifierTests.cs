@@ -157,6 +157,15 @@ namespace GxMcp.Worker.Tests
             + "<data attribute='att:1' /><data attribute='att:2' /></layout></detail></Form></GxMultiForm>";
 
         [Fact]
+        public void Projection_WhoseBeforeFormIsNotXml_IsNotConfirmed_EvenWhenItHasNoAttributeControls()
+        {
+            JObject result = WwpActionService.VerifyComboProjection("<GxMultiForm><broken", "<GxMultiForm><Form type='layout'/></GxMultiForm>");
+
+            Assert.False((bool)result["confirmed"]);
+            Assert.Contains("before the projection is not valid XML", (string)result["message"]);
+        }
+
+        [Fact]
         public void Projection_ThatKeepsTheFormAndItsAttributeControls_IsConfirmedStructurally()
         {
             JObject result = WwpActionService.VerifyComboProjection(Form, Form.Replace("<layout>", "<layout id='new'>"));
