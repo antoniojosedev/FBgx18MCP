@@ -113,6 +113,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("move_control")]
         [InlineData("add_grid_attribute")]
         [InlineData("add_user_action")]
+        [InlineData("set_combo_properties")]
         public void WorkWithPlusTypedWritesRespectPreviewBoundary(string action)
         {
             Assert.True(OperationClassifier.IsReadOnly("genexus_wwp", new JObject

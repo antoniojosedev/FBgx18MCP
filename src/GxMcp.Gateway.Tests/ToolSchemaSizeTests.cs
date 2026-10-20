@@ -280,7 +280,9 @@ namespace GxMcp.Gateway.Tests
         // of a Dynamic Combo Box). Measured 103015 bytes; the global token budget does not move.
         // genexus_wire.targets (#499 follow-up, pack_task on a native KB): ~100 bytes per profile;
         // all 103100 -> 103200 (measured 103121), devops 52500 -> 52700 (measured 52598).
-        [InlineData("all", 103200)]
+        // genexus_wwp set_combo_properties adds an enum value and the `properties` input (published
+        // descriptions are truncated): all 103200 -> 103300, measured 103228 bytes on the rebased tree.
+        [InlineData("all", 103300)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
         [InlineData("authoring", 72000)]

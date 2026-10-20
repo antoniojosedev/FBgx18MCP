@@ -80,8 +80,14 @@ namespace GxMcp.Worker.Services
                         ["details"] = dryRun ? "Dry-run: no change would be applied." : "No change",
                         ["savePathExercised"] = false
                     });
+                // The SDK keeps only the attributes the pattern specification declares: refuse the
+                // others now, in the preview as well, instead of saving and failing the verification.
+                string undeclaredAttributes = RejectAttributesOutsideSdkSpecification(obj, target, partName, plan.Xml, currentXml,
+                    resolvedPatternId, patternLabel, currentPattern != null && currentPattern.IsWorkWithPlus, out bool specificationChecked);
+                if (undeclaredAttributes != null) return undeclaredAttributes;
                 if (dryRun)
-                    return Models.McpResponse.Ok(target: target, code: "WriteDryRun", result: new JObject
+                {
+                    var dryRunResult = new JObject
                     {
                         ["part"] = partName,
                         ["details"] = "Dry-run: property changes validated; metadata preserved. Save skipped.",
@@ -93,7 +99,11 @@ namespace GxMcp.Worker.Services
                             : currentPattern.IsWorkWithPlus
                             ? "WorkWithPlus pattern saves can still be rejected by the WWP validator on save. This preview does not certify save isolation."
                             : currentPattern.Name + " pattern saves can still be rejected by the pattern's validator on save. This preview does not certify save isolation."
-                    });
+                    };
+                    // Only claimed when the specification was actually read and every attribute passed.
+                    if (specificationChecked) ((JArray)dryRunResult["verified"]).Add("sdkAttributeNames");
+                    return Models.McpResponse.Ok(target: target, code: "WriteDryRun", result: dryRunResult);
+                }
                 normalizedInput = plan.Xml;
             }
             else
@@ -498,6 +508,54 @@ namespace GxMcp.Worker.Services
                     transaction.Rollback();
                     return CreateWriteError("Pattern write failed", target, partName, ex.Message, resolvedObject ?? obj, code: "PatternSaveFailed");
                 }
+            }
+        }
+
+        /// <summary>
+        /// Refuses a requested PatternInstance that carries XML attributes its element types do not
+        /// declare. The pattern deserializer (<c>PatternInstanceElementAttributes.FromXml</c>) reads
+        /// only declared attributes, so those would be dropped by the save and the write would end in
+        /// <c>PatternVerificationMismatch</c> after the part was saved. Returns null when nothing is
+        /// undeclared or when the specification cannot be read (the check never blocks a write by failing).
+        /// </summary>
+        private string RejectAttributesOutsideSdkSpecification(global::Artech.Architecture.Common.Objects.KBObject obj, string target,
+            string partName, string requestedXml, string currentXml, Guid? patternId, string patternName, bool workWithPlus,
+            out bool specificationChecked)
+        {
+            specificationChecked = false;
+            try
+            {
+                _patternAnalysisService.BuildPatternPartEnvelope(obj, partName, currentXml, patternId, out _,
+                    out global::Artech.Architecture.Common.Objects.KBObjectPart specPart);
+                var specification = (specPart as global::Artech.Packages.Patterns.Objects.PatternInstancePart)?.RootElement?.Specification?.Specification;
+                if (specification == null) return null;
+
+                var found = PatternSdkAttributeCheck.Find(
+                    System.Xml.Linq.XDocument.Parse(requestedXml, System.Xml.Linq.LoadOptions.PreserveWhitespace),
+                    new SdkPatternSpecView(specification),
+                    workWithPlus ? (Func<string, string>)(name => WwpComboProperties.Suggest(name)?.SdkName) : null);
+                specificationChecked = true;
+                if (found.Count == 0) return null;
+
+                JObject description = PatternSdkAttributeCheck.Describe(found, patternName);
+                DiscardedAttribute first = found[0];
+                string hint = "Use the attribute names the pattern specification declares (see 'details')."
+                    + (workWithPlus && found.Any(f => WwpComboProperties.Suggest(f.Attribute) != null)
+                        ? " genexus_wwp action=set_combo_properties configures the DVelop combo properties (Parameters, LoadDataDynamically, ConditionsDynamicAttsOrVars) under the SDK names controlInputDPParameters, controlLoadDynamically and conditionDynAtts, with a dry-run, a fresh re-read and a verified rollback."
+                        : string.Empty);
+                return CreateWriteError("Pattern edit rejected", target, partName, (string)description["message"], obj,
+                    new XmlEquivalenceDiff
+                    {
+                        ElementName = first.Element,
+                        Path = first.ElementPath,
+                        RejectedAttributes = found.Where(f => f.ElementPath == first.ElementPath).Select(f => f.Attribute).ToArray()
+                    },
+                    code: "PatternAttributeNotInSdkSpecification", customHint: hint);
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[PATTERN-WRITE] SDK attribute-name check skipped: " + ex.Message);
+                return null;
             }
         }
 
