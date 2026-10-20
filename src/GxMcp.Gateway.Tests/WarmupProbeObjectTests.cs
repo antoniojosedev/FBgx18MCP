@@ -128,6 +128,41 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(2, calls);
         }
 
+        // Issue #593: on a very large KB the single SDK lane is busy opening or indexing,
+        // so the 30s warmup list times out at the transport. Retrying it 40 times keeps
+        // queueing work on a worker that is already saturated; a transport timeout ends the
+        // warm pass, while an IndexNotReady reply (null) still retries.
+        [Fact]
+        public async Task AwaitWarmupProbeObjectAsync_StopsRetrying_AfterATransportTimeout()
+        {
+            int calls = 0;
+            var retries = new List<int>();
+
+            string? name = await Program.AwaitWarmupProbeObjectAsync(
+                () =>
+                {
+                    calls++;
+                    if (calls == 2) throw new Program.WarmupProbeTimeoutException();
+                    return Task.FromResult<string?>(null);
+                },
+                maxAttempts: 10,
+                retryDelayMs: 0,
+                onRetry: retries.Add);
+
+            Assert.Null(name);
+            Assert.Equal(2, calls);
+            Assert.Equal(new[] { 1 }, retries);
+        }
+
+        [Fact]
+        public void IsWarmupListTimeout_IsTrueOnlyForTheTransportTimeoutReply()
+        {
+            Assert.True(Program.IsWarmupListTimeout(Program.BuildWarmupListTimeoutResponse("corr-1")));
+            Assert.False(Program.IsWarmupListTimeout(JObject.Parse(@"{""result"":" + IndexNotReadyEnvelope + "}")));
+            Assert.False(Program.IsWarmupListTimeout(JObject.Parse(@"{""error"":{""message"":""WorkerBusy""}}")));
+            Assert.False(Program.IsWarmupListTimeout(null));
+        }
+
         [Fact]
         public async Task AwaitWarmupProbeObjectAsync_ReturnsNull_ForMissingResolveDelegate()
         {
