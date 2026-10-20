@@ -15,6 +15,14 @@ rayon = "1.10"
 bincode = "1.3"
 walkdir = "2.5"
 
+[profile.dev]
+# Keep file/line backtraces but drop full debug info; dependencies get none.
+# Cuts target/ size substantially for every worktree.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 opt-level = "z"
 lto = "fat"
