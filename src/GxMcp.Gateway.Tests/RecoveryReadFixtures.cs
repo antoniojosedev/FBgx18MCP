@@ -52,7 +52,7 @@ namespace GxMcp.Gateway.Tests
             string entityKey = ObjectEntityKey,
             string path = ObjectName,
             string stamp = "w100",
-            string revision = "638000000000000000:root")
+            string revision = "r1:root")
         {
             string sha = Sha256(text);
             return new JObject

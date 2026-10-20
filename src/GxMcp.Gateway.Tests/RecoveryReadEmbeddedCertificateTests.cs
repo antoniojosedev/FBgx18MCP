@@ -30,7 +30,7 @@ namespace GxMcp.Gateway.Tests
                 ["truncated"] = paginated,
                 ["isTruncatedByWorker"] = paginated,
                 ["explicitFullRead"] = true,
-                ["versionToken"] = "638000000000000000:root:" + Sha256(text)
+                ["versionToken"] = "r1:root:" + Sha256(text)
             };
             if (certificate != null) payload["recoveryCertificate"] = certificate;
             return payload;
@@ -180,7 +180,7 @@ namespace GxMcp.Gateway.Tests
             // The page came from a Worker cache the fresh certification read has outdated:
             // the caller would edit from a versionToken that is not the one certified.
             string text = SyntheticPart(250000, 5000);
-            var worker = WorkerRead(text, 5000, Certificate(text, 5000, revision: "638000000000000009:root"));
+            var worker = WorkerRead(text, 5000, Certificate(text, 5000, revision: "r9:root"));
             var registry = Fenced();
 
             Assert.Equal(0, Decide(registry, ReadArgs(), worker));
@@ -197,7 +197,7 @@ namespace GxMcp.Gateway.Tests
             // The page is complete and would clear the fence on its own; the fresh certificate
             // says the part is at another version, so the page the caller holds is outdated.
             string text = SyntheticPart(3000, 60);
-            var certificate = Certificate(text, 60, revision: "638000000000000009:root");
+            var certificate = Certificate(text, 60, revision: "r9:root");
             var registry = Fenced();
             var page = ThroughWireGuards(WorkerRead(text, 60, null), ReadArgs());
             Assert.True(Program.IsCompleteMutationRecoveryRead(page));
@@ -248,7 +248,7 @@ namespace GxMcp.Gateway.Tests
             var certificate = Certificate(text, 5000);
             var registry = new MutationRecoveryRegistry();
             registry.RequireRead(Kb, ObjectName, PartName, "op-landed", null, null, null, null,
-                "638000000000000001:root:" + Sha256("before the write"));
+                "r2:root:" + Sha256("before the write"));
             registry.RequireRead(Kb, "OtherPanel", PartName, "op-other");
             var worker = WorkerRead(text, 5000, certificate);
             var args = ReadArgs();
@@ -409,7 +409,7 @@ namespace GxMcp.Gateway.Tests
         {
             var notModified = new JObject
             {
-                ["notModified"] = true, ["part"] = PartName, ["versionToken"] = "638000000000000000:root:abc",
+                ["notModified"] = true, ["part"] = PartName, ["versionToken"] = "r1:abc",
                 ["offset"] = 0, ["truncated"] = false
             };
 

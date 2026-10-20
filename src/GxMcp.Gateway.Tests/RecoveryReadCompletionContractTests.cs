@@ -95,7 +95,7 @@ namespace GxMcp.Gateway.Tests
                 ["entityKey"] = "d2b4a0c0-0000-0000-0000-000000000000:7",
                 ["path"] = "SyntheticPanel",
                 ["operationId"] = "op-1",
-                ["baseVersion"] = "638000000000000000:root:abc",
+                ["baseVersion"] = "r1:abc",
                 ["dryRun"] = false
             });
             Assert.True(accepted.Ok, string.Join("; ", accepted.Violations.Select(v => $"{v.Path} ({v.Actual})")));

@@ -187,7 +187,7 @@ namespace GxMcp.Gateway.Tests
             var registry = Registry();
             registry.RequireRead(Kb, ObjectName, PartName, "op-1");
             var args = Args();
-            args["baseVersion"] = "638000000000000000:root:" + Sha256("what I inspected");
+            args["baseVersion"] = "r1:root:" + Sha256("what I inspected");
 
             var result = await Run(registry, args,
                 new ScriptedWorker().Answer(WorkerEnvelope(Whole(SyntheticPart(3000, 60), 60))));
@@ -208,7 +208,7 @@ namespace GxMcp.Gateway.Tests
             args["complete"] = true;
             args["fenceCleared"] = true;
             args["recoveryCertificate"] = Whole(text, 60);
-            args["versionToken"] = "638000000000000000:root:" + Sha256(text);
+            args["versionToken"] = "r1:root:" + Sha256(text);
             args["sha256"] = Sha256(text);
             args["totalLines"] = 60;
             var incomplete = Whole(text, 60).With("complete", false);
@@ -352,7 +352,7 @@ namespace GxMcp.Gateway.Tests
             var worker = new ScriptedWorker().Answer(WorkerEnvelope(certificate));
 
             var stale = Args(dryRun: false);
-            stale["baseVersion"] = "638000000000000000:root:" + Sha256("an older read");
+            stale["baseVersion"] = "r1:root:" + Sha256("an older read");
             var refused = await Run(registry, stale, worker);
 
             Assert.Equal("RecoveryReadStale", refused["error"]!["code"]!.ToString());
@@ -649,7 +649,7 @@ namespace GxMcp.Gateway.Tests
             string? expectedVersion = expected switch
             {
                 "same" => certificate["versionToken"]!.ToString(),
-                "other" => "638000000000000001:root:" + Sha256("before the write"),
+                "other" => "r2:root:" + Sha256("before the write"),
                 _ => null
             };
             var registry = Registry();

@@ -93,7 +93,7 @@ namespace GxMcp.Gateway.Tests
         {
             // The token is made to agree with the malformed hash, so only the hash check can refuse.
             var certificate = Valid().With("sha256", hash);
-            certificate["versionToken"] = "638000000000000000:root:" + hash;
+            certificate["versionToken"] = "r1:root:" + hash;
 
             AssertRefused("hash-invalid", certificate, Fence());
         }
@@ -102,7 +102,7 @@ namespace GxMcp.Gateway.Tests
         public void VersionTokenThatDoesNotEndInTheHashIsRefused()
         {
             // A client cannot make a token and a hash agree by editing one of them.
-            var forged = Valid().With("versionToken", "638000000000000000:root:" + Sha256("other bytes"));
+            var forged = Valid().With("versionToken", "r1:root:" + Sha256("other bytes"));
 
             AssertRefused("version-token-hash-mismatch", forged, Fence());
         }
@@ -255,7 +255,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
-        [InlineData("versionToken", "638000000000000001:root:", "versionToken")]
+        [InlineData("versionToken", "r2:root:", "versionToken")]
         [InlineData("targetWriteStamp", "w200", "targetWriteStamp")]
         [InlineData("totalLines", 61, "totalLines")]
         [InlineData("identity.guid", "11111111-2222-3333-4444-555555555555", "identity.guid")]
@@ -263,7 +263,7 @@ namespace GxMcp.Gateway.Tests
         {
             var first = Valid();
             var second = field == "versionToken"
-                ? first.With("versionToken", "638000000000000001:root:" + first["sha256"])
+                ? first.With("versionToken", "r2:root:" + first["sha256"])
                 : first.With(field, value);
 
             Assert.False(RecoveryReadCertificateValidator.SameObservedState(first, second, out string difference));

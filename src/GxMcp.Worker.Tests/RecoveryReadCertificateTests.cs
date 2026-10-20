@@ -19,9 +19,6 @@ namespace GxMcp.Worker.Tests
     public class RecoveryReadCertificateTests
     {
         private const string Guid1 = "0f8fad5b-d9cb-469f-a165-70867728950e";
-        // The object-revision half of a version token (last-update ticks and parent).
-        private const string RevisionStamp = "638000000000000000:root";
-
         private static string SyntheticPart(int chars, int lines)
         {
             int width = Math.Max(1, chars / lines - 1);
@@ -47,13 +44,13 @@ namespace GxMcp.Worker.Tests
                 RequestedPart = part,
                 ResolvedPart = part,
                 Text = text,
-                VersionToken = text == null ? null : "638000000000000000:root:" + WriteService.ComputeContentFingerprint(text),
+                VersionToken = text == null ? null : "r1:root:" + WriteService.ComputeContentFingerprint(text),
                 RequestOffset = offset,
                 RequestLimit = limit,
                 WriteStampBefore = "w100",
                 WriteStampAfter = "w100",
-                RevisionBefore = "638000000000000000:root",
-                RevisionAfter = "638000000000000000:root"
+                RevisionBefore = "r1:root",
+                RevisionAfter = "r1:root"
             };
 
         // ---- what is certified ---------------------------------------------------------
@@ -167,7 +164,7 @@ namespace GxMcp.Worker.Tests
         public void PartWithoutTextIsNotComplete()
         {
             var observation = Observe(null);
-            observation.VersionToken = RevisionStamp + ":abc";
+            observation.VersionToken = "r1:abc";
 
             var certificate = RecoveryReadCertificate.Build(observation);
 
@@ -194,7 +191,7 @@ namespace GxMcp.Worker.Tests
         [Theory]
         [InlineData(null, "version-token-unavailable")]
         [InlineData("", "version-token-unavailable")]
-        [InlineData("638000000000000000:root:not-the-hash-of-this-text", "version-token-not-derived-from-text")]
+        [InlineData("r1:other", "version-token-not-derived-from-text")]
         public void VersionTokenMustDescribeTheSameBytesThatWereHashed(string token, string reason)
         {
             var observation = Observe(SyntheticPart(3000, 60));
@@ -232,7 +229,7 @@ namespace GxMcp.Worker.Tests
         {
             var observation = Observe(SyntheticPart(3000, 60));
             if (movement == "write-stamp") observation.WriteStampAfter = "w200";
-            if (movement == "revision") observation.RevisionAfter = "638000000000000001:root";
+            if (movement == "revision") observation.RevisionAfter = "r2:root";
             if (movement == "no-write-stamp") { observation.WriteStampBefore = null; observation.WriteStampAfter = null; }
             if (movement == "no-revision") { observation.RevisionBefore = null; observation.RevisionAfter = null; }
 
@@ -259,7 +256,7 @@ namespace GxMcp.Worker.Tests
             // The part also fails the token/hash check; the race must still be visible so the
             // Gateway can veto every route that would clear a fence from this read.
             var observation = Observe(SyntheticPart(3000, 60));
-            observation.VersionToken = RevisionStamp + ":not-the-hash-of-this-text";
+            observation.VersionToken = "r1:xyz";
             observation.WriteStampAfter = "w200";
 
             var certificate = RecoveryReadCertificate.Build(observation);
