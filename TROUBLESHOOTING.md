@@ -329,3 +329,20 @@ their owner. All Gateways sharing a journal must use the lock-aware version.
 When moving to a new package directory, preserve the entire `state` directory,
 including candidates and backups, while old Gateways are stopped. Binary
 rollback must not roll back newly created recovery evidence.
+
+# PostTimeoutReadRequired after a slow preview
+
+A `genexus_edit` call with `dryRun: true` never persists, so a preview that
+outlasts the synchronous window (or is cancelled) no longer arms a recovery
+fence; only a real write (`dryRun` absent or `false`) does. A fence that an older
+build left behind for a preview is cleared like any other: read the fenced part
+in full (`genexus_read` with `part` and `limit: 0`, plus `type` when the fence
+names one).
+
+The read clears the fence only when the caller actually received the whole part
+at the current `versionToken`. A response with `truncatedByGateway`,
+`isTruncatedByWorker`, a non-zero `offset` or an oversize-response sentinel is
+treated as a partial read and the fence stays. A part returned whole is no
+longer reported as truncated merely because its response envelope exceeds the
+80000-character guideline (an explicit full read keeps up to 200000 characters
+of `source`).

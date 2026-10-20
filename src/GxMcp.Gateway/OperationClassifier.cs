@@ -444,6 +444,39 @@ namespace GxMcp.Gateway
                 && HasKnownSideEffects(effectiveTool, effectiveArgs["action"]?.ToString(), effectiveArgs);
         }
 
+        // Tools that take no `action` but have a documented dryRun preview shown not to
+        // persist. genexus_edit routes (patch, ops, full-part, JSON-Patch, parts[], targets[])
+        // all forward dryRun and the Worker returns before the SDK save. The changeSet route
+        // is excluded in IsEffectFreeDryRunPreview: it is driven by changeSet.action, so a
+        // top-level dryRun does not stop changeSet.action=apply from writing. Do not add a tool
+        // here on the strength of an accepted `dryRun` argument alone (see #280/#489).
+        private static readonly HashSet<string> EffectFreeDryRunPreviewTools =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "genexus_edit" };
+
+        /// <summary>
+        /// True when the call is a dryRun preview of a tool whose preview is known not to
+        /// persist, so an unfinished or cancelled run leaves nothing to reconcile. This is
+        /// deliberately narrower than <see cref="Program.IsMutationPreview"/>, which trusts any
+        /// dryRun flag for the write gate: a recovery fence is the backstop for an unknown commit
+        /// state, so it is only waived for tools on <see cref="EffectFreeDryRunPreviewTools"/>.
+        /// An unparseable dryRun counts as a write.
+        /// </summary>
+        internal static bool IsEffectFreeDryRunPreview(string? toolName, JObject? args)
+        {
+            if (string.IsNullOrWhiteSpace(toolName) || args == null) return false;
+
+            var effectiveArgs = NormalizeArguments(toolName, args, out var canonical);
+            if (!EffectFreeDryRunPreviewTools.Contains(canonical)) return false;
+            if (effectiveArgs["changeSet"] != null) return false;
+
+            JToken? dryRun = effectiveArgs["dryRun"];
+            return dryRun != null
+                && (dryRun.Type == JTokenType.Boolean
+                    ? dryRun.Value<bool>()
+                    : dryRun.Type == JTokenType.String
+                        && bool.TryParse(dryRun.ToString(), out bool parsed) && parsed);
+        }
+
         /// <summary>The gateway-owned KB management tool.</summary>
         internal const string KbTool = "genexus_kb";
 

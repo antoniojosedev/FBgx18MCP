@@ -93,7 +93,10 @@ namespace GxMcp.Gateway
             JObject timeoutPayload)
         {
             if (recovery == null || string.IsNullOrWhiteSpace(kbAlias)
-                || !IsMutatingTool(toolName ?? string.Empty, toolArgs))
+                || !IsMutatingTool(toolName ?? string.Empty, toolArgs)
+                // A preview that cannot persist leaves nothing to reconcile; fencing the
+                // object would block the real write that follows the preview.
+                || OperationClassifier.IsEffectFreeDryRunPreview(toolName, toolArgs))
                 return false;
 
             var targets = EnumerateMutationRecoveryTargets(toolName ?? string.Empty, toolArgs).ToList();
@@ -254,21 +257,7 @@ namespace GxMcp.Gateway
                 // must not pay an exclusive cross-process lock, a full re-parse and a
                 // directory glob on every call. The mutating branch above keeps the
                 // unconditional Refresh(); the two are deliberately different.
-                bool ReadCoversPart(string part)
-                {
-                    if (tArgs?["part"] is { } partToken && partToken.Type != JTokenType.Null)
-                        return string.Equals(partToken.ToString(), part, StringComparison.OrdinalIgnoreCase);
-                    if (tArgs?["parts"] is JArray requestedParts)
-                        return requestedParts.OfType<JToken>().Any(item =>
-                            string.Equals(item.ToString(), part, StringComparison.OrdinalIgnoreCase));
-                    // No part selector is a complete-object read.
-                    return true;
-                }
-                foreach (var observed in _mutationRecovery.FindForRead(kbScope, tArgs))
-                {
-                    if (ReadCoversPart(observed.Part))
-                        recoveryReads.Add((observed.Target, observed.Part, observed));
-                }
+                recoveryReads.AddRange(FindCoveredRecoveryReads(_mutationRecovery, kbScope, tArgs));
                 requireAuthoritativeRead = recoveryReads.Count > 0;
                 // A cached response cannot reconcile an uncertain persisted write.
                 isLiveTool |= !_mutationRecovery.IsHealthy || _mutationRecovery.Count > 0;
@@ -653,39 +642,8 @@ namespace GxMcp.Gateway
                     }
 
                     // Reconcile only content that actually survives the wire guards.
-                    if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase)
-                        && IsCompleteMutationRecoveryRead(finalResult))
-                    {
-                        if (IsFullObjectMutationRecoveryRead(finalResult))
-                        {
-                            // A versioned FullObjectRead is complete evidence for
-                            // every part of the object, not just the default Source
-                            // key used to find the request.
-                            var fullParts = (finalResult as JObject)?["result"]?["parts"] as JObject;
-                            var availableParts = (finalResult as JObject)?["result"]?["availableParts"] as JArray;
-                            foreach (var recoveryTarget in recoveryReads)
-                            {
-                                var pending = recoveryTarget.Observed;
-                                if (pending == null) continue;
-                                bool partWasRead = fullParts != null
-                                    && fullParts.Properties().Any(property =>
-                                        string.Equals(property.Name, pending.Part, StringComparison.OrdinalIgnoreCase));
-                                bool emptyPartWasEnumerated = availableParts != null
-                                    && availableParts.Any(part => string.Equals(part?.ToString(), pending.Part, StringComparison.OrdinalIgnoreCase));
-                                if (!partWasRead && !emptyPartWasEnumerated) continue;
-                                _mutationRecovery.ConfirmRead(
-                                    kbScope,
-                                    pending.Target,
-                                    pending.Part,
-                                    pending);
-                            }
-                        }
-                        else
-                        {
-                            foreach (var recoveryTarget in recoveryReads)
-                                _mutationRecovery.ConfirmRead(kbScope, recoveryTarget.Target, recoveryTarget.Part, recoveryTarget.Observed);
-                        }
-                    }
+                    if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
+                        ConfirmMutationRecoveryRead(_mutationRecovery, kbScope, finalResult, recoveryReads);
                     if (!isErr && propertiesRecoveryRead && finalResult is JObject propertyPayload)
                     {
                         bool cleared = false;
