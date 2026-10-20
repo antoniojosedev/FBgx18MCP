@@ -207,6 +207,11 @@ namespace GxMcp.Worker.Services
         private readonly Dictionary<string, int> _objectRetries = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private int _scheduled;
         private bool _startedForCurrentIndex;
+        // Bumped by every Start.  A slice captures the generation together with the
+        // entry snapshot it walks; once a later Start has replaced that snapshot the
+        // slice's cursor arithmetic refers to a list nobody resumes, so the slice
+        // abandons instead of overwriting the restarted walk (issue #596).
+        private int _walkGeneration;
         internal const int MaxTransientRetries = 5;
 
         public SourceStoreBackfillService(SourceStoreService store)
@@ -238,6 +243,15 @@ namespace GxMcp.Worker.Services
             return state.ToJson(SourceStoreBackfillState.MaxReportedReadFailedObjects);
         }
 
+        /// <summary>The store this backfill populates; the start path reads freshness through it.</summary>
+        internal SourceStoreService Store => _store;
+
+        /// <summary>Number of Start calls so far; test observability for the start guard.</summary>
+        internal int WalkGenerationForTest
+        {
+            get { lock (_gate) return _walkGeneration; }
+        }
+
         /// <summary>
         /// Starts (or resumes) backfill for the currently loaded index.  The callbacks
         /// are invoked only from an SDK STA slice, never from the caller's thread.
@@ -264,6 +278,7 @@ namespace GxMcp.Worker.Services
                     .ThenBy(e => EntryIdentity(e), StringComparer.OrdinalIgnoreCase)
                     .ToList()
                     .AsReadOnly();
+                _walkGeneration++;
                 _state.TotalObjects = _entries.Count;
                 string catalogSignature = BuildCatalogSignature(_entries);
                 if (!string.IsNullOrWhiteSpace(_state.CatalogSignature)
@@ -409,12 +424,14 @@ namespace GxMcp.Worker.Services
             Func<SearchIndex.IndexEntry, IReadOnlyList<SourceStoreBackfillPart>> reader;
             Func<SearchIndex.IndexEntry, IReadOnlyList<string>> requiredPartProvider;
             int start;
+            int generation;
             lock (_gate)
             {
                 if (!_startedForCurrentIndex || _entryProvider == null || _partReader == null) return false;
                 entries = _entries;
                 reader = _partReader;
                 requiredPartProvider = _requiredPartProvider;
+                generation = _walkGeneration;
                 start = Math.Max(0, Math.Min(_state.CursorIndex, entries.Count));
                 _state.State = "running";
                 if (_runClock.Elapsed == TimeSpan.Zero) _runClockBaseline = _state.ProcessedObjects;
@@ -423,6 +440,11 @@ namespace GxMcp.Worker.Services
 
             int processed = 0;
             bool sliceHadError = false;
+            // Set when a later Start replaced the snapshot this slice walks.  Every
+            // cursor/counter write below is relative to `entries`, so the slice stops
+            // at the first stale observation and leaves the restarted walk untouched;
+            // that Start has already queued its own slice.
+            bool stale = false;
             try
             {
                 for (int i = start; i < entries.Count && processed < maxObjectsPerSlice; i++)
@@ -432,6 +454,7 @@ namespace GxMcp.Worker.Services
                     bool knownReadFailure;
                     lock (_gate)
                     {
+                        if (IsStaleSliceLocked(generation)) { stale = true; break; }
                         knownReadFailure = _state.ReadFailedObjects.Contains(entry.Guid, StringComparer.OrdinalIgnoreCase);
                         if (knownReadFailure)
                         {
@@ -465,6 +488,7 @@ namespace GxMcp.Worker.Services
                         _store.RemoveObject(entry.Guid);
                         lock (_gate)
                         {
+                            if (IsStaleSliceLocked(generation)) { stale = true; break; }
                             _state.RemovedObjects++;
                             _state.ProcessedObjects++;
                             _state.CursorIndex = i + 1;
@@ -550,15 +574,20 @@ namespace GxMcp.Worker.Services
 
                     if (objectError != null)
                     {
-                        int attempt = _objectRetries.TryGetValue(entry.Guid, out int count) ? count : 0;
+                        int attempt;
+                        lock (_gate)
+                        {
+                            if (IsStaleSliceLocked(generation)) { stale = true; break; }
+                            attempt = _objectRetries.TryGetValue(entry.Guid, out int count) ? count : 0;
+                            if (attempt < 1) _objectRetries[entry.Guid] = attempt + 1;
+                        }
                         if (attempt < 1)
                         {
-                            _objectRetries[entry.Guid] = attempt + 1;
                             // One probe retry per object. Only slice-level failures (SDK
                             // queue, store) consume the transient retry budget; otherwise
                             // a run of unreadable objects would wedge the walk in error.
-                            SetSliceError(objectError, consumesRetryBudget: false);
-                            sliceHadError = true;
+                            if (SetSliceError(objectError, generation, consumesRetryBudget: false)) sliceHadError = true;
+                            else stale = true;
                             break;
                         }
                         else
@@ -566,6 +595,7 @@ namespace GxMcp.Worker.Services
                             Logger.Warn("[SOURCE-STORE] " + objectError + " Advancing past failing object.");
                             lock (_gate)
                             {
+                                if (IsStaleSliceLocked(generation)) { stale = true; break; }
                                 if (!_state.ReadFailedObjects.Contains(entry.Guid, StringComparer.OrdinalIgnoreCase))
                                 {
                                     _state.ReadFailedObjects.Add(entry.Guid);
@@ -593,15 +623,15 @@ namespace GxMcp.Worker.Services
                             part.LastUpdate ?? entry.LastUpdate,
                             part.VersionToken))
                         {
-                            SetSliceError("Source-store rejected source part '"
+                            if (SetSliceError("Source-store rejected source part '"
                                 + CanonicalPartName(entry.Type, pair.Key)
-                                + "' for object '" + entry.Guid + "'.");
-                            sliceHadError = true;
+                                + "' for object '" + entry.Guid + "'.", generation)) sliceHadError = true;
+                            else stale = true;
                             break;
                         }
                         anyStored = true;
                     }
-                    if (sliceHadError) break;
+                    if (sliceHadError || stale) break;
 
                     // A successful Put is not enough to certify coverage.  Read the
                     // actual per-part records back so a missing/corrupt file or a
@@ -612,17 +642,18 @@ namespace GxMcp.Worker.Services
                     {
                         if (_store.IsStoredAndFresh(entry, new List<string> { partName }))
                             continue;
-                        SetSliceError("Source-store certification failed for part '"
+                        if (SetSliceError("Source-store certification failed for part '"
                             + CanonicalPartName(entry.Type, partName)
-                            + "' of object '" + entry.Guid + "'.");
-                        sliceHadError = true;
+                            + "' of object '" + entry.Guid + "'.", generation)) sliceHadError = true;
+                        else stale = true;
                         break;
                     }
-                    if (sliceHadError) break;
+                    if (sliceHadError || stale) break;
 
                     processed++;
                     lock (_gate)
                     {
+                        if (IsStaleSliceLocked(generation)) { stale = true; break; }
                         _state.CursorIndex = i + 1;
                         _state.Cursor = EntryIdentity(entry);
                         _state.ProcessedObjects++;
@@ -631,6 +662,8 @@ namespace GxMcp.Worker.Services
                         _state.UpdatedAtUtc = DateTime.UtcNow;
                     }
                 }
+
+                if (stale) return false;
 
                 if (sliceHadError)
                 {
@@ -644,6 +677,7 @@ namespace GxMcp.Worker.Services
                 bool complete;
                 lock (_gate)
                 {
+                    if (IsStaleSliceLocked(generation)) return false;
                     _state.RetryCount = 0;
                     _state.LastError = null;
                     complete = _state.CursorIndex >= entries.Count;
@@ -671,6 +705,7 @@ namespace GxMcp.Worker.Services
             {
                 lock (_gate)
                 {
+                    if (IsStaleSliceLocked(generation)) return false;
                     _state.State = "error";
                     _state.LastError = ex.Message;
                     _state.RetryCount++;
@@ -686,10 +721,22 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private void SetSliceError(string message, bool consumesRetryBudget = true)
+        /// <summary>
+        /// True when a later Start replaced the entry snapshot a slice captured at
+        /// <paramref name="generation"/>.  Callers hold <see cref="_gate"/>.
+        /// </summary>
+        private bool IsStaleSliceLocked(int generation) => _walkGeneration != generation;
+
+        /// <summary>
+        /// Records a slice-level error.  Returns false, leaving the state untouched,
+        /// when the slice belongs to a replaced walk: its error describes a snapshot
+        /// nobody resumes and must not wedge the restarted walk in <c>error</c>.
+        /// </summary>
+        private bool SetSliceError(string message, int generation, bool consumesRetryBudget = true)
         {
             lock (_gate)
             {
+                if (IsStaleSliceLocked(generation)) return false;
                 _state.LastError = string.IsNullOrWhiteSpace(message)
                     ? "The SDK source-part reader failed during source-store backfill."
                     : message;
@@ -698,6 +745,7 @@ namespace GxMcp.Worker.Services
                 _state.CompletedAtUtc = null;
                 _state.UpdatedAtUtc = DateTime.UtcNow;
                 PersistStateLocked();
+                return true;
             }
         }
 
@@ -739,7 +787,19 @@ namespace GxMcp.Worker.Services
             return !string.IsNullOrWhiteSpace(entry.StorageKey) ? entry.StorageKey : entry.Guid;
         }
 
-        private static string BuildCatalogSignature(IEnumerable<SearchIndex.IndexEntry> entries)
+        /// <summary>
+        /// Signature of the catalogue a Start would walk for <paramref name="index"/>:
+        /// the same identity filter Start applies, so the value is comparable with
+        /// <see cref="SourceStoreBackfillState.CatalogSignature"/>.  Null without objects.
+        /// </summary>
+        internal static string BuildCatalogSignature(SearchIndex index)
+        {
+            if (index?.Objects == null) return null;
+            return BuildCatalogSignature(index.Objects.Values
+                .Where(e => e != null && !string.IsNullOrWhiteSpace(e.Guid)));
+        }
+
+        internal static string BuildCatalogSignature(IEnumerable<SearchIndex.IndexEntry> entries)
         {
             string canonical = string.Join("|", (entries ?? Array.Empty<SearchIndex.IndexEntry>())
                 .Select(EntryIdentity)
