@@ -24,6 +24,36 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("Proc.Run", action.Attributes.GetPropertyValueString("gxobject"));
         }
 
+        [Fact]
+        public void ResetSemanticAttribute_ClearsThroughTheChangeCommand_AndConfirmsTheEmptyValue()
+        {
+            var element = new FakeElement("attribute", "x");
+            element.Attributes.SetPropertyValue("conditionDynAtts", "A;B");
+
+            Assert.True(PatternSemanticAttributeWriter.ResetSemanticAttribute(element, "conditionDynAtts", string.Empty));
+
+            Assert.Null(element.Attributes.GetPropertyValueString("conditionDynAtts"));
+        }
+
+        [Fact]
+        public void ResetSemanticAttribute_OfAnAlreadyEmptyValue_IsConfirmedWithoutACommand()
+        {
+            var element = new FakeElement("attribute", "x");
+
+            Assert.True(PatternSemanticAttributeWriter.ResetSemanticAttribute(element, "conditionDynAtts", null));
+        }
+
+        [Fact]
+        public void ResetSemanticAttribute_RefusesWhenTheValueIsNotTheExpectedEmptyOne()
+        {
+            var element = new FakeElement("attribute", "x");
+            element.Attributes.SetPropertyValue("conditionDynAtts", "A");
+
+            Assert.False(PatternSemanticAttributeWriter.ResetSemanticAttribute(element, "conditionDynAtts", "Other"));
+            Assert.False(PatternSemanticAttributeWriter.ResetSemanticAttribute(null, "conditionDynAtts", string.Empty));
+            Assert.False(PatternSemanticAttributeWriter.ResetSemanticAttribute(element, " ", string.Empty));
+        }
+
         private sealed class FakePart
         {
             public FakePart(FakeElement root) { RootElement = root; }

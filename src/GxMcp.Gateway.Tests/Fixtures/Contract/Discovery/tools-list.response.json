@@ -5233,6 +5233,7 @@
               "move_grid_column",
               "add_grid_variable",
               "add_grid",
+              "set_combo_properties",
               "list_tabs",
               "tab_schema",
               "replace_web_component_with_user_action",
@@ -5511,6 +5512,10 @@
           "procedure": {
             "description": "add/update: associated Procedure;…",
             "type": "string"
+          },
+          "properties": {
+            "description": "set_combo_properties: Parameters,…",
+            "type": "object"
           },
           "property": {
             "description": "Exact SDK property name.",

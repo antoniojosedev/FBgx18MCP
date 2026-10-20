@@ -2007,7 +2007,10 @@ namespace GxMcp.Gateway
                 // the stale-environment-copy warning are the whole point of the error.
                 "diagnostics", "warnings", "staleEnvironmentCopy", "timedOut", "taskId",
                 // object_atomic pre-flight: the hint tells the caller to read fieldErrors.
-                "fieldErrors"
+                "fieldErrors",
+                // Optimistic-concurrency retry contract: a refused token is only useful if the
+                // caller can see the token that is current.
+                "currentVersion", "expectedVersion"
             };
             foreach (var k in diagnosticKeys)
             {
@@ -2041,6 +2044,21 @@ namespace GxMcp.Gateway
                     foreach (string key in new[] { "exceptionType", "parameter", "callSites" })
                         if (diagnostic[key] != null) safeDiagnostic[key] = diagnostic[key];
                     trimmed["diagnostic"] = safeDiagnostic;
+                }
+            }
+            if (code?.ToString().Contains("Combo", StringComparison.Ordinal) == true)
+            {
+                // genexus_wwp set_combo_properties refusals and failures: the typed receipt the
+                // caller corrects the next call with (which key the SDK would discard and the
+                // nearest supported one, what the control must be configured as, which names
+                // are valid) and the persistence/rollback evidence of a failed write.
+                foreach (string key in new[] { "property", "properties", "unknown", "supported", "unresolved", "current",
+                    "requires", "visibleIf", "sdkName", "discardedOnSave", "requested", "matches", "available", "element",
+                    "detail", "partialPersistence", "patternReReadConfirmed", "webFormProjectionConfirmed", "snapshot",
+                    "rollbackPerformed", "versionTokenBefore", "lifecycleExecuted" })
+                {
+                    JToken? value = ResolveErrorField(error, key);
+                    if (value != null) trimmed[key] = value;
                 }
             }
             string? status = error["status"]?.ToString();
