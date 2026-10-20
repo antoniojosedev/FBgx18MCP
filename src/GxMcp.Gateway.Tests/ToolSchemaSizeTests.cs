@@ -278,11 +278,13 @@ namespace GxMcp.Gateway.Tests
         // Measured together (#586/#588/#595): all 102473, authoring 71374 bytes.
         // all 103000 -> 103100 for the `expressions` array on genexus_properties (typed parameter list
         // of a Dynamic Combo Box). Measured 103015 bytes; the global token budget does not move.
-        [InlineData("all", 103100)]
+        // genexus_wire.targets (#499 follow-up, pack_task on a native KB): ~100 bytes per profile;
+        // all 103100 -> 103200 (measured 103121), devops 52500 -> 52700 (measured 52598).
+        [InlineData("all", 103200)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
         [InlineData("authoring", 72000)]
-        [InlineData("devops", 52500)]
+        [InlineData("devops", 52700)]
         [InlineData("ui", 50500)]
         [InlineData("db", 40000)]
         public void PublishedToolProfileStaysWithinItsByteBudget(string profile, int maxBytes)

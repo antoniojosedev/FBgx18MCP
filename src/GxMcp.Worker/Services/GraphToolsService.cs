@@ -49,6 +49,8 @@ namespace GxMcp.Worker.Services
     /// <summary>genexus_dfd, genexus_impact and genexus_object_context: read-only views composed from the existing engines.</summary>
     public class GraphToolsService
     {
+        /// <summary>How many SDK references the caller fallback reads before it stops.</summary>
+        internal const int SdkReferenceCap = 50;
         private const int DefaultDfdDepth = 3;
         private const int DefaultDfdTables = 100;
 
@@ -172,7 +174,7 @@ namespace GxMcp.Worker.Services
                 try { kb = _kb?.GetKB(); } catch { }
 
                 var list = new List<string>();
-                const int cap = 50;
+                const int cap = SdkReferenceCap;
                 foreach (var r in obj.GetReferencesTo())
                 {
                     if (list.Count >= cap) break;
@@ -301,22 +303,7 @@ namespace GxMcp.Worker.Services
 
             int maxDepth = Clamp(args["maxDepth"], 1, 1, 6);
             int maxNodes = Clamp(args["maxNodes"], 100, 1, 2000);
-            JObject up = RunImpact(index, entry, ImpactAnalyzer.Up, maxDepth, maxNodes, null);
-            JObject down = RunImpact(index, entry, ImpactAnalyzer.Down, maxDepth, maxNodes, null);
-
-            JObject Side(JObject side)
-            {
-                bool partial = !string.Equals(side["fieldTrust"]?.ToString(), "complete", StringComparison.Ordinal);
-                var names = side["affected"].Select(a => (string)a["name"]).ToList();
-                return new JObject
-                {
-                    ["names"] = new JArray(names),
-                    ["fieldTrust"] = side["fieldTrust"],
-                    // Under partial coverage an empty list was not read; it is not a zero.
-                    ["read"] = !(partial && names.Count == 0),
-                    ["truncated"] = side["stats"]["truncated"]
-                };
-            }
+            JObject references = References(index, entry, maxDepth, maxNodes);
 
             var suppressed = new JArray();
             JToken dataModel = DataModel(entry, suppressed);
@@ -329,11 +316,42 @@ namespace GxMcp.Worker.Services
                     ["path"] = entry.Path, ["module"] = entry.Module, ["description"] = entry.Description,
                     ["lastUpdate"] = entry.LastUpdate == DateTime.MinValue ? null : (JToken)entry.LastUpdate.ToString("o")
                 },
-                ["references"] = new JObject { ["callers"] = Side(up), ["callees"] = Side(down) },
+                ["references"] = references,
                 ["suppressed"] = suppressed
             };
             if (dataModel != null) result["dataModel"] = dataModel;
             return McpResponse.Ok(code: "ObjectContextRetrieved", target: entry.Name, result: result);
+        }
+
+        /// <summary>
+        /// Direct callers and callees of one indexed object, each side carrying the trust of the
+        /// coverage that produced it. Shared by genexus_object_context and by the native
+        /// genexus_wire pack_task, so both report the same references for the same object.
+        /// </summary>
+        internal JObject References(SearchIndex index, SearchIndex.IndexEntry entry, int maxDepth, int maxNodes,
+            bool includeTruncationReasons = false)
+        {
+            JObject up = RunImpact(index, entry, ImpactAnalyzer.Up, maxDepth, maxNodes, null);
+            JObject down = RunImpact(index, entry, ImpactAnalyzer.Down, maxDepth, maxNodes, null);
+
+            JObject Side(JObject side)
+            {
+                bool partial = !string.Equals(side["fieldTrust"]?.ToString(), "complete", StringComparison.Ordinal);
+                var names = side["affected"].Select(a => (string)a["name"]).ToList();
+                var result = new JObject
+                {
+                    ["names"] = new JArray(names),
+                    ["fieldTrust"] = side["fieldTrust"],
+                    // Under partial coverage an empty list was not read; it is not a zero.
+                    ["read"] = !(partial && names.Count == 0),
+                    ["truncated"] = side["stats"]["truncated"]
+                };
+                // A direct-only reader stops at depth on purpose, so it must tell a node cap from a depth stop.
+                if (includeTruncationReasons) result["truncatedBy"] = side["stats"]["truncatedBy"];
+                return result;
+            }
+
+            return new JObject { ["callers"] = Side(up), ["callees"] = Side(down) };
         }
 
         private JToken DataModel(SearchIndex.IndexEntry entry, JArray suppressed)
