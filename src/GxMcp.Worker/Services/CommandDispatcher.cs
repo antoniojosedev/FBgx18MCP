@@ -3335,8 +3335,9 @@ namespace GxMcp.Worker.Services
 
         private string Handle_WorkWith(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            // genexus_workwith — Standard WorkWith (WorkWith for Web) typed action authoring (issue #455).
-            // list_actions|add_action over the standard WorkWith PatternInstance; dryRun supported.
+            // genexus_workwith — Standard WorkWith (WorkWith for Web) typed authoring (issues #455, #538, #559, #586).
+            // list_actions|add_action|remove_action|list_filters|add_filter_attribute|remove_filter_attribute
+            // over the standard WorkWith PatternInstance; dryRun supported.
             return _workWithService.Run(target, args ?? new JObject());
         }
 

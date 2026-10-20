@@ -5061,7 +5061,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed authoring and removal of actions, action parameters and selection filters for standard WorkWith pattern instances. action=list_actions|add_action|remove_action|list_filters|add_filter_attribute. Full guidance: genexus://kb/tool-help/genexus_workwith",
+      "description": "Typed authoring and removal of standard WorkWith actions, parameters and selection filters. action=list_actions|add_action|remove_action|list_filters|add_filter_attribute|remove_filter_attribute. Full guidance: genexus://kb/tool-help/genexus_workwith",
       "inputSchema": {
         "properties": {
           "action": {
@@ -5072,7 +5072,8 @@
               "add_action",
               "remove_action",
               "list_filters",
-              "add_filter_attribute"
+              "add_filter_attribute",
+              "remove_filter_attribute"
             ],
             "type": "string"
           },
@@ -5138,6 +5139,13 @@
           "procedure": {
             "description": "Target Procedure name or GUID to invoke…",
             "type": "string"
+          },
+          "removeConditions": {
+            "description": "remove_filter_attribute only: exact…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "tab": {
             "default": "General",

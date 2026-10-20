@@ -759,7 +759,7 @@ namespace GxMcp.Worker.Tests
                 Assert.Equal("Order Date", attribute.Description);
                 Assert.Equal("Today()", attribute.Default);
                 Assert.Same(attribute, Assert.Single(root.Selection.Filter.Attributes));
-                Assert.Equal(conditions[0], Assert.Single(root.Selection.Filter.Conditions).Value);
+                Assert.Equal(conditions[0], Assert.Single(root.Selection.Filter.Conditions.Cast<Artech.Patterns.WorkWith.ConditionElement>()).Value);
 
                 // The re-read of the same typed model reports the value the writer set.
                 var reread = WorkWithSdkAdapter.ReadNativeFilter(new WorkWithSdkAdapter.FilterLevelCandidate { Id = "Root", HasSelection = true, Filter = root.Selection.Filter });

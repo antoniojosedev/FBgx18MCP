@@ -79,10 +79,11 @@ namespace GxMcp.Worker.Tests
             string source = AdapterSource();
             const string marker = "[\"persistenceEvidence\"] = BuildPersistenceEvidence()";
 
-            // The three persisting actions build their receipts in these members.
+            // The persisting actions build their receipts in these members.
             Assert.Contains(marker, SourceAssert.MethodBody(source, "public static bool AddAction("));
             Assert.Contains(marker, SourceAssert.MethodBody(source, "public static bool RemoveAction("));
             Assert.Contains(marker, SourceAssert.MethodBody(source, "internal static JObject BuildFilterReceipt("));
+            Assert.Contains(marker, SourceAssert.MethodBody(source, "internal static JObject BuildRemoveFilterReceipt("));
 
             // The dryRun plans are previews: nothing was saved, so they carry no
             // persistence statement at all.
