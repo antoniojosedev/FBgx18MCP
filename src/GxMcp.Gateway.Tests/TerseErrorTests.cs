@@ -1,3 +1,4 @@
+using System.Linq;
 using GxMcp.Gateway;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -13,6 +14,33 @@ namespace GxMcp.Gateway.Tests
             var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
             foreach (var property in input.Properties())
                 Assert.True(JToken.DeepEquals(property.Value, trimmed[property.Name]), property.Name);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_PreservesIsolatedSaveFailureDiagnostics()
+        {
+            // The envelope the Worker builds for a failed isolated Events save: the terse
+            // projection keeps the first message line only, so the stage, the exception
+            // and the SDK's own messages must survive as fields or the caller sees "Erro".
+            var input = JObject.Parse(@"{
+                ""code"":""ObjectSaveIncomplete"",
+                ""message"":""Isolated Events save failed during part-save: src0059: Esperando 'EndFor'"",
+                ""savePhase"":""part-save"",""verificationPhase"":""post-commit-verification"",
+                ""diagnostics"":[{""code"":""src0294"",""message"":""Unknown function 'SetEmpty'"",""object"":""SamplePanel"",""part"":""Events"",""rawLine"":2,""column"":16}],
+                ""exceptionType"":""System.Exception"",
+                ""innerMessages"":[""inner""],""innerExceptionTypes"":[""System.ArgumentException""],
+                ""sdkMessages"":[{""code"":""src0059"",""part"":""Events"",""rawLine"":12,""severity"":""Error"",""message"":""src0059: Esperando 'EndFor'""}],
+                ""sourceValidationErrors"":[{""code"":""src0059"",""rawLine"":12,""message"":""src0059: Esperando 'EndFor'""}],
+                ""originalError"":""Erro"",""sdkMessagesTruncated"":true,""sdkMessagesError"":""unavailable"",
+                ""verificationFailure"":{""savePhase"":""post-commit-reread"",""exceptionType"":""System.Exception""},
+                ""saveFailureMessage"":""Isolated Events save failed during part-save: x""
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            foreach (var property in input.Properties().Where(p => p.Name != "message"))
+                Assert.True(JToken.DeepEquals(property.Value, trimmed[property.Name]), property.Name);
+            Assert.Equal("Isolated Events save failed during part-save: src0059: Esperando 'EndFor'", (string)trimmed["message"]!);
         }
 
         [Fact]

@@ -25,6 +25,38 @@ namespace GxMcp.Worker.Services
                 });
         }
 
+        internal const string ObjectSavePreviewScope =
+            "Preview only: it checked the textual patch and the isolation pins. It performed no SDK validation of the Events source "
+            + "and no save, so it does not prove the save will succeed. A source the SDK rejects fails at part-save; the failure "
+            + "reports savePhase, exceptionType and diagnostics[] (code, message, object, part, line, column).";
+
+        internal const string SemanticValidationNotPerformedReason =
+            "The SDK reports the validation messages of the Events source only from the part save (eventsPart.Save()), "
+            + "which a preview must not run.";
+
+        /// <summary>
+        /// Says what a <c>requireObjectSave</c> preview established and what it did not.
+        /// The isolation audit proves the bundle, pins and callbacks are eligible; it is
+        /// not a save, so <c>persistabilityVerified</c> stays false for any preview.
+        /// </summary>
+        internal static void AttachObjectSavePreviewScope(JObject dryRunBody, JObject isolation, int matchCount)
+        {
+            if (dryRunBody == null) throw new ArgumentNullException(nameof(dryRunBody));
+            dryRunBody["objectSaveIsolation"] = isolation;
+            dryRunBody["patchMatch"] = matchCount >= 1;
+            dryRunBody["isolationEligible"] = isolation?["verified"]?.Value<bool>() == true;
+            dryRunBody["validationExecuted"] = false;
+            dryRunBody["semanticValidation"] = new JObject
+            {
+                ["performed"] = false,
+                ["reason"] = SemanticValidationNotPerformedReason
+            };
+            dryRunBody["saveExecuted"] = false;
+            dryRunBody["persistabilityVerified"] = false;
+            dryRunBody["previewScope"] = ObjectSavePreviewScope;
+            if (isolation?["blocker"] != null) dryRunBody["writeBlocker"] = isolation["blocker"];
+        }
+
         internal static bool AttachVerification(
             JObject payload,
             TextPersistenceVerifier.Result verification,

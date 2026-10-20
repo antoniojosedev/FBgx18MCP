@@ -731,9 +731,7 @@ namespace GxMcp.Worker.Services
                         if (requireObjectSave)
                         {
                             var isolation = _writeService.InspectEventsIsolation(target, typeFilter);
-                            dryRunBody["objectSaveIsolation"] = isolation;
-                            dryRunBody["persistabilityVerified"] = isolation["verified"]?.Value<bool>() == true;
-                            if (isolation["blocker"] != null) dryRunBody["writeBlocker"] = isolation["blocker"];
+                            PatchPersistenceReceipt.AttachObjectSavePreviewScope(dryRunBody, isolation, matchCount);
                         }
                         dryRunBody["requestedHash"] = dryRunEvidence.RequestedHash;
                         dryRunBody["persistedHash"] = dryRunEvidence.PersistedHash;

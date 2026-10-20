@@ -1993,6 +1993,11 @@ namespace GxMcp.Gateway
                 "requiredPins", "effectivePins", "profileRevision", "profileRevisionSource", "phase", "persistabilityVerified",
                 "isolation", "writeAttempted", "verificationCompleted", "persistenceUncertain",
                 "transactionRolledBack", "rollbackVerified", "otherPartsIntact", "otherObjectMetadataIntact",
+                // Isolated Events save failure diagnostics: where the save stopped and the
+                // sanitized SDK cause. Without them a failed save reads as a bare "Erro".
+                "savePhase", "verificationPhase", "innerMessages", "innerExceptionTypes", "sdkMessages",
+                "sourceValidationErrors", "originalError", "sdkMessagesTruncated", "sdkMessagesError",
+                "verificationFailure", "saveFailureMessage",
                 // Patch NoMatch diagnostics are nested in the worker's canonical
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
