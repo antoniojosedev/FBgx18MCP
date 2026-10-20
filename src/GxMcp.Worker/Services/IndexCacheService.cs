@@ -3135,29 +3135,30 @@ namespace GxMcp.Worker.Services
             // (GetReferences + every ISource part, seconds each on a large KB) to the
             // background queue. The job re-resolves the live entry/index when it runs, so
             // the replacement that landed last is the one enriched.
-            if (_pendingEdgeEnrichment.TryAdd(key, 1))
-            {
-                Program.EnqueueBackground(() => {
-                    _pendingEdgeEnrichment.TryRemove(key, out _);
+            QueueEdgeEnrichment(key, Program.EnqueueBackground, () => {
                     try {
                         var kb = _buildService.KbService?.GetKB();
                         if (kb == null) return;
-                        // SdkGate: GetKB/Get/GetReferences are SDK calls; the background
-                        // dispatcher thread must not interleave them with other apartments.
+                        // Issue #594: SdkGate covers ONLY the SDK reads (Get / GetReferences /
+                        // part loads), which the background dispatcher must not interleave
+                        // with other apartments. Regex/parse work and the index mutations
+                        // run after the gate is released, so a slow scan never holds the
+                        // SDK against a foreground command.
+                        EdgeSdkSnapshot snapshot;
                         using (SdkGate.Enter())
                         {
                             var bgObj = kb.DesignModel.Objects.Get(objKey);
                             if (bgObj == null) bgObj = kb.DesignModel.Objects.Get(objGuid);
                             if (bgObj == null) return;
-                            var liveIndex = TryGetLoadedIndex() ?? index;
-                            SearchIndex.IndexEntry liveEntry = entry;
-                            if (liveIndex.Objects != null && liveIndex.Objects.TryGetValue(key, out var current) && current != null)
-                                liveEntry = current;
-                            EnrichEdges((global::Artech.Architecture.Common.Objects.KBObject)bgObj, liveEntry, liveIndex);
+                            snapshot = CollectEdgeSdkSnapshot((global::Artech.Architecture.Common.Objects.KBObject)bgObj);
                         }
+                        var liveIndex = TryGetLoadedIndex() ?? index;
+                        SearchIndex.IndexEntry liveEntry = entry;
+                        if (liveIndex.Objects != null && liveIndex.Objects.TryGetValue(key, out var current) && current != null)
+                            liveEntry = current;
+                        ApplyEdgeSnapshot(snapshot, liveEntry, liveIndex);
                     } catch (Exception ex) { Logger.Error("Background Indexing Error: " + ex.Message); }
                 });
-            }
 
             MarkDirtyForKey(key);
             // Fire and forget save to disk (throttled — see ScheduleThrottledFlush)
@@ -3272,16 +3273,47 @@ namespace GxMcp.Worker.Services
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pendingEdgeEnrichment =
             new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// Queues <paramref name="job"/> through <paramref name="enqueue"/> unless a scan for
+        /// <paramref name="key"/> is already pending. The pending mark is cleared when the
+        /// job starts, so a later change to the same object queues a fresh scan.
+        /// </summary>
+        internal bool QueueEdgeEnrichment(string key, Action<Action> enqueue, Action job)
+        {
+            if (!_pendingEdgeEnrichment.TryAdd(key, 1)) return false;
+            enqueue(() =>
+            {
+                _pendingEdgeEnrichment.TryRemove(key, out _);
+                job();
+            });
+            return true;
+        }
+
         internal int PendingEdgeEnrichmentCount => _pendingEdgeEnrichment.Count;
 
-        // Dependency enrichment (extracted so the call path is readable): populate this entry's
-        // Calls/Tables and the inverted CalledBy edges via the SDK reference graph + the FR#3
-        // textual call-site scan. Runs on the background STA dispatcher.
-        private void EnrichEdges(global::Artech.Architecture.Common.Objects.KBObject bgObj, SearchIndex.IndexEntry entry, SearchIndex index)
+        // Plain-data copy of everything the edge scan needs from the SDK, so the SDK is
+        // only touched inside SdkGate (CollectEdgeSdkSnapshot) and the rest of the work
+        // (ApplyEdgeSnapshot) runs outside it.
+        private sealed class EdgeSdkSnapshot
+        {
+            public readonly List<EdgeReference> References = new List<EdgeReference>();
+            public List<string> SourceParts; // null when the textual scan was skipped
+        }
+
+        private struct EdgeReference
+        {
+            public string TargetName;
+            public string TargetType;
+            public string TargetGuid;
+        }
+
+        // Dependency enrichment (extracted so the call path is readable): read the SDK
+        // reference graph and the ISource texts of the object. MUST run inside SdkGate.
+        private EdgeSdkSnapshot CollectEdgeSdkSnapshot(global::Artech.Architecture.Common.Objects.KBObject bgObj)
         {
             long rsStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            var snapshot = new EdgeSdkSnapshot();
             var references = ((dynamic)bgObj).GetReferences();
-            bool changed = false;
             if (references != null)
             {
                 foreach (dynamic reference in references)
@@ -3302,41 +3334,68 @@ namespace GxMcp.Worker.Services
                         if (string.IsNullOrEmpty(targetName)) continue;
 
                         string targetType = targetKey.TypeDescriptor.Name;
-                        if (targetType == "Attribute" || targetType == "Table") {
-                            if (AddTableCow(entry, targetName)) changed = true;
-                        } else {
-                            if (AddCallCow(entry, targetName)) changed = true;
-                        }
-
-                        // Inverted Index (CalledBy) — copy-on-write, see AddEdgeCow.
-                        // E4: resolve the target's REAL storage key instead of assuming the bare
-                        // "Type:Name" shape — GetEntryStorageKey scopes Folder/Module keys with
-                        // their path (Type:Path), so a direct lookup silently missed those
-                        // targets and their CalledBy edges were dropped.
                         string targetGuid = null;
                         try { object g = targetKey.Guid; if (g != null) targetGuid = g.ToString(); } catch { /* key shape without Guid */ }
-                        string targetIndexKey = ResolveTargetStorageKey(index, targetType, targetName, targetGuid);
-                        if (!string.IsNullOrEmpty(targetIndexKey)
-                            && index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
-                            if (AddCalledByCow(targetEntry, entry.Name)) { changed = true; MarkShardDirty(targetIndexKey); }
-                        }
+                        snapshot.References.Add(new EdgeReference { TargetName = targetName, TargetType = targetType, TargetGuid = targetGuid });
                     } catch { }
                 }
             }
             System.Threading.Interlocked.Add(ref _enrichRefScanTicks, System.Diagnostics.Stopwatch.GetTimestamp() - rsStart);
+
+            // FR#3: the textual scan needs the ISource texts. Skip the SDK part loads
+            // entirely once the breaker is tripped (RunTextualCallScan would discard them).
+            if (!TextualScanTripped)
+            {
+                var budget = System.Diagnostics.Stopwatch.StartNew();
+                snapshot.SourceParts = ReadTextualSourceParts(bgObj, () => budget.Elapsed > TextualScanBudget);
+            }
+            return snapshot;
+        }
+
+        // Runs OUTSIDE SdkGate: populate this entry's Calls/Tables and the inverted CalledBy
+        // edges from the snapshot, then the FR#3 textual call-site scan.
+        private void ApplyEdgeSnapshot(EdgeSdkSnapshot snapshot, SearchIndex.IndexEntry entry, SearchIndex index)
+        {
+            bool changed = false;
+            foreach (var reference in snapshot.References)
+            {
+                try
+                {
+                    string targetName = reference.TargetName;
+                    string targetType = reference.TargetType;
+                    if (targetType == "Attribute" || targetType == "Table") {
+                        if (AddTableCow(entry, targetName)) changed = true;
+                    } else {
+                        if (AddCallCow(entry, targetName)) changed = true;
+                    }
+
+                    // Inverted Index (CalledBy) - copy-on-write, see AddEdgeCow.
+                    // E4: resolve the target's REAL storage key instead of assuming the bare
+                    // "Type:Name" shape - GetEntryStorageKey scopes Folder/Module keys with
+                    // their path (Type:Path), so a direct lookup silently missed those
+                    // targets and their CalledBy edges were dropped.
+                    string targetIndexKey = ResolveTargetStorageKey(index, targetType, targetName, reference.TargetGuid);
+                    if (!string.IsNullOrEmpty(targetIndexKey)
+                        && index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
+                        if (AddCalledByCow(targetEntry, entry.Name)) { changed = true; MarkShardDirty(targetIndexKey); }
+                    }
+                } catch { }
+            }
 
             // FR#3 (friction-report 2026-05-14): GetReferences misses call sites in Event Start
             // blocks on some KB shapes. Augment with a textual scan over Source/Events/Rules:
             // any identifier that already exists as a non-Attribute object in the index is
             // treated as a call. The hard "must exist in index" filter eliminates false
             // positives from keywords / language built-ins.
-            // Issue #594: the scan runs behind a failure breaker (RunTextualCallScan) so a KB
-            // shape that fails on every object stops costing an SDK part load plus a log line
-            // per object for the rest of the session.
-            long tsStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            bool textualChanged = RunTextualCallScan(entry, index, () => ReadTextualSourceParts(bgObj));
-            if (textualChanged) changed = true;
-            System.Threading.Interlocked.Add(ref _enrichTextualScanTicks, System.Diagnostics.Stopwatch.GetTimestamp() - tsStart);
+            // Issue #594: the scan runs behind a failure breaker and a time budget
+            // (RunTextualCallScan).
+            if (snapshot.SourceParts != null)
+            {
+                long tsStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                bool textualChanged = RunTextualCallScan(entry, index, () => snapshot.SourceParts);
+                if (textualChanged) changed = true;
+                System.Threading.Interlocked.Add(ref _enrichTextualScanTicks, System.Diagnostics.Stopwatch.GetTimestamp() - tsStart);
+            }
 
             // Plan 003: entry's own shard was marked already (or is marked below); target
             // shards touched via CalledBy were marked inline above / in the textual scan.
@@ -3407,6 +3466,12 @@ namespace GxMcp.Worker.Services
         // Bound on the text handed to the regex/parser per part; larger parts are skipped
         // (they stay searchable through the source store, this only affects call edges).
         internal const int TextualScanMaxSourceChars = 2 * 1024 * 1024;
+        // Issue #594: wall-clock budget per object for the SDK part reads and, separately,
+        // for the textual parse. Parts not reached when it runs out are skipped for this
+        // pass (the SDK reference graph edges are unaffected); this is not a breaker failure.
+        internal TimeSpan TextualScanBudget = TimeSpan.FromSeconds(5);
+        private long _textualScanBudgetExceeded;
+        internal long TextualScanBudgetExceeded => System.Threading.Interlocked.Read(ref _textualScanBudgetExceeded);
         private int _textualScanConsecutiveFailures;
         private int _textualScanTripped;
         private long _textualScanSkipped;
@@ -3439,7 +3504,8 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                bool changed = EnrichCallsFromTextualSources(readSources(), entry, index);
+                var budget = System.Diagnostics.Stopwatch.StartNew();
+                bool changed = EnrichCallsFromTextualSources(readSources(), entry, index, () => budget.Elapsed > TextualScanBudget);
                 System.Threading.Interlocked.Exchange(ref _textualScanConsecutiveFailures, 0);
                 return changed;
             }
@@ -3464,7 +3530,7 @@ namespace GxMcp.Worker.Services
         // part (converted WorkPanel/WebPanel parts can throw inside the SDK enumerator)
         // discard the parts already read. Oversized parts are skipped, see
         // TextualScanMaxSourceChars. Runs inside SdkGate on the background dispatcher.
-        private static List<string> ReadTextualSourceParts(global::Artech.Architecture.Common.Objects.KBObject obj)
+        private static List<string> ReadTextualSourceParts(global::Artech.Architecture.Common.Objects.KBObject obj, Func<bool> budgetExpired)
         {
             var sourceParts = new List<string>();
             if (obj == null) return sourceParts;
@@ -3476,6 +3542,11 @@ namespace GxMcp.Worker.Services
 
             while (true)
             {
+                if (budgetExpired != null && budgetExpired())
+                {
+                    Logger.Debug("[FR#3] Textual scan source read budget exhausted for '" + obj.Name + "'; remaining parts skipped.");
+                    break;
+                }
                 bool moved;
                 try { moved = parts.MoveNext(); }
                 catch { break; }
@@ -3494,7 +3565,8 @@ namespace GxMcp.Worker.Services
         internal bool EnrichCallsFromTextualSources(
             IEnumerable<string> sourceParts,
             SearchIndex.IndexEntry entry,
-            SearchIndex index)
+            SearchIndex index,
+            Func<bool> budgetExpired = null)
         {
             if (sourceParts == null || entry == null || index?.Objects == null) return false;
 
@@ -3502,6 +3574,12 @@ namespace GxMcp.Worker.Services
             var parsedCallsByCandidate = new Dictionary<string, List<ParsedCall>>(StringComparer.OrdinalIgnoreCase);
             foreach (var src in sourceParts)
             {
+                if (budgetExpired != null && budgetExpired())
+                {
+                    System.Threading.Interlocked.Increment(ref _textualScanBudgetExceeded);
+                    Logger.Debug("[FR#3] Textual scan time budget exhausted for '" + entry.Name + "'; remaining parts skipped.");
+                    break;
+                }
                 if (string.IsNullOrEmpty(src) || src.Length > TextualScanMaxSourceChars) continue;
 
                 foreach (var call in SourceParser.ParseCalls(src, false))
