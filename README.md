@@ -121,26 +121,34 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 
 ### 🎮 Decompilation / Parity Progress
 
-Similar to video game decompilation projects, progress is measured capability-by-capability against verified differential runs of the official GeneXus SDK in clean Knowledge Bases.
+Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. On the disposable `KBTeste` KB, a whole-KB Rebuild All now generates and compiles every targeted object (**346/346, 0 skipped, 0 refused**) and the C# the SDK writes for that KB is reproduced **byte for byte (328/328 files)**, together with the web scripts, `gxcfg.js`, messages and runtime configuration. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default build backend** (`Engine.Backend=auto`, SDK fallback); see [engine routing](docs/engine_backend.md).
 
-```text
-Overall SDK Replacement: [🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0% weighted (60/60 core areas completed)
-```
+### What builds today
 
-| Subsystem | Progress | Status | Covered / Total |
-| :--- | :---: | :---: | :---: |
-| **Language & Runtime Core** (Math, Decimals, Text, Dates, Calendar) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 8 / 8 areas |
-| **Control Flow & Procedure Pipeline** (`If`, `Iif`, `For`, `For In`, `Exit`, `Case`, `Sub`/`Do`, `Call`/`.UDP`, `IsEmpty`/`SetEmpty`/`Nullvalue`) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 6 / 6 areas |
-| **Structured Data & Collections** (SDT, `Add`, `Remove`, `Clear`, `IndexOf`, `Item`, `ToJson`, `FromJson`, `ToXml`, `FromXml`) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 5 / 5 areas |
-| **Portable KB Catalog & XML Projection** (Procedures, SDT, Domain, Attribute, Transaction, Rules in `ExportFile` XML and portable catalog) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 6 / 6 areas |
-| **Specifier & SQL Navigation** (Physical Tables, DDL, Scoped-Thread Navigation, `For Each`) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 8 / 8 areas |
-| **Native KB Database Storage (UDM)** (TDS SQL Server/LocalDB, 11-byte envelope, GZip decompressor, State locks) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity (Plan 130) | 10 / 10 areas |
-| **C# (.NET) Generator & Rebuild All Pipeline** (Emitting `.cs` / `.csproj` / `.sln`, sub-20s parallel builds) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity (Plan 130) | 10 / 10 areas |
-| **Full GeneXus Surface** (WebPanels, Transactions, Reports, Events, BC) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity (Plan 130) | 18 / 18 areas |
+| Lane | Verified evidence | Boundary |
+| :--- | :--- | :--- |
+| Package build | `build.ps1` built Gateway, Worker, gxwire and gx-engine; local publish/backend engine hashes match. | Building the MCP distribution is not building every object in a KB. |
+| Selected-object build | Five alternating local SDK/engine pairs regenerated and compiled `DCM37961700`; core APIs and actual CLI output matched. SDK median **14.756s**, engine **0.230s** (**64.19×**). | Synthetic warm fixture; AUTO_CLOSE=OFF on both sides, original ON restored. The packaged binary was not benchmarked; it passed a separate build/run smoke. |
+| Full native KB build (`KBTeste`) | `rebuild-all`: **346 generated / 346 compiled, 0 skipped, 0 refused**. Against the SDK's own output for the same KB: **328/328 C# files byte-identical, 0 missing**; 24/24 web `.js`, `gxcfg.js`, `messages.eng.txt/.js`, `log.config`, `log.console.config` (+ `bin/` copies) and `CloudServices.config` byte-identical. | One oracle KB. The engine also writes 18 files the SDK's current output lacks (13 SDT classes identical to an earlier SDK generation, sidebar/program-name SDTs it reaches, 2 assembly-info files). Developer Menu not written (its object selection is not established). |
+
+Use the SDK for required workflows outside validated engine coverage. See
+[Plan 131](plans/131-sdk-performance-benchmark.md) for the exact binary, commands,
+samples and caveats; [engine routing](docs/engine_backend.md) for default/explicit backend behavior.
+
+| Subsystem | Evidence boundary / remaining work |
+| :--- | :--- |
+| Language, runtime, control flow, SDTs and collections | Bounded native differential corpora; not exhaustive GeneXus semantics. |
+| Portable catalog and XML projection | Fixture-backed support; does not establish native KB round-trip parity. |
+| Specifier, SQL navigation and datastore behavior | Portable tests do not prove complete live SDK navigation or database behavior. |
+| Native UDM storage | Live read evidence and targeted tests; not a general SDK persistence replacement. |
+| C# generation and Rebuild All | Live generated-object checks pass within a bounded set; refusals, missing objects and SDK-oracle gaps remain. |
+| Web UI, Transactions, Reports and BCs | Partial implementations; a successful compile is not end-to-end product parity. |
+
+See the [current acceptance/evidence ledger](plans/129-implementation-progress.md#current-acceptance-status--2026-10-18) for the tested binary, scope, failures and next actions.
 
 #### Gateway Capability Registry Gates
 
-The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) where operations are classified by measured parity before any traffic can be routed:
+The MCP Gateway exposes a capability gate (`EngineCapabilityRegistry`). The `Parity` labels below describe registered, bounded evidence, not complete SDK equivalence; routing boundaries and fallbacks are documented in [engine_backend.md](docs/engine_backend.md):
 
 | Capability | Status | Evidence & Performance |
 | :--- | :---: | :--- |
@@ -163,20 +171,22 @@ The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) wh
 | `physical_table_ddl` | 🟩 **Parity** | Physical Table schema normalization and multi-dialect SQL DDL generation (`CREATE TABLE`, primary keys, parent-child and cross-transaction foreign keys, indexes, ANSI/SQL Server/PostgreSQL/Oracle data types): 9 native-verified integration tests without database writes. |
 | `sql_navigation` | 🟩 **Parity** | Specifier, base table inference, For Each navigation, extended table joins, and multi-dialect SQL query planning (ANSI, SQL Server, PostgreSQL, Oracle): 10 native-verified integration tests, 13 frontend tests, fail-closed diagnostics (`spc0004`, `spc0005`), and zero SQL writes. |
 | `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟩 **Parity** | Foundational runtime capabilities behind the four Native Parity subsystems above; each `EngineCapabilityRegistry` entry lists its native differential corpus or bounded portable fixture (`decimal_oracle`, `numeric_math`, `text_extended`, `calendar_ops`, `date_conversions`, `collection_ops`, `subroutines`, `exchange`, `sdt_xml`, `catalog`). |
-| `udm_storage_access` | 🟩 **Parity** | Direct native UDM storage access (read/write/State locks) without COM/STA Worker (`knowledgebase.connection`, SQL Server, LocalDB): 10 integration tests, live LocalDB `KBTeste` read in 0.91s (`genexus_read`, `genexus_query`, `genexus_edit`). |
-| `csharp_emitter` | 🟩 **Parity** | Full C# code generator emitting .NET (C# 10/12, net8.0/net9.0) classes for Procedures, WebPanels, Transactions, BCs, and Visual Studio Solutions (.sln): 26 integration tests, verified by Roslyn `dotnet build`. |
-| `parallel_rebuild_all` | 🟩 **Parity** | Native parallel Rebuild All engine executing multi-core specification and Roslyn compilation in < 20s (benchmark 1.25s for multi-object catalog): consumers `genexus_lifecycle.build`, `genexus_lifecycle.rebuild`. |
+| `udm_storage_access` | 🟩 **Parity** (bounded reads) | Direct native UDM reads without COM/STA Worker (`knowledgebase.connection`, SQL Server, LocalDB); registered read/query consumers. Live engine writes are not implemented: `genexus_edit` remains SDK-backed or is refused under strict engine verification. Portable writer/lock tests are not live persistence evidence. |
+| `csharp_emitter` | **Bounded coverage** | C# generation and Roslyn compilation tests for supported object forms; unsupported native forms still fail closed. Compilation alone does not establish SDK behavior parity. |
+| `parallel_rebuild_all` | **Bounded coverage** | Parallel specification, C# emission and compilation; consumers `genexus_lifecycle.build` / `rebuild`. Live whole-KB runs still report refusals/errors; no validated whole-KB SDK speed ratio. |
 
 ### ⚡ Performance Benchmarks (gx-engine vs. GeneXus SDK)
 
-Every performance comparison requires **exact output parity** verified before measuring timings (zero mismatches, identical hash/byte output). The differential benchmarks measured on local Windows x86_64 hardware:
+A speed comparison requires the same input workload, target, dependency closure, observable results and success criteria. Independent generators need not emit byte-identical source or assemblies. Keep full SDK specify/generate/compile timings separate from compile-only MSBuild timings and bounded runtime microbenchmarks. The selected-object result below meets 50× only within its stated warm-fixture scope; whole-KB generation measures ~9.6×. Historical microbenchmarks do not establish a whole-KB speed goal:
 
 | Benchmark Workload | GeneXus SDK (.NET / MSBuild) | `gx-engine` (Rust) | Speedup / Gain | Verification & Oracle |
 | :--- | :---: | :---: | :---: | :--- |
+| **Warm selected-object C# build** (`DCM37961700`) | **14,755.9 ms** *(local specify + generate + Rebuild/Publish)* | **229.9 ms** *(live read + emit + guarded compiler replay, setup included)* | **64.19×** | Five alternating pairs; bounded API and direct CLI checks, stable sources. Synthetic fixture, AUTO_CLOSE=OFF; not cold/full-KB or packaged-binary performance. [Protocol](plans/131-sdk-performance-benchmark.md). |
 | **`Str()` Numeric Picture Formatting** (Microbenchmark) | 274 – 286 ns / row *(1.75 ms / pass)* | **121 – 130 ns / row** *(0.75 ms / pass)* | **~2.25x faster** | 6,152 rows (`str_matrix.tsv`), 80,235 chars, identical FNV-1a UTF-16 hash (`0xb9e1b48fb72067b0`), 0 mismatches against official `GeneXus.Classes.Core` runtime. |
 | **Live KB Metadata & Part Hydration** | 12,000 – 18,000 ms *(serial COM STA)* | **320 ms** *(direct TDS queries)* | **> 35x faster** | Verified on live LocalDB `GX_KB_KBTeste` (`test_udm_real_kb_live_read_procedure`). |
-| **Full Rebuild All (Multi-Object Catalog)** | **~480,000 ms (~8 minutes)** *(IDE)* | **1,250 ms** *(parallel spec + Roslyn)* | **> 380x faster** | Scoped threads parallel spec + C# emit + Roslyn compilation (`test_rebuild_pipeline`). |
-| **End-to-end Procedure Compilation & Build** | 10,930 ms *(SDK stages)*<br>16,366 ms *(MSBuild total)* | **223 ms** *(Rust parse + emit + rustc link)* | **~49x faster** | Synthetic `RustTimingProbe` in authorized `KBTeste` (`21 * 2 = 42`). Identical exit 0 and stdout `42`. |
+| **Whole-KB generation** (`KBTeste`, specify + generate, no compile) | **33.4 – 39.9 s** *(MSBuild `SpecifyAllOnly` + `GenerateOnly`, 3 runs)* | **0.61 – 0.68 s** *(`rebuild-all --skip-compile`, 3 runs alternating with the SDK runs; ~0.45 s of it is the KB catalog read)* | **~58× (median pair)** | Paired, one machine, 2026-10-21; neither side compiles; engine output unchanged after the SDK runs. Not a 50× claim: output parity is 328/328 C# identical with 20 extra files and no Developer Menu, so full SDK parity is unverified. The previous engine binary measured 1.29 – 1.40 s (12 alternating runs). |
+| **Whole-KB Rebuild All with compile** (`KBTeste`) | Not measured *(the SDK build task is blocked by GeneXus Cloud here)* | **1.38 – 1.43 s** warm *(3 runs: catalog ~0.45 s + emit ~0.15 s + direct `csc` replay 0.76 – 0.83 s)*; ~2.5 s for a first build into a new folder (`dotnet build`), ~22.8 s measured once with a cold compiler | **Not verified** | The former 480,000 ms / 1,250 ms (>380×) comparison had no matched IDE measurement and stays withdrawn. |
+| **Historical arithmetic fixture build** | 10,930 ms *(SDK stages)*<br>16,366 ms *(MSBuild process wall)* | **223 ms** *(Rust CLI + rustc build)* | **Not a whole-SDK speed ratio** | `RustTimingProbe` (`21 * 2 = 42`), three recorded samples, exit/output checked. Different pipelines and targets; the former ~49× stage/build ratio applies only to that tiny fixture. [Evidence and caveats](src/gx-engine/VALIDATION.md#verified-custom-msbuild--sdk-pipeline). |
 | **Generated Artifact Startup & Execution** | 123.06 ms *(CLR bootstrap + run)* | **5.75 ms** *(native binary bootstrap)* | **~21x faster** | Cold process launch and console output for the compiled arithmetic procedure artifact. |
 
 #### 📈 Benchmark Protocol & How to Record Improvements
@@ -193,9 +203,9 @@ As new capabilities reach parity and additional optimizations land, follow this 
 ### Activation Flag & Safety Seam
 
 > [!IMPORTANT]
-> **Zero Automatic Routing:** By default, `Engine.Backend` is `"sdk"`. The Gateway serves 100% of tool calls through the official GeneXus SDK. Even when `gxengine` is enabled, the router fails closed: only capabilities with measured `Parity` and an explicitly registered consumer can route to the engine; everything else stays on the SDK.
+> **Engine-first admitted builds:** `Engine.Backend` defaults to `"auto"`. Blocking `genexus_lifecycle` builds/rebuilds inside the admitted space use gx-engine. A directed `build` with `mode=compile_check`, explicit `callers=false` and transitive callees also uses gx-engine, building only the target closure. Other async/directed builds, reads, edits and unsupported request shapes stay on the SDK. Capability and argument gates still apply. Build errors or uncertain outcomes after engine start never trigger automatic SDK replay. Explicit `"sdk"` keeps every operation on the SDK.
 
-To test or benchmark the engine from a source checkout, configure `config.json`:
+No backend setting is needed for admitted builds. To also opt into eligible engine reads/queries, configure `config.json`:
 
 ```json
 {
@@ -207,7 +217,7 @@ To test or benchmark the engine from a source checkout, configure `config.json`:
 }
 ```
 
-- **`Engine.Backend`**: `"sdk"` (default) or `"gxengine"` (opt-in).
+- **`Engine.Backend`**: `"auto"` (default: admitted builds), `"sdk"` (SDK only), or `"gxengine"` (also eligible reads/queries).
 - **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK when not at parity) or `"error"` (fails closed with `EngineCapabilityNotParity` for strict verification).
 - **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, `capabilities`, and `routedOperations`.
 

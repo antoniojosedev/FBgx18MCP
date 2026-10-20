@@ -10,14 +10,21 @@ The journal is a safety fence, not a result store. If a process stops after the
 mutation starts, the next process returns `operation_unknown` for the same key
 instead of dispatching the SDK again. The caller must inspect the target and
 choose a new authorization. A different payload under the same key is always a
-conflict. Journal entries expire after seven days and writes use a sibling
-temporary file followed by an atomic replace. The versioned journal is bounded
+conflict. Completed and reconciled entries expire after seven days; unresolved
+`started` entries do not age out. Writes use a sibling temporary file followed
+by an atomic replace. The versioned journal is bounded
 and fails closed when its contents or persistence cannot be trusted; it never
 falls back to an empty state that could replay a mutation.
 
 Preview calls do not enter the journal. Errors rejected before persistence are
 removed from the journal; an exception after dispatch intentionally leaves the
-entry unresolved because the SDK outcome cannot be inferred safely.
+entry unresolved because the SDK outcome cannot be inferred safely. Engine build
+errors carrying `mutationOutcomeUnknown: true` also retain that operation's
+fence. A generic `reconciliationRequired` flag alone can describe a refusal
+before dispatch, so it does not poison a new key after the earlier write is
+reconciled. Unresolved entries count toward the existing 4,096-entry/2 MiB
+bounds; reaching a bound fails closed, never silently evicts unknown outcomes.
+Use inspection and explicit reconciliation rather than deleting the journal.
 
 Post-timeout read fences are stored separately in the versioned
 `genexus-mutation-recovery/1` journal. The fence key includes KB, object, and

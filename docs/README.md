@@ -16,6 +16,9 @@ also read [`AGENTS.md`](../AGENTS.md).
 - [SDK compatibility](sdk-compatibility.md) — how the Worker binds to each GeneXus major.
 - [Environment variables](environment_variables.md) — every runtime variable read by the Gateway and Worker.
 - [Engine backend switch (gx-engine)](engine_backend.md) — experimental SDK↔engine routing gate, capability registry and `genexus_doctor` reporting.
+- [UDM physical storage notes](udm_storage_notes.md) — entity types, `ModelEntityVersion`/composition/blob layout, `sqlcmd` behavior and the live-write gap, verified against a real GeneXus 18 KB.
+- [Enumerated domains](udm_enumerated_domains.md) — stored-domain type evidence, conservative mapping and unresolved SDK generation cases.
+- [Stored type codes](udm_type_codes.md) — SDK type-name evidence and which C# mappings remain unverified.
 - [Pinning the write destination](write-destination-pin.md) — fixing the target KB across restarts.
 - [Human-in-the-loop elicitation](elicitation.md) — client-side KB picker and human approval for irreversible calls.
 - [Migração para MCP 3.0](migration-3.0.md) — the 3.0 migration contract.

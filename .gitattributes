@@ -15,3 +15,11 @@
 # Release merge tooling and the existing changelog history intentionally preserve CRLF.
 # Marking it non-text prevents Git's renormalization from creating a noisy full-file diff.
 CHANGELOG.md -text !eol whitespace=cr-at-eol
+
+# SDK-generated C# and script fixtures are compared byte for byte (CRLF, cp1252): never convert them.
+src/gx-engine/tests/fixtures/sdk_form/*.cs -text
+src/gx-engine/tests/fixtures/sdk_form/*.js -text
+src/gx-engine/tests/fixtures/sdk_form/*.txt -text
+src/gx-engine/tests/fixtures/sdk_form/*.xml -text
+src/gx-engine/tests/fixtures/sdk_form/*.config -text
+src/gx-engine/tests/fixtures/sdk_form/developer_menu/** -text

@@ -7,12 +7,37 @@ before the SDK is removed: flip one setting, see the engine from
 `genexus_doctor`, and let capabilities move to the engine as they reach measured
 parity.
 
-**Status.** No product operation is served by the engine today. The capabilities
-measured at full parity (`str_format`, `numeric_render`, `text_functions`,
-`text_extended_functions`, `numeric_math_functions`, `collection_operations`,
-and `calendar_operations`) have no product consumer yet, and the gate is built
-so nothing partial can route. This page documents the seam, its rules, and how
-the first real swap lands.
+**Default policy.** `Engine.Backend=auto` (also when the section is absent)
+uses gx-engine for admitted blocking `genexus_lifecycle` `build`/`rebuild`
+requests, through `parallel_rebuild_all` / `rebuild-all`. A blocking directed
+`build` is also admitted for `mode=compile_check`, explicit `callers=false`,
+and transitive callees, using a simple or module-qualified object name.
+Reads, queries, edits, and unsupported build request shapes retain the SDK path. This selects the
+existing admitted space; it does not expand whole-KB compatibility or guarantee
+that arbitrary objects compile. Build errors/partial reports remain errors,
+not a trigger to replay a started build through the SDK.
+
+`auto` replaced `sdk` as the default in the 4.0.0 line (a breaking default change:
+set `Engine.Backend=sdk` to keep the previous behavior). The evidence behind it is
+the disposable `KBTeste` KB: whole-KB `rebuild-all` generates and compiles 346/346
+targeted objects with 0 refusals, its 328 C# files match the SDK's output byte for byte,
+and whole-KB generation runs in ~0.62 s against ~36 s for the SDK (paired; see the
+[engine README](../src/gx-engine/README.md#measured-local-sdk-comparison)). A KB with forms
+outside that evidence gets refusals by name, reported as a partial build.
+
+With explicit `Engine.Backend=gxengine`, the engine additionally serves
+admitted `genexus_read` and `genexus_query` from `udm_storage_access`
+(through `kb-read`/`kb-query`). Explicit `Engine.Backend=sdk` disables all
+engine routing, including builds. `genexus_edit` is a registered consumer but stays outside the
+engine space: the engine writer has no live persistence yet, so an engine edit
+would report a save that never reaches the Knowledge Base database
+(`Fallback=error` refuses it, `Fallback=sdk` serves it with the SDK). Everything
+else — and every call outside the admitted space documented below — stays on the
+SDK/Worker path, or is refused when `Engine.Fallback=error`. The remaining
+parity capabilities (`str_format`, `numeric_render`, …) still have no product
+consumer, and the gate is built so nothing partial can route. The physical
+storage facts behind the read path are recorded in
+[`udm_storage_notes.md`](udm_storage_notes.md).
 
 ## Enabling it
 
@@ -20,7 +45,7 @@ the first real swap lands.
 
 | Key | Values | Default | Meaning |
 | :--- | :--- | :--- | :--- |
-| `Engine.Backend` | `sdk`, `gxengine` | `sdk` | `gxengine` lets the engine serve the capabilities the gate marks at measured parity. |
+| `Engine.Backend` | `auto`, `sdk`, `gxengine` | `auto` | `auto`: admitted builds use the engine, other operations use SDK. `sdk`: SDK only. `gxengine`: also opt into admitted reads/queries. |
 | `Engine.Fallback` | `sdk`, `error` | `sdk` | What happens when a routed capability is not at parity: keep the GeneXus SDK, or refuse the call. `error` is the verification mode. |
 | `Engine.Executable` | path | unset | Explicit `gx-engine.exe`. Authoritative: when the path is missing the probe reports `EngineNotFound` instead of running a different binary. |
 | `Engine.TimeoutSeconds` | positive integer | `120` | Wall-clock budget for one engine invocation (matches the engine's native-compilation deadline). |
@@ -36,28 +61,31 @@ and the file must stay authoritative — the same rule as `GXMCP_PROFILE`):
 | `GXMCP_ENGINE_EXE` | `Engine.Executable` |
 | `GXMCP_ENGINE_TIMEOUT_SECONDS` | `Engine.TimeoutSeconds` |
 
-Invalid non-strict values are logged and ignored (the SDK default wins); a
+Invalid non-strict backend values are logged and resolve to SDK-only; a
 strict document fails at parse time. The Gateway hot-reloads `config.json` and
 re-resolves these settings on use, so `genexus_doctor` reflects an edit without
 a restart.
 
 ## What changes today
 
-`genexus_doctor` result gains an `engine` block:
+With default `Backend=auto`, only admitted builds are engine candidates.
+Explicit `Backend=gxengine` also enables the read/query operations below.
+Every other tool is untouched. `genexus_doctor` result gains an `engine` block:
 
 - always: `backend`, `fallback`, and `capabilities` — the `parity` / `partial` /
   `unsupported` counts plus `routedOperations`, the operations currently served
-  by the engine (empty today);
-- with `Backend=gxengine`: `executable`, `available`, `version` from the
+  enabled as engine candidates by the selected policy (argument gates still apply);
+- with `Backend=auto|gxengine`: `executable`, `available`, `version` from the
   `gx-engine --version` handshake (ten-second budget) or a structured `error`
   with one of `EngineNotFound`, `EngineStartFailed`, `EngineProbeFailed`,
   `EngineVersionUnrecognized`, `EngineTimeout`.
 
 When the switch is enabled and the binary is unusable, doctor appends a warning
-naming the error code and the configured `Engine.Fallback`. Everything else is
-unchanged: with no parity capability carrying a consumer, every tool call still
-routes through the SDK/Worker exactly as before. The switch is observable first
-and behavioral last, in that order.
+naming the error code and the configured `Engine.Fallback`. Routing is
+observable in every answer: an engine-served payload carries a top-level
+`engine` block (`{ backend: "gxengine", capability, operation, fallback,
+executable? }`). The switch remains observable first and behavioral last, in
+that order.
 
 ## The capability gate
 
@@ -65,6 +93,9 @@ and behavioral last, in that order.
 engine may serve, and `EngineRouter.Decide(capabilityId, settings)` is the
 single entry point a swap must call:
 
+- `Backend=auto` (default) → only `parallel_rebuild_all` is eligible; all other
+  capabilities remain SDK-only, even with `Fallback=error`. Builds still require
+  the same parity and argument gates as explicit engine mode.
 - `Backend=sdk` → the SDK serves everything; the engine is never invoked.
 - `Backend=gxengine` + capability at `Parity` → the engine serves it.
 - anything else (partial, unsupported, unknown capability) → the SDK serves it,
@@ -73,11 +104,15 @@ single entry point a swap must call:
 
 Status is a claim with evidence: a capability may only move to `Parity` after a
 measured native differential, and `EngineBackendTests` fails when an entry cites
-a repository path that does not exist. Snapshot (source of truth is
-`EngineCapabilityRegistry`):
+a repository path that does not exist. The entries below keep the evidence
+write-up for their differential; the current status of every capability is owned
+by `EngineCapabilityRegistry` (and the live `genexus_doctor` view), and rows are
+not re-annotated here when a later differential moves a status:
 
 | Capability | Status | Evidence / note |
 | :--- | :--- | :--- |
+| `udm_storage_access` | parity (routed) | Direct native UDM storage access: connection parser + envelope decoder + token reconstructor + reader/writer; `src/gx-engine/src/udm/mod.rs`, `src/gx-engine/tests/udm_decoder.rs` (19/19), `src/gx-engine/tests/udm_reader_writer.rs` (10/10), `src/gx-engine/tests/kb_ops.rs` (10/10) plus a live KBTeste read. Serves `genexus_read`/`genexus_query`; `genexus_edit` is registered but held outside the served space while engine writes have no live persistence (see below). |
+| `parallel_rebuild_all` | parity (routed) | Parallel specification + Roslyn compilation; `src/gx-engine/src/rebuild.rs`, `src/gx-engine/tests/rebuild_pipeline.rs` (5/5: sub-second 24-proc parallel rebuild). Serves `genexus_lifecycle` `build`/`rebuild`. |
 | `str_format` | parity | Numeric `Str` pictures: native `double`→`(decimal)` (15-digit) bound pipeline reproduced; 36,246 in-domain native rows across six scans, 0 mismatches; `src/gx-engine/tests/fixtures/str_matrix.tsv` (6,152 rows) plus the full bound table in `src/gx-engine/fixtures/str-bounds-native.tsv`. No consumer yet. |
 | `numeric_render` | parity | Implicit `&var.ToString()`/`Print(&numericVar)`: native measured equal to `Str(value, precision, scale)` (padding included) over 120 KBTeste cases across precision 1..18 boundary families, scale corners and the width 15..18 narrowed-bound regime; `src/gx-engine/tests/fixtures/numeric_render_native.tsv` + `src/gx-engine/tests/numeric_render_native.rs`. Expressions/record members/date components keep the untyped display path. No consumer yet. |
 | `text_functions` | parity | `Substr`/`Upper`/`Lower`/`StrReplace` plus `.Substring`/`.ToUpper`/`.ToLower`/`.Replace`: 63 recorded KBTeste rows (raw-value substringing with 1-based out-of-range rules, per-character case mapping that keeps characters whose mapping expands, case-sensitive left-to-right non-overlapping replace); `src/gx-engine/tests/fixtures/text_functions_native.tsv` + `src/gx-engine/tests/text_functions.rs`. Non-BMP positions and database-column semantics outside the claim. No consumer yet. |
@@ -106,6 +141,166 @@ reporting per-pass timings - after two hot-path fixes the measured medians are
 ~121-130 ns/row engine against ~274-286 ns/row native (see
 `src/gx-engine/VALIDATION.md`, "SDK-vs-engine benchmark").
 
+## Served operations and admitted space
+
+Each routed operation admits a deliberately narrow argument space. A call
+outside it is never approximated: with `Fallback=sdk` it continues on the SDK
+path unchanged, and with `Fallback=error` it is refused with
+`EngineOperationOutsideAdmittedSpace` naming the reason. The same rule applies
+when a read/query invocation fails (`EngineNotFound`, `EngineStartFailed`,
+`EngineTimeout`, `EngineCommandFailed`). Builds may fall back only on
+`EngineNotFound` or `EngineStartFailed`: after process start, missing or
+unrecognized reports return an error with `reconciliationRequired: true`, even
+with `Fallback=sdk`. A failed or timed-out process may already have changed build
+artifacts, so the Gateway must not replay that build on the SDK. A successful
+report paired with a nonzero exit is also uncertain, not a zero-error build
+failure. Exceptions while observing a started process return
+`EngineObservationFailed`; cleanup kills the process tree and waits up to five
+seconds for the owned process to exit, reporting whether that exit was observed.
+Unknown build outcomes additionally carry `mutationOutcomeUnknown: true`, which
+preserves a keyed request's durable retry fence. A generic reconciliation flag
+alone does not retain the new request's fence: it may be a pre-dispatch refusal
+requiring reconciliation of an earlier write. Reconcile the original operation
+before retrying; a new key does not make an uncertain build safe.
+Request cancellation is different:
+it propagates cancellation without SDK fallback, whether it arrives before
+launch or during an engine read/build. Nothing routes through the engine unless
+the registry marks the capability `Parity`.
+
+### `genexus_read` → `kb-read`
+
+Admitted: one object by `name` (or its `objectName` alias), with an explicit
+`part` or `parts[]` (`Source`, `Rules`, `Events`, `Conditions`, `Variables`,
+`Structure`, `WebForm`, `PatternInstance`), an optional `type` checked against
+the stored kind, and `refresh` (an engine read is always fresh).
+
+Outside: `guid`/`entityKey`/`path` lookups, `targets[]`, `ifUnchangedSince`,
+`offset`/`limit` paging, full-object reads (no `part`, or `all`/`full`/
+`summary`/`360`), and a `kb` naming a different Knowledge Base.
+
+Shape: single part → the ExtractSource-shaped payload (`name`, `type`, `part`,
+`source`, `isBase64`, `isEmpty`, `truncated`, `offset`, `limit`, `totalLines`,
+`totalBytes`); `parts[]` → a `parts` object with lowercase keys. There is no
+`versionToken` (the SDK token cannot be computed off the engine, and an engine
+write does not take one). A part the object does not have fails with
+`ObjectPartNotFound` listing `availableParts` — unlike the SDK path, the engine
+resolves no part aliases (`Layout` does not resolve to `WebForm`). Only the eight
+mapped part kinds are served and listed; other stored parts (`Documentation`,
+`Help`, `Layout`, …) have no engine part kind and report as missing rather than
+being decoded approximately. See [`udm_storage_notes.md`](udm_storage_notes.md).
+
+### `genexus_query` → `kb-query`
+
+Admitted: one exact object name, `type:X`, `usedby:Y`, `typeFilter`, and
+`limit` (default 50, engine cap 200), combined freely out of name/type/usedby.
+`exactMatch` may be absent or `true`.
+
+Outside: fuzzy/text queries (`exactMatch:false`, multi-term, wildcards,
+`description:`/`parent:`/`folder:` prefixes), an empty query, `domainFilter`,
+`sort`, `since`/`modifiedBefore`, `cursor`/`cursors`, `kbs` federation and its
+budget arguments. Documented deviation: the SDK path falls back to fuzzy index
+search after a direct-lookup miss, and the engine answers exact-only, so
+`exactMatch:false` stays outside the space instead of returning a subset.
+
+Shape: `results[]` with `name`/`type` (no `guid`/`path`/`lastUpdate`), `count`,
+`total`, `hasMore`/`truncated`, and the `pagination` block (offset 0, no
+cursors). Results are name-sorted.
+
+### `genexus_edit` → `kb-write` (held outside the served space)
+
+Not served today. The capability registers `genexus_edit` as a consumer, but
+`UdmWriter::save_object` mutates the engine's in-process store only: it issues no
+SQL, so an engine-served edit against a live Knowledge Base would report a save
+that is lost when the process exits. Every call is therefore outside the space:
+`Fallback=error` refuses it with `EngineOperationOutsideAdmittedSpace` naming the
+reason, and `Fallback=sdk` serves it with the SDK unchanged. `gx-engine kb-write`
+independently refuses a live client for the same reason.
+
+When live persistence lands (version bump plus part replacement through the same
+composition structure, verified by an independent read-back), the intended v1
+space is one existing object by `name`, one `part` (default `Source`), the full
+replacement text in `content` (an empty string clears the part), an optional
+`type` checked against the stored kind before any write, and `mode` absent or
+`full`. `patch`/`ops`/`scope`, `parts[]`/`targets[]`, `dryRun`, version
+tokens/change sets, validation and verification modes, object creation and
+`return_post_state` would remain outside it.
+
+### `genexus_lifecycle` `build`/`rebuild` → `rebuild-all`
+
+Admitted: `action=build|rebuild` with the blocking contract —
+`wait_until_done=true`, or an `estimated_seconds` the Gateway itself would run
+synchronously. Builds are serialized inside the Gateway process. Cancellation while
+waiting for that gate is pre-dispatch; after engine launch it does not imply rollback.
+A keyed request cancelled before dispatch leaves its idempotency key reusable.
+Cancellation after dispatch retains the unknown-outcome fence: inspect the operation
+and generated outputs before deciding whether another build is safe.
+
+A directed compile-only build is admitted with `action=build`, a simple or
+module-qualified `target` name, `mode=compile_check`, explicit `callers=false`,
+and `includeCallees` omitted or `transitive`. The same blocking intent is required.
+It uses `--object <name> --closure`: the engine builds that object and its
+transitive dependency closure, not unrelated objects in the KB. Output is isolated
+at `<KB>/.gx-engine/build-targets/<SHA-256-of-target>`. The answer identifies
+`engine.scope=target-closure` and `engine.target`; whole-KB answers identify
+`engine.scope=whole-kb`. A successful target build does not imply whole-KB success.
+
+```json
+{"action":"build","target":"MyProcedure","mode":"compile_check","callers":false,"wait_until_done":true}
+```
+
+Outside: the bare build/rebuild (the SDK path answers it with an accepted async
+job; the engine has no job registry), `wait_seconds`, other directed builds,
+targeted `rebuild`, `environment`, other `mode` values, `deploy`,
+`skipFullDeploy: false`, `fastIncremental`, `force`, `dryRun`, `callerCap`,
+`buildPlanCap`, and `limit`. Directed builds with the default `callers=true`,
+non-transitive callees, typed selectors, GUIDs or paths remain on SDK; the engine
+must not silently drop caller expansion or approximate a selector.
+
+Shape: `status: "Success"` only for a recognized, error-free complete report
+(or the supported legacy pipeline report without a status field), plus `report`
+with the engine report projection (`total_ms`, `catalog_load_ms`, phase times, object counts,
+`emitted_file_count`, `errors`, `warnings`, and the `status`, `generated_count`,
+`compiled_count`, `skipped_count`, `skipped_objects`, `not_generated_count`,
+`not_generated_objects`, `refused_count` and `refused_objects` fields).
+
+A run the engine reports as `partial` (exit 3: web UI objects skipped, a code
+kind with no generator, or a project that did not build) returns
+`status: "Partial"`, `error: "EngineBuildPartial"` and `isError=true`. It is
+never `Success`: the report lists what was left out, and the message gives the
+counts. A build whose report carries errors returns `status: "Failed"` with
+`isError=true` and the report attached — that is the build's answer, not
+an engine outage, so it is surfaced even under `Fallback=sdk`. An exit code of zero
+does not override a partial report or reported errors. If handling a returned build
+report throws, the Gateway returns an engine error, not an SDK replay of the build.
+An empty JSON object, unknown status or malformed errors field is not a build
+report: it requires reconciliation, not a success response or SDK replay. Such
+unknown outcomes carry a reconciliation hint, not advice to change fallback and
+retry blindly.
+`catalog_load_ms` measures loading before the pipeline and is not included in
+`total_ms`; compare both phases and the outer request wall time when profiling.
+Whole-KB `build` and `rebuild` both run the full pipeline; `rebuild` adds `--clean`
+to the output directory (`<KB>\.gx-engine\build`). Directed `compile_check` builds
+run the same pipeline only on the admitted target closure.
+
+### Documented v1 deviations
+
+- No `versionToken`/post-state on reads or edits, and no concurrency tokens.
+- Query results are name-sorted, exact-only, and carry no SDK-only identity
+  fields (`guid`, `path`, `lastUpdate`).
+- An engine-served read does not confirm SDK write-recovery fences; a fence
+  left by an uncertain SDK write still clears on an SDK read.
+- A semantic-cache hit can answer a routed read with an SDK-shaped payload
+  cached before the switch; engine results are not written to that cache.
+- Live reads are `sqlcmd`-backed and list only the twelve servable object entity
+  types: `ModelEntityVersion` also contains object parts and KB-tree nodes, which
+  are filtered out ([notes](udm_storage_notes.md)).
+- `rebuild-all` hydrates the full servable catalog. Native catalog snapshots remain
+  disabled: row counts and timestamps alone do not safely identify content edits.
+  Measure catalog loading separately rather than inferring whole-KB speed from a
+  warm compiler cache.
+- No engine write is persisted to live storage; `genexus_edit` stays outside the
+  served space until an independent read-back verifies a live write.
+
 ## Executable discovery
 
 Order: `Engine.Executable`/`GXMCP_ENGINE_EXE` (explicit; missing →
@@ -121,12 +316,14 @@ cargo build --release --manifest-path src/gx-engine/Cargo.toml
 `publish/gx-engine.exe` only exists when packaging copies it; the experimental
 switch is a checkout/operator path today, not a shipped artifact.
 
-## Adding the first routed capability
+## Adding a routed capability
 
 1. Measure the native differential inside the admitted space; record the
    evidence in `plans/129-implementation-progress.md` and the capability matrix.
 2. Move/add the entry in `EngineCapabilityRegistry`: status `Parity`, evidence
-   path, and the consumer operation key.
+   path, and the consumer operation key. Routing follows the registry — the
+   gateway maps a tool call to its operation key and looks up which capability
+   declares that consumer.
 3. Route the call site through `EngineRouter.Decide` — never invoke the engine
    from a tool path directly.
 4. Add tests for the routing decision, the engine path, and the fallback/error
@@ -139,8 +336,13 @@ switch is a checkout/operator path today, not a shipped artifact.
   approximated or silently delegated mid-operation.
 - `Fallback=error` is the experiment mode that proves the engine carried the
   whole call instead of the SDK.
-- Native KB access stays SDK-only (`native_kb_read` is `unsupported`); the
-  engine never touches a native Knowledge Base.
+- A write may only route once its persistence is verified end to end (engine
+  write, then an independent read-back); until then `genexus_edit` stays outside
+  the engine space.
+- Native KB object access is served through the engine's own UDM storage
+  adapter (`udm_storage_access`, measured against a live KB); a generic native
+  KB decoder (`native_kb_read`) remains unsupported, and the engine never
+  claims an SDK-only surface.
 - Raw SDK exports and private KB data never enter Git; engine evidence lives as
   the recorded differentials, fixtures and hashes already committed under
   `src/gx-engine/tests` and the ledger.

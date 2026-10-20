@@ -8,9 +8,11 @@ below and should be read only when the task matches it.
 
 Genexus18MCP is a two-process MCP server exposing Knowledge Bases from the
 officially supported native-SDK majors and catalogued legacy versions through
-their selected driver. It does not parse KB files or scrape IDE state; native
-edits use the same SDK paths as the IDE, while legacy paths use explicit
-reflection/COM adapters without changing the MCP contract.
+their selected driver. The default SDK route does not parse KB files or scrape
+IDE state; native edits use the same SDK paths as the IDE, while legacy paths use
+explicit reflection/COM adapters without changing the MCP contract. The experimental
+gx-engine route has independent native UDM readers and compiler paths; admitted
+blocking builds use it by default, while other operations retain the SDK.
 
 ```text
 MCP clients (Claude/Cursor/…)
@@ -66,6 +68,33 @@ Source of truth: `config/gx-versions.json`.
   - GeneXus Evolution 1 (10.1), Evolution 2 (10.2), Evolution 3 (10.3), and GeneXus 15 via `dotnet-reflection` (using `DynamicSdkBridge` and `OptionalSdkInvoker` for module-less vs `QualifiedName` and API differences).
   - GeneXus 8.0 and 9.0 via `com-gxpublic` (`ComGxPublicDriver` connecting to classic Win32 `GXPublic.GXPublic` COM automation on an STA thread for `.gxi` KBs).
   - Modern tools unsupported in earlier versions return structured degradation envelopes (`UNSUPPORTED_IN_GENEXUS_VERSION`).
+
+## gx-engine development
+
+- For compiler/storage work, read [`src/gx-engine/README.md`](src/gx-engine/README.md);
+  for MCP routing, read [`docs/engine_backend.md`](docs/engine_backend.md).
+  The objective is independent full SDK replacement; current bounded coverage
+  is not that outcome. `Engine.Backend` defaults to `auto`: admitted blocking
+  builds use gx-engine; other operations use SDK. Explicit `sdk` opts out;
+  `gxengine` also enables admitted reads/queries. Preserve capability/argument
+  gates, SDK fallback before build start, and reconciliation instead of replay
+  after a started build fails or has an uncertain outcome.
+- For performance work or speed claims, read
+  [Plan 131](plans/131-sdk-performance-benchmark.md) first. Compare the same
+  workload and observable behavior; distinguish warm/cold, selected-object/full-KB,
+  and benchmarked/packaged binaries. Keep all raw samples outside Git.
+- Drive remaining full-KB failures down with SDK differential evidence and
+  regression tests. Preserve refusals and malformed-input errors; account for
+  skipped/not-generated objects explicitly. A green package build or unit suite
+  does not establish a successful whole-KB build, runtime parity or SDK replacement.
+- Live engine validation uses only disposable `C:\KBs\*teste*` KBs. Native UDM
+  access can change KB state; record/restore temporary database settings and
+  reconcile uncertain effects before replay. Keep Cloud off and use local
+  SDK/MSBuild stages as the oracle; preserve licensing and existing SDK routing.
+- Validate the affected reader/compiler/runtime path, including actual runnable
+  output when behavior changes. Preserve the final `build.ps1` ordering below;
+  identify the exact packaged binary in postchecks rather than borrowing timings
+  from another target directory.
 
 ## KB and harness contracts
 

@@ -1,12 +1,18 @@
 # Plan 130: GeneXus SDK Complete Retirement — Implementation Ledger
 
+## Current status — 2026-10-18
+
+**SDK retirement is not complete.** The previous 100% displays and full-build >380× claim below were implementation/fixture summaries, not a valid measurement of SDK replacement. They are superseded by the [current acceptance ledger](129-implementation-progress.md#current-acceptance-status--2026-10-18). Native object refusals, SDT oracle gaps, live persistence/product coverage and a successful matched-workload speed comparison remain open. The 50× build-speed objective is not verified.
+
+The remaining sections record historical implementation reports. Passing a local fixture or Roslyn compile does not certify the full capability it exercises. Runtime routing status is owned by `EngineCapabilityRegistry`, with the admitted space documented in [engine_backend.md](../docs/engine_backend.md).
+
 ## Authorization and Boundaries
 
 The user explicitly authorized agents to execute Plan 130: **the complete, total retirement of the proprietary GeneXus SDK and `GxMcp.Worker.exe` (32-bit STA)**, replacing it with `gx-engine` (safe Rust) across all capabilities:
 - Physical Knowledge Base access (direct UDM SQL reading and writing).
 - Full object model and part support (Procedures, Transactions, WebPanels, Reports, Business Components, SDTs, Events, For Each, Formulas).
 - Native C# (.NET Core / Framework) code generation producing real `.cs` and `.csproj` files compatible with GeneXus standard classes (`GeneXus.Utils`, `GXProcedure`, `GXWebPanel`).
-- High-performance parallel Rebuild All pipeline shrinking ~8-minute IDE builds down to **< 20 seconds**.
+- High-performance parallel Rebuild All pipeline; the former ~8-minute IDE baseline was not measured on a matched workload and is withdrawn.
 - Decommissioning and capability promotion in `GxMcp.Gateway`.
 
 ---
@@ -16,7 +22,7 @@ The user explicitly authorized agents to execute Plan 130: **the complete, total
 Progress is measured capability-by-capability against differential runs of the official GeneXus SDK in clean Knowledge Bases (`C:\KBs\KBTeste`).
 
 ```text
-Overall SDK Retirement: [🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0% weighted (60/60 core areas completed)
+Overall SDK Retirement: unfinished; no verified completion percentage
 ```
 
 | Subsystem Track | Progress | Status | Covered / Total | Key Next Step |
@@ -62,4 +68,4 @@ Overall SDK Retirement: [🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0% weight
 | **Language Runtime Suite** | 82.4ms total | **5.4ms total** | **~15.2x faster** | 56 functional capabilities, peak 26.09x on SDT JSON serialization. |
 | **UDM Single Part Read & Decompress** | 45ms – 80ms *(Worker IPC)* | **~1.8ms** *(Direct GzDecoder)* | **~30x faster** | Tested on `Plan068Proc` (1.3MB decompressed text). |
 | **Live KB Metadata Hydration (1,800 objs)** | 12,000ms – 18,000ms | **320ms** | **> 35x faster** | Direct TDS relational query vs serial COM STA loads (`test_udm_real_kb_live_read_procedure`). |
-| **Full Rebuild All (Multi-Object Catalog)** | **~480s (~8 minutes)** | **1.25s** | **> 380x faster** | Scoped threads parallel spec + C# emit + Roslyn compilation (`test_rebuild_pipeline`). |
+| **Full Rebuild All** | No successful matched-workload baseline | Live runs include refusals/errors | **Not verified** | Former 480s / 1.25s (>380×) comparison withdrawn; follow the current acceptance ledger. |
