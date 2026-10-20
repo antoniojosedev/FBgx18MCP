@@ -22,10 +22,22 @@ namespace GxMcp.Gateway
                 "High-performance native Rust architectural discovery, call graph, and impact engine (sub-10ms).\n" +
                 "Call this FIRST before reading large objects or modifying the KB.\n\n" +
                 "## Requires a text source tree, not a native KB\n" +
-                "genexus_wire reads GeneXus sources **from files**. A native GeneXus 18 Knowledge Base keeps its object sources in the KB database, not on disk, so pointing `kb` at one is refused with `GXWIRE_REQUIRES_TEXT_SOURCE_TREE` rather than answered: indexing that folder would read generated output and report it as a graph.\n" +
-                "Point `dir` at a text source tree - a GeneXus XML/text export of the same Knowledge Base, the directory holding the .txt/.gxd/.xml/.trn/.wp object files.\n" +
+                "genexus_wire reads GeneXus sources **from files**. A native GeneXus 18 Knowledge Base keeps its object sources in the KB database, not on disk, so pointing `kb` at one is refused with `GXWIRE_REQUIRES_TEXT_SOURCE_TREE` before any process starts: indexing that folder would walk gigabytes of generated output (environment, build, obj, UserControls, Locks, OutputLogs...) and report it as a graph.\n" +
+                "Export the text tree first: `genexus_io action=export_kb_to_text format=native part=all outputPath=<folder>` writes the SDK text tree under `<folder>\\src`; then `genexus_wire action=index dir=<folder>` once and query with the same `dir`. The refusal carries this as `textTreeExport`. `action=doctor` still runs on a native root and answers `textSourceTreeRequired: true` with the same guidance.\n" +
                 "To work on a native KB itself, use the SDK-backed tools instead: `genexus_read`, `genexus_query`, `genexus_search_source`, `genexus_analyze`, `genexus_inspect`.\n" +
                 "genexus_wire writes nothing into the directory it analyses: the index lives under `%LOCALAPPDATA%\\GxMcp\\Cache\\gxwire`.\n\n" +
+                "## Index first, then query\n" +
+                "`action=status` answers from the index and returns `GxwireCacheMissing` (with the exact `action=index` call) when there is none, instead of parsing the tree on the fly. The other queries parse on the fly when no index exists, which on a large tree ends in `GxwireTimeout` pointing at `action=index`. `index` has a 900 s budget (`GXMCP_GXWIRE_TIMEOUT_SECONDS` raises it; queries get 30 s) and reports `cachePath`, `cacheExists`, `nodes` and `elapsedMs`. gxwire has no folder exclusions yet, so `dir` must be a text source tree, never a KB root.\n\n" +
+                "## Error codes\n" +
+                "Every failure is an envelope with `code`, `message`, `hint` and a `diagnosticContext` (action, kbRoot, cachePath, cacheExists, exitCode, elapsedMs, timeoutSeconds, bounded stderrTail/stdoutHead, exceptionType); none surfaces as a bare `Internal error`.\n" +
+                "- `GxwireNotFound`: gxwire.exe is not next to the Gateway, under publish/, src/gxwire/target/release/ or on PATH.\n" +
+                "- `KB_CONTEXT_REQUIRED`: no `dir`/`kb` resolved to an existing directory.\n" +
+                "- `GXWIRE_REQUIRES_TEXT_SOURCE_TREE`: `dir` is a native KB root (see above).\n" +
+                "- `GxwireCacheMissing`: `status` without an index; run `action=index`.\n" +
+                "- `GxwireTimeout`: the budget expired and the child was killed; the hint says whether to index first, raise the budget, or run `gxwire.exe --index` manually.\n" +
+                "- `GxwireExecutionFailed`: non-zero exit, with `exitCode`, the engine's own code when it printed one (`engineCode`, e.g. SymbolNotFound) and a bounded stderr tail.\n" +
+                "- `GxwireOutputUnparsable`: exit 0 but empty output, or non-JSON output for `format=json`.\n" +
+                "- `ProcessStartFailed` / `GxwireException`: the process could not be started, or the gateway failed before gxwire answered; `exceptionType` and a bounded message are in the context.\n\n" +
                 "## Actions\n" +
                 "- `pack_task` (default): Complete orientation bundle for a task description (ranked symbols, callers, signatures, variables) bounded under token_budget (default 1200).\n" +
                 "- `status`: Live KB graph status, node/edge counts, and top PageRank-central architectural hubs (content first).\n" +
