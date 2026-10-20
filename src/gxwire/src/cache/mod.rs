@@ -121,7 +121,23 @@ struct SourceFile {
 /// folder was also the cost that never finished). Only names that cannot be a
 /// GeneXus export folder are listed: an export nests objects under folders named
 /// after their type or module, never `bin`, `obj` or a VCS metadata directory.
-const PRUNED_DIR_NAMES: &[&str] = &[".git", ".svn", ".hg", ".vs", "node_modules", "bin", "obj"];
+///
+/// `build`, `UserControls`, `Locks` and `OutputLogs` are the generation, control
+/// cache, lock and log folders of a native KB environment (#593). Pruning only
+/// skips them in the walk; nothing on disk is touched.
+const PRUNED_DIR_NAMES: &[&str] = &[
+    ".git",
+    ".svn",
+    ".hg",
+    ".vs",
+    "node_modules",
+    "bin",
+    "obj",
+    "build",
+    "usercontrols",
+    "locks",
+    "outputlogs",
+];
 
 fn is_pruned_dir_name(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy();

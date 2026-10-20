@@ -124,3 +124,32 @@ fn a_pruned_name_used_for_a_file_does_not_hide_it() {
     assert!(names.iter().any(|n| n == "bin"), "{names:?}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn generated_environment_directories_are_not_walked() {
+    let dir = scratch("generated");
+    write_source(
+        &dir,
+        "Objects/Procedures/Caller.prc",
+        "// obj
+Call(Callee);
+",
+    );
+    for pruned in ["build", "UserControls", "Locks", "OutputLogs"] {
+        write_source(&dir, &format!("{pruned}/Stray{pruned}.txt"), "// obj
+");
+        write_source(&dir, &format!("Env/{pruned}/Deep{pruned}.txt"), "// obj
+");
+    }
+
+    let names = node_names(&dir);
+
+    assert!(names.iter().any(|n| n == "Caller"), "{names:?}");
+    assert!(
+        names
+            .iter()
+            .all(|n| !n.starts_with("Stray") && !n.starts_with("Deep")),
+        "generated/runtime folders must not become nodes: {names:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

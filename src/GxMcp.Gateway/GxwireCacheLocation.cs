@@ -122,6 +122,12 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return null;
 
                 var hard = FindMarkers(directory, HardMarkers);
+                // A real native KB keeps GXLOCK as a directory (GXLOCK/LOCKS); an
+                // export never carries one, so it is decisive like the database.
+                if (Directory.Exists(Path.Combine(directory, "GXLOCK")))
+                {
+                    hard.Add("GXLOCK (GeneXus KB lock directory)");
+                }
                 var soft = FindMarkers(directory, SoftMarkers);
                 if (hard.Count == 0 && soft.Count == 0) return null;
 
