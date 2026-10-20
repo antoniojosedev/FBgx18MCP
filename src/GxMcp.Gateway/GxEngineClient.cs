@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace GxMcp.Gateway
@@ -30,11 +32,49 @@ namespace GxMcp.Gateway
     }
 
     /// <summary>
-    /// The Gateway-side client for the experimental gx-engine backend. For now it
-    /// resolves the executable and runs the <c>--version</c> handshake; capability
-    /// invocations (gx-engine check/build/run and friends) plug in here when the
-    /// first parity capability with a consumer is registered
-    /// (docs/engine_backend.md).
+    /// Outcome of one gx-engine capability invocation (kb-read, kb-query,
+    /// kb-write, rebuild-all). Failures carry a stable code so routing can
+    /// decide between falling back to the SDK and refusing the call.
+    /// </summary>
+    internal sealed class GxEngineInvocation
+    {
+        private GxEngineInvocation(
+            bool ok, string? executable, string standardOutput, string standardError,
+            int? exitCode, bool timedOut, string? errorCode, string? errorMessage)
+        {
+            Ok = ok;
+            Executable = executable;
+            StandardOutput = standardOutput;
+            StandardError = standardError;
+            ExitCode = exitCode;
+            TimedOut = timedOut;
+            ErrorCode = errorCode;
+            ErrorMessage = errorMessage;
+        }
+
+        internal bool Ok { get; }
+        internal string? Executable { get; }
+        internal string StandardOutput { get; }
+        internal string StandardError { get; }
+        internal int? ExitCode { get; }
+        internal bool TimedOut { get; }
+        internal string? ErrorCode { get; }
+        internal string? ErrorMessage { get; }
+
+        internal static GxEngineInvocation Success(string executable, string stdout) =>
+            new GxEngineInvocation(true, executable, stdout, string.Empty, 0, false, null, null);
+
+        internal static GxEngineInvocation Failure(
+            string? executable, string errorCode, string errorMessage,
+            string stdout = "", string stderr = "", int? exitCode = null, bool timedOut = false) =>
+            new GxEngineInvocation(false, executable, stdout, stderr, exitCode, timedOut, errorCode, errorMessage);
+    }
+
+    /// <summary>
+    /// The Gateway-side client for the experimental gx-engine backend. It
+    /// resolves the executable, runs the <c>--version</c> handshake, and executes
+    /// the capability invocations the routing gate selects (kb-read, kb-query,
+    /// kb-write, rebuild-all) under the configured Engine.TimeoutSeconds budget.
     /// </summary>
     internal static class GxEngineClient
     {
@@ -120,6 +160,94 @@ namespace GxMcp.Gateway
         {
             string single = (text ?? string.Empty).Replace("\r", " ").Replace("\n", " ").Trim();
             return single.Length <= 240 ? single : single.Substring(0, 240) + "…";
+        }
+
+        /// <summary>
+        /// Runs one capability invocation to completion under the resolved
+        /// Engine.TimeoutSeconds budget. A cancellation request kills the child so
+        /// an abandoned MCP request cannot leave a compiler running; the caller
+        /// sees the resulting failure, never a half-finished success.
+        /// </summary>
+        internal static async Task<GxEngineInvocation> InvokeAsync(
+            EngineBackendSettings settings,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (arguments == null) throw new ArgumentNullException(nameof(arguments));
+
+            string? executable = GxEngineLocator.Locate(settings);
+            if (executable == null)
+            {
+                string detail = string.IsNullOrWhiteSpace(settings.Executable)
+                    ? "gx-engine.exe was not found next to the Gateway, in publish/ or src/gx-engine/target/{release,debug}, or on PATH."
+                    : $"Engine.Executable/GXMCP_ENGINE_EXE points at '{settings.Executable}', which does not exist.";
+                return GxEngineInvocation.Failure(null, "EngineNotFound", detail);
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = executable,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            foreach (string argument in arguments)
+                startInfo.ArgumentList.Add(argument);
+
+            using var proc = new Process { StartInfo = startInfo };
+            try
+            {
+                if (!proc.Start())
+                    return GxEngineInvocation.Failure(executable, "EngineStartFailed", "the process did not start.");
+            }
+            catch (Exception ex)
+            {
+                return GxEngineInvocation.Failure(executable, "EngineStartFailed", ex.Message);
+            }
+
+            GxEngineProcessRun run;
+            try
+            {
+                using var registration = cancellationToken.CanBeCanceled
+                    ? cancellationToken.Register(() => GxEngineProcessRunner.TryKillProcessTree(proc))
+                    : default(CancellationTokenRegistration);
+                run = await GxEngineProcessRunner.RunAsync(proc, settings.TimeoutSeconds).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // The child already started: a pipe/wait failure is an unknown
+                // execution outcome, never proof that SDK replay is safe.
+                bool stopped = await GxEngineProcessRunner.StopAndWaitAsync(proc).ConfigureAwait(false);
+                return GxEngineInvocation.Failure(
+                    executable, "EngineObservationFailed",
+                    $"gx-engine started, but observing its completion failed: {ex.Message} "
+                    + (stopped ? "Process exit observed after cleanup." : "Process termination could not be confirmed; reconcile before another build."));
+            }
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return GxEngineInvocation.Failure(
+                    executable, "EngineCancelled",
+                    "the request was cancelled before gx-engine finished.",
+                    stdout: run.StandardOutput, stderr: run.StandardError, timedOut: run.TimedOut);
+            }
+            if (run.TimedOut)
+            {
+                return GxEngineInvocation.Failure(
+                    executable, "EngineTimeout",
+                    $"gx-engine exceeded the {run.TimeoutSeconds}s budget (Engine.TimeoutSeconds).",
+                    stdout: run.StandardOutput, stderr: run.StandardError, timedOut: true);
+            }
+            if (run.ExitCode != 0)
+            {
+                return GxEngineInvocation.Failure(
+                    executable, "EngineCommandFailed",
+                    $"gx-engine exited with {run.ExitCode}: {Excerpt(run.StandardError)}",
+                    stdout: run.StandardOutput, stderr: run.StandardError, exitCode: run.ExitCode);
+            }
+
+            return GxEngineInvocation.Success(executable, run.StandardOutput);
         }
     }
 }

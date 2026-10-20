@@ -592,7 +592,7 @@ namespace GxMcp.Gateway
     /// The single gate a future SDK-to-engine swap must call. It answers which
     /// backend serves <paramref name="capabilityId"/> under the configured
     /// policy, and never returns a partially-engine path: the engine serves a
-    /// capability only at measured parity, and Backend=gxengine with
+    /// capability only at measured parity. Auto admits only builds; Backend=gxengine with
     /// Fallback=error refuses anything else instead of quietly using the SDK.
     /// </summary>
     internal static class EngineRouter
@@ -603,7 +603,9 @@ namespace GxMcp.Gateway
         {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
 
-            if (!settings.EngineEnabled)
+            if (!settings.EngineEnabled
+                || (settings.Backend == EngineBackendSettings.AutoBackend
+                    && !string.Equals(capabilityId, "parallel_rebuild_all", StringComparison.OrdinalIgnoreCase)))
                 return EngineRouteDecision.Sdk(capabilityId);
 
             var capability = EngineCapabilityRegistry.Find(capabilityId);

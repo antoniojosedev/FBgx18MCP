@@ -692,7 +692,13 @@ namespace GxMcp.Worker.Services
             string result;
             try
             {
-                string raw = DispatchInternal(request);
+                string raw;
+                // Part initialization mutates SDK-wide definitions even for reads.
+                // Writers acquire the gate in WriteService, before their post-write
+                // async specification/preview orchestration runs outside that scope.
+                bool sourceRead = string.Equals(method0, "read", StringComparison.OrdinalIgnoreCase);
+                using (sourceRead ? SdkGate.Enter() : null)
+                    raw = DispatchInternal(request);
                 JToken token = GxMcp.Worker.Helpers.McpResponseNormalizer.NormalizeToken(
                     raw, out bool rewritten);
                 // The idempotency cache and the string contract keep the original bytes when

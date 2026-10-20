@@ -673,6 +673,7 @@ namespace GxMcp.Worker.Services
         // IWriteServiceFacade adapter — translates JObject args into the canonical WriteObject call.
         public string WriteObject(string target, JObject args)
         {
+            using var sdkGate = SdkGate.Enter();
             var facadeArgs = NormalizeFacadeArgs(args);
 
             string facadeValidationError = ValidateRequireObjectSaveArgs(target, facadeArgs);
@@ -1175,6 +1176,7 @@ namespace GxMcp.Worker.Services
 
         public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool forceWrite = false, string baseVersion = null, string verifyMode = null, bool requireObjectSave = false, bool allowGridStructure = false)
         {
+            using var sdkGate = SdkGate.Enter();
             partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
             if (requireObjectSave) preferFastSourceSave = false;
             // A blank verifyMode means "omitted": the gateway serializes an absent argument as a

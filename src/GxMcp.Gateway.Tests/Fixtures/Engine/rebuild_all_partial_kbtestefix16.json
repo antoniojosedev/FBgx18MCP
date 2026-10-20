@@ -1,0 +1,70 @@
+{
+  "read_ms": 0,
+  "spec_ms": 0,
+  "emit_ms": 2,
+  "compile_ms": 1186,
+  "total_ms": 1188,
+  "procedures_count": 0,
+  "transactions_count": 0,
+  "sdts_count": 8,
+  "webpanels_count": 6,
+  "total_objects": 103,
+  "status": "partial",
+  "generated_count": 8,
+  "compiled_count": 8,
+  "skipped_count": 6,
+  "skipped_objects": [
+    {
+      "name": "AppMasterPage",
+      "kind": "WebPanel",
+      "reason": "web UI, not generated"
+    },
+    {
+      "name": "PromptMasterPage",
+      "kind": "WebPanel",
+      "reason": "web UI, not generated"
+    },
+    {
+      "name": "RecentLinks",
+      "kind": "WebPanel",
+      "reason": "web UI, not generated"
+    },
+    {
+      "name": "RwdMasterPage",
+      "kind": "WebPanel",
+      "reason": "web UI, not generated"
+    },
+    {
+      "name": "RwdPromptMasterPage",
+      "kind": "WebPanel",
+      "reason": "web UI, not generated"
+    },
+    {
+      "name": "RwdRecentLinks",
+      "kind": "WebPanel",
+      "reason": "web UI, not generated"
+    }
+  ],
+  "not_generated_count": 0,
+  "not_generated_objects": [],
+  "refused_count": 0,
+  "refused_objects": [],
+  "definition_kinds": {
+    "Domain": 73,
+    "Module": 16
+  },
+  "errors": [],
+  "warnings": [],
+  "emitted_files": [
+    "target/fix16/out_json\\RebuildApp.csproj",
+    "target/fix16/out_json\\SdtConfigurationProperty.cs",
+    "target/fix16/out_json\\SdtEvent.cs",
+    "target/fix16/out_json\\SdtLocalNotificationsInfo.cs",
+    "target/fix16/out_json\\SdtLocalizedText.cs",
+    "target/fix16/out_json\\SdtLoginExternalAdditionalParameters.cs",
+    "target/fix16/out_json\\SdtScannedBarcodes.cs",
+    "target/fix16/out_json\\SdtStoreProduct.cs",
+    "target/fix16/out_json\\SdtStoreValidationConfig.cs"
+  ],
+  "navigation_reports": []
+}

@@ -30,6 +30,28 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public async Task StopAndWait_ObservesTheOwnedProcessExit()
+        {
+            using var proc = StartCmd("/c ping -n 30 127.0.0.1 >nul");
+            try
+            {
+                Assert.True(await GxEngineProcessRunner.StopAndWaitAsync(proc));
+                Assert.True(proc.HasExited);
+            }
+            finally
+            {
+                GxEngineProcessRunner.TryKillProcessTree(proc);
+            }
+        }
+
+        [Fact]
+        public async Task StopAndWait_DoesNotClaimAnUnstartedProcessExited()
+        {
+            using var proc = new Process();
+            Assert.False(await GxEngineProcessRunner.StopAndWaitAsync(proc));
+        }
+
+        [Fact]
         public async Task Run_CapturesStdoutAndExitCode()
         {
             using var proc = StartCmd("/c echo hello-engine");

@@ -164,7 +164,10 @@ namespace GxMcp.Gateway
                 }
                 catch (ErrorNotCacheable ex)
                 {
-                    FailJournal(kbPath, tool, key, payloadHash);
+                    // An error response is not necessarily a known failure:
+                    // unknown execution outcomes must retain the retry fence.
+                    if (!ex.MutationOutcomeUnknown)
+                        FailJournal(kbPath, tool, key, payloadHash);
                     return ex.Result;
                 }
                 catch (Exception ex) when (PreDispatchFailureClassifier.Is(ex))
@@ -390,7 +393,11 @@ namespace GxMcp.Gateway
                 // A sibling, not a UsageException: declared in KbResolver.cs and
                 // thrown while choosing the KB context, which is definitionally
                 // before a command exists.
-                || error is WorkerPoolFullException;
+                || error is WorkerPoolFullException
+                // Raised by the gateway's own cancellation checks before the operation starts
+                // (no engine process or worker command exists yet). Only this subtype is listed:
+                // a plain OperationCanceledException can also come from after dispatch.
+                || error is PreDispatchCancelledException;
 
         // Deliberately NOT classified as pre-dispatch:
         //
@@ -398,7 +405,8 @@ namespace GxMcp.Gateway
         //     from RequestAborted can arrive either side of dispatch and is
         //     indistinguishable here, so a cancellation observed after the command
         //     was written leaves a genuinely unknown outcome. Keeping the fence is
-        //     the safe direction.
+        //     the safe direction. Only PreDispatchCancelledException, a subtype raised
+        //     before the operation starts, is pre-dispatch.
         //   * IdempotencyConflictException — a payload-conflict signal, not a
         //     dispatch-position signal; it is raised on both sides of the factory.
         //   * ArgumentException and every other framework exception — the BCL
@@ -406,5 +414,20 @@ namespace GxMcp.Gateway
         //     command is written. Too broad to classify as pre-dispatch.
         //   * Anything thrown once the command has been handed to a worker. If the
         //     outcome is unknown, the fence must stay 'started'.
+    }
+
+    /// <summary>
+    /// A cancellation the gateway observes before a keyed mutation has started any
+    /// side effect, such as before an engine process or a worker command is issued. It is still
+    /// an <see cref="OperationCanceledException"/>, so every caller's cancellation
+    /// handling is unchanged. The distinct type is what lets the journal tell it
+    /// apart from a cancellation after dispatch, which keeps the fence.
+    /// </summary>
+    internal sealed class PreDispatchCancelledException : OperationCanceledException
+    {
+        internal PreDispatchCancelledException(CancellationToken cancellationToken)
+            : base("The request was cancelled before the operation started.", cancellationToken)
+        {
+        }
     }
 }

@@ -511,7 +511,7 @@ namespace GxMcp.Gateway
                     if (_owner.HasValue
                         && !string.Equals(entry!.ScopeHash, ScopeHash(_owner.Value.Token), StringComparison.Ordinal))
                         throw new InvalidDataException("journal entry belongs to another operational state scope");
-                    if (DateTime.UtcNow - entry!.UpdatedAtUtc.ToUniversalTime() <= Retention)
+                    if (!IsExpired(entry!.Status, entry.UpdatedAtUtc, DateTime.UtcNow))
                     {
                         entry.UpdatedAtUtc = entry.UpdatedAtUtc.ToUniversalTime();
                         _entries[entry.Id] = entry;
@@ -531,10 +531,20 @@ namespace GxMcp.Gateway
 
         private void PruneLocked()
         {
-            DateTime cutoff = DateTime.UtcNow - Retention;
-            foreach (var id in _entries.Where(pair => pair.Value.UpdatedAtUtc < cutoff).Select(pair => pair.Key).ToArray())
+            DateTime now = DateTime.UtcNow;
+            foreach (var id in _entries.Where(pair => IsExpired(pair.Value.Status, pair.Value.UpdatedAtUtc, now)).Select(pair => pair.Key).ToArray())
                 _entries.Remove(id);
         }
+
+        /// <summary>
+        /// Settled records age out after the retention window. An unknown-outcome
+        /// ("started") record never does: the process that wrote it may have committed
+        /// the mutation, and expiring it would let the same key replay that mutation.
+        /// It leaves the journal only through Complete, Fail, or an explicit Reconcile.
+        /// </summary>
+        private static bool IsExpired(string status, DateTime updatedAtUtc, DateTime now)
+            => !string.Equals(status, "started", StringComparison.OrdinalIgnoreCase)
+                && now - updatedAtUtc.ToUniversalTime() > Retention;
 
         private bool PersistLocked()
         {

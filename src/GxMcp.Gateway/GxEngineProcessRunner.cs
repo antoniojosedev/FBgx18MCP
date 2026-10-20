@@ -71,6 +71,22 @@ namespace GxMcp.Gateway
                 timeoutSeconds: timeoutSeconds);
         }
 
+        internal static async Task<bool> StopAndWaitAsync(Process proc)
+        {
+            TryKillProcessTree(proc);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await proc.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception ex) when (ex is OperationCanceledException || ex is InvalidOperationException
+                || ex is System.ComponentModel.Win32Exception)
+            {
+                return false;
+            }
+        }
+
         /// <summary>
         /// Best-effort kill of the child and anything it spawned. Never throws:
         /// a process that already exited, or one the caller cannot kill, must not

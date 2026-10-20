@@ -1379,11 +1379,10 @@ namespace GxMcp.Gateway
                 warnings.Add("No active KB is selected.");
 
             var engine = BuildEngineDoctorSection(_activeConfig);
-            if (engine["backend"]?.ToString() == EngineBackendSettings.GxEngineBackend
-                && engine["available"]?.Type == JTokenType.Boolean
+            if (engine["available"]?.Type == JTokenType.Boolean
                 && engine["available"]!.Value<bool>() == false)
             {
-                warnings.Add("Engine backend 'gxengine' is enabled but the gx-engine executable is not usable ("
+                warnings.Add("Engine backend '" + engine["backend"] + "' is enabled but the gx-engine executable is not usable ("
                     + (engine["error"]?["code"]?.ToString() ?? "unknown")
                     + "). Anything the engine cannot serve follows Engine.Fallback="
                     + (engine["fallback"]?.ToString() ?? "sdk")
@@ -1430,10 +1429,9 @@ namespace GxMcp.Gateway
         }
 
         /// <summary>
-        /// Engine backend status for genexus_doctor (docs/engine_backend.md). With
-        /// the default sdk backend this is a static, process-free block; with the
-        /// gxengine backend it probes the executable so an operator immediately
-        /// sees whether the switch found a working binary.
+        /// Engine backend status for genexus_doctor (docs/engine_backend.md).
+        /// Auto and gxengine probe the executable; an explicit sdk policy is
+        /// static and process-free. Routed operations reflect the selected policy.
         /// </summary>
         internal static JObject BuildEngineDoctorSection(Configuration? config)
         {
@@ -1447,7 +1445,9 @@ namespace GxMcp.Gateway
                     ["parity"] = EngineCapabilityRegistry.All.Count(c => c.Status == EngineCapabilityStatus.Parity),
                     ["partial"] = EngineCapabilityRegistry.All.Count(c => c.Status == EngineCapabilityStatus.Partial),
                     ["unsupported"] = EngineCapabilityRegistry.All.Count(c => c.Status == EngineCapabilityStatus.Unsupported),
-                    ["routedOperations"] = new JArray(EngineCapabilityRegistry.RoutedOperations())
+                    ["routedOperations"] = new JArray(EngineCapabilityRegistry.All
+                        .Where(c => EngineRouter.Decide(c.Id, settings).Target == EngineRouteTarget.Engine)
+                        .SelectMany(c => c.Consumers).Distinct(StringComparer.OrdinalIgnoreCase))
                 }
             };
 

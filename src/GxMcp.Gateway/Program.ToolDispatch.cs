@@ -151,6 +151,8 @@ namespace GxMcp.Gateway
             JToken? idToken,
             CancellationToken transportCancellation)
         {
+            if (transportCancellation.IsCancellationRequested)
+                throw new PreDispatchCancelledException(transportCancellation);
             string tName = tcParams["name"]?.ToString() ?? "";
             var tArgs = tcParams["arguments"] as JObject;
             string kbScope = _currentKb.Value?.NormalizedAlias ?? "";
@@ -338,6 +340,17 @@ namespace GxMcp.Gateway
             // uncached one. Each leg is still recorded in ToolLatencyStats.
             JObject? multiKbResult = await TryDispatchMultiKbDiscoveryAsync(tName, tArgs, transportCancellation);
             if (multiKbResult != null) return multiKbResult;
+
+            // gx-engine real routing (docs/engine_backend.md): with Engine.Backend=gxengine,
+            // the parity capabilities that declare product consumers serve their operations
+            // here — before the SDK index gate, which must not short-circuit a read, query or
+            // lifecycle build the engine can answer without the worker index. A call outside
+            // the admitted space (or a failed engine invocation) returns null and continues on
+            // the SDK path, or refuses under Engine.Fallback=error. Returns null when the
+            // backend is sdk or the tool is not one of the routed consumers.
+            JObject? engineRoutedResult = await TryDispatchEngineRoutedOperationAsync(
+                tName, lcAction, tArgs, _currentKb.Value?.Path, _currentKb.Value?.Alias, transportCancellation);
+            if (engineRoutedResult != null) return engineRoutedResult;
 
             // v2.6.9 perf: gateway-side fast-fail for SDK-bound tools when
             // the worker is still doing its initial BulkIndex on the STA thread.

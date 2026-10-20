@@ -42,15 +42,17 @@ namespace GxMcp.Worker
         /// the argument against a future edit "simplifying" the two groups into
         /// one, and the reason the near-miss regression test exists.
         /// </summary>
+        // Only start the compound prefix at its boundary. Repeated prefix starts and
+        // overlapping whitespace runs otherwise make large non-matching logs quadratic.
         internal const string Pattern =
-            @"(?is)(?<key>(?:[A-Za-z0-9_.\[\]-]*(?:password|passwd|pwd|token|secret|api[-_]?key|authorization|credential|connectionstring)\b|\bpass\b))\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)";
+            @"(?is)(?<key>(?:(?<![A-Za-z0-9_.\[\]-])[A-Za-z0-9_.\[\]-]*(?:password|passwd|pwd|token|secret|api[-_]?key|authorization|credential|connectionstring)\b|\bpass\b))(?:\s*[""'])?(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)";
 
         /// <summary>
         /// Replaces the value that follows any <see cref="Pattern"/> key with
         /// <c>&lt;redacted&gt;</c>, keeping the key and its separator so the shape
         /// of the message stays readable.
         ///
-        /// Returns the input unchanged when it is null, and never throws: this runs
+        /// Returns empty for null, and a safe placeholder if sanitization fails. Never throws: this runs
         /// on the logging path, where an exception here would replace the log line
         /// with the failure to log it.
         /// </summary>
@@ -61,11 +63,14 @@ namespace GxMcp.Worker
                 return System.Text.RegularExpressions.Regex.Replace(
                     value ?? string.Empty,
                     Pattern,
-                    match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+                    match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>",
+                    System.Text.RegularExpressions.RegexOptions.None,
+                    System.TimeSpan.FromSeconds(1));
             }
             catch
             {
-                return value ?? string.Empty;
+                // A sanitization failure must not expose the unredacted diagnostic.
+                return "<redacted: diagnostic sanitization failed>";
             }
         }
     }

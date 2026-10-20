@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -37,6 +38,66 @@ namespace GxMcp.Gateway.Tests
         public void Dispose()
         {
             try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { }
+        }
+
+        [Theory]
+        [InlineData("{\"content\":[{\"text\":\"{\\\"mutationOutcomeUnknown\\\":true}\"}]}", true)]
+        [InlineData("{\"content\":[{\"text\":\"{\\\"error\\\":{\\\"mutationOutcomeUnknown\\\":true}}\"}]}", true)]
+        [InlineData("{\"structuredContent\":{\"mutationOutcomeUnknown\":true}}", true)]
+        [InlineData("{\"structuredContent\":{\"error\":{\"mutationOutcomeUnknown\":true}}}", true)]
+        [InlineData("{\"structuredContent\":{\"mutationOutcomeUnknown\":false}}", false)]
+        [InlineData("{\"structuredContent\":{\"mutationOutcomeUnknown\":\"true\"}}", false)]
+        [InlineData("{\"content\":[{\"text\":\"{\\\"error\\\":{\\\"reconciliationRequired\\\":true}}\"}]}", false)]
+        [InlineData("{\"content\":[{\"text\":\"not JSON\"}]}", false)]
+        [InlineData("{\"content\":[]}", false)]
+        [InlineData("{\"content\":[123]}", false)]
+        [InlineData("{\"content\":[\"plain text\"]}", false)]
+        [InlineData("{\"content\":[{\"text\":{}}]}", false)]
+        [InlineData("{\"content\":[null]}", false)]
+        [InlineData("{}", false)]
+        public async Task UnknownMutationMarkerControlsDurableFence(string json, bool requiresReconciliation)
+        {
+            var result = JObject.Parse(json);
+            result["isError"] = true;
+            var cache = new IdempotencyCache(1, 8, TimeSpan.FromSeconds(1), _journalPath);
+            var actual = await cache.GetOrCompute(KbPath, Tool, Key, PayloadHash,
+                () => throw new ErrorNotCacheable(result));
+
+            Assert.Same(result, actual);
+            Assert.Equal(requiresReconciliation ? "started" : "not_found",
+                cache.InspectOperation(KbPath, Tool, Key)["status"]?.ToString());
+        }
+
+        [Fact]
+        public async Task RecoveryRefusalBeforeDispatchLeavesKeyReusableAfterRecoveryRead()
+        {
+            var registry = new MutationRecoveryRegistry();
+            registry.RequireRead(KbPath, "SyntheticProcedure", "Source", "previous-write");
+            var cache = new IdempotencyCache(1, 8, TimeSpan.FromSeconds(1), _journalPath);
+            int executions = 0;
+            Task<JObject> Dispatch()
+            {
+                if (registry.TryGet(KbPath, "SyntheticProcedure", out var requirement))
+                {
+                    var refusal = MutationRecoveryRegistry.BuildBlockedEnvelope(requirement);
+                    throw new ErrorNotCacheable(new JObject
+                    {
+                        ["isError"] = true,
+                        ["content"] = new JArray(new JObject { ["type"] = "text", ["text"] = refusal.ToString() })
+                    });
+                }
+                executions++;
+                return Task.FromResult(new JObject { ["isError"] = false });
+            }
+
+            var refused = await cache.GetOrCompute(KbPath, Tool, Key, PayloadHash, Dispatch);
+            Assert.True(refused["isError"]!.Value<bool>());
+            Assert.Equal(0, executions);
+            Assert.Equal("not_found", cache.InspectOperation(KbPath, Tool, Key)["status"]?.ToString());
+            Assert.True(registry.ConfirmRead(KbPath, "SyntheticProcedure", "Source"));
+            var retried = await cache.GetOrCompute(KbPath, Tool, Key, PayloadHash, Dispatch);
+            Assert.False(retried["isError"]!.Value<bool>());
+            Assert.Equal(1, executions);
         }
 
         [Fact]
@@ -134,6 +195,34 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public async Task APreDispatchCancellationLeavesTheKeyReusable()
+        {
+            var cache = new IdempotencyCache(1, 8, TimeSpan.FromSeconds(1), _journalPath);
+            const string buildTool = "genexus_lifecycle";
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+
+            // The engine route raises this before its process starts, so nothing was
+            // written. The key must not stay 'started': a retry would be refused as
+            // operation_unknown for the life of the process.
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cache.GetOrCompute(
+                KbPath, buildTool, Key, PayloadHash,
+                () => throw new PreDispatchCancelledException(cancelled.Token)));
+
+            Assert.Equal("not_found", cache.InspectOperation(KbPath, buildTool, Key)["status"]?.ToString());
+            AssertNoStartedRecord(_journalPath);
+
+            int executions = 0;
+            var result = await cache.GetOrCompute(KbPath, buildTool, Key, PayloadHash, () =>
+            {
+                executions++;
+                return Task.FromResult(new JObject { ["isError"] = false });
+            });
+            Assert.False((bool?)result["isError"]);
+            Assert.Equal(1, executions);
+        }
+
+        [Fact]
         public async Task ErrorNotCacheableStillReturnsItsResult()
         {
             var cache = new IdempotencyCache(1, 8, TimeSpan.FromSeconds(1), _journalPath);
@@ -163,6 +252,7 @@ namespace GxMcp.Gateway.Tests
             Assert.True(PreDispatchFailureClassifier.Is(new UsageException("usage_error", "rejected")));
             Assert.True(PreDispatchFailureClassifier.Is(new KbResolutionException("KB_AMBIGUOUS", "pick one")));
             Assert.True(PreDispatchFailureClassifier.Is(PoolFull()));
+            Assert.True(PreDispatchFailureClassifier.Is(new PreDispatchCancelledException(CancellationToken.None)));
 
             Assert.False(PreDispatchFailureClassifier.Is(null));
             Assert.False(PreDispatchFailureClassifier.Is(new Exception("unknown")));
