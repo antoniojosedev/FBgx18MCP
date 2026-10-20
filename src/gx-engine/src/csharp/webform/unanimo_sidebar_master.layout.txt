@@ -1,0 +1,47 @@
+<GxMultiForm rootId="2" version="html:15.0.0;layout:17.11.0">
+  <Form type="layout">
+    <detail PanelType="Web">
+      <layout>
+        <table controlName="MainTable" class="class:MainContainer" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[],[{&quot;width&quot;:17},{&quot;width&quot;:100}]]}]">
+          <row>
+            <cell cellClass="">
+              <table controlName="Header" class="class:HeaderContainer ContainerFluid" tableType="Flex" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:17},{&quot;width&quot;:67},{&quot;width&quot;:17}]]}]" alignItems="Center">
+                <row>
+                  <cell flexGrow="0" alignSelf="Center" flexHeight="24">
+                    <image controlName="Image2" image="guid:ef73725b-c186-4f57-94bc-867e0a183c3e" class="class:sidebar__toggle-ico" />
+                  </cell>
+                  <cell hAlign="Left" flexGrow="0" minHeight="20">
+                    <image controlName="Image1" image="guid:194a18de-81a7-4ab6-8eb3-5191aa65f696" class="class:header__logo" />
+                  </cell>
+                  <cell hAlign="Center" minHeight="20">
+                    <textblock controlName="ApplicationHeader" caption="Application Name" class="class:header__title" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row>
+            <cell>
+              <table controlName="TableSidebarContainer" tableType="Responsive">
+                <row>
+                  <cell>
+                    <ucw gxControlType="-1054227045" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlName&lt;/Name&gt;&lt;Value&gt;SidebarMenu&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;SidebarItems&lt;/Name&gt;&lt;Value&gt;var:5&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+            <cell>
+              <table controlName="Content" class="class:expandible-container" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]}]">
+                <row>
+                  <cell>
+                    <contentholder controlName="ContentHolder" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+        </table>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

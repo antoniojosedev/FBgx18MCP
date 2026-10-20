@@ -1,0 +1,78 @@
+@@@ CONDITIONS
+
+@@@ RULES
+parm(in:@@name@@Id);
+
+@@@ EVENTS
+Event Start
+	If not IsAuthorized(&PgmName)
+		NotAuthorized(&PgmName)
+	Endif
+	Do 'PrepareTransaction'
+EndEvent
+
+Event Load
+EndEvent
+
+Event 'DoUpdate'
+	@@name@@(TrnMode.Update, @@name@@Id)
+EndEvent
+
+Event 'DoDelete'
+	@@name@@(TrnMode.Delete, @@name@@Id)
+EndEvent
+
+Sub 'PrepareTransaction'
+	&TrnContext = new()
+	&TrnContext.CallerObject = &Pgmname
+	&TrnContext.CallerOnDelete = False
+	&TrnContext.CallerURL = &HTTPRequest.ScriptName + !"?" + &HTTPRequest.QueryString
+	&TrnContext.TransactionName = !"@@name@@"
+
+	&TrnContextAtt = new()
+	&TrnContextAtt.AttributeName = !"@@name@@Id"
+	&TrnContextAtt.AttributeValue = &@@name@@Id.ToString()
+	&TrnContext.Attributes.Add(&TrnContextAtt)
+
+	&Session.Set(!"TrnContext", &TrnContext.ToXml())
+EndSub
+
+@@@ VARIABLES
+<Variables><StandardVariable Id="1" Name="Today"><Properties><Property><Name>Name</Name><Value>Today</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;6&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="2" Name="Time"><Properties><Property><Name>Name</Name><Value>Time</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>8</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="3" Name="Pgmname"><Properties><Property><Name>Name</Name><Value>Pgmname</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>128</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="4" Name="Pgmdesc"><Properties><Property><Name>Name</Name><Value>Pgmdesc</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>256</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><Variable Id="5" Name="IsAuthorized"><Properties><Property><Name>Name</Name><Value>IsAuthorized</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;15&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="6" Name="@@name@@Id"><Properties><Property><Name>Name</Name><Value>@@name@@Id</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>idBasedOn</Name><Value>attribute:@@k_id@@</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="7" Name="TrnContext"><Properties><Property><Name>Name</Name><Value>TrnContext</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;254&lt;/DataType&gt;&lt;Guid&gt;&amp;lt;StructureTypeReference&amp;gt;&amp;lt;Type&amp;gt;guid:a660ec17-05af-4659-8c50-50db237c3b29&amp;lt;/Id&amp;gt;&amp;lt;/StructureTypeReference&amp;gt;&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="8" Name="TrnContextAtt"><Properties><Property><Name>Name</Name><Value>TrnContextAtt</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;254&lt;/DataType&gt;&lt;Guid&gt;&amp;lt;StructureTypeReference&amp;gt;&amp;lt;Type&amp;gt;guid:ffe53be2-8506-4270-86c7-2452745210ef&amp;lt;/Id&amp;gt;&amp;lt;/StructureTypeReference&amp;gt;&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="9" Name="Session"><Properties><Property><Name>Name</Name><Value>Session</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;255&lt;/DataType&gt;&lt;Guid&gt;31&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="10" Name="HTTPRequest"><Properties><Property><Name>Name</Name><Value>HTTPRequest</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;255&lt;/DataType&gt;&lt;Guid&gt;21&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable></Variables>
+@@@ WEBFORM
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form type="layout">
+    <detail PanelType="Web">
+      <layout>
+        <table controlName="MainTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+          <row>
+            <cell cellClass="class:ViewActionsCell" hAlign="Center">
+              <actiongroup controlName="Actions" />
+            </cell>
+          </row>
+          <row>
+            <cell>
+              <table controlName="AttributesTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]}]">
+                <row>
+                  <cell cellClass="class:FormCell">
+                    <data attribute="att:@@k_id@@" labelCaption="Id" class="class:ReadonlyAttribute" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlType&lt;/Name&gt;&lt;Value&gt;Edit&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;InputType&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;DataSourceFrom&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+        </table>
+        <actionGroups>
+          <actionGroup controlName="Actions" class="class:WWViewActions">
+            <item>
+              <action controlName="BtnUpdate" onClickEvent="'DoUpdate'" caption="GXM_update" class="class:BtnEnter" />
+            </item>
+            <item>
+              <action controlName="BtnDelete" onClickEvent="'DoDelete'" caption="GX_BtnDelete" class="class:BtnDelete" />
+            </item>
+          </actionGroup>
+        </actionGroups>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

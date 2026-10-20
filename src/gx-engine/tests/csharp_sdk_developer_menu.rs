@@ -1,9 +1,9 @@
 //! Developer Menu files of a GeneXus 18 .NET web model.
 //!
 //! `DeveloperMenu.xml` is checked byte for byte against the SDK's output for KBTeste. The static
-//! files are copied from the install's `gxnetcore/` folder, and the copies are checked against the
-//! same install files (MD5 recorded in the fixture folder). The escaping test uses a synthetic
-//! description and is labelled as such.
+//! files are copied verbatim from the install's `gxnetcore/` folder; the copy test runs against
+//! synthetic stand-ins under `fixtures/sdk_form/developer_menu` (the GeneXus install files are not
+//! redistributed here). The escaping test uses a synthetic description and is labelled as such.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -84,7 +84,7 @@ fn developer_menu_xml_matches_the_sdk_output_for_kbteste() {
 }
 
 #[test]
-fn static_copies_match_the_install_files_for_kbteste() {
+fn static_copies_are_byte_copies_of_the_install_folder_synthetic() {
     let root = fixtures().join("developer_menu");
     let copies = developer_menu_static_copies(&root).expect("copies");
     let paths: Vec<&str> = copies.iter().map(|(p, _)| p.as_str()).collect();
