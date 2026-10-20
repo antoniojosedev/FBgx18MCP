@@ -388,6 +388,22 @@ namespace GxMcp.Worker.Tests
             Assert.True(runAt > applyAt, "PATH must be extended before the orchestrator starts");
         }
 
+        [Fact]
+        public void TheExternalMsBuildFallbackPrependsThePathBeforeSpawningMsBuild()
+        {
+            string source = Source("src", "GxMcp.Worker", "Services", "BuildService.cs");
+            string body = GxMcp.TestSupport.SourceAssert.MethodBody(source,
+                "internal void RunExternalMsBuildPhase(BuildTaskStatus status, string action, List<string> targets, string kbPath, int timeoutSec, out string tempFile, out int reapPid, out DateTime reapStart)");
+
+            const string apply = "GxBuildPathEnvironment.EnsureOnProcessPath()";
+            int applyAt = body.IndexOf(apply, StringComparison.Ordinal);
+            int startAt = body.IndexOf("process.Start()", StringComparison.Ordinal);
+
+            Assert.True(applyAt >= 0, "RunExternalMsBuildPhase must call " + apply);
+            Assert.Equal(1, GxMcp.TestSupport.SourceAssert.Count(body, apply));
+            Assert.True(startAt > applyAt, "PATH must be extended before MSBuild.exe is spawned (child inherits it)");
+        }
+
         private static int CountEntries(string path, string entry) =>
             path.Split(';').Count(e => string.Equals(e.Trim().Trim('"').Replace('/', '\\').TrimEnd('\\'), entry, StringComparison.OrdinalIgnoreCase));
     }
