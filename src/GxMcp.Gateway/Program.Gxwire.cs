@@ -215,6 +215,9 @@ namespace GxMcp.Gateway
                             envelope["evidence"] = new JArray(nativeKb);
                             envelope["textTreeExport"] = BuildGxwireTextTreeExportPointer();
                             envelope["sdkAlternative"] = new JArray("genexus_read", "genexus_query", "genexus_search_source", "genexus_analyze", "genexus_inspect");
+                            // pack_task needs no export once the KB is open: this refusal is only reached
+                            // when it is not (or dir names another native KB), so say how to reach the SDK path.
+                            GxwireNativePackTask.WithPackTaskHint(envelope, tArgs);
                         });
                 }
             }

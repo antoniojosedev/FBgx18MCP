@@ -130,6 +130,8 @@ namespace GxMcp.Worker.Services
         private readonly SecurityObjectAuditService _securityObjectAuditService;
         // genexus_dfd / genexus_impact / genexus_object_context — read-only views over the table relations and the caller graph.
         private readonly GraphToolsService _graphToolsService;
+        // genexus_wire action=pack_task on a native KB — orientation bundle from the SDK-backed index (read-only).
+        private readonly WirePackTaskService _wirePackTaskService;
         // genexus_gxserver action=pipeline_* — CI pipelines over IContinuousIntegrationService.
         private readonly CiPipelineService _ciPipelineService;
         // genexus_analyze mode=table_relations — table↔transaction relations over ITablesService.
@@ -207,6 +209,7 @@ namespace GxMcp.Worker.Services
             _analyzeService = new AnalyzeService(_kbService, _objectService, _indexCacheService, _navigationService, _uiService, callerGraphService);
             _buildService.SetCallerGraphService(callerGraphService);
             _graphToolsService = new GraphToolsService(_kbService, _objectService, _indexCacheService, callerGraphService);
+            _wirePackTaskService = new WirePackTaskService(_indexCacheService, _graphToolsService, _objectService);
             _summarizeService = new SummarizeService(_kbService, _objectService);
             _injectionService = new InjectionService(_kbService, _objectService, _analyzeService);
             _patternAnalysisService = new PatternAnalysisService(_objectService);
@@ -1001,6 +1004,7 @@ namespace GxMcp.Worker.Services
                 ["dfd"] = (request, method, action, target, payload, args) => _graphToolsService.Dfd(args ?? new JObject()),
                 ["impact"] = (request, method, action, target, payload, args) => _graphToolsService.Impact(args ?? new JObject()),
                 ["objectcontext"] = (request, method, action, target, payload, args) => _graphToolsService.ObjectContext(args ?? new JObject()),
+                ["wire"] = (request, method, action, target, payload, args) => _wirePackTaskService.Run(args ?? new JObject()),
                 ["themeclasses"] = Handle_ThemeClasses,
                 ["usercontrols"] = Handle_UserControls,
                 ["wwpaction"] = Handle_WwpAction,

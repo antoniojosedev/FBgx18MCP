@@ -21,9 +21,10 @@ namespace GxMcp.Gateway
                 "# genexus_wire\n\n" +
                 "High-performance native Rust architectural discovery, call graph, and impact engine (sub-10ms).\n" +
                 "Call this FIRST before reading large objects or modifying the KB.\n\n" +
-                "## Requires a text source tree, not a native KB\n" +
-                "genexus_wire reads GeneXus sources **from files**. A native GeneXus 18 Knowledge Base keeps its object sources in the KB database, not on disk, so pointing `kb` at one is refused with `GXWIRE_REQUIRES_TEXT_SOURCE_TREE` before any process starts: indexing that folder would walk gigabytes of generated output (environment, build, obj, UserControls, Locks, OutputLogs...) and report it as a graph.\n" +
+                "## Requires a text source tree, not a native KB (except pack_task)\n" +
+                "genexus_wire reads GeneXus sources **from files**. A native GeneXus 18 Knowledge Base keeps its object sources in the KB database, not on disk, so every action except `pack_task` refuses it with `GXWIRE_REQUIRES_TEXT_SOURCE_TREE` before any process starts: indexing that folder would walk gigabytes of generated output (environment, build, obj, UserControls, Locks, OutputLogs...) and report it as a graph.\n" +
                 "Export the text tree first: `genexus_io action=export_kb_to_text format=native part=all outputPath=<folder>` writes the SDK text tree under `<folder>\\src`; then `genexus_wire action=index dir=<folder>` once and query with the same `dir`. The refusal carries this as `textTreeExport`. `action=doctor` still runs on a native root and answers `textSourceTreeRequired: true` with the same guidance.\n" +
+                "`pack_task` works on the native KB the session has open, without any export: the Worker resolves the objects through the SDK-backed index and returns them with their direct callers and callees. It is read-only and runs no Specify, Generate, Build, Rebuild, reorganization or execution (see below).\n" +
                 "To work on a native KB itself, use the SDK-backed tools instead: `genexus_read`, `genexus_query`, `genexus_search_source`, `genexus_analyze`, `genexus_inspect`.\n" +
                 "genexus_wire writes nothing into the directory it analyses: the index lives under `%LOCALAPPDATA%\\GxMcp\\Cache\\gxwire`.\n\n" +
                 "## Index first, then query\n" +
@@ -38,8 +39,12 @@ namespace GxMcp.Gateway
                 "- `GxwireExecutionFailed`: non-zero exit, with `exitCode`, the engine's own code when it printed one (`engineCode`, e.g. SymbolNotFound) and a bounded stderr tail.\n" +
                 "- `GxwireOutputUnparsable`: exit 0 but empty output, or non-JSON output for `format=json`.\n" +
                 "- `ProcessStartFailed` / `GxwireException`: the process could not be started, or the gateway failed before gxwire answered; `exceptionType` and a bounded message are in the context.\n\n" +
+                "## pack_task on a native KB\n" +
+                "Pass `targets` (object names, `Type:Name` or `Module.Name` to disambiguate) for the exact objects to pack; whole identifiers in `task` that match an indexed object are resolved as well and marked `via: task-text`. Plain words in `task` are never looked up, and a bare word that only matches an attribute, table, folder or module is skipped (listed under `skipped`) unless it is passed in `targets`.\n" +
+                "The result carries: `anchors` (the resolved objects: type, path, module, guid, parm rule, direct `callers`/`callees` with `_total`/`_truncated`/`_read` flags and per-side `trust`, `parts_listed`), `links` (calls among the requested objects), `unresolved` (name, reason and near matches), `ambiguous` (every candidate, none picked), `skipped`, `omittedTargets` (objects left out by `token_budget`, the time budget or the anchor cap, by name), `consulted` (sources read; `partBodiesRead` is always empty), and `limitations` (partial index coverage, names taken from free text, parts that could not be listed).\n" +
+                "`token_budget` (default 1200) bounds the anchors; `full=true` lifts it (at most 25 anchors). No part body is read: use `genexus_read name=<object> part=<part>` for the code. If every explicit target fails to resolve the call returns `TargetsNotResolved` with the same details; with the index still building it returns `IndexNotReady`.\n\n" +
                 "## Actions\n" +
-                "- `pack_task` (default): Complete orientation bundle for a task description (ranked symbols, callers, signatures, variables) bounded under token_budget (default 1200).\n" +
+                "- `pack_task` (default): Complete orientation bundle for a task description (ranked symbols, callers, signatures, variables) bounded under token_budget (default 1200). On a native KB it is built through the SDK from `targets`/names in `task` (see above).\n" +
                 "- `status`: Live KB graph status, node/edge counts, and top PageRank-central architectural hubs (content first).\n" +
                 "- `for`: Intent-based ranking of GeneXus symbols for a natural language task with domain synonym expansion (e.g. fat->faturamento, ped->pedido, cli->cliente).\n" +
                 "- `callers`: 1-hop and transitive callers of a symbol.\n" +
@@ -59,7 +64,7 @@ namespace GxMcp.Gateway
                 "## Performance\n" +
                 "- Zero-allocation lexing and CSR compressed graph traversal in sub-10ms.\n" +
                 "- Incremental cache freshness: automatically checks file mtimes and selectively rebuilds on changes.\n" +
-                "- Independent of the GeneXus STA thread / worker pool.\n",
+                "- Independent of the GeneXus STA thread / worker pool, except `pack_task` on a native KB, which runs in that KB's Worker.\n",
 
             ["genexus_compare"] =
                 "# genexus_compare\n\n" +

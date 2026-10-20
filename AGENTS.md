@@ -233,13 +233,17 @@ validated where:
   present, so object sources live in the Knowledge Base database and are read
   through the SDK. `genexus_read`, `genexus_edit`, `genexus_analyze` and the
   `mode=ops` authoring paths work against them normally.
-- **`genexus_wire` cannot analyse them.** GxWire indexes files on disk, so on a
-  native KB it walks generated output and infers a graph from whatever text is
-  there. Validating a gxwire change needs a *text tree export* of a KB (a
-  directory of `.txt`/`.trn`/`.wp`/`.xml` object files), not a native KB
-  directory. This is the defect filed as
+- **`genexus_wire` cannot analyse them, except `pack_task`.** GxWire indexes
+  files on disk, so on a native KB it walks generated output and infers a graph
+  from whatever text is there. Validating a gxwire change needs a *text tree
+  export* of a KB (a directory of `.txt`/`.trn`/`.wp`/`.xml` object files), not a
+  native KB directory. This is the defect filed as
   [#499](https://github.com/lennix1337/Genexus18MCP/issues/499), and it is why
-  gxwire parser work cannot be confirmed on these paths alone.
+  gxwire parser work cannot be confirmed on these paths alone. `pack_task` on
+  the open native KB does not use gxwire at all: the Gateway falls through to
+  the Worker (`WirePackTaskService`), which resolves `targets[]` and the
+  identifiers named in `task` through the SDK-backed index, so it *can* be
+  validated live on these KBs, read-only.
 
 A live KB opens on demand:
 

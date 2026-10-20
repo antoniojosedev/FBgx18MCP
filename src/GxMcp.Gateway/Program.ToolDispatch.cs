@@ -460,7 +460,11 @@ namespace GxMcp.Gateway
             }
 
             // Gateway-served tools (factored method below; null = fall through).
-            JObject? gatewayResult = await TryDispatchGatewayToolAsync(tName, tArgs, sessionId, sessionContextEnabled);
+            // genexus_wire action=pack_task on the open native KB is the one Gateway-owned call
+            // the Worker answers (SDK-backed index, no text tree): fall through to the worker command below.
+            JObject? gatewayResult = GxwireNativePackTask.Applies(tName, tArgs, _currentKb.Value?.Path)
+                ? null
+                : await TryDispatchGatewayToolAsync(tName, tArgs, sessionId, sessionContextEnabled);
             if (gatewayResult != null) return gatewayResult;
 
             // Async lifecycle build (factored TryDispatchAsyncLifecycleBuildAsync below).

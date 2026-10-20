@@ -5004,6 +5004,13 @@
             "description": "Symbol name (e.g. 'CustomerProc' or…",
             "type": "string"
           },
+          "targets": {
+            "description": "Native KB pack_task: object names…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "task": {
             "description": "Intent / task description in natural…",
             "type": "string"
