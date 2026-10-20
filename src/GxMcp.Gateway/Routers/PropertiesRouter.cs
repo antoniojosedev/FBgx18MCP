@@ -31,6 +31,9 @@ namespace GxMcp.Gateway.Routers
                     propertyName = args?["propertyName"]?.ToString(),
                     value = args?["value"]?.ToString(),
                     properties = args?["properties"] as JObject,
+                    // The ordered parameter list of a Dynamic Combo/List Box control
+                    // (propertyName=DataProviderParameters); null for every other set.
+                    expressions = args?["expressions"] as JArray,
                     control = args?["control"]?.ToString(),
                     type = args?["type"]?.ToString(),
                     expectedVersion = args?["expectedVersion"]?.ToString() ?? args?["baseVersion"]?.ToString(),

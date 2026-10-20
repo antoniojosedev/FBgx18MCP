@@ -276,7 +276,9 @@ namespace GxMcp.Gateway.Tests
         // Issue #595 adds genexus_wwp add_table/move_control inputs: all 102000 -> 103000,
         // authoring 70500 -> 71500, ui 50000 -> 50500 (ui measured 50001).
         // Measured together (#586/#588/#595): all 102473, authoring 71374 bytes.
-        [InlineData("all", 103000)]
+        // all 103000 -> 103100 for the `expressions` array on genexus_properties (typed parameter list
+        // of a Dynamic Combo Box). Measured 103015 bytes; the global token budget does not move.
+        [InlineData("all", 103100)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
         [InlineData("authoring", 72000)]
