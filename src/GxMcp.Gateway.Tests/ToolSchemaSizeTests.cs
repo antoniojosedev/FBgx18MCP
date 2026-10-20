@@ -239,10 +239,12 @@ namespace GxMcp.Gateway.Tests
             // Issues #541, #551, #552, #559: 38500 -> 39000 for genexus_workwith filter authoring,
             // genexus_create attribute typing (dataType/length/decimals/basedOn), and genexus_wwp
             // tabs/userAction layout parameter enhancements. Measured ~38783 tokens; ~217 headroom.
-            // Issues #586/#587/#588: 39000 -> 39500 for genexus_workwith remove_filter_attribute
+            // Issues #586/#587/#588/#595: 39000 -> 40000 for genexus_workwith remove_filter_attribute
             // (enum, removeConditions, example), the filter `default` input and the resolved
-            // `domain` contract. Measured ~39082 tokens once all three landed together.
-            Assert.True(approxTokens < 39500, $"tool_definitions.json is ~{approxTokens} tokens; budget 39500.");
+            // `domain` contract, plus genexus_wwp add_table/move_control (tableName, numberOfColumns,
+            // includeInPanel, panelTitle, after, controlKind, children[].controlName). Measured
+            // ~39539 tokens once all of them landed together.
+            Assert.True(approxTokens < 40000, $"tool_definitions.json is ~{approxTokens} tokens; budget 40000.");
         }
 
         [Theory]
@@ -271,12 +273,15 @@ namespace GxMcp.Gateway.Tests
         // (measured 70527); the other profiles stayed within their budgets.
         // Issue #586 adds genexus_workwith remove_filter_attribute (enum, removeConditions,
         // example): authoring 70500 -> 71000, measured 70509 bytes.
-        [InlineData("all", 102000)]
+        // Issue #595 adds genexus_wwp add_table/move_control inputs: all 102000 -> 103000,
+        // authoring 70500 -> 71500, ui 50000 -> 50500 (ui measured 50001).
+        // Measured together (#586/#588/#595): all 102473, authoring 71374 bytes.
+        [InlineData("all", 103000)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
-        [InlineData("authoring", 71000)]
+        [InlineData("authoring", 72000)]
         [InlineData("devops", 52500)]
-        [InlineData("ui", 50000)]
+        [InlineData("ui", 50500)]
         [InlineData("db", 40000)]
         public void PublishedToolProfileStaysWithinItsByteBudget(string profile, int maxBytes)
         {

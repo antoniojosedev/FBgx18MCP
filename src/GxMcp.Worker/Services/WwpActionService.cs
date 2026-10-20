@@ -344,6 +344,8 @@ namespace GxMcp.Worker.Services
                     return RunGridAttributeOperation(target, requestedObject, instance, instancePart, xml, args);
                 if (IsTableTypeOperation(operation))
                     return RunTableTypeOperation(target, requestedObject, instance, instancePart, xml, args);
+                if (IsFormLayoutOperation(operation))
+                    return RunFormLayoutOperation(target, requestedObject, instance, instancePart, xml, operation, args);
                 if (IsTabOperation(operation))
                     return RunTabOperation(target, requestedObject, instance, instancePart, xml, operation, args);
 

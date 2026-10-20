@@ -259,6 +259,13 @@ namespace GxMcp.Worker.Services
         // otherwise the unique TableContent, otherwise the unique TableMain. Anything else is
         // refused with the paths the caller can name, never guessed.
         private static JObject ResolveTabsSynthesisContainer(XDocument document, JObject args, out XElement container)
+            => ResolveDefaultFormTable(document, args, "TabsContainerNotFound", "TabsContainerAmbiguous",
+                "The PatternInstance has no <tabs> container and", "the new <tabs>", "add_tab", out container);
+
+        // Shared by add_tab and add_table (#595): the same default-container rule, with each
+        // operation's own error codes and wording.
+        private static JObject ResolveDefaultFormTable(XDocument document, JObject args, string notFoundCode, string ambiguousCode,
+            string context, string subject, string operation, out XElement container)
         {
             container = null;
             string requested = args?["containerName"]?.ToString()?.Trim();
@@ -272,17 +279,17 @@ namespace GxMcp.Worker.Services
                 if (candidates.Count == 1) { container = candidates[0]; return null; }
                 if (candidates.Count > 1)
                 {
-                    JObject ambiguous = TabError("TabsContainerAmbiguous",
-                        "The PatternInstance has no <tabs> container and '" + name + "' matched more than one table; pass containerName with a path of named ancestors.");
+                    JObject ambiguous = TabError(ambiguousCode,
+                        context + " '" + name + "' matched more than one table; pass containerName with a path of named ancestors.");
                     ambiguous["matchingContainers"] = new JArray(candidates.Select(DescribeFormContainer));
                     return ambiguous;
                 }
             }
-            JObject notFound = TabError("TabsContainerNotFound",
+            JObject notFound = TabError(notFoundCode,
                 string.IsNullOrWhiteSpace(requested)
-                    ? "The PatternInstance has no <tabs> container and no TableContent or TableMain table to create one under; add_tab does not pick an arbitrary table."
-                    : "The PatternInstance has no <tabs> container and containerName '" + requested + "' matched no table.");
-            notFound["hint"] = "Pass containerName naming the form table (a path of named ancestors is accepted) that should hold the new <tabs>.";
+                    ? context + " no TableContent or TableMain table to create " + subject + " under; " + operation + " does not pick an arbitrary table."
+                    : context + " containerName '" + requested + "' matched no table.");
+            notFound["hint"] = "Pass containerName naming the form table (a path of named ancestors is accepted) that should hold " + subject + ".";
             notFound["availablePaths"] = new JArray(GetFormActionContainers(document).Where(e => Is(e, "table"))
                 .Select(ContainerPath).Where(p => p.Length > 0).Distinct());
             return notFound;
@@ -313,7 +320,10 @@ namespace GxMcp.Worker.Services
         // (in TableAttributes). It is moved, element and XML attributes intact, into the
         // tab's table; adding a second <attribute> would show the field twice. The new tab is
         // still detached here, so the scope search cannot see the children being built.
-        private static JObject MoveFormAttributesIntoTab(XElement tab, XElement scope, JArray moved)
+        // add_table (#595) also asks for the source tables (so the verification can find them
+        // again by position) and for each source's childrenOrderedList to drop the entry.
+        private static JObject MoveFormAttributesIntoTab(XElement tab, XElement scope, JArray moved,
+            List<XElement> sourceParents = null, bool maintainOrderedLists = false)
         {
             var requested = new List<string>();
             var moves = new List<KeyValuePair<XElement, XElement>>();
@@ -337,12 +347,23 @@ namespace GxMcp.Worker.Services
             foreach (var move in moves)
             {
                 XElement placeholder = move.Key, source = move.Value;
-                string from = ContainerPath(source.Parent);
+                XElement sourceParent = source.Parent;
+                string from = ContainerPath(sourceParent);
+                PatternChildOrderEdit.Change ordering = null;
+                if (maintainOrderedLists && !PatternChildOrderEdit.TryRemove(sourceParent, source, out ordering, out string reason))
+                    return OrderedContainerUnsupported(from, reason);
                 source.Remove();
                 foreach (XAttribute overridden in placeholder.Attributes().Where(a => !a.Name.LocalName.Equals("attribute", StringComparison.OrdinalIgnoreCase)))
                     source.SetAttributeValue(overridden.Name, overridden.Value);
                 placeholder.ReplaceWith(source);
-                moved.Add(new JObject { ["attribute"] = Attr(source, "attribute"), ["from"] = from });
+                var entry = new JObject { ["attribute"] = Attr(source, "attribute"), ["from"] = from };
+                if (maintainOrderedLists)
+                {
+                    entry["childrenOrderedList"] = OrderingJson(ordering);
+                    entry["orderingIdentifier"] = PatternChildOrderReconciler.GetIdentifier(source, sourceParent);
+                }
+                sourceParents?.Add(sourceParent);
+                moved.Add(entry);
             }
             return null;
         }
@@ -433,8 +454,23 @@ namespace GxMcp.Worker.Services
                 element = new XElement(ns + "attribute", new XAttribute("attribute", attName));
                 SetPair(element, "description", control["description"]);
             }
-            else throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table|attribute.");
+            else if (type.Equals("textBlock", StringComparison.OrdinalIgnoreCase))
+            {
+                // #595: a caption on the form, addressed by controlName as WorkWithPlus writes it.
+                string controlName = TextBlockControlName(control);
+                element = new XElement(ns + "textBlock", new XAttribute("controlName", controlName),
+                    new XAttribute("caption", control["caption"]?.ToString() ?? controlName));
+                SetPair(element, "themeClass", control["themeClass"]);
+            }
+            else throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table|attribute|textBlock.");
             return element;
+        }
+
+        private static string TextBlockControlName(JObject control)
+        {
+            string controlName = control["controlName"]?.ToString() ?? control["name"]?.ToString();
+            if (string.IsNullOrWhiteSpace(controlName)) throw new WwpTabException("InvalidWwpChild", "textBlock requires controlName.");
+            return controlName.Trim();
         }
 
         private static JObject ProjectTabs(XDocument document)
@@ -530,6 +566,12 @@ namespace GxMcp.Worker.Services
         }
 
         private static JObject ResolveNativeTabsSynthesisContainer(object root, JObject args, out object container)
+            => ResolveDefaultNativeFormTable(root, args, "TabsContainerNotFound", "TabsContainerAmbiguous",
+                "The native PatternInstance has no tabs container and", "the new tabs", "add_tab", out container);
+
+        // Native twin of ResolveDefaultFormTable.
+        private static JObject ResolveDefaultNativeFormTable(object root, JObject args, string notFoundCode, string ambiguousCode,
+            string context, string subject, string operation, out object container)
         {
             container = null;
             string requested = args?["containerName"]?.ToString()?.Trim();
@@ -538,8 +580,8 @@ namespace GxMcp.Worker.Services
                 JObject error = ResolveNativeContainer(root, requested, out container);
                 if (error == null && IsNativeTable(container)) return null;
                 container = null;
-                if (error == null) return TabError("TabsContainerNotFound", "containerName '" + requested + "' is not a native table.");
-                error["code"] = error["code"]?.ToString() == "FormActionContainerAmbiguous" ? "TabsContainerAmbiguous" : "TabsContainerNotFound";
+                if (error == null) return TabError(notFoundCode, "containerName '" + requested + "' is not a native table.");
+                error["code"] = error["code"]?.ToString() == "FormActionContainerAmbiguous" ? ambiguousCode : notFoundCode;
                 return error;
             }
             foreach (string name in TabsSynthesisContainers)
@@ -548,12 +590,12 @@ namespace GxMcp.Worker.Services
                     string.Equals(NativeAttribute(e, "name"), name, StringComparison.OrdinalIgnoreCase) && IsNativeTable(e)).ToList();
                 if (candidates.Count == 1) { container = candidates[0]; return null; }
                 if (candidates.Count > 1)
-                    return TabError("TabsContainerAmbiguous",
-                        "The native PatternInstance has no tabs container and '" + name + "' matched more than one table; pass containerName with a path of named ancestors.");
+                    return TabError(ambiguousCode,
+                        context + " '" + name + "' matched more than one table; pass containerName with a path of named ancestors.");
             }
-            JObject notFound = TabError("TabsContainerNotFound",
-                "The native PatternInstance has no tabs container and no TableContent or TableMain table to create one under; add_tab does not pick an arbitrary table.");
-            notFound["hint"] = "Pass containerName naming the form table (a path of named ancestors is accepted) that should hold the new tabs.";
+            JObject notFound = TabError(notFoundCode,
+                context + " no TableContent or TableMain table to create " + subject + " under; " + operation + " does not pick an arbitrary table.");
+            notFound["hint"] = "Pass containerName naming the form table (a path of named ancestors is accepted) that should hold " + subject + ".";
             return notFound;
         }
 
@@ -623,8 +665,8 @@ namespace GxMcp.Worker.Services
         private static void AttachNativeControl(object parent, JObject control, object scope, List<string> requestedAttributes)
         {
             string type = control?["type"]?.ToString();
-            if (type != "variable" && type != "userAction" && type != "table" && type != "attribute")
-                throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table|attribute.");
+            if (type != "variable" && type != "userAction" && type != "table" && type != "attribute" && type != "textBlock")
+                throw new WwpTabException("InvalidWwpChildType", "Unsupported child type '" + type + "'. Expected variable|userAction|table|attribute|textBlock.");
             if (type == "attribute")
             {
                 string attName = control["attribute"]?.ToString() ?? control["name"]?.ToString();
@@ -659,6 +701,13 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrWhiteSpace(attName)) throw new WwpTabException("InvalidWwpChild", "Attribute child requires attribute or name.");
                 SetNativeAttribute(child, "attribute", attName);
                 SetNativePair(child, "description", control["description"]);
+            }
+            else if (type == "textBlock")
+            {
+                string controlName = TextBlockControlName(control);
+                SetNativeAttribute(child, "controlName", controlName);
+                SetNativeAttribute(child, "caption", control["caption"]?.ToString() ?? controlName);
+                SetNativePair(child, "themeClass", control["themeClass"]);
             }
             else
             {
