@@ -43,7 +43,7 @@ try {
 } catch { }
 
 $artifactFingerprint = if ($DryRun) { $null } else {
-    Get-GxMcpReleaseArtifactFingerprint -RepositoryRoot $root -Version $Version -AllowLegacy:($Version -notmatch '^3\.')
+    Get-GxMcpReleaseArtifactFingerprint -RepositoryRoot $root -Version $Version -AllowLegacy:(Test-GxMcpReleaseLegacyVersion $Version)
 }
 $preflightInputs = Resolve-GxMcpReleasePreflightInputs `
     -Root $root `

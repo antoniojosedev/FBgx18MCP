@@ -78,8 +78,13 @@ jobs:
             echo "::error::Release tag $TAG does not match package.json version $EXPECTED."
             exit 1
           fi
+          # Releases before 3.0.0 predate the checksum, VSIX and npm gitHead contract;
+          # every major from 3 up must satisfy it.
+          MODERN_RELEASE=false
+          if (( ${VERSION%%.*} >= 3 )); then MODERN_RELEASE=true; fi
           echo "name=$NAME"       >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "modern=$MODERN_RELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Verify published release
         shell: bash
@@ -93,7 +98,7 @@ jobs:
           CHECKSUM_REQUIRED=false
           VSIX_REQUIRED=false
           MODERN_ASSETS=false
-          if [[ "$VERSION" == 3.* ]]; then CHECKSUM_REQUIRED=true; VSIX_REQUIRED=true; MODERN_ASSETS=true; fi
+          if [[ "${{ steps.pkg.outputs.modern }}" == "true" ]]; then CHECKSUM_REQUIRED=true; VSIX_REQUIRED=true; MODERN_ASSETS=true; fi
           RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
           jq -e \
             --arg tag "$TAG" \
@@ -125,7 +130,7 @@ jobs:
           OBSERVED_GIT_HEAD="$(jq -r 'if type == "array" then .[0].gitHead // empty else .gitHead // empty end' <<<"$OBSERVED_JSON" 2>/dev/null || true)"
           CHECK_ELAPSED_SECONDS=$(( $(date +%s) - CHECK_STARTED_EPOCH ))
           if [[ "$OBSERVED_VERSION" == "${{ steps.pkg.outputs.version }}" ]]; then
-            if [[ "${{ steps.pkg.outputs.version }}" == 3.* && "$OBSERVED_GIT_HEAD" != "${{ steps.source.outputs.commit }}" ]]; then
+            if [[ "${{ steps.pkg.outputs.modern }}" == "true" && "$OBSERVED_GIT_HEAD" != "${{ steps.source.outputs.commit }}" ]]; then
               echo "::error::npm version $OBSERVED_VERSION is bound to '$OBSERVED_GIT_HEAD', expected '${{ steps.source.outputs.commit }}'."
               exit 1
             fi
@@ -157,18 +162,18 @@ jobs:
           fi
           VERSION="${{ steps.pkg.outputs.version }}"
           VSIX="nexus-ide-${VERSION}.vsix"
-          if [[ "$VERSION" == 3.* ]] && ! grep -qx 'publish.zip.sha256' <<<"$ASSETS"; then
+          if [[ "${{ steps.pkg.outputs.modern }}" == "true" ]] && ! grep -qx 'publish.zip.sha256' <<<"$ASSETS"; then
             echo "::error title=checksum missing::Release ${{ steps.tag.outputs.tag }} must publish publish.zip.sha256 as an asset."
             exit 1
           fi
-          if [[ "$VERSION" == 3.* ]] && ! grep -qx "$VSIX" <<<"$ASSETS"; then
+          if [[ "${{ steps.pkg.outputs.modern }}" == "true" ]] && ! grep -qx "$VSIX" <<<"$ASSETS"; then
             echo "::error title=VSIX missing::Release ${{ steps.tag.outputs.tag }} must publish $VSIX as an asset."
             exit 1
           fi
           gh release download "${{ steps.tag.outputs.tag }}" \
             --pattern publish.zip \
             --dir .
-          if [[ "$VERSION" == 3.* ]]; then
+          if [[ "${{ steps.pkg.outputs.modern }}" == "true" ]]; then
             gh release download "${{ steps.tag.outputs.tag }}" \
               --pattern publish.zip.sha256 \
               --dir .
@@ -238,7 +243,7 @@ jobs:
               [[ "$digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]] || { echo "::error::$name has an invalid digest."; exit 1; }
             fi
           }
-          if [[ "$VERSION" == 3.* ]]; then
+          if [[ "${{ steps.pkg.outputs.modern }}" == "true" ]]; then
             verify_asset publish.zip publish.zip true
             verify_asset publish.zip.sha256 publish.zip.sha256 true
             verify_asset "$VSIX" "$VSIX" true
@@ -342,7 +347,7 @@ jobs:
             OBSERVED_JSON="$(npm view "${TARGET_SPEC}" version gitHead --json --fetch-retries=0 --fetch-timeout=$((REQUEST_TIMEOUT_SECONDS * 1000)) 2>/dev/null || true)"
             OBSERVED_VERSION="$(jq -r 'if type == "array" then .[0].version // empty else .version // empty end' <<<"$OBSERVED_JSON" 2>/dev/null || true)"
             OBSERVED_GIT_HEAD="$(jq -r 'if type == "array" then .[0].gitHead // empty else .gitHead // empty end' <<<"$OBSERVED_JSON" 2>/dev/null || true)"
-            if [[ "$OBSERVED_VERSION" == "$VERSION" && ( "$VERSION" != 3.* || "$OBSERVED_GIT_HEAD" == "${{ steps.source.outputs.commit }}" ) ]]; then
+            if [[ "$OBSERVED_VERSION" == "$VERSION" && ( "${{ steps.pkg.outputs.modern }}" != "true" || "$OBSERVED_GIT_HEAD" == "${{ steps.source.outputs.commit }}" ) ]]; then
               AVAILABLE=true
               REGISTRY_VISIBLE_EPOCH="$(date +%s)"
               REGISTRY_VISIBLE_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

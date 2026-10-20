@@ -266,6 +266,17 @@ function Format-GxMcpReleaseProcessSmokeBindingFailure {
     return ($lines -join [Environment]::NewLine)
 }
 
+# Releases before 3.0.0 predate the checksum, VSIX and npm gitHead contract; every
+# major from 3 up must satisfy it.
+function Test-GxMcpReleaseLegacyVersion {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    if ($Version.Trim().TrimStart('v') -notmatch '^(?<major>\d+)\.') {
+        throw "Release version '$Version' is not semver."
+    }
+    return [int]$Matches.major -lt 3
+}
+
 function Get-GxMcpReleaseRequiredAssetNames {
     param(
         [Parameter(Mandatory = $true)][string]$Version,

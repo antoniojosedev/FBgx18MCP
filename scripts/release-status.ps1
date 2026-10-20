@@ -63,7 +63,7 @@ if (Test-Path -LiteralPath $publicationPath -PathType Leaf) {
     }
 }
 
-$evidenceCheck = Test-GxMcpReleasePublicationEvidence -Status $status -Publication $publication -RepositoryRoot $RepositoryRoot -AllowLegacy:(([string]$status.version) -notmatch '^3\.')
+$evidenceCheck = Test-GxMcpReleasePublicationEvidence -Status $status -Publication $publication -RepositoryRoot $RepositoryRoot -AllowLegacy:(Test-GxMcpReleaseLegacyVersion ([string]$status.version))
 $status | Add-Member -NotePropertyName publicationEvidenceValid -NotePropertyValue ([bool]$evidenceCheck.Valid) -Force
 $status | Add-Member -NotePropertyName publicationEvidenceError -NotePropertyValue (Protect-StatusMessage $evidenceCheck.Error) -Force
 if (-not $evidenceCheck.Valid -and ([string]$status.state -eq 'succeeded' -or ($publication -and [string]$publication.state -eq 'failed'))) {

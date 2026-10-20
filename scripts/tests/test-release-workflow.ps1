@@ -25,6 +25,9 @@ Assert-Workflow ($workflow -match '\.draft == false') 'the workflow must reject 
 Assert-Workflow ($workflow -match 'nexus-ide-\$\{VERSION\}\.vsix') 'the workflow must require the versioned VSIX asset.'
 Assert-Workflow (([regex]::Matches($workflow, 'OBSERVED_VERSION')).Count -ge 2) 'both npm publication probes must capture the observed version.'
 
+Assert-Workflow ($workflow -notmatch '== 3\.\*') 'strict release assets must apply to every major from 3 up, not only 3.x.'
+Assert-Workflow ($workflow -match 'MODERN_RELEASE') 'the workflow must derive strict-release policy from the numeric major.'
+
 $exactQueryCount = ([regex]::Matches($workflow, 'npm view "\$\{TARGET_SPEC\}" version')).Count
 Assert-Workflow ($exactQueryCount -ge 1) 'the verification query must use the exact package@version spec.'
 

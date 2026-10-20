@@ -89,7 +89,7 @@ $artifacts = @($artifactDefinitions | ForEach-Object {
     }
 })
 $requiredArtifactsReady = @($artifacts | Where-Object { $_.required -and -not $_.exists }).Count -eq 0
-$currentArtifactFingerprint = Get-GxMcpReleaseArtifactFingerprint -RepositoryRoot $root -Version $Version -AllowLegacy:($Version -notmatch '^3\.')
+$currentArtifactFingerprint = Get-GxMcpReleaseArtifactFingerprint -RepositoryRoot $root -Version $Version -AllowLegacy:(Test-GxMcpReleaseLegacyVersion $Version)
 $gxCatalog = $null
 try {
     . (Join-Path $root 'scripts\gx-version-catalog.ps1')
@@ -145,7 +145,7 @@ if ($Remote) {
         $release = (($releaseRaw -join [Environment]::NewLine) | ConvertFrom-Json)
         $remoteState.releaseUrl = [string]$release.url
         $remoteState.assets = @($release.assets | ForEach-Object { [string]$_.name } | Sort-Object)
-        $remoteState.assetVerification = Get-GxMcpReleaseAssetVerification -Assets @($release.assets) -RepositoryRoot $root -Version $Version -AllowLegacy:($Version -notmatch '^3\.')
+        $remoteState.assetVerification = Get-GxMcpReleaseAssetVerification -Assets @($release.assets) -RepositoryRoot $root -Version $Version -AllowLegacy:(Test-GxMcpReleaseLegacyVersion $Version)
     } catch { $remoteState.errors += Protect-DoctorMessage $_.Exception.Message }
     try {
         $runRaw = @(& gh run list --repo $Repository --workflow release.yml --limit 50 --json databaseId,status,conclusion,headSha,headBranch,event,createdAt,url 2>$null)
@@ -184,7 +184,7 @@ $remoteWorkflowValid = $Remote -and
     [string]$remoteState.workflowConclusion -ceq 'success' -and
     @($remoteState.errors).Count -eq 0
 $remoteNpmValid = $Remote -and [string]$remoteState.npmVersion -ceq $Version -and
-    ($Version -notmatch '^3\.' -or [string]$remoteState.npmGitHead -ceq [string]$remoteState.tagCommit)
+    ((Test-GxMcpReleaseLegacyVersion $Version) -or [string]$remoteState.npmGitHead -ceq [string]$remoteState.tagCommit)
 $remotePublicationValid = $Remote -and $remoteAssetValid -and $remoteTagCommitValid -and $remoteReleaseUrlValid -and $remoteWorkflowValid -and $remoteNpmValid
 $remoteState.publicationValid = $remotePublicationValid
 
@@ -203,7 +203,7 @@ $publicationState = if ($publication -and (Get-OptionalValue $publication 'state
 $publicationEvidenceValid = $false
 $publicationEvidenceError = $null
 if ($publication -and $status) {
-    $publicationCheck = Test-GxMcpReleasePublicationEvidence -Status $status -Publication $publication -RepositoryRoot $root -Repository $Repository -AllowLegacy:($Version -notmatch '^3\.')
+    $publicationCheck = Test-GxMcpReleasePublicationEvidence -Status $status -Publication $publication -RepositoryRoot $root -Repository $Repository -AllowLegacy:(Test-GxMcpReleaseLegacyVersion $Version)
     $publicationEvidenceValid = [bool]$publicationCheck.Valid
     $publicationEvidenceError = Protect-DoctorMessage $publicationCheck.Error
     if (-not $publicationEvidenceValid -and ([string](Get-OptionalValue $status 'state') -eq 'succeeded' -or [string](Get-OptionalValue $publication 'state') -eq 'failed')) {

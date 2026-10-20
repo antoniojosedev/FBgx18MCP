@@ -246,7 +246,7 @@ function Test-ReleasePublicationAlreadyVerified {
         if ($LASTEXITCODE -ne 0 -or $releaseRaw.Count -eq 0) { return $false }
         $release = (($releaseRaw -join [Environment]::NewLine) | ConvertFrom-Json)
         if ($release.tagName -cne $Tag -or $release.isDraft) { return $false }
-        $allowLegacy = $PackageVersion -notmatch '^3\.'
+        $allowLegacy = Test-GxMcpReleaseLegacyVersion $PackageVersion
         $assetState = Get-GxMcpReleaseAssetVerification -Assets @($release.assets) -RepositoryRoot $RepositoryRoot -Version $PackageVersion -AllowLegacy:$allowLegacy
         if (-not $assetState.isValid) {
             Write-Verbose "Release assets do not match the local transaction: $($assetState.error)"
@@ -800,7 +800,7 @@ if (-not (Test-StrictSemVer $Version)) {
     Fail "Version '$Version' is not strict semver (X.Y.Z[-prerelease][+build])."
 }
 $tag = "v$Version"
-$allowLegacyAssets = $Version -notmatch '^3\.'
+$allowLegacyAssets = Test-GxMcpReleaseLegacyVersion $Version
 $numericVersion = ([regex]::Match($Version, '^\d+\.\d+\.\d+')).Value
 Ok "Target version: $Version  (tag: $tag)"
 
