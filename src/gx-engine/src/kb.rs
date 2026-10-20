@@ -2,7 +2,7 @@
 //! Native KB decoding, general Rules/Events and provider fallback are absent.
 //! A standalone Parm rule can supply the portable Procedure interface.
 use crate::{
-    catalog::{Catalog, ObjectId, ObjectKind, ReferenceKind},
+    catalog::{Catalog, KbObject, ObjectId, ObjectKind, ReferenceKind},
     model::{DataType, Project},
 };
 use serde::{Deserialize, Serialize};
@@ -170,51 +170,22 @@ fn resolve_catalog_variables(
     Ok(resolved)
 }
 
-fn project_transaction_level_schemas(
-    transaction_name: &str,
-    level: &crate::transaction::TransactionLevel,
-    catalog: &Catalog,
-    record_types: &mut Vec<String>,
-) -> Result<(), String> {
-    let mut fields: BTreeMap<String, DataType> = BTreeMap::new();
-    for attr in &level.attributes {
-        let data_type = if let Some(ref dt) = attr.data_type {
-            dt.clone()
-        } else {
-            resolve_domain_or_attribute_data_type(catalog, &attr.name, &mut BTreeSet::new(), 0)
-                .map_err(|e| {
-                    format!(
-                        "cannot resolve data type for Transaction attribute '{}' in level '{}': {e}",
-                        attr.name, level.name
-                    )
-                })?
-        };
-        fields.insert(attr.name.clone(), data_type);
+/// A request that targets a web UI or not-generated object, or reaches one, is refused by name
+/// and is never reported as built. The kinds come from [`ObjectKind::not_compile_unit_reason`].
+fn refuse_unbuildable(object: &KbObject) -> Result<(), String> {
+    if let Some(reason) = &object.refusal {
+        return Err(format!(
+            "{:?} '{}' is refused by the reader ({reason}): a build or run that targets or needs it is refused",
+            object.kind, object.name
+        ));
     }
-    for child in &level.levels {
-        let child_schema_name = format!("{}_{}", transaction_name, child.name);
-        fields.insert(
-            child.name.clone(),
-            DataType::Collection {
-                schema: child_schema_name.clone(),
-            },
-        );
-        project_transaction_level_schemas(transaction_name, child, catalog, record_types)?;
+    match object.kind.not_compile_unit_reason() {
+        Some(reason) => Err(format!(
+            "{:?} '{}' is not a compile unit ({reason}): a build or run that targets or needs it is refused",
+            object.kind, object.name
+        )),
+        None => Ok(()),
     }
-    let schema_name = if level.name.eq_ignore_ascii_case(transaction_name) {
-        transaction_name.to_string()
-    } else {
-        format!("{}_{}", transaction_name, level.name)
-    };
-    record_types.push(format!(
-        "{{\"name\":{},\"fields\":{}}}",
-        serde_json::to_string(&schema_name).map_err(|e| e.to_string())?,
-        serde_json::to_string(&fields).map_err(|e| e.to_string())?
-    ));
-    if record_types.len() > 128 {
-        return Err("catalog compile exceeds 128 record schemas".into());
-    }
-    Ok(())
 }
 
 /// Converts the reachable Procedure/Calls graph and explicit Uses SDT schemas. Unsupported
@@ -227,6 +198,7 @@ pub fn project_from_catalog(
     let entry_object = catalog
         .get(entry)
         .ok_or("catalog entry identity was not found")?;
+    refuse_unbuildable(entry_object)?;
     if entry_object.kind != ObjectKind::Procedure {
         return Err("catalog compiler entry must be a Procedure".into());
     }
@@ -243,6 +215,7 @@ pub fn project_from_catalog(
             return Err("catalog compile exceeds 1024 procedures plus 128 record schemas".into());
         }
         let object = catalog.get(&id).ok_or("catalog reference was not found")?;
+        refuse_unbuildable(object)?;
         if object.kind == ObjectKind::Domain || object.kind == ObjectKind::Attribute {
             if object.source_parts.len() != 1 || object.source_parts[0].name != "TYPE" {
                 return Err(format!(
@@ -254,6 +227,7 @@ pub fn project_from_catalog(
                 let target = catalog
                     .get(&reference.target)
                     .ok_or("catalog reference was not found")?;
+                refuse_unbuildable(target)?;
                 if reference.kind != ReferenceKind::BasedOn
                     || (target.kind != ObjectKind::Domain && target.kind != ObjectKind::Attribute)
                 {
@@ -276,6 +250,7 @@ pub fn project_from_catalog(
                 let target = catalog
                     .get(&reference.target)
                     .ok_or("catalog reference was not found")?;
+                refuse_unbuildable(target)?;
                 if !matches!(
                     (&reference.kind, target.kind),
                     (ReferenceKind::Uses, ObjectKind::StructuredDataType)
@@ -331,70 +306,6 @@ pub fn project_from_catalog(
             }
             continue;
         }
-        if object.kind == ObjectKind::Transaction {
-            let structure_part = object
-                .source_parts
-                .iter()
-                .find(|p| p.name == "STRUCTURE")
-                .ok_or_else(|| {
-                    format!(
-                        "portable Transaction '{}' requires a STRUCTURE part",
-                        object.name
-                    )
-                })?;
-            let structure: crate::transaction::TransactionStructure =
-                serde_json::from_str(&structure_part.source).map_err(|e| {
-                    format!(
-                        "invalid portable Transaction STRUCTURE part on '{}': {e}",
-                        object.name
-                    )
-                })?;
-            structure.validate()?;
-
-            for part in &object.source_parts {
-                match part.name.as_str() {
-                    "STRUCTURE" => {}
-                    "RULES" | "Rules" => {
-                        crate::rules::parse_rules(&part.source)
-                            .map_err(|e| format!("Transaction '{}': {e}", object.name))?;
-                    }
-                    other => {
-                        return Err(format!(
-                            "unsupported Transaction source part '{other}' on '{}'",
-                            object.name
-                        ));
-                    }
-                }
-            }
-
-            for reference in &object.references {
-                let target = catalog
-                    .get(&reference.target)
-                    .ok_or("catalog reference was not found")?;
-                if !matches!(
-                    (&reference.kind, target.kind),
-                    (ReferenceKind::Uses, ObjectKind::Attribute)
-                        | (ReferenceKind::Uses, ObjectKind::Domain)
-                        | (ReferenceKind::Uses, ObjectKind::Transaction)
-                        | (ReferenceKind::BasedOn, ObjectKind::Attribute)
-                        | (ReferenceKind::BasedOn, ObjectKind::Domain)
-                ) {
-                    return Err(format!(
-                        "Transaction '{}' references must be Uses or BasedOn to Attributes, Domains, or Transactions",
-                        object.name
-                    ));
-                }
-                queue.push_back(reference.target.clone());
-            }
-
-            project_transaction_level_schemas(
-                &object.name,
-                &structure.root,
-                catalog,
-                &mut record_types,
-            )?;
-            continue;
-        }
         if object.kind != ObjectKind::Procedure {
             return Err(format!(
                 "catalog compiler does not support referenced kind {:?}",
@@ -408,16 +319,23 @@ pub fn project_from_catalog(
             let target = catalog
                 .get(&reference.target)
                 .ok_or("catalog reference was not found")?;
+            // A Calls edge to a Module is the procedure's folder membership, not a call: the KB stores it as a
+            // cross-reference of link type 2 to a module, and the SDK places the procedure in that module's
+            // namespace. A module is never compiled, so the edge is skipped (not queued). Every other edge
+            // keeps its check.
+            if reference.kind == ReferenceKind::Calls && target.kind == ObjectKind::Module {
+                continue;
+            }
+            refuse_unbuildable(target)?;
             if !matches!(
                 (&reference.kind, target.kind),
                 (ReferenceKind::Calls, ObjectKind::Procedure)
                     | (ReferenceKind::Uses, ObjectKind::StructuredDataType)
-                    | (ReferenceKind::Uses, ObjectKind::Transaction)
                     | (ReferenceKind::BasedOn, ObjectKind::Domain)
                     | (ReferenceKind::BasedOn, ObjectKind::Attribute)
             ) {
                 return Err(
-                    "catalog compiler requires Calls to Procedures, Uses to SDTs/Transactions, or BasedOn to Domains/Attributes"
+                    "catalog compiler requires Calls to Procedures, Uses to SDTs, or BasedOn to Domains/Attributes"
                         .into(),
                 );
             }
@@ -446,6 +364,15 @@ pub fn project_from_catalog(
                         .map_err(|e| format!("invalid portable Signature part: {e}"))?
                 }
                 "RULES" => rules = Some(part.source.as_str()),
+                // The SDK writes a CONDITIONS part for every Procedure. An empty one holds no condition, so it
+                // changes nothing the portable build compiles; a non-empty one is refused by name.
+                "CONDITIONS" if part.source.trim().is_empty() => {}
+                "CONDITIONS" => {
+                    return Err(format!(
+                        "Procedure {} has a non-empty CONDITIONS part; the portable build does not compile conditions",
+                        object.name
+                    ));
+                }
                 name => return Err(format!("unsupported catalog compiler source part {name}")),
             }
         }
@@ -544,7 +471,9 @@ fn require_explicit_schema_use(
     owner: &str,
 ) -> Result<(), String> {
     let schema = match data_type {
-        DataType::Record { schema } | DataType::Collection { schema } => schema,
+        DataType::Record { schema }
+        | DataType::Collection { schema }
+        | DataType::BaseCollection { schema, .. } => schema,
         _ => return Ok(()),
     };
     if used_schemas.contains(&schema.to_ascii_uppercase()) {

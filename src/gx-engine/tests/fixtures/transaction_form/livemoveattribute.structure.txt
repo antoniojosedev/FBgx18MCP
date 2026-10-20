@@ -1,0 +1,1 @@
+{"root":{"name":"LiveMoveAttribute","attributes":[{"name":"LiveMoveAttributeId","is_key":true,"data_type":{"kind":"numeric","precision":4,"scale":0}},{"name":"LiveMoveAttributeCode","is_key":false,"data_type":{"kind":"character","length":20}},{"name":"LiveMoveAttributeDescription","is_key":false,"data_type":{"kind":"character","length":20}}]}}

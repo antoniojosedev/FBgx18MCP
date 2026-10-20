@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile]\n  gx-engine --version\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access, full object modeling, C# (.NET) generator, and parallel Rebuild All.\n";
+const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-read <kb-path> <object> [--parts <Name,Name>]\n  gx-engine kb-query <kb-path> [--name <name>] [--type <ObjectType>] [--usedby <object>] [--limit <n>]\n  gx-engine kb-write <kb-path> <object> --part <Part> --content-file <path> [--type <ObjectType>]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile] [--object <name> [--closure]] [--catalog-cache <dir>] [--web-theme <name>] [--web-generator <banner>] [--web-master <Name=dotted.class.path>]...\n  gx-engine --version\n\nrebuild-all --object <name>: builds that one object alone and is refused by name when it references another object. With --closure, the object and every object its references reach are built, as an executable whose entry point is the object's Main (a parameterless Procedure only). A reference the native reader or emitter does not cover is refused by name, with its path.\nrebuild-all exit codes: 0 complete; 3 partial (web UI objects skipped, a code kind with no generator present, or not compiled; the report lists them); 1 failed.\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access with partial object coverage (refusals are named), C# (.NET) generator, and parallel Rebuild All.\n";
 
 fn load(path: &str) -> Result<Project, String> {
     let file = File::open(path).map_err(|e| format!("cannot open project: {e}"))?;
@@ -78,8 +78,8 @@ fn execute(
         return Ok(());
     }
     let raw_command = args[0].as_str();
-    if raw_command == "rebuild-all" {
-        return execute_rebuild_all(&args[1..], category, json_errors);
+    if matches!(raw_command, "kb-read" | "kb-query" | "kb-write") {
+        return execute_kb_ops(raw_command, &args[1..], category);
     }
     let from_xml = raw_command.starts_with("xml-");
     let (command, from_objects) = match raw_command
@@ -209,11 +209,241 @@ fn execute(
     }
 }
 
+fn connect_udm_kb(kb_path: &str) -> Result<gx_engine::udm::UdmClient, String> {
+    let path = std::path::Path::new(kb_path);
+    if !path.is_dir() {
+        return Err(format!(
+            "Knowledge Base directory '{kb_path}' does not exist"
+        ));
+    }
+    gx_engine::udm::UdmClient::connect_kb(path)
+}
+
+/// One `kb-read` / `kb-query` / `kb-write` product operation against a native
+/// Knowledge Base directory. The result is printed as one line of JSON on
+/// stdout; failures follow the CLI's diagnostic contract (text by default,
+/// JSON on stderr when `--diagnostics=json` is the first argument).
+fn execute_kb_ops(
+    command: &str,
+    args: &[String],
+    category: &mut DiagnosticCategory,
+) -> Result<(), String> {
+    *category = DiagnosticCategory::Input;
+
+    let mut positional: Vec<&str> = Vec::new();
+    let mut parts: Option<Vec<String>> = None;
+    let mut name: Option<String> = None;
+    let mut object_type: Option<String> = None;
+    let mut used_by: Option<String> = None;
+    let mut limit: usize = 0;
+    let mut part: Option<String> = None;
+    let mut content_file: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--parts" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --parts".into());
+                }
+                parts = Some(
+                    args[i]
+                        .split(',')
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                        .collect(),
+                );
+            }
+            "--name" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --name".into());
+                }
+                name = Some(args[i].clone());
+            }
+            "--type" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --type".into());
+                }
+                object_type = Some(args[i].clone());
+            }
+            "--usedby" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --usedby".into());
+                }
+                used_by = Some(args[i].clone());
+            }
+            "--limit" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --limit".into());
+                }
+                limit = args[i]
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid limit: {e}"))?;
+            }
+            "--part" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --part".into());
+                }
+                part = Some(args[i].clone());
+            }
+            "--content-file" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --content-file".into());
+                }
+                content_file = Some(args[i].clone());
+            }
+            // Accepted here as well so the flag works after the command name;
+            // main() already consumed it when it was the first argument.
+            "--diagnostics=json" => {}
+            other if other.starts_with("--") => {
+                return Err(format!("unexpected argument for {command}: {other}"));
+            }
+            other => positional.push(other),
+        }
+        i += 1;
+    }
+
+    match command {
+        "kb-read" => {
+            if positional.len() != 2 {
+                return Err("kb-read requires <kb-path> <object>".into());
+            }
+            let client = connect_udm_kb(positional[0])?;
+            let result = gx_engine::kb_ops::read_object(&client, positional[1], parts.as_deref())?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(|e| e.to_string())?
+            );
+        }
+        "kb-query" => {
+            if positional.len() != 1 {
+                return Err("kb-query requires <kb-path>".into());
+            }
+            let client = connect_udm_kb(positional[0])?;
+            let result = gx_engine::kb_ops::query_objects(
+                &client,
+                name.as_deref(),
+                object_type.as_deref(),
+                used_by.as_deref(),
+                limit,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(|e| e.to_string())?
+            );
+        }
+        "kb-write" => {
+            if positional.len() != 2 {
+                return Err("kb-write requires <kb-path> <object>".into());
+            }
+            let part = part.ok_or_else(|| "kb-write requires --part <Part>".to_string())?;
+            let content_file = content_file
+                .ok_or_else(|| "kb-write requires --content-file <path>".to_string())?;
+            let bytes = std::fs::read(&content_file)
+                .map_err(|e| format!("cannot read content file '{content_file}': {e}"))?;
+            let content = String::from_utf8(bytes)
+                .map_err(|_| format!("content file '{content_file}' is not valid UTF-8"))?;
+            let expected = match object_type.as_deref() {
+                None => None,
+                Some(value) if value.trim().is_empty() => None,
+                Some(value) => Some(
+                    gx_engine::kb_ops::kind_from_type_name(value)
+                        .ok_or_else(|| format!("unknown object type '{value}'"))?,
+                ),
+            };
+            let client = connect_udm_kb(positional[0])?;
+            let result = gx_engine::kb_ops::write_object_part(
+                &client,
+                positional[1],
+                &part,
+                &content,
+                None,
+                expected,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(|e| e.to_string())?
+            );
+        }
+        _ => unreachable!("execute_kb_ops is only called for kb-read/kb-query/kb-write"),
+    }
+
+    Ok(())
+}
+
+/// Exit code of a partial rebuild: some objects were skipped or not compiled. Distinct from
+/// success (0) and failure (1), so a partial run cannot pass as a complete one.
+const EXIT_PARTIAL: u8 = 3;
+
+/// A catalog of one object read by name from a native KB directory, for a single-object build.
+/// The object's references must all resolve inside the catalog: a reference to an object that is not
+/// read would drop a dependency silently, so such an object is refused and the full catalog is needed.
+fn load_one_object_catalog(kb: &str, name: &str) -> Result<gx_engine::catalog::Catalog, String> {
+    let path = std::path::Path::new(kb);
+    if !path.join("knowledgebase.connection").exists() {
+        return Err(format!(
+            "--object needs a native KB directory (knowledgebase.connection): {kb}"
+        ));
+    }
+    let client = std::sync::Arc::new(
+        gx_engine::udm::client::UdmClient::connect_kb(path)?.with_persistent_reads(),
+    );
+    let reader = gx_engine::udm::reader::UdmReader::new(client);
+    let object = reader
+        .read_object_by_name(name)?
+        .ok_or_else(|| format!("object '{name}' is not in the KB"))?;
+    // Only a reference to an object that emits code must be in the catalog (see `single_object_gap`).
+    if let Some(missing) = gx_engine::catalog::single_object_gap(&object) {
+        return Err(format!(
+            "object '{name}' references {missing:?} outside the single-object catalog: use the full rebuild"
+        ));
+    }
+    let mut objects = std::collections::BTreeMap::new();
+    objects.insert(object.id.clone(), object);
+    Ok(gx_engine::catalog::Catalog::from_objects_map(objects))
+}
+
+/// Reads the closure of one object: the object and every object its references reach. The planner decides
+/// what is built (see `UdmReader::read_closure_by_name`).
+fn load_closure_catalog(
+    kb: &str,
+    name: &str,
+) -> Result<(gx_engine::catalog::ObjectId, gx_engine::catalog::Catalog), String> {
+    let path = std::path::Path::new(kb);
+    if !path.join("knowledgebase.connection").exists() {
+        return Err(format!(
+            "--closure needs a native KB directory (knowledgebase.connection): {kb}"
+        ));
+    }
+    let client = std::sync::Arc::new(
+        gx_engine::udm::client::UdmClient::connect_kb(path)?.with_persistent_reads(),
+    );
+    let reader = gx_engine::udm::reader::UdmReader::new(client);
+    let (entry, objects) = reader
+        .read_closure_by_name(name)?
+        .ok_or_else(|| format!("object '{name}' is not in the KB"))?;
+    let objects = objects
+        .into_iter()
+        .map(|object| (object.id.clone(), object))
+        .collect();
+    Ok((
+        entry,
+        gx_engine::catalog::Catalog::from_objects_map(objects),
+    ))
+}
+
 fn execute_rebuild_all(
     args: &[String],
     category: &mut DiagnosticCategory,
     json_errors: bool,
-) -> Result<(), String> {
+) -> Result<gx_engine::rebuild::RebuildStatus, String> {
     *category = DiagnosticCategory::Input;
     let mut kb_path: Option<String> = None;
     let mut output_dir: Option<String> = None;
@@ -221,6 +451,12 @@ fn execute_rebuild_all(
     let mut clean = false;
     let mut concurrency = 0;
     let mut skip_compile = false;
+    let mut only_object: Option<String> = None;
+    let mut closure = false;
+    let mut web_theme: Option<String> = None;
+    let mut web_generator: Option<String> = None;
+    let mut web_masters: std::collections::BTreeMap<String, String> = Default::default();
+    let mut catalog_cache: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -231,6 +467,13 @@ fn execute_rebuild_all(
                     return Err("missing argument for --kb".into());
                 }
                 kb_path = Some(args[i].clone());
+            }
+            "--object" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --object".into());
+                }
+                only_object = Some(args[i].clone());
             }
             "--output" => {
                 i += 1;
@@ -261,6 +504,40 @@ fn execute_rebuild_all(
             "--skip-compile" => {
                 skip_compile = true;
             }
+            "--closure" => {
+                closure = true;
+            }
+            "--catalog-cache" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing argument for --catalog-cache".into());
+                }
+                catalog_cache = Some(args[i].clone());
+            }
+            "--web-theme" => {
+                i += 1;
+                web_theme = Some(
+                    args.get(i)
+                        .ok_or("missing argument for --web-theme")?
+                        .clone(),
+                );
+            }
+            "--web-generator" => {
+                i += 1;
+                web_generator = Some(
+                    args.get(i)
+                        .ok_or("missing argument for --web-generator")?
+                        .clone(),
+                );
+            }
+            "--web-master" => {
+                i += 1;
+                let value = args.get(i).ok_or("missing argument for --web-master")?;
+                let (name, class) = value.split_once('=').ok_or_else(|| {
+                    format!("--web-master expects Name=dotted.class.path, got '{value}'")
+                })?;
+                web_masters.insert(name.to_string(), class.to_string());
+            }
             other => {
                 return Err(format!("unexpected argument for rebuild-all: {other}"));
             }
@@ -271,15 +548,158 @@ fn execute_rebuild_all(
     let kb = kb_path.ok_or_else(|| "missing required --kb <path>".to_string())?;
     let out = output_dir.ok_or_else(|| "missing required --output <dir>".to_string())?;
 
-    let catalog = gx_engine::catalog::Catalog::load(&kb)?;
+    if closure && only_object.is_none() {
+        return Err("--closure needs --object: the entry object of the closure".into());
+    }
+    // The catalog load happens before the pipeline, so `total_ms` does not include it; it is reported apart.
+    let catalog_started = Instant::now();
+    let mut closure_entry: Option<gx_engine::catalog::ObjectId> = None;
+    // The build environment (runtime version, web configuration, messages, design classes, GUIDs,
+    // attributes) is read on its own SQL session while the catalog loads: neither reads the other.
+    let (catalog, (runtime_version, client_config, model_files, web_environment)) =
+        std::thread::scope(|scope| -> Result<_, String> {
+            let kb = &kb;
+            let environment = scope.spawn(move || {
+                let runtime_version =
+                    gx_engine::rebuild::genexus_runtime_version_from_kb(std::path::Path::new(&kb));
+                // Plain WebPanels: the build number comes from the KB; theme, generator and master class
+                // paths are explicit. An unset option refuses each plain panel by name.
+                let client_config = gx_engine::csharp::webform::web_client_config_from_kb(
+                    std::path::Path::new(&kb),
+                );
+                // Messages and runtime configuration: from the KB's entities and stored model properties, and
+                // the install's message text (GX18_INSTALL_DIR). A group that cannot be read fails a run that writes it.
+                // One client, one persistent reader session, for every KB read that configures the build.
+                let kb_client = gx_engine::udm::client::UdmClient::connect_kb(kb)
+                    .map(|client| client.with_persistent_reads());
+                let model_files = gx_engine::csharp::model_files::model_files_from_kb(
+                    kb_client.as_ref().map_err(String::clone),
+                    &gx_engine::csharp::model_files::genexus_install_dir(),
+                );
+                let web_environment = gx_engine::csharp::webform::WebPanelEnvironment {
+                    theme: web_theme,
+                    generator: web_generator,
+                    master_classes: web_masters,
+                    build_number: gx_engine::csharp::webform::web_build_number_from_kb(
+                        std::path::Path::new(&kb),
+                    ),
+                    support_class: gx_engine::csharp::webform::web_support_from_kb(
+                        std::path::Path::new(&kb),
+                    ),
+                    // Layout class references resolve against the KB's design system; a KB without one
+                    // resolves nothing, and each panel naming a class is refused by name.
+                    design_classes: kb_client
+                        .clone()
+                        .and_then(|client| client.design_system_classes())
+                        .unwrap_or_else(|error| {
+                            eprintln!("design-system classes not read: {error}");
+                            std::collections::BTreeMap::new()
+                        }),
+                    // Image, SDT and Domain references resolve to their entity GUIDs; a KB whose objects are not
+                    // read resolves none, and each panel that is matched by them is refused by name.
+                    object_guids: kb_client
+                        .clone()
+                        .and_then(|client| client.object_guids())
+                        .unwrap_or_else(|error| {
+                            eprintln!("object GUIDs not read: {error}");
+                            std::collections::BTreeMap::new()
+                        }),
+                    // Attribute ids and titles and table keys name a Transaction's members; a KB whose
+                    // attributes are not read resolves none, and each Transaction is refused by name.
+                    attributes: kb_client
+                        .clone()
+                        .and_then(|client| client.attribute_facts())
+                        .unwrap_or_else(|error| {
+                            eprintln!("attributes not read: {error}");
+                            std::collections::BTreeMap::new()
+                        }),
+                    table_keys: kb_client
+                        .clone()
+                        .and_then(|client| client.table_keys())
+                        .unwrap_or_else(|error| {
+                            eprintln!("table keys not read: {error}");
+                            std::collections::BTreeMap::new()
+                        }),
+                    subtype_groups: kb_client
+                        .clone()
+                        .and_then(|client| client.subtype_groups())
+                        .unwrap_or_else(|error| {
+                            eprintln!("subtype groups not read: {error}");
+                            std::collections::BTreeMap::new()
+                        }),
+                };
+                (runtime_version, client_config, model_files, web_environment)
+            });
+            let catalog = match (only_object, catalog_cache) {
+                (Some(name), _) if closure => {
+                    let (entry, catalog) = load_closure_catalog(kb, &name)?;
+                    closure_entry = Some(entry);
+                    catalog
+                }
+                (None, Some(cache_dir))
+                    if std::path::Path::new(&kb)
+                        .join("knowledgebase.connection")
+                        .exists() =>
+                {
+                    let (catalog, status) = gx_engine::catalog_cache::load_native_kb(
+                        std::path::Path::new(&kb),
+                        std::path::Path::new(&cache_dir),
+                    )?;
+                    eprintln!("catalog cache: {status:?}");
+                    catalog
+                }
+                (None, _) => gx_engine::catalog::Catalog::load(kb)?,
+                (Some(name), _) => load_one_object_catalog(kb, &name)?,
+            };
+
+            let environment = environment
+                .join()
+                .map_err(|_| "the build environment reader panicked".to_string())?;
+            Ok((catalog, environment))
+        })?;
 
     *category = DiagnosticCategory::Build;
-    let options = gx_engine::rebuild::RebuildOptions::new(target)
+    let mut options = gx_engine::rebuild::RebuildOptions::new(target)
         .with_clean(clean)
         .with_concurrency(concurrency)
         .with_skip_compile(skip_compile);
+    // Compile against the runtime the KB itself declares; a KB without a declaration keeps
+    // the default (see DEFAULT_GENEXUS_RUNTIME_VERSION).
+    if let Some(version) = runtime_version {
+        options = options.with_genexus_runtime_version(version);
+    }
+    options = options
+        .with_client_config(client_config)
+        .with_model_files(model_files)
+        .with_web_environment(web_environment);
 
+    let catalog_load_ms = catalog_started.elapsed().as_millis() as u64;
+    // A library SDT the KB's runtime assemblies define is never emitted (the SDK uses the runtime class).
+    options.runtime_sdts = gx_engine::rebuild::runtime_sdt_names_from_kb(
+        std::path::Path::new(&kb),
+        catalog
+            .objects()
+            .filter(|object| {
+                object.kind == gx_engine::catalog::ObjectKind::StructuredDataType && object.library
+            })
+            .map(|object| object.name.as_str()),
+    );
+    if let Some(entry) = &closure_entry {
+        // The planner refuses by name before anything is emitted; the entry point comes from the emitter.
+        let plan = gx_engine::catalog::plan_single_object_closure(&catalog, entry)?;
+        options = options
+            .with_startup_object(gx_engine::rebuild::closure_startup_object(&catalog, entry)?);
+        eprintln!(
+            "closure: {} compile units, {} namespace modules",
+            plan.members.len(),
+            plan.namespace_modules.len()
+        );
+    }
     let report = gx_engine::rebuild::rebuild_all(&catalog, &PathBuf::from(out), &options)?;
+    let report = gx_engine::rebuild::RebuildReport {
+        catalog_load_ms,
+        ..report
+    };
 
     if json_errors || env::var("GXMCP_JSON_REPORT").is_ok() {
         println!(
@@ -288,11 +708,16 @@ fn execute_rebuild_all(
         );
     } else {
         println!(
-            "Rebuild All completed in {}ms (read: {}ms, spec: {}ms, emit: {}ms, compile: {}ms)",
-            report.total_ms, report.read_ms, report.spec_ms, report.emit_ms, report.compile_ms
+            "Rebuild All completed in {}ms (read: {}ms, spec: {}ms, emit: {}ms, compile: {}ms), catalog load {}ms before the pipeline",
+            report.total_ms,
+            report.read_ms,
+            report.spec_ms,
+            report.emit_ms,
+            report.compile_ms,
+            report.catalog_load_ms
         );
         println!(
-            "Objects: {} (Procedures: {}, Transactions: {}, SDTs: {}, WebPanels: {})",
+            "Objects: {} (Procedures in catalog: {}, Transactions: {}, SDTs emitted: {}, WebPanels: {})",
             report.total_objects,
             report.procedures_count,
             report.transactions_count,
@@ -300,6 +725,39 @@ fn execute_rebuild_all(
             report.webpanels_count
         );
         println!("Emitted files: {}", report.emitted_files.len());
+        println!(
+            "Status: {} (generated: {}, compiled: {}, skipped: {}, not generated: {}, refused: {})",
+            status_label(report.status),
+            report.generated_count,
+            report.compiled_count,
+            report.skipped_count,
+            report.not_generated_count,
+            report.refused_count
+        );
+        for skipped in &report.skipped_objects {
+            println!(
+                "  [SKIPPED] {} '{}': {}",
+                skipped.kind, skipped.name, skipped.reason
+            );
+        }
+        for object in &report.not_generated_objects {
+            println!(
+                "  [NOT GENERATED] {} '{}': {}",
+                object.kind, object.name, object.reason
+            );
+        }
+        for object in &report.not_targeted_objects {
+            println!(
+                "  [NOT TARGETED] {} '{}': {}",
+                object.kind, object.name, object.reason
+            );
+        }
+        for refused in &report.refused_objects {
+            println!(
+                "  [REFUSED] {} '{}': {}",
+                refused.kind, refused.name, refused.reason
+            );
+        }
         if !report.warnings.is_empty() {
             println!("Warnings ({}):", report.warnings.len());
             for w in &report.warnings {
@@ -311,21 +769,24 @@ fn execute_rebuild_all(
             for e in &report.errors {
                 println!("  [ERROR] {e}");
             }
-            return Err(format!(
-                "rebuild failed with {} error(s)",
-                report.errors.len()
-            ));
         }
     }
 
-    if !report.is_success() {
-        return Err(format!(
+    match report.status {
+        gx_engine::rebuild::RebuildStatus::Failed => Err(format!(
             "rebuild failed with {} error(s)",
             report.errors.len()
-        ));
+        )),
+        status => Ok(status),
     }
+}
 
-    Ok(())
+fn status_label(status: gx_engine::rebuild::RebuildStatus) -> &'static str {
+    match status {
+        gx_engine::rebuild::RebuildStatus::Complete => "complete",
+        gx_engine::rebuild::RebuildStatus::Partial => "partial",
+        gx_engine::rebuild::RebuildStatus::Failed => "failed",
+    }
 }
 
 fn main() -> ExitCode {
@@ -344,8 +805,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let mut category = DiagnosticCategory::Usage;
-    match execute(args, &mut category, json_errors) {
-        Ok(()) => ExitCode::SUCCESS,
+    let outcome = if args.first().is_some_and(|arg| arg == "rebuild-all") {
+        execute_rebuild_all(&args[1..], &mut category, json_errors)
+    } else {
+        execute(args, &mut category, json_errors)
+            .map(|()| gx_engine::rebuild::RebuildStatus::Complete)
+    };
+    match outcome {
+        Ok(gx_engine::rebuild::RebuildStatus::Complete) => ExitCode::SUCCESS,
+        Ok(gx_engine::rebuild::RebuildStatus::Partial) => ExitCode::from(EXIT_PARTIAL),
+        Ok(gx_engine::rebuild::RebuildStatus::Failed) => ExitCode::FAILURE,
         Err(error) => {
             if json_errors {
                 let diagnostic = Diagnostic::new(category, error);

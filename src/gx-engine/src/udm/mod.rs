@@ -7,24 +7,32 @@
 pub mod client;
 pub mod connection;
 pub mod decoder;
+pub mod entity_types;
+pub mod library;
 pub mod live;
 pub mod mock;
 pub mod reader;
 pub mod row;
+pub mod stored_sdt;
+pub mod stored_transaction;
+pub mod stored_variables;
+pub mod type_evidence;
 pub mod writer;
+
+#[cfg(test)]
+mod enum_domain_tests;
 
 pub use client::{
     EntityTypeRecord, EntityVersionCompositionRecord, EntityVersionRecord, InMemoryDatabase,
-    ModelCrossReferenceRecord, ModelEntityVersionRecord, StateLockRecord, UdmClient, UdmRow,
-    UdmValue,
+    ModelCrossReferenceRecord, ModelEntityVersionRecord, SYSTEM_ROOT_MODULE_GUID, StateLockRecord,
+    UdmClient, UdmRow, UdmValue,
 };
 pub use connection::{AuthMode, KbConnectionInfo};
 pub use decoder::{
-    FLAG_GZIP, FLAG_UNCOMPRESSED_UTF8, HEADER_LEN, MAGIC, UdmPartKind, VERSION_V1,
-    build_token_data_list, decode_blob, encode_blob, escape_xml, extract_token_data_list,
-    unescape_xml,
+    FLAG_GZIP, FLAG_UNCOMPRESSED_UTF8, HEADER_LEN, MAGIC, UNCOMPRESSED_PREFIX_LEN, UdmPartKind,
+    VERSION_V1, build_token_data_list, decode_blob, encode_blob, escape_xml,
+    extract_token_data_list, unescape_xml,
 };
-pub use reader::{
-    DEFAULT_DESIGN_MODEL_ID, UdmReader, map_entity_type_id_to_kind, map_kind_to_entity_type_id,
-};
+pub use entity_types::EntityTypeResolver;
+pub use reader::{DEFAULT_DESIGN_MODEL_ID, LoadedObject, ObjectRow, UdmReader};
 pub use writer::{UdmObjectIdentity, UdmWriter};

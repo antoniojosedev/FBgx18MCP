@@ -1,0 +1,53 @@
+Event Start
+	Form.Caption = Format("GXSPC_SelectionList", "Trn Group Probe Base")
+	&ADVANCED_LABEL_TEMPLATE = "%1 <strong>%2</strong>"
+EndEvent
+
+Event 'Toggle'
+	if AdvancedContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainer
+		AdvancedContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainer + !" " + StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerVisible
+		BtnToggle.Class += !" " + StyleClass:d52f9833-90c9-4096-8e42-27485741f78aBtnToggleActive
+	else
+		AdvancedContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainer
+		BtnToggle.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aBtnToggle
+	endif
+Endevent
+
+Event LblTrnGroupProbeBaseIdFilter.Click
+	if TrnGroupProbeBaseIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem
+		TrnGroupProbeBaseIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem + !" " + StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItemExpanded
+		&cTrnGroupProbeBaseId.Visible = true
+	else
+		TrnGroupProbeBaseIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem
+		&cTrnGroupProbeBaseId.Visible = false
+	endif
+EndEvent
+
+Event LblGpBaseIdFilter.Click
+	if GpBaseIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem
+		GpBaseIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem + !" " + StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItemExpanded
+		&cGpBaseId.Visible = true
+	else
+		GpBaseIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem
+		&cGpBaseId.Visible = false
+	endif
+EndEvent
+
+Event LblGpBaseDescFilter.Click
+	if GpBaseDescFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem
+		GpBaseDescFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem + !" " + StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItemExpanded
+		&cGpBaseDesc.Visible = true
+	else
+		GpBaseDescFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem
+		&cGpBaseDesc.Visible = false
+	endif
+EndEvent
+
+Event Load
+	&LinkSelection.FromImage(selectRow)
+EndEvent
+
+Event Enter
+	&pTrnGroupProbeBaseId = TrnGroupProbeBaseId
+	Return
+EndEvent

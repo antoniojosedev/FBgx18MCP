@@ -1,0 +1,34 @@
+<BODY class="Form" bottomMargin="0" leftMargin="0" topMargin="0" rightMargin="0" classref="">
+  <gxWebComponent ControlName="HeaderBC" />
+  <TABLE id="Table1" class="ViewTable" classref="">
+    <TBODY>
+      <TR>
+        <TD colSpan="2">
+          <gxTextBlock Class="" Caption="Not Authorized" CaptionExpression="&lt;Tokens&gt;&lt;Token&gt;&lt;Type&gt;Constant&lt;/Type&gt;&lt;Data&gt;&lt;![CDATA[Not Authorized]]&gt;&lt;/Data&gt;&lt;/Token&gt;&lt;/Tokens&gt;" id="TitleText" />
+        </TD>
+      </TR>
+      <TR>
+        <TD colSpan="2">
+          <gxErrorViewer ControlName="ErrViewer1" />
+        </TD>
+      </TR>
+      <TR>
+        <TD colSpan="2" />
+      </TR>
+    </TBODY>
+  </TABLE>
+  <TABLE id="Table2" class="HorizontalSpace" classref="">
+    <TBODY>
+      <TR>
+        <TD />
+      </TR>
+    </TBODY>
+  </TABLE>
+  <TABLE id="Table3" class="TableHorizontalLine" classref="">
+    <TBODY>
+      <TR>
+        <TD />
+      </TR>
+    </TBODY>
+  </TABLE>
+</BODY>

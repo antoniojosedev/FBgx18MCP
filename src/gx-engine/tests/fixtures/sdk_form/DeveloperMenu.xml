@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="prgs.xsl"?>
+<Objects>
+   <Charset>UTF-8</Charset>
+   <Path>file:///C:/Program Files (x86)/GeneXus/GeneXus18/</Path>
+   <Object>
+      <ObjCls>0</ObjCls>
+      <ObjName>TrnGroupProbeBase</ObjName>
+      <ObjDesc>Trn Group Probe Base</ObjDesc>
+      <ObjLink>trngroupprobebase.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>0</ObjCls>
+      <ObjName>TrnGroupProbeSub</ObjName>
+      <ObjDesc>Trn Group Probe Sub</ObjDesc>
+      <ObjLink>trngroupprobesub.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>0</ObjCls>
+      <ObjName>Plan070Trn</ObjName>
+      <ObjDesc>Plan070 Trn</ObjDesc>
+      <ObjLink>plan070trn.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>0</ObjCls>
+      <ObjName>Plan071Trn</ObjName>
+      <ObjDesc>Plan071 Trn</ObjDesc>
+      <ObjLink>plan071trn.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>0</ObjCls>
+      <ObjName>LiveMoveAttribute</ObjName>
+      <ObjDesc>Live Move Attribute</ObjDesc>
+      <ObjLink>livemoveattribute.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>0</ObjCls>
+      <ObjName>LiveMoveAttributeRules</ObjName>
+      <ObjDesc>Live Move Attribute Rules</ObjDesc>
+      <ObjLink>livemoveattributerules.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>0</ObjCls>
+      <ObjName>LiveMoveAttributeRules2</ObjName>
+      <ObjDesc>Live Move Attribute Rules2</ObjDesc>
+      <ObjLink>livemoveattributerules2.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>13</ObjCls>
+      <ObjName>LiveImportWebPanel</ObjName>
+      <ObjDesc>Live Import Web Panel</ObjDesc>
+      <ObjLink>liveimportwebpanel.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>13</ObjCls>
+      <ObjName>TestVldWpf5317a</ObjName>
+      <ObjDesc>Test Vld Wpf5317a</ObjDesc>
+      <ObjLink>testvldwpf5317a.aspx</ObjLink>
+   </Object>
+   <Object>
+      <ObjCls>13</ObjCls>
+      <ObjName>WWTrn353</ObjName>
+      <ObjDesc>Trn353s</ObjDesc>
+      <ObjLink>wwtrn353.aspx</ObjLink>
+   </Object>
+</Objects>

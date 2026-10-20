@@ -53,12 +53,12 @@ fn test_xpz_export_from_catalog() {
 
     let package = XpzPackage::from_catalog(&catalog, "18.0");
     assert_eq!(package.objects.len(), 1);
-    assert_eq!(package.objects[0].name, "PROCA");
+    assert_eq!(package.objects[0].name, "ProcA");
     assert_eq!(package.objects[0].object_type, "Procedure");
 
     let xml = package.to_xml();
     assert!(xml.contains("<ExportFile"));
-    assert!(xml.contains("Name=\"PROCA\""));
+    assert!(xml.contains("Name=\"ProcA\""));
 }
 
 #[test]

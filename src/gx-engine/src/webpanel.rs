@@ -172,6 +172,7 @@ impl ScreenVariable {
             return Err(format!("Invalid ScreenVariable identifier '{}'", self.name));
         }
         crate::model::validate_data_type(&self.data_type)?;
+        crate::model::require_attribute_form(&self.data_type)?;
         Ok(())
     }
 }

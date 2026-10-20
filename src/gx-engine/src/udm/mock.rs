@@ -70,54 +70,88 @@ pub struct InMemoryDatabase {
     pub entity_types: Vec<EntityTypeRecord>,
     pub model_cross_references: Vec<ModelCrossReferenceRecord>,
     pub state_locks: Vec<StateLockRecord>,
+    /// `Entity.EntityGuid` per `(EntityTypeId, EntityId)`.
+    pub entity_guids: std::collections::BTreeMap<(i32, i32), String>,
+    /// `ModelEntityVersion` parent per `(ModelId, EntityTypeId, EntityId)`, as
+    /// `(ModelParentEntityTypeId, ModelParentEntityId)`. `(0, 0)` is parent-less.
+    pub model_parents: std::collections::BTreeMap<(i32, i32, i32), (i32, i32)>,
+    /// The stored `GenerateObject` value of a Procedure per `(ModelId, EntityTypeId, EntityId)`, as the
+    /// Knowledge Base writes it (`"True"` or `"False"`).
+    pub generate_flags: std::collections::BTreeMap<(i32, i32, i32), String>,
     pub next_entity_id: i32,
     savepoint: Option<Box<InMemoryDatabase>>,
 }
 
 impl InMemoryDatabase {
+    /// An in-memory database that declares the GeneXus 18 vocabulary. Tests and
+    /// the catalog tooling use it; a live client never reads these seeds.
     pub fn new() -> Self {
-        let mut db = Self {
-            next_entity_id: 1000,
-            ..Default::default()
-        };
+        let mut db = Self::without_vocabulary();
         db.seed_default_entity_types();
         db
     }
 
+    /// An empty database with no `EntityType` rows: the vocabulary of a live
+    /// Knowledge Base is read from its own table, never from seeds.
+    pub fn without_vocabulary() -> Self {
+        Self {
+            next_entity_id: 1000,
+            ..Default::default()
+        }
+    }
+
+    /// Seeds the GeneXus 18 ids with the real `EntityType` names and namespaces
+    /// (`docs/udm_storage_notes.md`). Unserved parts such as `Documentation`,
+    /// `Help` and `Layout` are declared too, so tests can cover parts the engine
+    /// must skip.
     pub fn seed_default_entity_types(&mut self) {
         if !self.entity_types.is_empty() {
             return;
         }
 
-        let defaults = [
-            (1, "Procedure", "Artech.Architecture.Common.Objects"),
-            (2, "Transaction", "Artech.Architecture.Common.Objects"),
-            (4, "Attribute", "Artech.Architecture.Common.Objects"),
-            (5, "Domain", "Artech.Architecture.Common.Objects"),
-            (7, "Table", "Artech.Architecture.Common.Objects"),
-            (8, "DataView", "Artech.Architecture.Common.Objects"),
-            (12, "WebPanel", "Artech.Architecture.Common.Objects"),
-            (29, "SDT", "Artech.Architecture.Common.Objects"),
-            (33, "DataProvider", "Artech.Architecture.Common.Objects"),
-            (37, "DataSelector", "Artech.Architecture.Common.Objects"),
-            (38, "Module", "Artech.Architecture.Common.Objects"),
-            (45, "DesignSystem", "Artech.Architecture.Common.Objects"),
-            // Standard Component Parts
-            (100, "Source", "Artech.Genexus.Common.Parts"),
-            (102, "Rules", "Artech.Genexus.Common.Parts"),
-            (97, "Events", "Artech.Genexus.Common.Parts"),
-            (89, "Conditions", "Artech.Genexus.Common.Parts"),
-            (105, "Variables", "Artech.Genexus.Common.Parts"),
-            (104, "Structure", "Artech.Genexus.Common.Parts"),
-            (107, "WebForm", "Artech.Genexus.Common.Parts"),
-            (78, "PatternInstance", "Artech.Genexus.Common.Parts"),
+        let defaults: [(i32, &str, &str); 35] = [
+            (38, "Procedure", "Objects"),
+            (43, "Transaction", "Objects"),
+            (47, "WebPanel", "Objects"),
+            (40, "SDT", "Objects"),
+            (29, "DataProvider", "Objects"),
+            (30, "DataSelector", "Objects"),
+            (12, "Module", "Objects"),
+            (27, "Attribute", "Attributes"),
+            (33, "Domain", "Domains"),
+            (31, "DataView", "DataViews"),
+            (41, "Table", "PhysicalModel"),
+            (57, "DesignSystem", "Themes"),
+            (100, "Procedure", ""),
+            (99, "DataProviderSource", ""),
+            (102, "Rules", ""),
+            (97, "Events", ""),
+            (89, "Conditions", ""),
+            (105, "Variables", ""),
+            (104, "Structure", ""),
+            (103, "SDTStructure", ""),
+            (151, "SDTLevelEntity", ""),
+            (152, "SDTItemEntity", ""),
+            (107, "WebForm", ""),
+            (78, "PatternInstance", ""),
+            (95, "Documentation", ""),
+            (98, "Help", ""),
+            (118, "Layout", ""),
+            (8, "Udm.Types.Folder", "Folders"),
+            (2, "Udm.Types.Model", ""),
+            (1, "Root", ""),
+            (4, "Udm.Types.Reference", ""),
+            (5, "Udm.Types.Output", ""),
+            (7, "Udm.Types.User", ""),
+            (60, "ThemeClass", "ThemeClasses"),
+            (139, "GlobalWorkflowProperties", ""),
         ];
 
-        for (id, name, ns) in defaults {
+        for (id, name, namespace) in defaults {
             self.entity_types.push(EntityTypeRecord {
                 entity_type_id: id,
                 name: name.to_string(),
-                namespace: ns.to_string(),
+                namespace: namespace.to_string(),
             });
         }
     }

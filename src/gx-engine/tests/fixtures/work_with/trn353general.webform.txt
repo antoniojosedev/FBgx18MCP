@@ -1,0 +1,36 @@
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form id="1" type="layout">
+    <detail PanelType="Web">
+      <layout id="3cb84632-df61-4f86-aaa7-7d042ac9640e">
+        <table id="dbee22e1-6c4c-4a43-a4ca-13b82e1ec87b" controlName="MainTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+          <row id="35993af3-a337-4afb-9cc1-bf07e83a3be5">
+            <cell id="77a6d355-eff5-4d4e-8cc3-3e2a4f831a7a" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-481" hAlign="Center">
+              <actiongroup controlName="Actions" />
+            </cell>
+          </row>
+          <row id="b1a6d8b6-344c-4d2d-a017-7b6c385ff0e1">
+            <cell id="7066f675-29d6-46d7-83bf-eeceb066c455">
+              <table id="0ef513a7-29a7-4ff5-ae37-c3e59478a73a" controlName="AttributesTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]}]">
+                <row id="050b7ac8-8b52-4567-9853-99d6541849a1">
+                  <cell id="915eddcf-654f-4af0-b590-c2785f128ba6" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-483">
+                    <data attribute="att:61" labelCaption="Id" class="d52f9833-90c9-4096-8e42-27485741f78a-180" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlType&lt;/Name&gt;&lt;Value&gt;Edit&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;InputType&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;DataSourceFrom&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+        </table>
+        <actionGroups>
+          <actionGroup controlName="Actions" class="d52f9833-90c9-4096-8e42-27485741f78a-482">
+            <item>
+              <action controlName="BtnUpdate" onClickEvent="'DoUpdate'" caption="GXM_update" class="d52f9833-90c9-4096-8e42-27485741f78a-33" />
+            </item>
+            <item>
+              <action controlName="BtnDelete" onClickEvent="'DoDelete'" caption="GX_BtnDelete" class="d52f9833-90c9-4096-8e42-27485741f78a-32" />
+            </item>
+          </actionGroup>
+        </actionGroups>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

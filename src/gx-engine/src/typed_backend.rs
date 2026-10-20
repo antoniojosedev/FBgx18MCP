@@ -15,6 +15,8 @@ enum Kind {
     DateTime,
     Record,
     Collection,
+    /// A GeneXus type this backend does not emit (GUID, BITMAP, geospatial): refused, never emitted.
+    Unsupported,
 }
 
 fn kind(data_type: &DataType) -> Kind {
@@ -25,8 +27,40 @@ fn kind(data_type: &DataType) -> Kind {
         DataType::Date {} => Kind::Date,
         DataType::DateTime {} => Kind::DateTime,
         DataType::Numeric { .. } => Kind::Numeric,
-        DataType::Character { .. } | DataType::Varchar { .. } => Kind::Text,
+        DataType::Character { .. } | DataType::Varchar { .. } | DataType::LongVarchar { .. } => {
+            Kind::Text
+        }
+        DataType::Guid {}
+        | DataType::Image {}
+        | DataType::Geospatial {}
+        | DataType::BaseCollection { .. } => Kind::Unsupported,
     }
+}
+
+/// Refuses a procedure, record or variable whose type this backend does not emit.
+fn reject_unsupported_types(canonical: &Project) -> Result<(), String> {
+    let unsupported = |data_type: &DataType| -> Result<(), String> {
+        if kind(data_type) == Kind::Unsupported {
+            return Err(format!(
+                "type {data_type:?} is not supported by the native typed backend"
+            ));
+        }
+        Ok(())
+    };
+    for procedure in &canonical.procedures {
+        for data_type in procedure.variables.values() {
+            unsupported(data_type)?;
+        }
+        if let Some(return_type) = &procedure.return_type {
+            unsupported(return_type)?;
+        }
+    }
+    for record in &canonical.record_types {
+        for data_type in record.fields.values() {
+            unsupported(data_type)?;
+        }
+    }
+    Ok(())
 }
 
 struct Emitter<'a> {
@@ -55,12 +89,20 @@ fn parameters(procedure: &ProcedureSource) -> Vec<(ParamMode, &str)> {
 fn record_field_variant(data_type: &DataType) -> Result<&'static str, String> {
     match data_type {
         DataType::Numeric { .. } => Ok("Numeric"),
-        DataType::Character { .. } | DataType::Varchar { .. } => Ok("Text"),
+        DataType::Character { .. } | DataType::Varchar { .. } | DataType::LongVarchar { .. } => {
+            Ok("Text")
+        }
         DataType::Boolean {} => Ok("Boolean"),
         DataType::Date {} => Ok("Date"),
         DataType::DateTime {} => Ok("DateTime"),
         DataType::Record { .. } => Ok("Record"),
         DataType::Collection { .. } => Ok("Collection"),
+        DataType::Guid {}
+        | DataType::Image {}
+        | DataType::Geospatial {}
+        | DataType::BaseCollection { .. } => Err(format!(
+            "type {data_type:?} is not supported by the native typed backend"
+        )),
     }
 }
 
@@ -96,6 +138,9 @@ fn empty_value(
         Kind::DateTime => "DateTime::empty()",
         Kind::Record | Kind::Collection => {
             return Err("container default requires a declared schema".into());
+        }
+        Kind::Unsupported => {
+            return Err("type is not supported by the native typed backend".into());
         }
     }
     .into())
@@ -149,6 +194,7 @@ pub(crate) fn emit_parsed(
     canonical: &Project,
     parsed: &[crate::frontend::Procedure],
 ) -> Result<String, String> {
+    reject_unsupported_types(canonical)?;
     if canonical.procedures.iter().any(|p| {
         crate::frontend::is_typed_builtin(&p.name)
             && (p.name != "NEW" || !canonical.record_types.is_empty())
@@ -388,6 +434,9 @@ fn rust_type(data_type: &DataType) -> &'static str {
         Kind::DateTime => "DateTime",
         Kind::Record => "Record",
         Kind::Collection => "Collection",
+        // Rejected by `reject_unsupported_types` before any emission; a generated program that reached
+        // this name would not compile.
+        Kind::Unsupported => "UnsupportedGeneXusType",
     }
 }
 
@@ -398,8 +447,14 @@ fn boundary(data_type: &DataType, value: &str) -> String {
         | DataType::DateTime {}
         | DataType::Character { .. }
         | DataType::Varchar { .. }
+        | DataType::LongVarchar { .. }
         | DataType::Record { .. }
-        | DataType::Collection { .. } => value.into(),
+        | DataType::Collection { .. }
+        // Unsupported types are rejected before emission (`reject_unsupported_types`).
+        | DataType::Guid {}
+        | DataType::Image {}
+        | DataType::Geospatial {}
+        | DataType::BaseCollection { .. } => value.into(),
         DataType::Numeric { precision, scale } => {
             format!("NumericType::new({precision}, {scale})?.assign({value})?")
         }
@@ -794,6 +849,9 @@ impl Emitter<'_> {
                         Kind::Boolean => format!("!({value})"),
                         Kind::Record => {
                             return Err("IsEmpty() is not supported on records directly".into());
+                        }
+                        Kind::Unsupported => {
+                            return Err("IsEmpty() is not supported on this type".into());
                         }
                     };
                     (Kind::Boolean, code)
@@ -1387,6 +1445,9 @@ impl Emitter<'_> {
                     Kind::Record => {
                         return Err("IsEmpty is not supported on records directly".into());
                     }
+                    Kind::Unsupported => {
+                        return Err("IsEmpty is not supported on this type".into());
+                    }
                 };
                 (Kind::Boolean, code)
             }
@@ -1401,13 +1462,18 @@ impl Emitter<'_> {
                 };
                 match target_type {
                     DataType::Numeric { .. } => (Kind::Numeric, "\"0\".parse::<Decimal>()?".into()),
-                    DataType::Character { .. } | DataType::Varchar { .. } => {
-                        (Kind::Text, "Text::new(\"\")?".into())
+                    DataType::Character { .. }
+                    | DataType::Varchar { .. }
+                    | DataType::LongVarchar { .. } => (Kind::Text, "Text::new(\"\")?".into()),
+                    DataType::Guid {} | DataType::Image {} | DataType::Geospatial {} => {
+                        return Err("Nullvalue is not supported on this type".into());
                     }
                     DataType::Boolean {} => (Kind::Boolean, "false".into()),
                     DataType::Date {} => (Kind::Date, "Date::empty()".into()),
                     DataType::DateTime {} => (Kind::DateTime, "DateTime::empty()".into()),
-                    DataType::Record { .. } | DataType::Collection { .. } => {
+                    DataType::Record { .. }
+                    | DataType::Collection { .. }
+                    | DataType::BaseCollection { .. } => {
                         return Err("Nullvalue requires a scalar variable or field".into());
                     }
                 }
@@ -1586,6 +1652,7 @@ impl Emitter<'_> {
             return Ok(result);
         }
         let result = match expr {
+            Expr::Paren(inner) => return self.lower(inner, assigned, prelude),
             Expr::EmptyDate => (Kind::Date, "Date::empty()".into()),
             Expr::Integer(value) => (
                 Kind::Numeric,
@@ -1657,7 +1724,9 @@ impl Emitter<'_> {
                 Kind::Numeric => Ok("\"0\".parse::<Decimal>()?".into()),
                 Kind::Text => Ok("Text::new(\"\")?".into()),
                 Kind::Boolean => Ok("false".into()),
-                Kind::Record | Kind::Collection => Err("typed value mismatch".into()),
+                Kind::Record | Kind::Collection | Kind::Unsupported => {
+                    Err("typed value mismatch".into())
+                }
             };
         }
         let (actual, source) = self.expression(expr, assigned)?;
@@ -1847,8 +1916,16 @@ impl Emitter<'_> {
                         | DataType::DateTime {}
                         | DataType::Character { .. }
                         | DataType::Varchar { .. }
+                        | DataType::LongVarchar { .. }
                         | DataType::Record { .. }
                         | DataType::Collection { .. } => writeln!(output, "{target} = {value};"),
+                        // Rejected by `reject_unsupported_types` before emission.
+                        DataType::Guid {}
+                        | DataType::Image {}
+                        | DataType::Geospatial {}
+                        | DataType::BaseCollection { .. } => {
+                            return Err("type is not supported by the native typed backend".into());
+                        }
                         DataType::Numeric { precision, scale } => writeln!(
                             output,
                             "{target} = NumericType::new({precision}, {scale})?.assign({value})?;"
@@ -2121,5 +2198,51 @@ impl Emitter<'_> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::Project;
+    use serde_json::json;
+
+    fn project_with_variable(kind: serde_json::Value) -> Project {
+        Project::from_json(
+            &json!({
+                "format_version": 2,
+                "entry": "Main",
+                "procedures": [{
+                    "name": "Main",
+                    "params": [],
+                    "variables": { "V": kind },
+                    "source": "&V = 'text'\n&V = &V\n"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("the project decodes")
+    }
+
+    #[test]
+    fn a_longvarchar_variable_is_emitted_as_text() {
+        let project = project_with_variable(json!({ "kind": "long_varchar" }));
+        let code = crate::compile(&project).expect("LONGVARCHAR is text in the native backend");
+        assert!(code.contains("Text"), "{code}");
+    }
+
+    #[test]
+    fn guid_image_and_geospatial_variables_are_refused_by_the_native_backend() {
+        for kind in [
+            json!({ "kind": "guid" }),
+            json!({ "kind": "image" }),
+            json!({ "kind": "geospatial" }),
+        ] {
+            let project = project_with_variable(kind.clone());
+            let error = crate::compile(&project).expect_err("no native form for this type");
+            assert!(
+                error.contains("not supported by the native typed backend"),
+                "{kind}: {error}"
+            );
+        }
     }
 }

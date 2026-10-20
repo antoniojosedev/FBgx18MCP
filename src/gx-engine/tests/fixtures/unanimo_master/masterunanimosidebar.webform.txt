@@ -1,0 +1,47 @@
+<GxMultiForm rootId="2" version="html:15.0.0;layout:17.11.0">
+  <Form id="2" type="layout">
+    <detail PanelType="Web">
+      <layout id="52ee53df-bc3d-47d5-b53f-4ca26a7658fb">
+        <table id="59e9a60d-5988-4f71-9c25-a7f7088ff440" controlName="MainTable" class="d52f9833-90c9-4096-8e42-27485741f78a-140" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[],[{&quot;width&quot;:17},{&quot;width&quot;:100}]]}]">
+          <row id="a514bf79-0cde-4992-be7c-fb0bd288a685">
+            <cell id="b68bf6bc-4d8c-47ba-b76c-4a3ceb002c6d" cellClass="">
+              <table id="0375c9ac-29e3-41d4-b34c-bd61ba7e1d33" controlName="Header" class="d52f9833-90c9-4096-8e42-27485741f78a-339 ContainerFluid" tableType="Flex" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:17},{&quot;width&quot;:67},{&quot;width&quot;:17}]]}]" alignItems="Center">
+                <row id="878de560-60bc-42ce-bba5-8b904c8265e5">
+                  <cell id="34983d76-5bf2-4276-a12e-bdc620619df7" flexGrow="0" alignSelf="Center" flexHeight="24">
+                    <image controlName="Image2" image="9fb193d9-64a4-4d30-b129-ff7c76830f7e-74" class="d52f9833-90c9-4096-8e42-27485741f78a-362" />
+                  </cell>
+                  <cell id="4438150d-2ae5-42b6-9bb2-8944dc69a8d6" hAlign="Left" flexGrow="0" minHeight="20">
+                    <image controlName="Image1" image="9fb193d9-64a4-4d30-b129-ff7c76830f7e-46" class="d52f9833-90c9-4096-8e42-27485741f78a-337" />
+                  </cell>
+                  <cell id="5a35494f-0bf4-4813-bd77-11c121439310" hAlign="Center" minHeight="20">
+                    <textblock controlName="ApplicationHeader" caption="Application Name" class="d52f9833-90c9-4096-8e42-27485741f78a-338" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row id="bf9382a3-8f1f-4e94-8c06-62edd9a25d2a">
+            <cell id="7fdbd51c-bede-400f-8b88-d37aebc3f759">
+              <table id="3c8aefb7-4e14-433d-b0de-2d27a87bbdfe" controlName="TableSidebarContainer" tableType="Responsive">
+                <row id="9ec0a756-024c-425a-9cf6-eba203db9911">
+                  <cell id="d9a81d15-d98f-40e6-a101-ff0ae63841e4">
+                    <ucw gxControlType="-1054227045" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlName&lt;/Name&gt;&lt;Value&gt;SidebarMenu&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;SidebarItems&lt;/Name&gt;&lt;Value&gt;var:5&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+            <cell id="75040496-9ed5-4fb3-a54f-b0a19b585527">
+              <table id="a475faaa-41f2-4a5f-afca-ed751dd17be6" controlName="Content" class="d52f9833-90c9-4096-8e42-27485741f78a-63" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]}]">
+                <row id="400c33ff-e6fd-402d-8462-7dd2a5c202b6">
+                  <cell id="d6693f90-4d10-4a5e-9c57-26d1bb25d4d9">
+                    <contentholder controlName="ContentHolder" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+        </table>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

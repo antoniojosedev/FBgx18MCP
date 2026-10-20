@@ -127,6 +127,7 @@ fn has_attribute_ref(expr: &Expr) -> bool {
 
 fn collect_expression_calls(expression: &Expr, callees: &mut HashSet<String>) {
     match expression {
+        Expr::Paren(inner) => collect_expression_calls(inner, callees),
         Expr::Call(name, arguments) => {
             if !is_aggregate_formula_call(name, arguments) {
                 callees.insert(name.clone());

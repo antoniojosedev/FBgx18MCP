@@ -38,10 +38,6 @@ fn run_xml(input_xml: &str, entry: &str) -> std::process::Output {
     output
 }
 
-fn normalize_crlf(value: &str) -> String {
-    value.replace("\r\n", "\n")
-}
-
 #[test]
 fn transaction_structure_in_catalog() {
     let mut root = TransactionLevel::new("Customer");
@@ -170,7 +166,7 @@ fn transaction_nested_levels_in_catalog() {
 }
 
 #[test]
-fn transaction_with_referenced_attributes_in_catalog() {
+fn procedure_using_a_transaction_with_referenced_attributes_is_refused() {
     let mut catalog = Catalog::empty();
 
     // 1. Attribute CustomerId
@@ -258,9 +254,13 @@ Msg(&Cust.CustomerName, status)
         )
         .unwrap();
 
-    let project = gx_engine::kb::project_from_catalog(&catalog, &id("proc-test"), None).unwrap();
-    let rust_code = gx_engine::compile(&project).unwrap();
-    assert!(rust_code.contains("CUSTOMER"));
+    // The Procedure uses a Transaction (web UI): the build is refused by name, never built.
+    let err = gx_engine::kb::project_from_catalog(&catalog, &id("proc-test"), None)
+        .expect_err("a Procedure that uses a Transaction must be refused");
+    assert!(
+        err.contains("web UI") && err.to_ascii_uppercase().contains("CUSTOMER"),
+        "the refusal names the Transaction: {err}"
+    );
 }
 
 #[test]
@@ -500,7 +500,7 @@ fn exportfile_xml_with_transaction_structure() {
         .objects()
         .find(|o| o.kind == ObjectKind::Transaction)
         .unwrap();
-    assert_eq!(trn.name, "CUSTOMER");
+    assert_eq!(trn.name, "Customer");
     assert_eq!(trn.references.len(), 2); // CustomerId and CustomerName
 
     let struct_part = trn
@@ -517,7 +517,7 @@ fn exportfile_xml_with_transaction_structure() {
 }
 
 #[test]
-fn exportfile_xml_transaction_with_attributes_and_procedure_run() {
+fn exportfile_xml_procedure_using_a_transaction_run_is_refused() {
     let xml = r#"<ExportFile><Objects>
 <Object guid="dom-qty" name="Qty" type="00972a17-9975-449e-aab1-d26165d51393">
   <Properties>
@@ -583,17 +583,18 @@ Msg(Str(&Total), status)]]></Source>
     let catalog = exchange::catalog_from_xml(xml).unwrap();
     assert_eq!(catalog.objects().count(), 5);
 
-    let project = exchange::project_from_xml(xml, "ProcessInvoice", None).unwrap();
-    assert!(gx_engine::compile(&project).is_ok());
+    // ProcessInvoice uses the Invoice Transaction (web UI): build and run are refused, never built.
+    let err = exchange::project_from_xml(xml, "ProcessInvoice", None)
+        .expect_err("a Procedure that uses a Transaction must be refused");
+    assert!(err.contains("web UI"), "the refusal says web UI: {err}");
 
     let output = run_xml(xml, "ProcessInvoice");
+    assert!(!output.status.success(), "a refused run must not succeed");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("web UI"),
+        "the refused run names the reason: {stderr}"
     );
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(normalize_crlf(stdout.trim()), "50");
 }
 
 #[test]

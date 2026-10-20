@@ -1,0 +1,4 @@
+GXt_int1 = AV8I;
+new frh00138700(context ).execute( ref  AV9Calls, out  GXt_int1) ;
+AV8I = GXt_int1;
+AV8I = (int)(AV8I+1);

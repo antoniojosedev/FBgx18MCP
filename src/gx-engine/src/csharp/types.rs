@@ -53,10 +53,31 @@ pub const EXTENDED_DATA_IMPORTS: &[&str] = &[
 ];
 
 /// Converts a GeneXus `DataType` to its corresponding C# type name.
+/// The C# namespace of an object held by `module_path` (see `KbObject::module_path`):
+/// `GeneXus.Programs` under the root module, else `GeneXus.Programs.<module>...` in lower case, as the
+/// SDK writes it (`GeneXus.Programs.general.ui` for `General.UI`).
+pub fn module_namespace(module_path: &[String]) -> String {
+    let mut namespace = ROOT_NAMESPACE.to_string();
+    for module in module_path {
+        namespace.push('.');
+        namespace.push_str(&module.to_ascii_lowercase());
+    }
+    namespace
+}
+
+/// The namespace of every class held by the root module.
+pub const ROOT_NAMESPACE: &str = "GeneXus.Programs";
+
 pub fn to_csharp_type(data_type: &DataType) -> String {
     match data_type {
         DataType::Boolean {} => "bool".to_string(),
-        DataType::Character { .. } | DataType::Varchar { .. } => "string".to_string(),
+        DataType::Character { .. } | DataType::Varchar { .. } | DataType::LongVarchar { .. } => {
+            "string".to_string()
+        }
+        // BITMAP is a `string` in the SDK (an image path or URL; the image helpers take strings).
+        DataType::Image {} => "string".to_string(),
+        DataType::Guid {} => "Guid".to_string(),
+        DataType::Geospatial {} => "Geospatial".to_string(),
         DataType::Date {} | DataType::DateTime {} => "DateTime".to_string(),
         DataType::Numeric { precision, scale } => {
             if *scale > 0 {
@@ -86,6 +107,16 @@ pub fn to_csharp_type(data_type: &DataType) -> String {
             };
             format!("GxSimpleCollection<{item_type}>")
         }
+        // The SDK's collection of an SDT whose root is a collection (listprograms.cs: `GXBaseCollection<
+        // GeneXus.Programs.general.ui.SdtProgramNames_ProgramName>`). The item class is `<SDT>_<item>`.
+        DataType::BaseCollection { schema, .. } => {
+            let item_type = if schema.starts_with("Sdt") {
+                schema.clone()
+            } else {
+                format!("Sdt{schema}")
+            };
+            format!("GXBaseCollection<{item_type}>")
+        }
     }
 }
 
@@ -100,9 +131,19 @@ pub fn to_csharp_default_value(data_type: &DataType) -> String {
                 "0".to_string()
             }
         }
-        DataType::Character { .. } | DataType::Varchar { .. } => "\"\"".to_string(),
+        DataType::Character { .. } | DataType::Varchar { .. } | DataType::LongVarchar { .. } => {
+            "\"\"".to_string()
+        }
+        // The SDK's empty image is `""` (an SDT image member is initialised with `""`, SDTs.stg).
+        DataType::Image {} => "\"\"".to_string(),
+        // The SDK's empty GUID (Properties.stg and Rest.stg `guid` defaults).
+        DataType::Guid {} => "Guid.Empty".to_string(),
+        // The SDK initialises an empty geospatial member with `new Geospatial("")` (SDTs.stg).
+        DataType::Geospatial {} => "new Geospatial(\"\")".to_string(),
         DataType::Date {} | DataType::DateTime {} => "DateTime.MinValue".to_string(),
-        DataType::Record { .. } | DataType::Collection { .. } => "null".to_string(),
+        DataType::Record { .. } | DataType::Collection { .. } | DataType::BaseCollection { .. } => {
+            "null".to_string()
+        }
     }
 }
 

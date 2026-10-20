@@ -5,9 +5,9 @@
 //! maps GeneXus data types to standard SQL dialects, and emits clean, inspectable
 //! DDL without executing any database writes.
 
-use crate::catalog::{Catalog, ObjectKind};
+use crate::catalog::{Catalog, KbObject, ObjectKind};
 use crate::model::DataType;
-use crate::transaction::{TransactionLevel, TransactionStructure};
+use crate::transaction::{KeyReference, TransactionLevel, TransactionStructure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,6 +72,13 @@ impl SqlDialect {
                 }
             }
             DataType::Character { length } => Ok(format!("CHAR({length})")),
+            // No DDL type for these is evidenced for any dialect; a column of one is refused.
+            DataType::LongVarchar { .. }
+            | DataType::Guid {}
+            | DataType::Image {}
+            | DataType::Geospatial {} => Err(format!(
+                "no evidenced SQL column type for {data_type:?} in this dialect"
+            )),
             DataType::Varchar { length } => match self {
                 SqlDialect::Oracle => Ok(format!("VARCHAR2({length})")),
                 SqlDialect::SqlServer | SqlDialect::PostgreSql | SqlDialect::Ansi => {
@@ -90,7 +97,9 @@ impl SqlDialect {
                     Ok("TIMESTAMP".into())
                 }
             },
-            DataType::Record { schema } | DataType::Collection { schema } => Err(format!(
+            DataType::Record { schema }
+            | DataType::Collection { schema }
+            | DataType::BaseCollection { schema, .. } => Err(format!(
                 "cannot map complex type '{schema}' directly to relational table column"
             )),
         }
@@ -636,40 +645,50 @@ fn derive_level_table(
 /// infers cross-transaction foreign keys where non-key attributes match another table's primary key,
 /// and returns tables in dependency order.
 pub fn derive_tables_from_catalog(catalog: &Catalog) -> Result<Vec<Table>, String> {
-    let mut all_tables = Vec::new();
-    let mut table_names = BTreeSet::new();
+    let (tables, failures) = derive_tables_partial(catalog);
+    match failures.first() {
+        None => Ok(tables),
+        Some(_) => Err(failures.join("; ")),
+    }
+}
 
+/// Derives the physical tables of every Transaction that can be derived, and names each one that cannot.
+///
+/// A Transaction is derived or refused on its own: one refused Transaction does not stop the others. Each failure
+/// is one message naming its Transaction, in catalog order. A Transaction whose key references cannot be resolved
+/// is refused the same way (see `resolve_key_references`). The tables returned are those of the Transactions that
+/// derived, with their key references and the cross-Transaction foreign keys inferred among them.
+pub fn derive_tables_partial(catalog: &Catalog) -> (Vec<Table>, Vec<String>) {
     // Map attribute name -> DataType using catalog Attributes and Domains
     let resolve_attr = |name: &str| -> Option<DataType> {
         let mut visited = BTreeSet::new();
         crate::kb::resolve_domain_or_attribute_data_type(catalog, name, &mut visited, 0).ok()
     };
 
+    // One outcome per Transaction, in catalog order: its tables, or the reason they cannot be derived.
+    let mut outcomes: Vec<Result<DerivedTransaction, String>> = Vec::new();
     for obj in catalog.objects() {
         if obj.kind != ObjectKind::Transaction {
             continue;
         }
+        outcomes.push(derive_transaction_tables(obj, &resolve_attr));
+    }
+    resolve_key_references(&mut outcomes);
 
-        let structure_part = obj
-            .source_parts
-            .iter()
-            .find(|p| p.name == "STRUCTURE")
-            .ok_or_else(|| {
-                format!(
-                    "Transaction '{}' requires a STRUCTURE part to derive tables",
-                    obj.name
-                )
-            })?;
-
-        let structure: TransactionStructure = serde_json::from_str(&structure_part.source)
-            .map_err(|e| format!("invalid Transaction STRUCTURE on '{}': {e}", obj.name))?;
-
-        let derived = derive_tables_from_transaction(&structure, resolve_attr)?;
-        for tbl in derived {
-            let key = tbl.name.to_ascii_uppercase();
-            if table_names.insert(key) {
-                all_tables.push(tbl);
+    let mut all_tables = Vec::new();
+    let mut table_names = BTreeSet::new();
+    let mut failures = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Ok(derived) => {
+                for tbl in derived.tables {
+                    let key = tbl.name.to_ascii_uppercase();
+                    if table_names.insert(key) {
+                        all_tables.push(tbl);
+                    }
+                }
             }
+            Err(reason) => failures.push(reason),
         }
     }
 
@@ -716,7 +735,253 @@ pub fn derive_tables_from_catalog(catalog: &Catalog) -> Result<Vec<Table>, Strin
         }
     }
 
-    Ok(all_tables)
+    (all_tables, failures)
+}
+
+/// A Transaction's resolved key references: the index of its root table, and each foreign key with the name of
+/// the Transaction it targets.
+type ResolvedKeys = (usize, Vec<(TableForeignKey, String)>);
+
+/// One Transaction's derived tables, with the key references its structure declares.
+struct DerivedTransaction {
+    name: String,
+    tables: Vec<Table>,
+    key_references: Vec<KeyReference>,
+}
+
+/// Resolves the key references of the Transactions that derived, and attaches each resolved one to the root table
+/// of its Transaction as a foreign key.
+///
+/// A reference is refused when it names no derived table's whole primary key, names more than one (ambiguous),
+/// names a key of another type, or names the same table twice. A Transaction whose references lead back to itself
+/// through the others is refused as a cycle. A refused Transaction becomes a failure in place, and the others are
+/// resolved again, because a refused target is no longer derived. This repeats until no Transaction is refused.
+/// Nothing is defaulted, and no reference points at a table that is not derived.
+fn resolve_key_references(outcomes: &mut [Result<DerivedTransaction, String>]) {
+    loop {
+        // Each Transaction that declares references: its index, its name, and its root table and links, or why not.
+        let mut planned: Vec<(usize, String, Result<ResolvedKeys, String>)> = Vec::new();
+        {
+            let candidates: Vec<(&str, &Table)> = outcomes
+                .iter()
+                .filter_map(|outcome| outcome.as_ref().ok())
+                .flat_map(|derived| {
+                    derived
+                        .tables
+                        .iter()
+                        .map(move |table| (derived.name.as_str(), table))
+                })
+                .collect();
+            for (index, outcome) in outcomes.iter().enumerate() {
+                let Ok(owner) = outcome else { continue };
+                if owner.key_references.is_empty() {
+                    continue;
+                }
+                planned.push((
+                    index,
+                    owner.name.clone(),
+                    foreign_keys_of(owner, &candidates),
+                ));
+            }
+        }
+
+        // The Transaction-level graph of the references that resolved: owner -> the Transaction each one names.
+        let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (_, name, links) in &planned {
+            if let Ok((_, links)) = links {
+                edges.insert(
+                    name.to_ascii_uppercase(),
+                    links
+                        .iter()
+                        .map(|(_, target)| target.to_ascii_uppercase())
+                        .collect(),
+                );
+            }
+        }
+
+        let mut refused: Vec<(usize, String)> = Vec::new();
+        for (index, name, links) in &planned {
+            match links {
+                Err(reason) => refused.push((*index, format!("Transaction '{name}': {reason}"))),
+                Ok(_) if reaches_itself(&name.to_ascii_uppercase(), &edges) => refused.push((
+                    *index,
+                    format!(
+                        "Transaction '{name}': its key references form a cycle through '{name}'"
+                    ),
+                )),
+                Ok(_) => {}
+            }
+        }
+
+        if refused.is_empty() {
+            // Every planned Transaction resolved, so every plan is `Ok`: the foreign keys go on the root table
+            // whose index was found while planning, and nothing is attached to any other table.
+            for (index, _, links) in planned {
+                let Ok((root_index, links)) = links else {
+                    continue;
+                };
+                if let Ok(owner) = &mut outcomes[index] {
+                    owner.tables[root_index]
+                        .foreign_keys
+                        .extend(links.into_iter().map(|(fk, _)| fk));
+                }
+            }
+            return;
+        }
+        for (index, reason) in refused {
+            outcomes[index] = Err(reason);
+        }
+    }
+}
+
+/// The foreign keys that one Transaction's key references make, each with the name of the Transaction it targets.
+/// The result also gives the index of the Transaction's root table, where the keys go.
+///
+/// A reference targets the one derived table whose whole primary key is the referenced attribute. Zero matches, more
+/// than one match, a key of another type, or a second reference to the same table each refuse the Transaction.
+fn foreign_keys_of(
+    owner: &DerivedTransaction,
+    candidates: &[(&str, &Table)],
+) -> Result<ResolvedKeys, String> {
+    let root_index = owner
+        .tables
+        .iter()
+        .position(|table| table.name.eq_ignore_ascii_case(&owner.name))
+        .ok_or_else(|| "its root table was not derived".to_string())?;
+    let root = &owner.tables[root_index];
+    let mut links: Vec<(TableForeignKey, String)> = Vec::new();
+    for reference in &owner.key_references {
+        let column = root
+            .columns
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&reference.attribute))
+            .ok_or_else(|| {
+                format!(
+                    "key '{}' is not a column of its root table",
+                    reference.attribute
+                )
+            })?;
+        let matching: Vec<&(&str, &Table)> = candidates
+            .iter()
+            .filter(|(_, table)| {
+                matches!(
+                    table.primary_key.as_slice(),
+                    [only] if only.eq_ignore_ascii_case(&reference.references)
+                )
+            })
+            .collect();
+        let (target_txn, target) = match matching.as_slice() {
+            [] => {
+                return Err(format!(
+                    "its primary key references {}, which is not the whole primary key of any derived table",
+                    reference.references
+                ));
+            }
+            [single] => (single.0, single.1),
+            many => {
+                let names: Vec<&str> = many.iter().map(|(_, table)| table.name.as_str()).collect();
+                return Err(format!(
+                    "its primary key references {}, which is the whole primary key of {} tables ({}), so the target is ambiguous",
+                    reference.references,
+                    many.len(),
+                    names.join(", ")
+                ));
+            }
+        };
+        let target_column = target
+            .columns
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&reference.references))
+            .ok_or_else(|| {
+                format!(
+                    "the referenced key {} is not a column of '{}'",
+                    reference.references, target.name
+                )
+            })?;
+        if target_column.data_type != column.data_type {
+            return Err(format!(
+                "its key '{}' has type {:?}, but the key it references, {} of '{}', has type {:?}",
+                reference.attribute,
+                column.data_type,
+                reference.references,
+                target.name,
+                target_column.data_type
+            ));
+        }
+        if links
+            .iter()
+            .any(|(fk, _)| fk.referenced_table.eq_ignore_ascii_case(&target.name))
+        {
+            return Err(format!(
+                "two of its key references name table '{}'",
+                target.name
+            ));
+        }
+        links.push((
+            TableForeignKey::new(
+                format!("FK_{}_{}", root.name, target.name),
+                vec![column.name.clone()],
+                target.name.clone(),
+                vec![target_column.name.clone()],
+            ),
+            target_txn.to_string(),
+        ));
+    }
+    Ok((root_index, links))
+}
+
+/// Whether `start` reaches itself through the references: a cycle. `edges` holds upper-case Transaction names.
+fn reaches_itself(start: &str, edges: &BTreeMap<String, Vec<String>>) -> bool {
+    let mut stack: Vec<&str> = edges
+        .get(start)
+        .map(|next| next.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    while let Some(node) = stack.pop() {
+        if node == start {
+            return true;
+        }
+        if !seen.insert(node) {
+            continue;
+        }
+        if let Some(next) = edges.get(node) {
+            stack.extend(next.iter().map(String::as_str));
+        }
+    }
+    false
+}
+
+/// Derives one Transaction's tables. A refused Transaction, or one with no STRUCTURE part, is an error that
+/// names it; the refusal says why its tables cannot be derived.
+fn derive_transaction_tables(
+    obj: &KbObject,
+    resolve_attr: &dyn Fn(&str) -> Option<DataType>,
+) -> Result<DerivedTransaction, String> {
+    let Some(structure_part) = obj.source_parts.iter().find(|p| p.name == "STRUCTURE") else {
+        // A Transaction the reader refused holds no STRUCTURE part; its refusal names the element
+        // that cannot be decoded, and is the reason its tables cannot be derived.
+        return Err(match &obj.refusal {
+            Some(reason) => format!(
+                "Transaction '{}' is refused, so its tables cannot be derived: {reason}",
+                obj.name
+            ),
+            None => format!(
+                "Transaction '{}' requires a STRUCTURE part to derive tables",
+                obj.name
+            ),
+        });
+    };
+
+    let structure: TransactionStructure = serde_json::from_str(&structure_part.source)
+        .map_err(|e| format!("invalid Transaction STRUCTURE on '{}': {e}", obj.name))?;
+
+    let tables = derive_tables_from_transaction(&structure, resolve_attr)
+        .map_err(|e| format!("Transaction '{}': {e}", obj.name))?;
+    Ok(DerivedTransaction {
+        name: obj.name.clone(),
+        tables,
+        key_references: structure.key_references,
+    })
 }
 
 /// Generates complete SQL DDL for a set of tables in dependency order.
@@ -728,10 +993,47 @@ pub fn generate_database_ddl(tables: &[Table], dialect: SqlDialect) -> Result<St
         tables.len()
     ));
 
+    let mut pending: Vec<&Table> = tables.iter().collect();
+    let mut created = BTreeSet::new();
+    let mut names = BTreeSet::new();
     for table in tables {
         table.validate()?;
-        let ddl = table.to_full_ddl(dialect)?;
-        sections.push(ddl);
+        if !names.insert(table.name.to_ascii_uppercase()) {
+            return Err(format!("duplicate table '{}' in database DDL", table.name));
+        }
+    }
+    for table in tables {
+        for fk in &table.foreign_keys {
+            if !names.contains(&fk.referenced_table.to_ascii_uppercase()) {
+                return Err(format!(
+                    "Table '{}' references missing table '{}'",
+                    table.name, fk.referenced_table
+                ));
+            }
+        }
+    }
+    while !pending.is_empty() {
+        let next = pending
+            .iter()
+            .position(|table| {
+                table.foreign_keys.iter().all(|fk| {
+                    fk.referenced_table.eq_ignore_ascii_case(&table.name)
+                        || created.contains(&fk.referenced_table.to_ascii_uppercase())
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "cyclic foreign-key dependencies among tables: {}",
+                    pending
+                        .iter()
+                        .map(|table| table.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+        let table = pending.remove(next);
+        sections.push(table.to_full_ddl(dialect)?);
+        created.insert(table.name.to_ascii_uppercase());
     }
 
     Ok(sections.join("\n\n"))

@@ -1,0 +1,1 @@
+{"fields":[{"node":"field","name":"Amount","data_type":{"kind":"numeric","precision":4,"scale":0}},{"node":"level","name":"Rows","collection":true,"item_name":"Entry","children":[{"node":"field","name":"Amount","data_type":{"kind":"numeric","precision":4,"scale":0}}]}]}

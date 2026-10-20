@@ -24,6 +24,9 @@ pub struct CsprojConfig {
     pub assembly_name: String,
     pub target_framework: String,
     pub output_type: OutputType,
+    /// The class whose `Main` starts an executable (`<StartupObject>`). Unset for a library, and
+    /// the emitted project then has no such element.
+    pub startup_object: Option<String>,
     pub generate_dependency_file: bool,
     pub copy_local_lock_file_assemblies: bool,
     pub postgresql_support: bool,
@@ -59,6 +62,7 @@ impl CsprojConfig {
             )],
             compile_includes: vec![format!("{name}.cs")],
             import_targets: None,
+            startup_object: None,
         }
     }
 
@@ -106,7 +110,17 @@ impl CsprojConfig {
             package_references: Vec::new(),
             compile_includes: vec![format!(r"$(WebDirectory)\{name_str}.cs")],
             import_targets: Some(r"..\DotNetCoreBaseProject.targets".to_string()),
+            startup_object: None,
         }
+    }
+
+    /// Makes this project an executable that starts at `Main` of `startup_object` (a fully qualified
+    /// class name). The SDK builds the same output set for it: the assembly, `runtimeconfig.json` and
+    /// `deps.json`, with the entry point in the assembly metadata.
+    pub fn as_executable(mut self, startup_object: impl Into<String>) -> Self {
+        self.output_type = OutputType::Exe;
+        self.startup_object = Some(startup_object.into());
+        self
     }
 
     /// Adds a project reference.
@@ -160,6 +174,9 @@ impl CsprojEmitter {
             "\t\t<OutputType>{}</OutputType>",
             config.output_type.as_str()
         );
+        if let Some(startup) = &config.startup_object {
+            let _ = writeln!(xml, "\t\t<StartupObject>{startup}</StartupObject>");
+        }
         let _ = writeln!(
             xml,
             "\t\t<GenerateDependencyFile>{}</GenerateDependencyFile>",
@@ -191,6 +208,14 @@ impl CsprojEmitter {
             config.grpc_client_support
         );
         let _ = writeln!(xml, "\t\t<PdfLibrary>{}</PdfLibrary>", config.pdf_library);
+        if !config.compile_includes.is_empty() {
+            // The compile items are listed explicitly, as GeneXus lists them. With the SDK's
+            // default globbing on, every listed file is included twice (NETSDK1022).
+            let _ = writeln!(
+                xml,
+                "\t\t<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"
+            );
+        }
         let _ = writeln!(xml, "\t</PropertyGroup>");
 
         if !config.project_references.is_empty() {

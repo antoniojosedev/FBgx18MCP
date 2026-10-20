@@ -1,0 +1,8 @@
+AV8X = (decimal)(10);
+GXt_decimal1 = AV9R;
+new pob97435900(context ).execute( ref  AV8X, out  GXt_decimal1) ;
+AV9R = (decimal)(AV8X+GXt_decimal1);
+AV8X = (decimal)(10);
+GXt_decimal1 = AV9R;
+new pob97435900(context ).execute( ref  AV8X, out  GXt_decimal1) ;
+AV9R = (decimal)(GXt_decimal1+AV8X);

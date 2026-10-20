@@ -1,0 +1,2 @@
+GXt_decimal1 = (decimal)(7);
+new pod97435900(context ).execute( ref  GXt_decimal1) ;

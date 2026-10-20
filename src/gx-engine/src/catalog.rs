@@ -11,11 +11,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const FORMAT_VERSION: u32 = 1;
-const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OBJECTS: usize = 4096;
 const MAX_OBJECT_NAME_BYTES: usize = 128;
 const MAX_SOURCE_PARTS: usize = 128;
-const MAX_SOURCE_PART_BYTES: usize = 1024 * 1024;
+// Raised from 1 MiB: the real 1.3 MB Procedure Plan068Proc in KBTeste is a legitimate
+// object that the old cap rejected. The cap still bounds decompression: the UDM decoder
+// refuses any blob whose declared size exceeds it before inflating.
+pub const MAX_SOURCE_PART_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REFERENCES_PER_OBJECT: usize = 1024;
 const MAX_REFERENCES: usize = 65_536;
 
@@ -57,6 +60,22 @@ pub enum ObjectKind {
     WebPanel,
 }
 
+impl ObjectKind {
+    /// Why objects of this kind are not compile units of the portable engine, or `None` when
+    /// they are one. Web UI (Transaction, WebPanel) and the code generators this engine has no
+    /// generator for (DataProvider, DataSelector, DataView) are never built. A rebuild reports
+    /// them by name; a build or run that targets or needs one is refused.
+    pub fn not_compile_unit_reason(&self) -> Option<&'static str> {
+        match self {
+            ObjectKind::Transaction | ObjectKind::WebPanel => Some("web UI, not generated"),
+            ObjectKind::DataProvider | ObjectKind::DataSelector | ObjectKind::DataView => {
+                Some("no generator, not generated")
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceKind {
@@ -93,6 +112,45 @@ pub struct KbObject {
     pub source_parts: Vec<SourcePart>,
     #[serde(default)]
     pub references: Vec<Reference>,
+    /// The Knowledge Base root module, identified by the reader from its owner data.
+    /// Only this flag exempts a Module from the ASCII name rule, and only under the
+    /// name `SYSTEM_ROOT_MODULE_NAME`. Objects it owns carry no module segment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub system_root: bool,
+    /// Why the reader could not model this object faithfully, when it could not. A refused object
+    /// stays in the catalog, so every caller that depends on it still sees the dependency. Every
+    /// build or run that targets or needs it is refused by name; it is never emitted empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+    /// Why the Knowledge Base says this object is not generated, when it does. Such an object is
+    /// neither built nor an error: the run reports it as skipped, and a caller that needs it is
+    /// refused by name. Procedures only: `GenerateObject` is False. A Procedure with no SOURCE part is refused, not skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_generated: Option<String>,
+    /// Whether the object belongs to the GeneXus library: a module the GeneXus runtime ships (`GeneXus`,
+    /// `GeneXusUnanimo`, top-level under the root) or an object inside one. The reader sets it from the model's
+    /// parent chain. A structured data type of the library that no generated object reaches is not targeted
+    /// (see `crate::reachability`). A catalog without the flag targets every object, as before.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub library: bool,
+    /// A Procedure's stored `IsMain` ("Main program") property, when the reader read it. A Procedure stored
+    /// as not main is generated only when a generated object reaches it (see `crate::reachability`); `None`
+    /// keeps every Procedure a root, as a catalog read before the reader recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main: Option<bool>,
+    /// The names of the Modules that hold the object, outermost first, without the root module
+    /// (`["General", "UI"]` for `General.UI.MasterPrompt`). Empty for an object under the root
+    /// module and for a catalog read before the reader recorded it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_path: Vec<String>,
+}
+
+/// The display name GeneXus gives the Knowledge Base root module. It contains a space,
+/// so it is valid only as the flagged system root (see `KbObject::system_root`).
+pub const SYSTEM_ROOT_MODULE_NAME: &str = "Root Module";
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl KbObject {
@@ -103,6 +161,12 @@ impl KbObject {
             kind,
             source_parts: Vec::new(),
             references: Vec::new(),
+            system_root: false,
+            refusal: None,
+            not_generated: None,
+            library: false,
+            main: None,
+            module_path: Vec::new(),
         }
     }
 }
@@ -145,6 +209,138 @@ struct CatalogFile {
     revision: u64,
     /// A vector allows the loader to reject duplicate IDs instead of losing them in a JSON map.
     objects: Vec<KbObject>,
+}
+
+/// The module that a single-object closure accepts as namespace membership, never as code. The evidence is
+/// one KB: DCM37961700 on KBTeste, a Uses reference to the `Default` module (entity type 52, id 1). The name
+/// rule is an inference from that evidence, not a general rule; any other module is refused by name.
+pub const CLOSURE_NAMESPACE_MODULE: &str = "Default";
+
+/// What a single-object closure builds from: the entry and the compile units it reaches, and the namespace
+/// modules those objects are in. Both sets are sorted by id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosurePlan {
+    pub members: Vec<ObjectId>,
+    pub namespace_modules: Vec<ObjectId>,
+}
+
+/// Plans the closure of one entry over a catalog that holds the entry and every object it reaches.
+///
+/// The walk follows each reference from the entry. The root module is exempt. A Module target is namespace
+/// membership: only `CLOSURE_NAMESPACE_MODULE` is accepted, every other module is refused by name. A
+/// containment reference is refused. A target the catalog does not hold, and a web UI or not-generated
+/// object, are refused with the path that reached them. Nothing is dropped. The
+/// entry must be a Procedure or a structured data type.
+pub fn plan_single_object_closure(
+    catalog: &Catalog,
+    entry: &ObjectId,
+) -> Result<ClosurePlan, String> {
+    let start = catalog
+        .get(entry)
+        .ok_or_else(|| format!("closure entry '{}' is not in the catalog", entry.as_str()))?;
+    if !matches!(
+        start.kind,
+        ObjectKind::Procedure | ObjectKind::StructuredDataType
+    ) {
+        return Err(format!(
+            "closure entry '{}' is a {:?}: a closure starts at a Procedure or a structured data type",
+            start.name, start.kind
+        ));
+    }
+    let mut members = BTreeSet::new();
+    let mut namespace_modules = BTreeSet::new();
+    members.insert(entry.clone());
+    let mut path = vec![start.name.clone()];
+    visit_closure(
+        catalog,
+        entry,
+        &mut path,
+        &mut members,
+        &mut namespace_modules,
+    )?;
+    Ok(ClosurePlan {
+        members: members.into_iter().collect(),
+        namespace_modules: namespace_modules.into_iter().collect(),
+    })
+}
+
+fn visit_closure(
+    catalog: &Catalog,
+    id: &ObjectId,
+    path: &mut Vec<String>,
+    members: &mut BTreeSet<ObjectId>,
+    namespace_modules: &mut BTreeSet<ObjectId>,
+) -> Result<(), String> {
+    let Some(object) = catalog.get(id) else {
+        return Err(format!(
+            "{}: '{}' is not in the closure; refused",
+            path.join(" -> "),
+            id.as_str()
+        ));
+    };
+    for reference in &object.references {
+        let target_id = &reference.target;
+        if target_id.as_str() == crate::udm::reader::SYSTEM_ROOT_OBJECT_ID {
+            continue;
+        }
+        let here = path.join(" -> ");
+        if reference.kind == ReferenceKind::Contains {
+            return Err(format!(
+                "{here} -> {:?} '{}': containment not evidenced; refused",
+                reference.kind,
+                target_id.as_str()
+            ));
+        }
+        let Some(target) = catalog.get(target_id) else {
+            return Err(format!(
+                "{here} -> {:?} '{}': the target is not in the closure; refused",
+                reference.kind,
+                target_id.as_str()
+            ));
+        };
+        if target.kind == ObjectKind::Module {
+            if target.name == CLOSURE_NAMESPACE_MODULE {
+                namespace_modules.insert(target_id.clone());
+                continue;
+            }
+            return Err(format!(
+                "{here} -> module '{}': namespace not evidenced; refused",
+                target.name
+            ));
+        }
+        let blocked = target
+            .refusal
+            .as_deref()
+            .or(target.not_generated.as_deref())
+            .or(target.kind.not_compile_unit_reason());
+        if let Some(reason) = blocked {
+            return Err(format!(
+                "{here} -> {:?} '{}' ({reason}); refused",
+                target.kind, target.name
+            ));
+        }
+        if members.insert(target_id.clone()) {
+            path.push(target.name.clone());
+            visit_closure(catalog, target_id, path, members, namespace_modules)?;
+            path.pop();
+        }
+    }
+    Ok(())
+}
+
+/// The first reference of `object` that a single-object catalog cannot resolve, if any.
+///
+/// A single-object rebuild emits the object alone, so every reference that emits code must resolve to
+/// the object itself. The root module is exempt: a Module emits nothing, and every object refers to it.
+pub fn single_object_gap(object: &KbObject) -> Option<ObjectId> {
+    object
+        .references
+        .iter()
+        .map(|reference| &reference.target)
+        .find(|target| {
+            target.as_str() != crate::udm::reader::SYSTEM_ROOT_OBJECT_ID && **target != object.id
+        })
+        .cloned()
 }
 
 impl Catalog {
@@ -356,7 +552,9 @@ impl Catalog {
         if path.is_dir() {
             let conn_file = path.join("knowledgebase.connection");
             if conn_file.exists() {
-                let client = std::sync::Arc::new(crate::udm::client::UdmClient::connect_kb(path)?);
+                let client = std::sync::Arc::new(
+                    crate::udm::client::UdmClient::connect_kb(path)?.with_persistent_reads(),
+                );
                 let reader = crate::udm::reader::UdmReader::new(client);
                 return reader.read_catalog();
             }
@@ -365,33 +563,83 @@ impl Catalog {
             .is_some_and(|f| f == "knowledgebase.connection")
         {
             let kb_dir = path.parent().unwrap_or(path);
-            let client = std::sync::Arc::new(crate::udm::client::UdmClient::connect_kb(kb_dir)?);
+            let client = std::sync::Arc::new(
+                crate::udm::client::UdmClient::connect_kb(kb_dir)?.with_persistent_reads(),
+            );
             let reader = crate::udm::reader::UdmReader::new(client);
             return reader.read_catalog();
         }
 
-        let file = File::open(path)
-            .map_err(|error| format!("could not open catalog '{}': {error}", path.display()))?;
-        let metadata = file
-            .metadata()
-            .map_err(|error| format!("could not inspect catalog '{}': {error}", path.display()))?;
-        if metadata.len() > MAX_CATALOG_BYTES as u64 {
+        Self::from_json(&read_catalog_text(path)?)
+    }
+
+    /// The snapshot JSON for this catalog: the text `save_snapshot_atomic` writes and `from_snapshot_text`
+    /// reads. Nothing is re-sorted, so the order the KB reader produced is kept.
+    pub fn snapshot_text(&self) -> Result<String, String> {
+        let file = CatalogFile {
+            format_version: FORMAT_VERSION,
+            revision: self.revision,
+            objects: self.objects.values().cloned().collect(),
+        };
+        let text = serde_json::to_string(&file)
+            .map_err(|error| format!("cannot encode the catalog snapshot: {error}"))?;
+        if text.len() > MAX_CATALOG_BYTES {
             return Err(format!(
-                "catalog file exceeds the {MAX_CATALOG_BYTES}-byte limit"
+                "catalog snapshot exceeds the {MAX_CATALOG_BYTES}-byte limit"
             ));
         }
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.take((MAX_CATALOG_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("could not read catalog '{}': {error}", path.display()))?;
-        if bytes.len() > MAX_CATALOG_BYTES {
+        Ok(text)
+    }
+
+    /// Writes the snapshot the KB cache reuses. Unlike `save_atomic`, nothing is re-sorted: each object's
+    /// parts and references keep the order the KB reader produced, so `load_snapshot` returns the same
+    /// catalog the live read builds.
+    pub fn save_snapshot_atomic(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let bytes = self.snapshot_text()?;
+        atomic_write_with(path, bytes.as_bytes(), |file, contents| {
+            file.write_all(contents)
+        })
+        .map_err(|error| {
+            format!(
+                "could not atomically save catalog snapshot '{}': {error}",
+                path.display()
+            )
+        })
+    }
+
+    /// Loads a snapshot written by `save_snapshot_atomic`, keeping every object's part and reference order.
+    /// The format, the size, the object limit and identity uniqueness are checked. Nothing is re-sorted or
+    /// re-normalized, so the loaded catalog equals the catalog that was saved.
+    pub fn load_snapshot(path: impl AsRef<Path>) -> Result<Self, String> {
+        let text = read_catalog_text(path.as_ref())?;
+        Self::from_snapshot_text(&text)
+    }
+
+    /// Decodes snapshot JSON with the checks `load_snapshot` makes.
+    pub fn from_snapshot_text(text: &str) -> Result<Self, String> {
+        let file: CatalogFile = serde_json::from_str(text)
+            .map_err(|error| format!("invalid catalog snapshot: {error}"))?;
+        if file.format_version != FORMAT_VERSION {
             return Err(format!(
-                "catalog file exceeds the {MAX_CATALOG_BYTES}-byte limit"
+                "unsupported catalog snapshot format_version {}; expected {FORMAT_VERSION}",
+                file.format_version
             ));
         }
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|error| format!("catalog file is not UTF-8: {error}"))?;
-        Self::from_json(text)
+        if file.objects.len() > MAX_OBJECTS {
+            return Err(format!("catalog exceeds the {MAX_OBJECTS}-object limit"));
+        }
+        let mut objects = BTreeMap::new();
+        for object in file.objects {
+            let id = object.id.clone();
+            if objects.insert(id.clone(), object).is_some() {
+                return Err(format!("duplicate object identity '{}'", id.as_str()));
+            }
+        }
+        Ok(Self {
+            revision: file.revision,
+            objects,
+        })
     }
 
     /// Writes a complete catalog to a sibling temporary file, then atomically renames it.
@@ -419,12 +667,27 @@ impl Catalog {
         let mut names = HashSet::with_capacity(self.objects.len());
         let mut total_bytes = 0usize;
         let mut total_references = 0usize;
+        let mut system_roots = 0usize;
         for (_, mut object) in std::mem::take(&mut self.objects) {
             object.id = canonical_id(object.id)?;
-            normalize_name(&mut object.name, "object name")?;
+            if object.system_root {
+                system_roots += 1;
+                if system_roots > 1 {
+                    return Err("catalog declares more than one system root module".to_string());
+                }
+            }
+            normalize_object_name(&object)?;
             add_bounded_bytes(&mut total_bytes, object.id.0.len())?;
             add_bounded_bytes(&mut total_bytes, object.name.len())?;
-            if !names.insert(object.name.clone()) {
+            // Only objects that produce a named class or file must have unique names. A Module emits
+            // nothing, and GeneXus allows two Modules of one name under different parents (KBTeste16
+            // and KBTeste both hold two `Notifications` Modules). A Table is the physical model of a
+            // Transaction and takes its name by design (`plan070trn`, `trn353`), and the rebuild never
+            // derives a table from a Table object. Neither kind is in the name set.
+            // Uniqueness is case-insensitive; the name itself keeps its stored case (see `normalize_name`).
+            if !matches!(object.kind, ObjectKind::Module | ObjectKind::Table)
+                && !names.insert(object.name.to_ascii_uppercase())
+            {
                 return Err(format!(
                     "duplicate object name '{}' (names are case-insensitive)",
                     object.name
@@ -530,10 +793,29 @@ fn canonical_id(mut id: ObjectId) -> Result<ObjectId, String> {
     Ok(id)
 }
 
-fn normalize_name(name: &mut str, field: &str) -> Result<(), String> {
-    validate_token(name, field, false)?;
-    name.make_ascii_uppercase();
+/// Object names follow the ASCII rule, except the flagged system root. Its exemption
+/// covers exactly one Module under exactly `SYSTEM_ROOT_MODULE_NAME`: a Module with a
+/// space in its name is refused unless the reader identified it as the root.
+fn normalize_object_name(object: &KbObject) -> Result<(), String> {
+    if !object.system_root {
+        return normalize_name(&object.name, "object name");
+    }
+    if object.kind != ObjectKind::Module
+        || !object.name.eq_ignore_ascii_case(SYSTEM_ROOT_MODULE_NAME)
+    {
+        return Err(format!(
+            "object '{}' is flagged as the system root module but is not the Module named '{SYSTEM_ROOT_MODULE_NAME}'",
+            object.id.as_str()
+        ));
+    }
     Ok(())
+}
+
+/// Validates an object name and leaves its case as stored. The KB path keeps the stored case, and the
+/// emitter writes it into C# class names (`public class AddDeviceGroups`), so a snapshot that upper-cased
+/// it would emit different classes. Uniqueness is checked case-insensitively by the caller.
+fn normalize_name(name: &str, field: &str) -> Result<(), String> {
+    validate_token(name, field, false)
 }
 
 fn canonical_part_name(name: &str) -> Result<String, String> {
@@ -577,6 +859,30 @@ fn add_bounded_bytes(total: &mut usize, amount: usize) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Reads a catalog file as UTF-8 text, bounded by `MAX_CATALOG_BYTES`.
+fn read_catalog_text(path: &Path) -> Result<String, String> {
+    let file = File::open(path)
+        .map_err(|error| format!("could not open catalog '{}': {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("could not inspect catalog '{}': {error}", path.display()))?;
+    if metadata.len() > MAX_CATALOG_BYTES as u64 {
+        return Err(format!(
+            "catalog file exceeds the {MAX_CATALOG_BYTES}-byte limit"
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take((MAX_CATALOG_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read catalog '{}': {error}", path.display()))?;
+    if bytes.len() > MAX_CATALOG_BYTES {
+        return Err(format!(
+            "catalog file exceeds the {MAX_CATALOG_BYTES}-byte limit"
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| format!("catalog file is not UTF-8: {error}"))
 }
 
 fn atomic_write_with(

@@ -1,4 +1,5 @@
-//! GXDataComponent and Transaction C# class generator.
+//! Transaction C# class generator. Transactions derive from `GXDataArea`, the base the
+//! GeneXus 18 runtime defines and its generated transactions use (`plan070trn`, `trn353`).
 
 use crate::{
     catalog::{KbObject, ObjectKind},
@@ -18,7 +19,7 @@ use std::fmt::Write;
 /// Extended standard imports for Transaction and Business Component classes.
 pub use crate::csharp::types::EXTENDED_DATA_IMPORTS as TRANSACTION_IMPORTS;
 
-/// Represents an emittable GeneXus C# Transaction / Business Component class (`GXDataComponent`).
+/// Represents an emittable GeneXus C# Transaction class (`GXDataArea`).
 #[derive(Debug, Clone)]
 pub struct TransactionClass {
     pub name: String,
@@ -38,7 +39,7 @@ impl TransactionClass {
             name: name.into(),
             namespace: "GeneXus.Programs".to_string(),
             theme: Some("KBTeste".to_string()),
-            base_class: "GXDataComponent".to_string(),
+            base_class: "GXDataArea".to_string(),
             is_business_component: false,
             structure: None,
             attributes: Vec::new(),
@@ -73,7 +74,7 @@ impl TransactionClass {
         self
     }
 
-    /// Sets base class (`GXDataComponent`, `TransactionBase`, or `GXDataArea`).
+    /// Sets base class (`GXDataArea` by default, or `TransactionBase`).
     pub fn with_base_class(mut self, base_class: impl Into<String>) -> Self {
         self.base_class = base_class.into();
         self
@@ -471,11 +472,7 @@ impl TransactionClass {
         if let Some(ref structure) = self.structure {
             for child_level in &structure.root.levels {
                 let child_clean = clean_ident(&child_level.name);
-                let _ = writeln!(
-                    out,
-                    "      public class {}_{child_clean} : GXDataComponent",
-                    self.name
-                );
+                let _ = writeln!(out, "      public class {}_{child_clean}", self.name);
                 let _ = writeln!(out, "      {{");
                 for attr in &child_level.attributes {
                     let attr_field = to_csharp_attr_name(&attr.name);

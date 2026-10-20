@@ -1,0 +1,3 @@
+TrnGroupProbeBaseId >= &cTrnGroupProbeBaseId ;
+GpBaseId >= &cGpBaseId when not &cGpBaseId.IsEmpty();
+GpBaseDesc LIKE &cGpBaseDesc when not &cGpBaseDesc.IsEmpty();

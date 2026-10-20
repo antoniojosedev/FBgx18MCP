@@ -94,6 +94,7 @@ pub fn substitute_parameters(
 ) -> crate::frontend::Expr {
     use crate::frontend::Expr;
     match expr {
+        Expr::Paren(inner) => Expr::Paren(Box::new(substitute_parameters(inner, param_map))),
         Expr::Variable(var_name) => {
             let key = var_name
                 .strip_prefix('&')

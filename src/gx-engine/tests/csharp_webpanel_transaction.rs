@@ -177,6 +177,12 @@ fn test_webpanel_from_kb_object() {
             },
         ],
         references: vec![],
+        system_root: false,
+        refusal: None,
+        not_generated: None,
+        library: false,
+        main: None,
+        module_path: Vec::new(),
     };
 
     let panel_class = WebPanelClass::from_kb_object(&kb_obj).expect("from kb object");
@@ -287,13 +293,13 @@ fn test_transaction_bc_basic_emission() {
 
     let tc = TransactionClass::from_structure("Customer", structure)
         .with_theme("Carmine")
-        .with_base_class("GXDataComponent")
+        .with_base_class("GXDataArea")
         .with_namespace("GeneXus.Programs");
 
     let code = tc.emit();
 
     // Verify class declaration & inheritance
-    assert!(code.contains("public class Customer : GXDataComponent"));
+    assert!(code.contains("public class Customer : GXDataArea"));
     assert!(code.contains("namespace GeneXus.Programs {"));
 
     // Verify constructors
@@ -406,12 +412,14 @@ fn test_transaction_multilevel_emission() {
     let code = tc.emit();
 
     // Verify root class
-    assert!(code.contains("public class Invoice : GXDataComponent"));
+    assert!(code.contains("public class Invoice : GXDataArea"));
     assert!(code.contains("public long InvoiceId"));
     assert!(code.contains("public DateTime InvoiceDate"));
 
-    // Verify child nested class
-    assert!(code.contains("public class Invoice_Lines : GXDataComponent"));
+    // Verify child nested class: it derives from no runtime type, because the runtime
+    // defines none for a level
+    assert!(code.contains("public class Invoice_Lines\n"));
+    assert!(!code.contains("Invoice_Lines : "));
     assert!(code.contains("private int A_LineId ;"));
     assert!(code.contains("private decimal A_LineTotal ;"));
     assert!(code.contains("public int LineId"));
@@ -445,12 +453,18 @@ fn test_transaction_from_kb_object() {
             },
         ],
         references: vec![],
+        system_root: false,
+        refusal: None,
+        not_generated: None,
+        library: false,
+        main: None,
+        module_path: Vec::new(),
     };
 
     let tc = TransactionClass::from_kb_object(&kb_obj).expect("from kb object");
     let code = tc.emit();
 
-    assert!(code.contains("public class Customer : GXDataComponent"));
+    assert!(code.contains("public class Customer : GXDataArea"));
     assert!(code.contains("private long A_CustomerId ;"));
     assert!(code.contains("private string A_CustomerName ;"));
     assert!(code.contains("/* Default rule: CustomerName = Unknown */"));

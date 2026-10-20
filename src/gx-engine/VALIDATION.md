@@ -1,5 +1,9 @@
 # Numeric engine validation and comparison
 
+## Current scope
+
+This document retains historical measurements and their original fixture scope. The [current acceptance ledger](../../plans/129-implementation-progress.md#current-acceptance-status--2026-10-18) supersedes broader completion/speed summaries: full SDK replacement and 50× faster builds are **not verified**. The recorded 223 ms arithmetic build below is real historical evidence for a tiny Rust-target fixture, not a current whole-KB or equivalent C# build benchmark. Compile-only MSBuild measurements exclude SDK specification/generation and cannot substitute for SDK end-to-end timing.
+
 ## Reproduce
 
 From the repository root (Python standard library, Cargo and rustc only):

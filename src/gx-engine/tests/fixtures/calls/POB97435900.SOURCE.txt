@@ -1,0 +1,3 @@
+&V = &V + 1
+&Result = &V
+msg("bump_v=" + &V.ToString().Trim(), status)

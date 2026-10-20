@@ -1,0 +1,9 @@
+msg("entry_a=" + &A.ToString().Trim(), status)
+msg("entry_b=" + &B.ToString().Trim(), status)
+msg("entry_c=" + &C.ToString().Trim(), status)
+msg("entry_d=" + &D.ToString().Trim(), status)
+msg("entry_e=" + &E.ToString().Trim(), status)
+&B = &A + 10
+&C = &C + 20
+&D = &A + 30
+&E = &E + 40

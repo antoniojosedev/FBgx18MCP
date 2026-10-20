@@ -1,0 +1,50 @@
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form id="1" type="layout">
+    <detail PanelType="Web">
+      <layout id="27872925-a923-43fa-b7da-e21df6d1af96">
+        <table id="1595d24b-c8f8-4635-ac68-a8b26a4c4a7c" controlName="MainTable" class="d52f9833-90c9-4096-8e42-27485741f78a-201" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:50,&quot;offset&quot;:17}],[{&quot;width&quot;:83,&quot;offset&quot;:8}]]},{&quot;scale&quot;:&quot;xs&quot;,&quot;rows&quot;:[[],[{&quot;width&quot;:100}],[{&quot;width&quot;:83,&quot;offset&quot;:8}]]}]">
+          <row id="b717f0ef-3523-402e-9296-954e8c4e4d98">
+            <cell id="42e6e45c-e603-431e-b7be-03b058daf6fa">
+              <table id="f6a07bc7-eb48-4062-b9e5-a5c36018aef3" controlName="TableTop" class="d52f9833-90c9-4096-8e42-27485741f78a-463" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:33,&quot;offset&quot;:17},{&quot;width&quot;:33}]]}]">
+                <row id="d8935eb0-4e71-419e-ad74-212f02232662">
+                  <cell id="5bd67fc7-8b50-479a-a943-119f96c2089f">
+                    <textblock controlName="ViewTitle" caption="Trn353 Information" class="d52f9833-90c9-4096-8e42-27485741f78a-198" />
+                  </cell>
+                  <cell id="5b272db1-e090-451c-82c7-ed4c3f20c296" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-476" hAlign="Right">
+                    <textblock controlName="ViewAll" caption="Trn353s" class="d52f9833-90c9-4096-8e42-27485741f78a-477" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row id="5ea32100-337e-4756-a0f7-5143e7f8ddbf">
+            <cell id="989082b4-e415-4a6b-80fa-6d2ceaf33312">
+              <table id="6d05649b-dc9e-491e-aa69-430b1e437e61" controlName="TabTable_1" class="d52f9833-90c9-4096-8e42-27485741f78a-479" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:50}],[{&quot;width&quot;:100}]]},{&quot;scale&quot;:&quot;xs&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+                <row id="ad1e0bf0-abb2-4469-b4e1-285fc31ac78c">
+                  <cell id="43ac44b4-f0a4-4dc2-89f7-ca192e6a4b64">
+                    <data attribute="att:61" labelCaption="Id" class="d52f9833-90c9-4096-8e42-27485741f78a-180" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlType&lt;/Name&gt;&lt;Value&gt;Edit&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;InputType&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;DataSourceFrom&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row id="7af10f83-6e67-420f-b231-ac2feb6e32db">
+            <cell id="5e5d7d94-2828-4f6c-bb7e-bcd90dfb9c48">
+              <tab id="a5502336-b5f6-46be-869a-b9a04c0deb12" controlName="Tab" class="WWTab" historyManagement="True">
+                <item id="1a5c6ec4-d5cd-4e53-b3da-7fbd7abbeadb" itemControlName="General" caption="General">
+                  <table id="36a097ee-47ee-4383-b4d8-13df7abfed6c" controlName="TableGeneral" class="d52f9833-90c9-4096-8e42-27485741f78a-206" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]}]">
+                    <row id="2b446195-3ae5-45fc-ad68-14497eca18a8">
+                      <cell id="e3ced2a1-ca5e-4232-ba19-b9cd39c67a2f">
+                        <component controlName="GeneralWC" />
+                      </cell>
+                    </row>
+                  </table>
+                </item>
+              </tab>
+            </cell>
+          </row>
+        </table>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

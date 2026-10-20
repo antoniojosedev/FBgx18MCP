@@ -475,7 +475,9 @@ fn project_level<'a>(
                 ParsedTypeDefinition::Concrete(data_type) => {
                     if matches!(
                         data_type,
-                        DataType::Record { .. } | DataType::Collection { .. }
+                        DataType::Record { .. }
+                            | DataType::Collection { .. }
+                            | DataType::BaseCollection { .. }
                     ) {
                         return Err("SDT levels may contain only scalar Items".into());
                     }
@@ -535,9 +537,12 @@ fn project_level<'a>(
             nested: child_nested,
         } = project_level(member, context, depth + 1, &child_path, seen_level_names)?;
         if !child_fields.values().any(|raw_type| match raw_type {
-            crate::kb::RawCatalogType::Concrete(dt) => {
-                !matches!(dt, DataType::Record { .. } | DataType::Collection { .. })
-            }
+            crate::kb::RawCatalogType::Concrete(dt) => !matches!(
+                dt,
+                DataType::Record { .. }
+                    | DataType::Collection { .. }
+                    | DataType::BaseCollection { .. }
+            ),
             crate::kb::RawCatalogType::BasedOnShort { .. }
             | crate::kb::RawCatalogType::BasedOnTagged { .. } => true,
         }) {
@@ -1022,7 +1027,9 @@ fn parse_domain_attribute_object(
         ParsedTypeDefinition::Concrete(data_type) => {
             if matches!(
                 data_type,
-                DataType::Record { .. } | DataType::Collection { .. }
+                DataType::Record { .. }
+                    | DataType::Collection { .. }
+                    | DataType::BaseCollection { .. }
             ) {
                 return Err(format!(
                     "XML {:?} cannot have record or collection data type",

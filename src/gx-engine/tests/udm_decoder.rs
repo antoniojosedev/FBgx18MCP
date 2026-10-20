@@ -4,8 +4,9 @@
 #![forbid(unsafe_code)]
 
 use gx_engine::udm::{
-    AuthMode, FLAG_GZIP, FLAG_UNCOMPRESSED_UTF8, HEADER_LEN, KbConnectionInfo, MAGIC, UdmPartKind,
-    VERSION_V1, decode_blob, encode_blob, extract_token_data_list, unescape_xml,
+    AuthMode, FLAG_GZIP, FLAG_UNCOMPRESSED_UTF8, HEADER_LEN, KbConnectionInfo, MAGIC,
+    UNCOMPRESSED_PREFIX_LEN, UdmPartKind, VERSION_V1, decode_blob, encode_blob,
+    extract_token_data_list, unescape_xml,
 };
 use std::path::Path;
 
@@ -14,15 +15,13 @@ fn test_envelope_11_byte_header_structure() {
     let payload = "GeneXus UDM Envelope Header Test";
     let encoded = encode_blob(payload, false).expect("encode payload");
 
-    assert!(encoded.len() >= HEADER_LEN);
+    // A stored uncompressed blob has a 7-byte prefix (magic, version, flag) and no length field.
+    assert_eq!(encoded.len(), UNCOMPRESSED_PREFIX_LEN + payload.len());
     assert_eq!(&encoded[0..4], &MAGIC);
     assert_eq!(&encoded[4..6], &VERSION_V1);
     assert_eq!(encoded[6], FLAG_UNCOMPRESSED_UTF8);
 
-    let len_in_header = u32::from_le_bytes([encoded[7], encoded[8], encoded[9], encoded[10]]);
-    assert_eq!(len_in_header as usize, payload.len());
-
-    assert_eq!(&encoded[HEADER_LEN..], payload.as_bytes());
+    assert_eq!(&encoded[UNCOMPRESSED_PREFIX_LEN..], payload.as_bytes());
 
     let decoded = decode_blob(&encoded).expect("decode payload");
     assert_eq!(decoded, payload);
@@ -32,7 +31,8 @@ fn test_envelope_11_byte_header_structure() {
 fn test_envelope_fails_closed_on_truncated_data() {
     assert!(decode_blob(&[]).is_err());
     assert!(decode_blob(&[0x01, 0x02, 0x03]).is_err());
-    assert!(decode_blob(&[0x01, 0x02, 0x03, 0x04, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00]).is_err());
+    // A gzip blob (flag 01) cut inside its 11-byte header is refused.
+    assert!(decode_blob(&[0x01, 0x02, 0x03, 0x04, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00]).is_err());
 }
 
 #[test]
@@ -339,27 +339,32 @@ fn test_end_to_end_pipeline_blob_to_source() {
     assert_eq!(reconstructed_source, expected_source);
 }
 
+/// Part classification is by canonical name. A numeric id is not a part kind:
+/// GeneXus 16, 17 and 18 number the same part differently, so ids are resolved per
+/// Knowledge Base by `EntityTypeResolver` (see `udm_entity_types.rs`).
 #[test]
 fn test_udm_part_kinds_classification() {
     let test_cases = [
-        (100, UdmPartKind::Source, true, false),
-        (102, UdmPartKind::Rules, true, false),
-        (97, UdmPartKind::Events, true, false),
-        (89, UdmPartKind::Conditions, true, false),
-        (105, UdmPartKind::Variables, false, true),
-        (104, UdmPartKind::Structure, false, true),
-        (107, UdmPartKind::WebForm, false, true),
-        (78, UdmPartKind::PatternInstance, false, true),
-        (999, UdmPartKind::Unknown(999), false, false),
+        ("SOURCE", UdmPartKind::Source, true, false),
+        ("Rules", UdmPartKind::Rules, true, false),
+        ("Events", UdmPartKind::Events, true, false),
+        ("Conditions", UdmPartKind::Conditions, true, false),
+        ("Variables", UdmPartKind::Variables, false, true),
+        ("Structure", UdmPartKind::Structure, false, true),
+        ("WebForm", UdmPartKind::WebForm, false, true),
+        ("PatternInstance", UdmPartKind::PatternInstance, false, true),
     ];
 
-    for (id, expected_kind, is_token, is_xml) in test_cases {
-        let kind = UdmPartKind::from_id(id);
-        assert_eq!(kind, expected_kind);
-        assert_eq!(kind.id(), id);
-        assert_eq!(kind.is_tokenized_source(), is_token);
-        assert_eq!(kind.is_xml_part(), is_xml);
+    for (name, expected_kind, is_token, is_xml) in test_cases {
+        let kind = UdmPartKind::from_name(name);
+        assert_eq!(kind, expected_kind, "part name {name}");
+        assert_eq!(kind.is_tokenized_source(), is_token, "part name {name}");
+        assert_eq!(kind.is_xml_part(), is_xml, "part name {name}");
     }
+    assert!(matches!(
+        UdmPartKind::from_name("Help"),
+        UdmPartKind::Unknown(_)
+    ));
 }
 
 #[test]

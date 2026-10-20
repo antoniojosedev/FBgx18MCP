@@ -18,7 +18,7 @@ fn test_udm_client_sql_queries_and_row_extraction() {
     client
         .insert_model_entity_version(ModelEntityVersionRecord {
             model_id: 1,
-            entity_type_id: 1, // Procedure
+            entity_type_id: 38, // Procedure
             entity_id: 10,
             entity_version_id: 1,
             name: "PCalculateTax".to_string(),
@@ -33,7 +33,7 @@ fn test_udm_client_sql_queries_and_row_extraction() {
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert_eq!(row.get_i32("ModelId"), Some(1));
-    assert_eq!(row.get_i32("EntityTypeId"), Some(1));
+    assert_eq!(row.get_i32("EntityTypeId"), Some(38));
     assert_eq!(row.get_i32("EntityId"), Some(10));
     assert_eq!(row.get_i32("EntityVersionId"), Some(1));
     assert_eq!(row.get_str("ModelEntityVersionName"), Some("PCalculateTax"));
@@ -47,7 +47,7 @@ fn test_udm_client_sql_queries_and_row_extraction() {
         .iter()
         .find(|r| r.get_str("EntityTypeName") == Some("Procedure"));
     assert!(proc_type.is_some());
-    assert_eq!(proc_type.unwrap().get_i32("EntityTypeId"), Some(1));
+    assert_eq!(proc_type.unwrap().get_i32("EntityTypeId"), Some(38));
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn test_udm_transactional_boundaries_commit_rollback() {
     client
         .insert_model_entity_version(ModelEntityVersionRecord {
             model_id: 1,
-            entity_type_id: 1,
+            entity_type_id: 38,
             entity_id: 100,
             entity_version_id: 1,
             name: "PStableProc".to_string(),
@@ -70,7 +70,7 @@ fn test_udm_transactional_boundaries_commit_rollback() {
     client
         .insert_model_entity_version(ModelEntityVersionRecord {
             model_id: 1,
-            entity_type_id: 1,
+            entity_type_id: 38,
             entity_id: 101,
             entity_version_id: 1,
             name: "PTempProc".to_string(),
@@ -90,7 +90,7 @@ fn test_udm_transactional_boundaries_commit_rollback() {
     client
         .insert_model_entity_version(ModelEntityVersionRecord {
             model_id: 1,
-            entity_type_id: 1,
+            entity_type_id: 38,
             entity_id: 102,
             entity_version_id: 1,
             name: "PCommittedProc".to_string(),
@@ -122,7 +122,9 @@ EndFor"#;
 
     let rules_code = "Parm(in:&CustomerId, out:&TotalBalance);";
     let conditions_code = "CustomerBalance > 0;";
-    let variables_xml = r#"<Variables><Variable Name="CustomerId"><Type>Numeric(10,0)</Type></Variable><Variable Name="TotalBalance"><Type>Numeric(12,2)</Type></Variable></Variables>"#;
+    // The stored form: each declaration carries its type in ATTCUSTOMTYPE (code 4 = NUMERIC,
+    // Length = precision, Decimals = scale), as GeneXus writes it.
+    let variables_xml = r#"<Variables><Variable Name="CustomerId"><Properties><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;4&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>10</Value></Property></Properties></Variable><Variable Name="TotalBalance"><Properties><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;4&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>12</Value></Property><Property><Name>Decimals</Name><Value>2</Value></Property></Properties></Variable></Variables>"#;
 
     proc.source_parts.push(SourcePart {
         name: "SOURCE".to_string(),
@@ -142,7 +144,7 @@ EndFor"#;
     });
 
     let identity = writer.create_object(&proc).expect("create procedure");
-    assert_eq!(identity.entity_type_id, 1);
+    assert_eq!(identity.entity_type_id, 38);
     assert_eq!(identity.version_id, 1);
     assert_eq!(identity.name, "PCustomerService");
 
@@ -182,7 +184,23 @@ EndFor"#;
         .iter()
         .find(|p| p.name == "VARIABLES")
         .expect("variables part");
-    assert_eq!(vars.source, variables_xml);
+    // The engine holds the declarations in their portable form, not the stored XML.
+    let held: std::collections::BTreeMap<String, gx_engine::model::DataType> =
+        serde_json::from_str(&vars.source).expect("portable declarations");
+    assert_eq!(
+        held["CustomerId"],
+        gx_engine::model::DataType::Numeric {
+            precision: 10,
+            scale: 0
+        }
+    );
+    assert_eq!(
+        held["TotalBalance"],
+        gx_engine::model::DataType::Numeric {
+            precision: 12,
+            scale: 2
+        }
+    );
 
     // 3. Update using save_object (version bump to 2)
     let updated_source = "For Each Customer\n    Msg(CustomerName)\nEndFor";
@@ -243,7 +261,7 @@ fn test_udm_writer_and_reader_transaction_with_structure_events_rules() {
     });
 
     let identity = writer.create_object(&trn).expect("create transaction");
-    assert_eq!(identity.entity_type_id, 2); // Transaction EntityType
+    assert_eq!(identity.entity_type_id, 43); // Transaction EntityType
 
     let read_trn = reader.read_object_by_name("Customer").unwrap().unwrap();
     assert_eq!(read_trn.name, "Customer");
@@ -465,26 +483,41 @@ fn test_udm_real_kb_connection_info_integration() {
     }
 }
 
+/// Reads a real Procedure of the disposable GeneXus 18 KB. Every step is asserted:
+/// a read that fails, or a KB with no Procedure, fails the test instead of passing
+/// silently. Skipped only when the KB is not present on this machine.
 #[test]
 fn test_udm_real_kb_live_read_procedure() {
     let kb_path = "C:\\KBs\\KBTeste";
     let conn_file = Path::new(kb_path).join("knowledgebase.connection");
-    if conn_file.exists() {
-        let client = match UdmClient::connect_kb(kb_path) {
-            Ok(c) => Arc::new(c),
-            Err(_) => return,
-        };
-        let reader = UdmReader::new(client.clone());
-        let active = client.get_active_objects(DEFAULT_DESIGN_MODEL_ID);
-        if let Ok(records) = active {
-            // Find a Procedure object (EntityTypeId == 38)
-            if let Some(proc_rec) = records.iter().find(|r| r.entity_type_id == 38) {
-                let obj = reader.read_object(proc_rec.entity_type_id, proc_rec.entity_id);
-                if let Ok(kb_obj) = obj {
-                    assert_eq!(kb_obj.name, proc_rec.name);
-                    assert_eq!(kb_obj.kind, gx_engine::catalog::ObjectKind::Procedure);
-                }
-            }
-        }
+    if !conn_file.exists() {
+        return;
     }
+    let client = Arc::new(UdmClient::connect_kb(kb_path).expect("connect KBTeste"));
+    let reader = UdmReader::new(client.clone());
+    let procedure_id = client
+        .entity_type_resolver()
+        .expect("read KBTeste vocabulary")
+        .object_type_id(ObjectKind::Procedure)
+        .expect("KBTeste declares Procedure");
+    let records = client
+        .get_active_objects(DEFAULT_DESIGN_MODEL_ID)
+        .expect("read active objects");
+    let proc_rec = records
+        .iter()
+        .find(|r| r.entity_type_id == procedure_id)
+        .expect("KBTeste has an active Procedure");
+
+    let kb_obj = reader
+        .read_object(proc_rec.entity_type_id, proc_rec.entity_id)
+        .expect("read the Procedure");
+    assert_eq!(kb_obj.name, proc_rec.name);
+    assert_eq!(kb_obj.kind, ObjectKind::Procedure);
+    assert!(
+        kb_obj
+            .source_parts
+            .iter()
+            .all(|p| !p.name.eq_ignore_ascii_case("UNKNOWN")),
+        "no served part may be labelled UNKNOWN"
+    );
 }

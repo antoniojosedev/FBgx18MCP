@@ -1,0 +1,15 @@
+&Amount = RustCallEchoProbe(1.235) + RustCallEchoProbe(2.001)
+msg(&Amount.ToString().Trim(), status)
+&Flag = RustCallPositiveProbe(&Amount) Or RustCallPositiveProbe(RustCallEchoProbe(99))
+If &Flag
+msg("1", status)
+Else
+msg("0", status)
+EndIf
+&Amount = RustCallPairProbe(RustCallEchoProbe(3.125), RustCallEchoProbe(4.001))
+msg(&Amount.ToString().Trim(), status)
+&Amount = 0
+Do While RustCallPositiveProbe(RustCallEchoProbe(1)) And &Amount < 2
+&Amount = &Amount + 1
+EndDo
+msg(&Amount.ToString().Trim(), status)

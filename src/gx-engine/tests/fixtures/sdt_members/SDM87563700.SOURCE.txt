@@ -1,0 +1,11 @@
+&First = new()
+msg("default=" + Trim(Str(&First.Amount)), status)
+&First.Amount = 7
+&Second = &First
+&Second.Amount = 9
+msg("alias_first=" + Trim(Str(&First.Amount)), status)
+msg("alias_second=" + Trim(Str(&Second.Amount)), status)
+&Second = &First.Clone()
+&Second.Amount = 11
+msg("clone_first=" + Trim(Str(&First.Amount)), status)
+msg("clone_second=" + Trim(Str(&Second.Amount)), status)

@@ -1,0 +1,37 @@
+Event Start
+
+	If not IsAuthorized(&PgmName)
+		NotAuthorized(&PgmName)
+	Endif
+
+	For each
+		Where Trn353Id = &Trn353Id
+		Form.Caption = Trn353Id.ToString()
+		ViewAll.Link = WWTrn353.Link()
+		&Exists = True
+
+	When none
+		Form.Caption = "Record not found"
+		ViewAll.Visible = false
+		&Exists = False
+	Endfor
+	&LoadAllTabs = false
+
+	If &Exists
+		&SelectedTabCode = &TabCode
+		Tab.ActivePageControlName = &SelectedTabCode
+		Do 'Load Tab'
+	Endif
+EndEvent
+
+Event Tab.TabChanged
+	&SelectedTabCode = Tab.ActivePageControlName
+	&LoadAllTabs = false
+	Do 'Load Tab'
+EndEvent
+
+Sub 'Load Tab'
+	if &LoadAllTabs or &SelectedTabCode = '' or&SelectedTabCode = "General"
+		GeneralWC.Object = Trn353General.Create(&Trn353Id)
+	endif
+EndSub

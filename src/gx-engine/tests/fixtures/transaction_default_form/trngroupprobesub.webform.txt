@@ -1,0 +1,81 @@
+<GxMultiForm rootId="2" version="html:15.0.0;layout:17.11.0">
+  <Form id="2" type="layout">
+    <detail PanelType="Web">
+      <layout id="d7c4a74b-a6e4-4b6e-8850-f92c45e713c0">
+        <table id="380ba2f7-b68f-4b4b-8bf8-e513282e9362" controlName="MainTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100,&quot;offset&quot;:0}],[{&quot;width&quot;:100,&quot;offset&quot;:0}],[{&quot;width&quot;:100,&quot;offset&quot;:0}]]}]">
+          <row id="c92bb0d2-8f4c-40cb-9a99-069813e29132">
+            <cell id="ec71855c-51e0-4985-bcfc-f4a3426f71a3">
+              <table id="e7405e85-9445-477d-a3de-f33fbe5b7154" controlName="TitleContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-216" tableType="Responsive" responsiveSizes="[]">
+                <row id="01036f1e-ed43-40ee-ad3f-b966f202efce">
+                  <cell id="c1b0962b-68bc-4b83-b994-26be8d4ae75f">
+                    <textblock controlName="Title" caption="Trn Group Probe Sub" class="d52f9833-90c9-4096-8e42-27485741f78a-119" />
+                  </cell>
+                </row>
+                <row id="bddb7cd5-d920-4532-a31f-1c161168032b">
+                  <cell id="d4984b2e-ac36-4bad-9b88-1c74791f9efb">
+                    <errorviewer controlName="ErrorViewer" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row id="d46c1d39-e605-4b1f-9266-27dbb4f3fe85">
+            <cell id="5712991c-b5d1-4eb4-8d60-778fa346ea98">
+              <table id="4e71ceba-280f-4edc-8d80-97ff744ad5e8" controlName="FormContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-84" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:75,&quot;offset&quot;:25}],[{&quot;width&quot;:100}]]}]">
+                <row id="593f3f61-085a-4b3b-902d-a00126fb71a5">
+                  <cell id="01a01ce4-f96f-4a1d-aad2-b2f958f2f559" cellControlName="ToolbarCell" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-83">
+                    <actiongroup controlName="Toolbar" />
+                  </cell>
+                </row>
+                <row id="0b7f04f1-bd79-4242-bbce-5fcd22f8cdb7">
+                  <cell id="ecdbe224-223d-420c-9676-1bd990ccabdd" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-450">
+                    <data attribute="att:5" labelCaption="=TrnGroupProbeSubId.Title" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row id="34fedff1-adf2-47ad-8531-2b3284a881d1">
+            <cell id="9e30401e-430a-4107-9aa1-b5a2d3401ed4" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-80" hAlign="Right" vAlign="Middle">
+              <actiongroup controlName="FormButtons" />
+            </cell>
+          </row>
+        </table>
+        <actionGroups>
+          <actionGroup controlName="FormButtons" class="">
+            <item>
+              <action controlName="btn_enter" onClickEvent="Enter" caption="GX_BtnEnter" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-263" />
+            </item>
+            <item>
+              <action controlName="btn_cancel" onClickEvent="Cancel" caption="GX_BtnCancel" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-270" />
+            </item>
+            <item>
+              <action controlName="btn_delete" onClickEvent="Delete" caption="GX_BtnDelete" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-270" />
+            </item>
+          </actionGroup>
+          <actionGroup controlName="Toolbar">
+            <item>
+              <actionGroup controlName="NavButtons">
+                <item>
+                  <action controlName="btn_first" onClickEvent="First" caption="" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-299 d52f9833-90c9-4096-8e42-27485741f78a-125" />
+                </item>
+                <item>
+                  <action controlName="btn_previous" onClickEvent="Previous" caption="" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-299 d52f9833-90c9-4096-8e42-27485741f78a-128" />
+                </item>
+                <item>
+                  <action controlName="btn_next" onClickEvent="Next" caption="" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-299 d52f9833-90c9-4096-8e42-27485741f78a-127" />
+                </item>
+                <item>
+                  <action controlName="btn_last" onClickEvent="Last" caption="" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-299 d52f9833-90c9-4096-8e42-27485741f78a-126" />
+                </item>
+                <item>
+                  <action controlName="btn_select" onClickEvent="Select" caption="GX_BtnSelect" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-268" />
+                </item>
+              </actionGroup>
+            </item>
+          </actionGroup>
+        </actionGroups>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

@@ -1,0 +1,10 @@
+&A = 1
+&B = 2
+&C = 3
+&D = 4
+&E = 5
+POI97435900.Call(&A, &B, &C, &D, &E)
+msg("C_distinct=" + &A.ToString().Trim() + "," + &B.ToString().Trim() + "," + &C.ToString().Trim() + "," + &D.ToString().Trim() + "," + &E.ToString().Trim(), status)
+&X = 1
+POI97435900.Call(&X, &X, &X, &X, &X)
+msg("C_alias_x=" + &X.ToString().Trim(), status)

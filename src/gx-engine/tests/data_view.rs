@@ -428,7 +428,7 @@ fn test_dataview_json_roundtrip_and_catalog_admission() {
         .get(&dv_id)
         .expect("DataView object must exist in catalog");
     assert_eq!(retrieved.kind, ObjectKind::DataView);
-    assert_eq!(retrieved.name, "CUSTOMERVIEW");
+    assert_eq!(retrieved.name, "CustomerView");
     assert_eq!(retrieved.source_parts.len(), 1);
     assert_eq!(retrieved.source_parts[0].name, "STRUCTURE");
 }

@@ -7,14 +7,32 @@
 
 #![forbid(unsafe_code)]
 
+pub mod calls;
+pub mod data_provider;
+pub mod developer_menu;
+pub mod domain;
 pub mod emitter;
+pub mod literals;
+pub mod messages;
+pub mod model_files;
+pub mod not_authorized;
 pub mod procedure;
 pub mod project;
+pub mod prompt;
+pub mod prompt_js;
+pub mod runtime_config;
 pub mod sdt;
+pub mod sdt_sdk;
 pub mod solution;
+pub mod template;
 pub mod transaction;
+pub mod transaction_form;
+pub mod transaction_js;
 pub mod types;
+pub mod unanimo_master;
+pub mod webform;
 pub mod webpanel;
+pub mod work_with;
 
 pub use emitter::CSharpEmitter;
 pub use procedure::{CsharpParam, ProcedureClass, STANDARD_IMPORTS};

@@ -1,0 +1,8 @@
+AV8A = (decimal)(1);
+AV9B = (decimal)(2);
+AV10C = (decimal)(3);
+AV11D = (decimal)(4);
+AV12E = (decimal)(5);
+new poi97435900(context ).execute(  AV8A, out  AV9B, ref  AV10C, out  AV11D, ref  AV12E) ;
+AV13X = (decimal)(1);
+new poi97435900(context ).execute(  AV13X, out  AV13X, ref  AV13X, out  AV13X, ref  AV13X) ;

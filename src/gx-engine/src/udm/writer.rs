@@ -6,14 +6,67 @@
 
 #![forbid(unsafe_code)]
 
-use crate::catalog::{KbObject, ReferenceKind};
+use crate::catalog::{KbObject, ReferenceKind, SourcePart};
 use crate::udm::client::{
     EntityVersionCompositionRecord, EntityVersionRecord, ModelCrossReferenceRecord,
     ModelEntityVersionRecord, StateLockRecord, UdmClient,
 };
 use crate::udm::decoder::{UdmPartKind, build_token_data_list, encode_blob};
-use crate::udm::reader::{DEFAULT_DESIGN_MODEL_ID, map_kind_to_entity_type_id};
+use crate::udm::entity_types::EntityTypeResolver;
+use crate::udm::reader::DEFAULT_DESIGN_MODEL_ID;
 use std::sync::Arc;
+
+/// The stored part rows of an object, in write order: the Knowledge Base's own
+/// entity type id, the engine part kind, and the part. A part name the engine does
+/// not serve, or a part type the Knowledge Base does not declare for this object
+/// kind, is refused before anything is written. A row stored under an undeclared
+/// entity type (the old code stored `0`) is corrupt data.
+fn stored_parts<'a>(
+    resolver: &EntityTypeResolver,
+    object: &'a KbObject,
+) -> Result<Vec<(i32, UdmPartKind, &'a SourcePart)>, String> {
+    object
+        .source_parts
+        .iter()
+        .map(|part| {
+            let kind = match UdmPartKind::from_name(&part.name) {
+                UdmPartKind::Unknown(_) => {
+                    return Err(format!(
+                        "part '{}' of '{}' is not a part this engine stores; refusing to write it under an undeclared entity type",
+                        part.name, object.name
+                    ));
+                }
+                kind => kind,
+            };
+            let type_id = resolver.part_type_id(object.kind, kind)?;
+            Ok((type_id, kind, part))
+        })
+        .collect()
+}
+
+/// The `(entity type, entity id)` a reference points to. The object being written
+/// (a self-reference) is resolved from `self_entity`, because a new object is not in
+/// the `active` snapshot yet. Any other target that is not an object of the model is
+/// refused: storing it under an invented id left a dangling row in the model.
+fn reference_target(
+    active: &[ModelEntityVersionRecord],
+    self_entity: (i32, i32),
+    object_name: &str,
+    target: &str,
+) -> Result<(i32, i32), String> {
+    if target.eq_ignore_ascii_case(object_name) {
+        return Ok(self_entity);
+    }
+    active
+        .iter()
+        .find(|rec| rec.name.eq_ignore_ascii_case(target))
+        .map(|rec| (rec.entity_type_id, rec.entity_id))
+        .ok_or_else(|| {
+            format!(
+                "'{object_name}' references '{target}', which is not an object of this model; refusing to store a dangling reference"
+            )
+        })
+}
 
 /// Identifies an object entity and active version in the UDM database.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -89,6 +142,9 @@ impl UdmWriter {
 
     /// Creates a new object in the UDM database. Fails if an object with the same name exists.
     pub fn create_object(&self, object: &KbObject) -> Result<UdmObjectIdentity, String> {
+        let resolver = self.client.entity_type_resolver()?;
+        let entity_type_id = resolver.object_type_id(object.kind)?;
+        let parts = stored_parts(&resolver, object)?;
         self.client.begin_transaction()?;
 
         let result = (|| {
@@ -103,7 +159,6 @@ impl UdmWriter {
                 ));
             }
 
-            let entity_type_id = map_kind_to_entity_type_id(object.kind);
             let entity_id = self.client.allocate_entity_id()?;
             let version_id = 1;
 
@@ -118,9 +173,7 @@ impl UdmWriter {
                 })?;
 
             // 2. Insert component parts
-            for part in &object.source_parts {
-                let part_kind = UdmPartKind::from_name(&part.name);
-                let component_type_id = part_kind.id();
+            for &(component_type_id, part_kind, part) in &parts {
                 let component_id = self.client.allocate_entity_id()?;
 
                 let payload = if part_kind.is_tokenized_source() {
@@ -152,14 +205,12 @@ impl UdmWriter {
 
             // 3. Insert cross-references
             for r in &object.references {
-                let to_record = active
-                    .iter()
-                    .find(|rec| rec.name.eq_ignore_ascii_case(r.target.as_str()));
-
-                let (to_type_id, to_id) = match to_record {
-                    Some(tr) => (tr.entity_type_id, tr.entity_id),
-                    None => (0, 0),
-                };
+                let (to_type_id, to_id) = reference_target(
+                    &active,
+                    (entity_type_id, entity_id),
+                    &object.name,
+                    r.target.as_str(),
+                )?;
 
                 let ref_type = match r.kind {
                     ReferenceKind::Calls => 1,
@@ -212,6 +263,15 @@ impl UdmWriter {
             return self.create_object(object);
         };
 
+        let resolver = self.client.entity_type_resolver()?;
+        if resolver.object_kind(existing_record.entity_type_id) != Some(object.kind) {
+            return Err(format!(
+                "'{}' exists as a different object kind; refusing to save it as {:?}",
+                object.name, object.kind
+            ));
+        }
+        let parts = stored_parts(&resolver, object)?;
+
         self.client.begin_transaction()?;
 
         let result = (|| {
@@ -229,9 +289,7 @@ impl UdmWriter {
             )?;
 
             // 2. Insert new version component parts
-            for part in &object.source_parts {
-                let part_kind = UdmPartKind::from_name(&part.name);
-                let component_type_id = part_kind.id();
+            for &(component_type_id, part_kind, part) in &parts {
                 let component_id = self.client.allocate_entity_id()?;
 
                 let payload = if part_kind.is_tokenized_source() {
@@ -266,14 +324,12 @@ impl UdmWriter {
                 .clear_cross_references(self.model_id, entity_type_id, entity_id)?;
 
             for r in &object.references {
-                let to_record = active
-                    .iter()
-                    .find(|rec| rec.name.eq_ignore_ascii_case(r.target.as_str()));
-
-                let (to_type_id, to_id) = match to_record {
-                    Some(tr) => (tr.entity_type_id, tr.entity_id),
-                    None => (0, 0),
-                };
+                let (to_type_id, to_id) = reference_target(
+                    &active,
+                    (entity_type_id, entity_id),
+                    &object.name,
+                    r.target.as_str(),
+                )?;
 
                 let ref_type = match r.kind {
                     ReferenceKind::Calls => 1,

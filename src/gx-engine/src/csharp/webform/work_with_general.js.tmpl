@@ -1,0 +1,91 @@
+gx.evt.autoSkip = false;
+gx.define('@@lname@@general', true, function (CmpContext) {
+   this.ServerClass =  "@@lname@@general" ;
+   this.PackageName =  "GeneXus.Programs" ;
+   this.ServerFullClass =  "@@lname@@general.aspx" ;
+   this.setObjectType("web");
+   this.setCmpContext(CmpContext);
+   this.ReadonlyForm = true;
+   this.hasEnterEvent = false;
+   this.skipOnEnter = false;
+   this.autoRefresh = true;
+   this.fullAjax = true;
+   this.supportAjaxEvents =  true ;
+   this.ajaxSecurityToken =  true ;
+   this.DSO =  "@@theme@@" ;
+   this.SetStandaloneVars=function()
+   {
+   };
+   this.Valid_@@k_cap@@=function()
+   {
+      return this.validCliEvt("Valid_@@k_cap@@", 0, function () {
+      try {
+         var gxballoon = gx.util.balloon.getNew("@@k_U@@");
+         this.AnyError  = 0;
+
+      }
+      catch(e){}
+      try {
+          if (gxballoon == null) return true; return gxballoon.show();
+      }
+      catch(e){}
+      return true ;
+      });
+   }
+   this.e11@@loid@@1_client=function()
+   {
+      return this.executeClientEvent(  function() {
+         this.clearMessages();
+         this.call("@@lname@@.aspx", ["UPD", this.A@@k_id@@@@k_p@@], null, ["Mode","@@k_p@@"]);
+         this.refreshOutputs([]);
+         this.OnClientEventEnd();
+      }, arguments);
+   };
+   this.e12@@loid@@1_client=function()
+   {
+      return this.executeClientEvent(  function() {
+         this.clearMessages();
+         this.call("@@lname@@.aspx", ["DLT", this.A@@k_id@@@@k_p@@], null, ["Mode","@@k_p@@"]);
+         this.refreshOutputs([]);
+         this.OnClientEventEnd();
+      }, arguments);
+   };
+   this.e15@@loid@@2_client=function()
+   {
+      return this.executeServerEvent("ENTER", true, null, false, false);
+   };
+   this.e16@@loid@@2_client=function()
+   {
+      return this.executeServerEvent("CANCEL", true, null, false, false);
+   };
+   this.GXValidFnc = [];
+   var GXValidFnc = this.GXValidFnc ;
+   this.GXCtrlIds=[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18];
+   this.GXLastCtrlId =18;
+   GXValidFnc[2]={ id: 2, fld:"",grid:0};
+   GXValidFnc[3]={ id: 3, fld:"MAINTABLE",grid:0};
+   GXValidFnc[4]={ id: 4, fld:"",grid:0};
+   GXValidFnc[5]={ id: 5, fld:"",grid:0};
+   GXValidFnc[6]={ id: 6, fld:"",grid:0};
+   GXValidFnc[7]={ id: 7, fld:"",grid:0};
+   GXValidFnc[8]={ id: 8, fld:"BTNUPDATE",grid:0,evt:"e11@@loid@@1_client"};
+   GXValidFnc[9]={ id: 9, fld:"",grid:0};
+   GXValidFnc[10]={ id: 10, fld:"BTNDELETE",grid:0,evt:"e12@@loid@@1_client"};
+   GXValidFnc[11]={ id: 11, fld:"",grid:0};
+   GXValidFnc[12]={ id: 12, fld:"",grid:0};
+   GXValidFnc[13]={ id: 13, fld:"ATTRIBUTESTABLE",grid:0};
+   GXValidFnc[14]={ id: 14, fld:"",grid:0};
+   GXValidFnc[15]={ id: 15, fld:"",grid:0};
+   GXValidFnc[16]={ id: 16, fld:"",grid:0};
+   GXValidFnc[17]={ id: 17, fld:"",grid:0};
+   GXValidFnc[18]={ id:18 ,lvl:0,type:"int",len:4,dec:0,sign:false,pic:"ZZZ9",ro:1,grid:0,gxgrid:null,fnc:this.Valid_@@k_cap@@,isvalid:null,evt_cvc:null,evt_cvcing:null,rgrid:[],fld:"@@k_U@@",fmt:0,gxz:"Z@@k_id@@@@k_p@@",gxold:"O@@k_id@@@@k_p@@",gxvar:"A@@k_id@@@@k_p@@",ucs:[],op:[],ip:[],@@cr@@
+						nacdep:[],ctrltype:"edit",v2v:function(Value){if(Value!==undefined)gx.O.A@@k_id@@@@k_p@@=gx.num.intval(Value)},v2z:function(Value){if(Value!==undefined)gx.O.Z@@k_id@@@@k_p@@=gx.num.intval(Value)},v2c:function(){gx.fn.setControlValue("@@k_U@@",gx.O.A@@k_id@@@@k_p@@,0)},c2v:function(){if(this.val()!==undefined)gx.O.A@@k_id@@@@k_p@@=gx.num.intval(this.val())},val:function(){return gx.fn.getIntegerValue("@@k_U@@",',')},nac:gx.falseFn};
+   this.A@@k_id@@@@k_p@@ = 0 ;
+   this.Events = {"e15@@loid@@2_client": ["ENTER", true] ,"e16@@loid@@2_client": ["CANCEL", true] ,"e11@@loid@@1_client": ["'DOUPDATE'", false] ,"e12@@loid@@1_client": ["'DODELETE'", false]};
+   this.EvtParms["REFRESH"] = [[{"av":"A@@k_id@@@@k_p@@","fld":"@@k_U@@","pic":"ZZZ9"}],[]];
+   this.EvtParms["'DOUPDATE'"] = [[{"av":"A@@k_id@@@@k_p@@","fld":"@@k_U@@","pic":"ZZZ9"}],[]];
+   this.EvtParms["'DODELETE'"] = [[{"av":"A@@k_id@@@@k_p@@","fld":"@@k_U@@","pic":"ZZZ9"}],[]];
+   this.EvtParms["ENTER"] = [[],[]];
+   this.EvtParms["VALID_@@k_U@@"] = [[],[]];
+   this.Initialize( );
+});

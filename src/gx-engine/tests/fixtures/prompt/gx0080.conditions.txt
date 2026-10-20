@@ -1,0 +1,3 @@
+LiveMoveAttributeRules2Id >= &cLiveMoveAttributeRules2Id ;
+LiveMoveAttributeRules2Description LIKE &cLiveMoveAttributeRules2Description when not &cLiveMoveAttributeRules2Description.IsEmpty();
+LiveMoveAttributeRules2Code LIKE &cLiveMoveAttributeRules2Code when not &cLiveMoveAttributeRules2Code.IsEmpty();

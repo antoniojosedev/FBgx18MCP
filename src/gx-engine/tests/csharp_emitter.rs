@@ -239,6 +239,25 @@ fn test_expression_emission() {
     assert_eq!(emitter.emit_expr(&call_now), "DateTimeUtil.Now(context)");
 }
 
+/// `&X = new()` with no type instantiates the declared SDT of `&X`. An untyped target keeps the
+/// previous emission. This is what makes a Procedure that declares an SDT variable compile.
+#[test]
+fn new_without_a_type_instantiates_the_declared_sdt_of_the_target() {
+    let mut emitter = CSharpEmitter::new();
+    let mut vars = BTreeMap::new();
+    vars.insert(
+        "First".to_string(),
+        DataType::Record {
+            schema: "LiveSdtMember60744600".to_string(),
+        },
+    );
+    let assign = Stmt::Assign("&First".to_string(), Expr::Call("NEW".to_string(), vec![]));
+    assert_eq!(
+        emitter.emit_stmt(&assign, &vars),
+        "AV_First = new SdtLiveSdtMember60744600(context);\n"
+    );
+}
+
 #[test]
 fn test_statement_emission() {
     let mut emitter = CSharpEmitter::new();
@@ -334,8 +353,9 @@ fn test_procedure_class_emission_arusttimingprobe() {
         },
     );
 
+    // The KB object is RustTimingProbe; its main class is `arusttimingprobe` (NetModel).
     let source = ProcedureSource {
-        name: "arusttimingprobe".to_string(),
+        name: "RustTimingProbe".to_string(),
         params: vec![],
         variables: vars,
         return_type: None,
@@ -383,8 +403,8 @@ fn test_procedure_class_emission_arusttimingprobe() {
     assert!(code.contains("IsMain = false;"));
 
     // Verify methods
-    assert!(code.contains("public void execute()"));
-    assert!(code.contains("public void executeSubmit()"));
+    assert!(code.contains("public void execute( )"));
+    assert!(code.contains("public void executeSubmit( )"));
     assert!(code.contains("protected override void ExecutePrivate( )"));
     assert!(code.contains("public override void cleanup( )"));
     assert!(code.contains("public override void initialize( )"));
@@ -437,9 +457,9 @@ fn test_procedure_with_parameters_and_udp() {
 
     // Verify incoming and outgoing parameter assignments
     assert!(code.contains("this.AV_Hits = aP0_Hits;"));
-    assert!(code.contains("this.AV_Result = 0m ;"));
-    assert!(code.contains("aP0_Hits = this.AV_Hits;"));
-    assert!(code.contains("aP1_Result = this.AV_Result;"));
+    assert!(code.contains("this.AV_Result = 0 ;"));
+    assert!(code.contains("aP0_Hits=this.AV_Hits;"));
+    assert!(code.contains("aP1_Result=this.AV_Result;"));
 
     // Verify executeUdp returns the out parameter Result
     assert!(code.contains("public decimal executeUdp( ref decimal aP0_Hits )"));
@@ -486,9 +506,12 @@ fn test_procedure_from_kb_object() {
     let proc_class = ProcedureClass::from_kb_object(&kb_obj).expect("from kb object");
     let code = proc_class.emit();
 
-    assert!(code.contains("public class CalcTotal : GXProcedure"));
+    // The SDK names a Procedure's class in lower case (`calctotal`), see the KBTeste NetModel.
+    assert!(code.contains("public class calctotal : GXProcedure"));
     assert!(code.contains("public void execute( decimal aP0_Price ,\n                           int aP1_Qty ,\n                           out decimal aP2_Total )"));
-    assert!(code.contains("public decimal executeUdp( decimal aP0_Price , int aP1_Qty )"));
+    assert!(code.contains(
+        "public decimal executeUdp( decimal aP0_Price ,\n                                 int aP1_Qty )"
+    ));
     assert!(code.contains("return AV_Total ;"));
     assert!(code.contains("AV_Total = (decimal)((AV_Price * AV_Qty));"));
 }
@@ -600,8 +623,9 @@ fn test_live_kb_arusttimingprobe_structural_parity() {
         },
     );
 
+    // The KB object is RustTimingProbe; the official file is its `a`-class (arusttimingprobe.cs).
     let source = ProcedureSource {
-        name: "arusttimingprobe".to_string(),
+        name: "RustTimingProbe".to_string(),
         params: vec![],
         variables: vars,
         return_type: None,
@@ -702,12 +726,92 @@ fn test_dotnet_compile_generated_project() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 
+    // A build that cannot start is an environment problem and is skipped. A build that
+    // runs and fails is a failure whatever its code: MSBuild errors such as NETSDK1022
+    // (duplicate Compile items) are not `error CS` and used to pass unnoticed.
     if let Ok(output) = build_output {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        if !output.status.success() && (stdout.contains("error CS") || stderr.contains("error CS"))
-        {
-            panic!("C# syntax or compilation error in generated code:\n{stdout}\n{stderr}");
-        }
+        assert!(
+            output.status.success(),
+            "generated project does not build:\n{stdout}\n{stderr}"
+        );
     }
+}
+
+// The SDK's own using lines of `arusttimingprobe.cs` (KBTeste NetModel/Web), copied from the oracle in order.
+const SDK_PROCEDURE_USINGS: &[&str] = &[
+    "using System;",
+    "using System.Collections;",
+    "using GeneXus.Utils;",
+    "using GeneXus.Resources;",
+    "using GeneXus.Application;",
+    "using GeneXus.Metadata;",
+    "using GeneXus.Cryptography;",
+    "using com.genexus;",
+    "using GeneXus.Data.ADO;",
+    "using GeneXus.Data.NTier;",
+    "using GeneXus.Data.NTier.ADO;",
+    "using GeneXus.WebControls;",
+    "using GeneXus.Http;",
+    "using GeneXus.Procedure;",
+    "using GeneXus.XML;",
+    "using GeneXus.Search;",
+    "using GeneXus.Encryption;",
+    "using GeneXus.Http.Client;",
+    "using System.Threading;",
+    "using System.Xml.Serialization;",
+    "using System.Runtime.Serialization;",
+];
+
+/// SYNTHETIC source with the shape of KBTeste's `RustTimingProbe` (no parameters, one statement).
+fn rusttimingprobe_source() -> ProcedureSource {
+    ProcedureSource {
+        name: "RustTimingProbe".to_string(),
+        params: vec![],
+        variables: BTreeMap::from([(
+            "Value".to_string(),
+            DataType::Numeric {
+                precision: 10,
+                scale: 0,
+            },
+        )]),
+        return_type: None,
+        source: "&Value = 21 * 2\nmsg(trim(str(&Value, 10, 0)), status)\n".to_string(),
+    }
+}
+
+#[test]
+fn a_procedure_declares_the_usings_the_sdk_declares_in_their_order() {
+    // The SDK's procedures carry these 21 usings and no others: none of the 67 a-class procedures in the
+    // KBTeste oracle has `System.Data` or `GeneXus.Data` (those 87 files are data components and transactions).
+    let source = rusttimingprobe_source();
+    let code = ProcedureClass::from_source(&source)
+        .expect("the procedure parses")
+        .emit();
+    let usings: Vec<&str> = code.lines().filter(|l| l.starts_with("using ")).collect();
+    assert_eq!(usings, SDK_PROCEDURE_USINGS.to_vec(), "{code}");
+}
+
+#[test]
+fn a_procedure_without_parameters_is_split_and_its_wrapper_starts_the_a_class_as_the_sdk_does() {
+    // rusttimingprobe.cs (KBTeste NetModel): the wrapper is the lower-case class, and it starts `a<name>`
+    // through ClassLoader with these exact arguments.
+    let source = rusttimingprobe_source();
+    let procedure = ProcedureClass::from_source(&source).expect("the procedure parses");
+    assert_eq!(procedure.emitted_class_name(), "arusttimingprobe");
+    let wrapper = procedure
+        .emit_wrapper()
+        .expect("a procedure without parameters has a wrapper");
+    assert!(
+        wrapper.contains("public class rusttimingprobe : GXProcedure"),
+        "{wrapper}"
+    );
+    assert!(wrapper.contains("args = new Object[] {} ;"), "{wrapper}");
+    assert!(
+        wrapper.contains(
+            r#"ClassLoader.Execute("arusttimingprobe","GeneXus.Programs","arusttimingprobe", new Object[] {context }, "execute", args);"#
+        ),
+        "{wrapper}"
+    );
 }

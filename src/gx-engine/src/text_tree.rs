@@ -134,11 +134,20 @@ pub fn format_data_type(dt: &DataType) -> String {
         }
         DataType::Character { length } => format!("Character({length})"),
         DataType::Varchar { length } => format!("Varchar({length})"),
+        DataType::LongVarchar {} => "LongVarchar".to_string(),
+        DataType::Guid {} => "Guid".to_string(),
+        DataType::Image {} => "Image".to_string(),
+        DataType::Geospatial {} => "Geospatial".to_string(),
         DataType::Boolean {} => "Boolean".to_string(),
         DataType::Date {} => "Date".to_string(),
         DataType::DateTime {} => "DateTime".to_string(),
         DataType::Record { schema } => format!("Record({schema})"),
         DataType::Collection { schema } => format!("Collection({schema})"),
+        DataType::BaseCollection {
+            schema,
+            item,
+            namespace,
+        } => format!("BaseCollection({schema}, {item}, {namespace})"),
     }
 }
 

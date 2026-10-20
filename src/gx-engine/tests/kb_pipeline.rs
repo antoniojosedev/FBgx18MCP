@@ -658,3 +658,115 @@ fn catalog_cli_loads_saved_objects_builds_and_runs_without_sdk() {
     assert!(!output.status.success());
     assert!(!absent.exists());
 }
+
+/// A Procedure whose only extra part is a CONDITIONS part with `conditions` as its text.
+fn procedure_with_conditions(conditions: &str) -> Catalog {
+    let mut catalog = Catalog::empty();
+    let mut main = object("entry-id", "Main", "Print(21)\nReturn 0", None);
+    main.source_parts.push(SourcePart {
+        name: "Conditions".into(),
+        source: conditions.into(),
+    });
+    catalog.apply(0, &[Edit::Upsert(main)]).unwrap();
+    catalog
+}
+
+#[test]
+fn an_empty_or_whitespace_conditions_part_is_a_no_op_for_the_portable_build() {
+    // The SDK writes an empty CONDITIONS part for every Procedure; it must not refuse the Procedure.
+    for conditions in ["", "   ", "\r\n\t \n"] {
+        let catalog = procedure_with_conditions(conditions);
+        let project = kb::project_from_catalog(&catalog, &ObjectId::new("entry-id").unwrap(), None)
+            .unwrap_or_else(|error| panic!("an empty CONDITIONS part is a no-op: {error}"));
+        assert_eq!(project.entry, "MAIN");
+    }
+}
+
+#[test]
+fn a_non_empty_conditions_part_is_refused_by_name_with_its_reason() {
+    let catalog = procedure_with_conditions("&Amount > 0");
+    let error =
+        kb::project_from_catalog(&catalog, &ObjectId::new("entry-id").unwrap(), None).unwrap_err();
+    assert_eq!(
+        error,
+        "Procedure Main has a non-empty CONDITIONS part; the portable build does not compile conditions"
+    );
+}
+
+/// A Procedure "Main" whose only reference is `kind` to `target`. The target is stored in the catalog first.
+fn main_referencing(kind: ReferenceKind, target: KbObject) -> Catalog {
+    let mut catalog = Catalog::empty();
+    let target_id = target.id.clone();
+    let mut main = object("entry-id", "Main", "Print(21)\nReturn 0", None);
+    main.references.push(Reference {
+        kind,
+        target: target_id,
+    });
+    catalog
+        .apply(0, &[Edit::Upsert(target), Edit::Upsert(main)])
+        .unwrap();
+    catalog
+}
+
+const UNSUPPORTED_REFERENCE: &str =
+    "catalog compiler requires Calls to Procedures, Uses to SDTs, or BasedOn to Domains/Attributes";
+
+#[test]
+fn a_calls_edge_to_a_module_is_membership_and_is_ignored() {
+    // The reader turns a KB cross-reference of link type 2 to a module into a Calls edge. It says which
+    // folder the procedure belongs to, so the portable build skips it and still builds the procedure.
+    let module = KbObject::new(
+        ObjectId::new("root-module").unwrap(),
+        "CommonModule",
+        ObjectKind::Module,
+    );
+    let catalog = main_referencing(ReferenceKind::Calls, module);
+    let project = kb::project_from_catalog(&catalog, &ObjectId::new("entry-id").unwrap(), None)
+        .unwrap_or_else(|error| panic!("a module edge is membership, not a call: {error}"));
+    assert_eq!(project.entry, "MAIN");
+    assert_eq!(project.procedures.len(), 1);
+}
+
+#[test]
+fn a_calls_edge_to_a_structured_data_type_is_still_refused() {
+    let sdt = KbObject::new(
+        ObjectId::new("sdt-id").unwrap(),
+        "SdtCustomer",
+        ObjectKind::StructuredDataType,
+    );
+    let catalog = main_referencing(ReferenceKind::Calls, sdt);
+    let error =
+        kb::project_from_catalog(&catalog, &ObjectId::new("entry-id").unwrap(), None).unwrap_err();
+    assert_eq!(error, UNSUPPORTED_REFERENCE);
+}
+
+#[test]
+fn a_calls_edge_to_a_transaction_is_still_refused_by_its_own_reason() {
+    let transaction = KbObject::new(
+        ObjectId::new("trn-id").unwrap(),
+        "Customer",
+        ObjectKind::Transaction,
+    );
+    let catalog = main_referencing(ReferenceKind::Calls, transaction);
+    let error =
+        kb::project_from_catalog(&catalog, &ObjectId::new("entry-id").unwrap(), None).unwrap_err();
+    assert!(
+        error.contains("Transaction 'Customer' is not a compile unit"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_uses_edge_to_a_module_is_still_refused() {
+    // Only a Calls edge is membership. A Uses edge to a module is not what the KB stores for membership,
+    // so it keeps its refusal.
+    let module = KbObject::new(
+        ObjectId::new("root-module").unwrap(),
+        "CommonModule",
+        ObjectKind::Module,
+    );
+    let catalog = main_referencing(ReferenceKind::Uses, module);
+    let error =
+        kb::project_from_catalog(&catalog, &ObjectId::new("entry-id").unwrap(), None).unwrap_err();
+    assert_eq!(error, UNSUPPORTED_REFERENCE);
+}

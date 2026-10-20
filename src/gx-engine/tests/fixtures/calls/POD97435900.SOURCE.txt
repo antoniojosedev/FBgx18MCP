@@ -1,0 +1,3 @@
+msg("d_entry=" + &V.ToString().Trim(), status)
+&V = &V + 1
+msg("d_after=" + &V.ToString().Trim(), status)

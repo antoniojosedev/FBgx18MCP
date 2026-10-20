@@ -76,7 +76,9 @@ pub(crate) fn is_typed_builtin(name: &str) -> bool {
     )
 }
 
-const MAX_SOURCE_BYTES: usize = 1_048_576;
+// The same bound the catalog applies to a source part (`catalog::MAX_SOURCE_PART_BYTES`): a body the
+// catalog admits must also parse, so the two cannot drift apart.
+const MAX_SOURCE_BYTES: usize = crate::catalog::MAX_SOURCE_PART_BYTES;
 const MAX_TOKENS: usize = 100_000;
 const MAX_NESTING: usize = 128;
 const MAX_EXPRESSION_NODES: usize = 128;
@@ -186,6 +188,22 @@ pub enum Expr {
     Call(String, Vec<Expr>),
     Binary(Box<Expr>, BinOp, Box<Expr>),
     Negate(Box<Expr>),
+    /// A parenthesised expression, kept only when the parser is asked to (see `keep_parentheses`): the
+    /// SDK writes the source's parentheses (`(long)((21*2))`, arusttimingprobe.cs).
+    Paren(Box<Expr>),
+}
+
+thread_local! {
+    static KEEP_PARENTHESES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Parses with `f` keeping each parenthesised expression as `Expr::Paren`. Only the C# emitter that
+/// writes the SDK's form reads these nodes; every other parse drops the parentheses, as before.
+pub fn keep_parentheses<T>(f: impl FnOnce() -> T) -> T {
+    let previous = KEEP_PARENTHESES.with(|keep| keep.replace(true));
+    let result = f();
+    KEEP_PARENTHESES.with(|keep| keep.set(previous));
+    result
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +220,24 @@ pub enum BinOp {
     LessEqual,
     Greater,
     GreaterEqual,
+}
+
+/// The operand a Trim method accepts: a variable, a member, or the `ToString()` of one. The
+/// `ToString()` form is the text of a value (`&I.ToString().Trim()`, 84 stored Procedures of KBTeste);
+/// its type is decided where it is emitted, not here.
+fn is_text_operand(value: &Expr) -> bool {
+    match value {
+        Expr::Variable(_) | Expr::Member(_, _) => true,
+        // ToString() yields text. Its operand is a variable, a member, a Length() or a Year() whose numeric
+        // value the emitter writes as the SDK does (`Trim(Length().ToString())`, `Trim(Year().ToString())`).
+        // Other operands, such as arithmetic, are still refused here.
+        Expr::Call(name, args) if name == "TOSTRING" => match args.as_slice() {
+            [Expr::Variable(_) | Expr::Member(_, _) | Expr::TextLength(_)] => true,
+            [Expr::DateMethod(method, _)] => method == "YEAR",
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1063,9 +1099,9 @@ impl Parser {
         } else {
             1
         };
-        if step == 0 {
-            return Err(start.location.error("For Step must be nonzero"));
-        }
+        // Step 0 is admitted for the C# path. The SDK writes `while (x <= end) { ...; x = (int)(x+0); }`
+        // and the emitter writes the same test and increment as `for (...; x <= end; x += 0)`. The typed
+        // backend still refuses Step 0 (`typed_backend.rs`), and the format_version 1 backend refuses every For.
         self.require_statement_end()?;
         let (body, end) = self.parse_block(nesting + 1)?;
         if end != BlockEnd::EndFor {
@@ -1413,6 +1449,10 @@ impl Parser {
                 })?;
                 self.count_expression_node(nodes, minus.location)?;
                 self.take();
+                // `-0` is kept as written for the SDK's form (`AV8Value = -0;`, arustedge7476154929200.cs).
+                if value == 0 && KEEP_PARENTHESES.with(std::cell::Cell::get) {
+                    return Ok(Expr::Negate(Box::new(Expr::Integer(0))));
+                }
                 return Ok(Expr::Integer(value));
             }
             let operand = self.parse_unary(depth + 1, nodes)?;
@@ -1479,7 +1519,7 @@ impl Parser {
         method_location: Location,
     ) -> Result<Expr, String> {
         if name == "TRIM" {
-            if !matches!(value, Expr::Variable(_) | Expr::Member(_, _)) {
+            if !is_text_operand(&value) {
                 return Err(
                     method_location.error("Trim() currently requires a text variable or member")
                 );
@@ -1490,7 +1530,7 @@ impl Parser {
             return Ok(Expr::Call("TRIM".into(), vec![value]));
         }
         if matches!(name, "TRIMSTART" | "TRIMEND") {
-            if !matches!(value, Expr::Variable(_) | Expr::Member(_, _)) {
+            if !is_text_operand(&value) {
                 return Err(method_location
                     .error("TrimStart()/TrimEnd() currently requires a text variable or member"));
             }
@@ -1822,6 +1862,9 @@ impl Parser {
                 self.take();
                 let expression = self.parse_or(depth + 1, nodes)?;
                 self.expect(TokenKind::RightParen, "')' to close the expression")?;
+                if KEEP_PARENTHESES.with(std::cell::Cell::get) {
+                    return Ok(Expr::Paren(Box::new(expression)));
+                }
                 Ok(expression)
             }
             _ => Err(token
@@ -1922,8 +1965,43 @@ impl Parser {
 /// Identifiers are normalized to ASCII uppercase; variable names omit `&`.
 /// Errors always include a one-based source line and column.
 pub fn parse_body(source: &str) -> Result<Vec<Stmt>, String> {
-    let tokens = Lexer::new(source)?.lex()?;
+    let stripped = strip_block_comments(source)?;
+    let tokens = Lexer::new(&stripped)?.lex()?;
     Parser::new(tokens).parse_body()
+}
+
+/// Replace each `/* ... */` block comment with spaces, keeping its line breaks, so every later token
+/// keeps its real line and column. The comment does not nest: the first `*/` closes it. A delimiter
+/// inside a string literal is text, and a `//` line comment is left for the lexer. An unclosed comment
+/// is refused with the line where it opens.
+fn strip_block_comments(source: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(ch) = rest.chars().next() {
+        if ch == '/' && rest[1..].starts_with('/') {
+            let end = rest.find(['\r', '\n']).unwrap_or(rest.len());
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+        } else if ch == '/' && rest[1..].starts_with('*') {
+            let line = source[..source.len() - rest.len()].matches('\n').count() + 1;
+            let Some(close) = rest[2..].find("*/") else {
+                return Err(format!("line {line}, column 1: unclosed block comment"));
+            };
+            let body = &rest[..close + 4];
+            for c in body.chars() {
+                out.push(if c == '\r' || c == '\n' { c } else { ' ' });
+            }
+            rest = &rest[close + 4..];
+        } else if ch == '\'' || ch == '"' {
+            let end = rest[1..].find(ch).map_or(rest.len(), |i| i + 2);
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+        } else {
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+        }
+    }
+    Ok(out)
 }
 
 /// Parse an individual expression into the shared portable-engine AST.
@@ -2150,6 +2228,32 @@ mod tests {
         let source = format!("Do Case\n{cases}Otherwise\nReturn 1\nEndCase");
         let error = parse_body(&source).unwrap_err();
         assert!(error.contains("block nesting exceeds"), "{error}");
+    }
+
+    #[test]
+    fn a_body_as_large_as_the_catalog_admits_is_parsed_not_refused_at_one_mebibyte() {
+        // A real statement repeated past 1 MiB: the lexer's byte bound is the catalog's (8 MiB), not 1 MiB.
+        let line = "Msg('x', status)
+";
+        let body = line.repeat((1024 * 1024 + 1) / line.len() + 1);
+        assert!(body.len() > 1024 * 1024 && body.len() < MAX_SOURCE_BYTES);
+        // The token limit may refuse it (a statement repeated past 1 MiB is many tokens); the byte bound must not.
+        let refused = parse_body(&body).err();
+        assert!(
+            refused
+                .as_deref()
+                .is_none_or(|e| !e.contains("-byte limit")),
+            "a 1 MiB+ body is refused by the byte bound: {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_body_past_the_catalog_bound_is_refused_by_the_byte_bound() {
+        let error = parse_body(&" ".repeat(MAX_SOURCE_BYTES + 1)).unwrap_err();
+        assert!(
+            error.contains("source exceeds the 8388608-byte limit"),
+            "{error}"
+        );
     }
 
     #[test]

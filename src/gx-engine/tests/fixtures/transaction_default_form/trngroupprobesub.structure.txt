@@ -1,0 +1,1 @@
+{"root":{"name":"TrnGroupProbeSub","attributes":[{"name":"TrnGroupProbeSubId","is_key":true,"data_type":{"kind":"numeric","precision":4,"scale":0}},{"name":"GpSubId","is_key":false,"data_type":{"kind":"numeric","precision":8,"scale":0}},{"name":"GpSubDesc","is_key":false,"data_type":{"kind":"varchar","length":40}}]}}

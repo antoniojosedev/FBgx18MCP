@@ -1,0 +1,5 @@
+         GXt_decimal1 = AV9PairResult;
+         GXt_decimal2 = AV9PairResult;
+         new pob97435900(context ).execute( ref  AV8X, out  GXt_decimal2) ;
+         new pop97435900(context ).execute(  AV8X,  GXt_decimal2, out  GXt_decimal1) ;
+         AV9PairResult = GXt_decimal1;

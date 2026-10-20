@@ -720,68 +720,6 @@ impl Decimal {
             }
         }
 
-        // 128-bit hardware division fast-path
-        for scale in (0..=MAX_SCALE).rev() {
-            let exponent = other.scale as i32 + scale as i32 - self.scale as i32;
-            if exponent >= 0 {
-                let exp = exponent as usize;
-                if exp < POW10_I128.len() {
-                    let pow = POW10_I128[exp] as u128;
-                    if let Some(scaled_num) = num_u128.checked_mul(pow) {
-                        let mut quotient = scaled_num / den_u128;
-                        let remainder = scaled_num % den_u128;
-                        if let Some(twice_rem) = remainder.checked_mul(2) {
-                            if twice_rem > den_u128
-                                || (twice_rem == den_u128 && (quotient & 1 != 0))
-                            {
-                                if let Some(q_plus) = quotient.checked_add(1) {
-                                    quotient = q_plus;
-                                } else {
-                                    continue;
-                                }
-                            }
-                            if quotient <= MAX_COEFFICIENT as u128 {
-                                let coeff = if negative {
-                                    -(quotient as i128)
-                                } else {
-                                    quotient as i128
-                                };
-                                return Self::new(coeff, scale);
-                            }
-                        }
-                    }
-                }
-            } else {
-                let exp = (-exponent) as usize;
-                if exp < POW10_I128.len() {
-                    let pow = POW10_I128[exp] as u128;
-                    if let Some(scaled_den) = den_u128.checked_mul(pow) {
-                        let mut quotient = num_u128 / scaled_den;
-                        let remainder = num_u128 % scaled_den;
-                        if let Some(twice_rem) = remainder.checked_mul(2) {
-                            if twice_rem > scaled_den
-                                || (twice_rem == scaled_den && (quotient & 1 != 0))
-                            {
-                                if let Some(q_plus) = quotient.checked_add(1) {
-                                    quotient = q_plus;
-                                } else {
-                                    continue;
-                                }
-                            }
-                            if quotient <= MAX_COEFFICIENT as u128 {
-                                let coeff = if negative {
-                                    -(quotient as i128)
-                                } else {
-                                    quotient as i128
-                                };
-                                return Self::new(coeff, scale);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         let numerator = self.magnitude();
         let denominator = other.magnitude();
         let maximum = Wide::from_u128(MAX_COEFFICIENT as u128);

@@ -82,6 +82,21 @@ pub struct TransactionStructure {
     pub is_business_component: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<TransactionRule>,
+    /// The key attributes whose `SuperTypeKey` names the key of another Transaction. The physical schema
+    /// derives a foreign key from each of them. The web class checks the reference only for the
+    /// key-only shape `csharp::transaction_form` matches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_references: Vec<KeyReference>,
+}
+
+/// A key attribute of a Transaction that references the key of another Transaction (`SuperTypeKey`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyReference {
+    /// The name of the key attribute of the Transaction that stores the reference.
+    pub attribute: String,
+    /// The name of the referenced attribute, whose table's whole primary key the foreign key targets.
+    pub references: String,
 }
 
 impl TransactionStructure {
@@ -90,6 +105,7 @@ impl TransactionStructure {
             root,
             is_business_component: false,
             rules: Vec::new(),
+            key_references: Vec::new(),
         }
     }
 
@@ -135,6 +151,50 @@ impl TransactionStructure {
                         return Err("Transaction prompt rule requires object name".into());
                     }
                 }
+            }
+        }
+
+        for (index, reference) in self.key_references.iter().enumerate() {
+            let owner = self
+                .root
+                .attributes
+                .iter()
+                .find(|a| a.name.eq_ignore_ascii_case(&reference.attribute))
+                .ok_or_else(|| {
+                    format!(
+                        "key reference on '{}', which is not an attribute of the root level",
+                        reference.attribute
+                    )
+                })?;
+            if !owner.is_key {
+                return Err(format!(
+                    "key reference on '{}', which is not a key attribute",
+                    reference.attribute
+                ));
+            }
+            if reference.references.trim().is_empty() {
+                return Err(format!(
+                    "key reference on '{}' names no attribute",
+                    reference.attribute
+                ));
+            }
+            if reference
+                .references
+                .eq_ignore_ascii_case(&reference.attribute)
+            {
+                return Err(format!(
+                    "key '{}' references its own attribute",
+                    reference.attribute
+                ));
+            }
+            if self.key_references[..index]
+                .iter()
+                .any(|earlier| earlier.attribute.eq_ignore_ascii_case(&reference.attribute))
+            {
+                return Err(format!(
+                    "key '{}' has two key references",
+                    reference.attribute
+                ));
             }
         }
 
@@ -315,6 +375,7 @@ impl TransactionLevel {
             }
             if let Some(ref dt) = attr.data_type {
                 crate::model::validate_data_type(dt)?;
+                crate::model::require_attribute_form(dt)?;
             }
         }
         if !has_key {

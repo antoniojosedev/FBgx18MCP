@@ -1,0 +1,115 @@
+gx.evt.autoSkip = false;
+gx.define('@@lname@@', false, function () {
+   this.ServerClass =  "@@lname@@" ;
+   this.PackageName =  "GeneXus.Programs" ;
+   this.ServerFullClass =  "@@lname@@.aspx" ;
+   this.setObjectType("trn");
+   this.hasEnterEvent = true;
+   this.skipOnEnter = false;
+   this.fullAjax = true;
+   this.supportAjaxEvents =  true ;
+   this.ajaxSecurityToken =  true ;
+   this.DSO =  "@@theme@@" ;
+   this.SetStandaloneVars=function()
+   {
+      this.AV7@@k_p@@=gx.fn.getIntegerValue("v@@k_U@@",',') ;
+      this.AV11Pgmname=gx.fn.getControlValue("vPGMNAME") ;
+      this.Gx_mode=gx.fn.getControlValue("vMODE") ;
+      this.AV9TrnContext=gx.fn.getControlValue("vTRNCONTEXT") ;
+   };
+   this.Valid_@@k_cap@@=function()
+   {
+      return this.validCliEvt("Valid_@@k_cap@@", 0, function () {
+      try {
+         var gxballoon = gx.util.balloon.getNew("@@k_U@@");
+         this.AnyError  = 0;
+
+      }
+      catch(e){}
+      try {
+          if (gxballoon == null) return true; return gxballoon.show();
+      }
+      catch(e){}
+      return true ;
+      });
+   }
+   this.e12@@loid@@2_client=function()
+   {
+      return this.executeServerEvent("AFTER TRN", true, null, false, false);
+   };
+   this.e13@@loid@@9_client=function()
+   {
+      return this.executeServerEvent("ENTER", true, null, false, false);
+   };
+   this.e14@@loid@@9_client=function()
+   {
+      return this.executeServerEvent("CANCEL", true, null, false, false);
+   };
+   this.GXValidFnc = [];
+   var GXValidFnc = this.GXValidFnc ;
+   this.GXCtrlIds=[2,3,4,5,6,7,8,9,10,11,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43];
+   this.GXLastCtrlId =43;
+   GXValidFnc[2]={ id: 2, fld:"",grid:0};
+   GXValidFnc[3]={ id: 3, fld:"MAINTABLE",grid:0};
+   GXValidFnc[4]={ id: 4, fld:"",grid:0};
+   GXValidFnc[5]={ id: 5, fld:"",grid:0};
+   GXValidFnc[6]={ id: 6, fld:"TITLECONTAINER",grid:0};
+   GXValidFnc[7]={ id: 7, fld:"",grid:0};
+   GXValidFnc[8]={ id: 8, fld:"",grid:0};
+   GXValidFnc[9]={ id: 9, fld:"TITLE", format:0,grid:0, ctrltype: "textblock"};
+   GXValidFnc[10]={ id: 10, fld:"",grid:0};
+   GXValidFnc[11]={ id: 11, fld:"",grid:0};
+   GXValidFnc[13]={ id: 13, fld:"",grid:0};
+   GXValidFnc[14]={ id: 14, fld:"",grid:0};
+   GXValidFnc[15]={ id: 15, fld:"FORMCONTAINER",grid:0};
+   GXValidFnc[16]={ id: 16, fld:"",grid:0};
+   GXValidFnc[17]={ id: 17, fld:"TOOLBARCELL",grid:0};
+   GXValidFnc[18]={ id: 18, fld:"",grid:0};
+   GXValidFnc[19]={ id: 19, fld:"",grid:0};
+   GXValidFnc[20]={ id: 20, fld:"",grid:0};
+   GXValidFnc[21]={ id: 21, fld:"BTN_FIRST",grid:0,evt:"e15@@loid@@9_client",std:"FIRST"};
+   GXValidFnc[22]={ id: 22, fld:"",grid:0};
+   GXValidFnc[23]={ id: 23, fld:"BTN_PREVIOUS",grid:0,evt:"e16@@loid@@9_client",std:"PREVIOUS"};
+   GXValidFnc[24]={ id: 24, fld:"",grid:0};
+   GXValidFnc[25]={ id: 25, fld:"BTN_NEXT",grid:0,evt:"e17@@loid@@9_client",std:"NEXT"};
+   GXValidFnc[26]={ id: 26, fld:"",grid:0};
+   GXValidFnc[27]={ id: 27, fld:"BTN_LAST",grid:0,evt:"e18@@loid@@9_client",std:"LAST"};
+   GXValidFnc[28]={ id: 28, fld:"",grid:0};
+   GXValidFnc[29]={ id: 29, fld:"BTN_SELECT",grid:0,evt:"e19@@loid@@9_client",std:"SELECT"};
+   GXValidFnc[30]={ id: 30, fld:"",grid:0};
+   GXValidFnc[31]={ id: 31, fld:"",grid:0};
+   GXValidFnc[32]={ id: 32, fld:"",grid:0};
+   GXValidFnc[33]={ id: 33, fld:"",grid:0};
+   GXValidFnc[34]={ id:34 ,lvl:0,type:"int",len:4,dec:0,sign:false,pic:"ZZZ9",ro:0,grid:0,gxgrid:null,fnc:this.Valid_@@k_cap@@,isvalid:null,evt_cvc:null,evt_cvcing:null,rgrid:[],fld:"@@k_U@@",fmt:0,gxz:"Z@@k_id@@@@k_p@@",gxold:"O@@k_id@@@@k_p@@",gxvar:"A@@k_id@@@@k_p@@",ucs:[],op:[],ip:[],@@cr@@
+						nacdep:[],ctrltype:"edit",v2v:function(Value){if(Value!==undefined)gx.O.A@@k_id@@@@k_p@@=gx.num.intval(Value)},v2z:function(Value){if(Value!==undefined)gx.O.Z@@k_id@@@@k_p@@=gx.num.intval(Value)},v2c:function(){gx.fn.setControlValue("@@k_U@@",gx.O.A@@k_id@@@@k_p@@,0)},c2v:function(){if(this.val()!==undefined)gx.O.A@@k_id@@@@k_p@@=gx.num.intval(this.val())},val:function(){return gx.fn.getIntegerValue("@@k_U@@",',')},nac:function(){return !((0==this.AV7@@k_p@@))}};
+   GXValidFnc[35]={ id: 35, fld:"",grid:0};
+   GXValidFnc[36]={ id: 36, fld:"",grid:0};
+   GXValidFnc[37]={ id: 37, fld:"",grid:0};
+   GXValidFnc[38]={ id: 38, fld:"",grid:0};
+   GXValidFnc[39]={ id: 39, fld:"BTN_ENTER",grid:0,evt:"e13@@loid@@9_client",std:"ENTER"};
+   GXValidFnc[40]={ id: 40, fld:"",grid:0};
+   GXValidFnc[41]={ id: 41, fld:"BTN_CANCEL",grid:0,evt:"e14@@loid@@9_client"};
+   GXValidFnc[42]={ id: 42, fld:"",grid:0};
+   GXValidFnc[43]={ id: 43, fld:"BTN_DELETE",grid:0,evt:"e20149_client",std:"DELETE"};
+   this.A@@k_id@@@@k_p@@ = 0 ;
+   this.Z@@k_id@@@@k_p@@ = 0 ;
+   this.O@@k_id@@@@k_p@@ = 0 ;
+   this.AV11Pgmname = "" ;
+   this.AV9TrnContext = {CallerObject:"",CallerOnDelete:false,CallerURL:"",TransactionName:"",Attributes:[]} ;
+   this.AV7@@k_p@@ = 0 ;
+   this.AV10WebSession = {} ;
+   this.A@@k_id@@@@k_p@@ = 0 ;
+   this.Gx_mode = "" ;
+   this.Events = {"e12@@loid@@2_client": ["AFTER TRN", true] ,"e13@@loid@@9_client": ["ENTER", true] ,"e14@@loid@@9_client": ["CANCEL", true]};
+   this.EvtParms["ENTER"] = [[{"postForm":true},{"av":"Gx_mode","fld":"vMODE","pic":"@!","hsh":true},{"av":"AV7@@k_p@@","fld":"v@@k_U@@","pic":"ZZZ9","hsh":true}],[]];
+   this.EvtParms["REFRESH"] = [[{"av":"Gx_mode","fld":"vMODE","pic":"@!","hsh":true},{"av":"AV9TrnContext","fld":"vTRNCONTEXT","hsh":true},{"av":"AV7@@k_p@@","fld":"v@@k_U@@","pic":"ZZZ9","hsh":true}],[]];
+   this.EvtParms["AFTER TRN"] = [[{"av":"Gx_mode","fld":"vMODE","pic":"@!","hsh":true},{"av":"AV9TrnContext","fld":"vTRNCONTEXT","hsh":true}],[]];
+   this.EvtParms["VALID_@@k_U@@"] = [[],[]];
+   this.EnterCtrl = ["BTN_ENTER"];
+   this.setVCMap("AV7@@k_p@@", "v@@k_U@@", 0, "int", 4, 0);
+   this.setVCMap("AV11Pgmname", "vPGMNAME", 0, "char", 129, 0);
+   this.setVCMap("Gx_mode", "vMODE", 0, "char", 3, 0);
+   this.setVCMap("AV9TrnContext", "vTRNCONTEXT", 0, "General\UI\TransactionContext", 0, 0);
+   this.Initialize( );
+});
+gx.wi( function() { gx.createParentObj(this.@@lname@@);});
