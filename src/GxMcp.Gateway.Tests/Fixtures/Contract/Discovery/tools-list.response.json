@@ -9,7 +9,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Use this for cross-object semantic analysis. mode=context (alias deep_context) returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs… Full guidance: genexus://kb/tool-help/genexus_analyze",
+      "description": "Use to run cross-object semantic analysis: impact, callers, hierarchy, navigation, linter, summary, explain, theme_classes and context (360° task context). Full guidance: genexus://kb/tool-help/genexus_analyze",
       "inputSchema": {
         "properties": {
           "code": {
@@ -373,7 +373,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Author members of object types the structure DSL doesn't cover. add_external_method / add_external_property add a method (with parameters) or property to an External Object; add_menu_option adds an… Full guidance: genexus://kb/tool-help/genexus_authoring",
+      "description": "Author members of object types the structure DSL does not cover: External Object methods/properties, Menu options and Data Selector conditions. Full guidance: genexus://kb/tool-help/genexus_authoring",
       "inputSchema": {
         "properties": {
           "action": {
@@ -644,7 +644,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Creation. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object with one HTTP-verb block per object; type='Folder'/'Module'… Full guidance: genexus://kb/tool-help/genexus_create",
+      "description": "Create KB objects (Transaction, Procedure, WebPanel, SDT, API, Domain, Dashboard, Folder, Module) and generate popups, SD panels, templates and scaffolds. Full guidance: genexus://kb/tool-help/genexus_create",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1321,7 +1321,7 @@
             "type": "boolean"
           },
           "baseVersion": {
-            "description": "Optimistic concurrency: pass the…",
+            "description": "Optimistic concurrency: the…",
             "type": "string"
           },
           "changeSet": {
@@ -1416,7 +1416,7 @@
             "type": "boolean"
           },
           "indentation": {
-            "description": "patch.indentation may also be passed at…",
+            "description": "Top-level alias of patch.indentation,…",
             "type": "object"
           },
           "kb": {
@@ -1564,7 +1564,7 @@
             "type": "boolean"
           },
           "scope": {
-            "description": "patch.scope may also be passed at the…",
+            "description": "Top-level alias of patch.scope, honored…",
             "type": "object"
           },
           "targets": {
@@ -2986,7 +2986,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Build, validate, index, or poll the KB. action=build_all runs the native incremental Build All for the entire selected KB (ForceRebuild=false); it rejects target, refuses silent reorganization, and… Full guidance: genexus://kb/tool-help/genexus_lifecycle",
+      "description": "Build, validate, index or poll the KB (build, build_all, rebuild, specify, validate, index, status, result); long operations are async with operationId. Full guidance: genexus://kb/tool-help/genexus_lifecycle",
       "inputSchema": {
         "properties": {
           "action": {
@@ -3433,7 +3433,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "GeneXus Module Manager over the SDK's IModuleManagerService. action=list (read-only: installed Module KB objects) | install (opcFile=<path to .opc file>, or name[+version] to install a named module)… Full guidance: genexus://kb/tool-help/genexus_module",
+      "description": "GeneXus Module Manager over IModuleManagerService: list, install, update, package and publish modules, and manage module servers. Full guidance: genexus://kb/tool-help/genexus_module",
       "inputSchema": {
         "properties": {
           "action": {
@@ -3768,7 +3768,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Search objects in active KB. Prefixes: name:, type:, usedby:, parent:, parentPath:, description:. name:\"X\" (or bare quoted \"X\") demands exact-name match — use it when you know the object's name. Full guidance: genexus://kb/tool-help/genexus_query",
+      "description": "Search objects in the active KB by the prefixes name:, type:, usedby:, parent:, parentPath: and description:; name:\"X\" (or bare quoted \"X\") demands an exact-name match. Full guidance: genexus://kb/tool-help/genexus_query",
       "inputSchema": {
         "properties": {
           "axiCompact": {
@@ -3803,7 +3803,7 @@
             "type": "string"
           },
           "kbs": {
-            "description": "Federated read-only discovery over an…",
+            "description": "Federated read-only search over an…",
             "items": {
               "type": "string"
             },
@@ -3861,7 +3861,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Read object code and metadata. Omitting 'part' (RECOMMENDED) returns the COMPLETE object in 1 call (rules with parm, source/events, variables, structure, called signatures) tailored to the object… Full guidance: genexus://kb/tool-help/genexus_read",
+      "description": "Read object code and metadata; omitting 'part' (RECOMMENDED) returns the COMPLETE object in 1 call, tailored to its type. Full guidance: genexus://kb/tool-help/genexus_read",
       "inputSchema": {
         "properties": {
           "entityKey": {
@@ -3983,7 +3983,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Run GeneXus refactor: rename, extract procedure, extract local subroutine, or WWP condition set. For KB-wide rename with call-site patching (RenameObject/RenameAttribute), the response includes a… Full guidance: genexus://kb/tool-help/genexus_refactor",
+      "description": "Run a GeneXus refactor: rename objects, attributes or variables, extract a procedure or a local subroutine, or apply a WWP condition set. Full guidance: genexus://kb/tool-help/genexus_refactor",
       "inputSchema": {
         "properties": {
           "action": {
@@ -4322,7 +4322,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or write the structure/data-model of GeneXus objects. update_visual requires expectedVersion for SDT writes. SDT mode=replace previews omitted members as removals and requires allowRemoval=true… Full guidance: genexus://kb/tool-help/genexus_structure",
+      "description": "Read or write the structure/data model of GeneXus objects: Transactions, SDTs, indexes, attributes, levels, Domains (including enumValues) and SubType Groups. Full guidance: genexus://kb/tool-help/genexus_structure",
       "inputSchema": {
         "properties": {
           "action": {
@@ -4931,7 +4931,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "KB context + version + health (worker/index/database) + next-step hints. Call FIRST every session. Lean by default; pass verbose=true ONCE for the inline playbooks + skills catalog of verified… Full guidance: genexus://kb/tool-help/genexus_whoami",
+      "description": "KB context + version + health (worker/index/database) + next-step hints; call FIRST every session. Lean by default; pass verbose=true ONCE for the inline playbooks + skills catalog of verified… Full guidance: genexus://kb/tool-help/genexus_whoami",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -5105,12 +5105,12 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed authoring and removal of standard WorkWith actions, parameters and selection filters. action=list_actions|add_action|remove_action|list_filters|add_filter_attribute|remove_filter_attribute. Full guidance: genexus://kb/tool-help/genexus_workwith",
+      "description": "Typed authoring and removal of standard WorkWith actions, parameters and selection filters, kept strictly separate from WorkWithPlus (genexus_wwp). Full guidance: genexus://kb/tool-help/genexus_workwith",
       "inputSchema": {
         "properties": {
           "action": {
             "default": "list_actions",
-            "description": "Operation to perform: list_actions…",
+            "description": "Operation: list_actions, add_action…",
             "enum": [
               "list_actions",
               "add_action",
@@ -5211,7 +5211,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed WorkWithPlus action, form-level action, tab, grid, native table-type, and structural edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and… Full guidance: genexus://kb/tool-help/genexus_wwp",
+      "description": "Typed WorkWithPlus edits (actions, tabs, grids, tables, settings) with dryRun, optimistic concurrency, post-save reread and rollback. Full guidance: genexus://kb/tool-help/genexus_wwp",
       "inputSchema": {
         "properties": {
           "action": {

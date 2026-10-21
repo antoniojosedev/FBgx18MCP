@@ -190,7 +190,7 @@ namespace GxMcp.Gateway.Tests
                 ["task"] = "Sync",
                 ["target"] = "Sync",
                 ["dir"] = kb.Path
-            }, new Program.GxwireToolSeams
+            }, new GxwireTool.GxwireToolSeams
             {
                 // CI has no gxwire.exe; the refusal must come before any launch anyway.
                 LocateExecutable = () => System.IO.Path.Combine(kb.Path, "gxwire.exe"),

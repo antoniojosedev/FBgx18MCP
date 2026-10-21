@@ -15,7 +15,7 @@ namespace GxMcp.Gateway.Tests
     // is launched, with the text-tree export named as the way forward.
     //
     // These tests never need gxwire.exe: the locator, launcher and cache path
-    // are replaced through Program.GxwireToolSeams.
+    // are replaced through GxwireTool.GxwireToolSeams.
     public class GxwireErrorEnvelopeTests
     {
         private const string FakeExe = @"C:\fake\gxwire.exe";
@@ -34,7 +34,7 @@ namespace GxMcp.Gateway.Tests
 
             internal Func<string?> Locator { get; set; } = () => FakeExe;
 
-            internal Program.GxwireToolSeams Seams => new Program.GxwireToolSeams
+            internal GxwireTool.GxwireToolSeams Seams => new GxwireTool.GxwireToolSeams
             {
                 LocateExecutable = Locator,
                 ResolveCachePath = _ => CachePath,
@@ -166,12 +166,12 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(101, result["exitCode"]?.Value<int>());
             string stderr = result["stderr"]?.ToString() ?? "";
             Assert.EndsWith("FINAL-LINE", stderr);
-            Assert.True(stderr.Length <= Program.GxwireStderrTailChars + 1, $"stderr must be bounded, got {stderr.Length} chars");
+            Assert.True(stderr.Length <= GxwireTool.GxwireStderrTailChars + 1, $"stderr must be bounded, got {stderr.Length} chars");
 
             var ctx = (JObject)result["diagnosticContext"]!;
             Assert.Equal(101, ctx["exitCode"]?.Value<int>());
             Assert.Equal(250, ctx["elapsedMs"]?.Value<long>());
-            Assert.True((ctx["stderrTail"]?.ToString() ?? "").Length <= Program.GxwireStderrTailChars + 1);
+            Assert.True((ctx["stderrTail"]?.ToString() ?? "").Length <= GxwireTool.GxwireStderrTailChars + 1);
             Assert.Null(result["engineCode"]);
         }
 
@@ -201,7 +201,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("", null)]
         public void EngineCode_IsLiftedFromEveryOutputFormat(string text, string? expected)
         {
-            Assert.Equal(expected, Program.ExtractGxwireEngineCode(text));
+            Assert.Equal(expected, GxwireTool.ExtractGxwireEngineCode(text));
         }
 
         // --- status without an index ----------------------------------------------
@@ -423,7 +423,7 @@ namespace GxMcp.Gateway.Tests
 
             AssertCodedError(result, GxwireErrorCodes.UnexpectedException);
             Assert.True(
-                (result["message"]?.ToString() ?? "").Length <= Program.GxwireExceptionMessageChars + 128,
+                (result["message"]?.ToString() ?? "").Length <= GxwireTool.GxwireExceptionMessageChars + 128,
                 "the exception detail must stay bounded inside the envelope");
         }
 
