@@ -164,7 +164,7 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("TableContainerNotFound", (string)plan["code"]);
             Assert.Contains("TableFilters", plan["availablePaths"].Values<string>());
             Assert.Contains("containerName", (string)plan["hint"]);
-            Assert.Empty(doc.Descendants("table").Where(t => (string)t.Attribute("name") == "tableOp"));
+            Assert.DoesNotContain(doc.Descendants("table"), t => (string)t.Attribute("name") == "tableOp");
 
             Assert.Equal("TableContainerNotFound", (string)AddTable(doc, "containerName:'Nope'")["code"]);
             Assert.Null(AddTable(doc, "containerName:'TableFilters'")["error"]);

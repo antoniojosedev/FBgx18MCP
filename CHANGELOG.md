@@ -7,6 +7,35 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Internal
+
+## v4.0.0 - 2026-10-21
+
+
+### Tracked issues
+
+- [#586](https://github.com/lennix1337/Genexus18MCP/issues/586) — [Feature][Follow-up #559] genexus_workwith: adicionar remove_filter_attribute
+- [#587](https://github.com/lennix1337/Genexus18MCP/issues/587) — [Enhancement][Follow-up #559] genexus_workwith add_filter_attribute: validar/resolver domain
+- [#588](https://github.com/lennix1337/Genexus18MCP/issues/588) — [Enhancement][Follow-up #559] genexus_workwith add_filter_attribute: expor e ler o campo default
+- [#589](https://github.com/lennix1337/Genexus18MCP/issues/589) — [Enhancement][Follow-up #559] genexus_workwith: o recibo deve refletir o caminho de leitura real
+- [#590](https://github.com/lennix1337/Genexus18MCP/issues/590) — [Enhancement][Follow-up #559] genexus_workwith: avaliar leitura independente da definição persistida (ou declarar o limite)
+- [#592](https://github.com/lennix1337/Genexus18MCP/issues/592) — [Bug][Follow-up #558] A reversão automática de mode=ops remove a referência ao atributo criado, mas deixa o atributo global na KB
+- [#595](https://github.com/lennix1337/Genexus18MCP/issues/595) — [Feature] WorkWithPlus: criar <table>/painel numa instância (WebPanel e Transaction) e mover controles para dentro — hoje recusado mesmo vazio
+- [#596](https://github.com/lennix1337/Genexus18MCP/issues/596) — [Bug][Follow-up #522/#554] O gate de início do backfill do source store é one-shot por instância de ObjectService: depois do primeiro Start, mudanças de catálogo não refazem a caminhada (o reset por assinatura não volta a ser alcançado no fluxo normal)
+- [#605](https://github.com/lennix1337/Genexus18MCP/issues/605) — [Testes][Refatoração][Follow-up #548] Isolar e testar o append assíncrono do logger
+- [#613](https://github.com/lennix1337/Genexus18MCP/issues/613) — [Bug] Save isolado de Events (requireObjectSave): ObjectSaveIncomplete devolve message "Erro" sem etapa, tipo de exceção nem mensagens do SDK
+- [#615](https://github.com/lennix1337/Genexus18MCP/issues/615) — [Bug] Preview dryRun lento de genexus_edit arma PostTimeoutReadRequired e a releitura integral de um Source grande não limpa a cerca
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
 - **`genexus_wire action=pack_task` works on a native Knowledge Base, scoped and read-only, without exporting it** ([#499](https://github.com/lennix1337/Genexus18MCP/issues/499), follow-up). A native KB keeps its object sources in the KB database, so the file-based engine could only refuse it with `GXWIRE_REQUIRES_TEXT_SOURCE_TREE` and point at a whole-KB text export. On the KB the session has open, `pack_task` now falls through to the Worker, which resolves the objects it is asked about through the SDK-backed search index: pass `targets` (object names, `Type:Name` or `Module.Name` to disambiguate) and/or name the objects in `task`. The answer lists the resolved objects (type, path, module, parm rule, direct callers and callees, and the parts each object exposes), the calls among them, the sources it consulted and its limits (partial index coverage per side, names taken from free text, parts it could not list), and it names every object it did not pack: not found (with near matches), ambiguous (every candidate, none picked), skipped because a bare word only matched an attribute, table, folder or module, or left out by `token_budget`, the time budget or the object cap (12, or 25 with `full=true`). If every explicit target fails to resolve the call returns `TargetsNotResolved` with the same details. It reads no part body, writes nothing and runs no Specify, Generate, Build, Rebuild, reorganization or execution. Every other `genexus_wire` action, and `pack_task` on a text tree, behave as before.
 
 - **`genexus_wwp action=set_combo_properties`** configures the DVelop combo of one WorkWithPlus attribute: `Parameters` (an array of expressions or a comma-separated string), `LoadDataDynamically` (boolean) and `ConditionsDynamicAttsOrVars` (attribute/variable names of the same form). The SDK stores them as `controlInputDPParameters`, `controlLoadDynamically` and `conditionDynAtts`; any other key is refused as `UnknownComboProperty` with the nearest supported name. `dryRun` runs every value through the SDK's own converters and reports requested/before/after per property without touching the instance, and a control that cannot use a property (not a DVelop Combo, Based on, Fixed Values) is refused with its current configuration. A write needs `baseVersion`, changes the properties with the Pattern SDK change command, re-reads the whole instance through a fresh SDK resolution, projects the parent through the WorkWithPlus build process, verifies the projected WebForm structurally and re-reads the instance again; on any divergence it restores the exact PatternInstance/WebForm snapshots and reports `rollbackVerified` only when a fresh re-read matches their SHA-256. It never sets `controlType`/`controlInputDS` and starts no KB lifecycle operation. https://github.com/lennix1337/Genexus18MCP/issues/620
