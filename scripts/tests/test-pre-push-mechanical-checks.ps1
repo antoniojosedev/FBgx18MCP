@@ -73,6 +73,14 @@ foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 
 # parsed and validated here, before the dot-source below, so an offending file is
 # refused without first executing it in this scope.
 #
+# Covered surfaces are the ones that execute on import: the param/begin/process/
+# dynamicparam/clean blocks and the end-block statements. `using` statements are
+# resolved while the file is parsed, before any post-parse guard can inspect
+# them, so that surface is documented as out of reach instead of pretended to be
+# covered. The production checker dot-sources the same contract without this
+# guard: this is a structural assertion over trusted upstream code, not a sandbox
+# for it, and a top-level `exit` there would still terminate the checker.
+#
 # Upstream binds two named constants at top level (v4.0.0):
 #   $script:GxMcpReleaseWorkflowCheck / $script:GxMcpReleaseWorkflowAppId
 # A literal binding to one of those script-scoped names emits no output, consumes
@@ -136,16 +144,35 @@ foreach ($case in @(
         @{ text = '$script:GxMcpReleaseWorkflowCheck = @(1, 2)'; accepted = $false; name = 'array expression' }
         @{ text = '$script:GxMcpReleaseWorkflowCheck = $(1)'; accepted = $false; name = 'subexpression' }
         @{ text = '[string]$script:GxMcpReleaseWorkflowCheck = ''test'''; accepted = $false; name = 'typed assignment' }
+        @{ text = '''test'' | Out-Null'; accepted = $false; name = 'top-level pipeline' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = $false'; accepted = $false; name = 'false literal' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = "a$(Get-Date)"'; accepted = $false; name = 'expandable string' }
+        @{ text = 'function Get-Thing { Get-Location }'; accepted = $true; name = 'function with a non-empty body' }
+        @{ text = 'class Foo { }'; accepted = $false; name = 'class definition' }
+        @{ text = 'enum Bar { A }'; accepted = $false; name = 'enum definition' }
+        @{ text = 'exit 1'; accepted = $false; name = 'exit statement' }
+        @{ text = 'return'; accepted = $false; name = 'return statement' }
+        @{ text = 'throw ''x'''; accepted = $false; name = 'throw statement' }
     )) {
     Assert-ReleaseContractStatementClassification -Text $case.text -Accepted $case.accepted -CaseName $case.name
 }
+
+# The contract loop classifies every end-block statement, so a file that mixes an
+# accepted statement with a refused one must be rejected on the second one.
+$multiTokens = $null; $multiErrors = $null
+$multiAst = [System.Management.Automation.Language.Parser]::ParseInput("function Get-Thing { }`nGet-Location", [ref]$multiTokens, [ref]$multiErrors)
+$multiStatements = @($multiAst.EndBlock.Statements)
+if ($multiStatements.Count -ne 2) { throw "The multi-statement fixture must parse to two statements; found $($multiStatements.Count)." }
+if (-not (Test-ReleaseContractTopLevelStatement -Statement $multiStatements[0])) { throw 'The multi-statement fixture must accept its function statement.' }
+if (Test-ReleaseContractTopLevelStatement -Statement $multiStatements[1]) { throw 'The multi-statement fixture must reject its pipeline statement.' }
 
 $contractPath = Join-Path $root 'scripts\release-contract.ps1'
 $contractTokens = $null; $contractParseErrors = $null
 $contractAst = [System.Management.Automation.Language.Parser]::ParseFile($contractPath, [ref]$contractTokens, [ref]$contractParseErrors)
 if ($contractParseErrors.Count -gt 0) { throw "release-contract.ps1 has parse errors: $($contractParseErrors -join '; ')" }
-if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.ProcessBlock) {
-    throw 'release-contract.ps1 must not declare param/begin/process blocks; the dot-source must not consume arguments.'
+if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.ProcessBlock -or
+    $contractAst.DynamicParamBlock -or $contractAst.CleanBlock) {
+    throw 'release-contract.ps1 must not declare param/begin/process/dynamicparam/clean blocks; the dot-source must not consume arguments or run top-level code.'
 }
 foreach ($stmt in $contractAst.EndBlock.Statements) {
     if (Test-ReleaseContractTopLevelStatement -Statement $stmt) { continue }
