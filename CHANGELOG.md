@@ -151,6 +151,7 @@
 
 ### Internal
 
+- gx-engine: the six production files over 1000 lines (`udm/reader.rs`, `udm/client.rs`, `udm/stored_variables.rs`, `csharp/emitter.rs`, `csharp/webform.rs`, `table.rs`) are split into cohesive submodules, each under 600 lines, with their tests in sibling `tests.rs` files; public paths are re-exported unchanged and behavior is identical (same public items, same 1277 passing tests).
 - Tool profile byte budget `all` 103200 -> 103300 (measured 103228) for the `genexus_wwp` `set_combo_properties` enum value and `properties` input; the token budget and the other profiles are unchanged.
 - Tool schema budget: the `all` profile byte budget goes from 103000 to 103100 for the `expressions` input of `genexus_properties` (typed Dynamic Combo parameters); measured 103015 bytes. The combined token budget is unchanged.
 - `genexus_wire` execution moved from `Program.ToolDispatch.cs` to `Program.Gxwire.cs`; the executable locator, process launcher and cache-path resolver are a `GxwireToolSeams` the tests replace, so every failure path is covered without a gxwire binary (`GxwireErrorEnvelopeTests`). `GxwireProcessRun` carries `ExitCode` and `ElapsedMs`.
