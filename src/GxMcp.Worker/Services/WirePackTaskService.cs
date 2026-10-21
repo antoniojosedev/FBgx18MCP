@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text.RegularExpressions;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -342,7 +343,11 @@ namespace GxMcp.Worker.Services
 
             // The edges and the parm rule come from enrichment; promote this object so its own are read.
             if (!entry.IsEnriched)
-                try { _indexCache.GetEnrichmentQueue()?.PromoteAsync(entry).GetAwaiter().GetResult(); } catch { }
+            {
+                // A failed promotion leaves the entry unenriched; the reference read below reports its own field trust.
+                try { _indexCache.GetEnrichmentQueue()?.PromoteAsync(entry).GetAwaiter().GetResult(); }
+                catch (Exception ex) { Logger.Debug("[WirePack] enrichment of '" + entry.Name + "' failed: " + ex.Message); }
+            }
 
             JObject references = _graph.References(index, entry, ReferenceDepth, ReferenceNodeCap, includeTruncationReasons: true);
             JObject callers = (JObject)references["callers"];

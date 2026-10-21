@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -7,6 +8,7 @@ using System.Xml.Linq;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -238,9 +240,14 @@ namespace GxMcp.Worker.Services
                 explicitBase64: false, strictVerify: true, rollbackOnFailure: true, forceWrite: false,
                 baseVersion: before.CurrentVersion);
 
-            JObject write;
-            try { write = JObject.Parse(raw); }
-            catch { return raw; }
+            if (!TryParseWriteResponse(raw, out JObject write, out string unreadable))
+            {
+                Logger.Error("[ControlParameters] the write pipeline answered something that is not JSON: " + unreadable);
+                return McpResponse.Err(code: "ControlParametersWriteFailed", target: target,
+                    message: "The write pipeline's answer could not be read, so the control's parameters may or may not be persisted: " + unreadable,
+                    hint: "Read the control's parameters again to see what is persisted before retrying.",
+                    extra: new JObject { ["persistenceStateKnown"] = false });
+            }
 
             bool pipelineOk = string.Equals(write["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(write["status"]?.ToString(), "success", StringComparison.OrdinalIgnoreCase);
@@ -301,6 +308,16 @@ namespace GxMcp.Worker.Services
             result["details"] = "Parameters updated; read back from a fresh instance and compared with the request.";
             var ok = JObject.Parse(McpResponse.Ok(target: target, code: "ControlParametersApplied", result: result));
             return ok.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        /// <summary>The write pipeline's envelope as JSON; false, with the parse failure, when it is not JSON.</summary>
+        internal static bool TryParseWriteResponse(string raw, out JObject write, out string failure)
+        {
+            write = null;
+            failure = null;
+            try { write = JObject.Parse(raw ?? string.Empty); }
+            catch (JsonReaderException ex) { failure = ex.Message; }
+            return write != null;
         }
 
         // ------------------------------------------------------------ rollback
@@ -615,9 +632,7 @@ namespace GxMcp.Worker.Services
 
         private static string Canonical(string tokens)
         {
-            if (string.IsNullOrWhiteSpace(tokens)) return string.Empty;
-            try { return XDocument.Parse(tokens.Trim()).Root.ToString(SaveOptions.DisableFormatting); }
-            catch { return tokens.Trim(); }
+            return CustomPropertiesPayload.CanonicalXmlOrText(tokens);
         }
 
         internal static bool SameExpressions(IList<string> persisted, IList<string> expected)
@@ -672,7 +687,11 @@ namespace GxMcp.Worker.Services
                 }
                 return document.ToString(SaveOptions.DisableFormatting);
             }
-            catch { return xml; }
+            catch (XmlException)
+            {
+                // Unparseable text is left unmasked: the comparison that follows reports the parse error.
+                return xml;
+            }
         }
 
         private ControlContext ReadBack(string target, string control, string typeFilter, out string failure)
@@ -681,7 +700,7 @@ namespace GxMcp.Worker.Services
             var context = Resolve(target, control, typeFilter, out string error);
             if (context == null)
             {
-                try { failure = JObject.Parse(error)["error"]?["message"]?.ToString(); } catch { failure = "unreadable"; }
+                failure = ReadErrorMessage(error);
                 return null;
             }
             // Resolve read the object through the fresh-read path, but the model operations ran on
@@ -691,6 +710,13 @@ namespace GxMcp.Worker.Services
             return context;
         }
 
+        /// <summary>The message of an error envelope; says so when the envelope is not JSON.</summary>
+        internal static string ReadErrorMessage(string errorEnvelope)
+        {
+            try { return JObject.Parse(errorEnvelope)["error"]?["message"]?.ToString(); }
+            catch (JsonReaderException ex) { return "the error response is not valid JSON (" + ex.Message + ")"; }
+        }
+
         /// <summary>The variables declared in the object's Variables part (the standard ones included), or null when unreadable.</summary>
         private static HashSet<string> DeclaredVariableNames(KBObject obj)
         {
@@ -698,21 +724,26 @@ namespace GxMcp.Worker.Services
             {
                 var part = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => string.Equals(p.GetType().Name, "VariablesPart", StringComparison.Ordinal));
                 if (part == null) return null;
-                dynamic variables = ((dynamic)part).Variables;
-                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (dynamic variable in variables)
-                {
-                    string name = null;
-                    try { name = (string)variable.Name; } catch { }
-                    if (!string.IsNullOrWhiteSpace(name)) names.Add(name.TrimStart('&'));
-                }
-                return names;
+                return ReadVariableNames((IEnumerable)((dynamic)part).Variables);
             }
             catch (Exception ex)
             {
                 Logger.Debug("[ControlParameters] variables not readable: " + (ex.InnerException ?? ex).Message);
                 return null;
             }
+        }
+
+        // A variable whose name cannot be read makes the whole list unreadable: a partial list would
+        // report the variables it skipped as undeclared.
+        internal static HashSet<string> ReadVariableNames(IEnumerable variables)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (dynamic variable in variables)
+            {
+                string name = variable.Name;
+                if (!string.IsNullOrWhiteSpace(name)) names.Add(name.TrimStart('&'));
+            }
+            return names;
         }
 
         internal static List<ParameterListDiagnostic> FindUndeclaredVariables(
@@ -796,7 +827,9 @@ namespace GxMcp.Worker.Services
             var first = unresolved[0];
             return McpResponse.Err(
                 code: "UnknownAttributeReference", target: target,
-                message: "expressions[" + first.Index + "] names att:" + first.AttributeId + ", which is not an attribute of this Knowledge Base; nothing was written.",
+                message: first.LookupFailure == null
+                    ? "expressions[" + first.Index + "] names att:" + first.AttributeId + ", which is not an attribute of this Knowledge Base; nothing was written."
+                    : "expressions[" + first.Index + "] names att:" + first.AttributeId + ", which could not be looked up (" + first.LookupFailure + "); nothing was written.",
                 hint: "Pass the attribute by name (as in the Transaction structure) or with an att:<id> that exists in this KB. genexus_structure action=get_visual lists them.",
                 extra: new JObject
                 {
@@ -809,7 +842,7 @@ namespace GxMcp.Worker.Services
                         ["expression"] = u.Expression,
                         ["code"] = "UnknownAttributeReference",
                         ["attributeId"] = u.AttributeId,
-                        ["message"] = "att:" + u.AttributeId + " does not resolve in this KB."
+                        ["message"] = u.Message
                     }))
                 });
         }
@@ -881,17 +914,25 @@ namespace GxMcp.Worker.Services
         {
             string stored = context.ReadStored("DataProvider");
             if (stored == null) return JValue.CreateNull();
+            return DescribeStoredDataProvider(stored, (typeGuid, id) =>
+                context.Object.Model.Objects.GetName(new global::Artech.Udm.Framework.EntityKey(typeGuid, id))?.ObjectName);
+        }
+
+        // The stored value is "<type guid>-<id>". A lookup that fails is reported beside the stored
+        // value, so a missing name is never read as a Data Provider that has none.
+        internal static JObject DescribeStoredDataProvider(string stored, Func<Guid, int, string> objectNameOf)
+        {
             var entry = new JObject { ["stored"] = stored };
             var match = Regex.Match(stored, @"^([0-9a-fA-F-]{36})-(\d+)$");
-            if (match.Success)
+            if (!match.Success) return entry;
+            try
             {
-                try
-                {
-                    var key = new global::Artech.Udm.Framework.EntityKey(new Guid(match.Groups[1].Value), int.Parse(match.Groups[2].Value));
-                    var name = context.Object.Model.Objects.GetName(key);
-                    if (name != null) entry["name"] = name.ObjectName;
-                }
-                catch { }
+                string name = objectNameOf(new Guid(match.Groups[1].Value), int.Parse(match.Groups[2].Value));
+                if (name != null) entry["name"] = name;
+            }
+            catch (Exception ex)
+            {
+                entry["nameLookupError"] = (ex.InnerException ?? ex).Message;
             }
             return entry;
         }

@@ -202,8 +202,10 @@ namespace GxMcp.Worker.Services
                 value = ReadDiagnosticSanitizer.SanitizeText(value, out _);
                 return Regex.Replace(value, @"\s*[\r\n]+\s*", " ").Trim();
             }
-            catch
+            catch (Exception ex)
             {
+                // Fail closed: the text is withheld. Only the exception type is logged, never its text.
+                Logger.Debug("[ISOLATED-EVENTS] diagnostic text withheld, sanitization failed: " + ex.GetType().Name);
                 return "[diagnostic text withheld: sanitization failed]";
             }
         }
@@ -248,7 +250,7 @@ namespace GxMcp.Worker.Services
                 string exceptionPart = string.Equals(phase, IsolatedEventsSavePhase.PartSave, StringComparison.Ordinal)
                     ? "Events" : "Object";
                 foreach (Exception carrier in EnumerateWithInner(ex))
-                    foreach (object message in ReadExceptionOutput(carrier))
+                    foreach (object message in ReadExceptionOutput(carrier, failure))
                         candidates.Add(new KeyValuePair<string, object>(exceptionPart, message));
             }
             catch (Exception outputEx)
@@ -261,7 +263,7 @@ namespace GxMcp.Worker.Services
                 if (sdkSources != null)
                     foreach (var source in sdkSources() ?? Enumerable.Empty<KeyValuePair<string, object>>())
                         if (source.Value != null)
-                            foreach (object message in ReadMessages(source.Value))
+                            foreach (object message in ReadMessages(source.Value, failure))
                                 candidates.Add(new KeyValuePair<string, object>(source.Key, message));
             }
             catch (Exception sdkEx)
@@ -407,7 +409,7 @@ namespace GxMcp.Worker.Services
         // A GeneXus ValidationException keeps the validation messages in Output; its Message
         // is the bare "Erro". FullMessage (the same messages as text) covers an Output that
         // cannot be enumerated.
-        private static List<object> ReadExceptionOutput(Exception carrier)
+        private static List<object> ReadExceptionOutput(Exception carrier, IsolatedEventsFailure failure)
         {
             var messages = new List<object>();
             try
@@ -421,9 +423,10 @@ namespace GxMcp.Worker.Services
                     && full.Trim().Length > 0 && !WritePolicy.IsBareGenericError(full))
                     messages.Add(new PlainMessage { Text = full });
             }
-            catch
+            catch (Exception ex)
             {
-                // An exception whose Output cannot be read still has its own message.
+                // An exception whose Output cannot be read still has its own message; say why it was not read.
+                failure.SdkMessagesError = Sanitize((ex.InnerException ?? ex).Message);
             }
             return messages;
         }
@@ -433,7 +436,7 @@ namespace GxMcp.Worker.Services
             public string Text { get; set; }
         }
 
-        private static List<object> ReadMessages(object owner)
+        private static List<object> ReadMessages(object owner, IsolatedEventsFailure failure)
         {
             var messages = new List<object>();
             try
@@ -444,9 +447,10 @@ namespace GxMcp.Worker.Services
                     foreach (object message in list)
                         if (message != null) messages.Add(message);
             }
-            catch
+            catch (Exception ex)
             {
                 // A part whose Messages cannot be read contributes nothing; the others still do.
+                failure.SdkMessagesError = Sanitize((ex.InnerException ?? ex).Message);
             }
             return messages;
         }
@@ -542,7 +546,7 @@ namespace GxMcp.Worker.Services
         {
             if (!(value is IConvertible)) return null;
             try { return Convert.ToInt32(value); }
-            catch { return null; }
+            catch (Exception ex) when (ex is FormatException || ex is OverflowException || ex is InvalidCastException) { return null; }
         }
     }
 }

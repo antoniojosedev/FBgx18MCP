@@ -428,6 +428,42 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("no messages", failure.SdkMessagesError);
         }
 
+        private sealed class ExceptionWithUnreadableOutput : Exception
+        {
+            public ExceptionWithUnreadableOutput() : base("Erro") { }
+            public System.Collections.IEnumerable Output => throw new InvalidOperationException("output is unreadable");
+        }
+
+        private sealed class OwnerWithUnreadableMessages
+        {
+            public System.Collections.IEnumerable Messages => throw new InvalidOperationException("messages are unreadable");
+        }
+
+        [Fact]
+        public void Describe_AnExceptionWhoseOutputCannotBeRead_ReportsWhyInsteadOfSwallowingIt()
+        {
+            var failure = Describe(new ExceptionWithUnreadableOutput());
+
+            Assert.Contains("output is unreadable", failure.SdkMessagesError);
+        }
+
+        [Fact]
+        public void Describe_ASourceWhoseMessagesCannotBeRead_ReportsWhyAndKeepsTheOtherSources()
+        {
+            var readable = new FakeSdkPart();
+            readable.Messages.Add(new FakeSdkMessage { ErrorCode = "src0059", Text = "Esperando 'EndFor'" });
+            var sources = new List<KeyValuePair<string, object>>
+            {
+                new KeyValuePair<string, object>("Rules", new OwnerWithUnreadableMessages()),
+                new KeyValuePair<string, object>("Events", readable)
+            };
+
+            var failure = Describe(new Exception("boom"), sources: sources);
+
+            Assert.Contains("messages are unreadable", failure.SdkMessagesError);
+            Assert.Single(failure.Diagnostics);
+        }
+
         [Fact]
         public void Describe_WithoutAnyExceptionDetail_StillNamesTheExceptionType()
         {

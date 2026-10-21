@@ -1,9 +1,10 @@
 //! Developer Menu files of a GeneXus 18 .NET web model.
 //!
 //! `DeveloperMenu.xml` is checked byte for byte against the SDK's output for KBTeste. The static
-//! files are copied verbatim from the install's `gxnetcore/` folder; the copy test runs against
-//! synthetic stand-ins under `fixtures/sdk_form/developer_menu` (the GeneXus install files are not
-//! redistributed here). The escaping test uses a synthetic description and is labelled as such.
+//! files are copied at run time from the user's GeneXus install (`gxnetcore/`); this repository
+//! embeds and redistributes none of them (`developermenu.js` of the install uses `eval`, which the
+//! plugin scanner flags), so the copy tests build a folder of their own with bytes a text-oriented copy
+//! would alter. The escaping test uses a synthetic description and is labelled as such.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -83,27 +84,69 @@ fn developer_menu_xml_matches_the_sdk_output_for_kbteste() {
     );
 }
 
+/// A folder shaped like the install's `gxnetcore/`, written by the test. The emitter embeds none of the
+/// install's files (it reads them from the user's GeneXus install when asked), so the contract under test
+/// is "copy what the folder holds, byte for byte". The contents are bytes a text-oriented copy would
+/// change: a BOM, CRLF and lone CR line ends, NUL and bytes that are not UTF-8.
+fn write_install_like_folder(root: &Path) -> Vec<(&'static str, Vec<u8>)> {
+    let files: Vec<(&'static str, Vec<u8>)> = vec![
+        (
+            "developermenu.html",
+            b"\xEF\xBB\xBF<html>\r\n</html>\r".to_vec(),
+        ),
+        ("prgs.xsl", vec![0x00, 0xFF, 0xFE, b'\n', b'\r', 0x80]),
+        ("devmenu/b.js", b"x = 1;\r\n".to_vec()),
+        ("devmenu/a.css", vec![b'a', 0xFF, 0x00, b'\n']),
+    ];
+    let _ = fs::remove_dir_all(root);
+    for (relative, bytes) in &files {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+    // A nested folder is not a menu asset and is not copied.
+    fs::create_dir_all(root.join("devmenu").join("nested")).unwrap();
+    fs::write(
+        root.join("devmenu").join("nested").join("skip.txt"),
+        b"skip",
+    )
+    .unwrap();
+    files
+}
+
 #[test]
-fn static_copies_are_byte_copies_of_the_install_folder_synthetic() {
-    let root = fixtures().join("developer_menu");
+fn static_copies_are_byte_copies_of_the_folder_they_are_given() {
+    let root = std::env::temp_dir().join(format!("gx_developer_menu_{}", std::process::id()));
+    let files = write_install_like_folder(&root);
+
     let copies = developer_menu_static_copies(&root).expect("copies");
+
     let paths: Vec<&str> = copies.iter().map(|(p, _)| p.as_str()).collect();
     assert_eq!(
         paths,
         [
             "developermenu.html",
             "prgs.xsl",
-            "devmenu/developermenu.css",
-            "devmenu/developermenu.js"
+            "devmenu/a.css",
+            "devmenu/b.js"
         ]
     );
     for (relative, bytes) in &copies {
-        let expected = fs::read(root.join(relative)).expect("fixture file");
-        assert!(
-            *bytes == expected,
-            "{relative} differs from the install copy"
-        );
+        let expected = &files.iter().find(|(name, _)| name == relative).unwrap().1;
+        assert!(bytes == expected, "{relative} is not a byte copy");
     }
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn static_copies_fail_when_the_install_folder_lacks_a_menu_file() {
+    let root =
+        std::env::temp_dir().join(format!("gx_developer_menu_missing_{}", std::process::id()));
+    write_install_like_folder(&root);
+    fs::remove_file(root.join("prgs.xsl")).unwrap();
+
+    assert!(developer_menu_static_copies(&root).is_err());
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

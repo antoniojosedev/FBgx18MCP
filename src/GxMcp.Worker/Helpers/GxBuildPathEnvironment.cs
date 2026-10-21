@@ -148,7 +148,7 @@ namespace GxMcp.Worker.Helpers
                 string full = Path.GetFullPath(trimmed);
                 return full.Length > 3 ? full.TrimEnd('\\', '/') : full;
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
             {
                 return null;
             }
