@@ -49,23 +49,33 @@ bookkeeping files.
 
 ## Measured local SDK comparison
 
-**Whole-KB generation** (`KBTeste`, specify + generate, no compile), wall clock on one machine:
+**Whole-KB Rebuild All** (`KBTeste`, 346 classes), paired and alternating on one machine,
+2026-10-21, with the database held open by an idle connection as an opened KB holds it
+(`bench-s42.py`). The SDK side runs specify + generate only (MSBuild `SpecifyAllOnly` +
+`GenerateOnly`); its own compile is blocked by GeneXus Cloud here, so the engine side, which
+does compile, is measured against less work than it does:
 
-| | Runs | Wall | Notes |
-| :--- | :---: | :---: | :--- |
-| GeneXus SDK (MSBuild `SpecifyAllOnly` + `GenerateOnly`) | 3 | 33.4 – 39.9 s | 2026-10-21, alternating with the engine runs |
-| gx-engine `rebuild-all --skip-compile` | 3 | 0.61 – 0.68 s | 2026-10-21; ~0.45 s is the KB catalog read, ~0.15 s emit |
+| | Runs | Median | Range | Ratio |
+| :--- | :---: | :---: | :---: | :---: |
+| GeneXus SDK (specify + generate, no compile) | 3 | 42.2 s | 32.3 – 46.2 s | |
+| gx-engine, nothing changed (compile proven up to date) | 9 | 289 ms | 271 – 306 ms | ~146× |
+| gx-engine, forced full compile of all 346 classes | 9 | 816 ms | 739 – 989 ms | ~51.7× |
 
-The median pair is **~58×** (36.0 s vs 0.62 s). That is not claimed as reaching the 50× goal:
-the output parity above is 328/328 C# files with 20 extra and no Developer Menu, so full SDK
-parity is unverified. The catalog read went from ~3.1 s to ~0.45 s: every KB read of a run shares
-a persistent `sqlcmd` session, the part payloads are read on four parallel sessions and decoded
-with a lookup table, and the build environment is read while the catalog loads. A warm whole-KB
-build with compile takes the engine 1.38 – 1.43 s (direct `csc` replay of the kept compiler
-command, 0.76 – 0.83 s); the first build into a new output folder runs `dotnet build` (~2.5 s
-warm, ~22.8 s measured once cold). The SDK's
-own build task is blocked by GeneXus Cloud on this machine, so no compiled whole-KB ratio exists.
+The ratios are medians against medians; the fastest SDK run against the slowest forced-compile run
+is ~33×. Output parity of the same run: 328/328 C# files identical to the SDK, 20 extra, 0
+missing; the Developer Menu is not written, so full SDK parity is unverified and this is not a
+full-replacement claim.
 
+Where the time went: the catalog read is ~150 ms (from ~3.1 s): every KB read of a run shares a
+persistent `sqlcmd` session, only the entity types the engine serves are read (2 MB of part hex
+instead of 62 MB), on four parallel sessions decoded with a lookup table, while the build
+environment is read alongside. A web class that differs from the file on disk only by its
+generation stamp is not rewritten, so an unchanged KB leaves every compiler input unchanged and
+the compile is skipped. A real compile replays the kept compiler command directly (`csc /shared`,
+`/skipanalyzers+` when no analyzer diagnostic can fail the build; same DLL). The first build into a
+new output folder runs `dotnet build` (~1.9 s); a cold compiler server was measured once at
+~22.8 s. An earlier binary measured generation alone (`--skip-compile`) at 0.61 – 0.68 s against
+SDK 33.4 – 39.9 s (~58×).
 
 A five-pair **warm, selected-object** local MSBuild comparison measured SDK median
 14.756s versus gx-engine 0.230s (**64.19x**), including engine database setup.

@@ -99,6 +99,53 @@ pub fn client_config_script(settings: &str) -> Result<String, String> {
     Ok(lines.iter().map(|line| format!("{line}\r\n")).collect())
 }
 
+/// The `<meta name="generator">` text the SDK writes into web objects, `GeneXus .NET 18_0_10-184260`, for
+/// the GeneXus install that generates: the product version of its `genexus.exe`. `None` when the install
+/// or its version is not read.
+pub fn web_generator_from_install(install: &Path) -> Option<String> {
+    let image = std::fs::read(install.join("genexus.exe")).ok()?;
+    generator_banner(&product_version_from_pe(&image)?)
+}
+
+/// `GeneXus .NET <major>_<minor>_<upgrade>-<build>` for a four-part product version.
+pub fn generator_banner(version: &str) -> Option<String> {
+    let parts: Vec<&str> = version.split('.').collect();
+    let numeric = |part: &&str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    match parts.as_slice() {
+        [major, minor, upgrade, build] if parts.iter().all(numeric) => {
+            Some(format!("GeneXus .NET {major}_{minor}_{upgrade}-{build}"))
+        }
+        _ => None,
+    }
+}
+
+/// The `ProductVersion` string of a PE image's version resource: the UTF-16 key, NUL, padding to a
+/// 32-bit boundary, then the NUL-terminated UTF-16 value.
+pub fn product_version_from_pe(image: &[u8]) -> Option<String> {
+    let key: Vec<u8> = "ProductVersion\0"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let at = image
+        .windows(key.len())
+        .position(|window| window == key.as_slice())?;
+    let mut cursor = (at + key.len()).next_multiple_of(4);
+    let mut units = Vec::new();
+    loop {
+        let unit = u16::from_le_bytes([*image.get(cursor)?, *image.get(cursor + 1)?]);
+        if unit == 0 {
+            break;
+        }
+        units.push(unit);
+        cursor += 2;
+        if units.len() > 64 {
+            return None;
+        }
+    }
+    let value = String::from_utf16(&units).ok()?;
+    (!value.is_empty()).then_some(value)
+}
+
 /// The KB's generated helper class `NetModel/Web/GxWebStd.cs`, verbatim. `None` when the file is
 /// absent or unreadable.
 pub fn web_support_from_kb(kb_dir: &Path) -> Option<String> {
@@ -130,6 +177,43 @@ pub fn stamp_from_unix_seconds(seconds: u64) -> String {
     )
 }
 
+/// Whether `existing` is the output `new` already, generated at another time: the bytes are equal except
+/// where `new` holds `stamp`, and there `existing` holds one earlier stamp of the same width, all digits.
+/// The stamp only marks when a panel's scripts were generated, so a file that matches keeps its stamp and
+/// a browser's cached scripts stay valid (and an unchanged project is not compiled again).
+pub fn differs_only_in_stamp(existing: &[u8], new: &[u8], stamp: &str) -> bool {
+    if existing.len() != new.len() {
+        return false;
+    }
+    let stamp = stamp.as_bytes();
+    let mut earlier: Option<&[u8]> = None;
+    let mut at = 0;
+    while at < new.len() {
+        let Some(found) = (!stamp.is_empty())
+            .then(|| {
+                new[at..]
+                    .windows(stamp.len())
+                    .position(|window| window == stamp)
+            })
+            .flatten()
+        else {
+            return existing[at..] == new[at..];
+        };
+        let start = at + found;
+        let end = start + stamp.len();
+        if existing[at..start] != new[at..start] {
+            return false;
+        }
+        let old = &existing[start..end];
+        if !old.iter().all(u8::is_ascii_digit) || earlier.is_some_and(|value| value != old) {
+            return false;
+        }
+        earlier = Some(old);
+        at = end;
+    }
+    true
+}
+
 /// The generation stamp for the current time.
 pub fn current_stamp() -> String {
     let seconds = std::time::SystemTime::now()
@@ -137,4 +221,54 @@ pub fn current_stamp() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     stamp_from_unix_seconds(seconds)
+}
+
+#[cfg(test)]
+mod generator_banner_tests {
+    use super::{generator_banner, product_version_from_pe};
+
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    /// A `VS_VERSIONINFO` string entry as a PE stores it: length, value length, type, the key, padding, the value.
+    fn entry(key: &str, value: &str) -> Vec<u8> {
+        let mut bytes = vec![0u8; 6];
+        bytes.extend(utf16(key));
+        bytes.extend([0, 0]);
+        bytes.resize(bytes.len().next_multiple_of(4), 0);
+        bytes.extend(utf16(value));
+        bytes.extend([0, 0]);
+        bytes.resize(bytes.len().next_multiple_of(4), 0);
+        bytes
+    }
+
+    #[test]
+    fn the_product_version_is_read_from_the_version_resource() {
+        // Version-resource structures are 32-bit aligned, as in an image.
+        let mut image = b"MZ\x90\x00 not a real image   ".to_vec();
+        assert!(image.len().is_multiple_of(4));
+        image.extend(entry("FileVersion", "18.0.10.53188"));
+        image.extend(entry("ProductVersion", "18.0.10.184260"));
+        image.extend(entry("Comments", "x"));
+        assert_eq!(
+            product_version_from_pe(&image).as_deref(),
+            Some("18.0.10.184260")
+        );
+        assert_eq!(product_version_from_pe(b"MZ no resources"), None);
+        let mut truncated = b"MZ".to_vec();
+        truncated.extend(utf16("ProductVersion"));
+        assert_eq!(product_version_from_pe(&truncated), None);
+    }
+
+    #[test]
+    fn the_banner_is_the_sdk_meta_generator_text() {
+        assert_eq!(
+            generator_banner("18.0.10.184260").as_deref(),
+            Some("GeneXus .NET 18_0_10-184260")
+        );
+        for bad in ["", "18.0.10", "18.0.10.x", "18.0.10.184260.1", "18..10.1"] {
+            assert_eq!(generator_banner(bad), None, "{bad}");
+        }
+    }
 }

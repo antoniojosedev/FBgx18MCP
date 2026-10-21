@@ -76,6 +76,13 @@ impl<'a> OutputTree<'a> {
     }
 
     fn write_generated_file(&mut self, file_name: &str, content: &str) {
+        self.write_stamped_file(file_name, content, "");
+    }
+
+    /// Writes one generated file unless the file already holds that output: the same bytes, or the same
+    /// bytes generated at another time (`stamp`, see `webform::differs_only_in_stamp`). A kept file keeps
+    /// its bytes and time, so an unchanged project is recognised as unchanged by the compile step.
+    fn write_stamped_file(&mut self, file_name: &str, content: &str, stamp: &str) {
         let file_path = self.dir.join(file_name);
         // A C# file's literal values depend on the whole file's bytes (see `csharp::literals`), so its text
         // is resolved here, once, before it is written.
@@ -94,7 +101,13 @@ impl<'a> OutputTree<'a> {
         } else {
             content.as_bytes().to_vec()
         };
-        match std::fs::write(&file_path, bytes) {
+        let kept = std::fs::read(&file_path)
+            .is_ok_and(|existing| webform::differs_only_in_stamp(&existing, &bytes, stamp));
+        match if kept {
+            Ok(())
+        } else {
+            std::fs::write(&file_path, bytes)
+        } {
             Ok(()) => self.files.push(file_path),
             Err(e) => self
                 .errors
@@ -201,16 +214,12 @@ pub(super) fn emission_phase(
 /// would be compiled into the project and counted as generated.
 fn prepare_output_dir(output_dir: &Path, clean: bool) -> Result<(), String> {
     if clean {
-        match std::fs::remove_dir_all(output_dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(format!(
-                    "cannot clean output directory '{}': {e}",
-                    output_dir.display()
-                ));
-            }
-        }
+        clean_output_dir(output_dir).map_err(|e| {
+            format!(
+                "cannot clean output directory '{}': {e}",
+                output_dir.display()
+            )
+        })?;
     }
     std::fs::create_dir_all(output_dir).map_err(|e| {
         format!(
@@ -218,6 +227,37 @@ fn prepare_output_dir(output_dir: &Path, clean: bool) -> Result<(), String> {
             output_dir.display()
         )
     })
+}
+
+/// A Rebuild's clean: every generated file and build output is removed, and `obj/` is kept as
+/// `dotnet clean` keeps it (the restore outputs), with the kept compiler command, which `csc_direct`
+/// checks against its key before any use. The compile record goes, so everything is compiled again.
+fn clean_output_dir(output_dir: &Path) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(output_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            if entry.file_name() == "obj" {
+                let record = output_dir
+                    .join(crate::csc_direct::CACHE_DIR)
+                    .join(crate::csc_direct::BUILT_FILE);
+                match std::fs::remove_file(record) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                    _ => {}
+                }
+            } else {
+                std::fs::remove_dir_all(path)?;
+            }
+        } else {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
 }
 
 /// The SDT classes that build, with the namespaces they are imported through.
@@ -429,7 +469,7 @@ fn write_web_classes(
     // The stamp is the generation time, the token the SDK writes into a panel's script URLs.
     let stamp = webform::current_stamp();
     for panel in &manifest.webpanels {
-        out.write_generated_file(&panel.file_name(), &panel.emit(&stamp));
+        out.write_stamped_file(&panel.file_name(), &panel.emit(&stamp), &stamp);
         match panel.script() {
             Ok((file_name, text)) => out.write_generated_file(&file_name, &text),
             Err(error) => out

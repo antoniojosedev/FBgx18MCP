@@ -228,6 +228,34 @@ fn stamp_formats_the_civil_time() {
 }
 
 #[test]
+fn a_file_that_differs_only_in_its_generation_stamp_is_the_same_output() {
+    let new = b"src='a.js?20261021015748'; x(\"?20261021015748\");";
+    let same_run = b"src='a.js?20261021015739'; x(\"?20261021015739\");";
+    let stamp = "20261021015748";
+    assert!(differs_only_in_stamp(new, new, stamp), "identical bytes");
+    assert!(
+        differs_only_in_stamp(same_run, new, stamp),
+        "an earlier stamp"
+    );
+    // Anything else that changed is a change, however small.
+    let edited = b"src='b.js?20261021015739'; x(\"?20261021015739\");";
+    assert!(!differs_only_in_stamp(edited, new, stamp));
+    // One file holds one generation's stamp: two different earlier stamps are not that.
+    let mixed = b"src='a.js?20261021015739'; x(\"?20261021015740\");";
+    assert!(!differs_only_in_stamp(mixed, new, stamp));
+    // An earlier "stamp" that is not digits is not a stamp.
+    let text = b"src='a.js?2026102101573x'; x(\"?2026102101573x\");";
+    assert!(!differs_only_in_stamp(text, new, stamp));
+    assert!(
+        !differs_only_in_stamp(b"short", new, stamp),
+        "length differs"
+    );
+    // Without the stamp in the new bytes, only identical bytes are the same output.
+    assert!(differs_only_in_stamp(b"plain", b"plain", stamp));
+    assert!(!differs_only_in_stamp(b"plaim", b"plain", stamp));
+}
+
+#[test]
 fn build_number_is_read_from_gxcfg() {
     let dir = std::env::temp_dir().join(format!("gx_webform_cfg_{}", std::process::id()));
     let web = dir.join("NetModel").join("Web");

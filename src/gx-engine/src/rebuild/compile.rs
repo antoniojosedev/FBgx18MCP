@@ -21,6 +21,11 @@ pub(super) fn compile_phase(
             eprintln!("compile path: csc-direct");
             return (compile_start.elapsed().as_millis() as u64, true);
         }
+        crate::csc_direct::Verdict::UpToDate { warnings } => {
+            findings.warnings.extend(warnings);
+            eprintln!("compile path: csc-direct (up to date)");
+            return (compile_start.elapsed().as_millis() as u64, true);
+        }
         crate::csc_direct::Verdict::Diagnostics { errors, warnings } => {
             findings.errors.extend(errors);
             findings.warnings.extend(warnings);

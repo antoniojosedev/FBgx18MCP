@@ -25,6 +25,8 @@ pub const CACHE_DIR: &str = "obj/gx-csc";
 const TEMPLATE_FILE: &str = "template.json";
 const KEY_FILE: &str = "key.txt";
 const RSP_FILE: &str = "build.rsp";
+/// What the last direct compile read and published, so an unchanged project is not compiled again.
+pub const BUILT_FILE: &str = "built.json";
 const ASSETS_FILE: &str = "obj/project.assets.json";
 
 /// The compiler command MSBuild used for the project, without its project sources.
@@ -45,6 +47,9 @@ pub struct Template {
 pub enum Verdict {
     /// The compiler succeeded and the outputs were published to `bin`.
     Built { warnings: Vec<String> },
+    /// Nothing the compiler reads changed since its last success, and the outputs it published are
+    /// untouched: they stand, and that compile's warnings are reported again.
+    UpToDate { warnings: Vec<String> },
     /// The compiler reported compile errors; the outcome is the same as `dotnet build`'s.
     Diagnostics {
         errors: Vec<String>,
@@ -558,6 +563,78 @@ pub fn render_rsp(template: &Template, sources: &[String]) -> String {
     text
 }
 
+/// Runs the kept compiler on the response file through the shared compiler server, after creating the
+/// folders its outputs go to. Analyzers run unless `analyzers_can_be_skipped` says they cannot matter.
+fn run_compiler(
+    template: &Template,
+    project_dir: &Path,
+    rsp_path: &Path,
+) -> Result<std::process::Output, String> {
+    let options: Vec<String> = template
+        .options_before
+        .iter()
+        .chain(&template.options_after)
+        .cloned()
+        .collect();
+    for option in &options {
+        if let Some(path) = option
+            .strip_prefix("/out:")
+            .or_else(|| option.strip_prefix("/refout:"))
+            .or_else(|| option.strip_prefix("/pdb:"))
+        {
+            if let Some(parent) = project_dir.join(unquote(path)).parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+        }
+    }
+    Command::new(&template.compiler)
+        .current_dir(project_dir)
+        .arg("/noconfig")
+        .arg("/shared")
+        .args(analyzers_can_be_skipped(&options).then_some("/skipanalyzers+"))
+        .arg(format!("@{}", rsp_path.display()))
+        .output()
+        .map_err(|error| format!("cannot start the compiler: {error}"))
+}
+
+/// Whether the direct compile may pass `/skipanalyzers+`. Analyzers only report diagnostics; source
+/// generators still run, so the assembly is the same (byte-identical on KBTeste's 346 classes, with the
+/// same 337 compiler warnings). A diagnostic of theirs can only fail the build through an option that
+/// makes it an error: `/warnaserror` for every warning or for a non-compiler id, or a `/ruleset`. Project
+/// analyzer configuration already refuses the direct path (see `guarded_key_with`). Any of those, or an
+/// explicit `/skipanalyzers-`, keeps the analyzers running.
+pub fn analyzers_can_be_skipped(options: &[String]) -> bool {
+    let compiler_id = |id: &str| {
+        ["CS", "NU", "SYSLIB"].iter().any(|prefix| {
+            id.strip_prefix(prefix).is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            })
+        })
+    };
+    options.iter().all(|option| {
+        let lower = option.to_ascii_lowercase();
+        if lower.starts_with("/ruleset:") || lower.starts_with("/skipanalyzers") {
+            return false;
+        }
+        let Some(rest) = lower.strip_prefix("/warnaserror") else {
+            return true;
+        };
+        match rest {
+            "-" => true,
+            "" | "+" => false,
+            _ => rest
+                .trim_start_matches('+')
+                .strip_prefix(':')
+                .is_some_and(|ids| {
+                    ids.split([',', ';'])
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .all(|id| compiler_id(&id.to_ascii_uppercase()))
+                }),
+        }
+    })
+}
+
 /// Turns the compiler's exit status and output into a verdict. Compile errors are reported as they are;
 /// a failure with no `error CS` line is not a verdict, and `dotnet build` decides instead.
 pub fn classify(success: bool, output: &str) -> Verdict {
@@ -689,35 +766,23 @@ pub fn compile(csproj_path: &Path) -> Verdict {
         })
         .collect();
     let rsp_path = dir.join(RSP_FILE);
-    if let Err(error) = fs::write(&rsp_path, render_rsp(&template, &sources)) {
+    let rsp = render_rsp(&template, &sources);
+    let inputs = input_digest(&project_dir, &expected, &rsp, &template, &csproj);
+    let built_path = dir.join(BUILT_FILE);
+    if let Some(warnings) = inputs
+        .as_deref()
+        .and_then(|inputs| up_to_date(&built_path, inputs))
+    {
+        return Verdict::UpToDate { warnings };
+    }
+    // A compile that is cut off must not leave an old record that still matches its inputs.
+    let _ = fs::remove_file(&built_path);
+    if let Err(error) = fs::write(&rsp_path, &rsp) {
         return Verdict::Unavailable(format!("cannot write the response file: {error}"));
     }
-    for option in template
-        .options_before
-        .iter()
-        .chain(&template.options_after)
-    {
-        if let Some(path) = option
-            .strip_prefix("/out:")
-            .or_else(|| option.strip_prefix("/refout:"))
-            .or_else(|| option.strip_prefix("/pdb:"))
-        {
-            if let Some(parent) = project_dir.join(unquote(path)).parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-        }
-    }
-    let output = match Command::new(&template.compiler)
-        .current_dir(&project_dir)
-        .arg("/noconfig")
-        .arg("/shared")
-        .arg(format!("@{}", rsp_path.display()))
-        .output()
-    {
+    let output = match run_compiler(&template, &project_dir, &rsp_path) {
         Ok(output) => output,
-        Err(error) => {
-            return Verdict::Unavailable(format!("cannot start the compiler: {error}"));
-        }
+        Err(error) => return Verdict::Unavailable(error),
     };
     let text = format!(
         "{}\n{}",
@@ -725,12 +790,138 @@ pub fn compile(csproj_path: &Path) -> Verdict {
         String::from_utf8_lossy(&output.stderr)
     );
     let verdict = classify(output.status.success(), &text);
-    if matches!(verdict, Verdict::Built { .. }) {
-        if let Err(error) = publish(&project_dir, &project_dir.join(unquote(&out))) {
-            return Verdict::Unavailable(format!("cannot publish the outputs: {error}"));
+    if let Verdict::Built { warnings } = &verdict {
+        let obj_out = project_dir.join(unquote(&out));
+        let published = match publish(&project_dir, &obj_out) {
+            Ok(published) => published,
+            Err(error) => {
+                return Verdict::Unavailable(format!("cannot publish the outputs: {error}"));
+            }
+        };
+        if let Some(inputs) = inputs {
+            let mut outputs = vec![obj_out];
+            outputs.extend(published);
+            // Unrecorded only costs the next run a compile.
+            let _ = record_built(&built_path, inputs, &outputs, warnings);
         }
     }
     verdict
+}
+
+/// One file the compiler published, as it was left: path, length and modification time.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct OutputStamp {
+    path: PathBuf,
+    len: u64,
+    modified_ns: u128,
+}
+
+/// The record of the last successful direct compile.
+#[derive(Debug, Serialize, Deserialize)]
+struct BuiltRecord {
+    inputs: String,
+    outputs: Vec<OutputStamp>,
+    warnings: Vec<String>,
+}
+
+fn output_stamp(path: &Path) -> io::Result<OutputStamp> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(io::Error::other("not a file"));
+    }
+    Ok(OutputStamp {
+        path: path.to_path_buf(),
+        len: metadata.len(),
+        modified_ns: metadata
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos(),
+    })
+}
+
+/// Everything the compiler reads, as one digest: the project key (properties, packages, compiler and SDK),
+/// the response file, the content of every source, and the length and time of every file an option
+/// names (references, analyzers, resources). `None` when an input cannot be read: the project compiles.
+fn input_digest(
+    project_dir: &Path,
+    key: &str,
+    rsp: &str,
+    template: &Template,
+    csproj: &str,
+) -> Option<String> {
+    let mut text = format!(
+        "key={:016x}\nrsp={:016x}\n",
+        fnv1a64(key.as_bytes()),
+        fnv1a64(rsp.as_bytes())
+    );
+    for source in project_sources(csproj)
+        .iter()
+        .chain(&template.generated_sources)
+    {
+        let bytes = fs::read(project_dir.join(unquote(source))).ok()?;
+        text.push_str(&format!("source={source}:{:016x}\n", fnv1a64(&bytes)));
+    }
+    for option in template
+        .options_before
+        .iter()
+        .chain(&template.options_after)
+    {
+        if option.starts_with("/out:")
+            || option.starts_with("/refout:")
+            || option.starts_with("/pdb:")
+        {
+            continue;
+        }
+        let Some((_, value)) = option.split_once(':') else {
+            continue;
+        };
+        for part in value.split([',', ';']) {
+            let path = project_dir.join(unquote(
+                part.rsplit_once('=').map_or(part, |(_, path)| path),
+            ));
+            if let Ok(stamp) = output_stamp(&path) {
+                text.push_str(&format!(
+                    "file={part}:{}:{}\n",
+                    stamp.len, stamp.modified_ns
+                ));
+            }
+        }
+    }
+    Some(text)
+}
+
+/// The warnings of the last successful compile, when it read exactly `inputs` and every file it
+/// published is still as it left it.
+fn up_to_date(built_path: &Path, inputs: &str) -> Option<Vec<String>> {
+    let record: BuiltRecord = serde_json::from_slice(&fs::read(built_path).ok()?).ok()?;
+    let unchanged = record.inputs == inputs
+        && !record.outputs.is_empty()
+        && record
+            .outputs
+            .iter()
+            .all(|stamp| output_stamp(&stamp.path).is_ok_and(|now| now == *stamp));
+    unchanged.then_some(record.warnings)
+}
+
+fn record_built(
+    built_path: &Path,
+    inputs: String,
+    outputs: &[PathBuf],
+    warnings: &[String],
+) -> io::Result<()> {
+    let record = BuiltRecord {
+        inputs,
+        outputs: outputs
+            .iter()
+            .map(|path| output_stamp(path))
+            .collect::<io::Result<_>>()?,
+        warnings: warnings.to_vec(),
+    };
+    fs::write(
+        built_path,
+        serde_json::to_vec(&record).map_err(io::Error::other)?,
+    )
 }
 
 /// The `/out:` path of a kept command, unquoted.
@@ -745,7 +936,7 @@ fn output_path(template: &Template) -> Option<String> {
 
 /// Copies the assembly and its PDB from the compiler output directory (`obj/<config>/<tfm>`) to the
 /// MSBuild output directory (`bin/<config>/<tfm>`).
-fn publish(project_dir: &Path, out: &Path) -> io::Result<()> {
+fn publish(project_dir: &Path, out: &Path) -> io::Result<Vec<PathBuf>> {
     let file_name = out
         .file_name()
         .ok_or_else(|| io::Error::other("the output path has no file name"))?;
@@ -760,12 +951,15 @@ fn publish(project_dir: &Path, out: &Path) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("the output path has no configuration directory"))?;
     let bin = project_dir.join("bin").join(config_dir).join(tfm_dir);
     fs::create_dir_all(&bin)?;
-    fs::copy(out, bin.join(file_name))?;
+    let mut published = vec![bin.join(file_name)];
+    fs::copy(out, &published[0])?;
     let pdb = out.with_extension("pdb");
     if pdb.is_file() {
-        fs::copy(&pdb, bin.join(pdb.file_name().unwrap_or_default()))?;
+        let target = bin.join(pdb.file_name().unwrap_or_default());
+        fs::copy(&pdb, &target)?;
+        published.push(target);
     }
-    Ok(())
+    Ok(published)
 }
 
 fn unquote(text: &str) -> &str {

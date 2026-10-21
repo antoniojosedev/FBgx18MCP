@@ -68,3 +68,48 @@ fn clean_of_an_absent_output_directory_is_not_an_error() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     let _ = fs::remove_dir_all(&out);
 }
+
+/// `--clean` is a Rebuild: every generated file and every build output goes, and everything is compiled
+/// again. What `dotnet clean` also keeps stays: the restore outputs and the kept compiler command in
+/// `obj/`, each still checked against its key before it is used. Only the compile record goes, so the
+/// next compile cannot be skipped as up to date.
+#[test]
+fn clean_keeps_the_restore_and_compiler_cache_but_forces_a_compile() {
+    let out = std::env::temp_dir().join(format!("gx_rebuild_keep_obj_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    let cache = out.join("obj").join("gx-csc");
+    fs::create_dir_all(&cache).unwrap();
+    fs::create_dir_all(out.join("bin").join("Release")).unwrap();
+    fs::create_dir_all(out.join("web")).unwrap();
+    fs::write(out.join("Stale.cs"), "class Stale {}").unwrap();
+    fs::write(out.join("web").join("Stale.cs"), "class Nested {}").unwrap();
+    fs::write(out.join("bin").join("Release").join("Old.dll"), "old").unwrap();
+    fs::write(out.join("obj").join("project.assets.json"), "{}").unwrap();
+    fs::write(cache.join("template.json"), "{}").unwrap();
+    fs::write(cache.join("key.txt"), "key").unwrap();
+    fs::write(cache.join("built.json"), "{}").unwrap();
+
+    let options = RebuildOptions::new("net8.0")
+        .with_clean(true)
+        .with_skip_compile(true);
+    let report = rebuild_all(&hello_catalog(), &out, &options).expect("clean rebuild");
+
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(out.join("ahello.cs").exists());
+    for gone in [
+        "Stale.cs",
+        "web/Stale.cs",
+        "bin/Release/Old.dll",
+        "obj/gx-csc/built.json",
+    ] {
+        assert!(!out.join(gone).exists(), "{gone} survived the clean");
+    }
+    for kept in [
+        "obj/project.assets.json",
+        "obj/gx-csc/template.json",
+        "obj/gx-csc/key.txt",
+    ] {
+        assert!(out.join(kept).exists(), "{kept} was removed by the clean");
+    }
+    let _ = fs::remove_dir_all(&out);
+}

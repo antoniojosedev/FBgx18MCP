@@ -439,6 +439,15 @@ fn load_closure_catalog(
     ))
 }
 
+/// The theme the KB's generating environment uses; `None`, with the reason on stderr, when it is not read.
+fn kb_web_theme(kb_client: &Result<gx_engine::udm::client::UdmClient, String>) -> Option<String> {
+    let client = kb_client.as_ref().ok()?;
+    client.default_web_theme().unwrap_or_else(|error| {
+        eprintln!("web theme not read from the KB: {error}");
+        None
+    })
+}
+
 fn execute_rebuild_all(
     args: &[String],
     category: &mut DiagnosticCategory,
@@ -547,6 +556,18 @@ fn execute_rebuild_all(
 
     let kb = kb_path.ok_or_else(|| "missing required --kb <path>".to_string())?;
     let out = output_dir.ok_or_else(|| "missing required --output <dir>".to_string())?;
+    if !matches!(target.as_str(), "net8.0" | "net9.0") {
+        return Err(format!(
+            "unsupported --target {target}: rebuild-all builds net8.0 or net9.0"
+        ));
+    }
+    // Checked before any read: every KB read would otherwise report the same missing file on its own.
+    let kb_dir = std::path::Path::new(&kb);
+    if !kb_dir.is_file() && !kb_dir.join("knowledgebase.connection").is_file() {
+        return Err(format!(
+            "--kb '{kb}' is neither a Knowledge Base folder (it has no knowledgebase.connection) nor a catalog file"
+        ));
+    }
 
     if closure && only_object.is_none() {
         return Err("--closure needs --object: the entry object of the closure".into());
@@ -576,9 +597,17 @@ fn execute_rebuild_all(
                     kb_client.as_ref().map_err(String::clone),
                     &gx_engine::csharp::model_files::genexus_install_dir(),
                 );
+                // Theme and generator text: the explicit options, else the KB's stored theme and the
+                // install's version, as the SDK reads them. Neither found leaves each web object refused by name.
+                let theme = web_theme.or_else(|| kb_web_theme(&kb_client));
+                let generator = web_generator.or_else(|| {
+                    gx_engine::csharp::webform::web_generator_from_install(
+                        &gx_engine::csharp::model_files::genexus_install_dir(),
+                    )
+                });
                 let web_environment = gx_engine::csharp::webform::WebPanelEnvironment {
-                    theme: web_theme,
-                    generator: web_generator,
+                    theme,
+                    generator,
                     master_classes: web_masters,
                     build_number: gx_engine::csharp::webform::web_build_number_from_kb(
                         std::path::Path::new(&kb),

@@ -171,6 +171,21 @@ impl EntityTypeResolver {
         self.parts_by_id.get(&id).copied()
     }
 
+    /// Every entity type id this Knowledge Base serves: object, part and SDT node types, sorted. A row of
+    /// any other type (a File's `WikiBlob`, a Module's `ModuleContent`, documentation) is never decoded.
+    pub fn served_type_ids(&self) -> Vec<i32> {
+        let mut ids: Vec<i32> = self
+            .objects_by_id
+            .keys()
+            .chain(self.parts_by_id.keys())
+            .chain(self.nodes_by_id.keys())
+            .copied()
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     /// The entity type id this Knowledge Base uses for an object kind.
     pub fn object_type_id(&self, kind: ObjectKind) -> Result<i32, String> {
         self.object_ids.get(&kind).copied().ok_or_else(|| {
@@ -253,6 +268,20 @@ mod tests {
         assert_eq!(resolver.part_kind(95), None);
         assert_eq!(resolver.object_kind(8), None);
         assert_eq!(resolver.object_kind(999), None);
+    }
+
+    #[test]
+    fn served_type_ids_are_the_object_part_and_node_types_only() {
+        let resolver = EntityTypeResolver::from_records(&[
+            record(38, "Procedure", "Objects"),
+            record(81, "Procedure", ""),
+            record(201, "SDTLevelEntity", ""),
+            record(67, "ModuleContent", ""),
+            record(130, "WikiBlob", ""),
+            record(64, "File", "Objects"),
+        ])
+        .expect("resolver");
+        assert_eq!(resolver.served_type_ids(), vec![38, 81, 201]);
     }
 
     #[test]

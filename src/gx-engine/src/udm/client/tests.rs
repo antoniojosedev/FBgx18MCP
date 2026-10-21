@@ -139,3 +139,25 @@ fn a_rollback_drops_the_composition_coverage_of_a_prefetch_inside_the_transactio
 
     assert!(client.get_compositions(47, 3, 1).is_err());
 }
+
+#[test]
+fn the_model_part_read_takes_served_types_only() {
+    let sql = UdmClient::model_parts_sql(2, &[38, 81, 201], 1);
+    assert!(sql.contains("m.ModelId = 2"), "{sql}");
+    assert!(sql.contains("AND e.EntityTypeId IN (38, 81, 201)"), "{sql}");
+    assert!(
+        sql.ends_with(&format!("e.EntityId % {PART_READ_SHARDS} = 1")),
+        "{sql}"
+    );
+    // A Knowledge Base serving no type reads no part.
+    assert!(UdmClient::model_parts_sql(2, &[], 0).contains("AND 1 = 0"));
+}
+
+#[test]
+fn only_served_part_keys_are_covered_by_the_model_read() {
+    let keys = [(38, 1, 1), (130, 5, 1), (81, 2, 3)];
+    assert_eq!(
+        UdmClient::served_keys(keys.iter().copied(), &[38, 81]),
+        vec![(38, 1, 1), (81, 2, 3)]
+    );
+}

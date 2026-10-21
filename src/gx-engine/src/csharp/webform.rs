@@ -37,8 +37,9 @@ pub use master::{MasterPage, ModuleScope, plan_master_page};
 pub(crate) use master::{master_class_of, master_names};
 pub use web_class::{WebClass, plan_web_class};
 pub use web_config::{
-    client_config_script, current_stamp, stamp_from_unix_seconds, web_build_number_from_kb,
-    web_client_config_from_kb, web_support_from_kb,
+    client_config_script, current_stamp, differs_only_in_stamp, generator_banner,
+    product_version_from_pe, stamp_from_unix_seconds, web_build_number_from_kb,
+    web_client_config_from_kb, web_generator_from_install, web_support_from_kb,
 };
 
 /// The class template: GeneXus 18 web panel structure with `@@NAME@@` placeholders.

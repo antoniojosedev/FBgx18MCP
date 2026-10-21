@@ -284,7 +284,12 @@ retry blindly.
 `catalog_load_ms` measures loading before the pipeline and is not included in
 `total_ms`; compare both phases and the outer request wall time when profiling.
 Whole-KB `build` and `rebuild` both run the full pipeline; `rebuild` adds `--clean`
-to the output directory (`<KB>\.gx-engine\build`). Directed `compile_check` builds
+to the output directory (`<KB>\.gx-engine\build`). `--clean` removes every generated
+file and build output and forces a full compile, but keeps `obj/` as `dotnet clean`
+does (restore outputs and the kept compiler command, each checked against its key).
+A `build` whose generated files and compiler inputs are all unchanged skips the
+compile (`compile path: csc-direct (up to date)`); a web class that differs only in
+its generation stamp keeps its earlier stamp. Directed `compile_check` builds
 run the same pipeline only on the admitted target closure.
 
 ### Documented v1 deviations

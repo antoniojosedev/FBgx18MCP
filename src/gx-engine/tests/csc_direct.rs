@@ -6,9 +6,10 @@
 //! option set shortened.
 
 use gx_engine::csc_direct::{
-    Verdict, ambient_import, capture, classify, compile, compiler_and_sdk_identity,
-    declares_import, environment_digest, guarded_key, guarded_key_with, key_text, project_sources,
-    render_rsp, sdk_inputs, sdk_root_of, split_command_line, template_from_log,
+    Verdict, ambient_import, analyzers_can_be_skipped, capture, classify, compile,
+    compiler_and_sdk_identity, declares_import, environment_digest, guarded_key, guarded_key_with,
+    key_text, project_sources, render_rsp, sdk_inputs, sdk_root_of, split_command_line,
+    template_from_log,
 };
 use std::ffi::OsString;
 use std::fs;
@@ -338,6 +339,64 @@ fn a_kept_command_builds_the_assembly_dotnet_build_builds_and_follows_compile_it
         matches!(compile(&csproj), Verdict::Unavailable(reason) if reason.contains("changed")),
         "a changed property must fall back"
     );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unchanged_project_is_not_compiled_again_and_any_input_or_output_change_compiles_it() {
+    if !dotnet_available() {
+        eprintln!("skipped: the dotnet CLI is not available");
+        return;
+    }
+    let dir = scratch("uptodate");
+    let csproj = dir.join("RebuildApp.csproj");
+    write_project(&dir, &["A.cs"], "");
+    let a = "namespace N { public class A { public int V() => 1; } }\n";
+    fs::write(dir.join("A.cs"), a).unwrap();
+    assert!(capture(&csproj, &dotnet_build_detailed(&dir)).unwrap());
+    let dll = dir.join("bin/Release/net8.0/RebuildApp.dll");
+
+    assert!(matches!(compile(&csproj), Verdict::Built { .. }));
+    let built = fs::metadata(&dll).unwrap().modified().unwrap();
+    // Nothing changed: the published assembly stands, untouched.
+    assert!(matches!(compile(&csproj), Verdict::UpToDate { .. }));
+    assert_eq!(fs::metadata(&dll).unwrap().modified().unwrap(), built);
+    // The emitter rewrites every source each run: a rewrite with the same text is no change.
+    fs::write(dir.join("A.cs"), a).unwrap();
+    assert!(matches!(compile(&csproj), Verdict::UpToDate { .. }));
+
+    // A changed source compiles, and its assembly differs.
+    let before = bin_dll(&dir);
+    fs::write(
+        dir.join("A.cs"),
+        "namespace N { public class A { public int V() => 7; } }\n",
+    )
+    .unwrap();
+    assert!(matches!(compile(&csproj), Verdict::Built { .. }));
+    assert_ne!(bin_dll(&dir), before);
+    assert!(matches!(compile(&csproj), Verdict::UpToDate { .. }));
+
+    // A removed or altered output is rebuilt, never trusted.
+    fs::remove_file(&dll).unwrap();
+    assert!(matches!(compile(&csproj), Verdict::Built { .. }));
+    assert!(dll.is_file());
+    fs::write(&dll, b"not an assembly").unwrap();
+    assert!(matches!(compile(&csproj), Verdict::Built { .. }));
+    assert_ne!(fs::read(&dll).unwrap(), b"not an assembly");
+
+    // A compile error leaves nothing to reuse: fixing the source back compiles again.
+    fs::write(
+        dir.join("A.cs"),
+        "namespace N { public class A { broken } }\n",
+    )
+    .unwrap();
+    assert!(matches!(compile(&csproj), Verdict::Diagnostics { .. }));
+    fs::write(
+        dir.join("A.cs"),
+        "namespace N { public class A { public int V() => 7; } }\n",
+    )
+    .unwrap();
+    assert!(matches!(compile(&csproj), Verdict::Built { .. }));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -986,4 +1045,31 @@ fn a_line_that_only_looks_like_a_node_prefix_is_kept() {
         warnings,
         vec!["x1:y>A.cs(1,1): warning CS8981: x".to_string()]
     );
+}
+
+/// Analyzers only add diagnostics (source generators still run with `/skipanalyzers+`), so the direct
+/// path skips them unless an option could turn an analyzer diagnostic into an error.
+#[test]
+fn analyzers_are_skipped_only_when_none_of_their_diagnostics_can_fail_the_build() {
+    let options = |list: &[&str]| list.iter().map(|o| o.to_string()).collect::<Vec<_>>();
+    let generated = options(&[
+        "/warn:8",
+        "/nowarn:1701,1702,8002",
+        "/warnaserror+:NU1605,SYSLIB0011",
+        r#"/analyzer:"C:/sdk/analyzers/Microsoft.CodeAnalysis.NetAnalyzers.dll""#,
+    ]);
+    assert!(analyzers_can_be_skipped(&generated));
+    assert!(analyzers_can_be_skipped(&options(&["/warnaserror-"])));
+    for refused in [
+        "/warnaserror",
+        "/warnaserror+",
+        "/warnaserror+:CA2200",
+        "/warnaserror:NU1605,IDE0005",
+        "/ruleset:rules.ruleset",
+        "/skipanalyzers-",
+    ] {
+        let mut list = generated.clone();
+        list.push(refused.to_string());
+        assert!(!analyzers_can_be_skipped(&list), "{refused}");
+    }
 }

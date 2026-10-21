@@ -44,13 +44,13 @@ impl UdmClient {
             })
             .collect();
 
-        // The parts are the bulk of a catalog read (tens of MB of hex): read in shards on parallel
-        // sqlcmd sessions, each decoded on its own thread, then put back in key order.
-        let parts_sql = |shard: usize| {
-            format!(
-                "SET NOCOUNT ON; SELECT e.EntityTypeId, e.EntityId, e.EntityVersionId, ISNULL(DATALENGTH(e.EntityVersionData), 0), CONVERT(VARCHAR(MAX), e.EntityVersionData, 2), ISNULL(DATALENGTH(e.EntityVersionProperties), 0), CONVERT(VARCHAR(MAX), CAST(e.EntityVersionProperties AS VARBINARY(MAX)), 2) FROM EntityVersion e WHERE (EXISTS (SELECT 1 FROM ModelEntityVersion m WHERE m.ModelId = {model_id} AND m.EntityTypeId = e.EntityTypeId AND m.EntityId = e.EntityId AND m.EntityVersionId = e.EntityVersionId) OR EXISTS (SELECT 1 FROM EntityVersionComposition c JOIN ModelEntityVersion m ON m.EntityTypeId = c.CompoundEntityTypeId AND m.EntityId = c.CompoundEntityId AND m.EntityVersionId = c.CompoundEntityVersionId WHERE m.ModelId = {model_id} AND c.ComponentEntityTypeId = e.EntityTypeId AND c.ComponentEntityId = e.EntityId AND c.ComponentEntityVersionId = e.EntityVersionId)) AND e.EntityId % {PART_READ_SHARDS} = {shard}"
-            )
-        };
+        // The parts are the bulk of a catalog read: read in shards on parallel sqlcmd sessions, each
+        // decoded on its own thread, then put back in key order.
+        // Only the types the engine decodes are read: an unserved row (a File's `WikiBlob`, a library
+        // Module's `ModuleContent`, each up to tens of MB) is left out and stays uncovered, so a caller that
+        // asks for one still reads it live.
+        let served = self.entity_type_resolver()?.served_type_ids();
+        let parts_sql = |shard: usize| Self::model_parts_sql(model_id, &served, shard);
         let read_shard = |shard: usize, sql: String| -> Result<Vec<EntityVersionRecord>, String> {
             let raw = match (shard, &self.connection_info, &self.read_session) {
                 (0, _, _) | (_, None, _) => self.execute_live_sql(&sql)?,
@@ -142,9 +142,41 @@ impl UdmClient {
             .write()
             .map_err(|e| format!("Storage lock poisoned: {e}"))?;
         bulk.compositions.extend(objects.iter().copied());
-        bulk.entity_versions.extend(objects.iter().copied());
-        bulk.entity_versions.extend(components);
+        bulk.entity_versions
+            .extend(Self::served_keys(objects.iter().copied(), &served));
+        bulk.entity_versions
+            .extend(Self::served_keys(components, &served));
         Ok(())
+    }
+
+    /// The `EntityVersion` read of one shard of `model_id`'s objects and their components, restricted to the
+    /// `served` entity types. With no served type the read selects nothing.
+    pub(super) fn model_parts_sql(model_id: i32, served: &[i32], shard: usize) -> String {
+        let types = if served.is_empty() {
+            "1 = 0".to_string()
+        } else {
+            format!(
+                "e.EntityTypeId IN ({})",
+                served
+                    .iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        format!(
+            "SET NOCOUNT ON; SELECT e.EntityTypeId, e.EntityId, e.EntityVersionId, ISNULL(DATALENGTH(e.EntityVersionData), 0), CONVERT(VARCHAR(MAX), e.EntityVersionData, 2), ISNULL(DATALENGTH(e.EntityVersionProperties), 0), CONVERT(VARCHAR(MAX), CAST(e.EntityVersionProperties AS VARBINARY(MAX)), 2) FROM EntityVersion e WHERE (EXISTS (SELECT 1 FROM ModelEntityVersion m WHERE m.ModelId = {model_id} AND m.EntityTypeId = e.EntityTypeId AND m.EntityId = e.EntityId AND m.EntityVersionId = e.EntityVersionId) OR EXISTS (SELECT 1 FROM EntityVersionComposition c JOIN ModelEntityVersion m ON m.EntityTypeId = c.CompoundEntityTypeId AND m.EntityId = c.CompoundEntityId AND m.EntityVersionId = c.CompoundEntityVersionId WHERE m.ModelId = {model_id} AND c.ComponentEntityTypeId = e.EntityTypeId AND c.ComponentEntityId = e.EntityId AND c.ComponentEntityVersionId = e.EntityVersionId)) AND {types} AND e.EntityId % {PART_READ_SHARDS} = {shard}"
+        )
+    }
+
+    /// The keys of `keys` whose entity type is in `served` (sorted), in their order.
+    pub(super) fn served_keys(
+        keys: impl IntoIterator<Item = (i32, i32, i32)>,
+        served: &[i32],
+    ) -> Vec<(i32, i32, i32)> {
+        keys.into_iter()
+            .filter(|(entity_type, _, _)| served.binary_search(entity_type).is_ok())
+            .collect()
     }
 
     /// The distinct keys of `keys`, sorted, as the set-based prefetch takes them.

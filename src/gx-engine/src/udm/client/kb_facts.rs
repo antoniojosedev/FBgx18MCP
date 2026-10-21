@@ -274,6 +274,125 @@ impl UdmClient {
     }
 }
 
+impl UdmClient {
+    /// The name of the theme (DesignSystem) the web generator uses: the `Theme` property the generating
+    /// environment stores, else the one it inherits from the Design model. `None` when no model stores one:
+    /// GeneXus then uses a built-in default the engine does not resolve. Environments that would generate
+    /// with different themes are an error, since the engine cannot tell which one builds.
+    pub fn default_web_theme(&self) -> Result<Option<String>, String> {
+        if !self.is_live() {
+            return Ok(None);
+        }
+        const MARK: &str = "<Name>Theme</Name><Value>";
+        let props = "CAST(v.EntityVersionProperties AS NVARCHAR(MAX))";
+        let start = format!("CHARINDEX('{MARK}', {props})");
+        let sql = format!(
+            "SET NOCOUNT ON; SELECT v.EntityId, ISNULL(m.ModelParentId, 0), CASE WHEN {start} > 0 THEN SUBSTRING({props}, {start} + {len}, CHARINDEX('</Value>', {props}, {start}) - {start} - {len}) ELSE '' END FROM EntityVersion v JOIN EntityType t ON t.EntityTypeId = v.EntityTypeId AND t.EntityTypeName = 'Udm.Types.Model' LEFT JOIN UdmModel m ON m.ModelId = v.EntityId WHERE v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = v.EntityTypeId AND l.EntityId = v.EntityId)",
+            len = MARK.len()
+        );
+        let raw = self.execute_live_sql(&sql)?;
+        let rows = parse_live_rows(&raw, 3)?
+            .into_iter()
+            .map(|row| {
+                Ok(ModelThemeRow {
+                    model_id: parse_live_int(row[0], "EntityId")?,
+                    parent_id: parse_live_int(row[1], "ModelParentId")?,
+                    theme: row[2].trim().to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let Some(reference) = effective_theme_reference(&rows)? else {
+            return Ok(None);
+        };
+        let (type_guid, entity_id) = parse_theme_reference(&reference)?;
+        // `type_guid` is validated hex and dashes, `entity_id` a number: neither can break out of the literal.
+        let sql = format!(
+            "SET NOCOUNT ON; SELECT v.EntityVersionName FROM EntityVersion v JOIN EntityType t ON t.EntityTypeId = v.EntityTypeId AND t.EntityTypeName = 'DesignSystem' JOIN Entity g ON g.EntityTypeId = 1 AND g.EntityId = t.EntityTypeId AND LOWER(CONVERT(VARCHAR(36), g.EntityGuid)) = '{type_guid}' WHERE v.EntityId = {entity_id} AND v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = v.EntityTypeId AND l.EntityId = v.EntityId)"
+        );
+        let raw = self.execute_live_sql(&sql)?;
+        match parse_live_rows(&raw, 1)?.as_slice() {
+            [row] if !row[0].trim().is_empty() => Ok(Some(row[0].trim().to_string())),
+            _ => Err(format!(
+                "the stored theme '{reference}' names no DesignSystem of this Knowledge Base"
+            )),
+        }
+    }
+}
+
+/// One `Udm.Types.Model` at its latest version: its id, its parent (0 for the Design model) and the
+/// `Theme` reference it stores (empty when it inherits).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelThemeRow {
+    pub model_id: i32,
+    pub parent_id: i32,
+    pub theme: String,
+}
+
+/// The theme reference the generating environments use. Each environment (a model with a parent) uses
+/// the theme it stores, else its parent's; with no environment, the Design model's. They must agree.
+pub(crate) fn effective_theme_reference(rows: &[ModelThemeRow]) -> Result<Option<String>, String> {
+    let stored = |id: i32| {
+        rows.iter()
+            .find(|row| row.model_id == id)
+            .map(|row| row.theme.as_str())
+            .filter(|theme| !theme.is_empty())
+    };
+    let effective = |row: &ModelThemeRow| -> Option<String> {
+        let mut current = Some(row);
+        let mut seen = 0;
+        while let Some(model) = current {
+            if !model.theme.is_empty() {
+                return Some(model.theme.clone());
+            }
+            seen += 1;
+            if model.parent_id == 0 || seen > rows.len() {
+                return None;
+            }
+            current = rows
+                .iter()
+                .find(|parent| parent.model_id == model.parent_id);
+        }
+        None
+    };
+    let environments: Vec<&ModelThemeRow> = rows.iter().filter(|row| row.parent_id != 0).collect();
+    if environments.is_empty() {
+        return Ok(rows
+            .iter()
+            .find_map(|row| stored(row.model_id).map(str::to_string)));
+    }
+    let mut themes: Vec<Option<String>> = environments.iter().map(|row| effective(row)).collect();
+    themes.sort();
+    themes.dedup();
+    match themes.as_slice() {
+        [only] => Ok(only.clone()),
+        _ => Err(format!(
+            "the environments generate with different themes ({}); pass --web-theme <name>",
+            themes
+                .iter()
+                .map(|theme| theme.as_deref().unwrap_or("the GeneXus default"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Splits a stored theme reference, `<DesignSystem type GUID>-<entity id>`, into its lowercase GUID and id.
+pub(crate) fn parse_theme_reference(reference: &str) -> Result<(String, i64), String> {
+    let invalid =
+        || format!("the stored theme '{reference}' is not a <type GUID>-<entity id> reference");
+    let (guid, id) = reference.rsplit_once('-').ok_or_else(invalid)?;
+    let id: i64 = id.parse().map_err(|_| invalid())?;
+    let groups: Vec<&str> = guid.split('-').collect();
+    let shaped = groups.iter().map(|group| group.len()).eq([8, 4, 4, 4, 12])
+        && groups
+            .iter()
+            .all(|group| group.bytes().all(|b| b.is_ascii_hexdigit()));
+    if !shaped || id < 0 {
+        return Err(invalid());
+    }
+    Ok((guid.to_ascii_lowercase(), id))
+}
+
 /// What a transaction emitter needs to know of one Attribute (see [`UdmClient::attribute_facts`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AttributeFacts {
@@ -319,5 +438,79 @@ mod attribute_title_tests {
         let titled = "<Properties><Property><Name>Name</Name><Value>A</Value></Property><Property><Name>ContextualTitle</Name><Value>Code</Value></Property></Properties>";
         assert!(attribute_has_own_title(titled).unwrap());
         assert!(attribute_has_own_title("<Properties>").is_err());
+    }
+}
+
+#[cfg(test)]
+mod web_theme_tests {
+    use super::{ModelThemeRow, effective_theme_reference, parse_theme_reference};
+
+    /// Models as `(id, parent, stored theme)`.
+    fn models(spec: &[(i32, i32, &str)]) -> Vec<ModelThemeRow> {
+        spec.iter()
+            .map(|&(model_id, parent_id, theme)| ModelThemeRow {
+                model_id,
+                parent_id,
+                theme: theme.into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_environment_inherits_the_design_model_theme_unless_it_stores_its_own() {
+        // KBTeste: the Design model stores the theme, the .NET environment inherits it.
+        let kbteste = models(&[(1, 0, "78b3fa0e-174c-4b2b-8716-718167a428b5-6"), (2, 1, "")]);
+        assert_eq!(
+            effective_theme_reference(&kbteste).unwrap().as_deref(),
+            Some("78b3fa0e-174c-4b2b-8716-718167a428b5-6")
+        );
+        let own = models(&[(1, 0, "g-6"), (2, 1, "g-9")]);
+        assert_eq!(
+            effective_theme_reference(&own).unwrap().as_deref(),
+            Some("g-9")
+        );
+        // Two environments that generate with different themes: the engine cannot tell which one builds.
+        let split = models(&[(1, 0, "g-6"), (2, 1, ""), (3, 1, "g-9")]);
+        assert!(
+            effective_theme_reference(&split)
+                .unwrap_err()
+                .contains("--web-theme")
+        );
+        let agreeing = models(&[(1, 0, "g-6"), (2, 1, ""), (3, 1, "g-6")]);
+        assert_eq!(
+            effective_theme_reference(&agreeing).unwrap().as_deref(),
+            Some("g-6")
+        );
+        // Nothing stored: GeneXus falls back to a built-in default the engine does not resolve.
+        assert_eq!(
+            effective_theme_reference(&models(&[(1, 0, ""), (2, 1, "")])).unwrap(),
+            None
+        );
+        assert_eq!(effective_theme_reference(&models(&[])).unwrap(), None);
+        // A design model alone (no environment yet) still names the theme.
+        assert_eq!(
+            effective_theme_reference(&models(&[(1, 0, "g-6")]))
+                .unwrap()
+                .as_deref(),
+            Some("g-6")
+        );
+    }
+
+    #[test]
+    fn a_theme_reference_is_a_type_guid_and_an_entity_id() {
+        assert_eq!(
+            parse_theme_reference("78B3FA0E-174c-4b2b-8716-718167a428b5-6").unwrap(),
+            ("78b3fa0e-174c-4b2b-8716-718167a428b5".to_string(), 6)
+        );
+        for bad in [
+            "",
+            "6",
+            "78b3fa0e-174c-4b2b-8716-718167a428b5",
+            "78b3fa0e-174c-4b2b-8716-718167a428b5-x",
+            "'; DROP TABLE x;--1-6",
+            "78b3fa0e-174c-4b2b-8716-718167a428b5--6",
+        ] {
+            assert!(parse_theme_reference(bad).is_err(), "{bad}");
+        }
     }
 }
