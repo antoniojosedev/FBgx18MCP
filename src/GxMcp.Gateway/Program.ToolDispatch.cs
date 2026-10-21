@@ -1051,7 +1051,7 @@ namespace GxMcp.Gateway
                         ["error"] = GxwireErrorCodes.UnexpectedException,
                         ["code"] = GxwireErrorCodes.UnexpectedException,
                         ["message"] = "genexus_wire produced a result the gateway could not shape into a response: "
-                            + Head(shapeEx.Message, GxwireExceptionMessageChars),
+                            + GxwireTool.Head(shapeEx.Message, GxwireTool.GxwireExceptionMessageChars),
                         ["originalCode"] = wireResult["code"]?.ToString() ?? wireResult["error"]?.ToString(),
                         ["diagnosticContext"] = new JObject
                         {

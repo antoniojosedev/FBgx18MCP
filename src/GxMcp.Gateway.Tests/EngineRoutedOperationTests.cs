@@ -70,7 +70,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_whoami", null, null)]
         public void OperationKey_OnlyRoutedConsumersAreMapped(string tool, string? action, string? expected)
         {
-            Assert.Equal(expected, Program.EngineOperationKeyFor(tool, action));
+            Assert.Equal(expected, EngineRoutedOperations.EngineOperationKeyFor(tool, action));
         }
 
         [Theory]
@@ -83,7 +83,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("", null)]
         public void CapabilityId_ComesFromTheRegistry(string operationKey, string? expected)
         {
-            Assert.Equal(expected, Program.EngineCapabilityIdForOperation(operationKey));
+            Assert.Equal(expected, EngineRoutedOperations.EngineCapabilityIdForOperation(operationKey));
         }
 
         // ---------------------------------------------------------- gate: sdk
@@ -1196,17 +1196,143 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
+        // ------------------------------------------------- admitted argument space
+
+        [Theory]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'targets':['Beta'] }", "targets")]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'guid':'g' }", "guid")]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'entityKey':'k' }", "entityKey")]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'path':'p' }", "path")]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'ifUnchangedSince':'x' }", "ifUnchangedSince")]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'offset':5 }", "offset")]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'limit':5 }", "limit")]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'unlistedArgument':'x' }", "unlistedArgument")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'kbs':['a'] }", "kbs")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'cursor':'c' }", "cursor")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'cursors':{'a':'c'} }", "cursors")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'domainFilter':'d' }", "domainFilter")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'inline_read_top':2 }", "inline_read_top")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'sort':'name' }", "sort")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'since':'2020' }", "since")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'modifiedBefore':'2020' }", "modifiedBefore")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'maxConcurrency':2 }", "maxConcurrency")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'maxTotalResults':2 }", "maxTotalResults")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'perKbTimeoutMs':2 }", "perKbTimeoutMs")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'unlistedArgument':'x' }", "unlistedArgument")]
+        [InlineData("genexus_lifecycle", "build", "{ 'dryRun':true }", "dryRun")]
+        [InlineData("genexus_lifecycle", "build", "{ 'environment':'Default' }", "environment")]
+        [InlineData("genexus_lifecycle", "build", "{ 'deploy':true }", "deploy")]
+        [InlineData("genexus_lifecycle", "build", "{ 'fastIncremental':true }", "fastIncremental")]
+        [InlineData("genexus_lifecycle", "build", "{ 'wait_seconds':5 }", "wait_seconds")]
+        [InlineData("genexus_lifecycle", "build", "{ 'force':true }", "force")]
+        [InlineData("genexus_lifecycle", "build", "{ 'callerCap':5 }", "callerCap")]
+        [InlineData("genexus_lifecycle", "build", "{ 'buildPlanCap':5 }", "buildPlanCap")]
+        [InlineData("genexus_lifecycle", "build", "{ 'limit':5 }", "limit")]
+        [InlineData("genexus_lifecycle", "rebuild", "{ 'unlistedArgument':'x' }", "unlistedArgument")]
+        public async Task UnlistedArgument_IsRefusedWithAMessageGeneratedFromTheSupportedList(
+            string tool, string? action, string extraArgs, string argument)
+        {
+            string tempDir = NewTempDir();
+            try
+            {
+                string marker = Path.Combine(tempDir, "ran.txt");
+                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, CreateStub(tempDir, "engine.cmd",
+                    "@echo off\r\necho ran > \"%~dp0ran.txt\"\r\n" + BuildReportStubBody));
+                SetEngineEnv(EngineBackendSettings.FallbackEnvVar, "error");
+                var args = JObject.Parse(extraArgs);
+                if (action != null)
+                {
+                    args["action"] = action;
+                    args["wait_until_done"] = true;
+                }
+
+                var result = await DispatchAsync(tool, action, args.ToString(), tempDir);
+
+                Assert.NotNull(result);
+                Assert.True(result!.Value<bool>("isError"));
+                var payload = PayloadOf(result);
+                Assert.Equal("EngineOperationOutsideAdmittedSpace", payload["error"]?.ToString());
+                string message = payload["message"]!.ToString();
+                Assert.Contains($"`{argument}`", message);
+                Assert.Contains("supported arguments:", message);
+                Assert.False(File.Exists(marker), "a refused call must never start gx-engine");
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Theory]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'targets':['Beta'] }")]
+        [InlineData("genexus_query", null, "{ 'query':'Alpha', 'sort':'name' }")]
+        [InlineData("genexus_lifecycle", "build", "{ 'dryRun':true }")]
+        public async Task UnlistedArgument_FallsBackToTheSdkUnderSdkFallback(string tool, string? action, string extraArgs)
+        {
+            string tempDir = NewTempDir();
+            try
+            {
+                string marker = Path.Combine(tempDir, "ran.txt");
+                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, CreateStub(tempDir, "engine.cmd",
+                    "@echo off\r\necho ran > \"%~dp0ran.txt\"\r\n" + BuildReportStubBody));
+                var args = JObject.Parse(extraArgs);
+                if (action != null)
+                {
+                    args["action"] = action;
+                    args["wait_until_done"] = true;
+                }
+
+                Assert.Null(await DispatchAsync(tool, action, args.ToString(), tempDir));
+                Assert.False(File.Exists(marker));
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Theory]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'objectName':'Alpha', 'type':'Procedure', 'part':'Source', 'refresh':true, 'kb':'kb-alias', 'fields':['name'], 'axiCompact':true }")]
+        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'parts':['Source','Rules'], 'limit':null, 'targets':[] }")]
+        [InlineData("genexus_query", null, "{ 'query':'type:Procedure', 'typeFilter':'', 'limit':10, 'exactMatch':true, 'kb':'kb-alias', 'axiCompact':true }")]
+        [InlineData("genexus_lifecycle", "build", "{ 'wait_until_done':true, 'estimated_seconds':5, 'dryRun':false, 'deploy':false, 'skipFullDeploy':true, 'kb':'kb-alias', 'fields':['status'] }")]
+        [InlineData("genexus_lifecycle", "rebuild", "{ 'wait_until_done':true, 'fastIncremental':false }")]
+        public async Task ListedArguments_AreServedByTheEngine(string tool, string? action, string argsJson)
+        {
+            string tempDir = NewTempDir();
+            try
+            {
+                string body = tool == "genexus_read" ? ReadStubBody
+                    : tool == "genexus_query" ? "@echo off\r\necho {\"objects\":[],\"total\":0,\"truncated\":false}\r\n"
+                    : BuildReportStubBody;
+                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, CreateStub(tempDir, "engine.cmd", body));
+                SetEngineEnv(EngineBackendSettings.FallbackEnvVar, "error");
+                var args = JObject.Parse(argsJson);
+                if (action != null) args["action"] = action;
+
+                var result = await DispatchAsync(tool, action, args.ToString(), tempDir);
+
+                Assert.NotNull(result);
+                Assert.False(result!.Value<bool>("isError"));
+                Assert.Equal("gxengine", PayloadOf(result)["engine"]?["backend"]?.ToString());
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
         // ------------------------------------------------------------- helpers
 
         [Fact]
         public void TryParseEngineJson_ToleratesLeadingNoise()
         {
-            Assert.True(Program.TryParseEngineJson("note: using cache\n{\"a\":1}", out JObject? json, out _));
+            Assert.True(EngineRoutedOperations.TryParseEngineJson("note: using cache\n{\"a\":1}", out JObject? json, out _));
             Assert.Equal(1, json!["a"]!.Value<int>());
 
-            Assert.False(Program.TryParseEngineJson("", out _, out string? emptyError));
+            Assert.False(EngineRoutedOperations.TryParseEngineJson("", out _, out string? emptyError));
             Assert.False(string.IsNullOrWhiteSpace(emptyError));
-            Assert.False(Program.TryParseEngineJson("no json here", out _, out _));
+            Assert.False(EngineRoutedOperations.TryParseEngineJson("no json here", out _, out _));
         }
 
         [Theory]
@@ -1215,7 +1341,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("Procedure", "Transaction", false)]
         public void EngineTypeNamesMatch_HandlesSdkSpellings(string requested, string stored, bool expected)
         {
-            Assert.Equal(expected, Program.EngineTypeNamesMatch(requested, stored));
+            Assert.Equal(expected, EngineRoutedOperations.EngineTypeNamesMatch(requested, stored));
         }
 
         private static Task<JObject?> DispatchAsync(string tool, string? action, string argsJson, string kbPath)
