@@ -77,6 +77,11 @@ try {
         -GxPath $env:GX_PATH 2>&1 | Tee-Object -FilePath $logPath -Append
     if ($LASTEXITCODE -ne 0) { throw "Release build warning baseline failed with exit code $LASTEXITCODE." }
 
+    # The live harness deliberately uses --no-build; a clean runner has no Worker test assembly.
+    $workerTests = Join-Path $root 'src\GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj'
+    & dotnet build $workerTests -c Release --nologo "-p:GX_PATH=$env:GX_PATH" 2>&1 | Tee-Object -FilePath $logPath -Append
+    if ($LASTEXITCODE -ne 0) { throw "Worker live-test build failed with exit code $LASTEXITCODE." }
+
     & pwsh -NoProfile -File (Join-Path $root 'scripts\test-live.ps1') `
         -KbPath $env:GXMCP_TEST_KB -FixtureManifest $env:GXMCP_TEST_FIXTURE -GxPath $env:GX_PATH 2>&1 | Tee-Object -FilePath $logPath -Append
     if ($LASTEXITCODE -ne 0) { throw "Live Worker validation failed with exit code $LASTEXITCODE." }

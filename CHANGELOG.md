@@ -117,6 +117,8 @@
 
 ### Fixed
 
+- The protected SDK CI lane now compiles the Release Worker live-test assembly against the selected SDK before packaging and no-build live execution. Clean runners no longer depend on stale local test outputs; compilation failures block validation.
+
 - Lifecycle index jobs now wait for the same Worker operation to finish with a current, ready index. Background acknowledgements, cancellation and observer timeouts no longer imply successful completion.
 - Warm SDK indexes now reconcile restored objects against the live catalog. Unreadable catalogs and incomplete reconciliation cannot certify a current cache; freshness waits use a coherent, settled-operation snapshot. Catalog reconciliation reports progress without weakening stale-generation checks or the watchdog.
 - WebPanel type queries retain SDK routing because native storage includes objects outside the SDK's WebPanel result set. Unsupported native queries fail closed when SDK fallback is disabled.

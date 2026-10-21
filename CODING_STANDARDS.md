@@ -96,6 +96,11 @@ running it after `build.ps1` breaks the publish↔source byte identity and
 `Get-GxMcpReleaseProcessSmokeFingerprint` returns empty — which fails
 `test-release-preflight.ps1` for a reason unrelated to the change under test.
 
+**Clean-checkout prerequisites.** A lane that invokes tests with `--no-build`
+must compile every selected test project before the final package build; do not
+rely on a developer's existing `bin/obj`. Regression-test missing outputs and
+compilation failure without skipping the live check.
+
 **Review signal.** A commit whose message cites counts for some lanes but not
 others is unverified. Ask for the missing lane's output, not for a claim about it.
 
