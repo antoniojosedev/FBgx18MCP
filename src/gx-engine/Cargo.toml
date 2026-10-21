@@ -2,6 +2,7 @@
 name = "gx-engine"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 publish = false
 description = "Experimental independent portable GeneXus-style compiler and native build driver"
 
@@ -10,6 +11,7 @@ roxmltree = { version = "0.21", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 flate2 = "1.0"
+sha2 = "0.11.1"
 
 [[bench]]
 name = "str_format"

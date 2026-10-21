@@ -286,3 +286,211 @@ fn type_name_mapping_round_trips() {
     assert_eq!(kind_from_type_name("webpanel"), Some(ObjectKind::WebPanel));
     assert_eq!(kind_from_type_name("Gizmo"), None);
 }
+
+// ---- StyleClass design-class token projection -------------------------------------------------
+//
+// Native storage names a design-system class `StyleClass:<type guid><Name>`; the SDK shows
+// `StyleClass:<Name>`. `kb-read` projects the SDK text, while the reader the generators consume keeps
+// the stored token. The oracle is an SDK capture, not a transformation of the native text.
+
+const DESIGN_CLASS_TYPE: &str = "d52f9833-90c9-4096-8e42-27485741f78a";
+const NATIVE_GX0010_EVENTS: &str = include_str!("fixtures/prompt/gx0010.events.txt");
+const SDK_GX0010_EVENTS: &str = include_str!("fixtures/kb_ops/gx0010.events.sdk.txt");
+
+fn seeded_part(kind: ObjectKind, part: &str, source: &str) -> UdmClient {
+    let client = UdmClient::new_in_memory();
+    UdmWriter::new(Arc::new(client.clone()))
+        .create_object(&object("Subject", kind, &[(part, source)]))
+        .expect("create Subject");
+    client
+}
+
+fn read_part(client: &UdmClient, part: &str) -> String {
+    let read = read_object(client, "Subject", Some(&[part.to_string()])).expect("read Subject");
+    assert_eq!(read.parts.len(), 1, "{read:?}");
+    read.parts[0].source.clone()
+}
+
+#[test]
+fn read_projects_a_native_events_part_to_the_sdk_text_but_the_reader_keeps_the_token() {
+    assert!(NATIVE_GX0010_EVENTS.contains(&format!("StyleClass:{DESIGN_CLASS_TYPE}Advanced")));
+    let client = seeded_part(ObjectKind::WebPanel, "EVENTS", NATIVE_GX0010_EVENTS);
+
+    assert_eq!(read_part(&client, "Events"), SDK_GX0010_EVENTS);
+
+    let stored = gx_engine::udm::UdmReader::new(Arc::new(client.clone()))
+        .read_object_by_name("Subject")
+        .expect("reader")
+        .expect("object");
+    let events = stored
+        .source_parts
+        .iter()
+        .find(|part| part.name == "EVENTS")
+        .expect("EVENTS part");
+    assert_eq!(
+        events.source, NATIVE_GX0010_EVENTS,
+        "generators need the stored token"
+    );
+}
+
+#[test]
+fn read_projection_leaves_literals_and_comments_alone() {
+    let token = format!("StyleClass:{DESIGN_CLASS_TYPE}Box");
+    let native = format!(
+        "Event Start\n\
+         \tMsg(\"{token}\")\n\
+         \tMsg(!\"a {token} b\" + {token})\n\
+         \t// note {token}\n\
+         \t/* block\n\
+         \t   {token} */\n\
+         \tx.Class = {token} // tail {token}\n\
+         \t'{token}'\n\
+         EndEvent\n"
+    );
+    let plain = "StyleClass:Box";
+    let expected = format!(
+        "Event Start\n\
+         \tMsg(\"{token}\")\n\
+         \tMsg(!\"a {token} b\" + {plain})\n\
+         \t// note {token}\n\
+         \t/* block\n\
+         \t   {token} */\n\
+         \tx.Class = {plain} // tail {token}\n\
+         \t'{token}'\n\
+         EndEvent\n"
+    );
+    let client = seeded_part(ObjectKind::WebPanel, "EVENTS", &native);
+    assert_eq!(read_part(&client, "Events"), expected);
+}
+
+#[test]
+fn read_projection_preserves_escaped_double_quotes_and_backslashes() {
+    let token = format!("StyleClass:{DESIGN_CLASS_TYPE}Box");
+    let cases = [
+        (
+            format!(r#"Msg("literal \"{token}\""); x.Class = {token}"#),
+            format!(r#"Msg("literal \"{token}\""); x.Class = StyleClass:Box"#),
+        ),
+        (
+            format!(r#"Msg("backslash \\"); x.Class = {token}"#),
+            r#"Msg("backslash \\"); x.Class = StyleClass:Box"#.to_string(),
+        ),
+        (
+            format!(r#"Msg("ação \"{token}\" 🦷"); x.Class = {token}"#),
+            format!(r#"Msg("ação \"{token}\" 🦷"); x.Class = StyleClass:Box"#),
+        ),
+    ];
+    for (native, expected) in cases {
+        let client = seeded_part(ObjectKind::WebPanel, "RULES", &native);
+        assert_eq!(read_part(&client, "Rules"), expected, "native: {native:?}");
+    }
+}
+
+#[test]
+fn read_projection_rewrites_only_the_design_class_token() {
+    let other = "StyleClass:11111111-2222-3333-4444-555555555555Box";
+    let upper = DESIGN_CLASS_TYPE.to_ascii_uppercase();
+    let cases = [
+        // another type's guid is not the design-class wrapper
+        (other.to_string(), other.to_string()),
+        // no class name after the wrapper
+        (
+            format!("x = StyleClass:{DESIGN_CLASS_TYPE}\n"),
+            format!("x = StyleClass:{DESIGN_CLASS_TYPE}\n"),
+        ),
+        // a longer identifier that merely ends in the keyword
+        (
+            format!("x = MyStyleClass:{DESIGN_CLASS_TYPE}Box\n"),
+            format!("x = MyStyleClass:{DESIGN_CLASS_TYPE}Box\n"),
+        ),
+        // a guid cut short
+        (
+            "x = StyleClass:d52f9833-90c9-4096Box\n".to_string(),
+            "x = StyleClass:d52f9833-90c9-4096Box\n".to_string(),
+        ),
+        // guid case does not matter; the keyword and the name keep their text
+        (
+            format!("x = StyleClass:{upper}Box\n"),
+            "x = StyleClass:Box\n".to_string(),
+        ),
+        // an unterminated string ends with its line; the next line is code again
+        (
+            format!(
+                "x = \"StyleClass:{DESIGN_CLASS_TYPE}Box\ny = StyleClass:{DESIGN_CLASS_TYPE}Box\n"
+            ),
+            format!("x = \"StyleClass:{DESIGN_CLASS_TYPE}Box\ny = StyleClass:Box\n"),
+        ),
+        // an unterminated block comment keeps the rest of the part
+        (
+            format!(
+                "/* open StyleClass:{DESIGN_CLASS_TYPE}Box\nStyleClass:{DESIGN_CLASS_TYPE}Box\n"
+            ),
+            format!(
+                "/* open StyleClass:{DESIGN_CLASS_TYPE}Box\nStyleClass:{DESIGN_CLASS_TYPE}Box\n"
+            ),
+        ),
+        // adjacent tokens
+        (
+            format!("StyleClass:{DESIGN_CLASS_TYPE}A+StyleClass:{DESIGN_CLASS_TYPE}B"),
+            "StyleClass:A+StyleClass:B".to_string(),
+        ),
+    ];
+    for (native, expected) in cases {
+        let client = seeded_part(ObjectKind::WebPanel, "EVENTS", &native);
+        assert_eq!(read_part(&client, "Events"), expected, "native: {native:?}");
+    }
+}
+
+#[test]
+fn read_projection_only_touches_tokenized_source_parts() {
+    let token = format!("StyleClass:{DESIGN_CLASS_TYPE}Box");
+    let layout = format!("<Table class=\"{token}\"/>");
+    let client = seeded_part(ObjectKind::WebPanel, "WEBFORM", &layout);
+    assert_eq!(read_part(&client, "WebForm"), layout);
+
+    // A Procedure is only readable with its SOURCE; the other tokenized parts live on a WebPanel.
+    for (kind, part) in [
+        (ObjectKind::Procedure, "SOURCE"),
+        (ObjectKind::WebPanel, "RULES"),
+        (ObjectKind::WebPanel, "CONDITIONS"),
+    ] {
+        let client = seeded_part(kind, part, &format!("x = {token}\n"));
+        assert_eq!(read_part(&client, part), "x = StyleClass:Box\n", "{part}");
+    }
+}
+
+#[test]
+fn operations_serve_the_design_model_the_client_targets() {
+    // One store, two Design models: the trunk (1) and a branch (4) with an object of its own.
+    let trunk = UdmClient::new_in_memory();
+    let branch = trunk.clone().with_design_model_id(4);
+    UdmWriter::new(Arc::new(trunk.clone()))
+        .create_object(&object(
+            "PTrunk",
+            ObjectKind::Procedure,
+            &[("SOURCE", "// trunk")],
+        ))
+        .expect("create PTrunk");
+    UdmWriter::new(Arc::new(branch.clone()))
+        .create_object(&object(
+            "PBranch",
+            ObjectKind::Procedure,
+            &[("SOURCE", "// branch")],
+        ))
+        .expect("create PBranch");
+
+    let names = |client: &UdmClient| -> Vec<String> {
+        query_objects(client, None, Some("Procedure"), None, 0)
+            .expect("query procedures")
+            .objects
+            .into_iter()
+            .map(|object| object.name)
+            .collect()
+    };
+    assert_eq!(names(&trunk), vec!["PTrunk"]);
+    assert_eq!(names(&branch), vec!["PBranch"]);
+    assert!(read_object(&trunk, "PBranch", None).is_err());
+    let read = read_object(&branch, "PBranch", None).expect("branch read");
+    let source = read.parts.iter().find(|part| part.name == "SOURCE");
+    assert_eq!(source.map(|part| part.source.as_str()), Some("// branch"));
+}

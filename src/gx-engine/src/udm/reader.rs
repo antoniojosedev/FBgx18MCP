@@ -89,11 +89,12 @@ pub const GENERATE_OBJECT_FALSE: &str =
     "GenerateObject is False in the Knowledge Base, so the SDK does not generate this procedure";
 
 impl UdmReader {
-    /// Creates a reader using the default design model (ModelId = 1).
+    /// Creates a reader of the client's Design model (`UdmClient::design_model_id`; ModelId 1 by default).
     pub fn new(client: Arc<UdmClient>) -> Self {
+        let model_id = client.design_model_id();
         Self {
             client,
-            model_id: DEFAULT_DESIGN_MODEL_ID,
+            model_id,
             nested_levels: OnceLock::new(),
             procedure_flags: OnceLock::new(),
             main_flags: OnceLock::new(),

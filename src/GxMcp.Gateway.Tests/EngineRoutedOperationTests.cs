@@ -16,11 +16,12 @@ namespace GxMcp.Gateway.Tests
     /// (genexus_query, genexus_lifecycle.build, genexus_lifecycle.rebuild) are
     /// served by the engine when the call is inside the admitted space, and are
     /// either handed back to the SDK path or refused under Fallback=error when it
-    /// is not. `genexus_read` and `genexus_edit` are registered as consumers but
-    /// deliberately held outside the served space (the engine cannot supply the
-    /// SDK read identity/freshness/versionToken, nor persist a write to a live
-    /// Knowledge Base database), so they always refuse (error) or fall back (sdk)
-    /// - never a silent no-op.
+    /// is not. `genexus_read` and `genexus_edit` are not capability consumers: the
+    /// explicit deferral policy (EngineRoutedOperations.DeferredOperationCapabilityIds)
+    /// holds them outside the engine (it cannot supply the SDK read
+    /// identity/freshness/versionToken, nor persist a write to a live Knowledge Base
+    /// database), so under gxengine they always refuse (error) or fall back (sdk),
+    /// and under auto/sdk they never reach the engine path - never a silent no-op.
     ///
     /// Every stub engine here is a .cmd that echoes canned JSON, so the tests
     /// exercise the full Gateway↔process contract without cargo or a KB. The
@@ -49,13 +50,13 @@ namespace GxMcp.Gateway.Tests
 
         [Theory]
         [InlineData("genexus_read", "udm_storage_access")]
-        [InlineData("genexus_query", "udm_storage_access")]
+        [InlineData("genexus_query", "udm_type_query")]
         [InlineData("genexus_edit", "udm_storage_access")]
         [InlineData("genexus_lifecycle.build", "parallel_rebuild_all")]
         [InlineData("genexus_lifecycle.rebuild", "parallel_rebuild_all")]
         [InlineData("genexus_unknown", null)]
         [InlineData("", null)]
-        public void CapabilityId_ComesFromTheRegistry(string operationKey, string? expected)
+        public void CapabilityId_ComesFromTheRegistryOrTheDeferralPolicy(string operationKey, string? expected)
         {
             Assert.Equal(expected, EngineRoutedOperations.EngineCapabilityIdForOperation(operationKey));
         }
@@ -227,6 +228,7 @@ namespace GxMcp.Gateway.Tests
                 Assert.Equal(2, payload["total"]!.Value<int>());
                 Assert.Equal(10, payload["pagination"]!["limit"]!.Value<int>());
                 Assert.Equal("genexus_query", payload["engine"]?["operation"]?.ToString());
+                Assert.Equal("udm_type_query", payload["engine"]?["capability"]?.ToString());
 
                 string argsSeen = File.ReadAllText(Path.Combine(tempDir, "args.txt"));
                 Assert.Contains("kb-query", argsSeen);
@@ -283,6 +285,8 @@ namespace GxMcp.Gateway.Tests
                 Assert.True(result!["isError"]!.Value<bool>());
                 var payload = PayloadOf(result);
                 Assert.Equal("EngineOperationOutsideAdmittedSpace", payload["error"]?.ToString());
+                Assert.Equal("udm_storage_access", payload["engine"]?["capability"]?.ToString());
+                Assert.Equal("genexus_edit", payload["engine"]?["operation"]?.ToString());
                 Assert.Contains("not persisted", payload["message"]?.ToString());
                 Assert.False(File.Exists(ranMarker),
                     "an edit the engine cannot persist must never be reported as saved");
@@ -314,6 +318,58 @@ namespace GxMcp.Gateway.Tests
             finally
             {
                 TryDeleteDirectory(tempDir);
+            }
+        }
+
+        // ------------------------------------------------- read/edit deferral policy
+
+        /// <summary>
+        /// The deferral is routing policy keyed on the backend and fallback only: it refuses
+        /// (with the original udm_storage_access id) only under gxengine + Fallback=error,
+        /// and in every other combination hands the call to the SDK without ever starting
+        /// the engine. auto and sdk bypass it even with Fallback=error.
+        /// </summary>
+        [Theory]
+        [InlineData("genexus_read", @"{ ""name"": ""Alpha"", ""part"": ""Source"" }")]
+        [InlineData("genexus_edit", @"{ ""name"": ""Alpha"", ""part"": ""Source"", ""content"": ""x"" }")]
+        public async Task ReadAndEditDeferral_FollowsBackendAndFallbackWithoutInvokingTheEngine(string tool, string args)
+        {
+            foreach (string? backend in new string?[] { null, "gxengine", "auto", "sdk" })
+            {
+                foreach (string fallback in new[] { "sdk", "error" })
+                {
+                    string tempDir = NewTempDir();
+                    try
+                    {
+                        string ranMarker = Path.Combine(tempDir, "ran.txt");
+                        SetEngineEnv(EngineBackendSettings.BackendEnvVar, backend);
+                        SetEngineEnv(EngineBackendSettings.FallbackEnvVar, fallback);
+                        SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, CreateStub(tempDir, "engine.cmd", "@echo off\r\necho ran > \"%~dp0ran.txt\"\r\necho {\"status\":\"ok\"}\r\n"));
+
+                        var result = await DispatchAsync(tool, null, args, tempDir);
+
+                        string label = $"backend={backend ?? "(default)"} fallback={fallback}";
+                        bool refusalExpected = backend is null or "gxengine" && fallback == "error";
+                        if (refusalExpected)
+                        {
+                            Assert.True(result != null, label);
+                            Assert.True(result!["isError"]!.Value<bool>(), label);
+                            var payload = PayloadOf(result);
+                            Assert.Equal("EngineOperationOutsideAdmittedSpace", payload["error"]?.ToString());
+                            Assert.Equal("udm_storage_access", payload["engine"]?["capability"]?.ToString());
+                            Assert.Equal(tool, payload["engine"]?["operation"]?.ToString());
+                        }
+                        else
+                        {
+                            Assert.True(result == null, label);
+                        }
+                        Assert.False(File.Exists(ranMarker), "read/edit are never served by the engine: " + label);
+                    }
+                    finally
+                    {
+                        TryDeleteDirectory(tempDir);
+                    }
+                }
             }
         }
 

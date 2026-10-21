@@ -439,6 +439,7 @@ namespace GxMcp.Worker.Services
                 }
 
                 _isOpenInProgress = true;
+                ActiveModelSnapshot.Clear();
             }
 
             // PERFORMANCE (instrumentation): time the KB.Open call so cold-start regressions
@@ -477,6 +478,7 @@ namespace GxMcp.Worker.Services
 
                 // Publish the handle.
                 lock (_kbLock) { _kb = opened; }
+                ActiveModelSnapshot.Capture(opened as Artech.Architecture.Common.Objects.KnowledgeBase);
 
                 // Warm reload is intentionally attempted after the SDK handle is
                 // published, but before the caller receives KbOpened. This makes the

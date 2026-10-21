@@ -55,6 +55,8 @@ pub struct UdmClient {
     /// Keys answered from memory after a set-wise read; any write clears it.
     bulk: Arc<RwLock<BulkCoverage>>,
     read_session: Option<Arc<Mutex<Option<live::ReadSession>>>>,
+    /// The Design model readers and writers of this client target (see `udm::version_scope`).
+    design_model_id: i32,
 }
 
 impl UdmClient {
@@ -66,6 +68,7 @@ impl UdmClient {
             live_vocabulary: Arc::new(OnceLock::new()),
             bulk: Arc::new(RwLock::new(BulkCoverage::default())),
             read_session: None,
+            design_model_id: crate::udm::reader::DEFAULT_DESIGN_MODEL_ID,
         }
     }
 
@@ -80,6 +83,7 @@ impl UdmClient {
             live_vocabulary: Arc::new(OnceLock::new()),
             bulk: Arc::new(RwLock::new(BulkCoverage::default())),
             read_session: None,
+            design_model_id: crate::udm::reader::DEFAULT_DESIGN_MODEL_ID,
         }
     }
 
@@ -92,6 +96,7 @@ impl UdmClient {
             live_vocabulary: Arc::new(OnceLock::new()),
             bulk: Arc::new(RwLock::new(BulkCoverage::default())),
             read_session: None,
+            design_model_id: crate::udm::reader::DEFAULT_DESIGN_MODEL_ID,
         }
     }
 
@@ -106,6 +111,18 @@ impl UdmClient {
     pub fn with_persistent_reads(mut self) -> Self {
         self.read_session = Some(Arc::new(Mutex::new(None)));
         self
+    }
+
+    /// Targets the Design model `model_id` (the active KB version's, selected by
+    /// `udm::version_scope::select_design_model`) for every reader and writer built on this client.
+    pub fn with_design_model_id(mut self, model_id: i32) -> Self {
+        self.design_model_id = model_id;
+        self
+    }
+
+    /// The Design model readers and writers built on this client target.
+    pub fn design_model_id(&self) -> i32 {
+        self.design_model_id
     }
 
     /// Returns the target `KbConnectionInfo`, if configured.

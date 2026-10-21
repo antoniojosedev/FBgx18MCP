@@ -80,8 +80,11 @@ docs/sdk-probe/raw.json
 .gx-smoke-final/
 .gx-smoke*/
 
-# improve skill (shadcn) — local tooling, not part of the package
-.agents/
+# Local agent tooling stays ignored; the project artifact-comparison skill is source.
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/gxe-artifact-parity/
 skills-lock.json
 .freebuff/
 

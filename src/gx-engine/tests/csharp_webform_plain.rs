@@ -225,6 +225,78 @@ fn an_unconfigured_master_class_refuses_the_plain_panel_naming_the_option() {
 }
 
 #[test]
+fn event_bearing_panels_are_refused_before_artifacts_are_written() {
+    // Rebuild uses the SDK-form webform planner, not the library WebPanelClass emitter.
+    // Even otherwise-supported event statements stay outside this admitted space.
+    let cases = [
+        (
+            "foreach",
+            "EVENTS",
+            "Event Start\nFor Each\nEndFor\nEndEvent",
+        ),
+        ("new", "EVENTS", "Event Start\nNew\nEndNew\nEndEvent"),
+        ("delete", "EVENTS", "Event Start\nDelete\nEndEvent"),
+        (
+            "nested",
+            "EVENTS",
+            "Event Start\nIf 1 = 1\nDelete\nEndIf\nEndEvent",
+        ),
+        ("malformed", "EVENTS", "Event Start\nIf (\nEndEvent"),
+        ("simple", "EVENTS", "Event Start\nMsg('hello')\nEndEvent"),
+        ("rules", "RULES", "parm(in:&Value);"),
+        ("conditions", "CONDITIONS", "1 = 1"),
+    ];
+    for (tag, part_name, source) in cases {
+        let mut panel = live_import();
+        panel.source_parts.push(SourcePart {
+            name: part_name.into(),
+            source: source.into(),
+        });
+        let mut catalog = Catalog::empty();
+        catalog
+            .apply(0, &[Edit::Upsert(master()), Edit::Upsert(panel)])
+            .expect("catalog setup");
+        let out = temp_output(tag);
+        let options = RebuildOptions::new("net8.0")
+            .with_clean(true)
+            .with_skip_compile(true)
+            .with_web_environment(configured());
+        let report = rebuild_all(&catalog, &out, &options).expect("rebuild completes");
+        let refusal = report
+            .skipped_objects
+            .iter()
+            .find(|object| object.name == "LiveImportWebPanel")
+            .expect("event-bearing panel is explicitly refused");
+        assert!(
+            refusal
+                .reason
+                .contains(&format!("{} code", part_name.to_ascii_lowercase())),
+            "{tag}: {}",
+            refusal.reason
+        );
+        assert_eq!(
+            report.status,
+            RebuildStatus::Partial,
+            "{tag}: refusal is not success"
+        );
+        assert_eq!(
+            report.generated_count, 0,
+            "{tag}: no generated panel or support files"
+        );
+        assert!(
+            !out.join("liveimportwebpanel.cs").exists(),
+            "{tag}: no panel artifact"
+        );
+        let project = fs::read_to_string(out.join("RebuildApp.csproj")).expect("project readable");
+        assert!(
+            !project.contains("liveimportwebpanel.cs"),
+            "{tag}: no compiler input for panel"
+        );
+        fs::remove_dir_all(&out).expect("temporary output removed");
+    }
+}
+
+#[test]
 fn the_mask_keeps_everything_but_the_stamp() {
     assert_eq!(
         mask_stamp("a \"?202610150405993\" b \"?20261015040599\" c"),

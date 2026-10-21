@@ -281,6 +281,15 @@ impl<'a> CSharpEmitter<'a> {
         }
     }
 
+    /// Refuses a database statement by name. The SDK writes a cursor class and commands for it; this build
+    /// writes neither, so a class that kept only the statement's comment or body would run without ever
+    /// reading or writing a row.
+    pub(super) fn refuse_database_statement(&self, construct: &str) {
+        self.fail(format!(
+            "{construct}: a database statement has no SDK form in this build, so the Procedure cannot be written"
+        ));
+    }
+
     fn fail(&self, message: String) {
         let mut refusals = self.refusals.borrow_mut();
         if !refusals.contains(&message) {

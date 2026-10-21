@@ -85,6 +85,8 @@ Source of truth: `config/gx-versions.json`.
   [Plan 131](plans/131-sdk-performance-benchmark.md) first. Compare the same
   workload and observable behavior; distinguish warm/cold, selected-object/full-KB,
   and benchmarked/packaged binaries. Keep all raw samples outside Git.
+- For generated-file parity, missing/extra artifacts or SDK output comparisons,
+  read [gxe-artifact-parity](.agents/skills/gxe-artifact-parity/SKILL.md).
 - Drive remaining full-KB failures down with SDK differential evidence and
   regression tests. Preserve refusals and malformed-input errors; account for
   skipped/not-generated objects explicitly. A green package build or unit suite

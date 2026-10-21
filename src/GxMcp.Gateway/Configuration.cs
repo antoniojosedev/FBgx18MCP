@@ -684,14 +684,17 @@ namespace GxMcp.Gateway
 
     /// <summary>
     /// gx-engine backend policy (docs/engine_backend.md). An absent section
-    /// defaults to gxengine: admitted builds, reads and queries use gx-engine;
-    /// everything outside the admitted space uses the SDK.
-    /// Only capabilities measured at full parity may be routed to the engine; the
-    /// capability gate lives in <see cref="EngineCapabilityRegistry"/>.
+    /// defaults to gxengine: admitted blocking builds and field-limited type-only
+    /// queries use gx-engine; reads, edits and everything outside the admitted
+    /// space use the SDK (or are refused under Fallback=error).
+    /// Only capabilities with recorded parity evidence for their admitted space may
+    /// be served by the engine; the capability gate lives in
+    /// <see cref="EngineCapabilityRegistry"/>, and the read/edit deferral is a
+    /// separate routing policy in <see cref="EngineRoutedOperations"/>.
     /// </summary>
     public class EngineConfig
     {
-        /// <summary>"gxengine" (default: admitted builds, reads, queries), "auto" (admitted builds only), or "sdk" (engine off).</summary>
+        /// <summary>"gxengine" (default: admitted builds and type-only queries; reads/edits deferred to the SDK), "auto" (admitted builds only), or "sdk" (engine off).</summary>
         [JsonProperty("Backend")]
         public string? Backend { get; set; }
 

@@ -408,9 +408,9 @@ fn test_parallel_execution_performance() {
             source: format!(
                 r#"
                 &AV8Sum = 0
-                For each
-                    If CustomerActive
-                        &AV8Sum = &AV8Sum + CustomerId + {i}
+                For &AV8I = 1 to 3
+                    If &AV8I > 1
+                        &AV8Sum = &AV8Sum + &AV8I + {i}
                     EndIf
                 EndFor
                 msg(trim(str(&AV8Sum, 10, 0)), status)
@@ -419,7 +419,7 @@ fn test_parallel_execution_performance() {
         });
         p.source_parts.push(SourcePart {
             name: "Variables".into(),
-            source: r#"{"AV8Sum":{"kind":"numeric","precision":10,"scale":0}}"#.into(),
+            source: r#"{"AV8Sum":{"kind":"numeric","precision":10,"scale":0},"AV8I":{"kind":"numeric","precision":4,"scale":0}}"#.into(),
         });
         edits.push(Edit::Upsert(p));
     }

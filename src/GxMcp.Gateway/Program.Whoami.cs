@@ -1431,7 +1431,11 @@ namespace GxMcp.Gateway
         /// <summary>
         /// Engine backend status for genexus_doctor (docs/engine_backend.md).
         /// Auto and gxengine probe the executable; an explicit sdk policy is
-        /// static and process-free. Routed operations reflect the selected policy.
+        /// static and process-free. <c>routedOperations</c> lists only operations the
+        /// engine can actually serve under the selected policy (evidence-gated Parity
+        /// consumers); <c>deferredOperations</c> lists the read/edit operations held
+        /// outside the engine by explicit policy (refused under Fallback=error, SDK
+        /// otherwise) and never counts as parity or as a routed operation.
         /// </summary>
         internal static JObject BuildEngineDoctorSection(Configuration? config)
         {
@@ -1447,7 +1451,8 @@ namespace GxMcp.Gateway
                     ["unsupported"] = EngineCapabilityRegistry.All.Count(c => c.Status == EngineCapabilityStatus.Unsupported),
                     ["routedOperations"] = new JArray(EngineCapabilityRegistry.All
                         .Where(c => EngineRouter.Decide(c.Id, settings).Target == EngineRouteTarget.Engine)
-                        .SelectMany(c => c.Consumers).Distinct(StringComparer.OrdinalIgnoreCase))
+                        .SelectMany(c => c.Consumers).Distinct(StringComparer.OrdinalIgnoreCase)),
+                    ["deferredOperations"] = new JArray(EngineRoutedOperations.DeferredOperationsFor(settings))
                 }
             };
 

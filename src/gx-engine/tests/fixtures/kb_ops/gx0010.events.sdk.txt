@@ -1,0 +1,53 @@
+Event Start
+	Form.Caption = Format("GXSPC_SelectionList", "Trn Group Probe Base")
+	&ADVANCED_LABEL_TEMPLATE = "%1 <strong>%2</strong>"
+EndEvent
+
+Event 'Toggle'
+	if AdvancedContainer.Class = StyleClass:AdvancedContainer
+		AdvancedContainer.Class = StyleClass:AdvancedContainer + !" " + StyleClass:AdvancedContainerVisible
+		BtnToggle.Class += !" " + StyleClass:BtnToggleActive
+	else
+		AdvancedContainer.Class = StyleClass:AdvancedContainer
+		BtnToggle.Class = StyleClass:BtnToggle
+	endif
+Endevent
+
+Event LblTrnGroupProbeBaseIdFilter.Click
+	if TrnGroupProbeBaseIdFilterContainer.Class = StyleClass:AdvancedContainerItem
+		TrnGroupProbeBaseIdFilterContainer.Class = StyleClass:AdvancedContainerItem + !" " + StyleClass:AdvancedContainerItemExpanded
+		&cTrnGroupProbeBaseId.Visible = true
+	else
+		TrnGroupProbeBaseIdFilterContainer.Class = StyleClass:AdvancedContainerItem
+		&cTrnGroupProbeBaseId.Visible = false
+	endif
+EndEvent
+
+Event LblGpBaseIdFilter.Click
+	if GpBaseIdFilterContainer.Class = StyleClass:AdvancedContainerItem
+		GpBaseIdFilterContainer.Class = StyleClass:AdvancedContainerItem + !" " + StyleClass:AdvancedContainerItemExpanded
+		&cGpBaseId.Visible = true
+	else
+		GpBaseIdFilterContainer.Class = StyleClass:AdvancedContainerItem
+		&cGpBaseId.Visible = false
+	endif
+EndEvent
+
+Event LblGpBaseDescFilter.Click
+	if GpBaseDescFilterContainer.Class = StyleClass:AdvancedContainerItem
+		GpBaseDescFilterContainer.Class = StyleClass:AdvancedContainerItem + !" " + StyleClass:AdvancedContainerItemExpanded
+		&cGpBaseDesc.Visible = true
+	else
+		GpBaseDescFilterContainer.Class = StyleClass:AdvancedContainerItem
+		&cGpBaseDesc.Visible = false
+	endif
+EndEvent
+
+Event Load
+	&LinkSelection.FromImage(selectRow)
+EndEvent
+
+Event Enter
+	&pTrnGroupProbeBaseId = TrnGroupProbeBaseId
+	Return
+EndEvent

@@ -559,6 +559,10 @@ namespace GxMcp.Worker.Services
                 if (method == "ping" || method == "health")
                     return true;
 
+                // The active-model snapshot is published by the SDK thread and read without the SDK.
+                if (method == "kbversion" && string.Equals(action, "ActiveModel", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
                 // issue #26 P2: 'search' is index-only (in-memory) EXCEPT SearchSource,
                 // which reads object Source/WebForm XML via the GeneXus SDK and MUST run
                 // on the STA thread. Routing SearchSource to the MTA thread-pool path
@@ -3321,6 +3325,9 @@ namespace GxMcp.Worker.Services
             // genexus_kb_version — KB model-version management
             // (Create Version / Branch / Activate / Revert) over
             // Artech.Architecture.Common.Helpers.KBVersionHelper.
+            // ActiveModel answers from the snapshot only (no SDK call), off the SDK thread.
+            if (string.Equals(action, "ActiveModel", StringComparison.OrdinalIgnoreCase))
+                return ActiveModelSnapshot.Describe(ActiveModelSnapshot.Current);
             return _kbVersionService.Run(args ?? new JObject());
         }
 

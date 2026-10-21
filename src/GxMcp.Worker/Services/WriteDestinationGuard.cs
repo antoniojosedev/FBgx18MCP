@@ -63,7 +63,8 @@ namespace GxMcp.Worker.Services
                 case "search": return action == "Query" || action == "SearchSource";
                 case "list": return action == "Objects";
                 case "object": return action == "Read" || action == "ReadLogs";
-                case "kbversion": return string.Equals(args?["action"]?.ToString() ?? "list", "list", StringComparison.OrdinalIgnoreCase);
+                case "kbversion": return action == "ActiveModel"
+                    || string.Equals(args?["action"]?.ToString() ?? "list", "list", StringComparison.OrdinalIgnoreCase);
                 // Open has its own pre-SDK path fence in KbService.OpenKB.
                 case "kb": return action == "Open" || action == "GetIndexStatus" || action == "GetIndexState" || action == "GetNameTypeMap" || action == "ListEnvironments" || action == "GetActiveEnvironment";
                 default: return false;

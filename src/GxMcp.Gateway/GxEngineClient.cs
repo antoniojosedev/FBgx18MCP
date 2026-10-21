@@ -158,8 +158,8 @@ namespace GxMcp.Gateway
 
         private static string Excerpt(string text)
         {
-            string single = (text ?? string.Empty).Replace("\r", " ").Replace("\n", " ").Trim();
-            return single.Length <= 240 ? single : single.Substring(0, 240) + "…";
+            string single = EngineFailureText.Redact(text).Replace("\r", " ").Replace("\n", " ").Trim();
+            return EngineFailureText.Truncate(single, 240);
         }
 
         /// <summary>
