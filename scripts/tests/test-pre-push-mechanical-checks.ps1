@@ -259,6 +259,24 @@ foreach ($pin in @(
 # the caller's scope, so the module stays a pure function library. The pre-push
 # checker dot-sources the contract, so this fork-local guard lives with the
 # checker rather than in the upstream test-release-contract.ps1.
+# Upstream may bind a named constant at top level (v4.0.0 added
+# $script:GxMcpReleaseWorkflowCheck / $script:GxMcpReleaseWorkflowAppId). A
+# constant binding to a script-scoped variable emits no output, consumes no
+# argument and invokes no command, so it keeps the invariant the guard exists
+# to protect. Anything else at top level is still refused.
+function Test-ReleaseContractConstantBinding {
+    param([Parameter(Mandatory = $true)][object]$Statement)
+
+    if ($Statement -isnot [System.Management.Automation.Language.AssignmentStatementAst]) { return $false }
+    if ($Statement.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals) { return $false }
+    $left = $Statement.Left
+    if ($left -isnot [System.Management.Automation.Language.VariableExpressionAst]) { return $false }
+    if (-not $left.VariablePath.UserPath.StartsWith('script:', [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $value = $Statement.Right
+    if ($value -is [System.Management.Automation.Language.CommandExpressionAst]) { $value = $value.Expression }
+    return $value -is [System.Management.Automation.Language.ConstantExpressionAst]
+}
+
 $contractPath = Join-Path $root 'scripts\release-contract.ps1'
 $contractTokens = $null; $contractParseErrors = $null
 $contractAst = [System.Management.Automation.Language.Parser]::ParseFile($contractPath, [ref]$contractTokens, [ref]$contractParseErrors)
@@ -267,9 +285,9 @@ if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.Process
     throw 'release-contract.ps1 must not declare param/begin/process blocks; the dot-source must not consume arguments.'
 }
 foreach ($stmt in $contractAst.EndBlock.Statements) {
-    if ($stmt -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) {
-        throw "release-contract.ps1 must define only functions at top level; found: $($stmt.GetType().Name)"
-    }
+    if ($stmt -is [System.Management.Automation.Language.FunctionDefinitionAst]) { continue }
+    if (Test-ReleaseContractConstantBinding -Statement $stmt) { continue }
+    throw "release-contract.ps1 must define only functions at top level (a constant binding to a script-scoped variable is tolerated); found: $($stmt.GetType().Name)"
 }
 
 $corpus = @(
