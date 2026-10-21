@@ -134,6 +134,7 @@ namespace GxMcp.Worker.Services
             if (!completed) return false;
             _indexWatchdog?.Stop();
             _isIndexing = false;
+            _indexCacheService?.NotifyOperationCompleted();
             return true;
         }
 
@@ -1248,34 +1249,38 @@ namespace GxMcp.Worker.Services
                         catch { /* skip individual object failures */ }
                     }
 
-                    // Fase 2: authoritative deletion sweep, count-gated. GetKeys(hwm) never
-                    // reports deletions, so a deleted object would linger as a stale entry.
-                    // Only walk current GUIDs when the live object count dropped below the
-                    // stored count — the common no-deletion case stays a fast delta.
+                    // Fase 2: authoritative catalog reconciliation. GetKeys(hwm) never reports
+                    // a deleted object, nor a live one whose LastUpdate predates the mark (a
+                    // restored backup, an XPZ import), so the restored index would keep the
+                    // former and never learn the latter. One enumeration of the catalog's
+                    // guids corrects both; DesignModel.Objects has no Count to gate it on.
+                    // The reconciliation is authoritative: if it cannot run, is refused, or leaves a
+                    // live object unindexed, the index is NOT known to match the KB. It throws into
+                    // the delta failure path below (Cold/stale + bounded retry) instead of publishing
+                    // Ready/current on an index that was never verified.
                     int deleted = 0;
-                    try
+                    int added = 0;
                     {
                         var idx = _indexCacheService.GetIndex();
                         int storedCount = idx.Objects.Count;
-                        int currentCount = -1;
-                        try { currentCount = (int)kb.DesignModel.Objects.Count; } catch { currentCount = -1; }
-                        // Item 3: sweep when count dropped OR when objects changed (changed > 0
-                        // means GUIDs may have rotated even if total count is the same).
-                        if (currentCount >= 0 && (currentCount < storedCount || changed > 0) && idx.GuidToKey != null)
-                        {
-                            var currentGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                            foreach (global::Artech.Architecture.Common.Objects.KBObject o in (System.Collections.IEnumerable)kb.DesignModel.Objects)
-                            {
-                                try { currentGuids.Add(o.Guid.ToString()); } catch { }
-                            }
-                            foreach (var storedGuid in idx.GuidToKey.Keys.ToList())
-                            {
-                                if (!currentGuids.Contains(storedGuid)) { _indexCacheService.RemoveEntryByGuid(storedGuid); deleted++; }
-                            }
-                            if (deleted > 0) Logger.Info($"[DELTA-DELETIONS] removed={deleted} storedCount={storedCount} currentCount={currentCount}");
-                        }
+                        if (idx.GuidToKey == null)
+                            throw new InvalidOperationException("catalog reconciliation impossible: the restored index has no guid map");
+                        var reconciliation = IndexCatalogReconciler.Reconcile(
+                            (object)kb.DesignModel.Objects,
+                            o => ((global::Artech.Architecture.Common.Objects.KBObject)o).Guid.ToString(),
+                            idx.GuidToKey.Keys.ToList(),
+                            progress: () => MarkIndexProgressHeartbeat(operationGeneration));
+                        var applied = IndexCatalogReconciler.Apply(
+                            reconciliation,
+                            () => IsCurrentIndexOperation(operationGeneration),
+                            guid => _indexCacheService.RemoveEntryByGuid(guid),
+                            missingObject => _indexCacheService.UpdateEntry((dynamic)missingObject),
+                            progress: () => MarkIndexProgressHeartbeat(operationGeneration));
+                        if (applied.Superseded) return;
+                        deleted = applied.Removed;
+                        added = applied.Added;
+                        if (deleted > 0 || added > 0) Logger.Info($"[DELTA-RECONCILE] removed={deleted} added={added} storedCount={storedCount}");
                     }
-                    catch (Exception dex) { Logger.Warn("Delta deletion sweep failed: " + dex.Message); }
 
                     int effectiveCount = _indexCacheService.GetIndex().Objects.Count;
                     if (!IsCurrentIndexOperation(operationGeneration)) return;
@@ -1286,7 +1291,7 @@ namespace GxMcp.Worker.Services
                     catch (Exception fx) { Logger.Warn("Delta refresh flush/sidecar failed: " + fx.Message); }
 
                     sw.Stop();
-                    Logger.Info($"[DELTA-REFRESH] elapsedMs={sw.ElapsedMilliseconds} changed={changed} deleted={deleted} hwmBefore={highWaterMark:o} hwmAfter={newHwm:o} objects={effectiveCount}");
+                    Logger.Info($"[DELTA-REFRESH] elapsedMs={sw.ElapsedMilliseconds} changed={changed} deleted={deleted} added={added} hwmBefore={highWaterMark:o} hwmAfter={newHwm:o} objects={effectiveCount}");
 
                     // Fase 1 (robustness): if the persisted body was lite-only or partially
                     // enriched (worker evicted mid-enrichment before), resume enrichment for the
@@ -1622,25 +1627,45 @@ namespace GxMcp.Worker.Services
                     reused: false));
         }
 
-        public string GetIndexStatus()
+        public string GetIndexStatus() => GetIndexStatus(null);
+
+        public string GetIndexStatus(IndexState observed)
         {
             var json = new Newtonsoft.Json.Linq.JObject();
-            json["isIndexing"] = _isIndexing;
+            // One cache-state snapshot (it embeds the operation coordinator's snapshot) feeds every
+            // availability and operation field of this reply. The caller passes the snapshot it
+            // already used for its wait decision so the two cannot disagree.
+            var state = observed ?? _indexCacheService?.GetState();
+            bool observedOperation = observed != null;
+            bool indexing = _isIndexing;
+            if (observedOperation && !observed.OperationActive) indexing = false;
+            json["isIndexing"] = indexing;
             json["total"] = _totalCount;
             json["processed"] = _processedCount;
             // issue #25 #1: while the lite walk runs, `total` is the running
             // count of objects walked SO FAR, not the KB's grand total (which is
             // only known once the walk completes). Flag it so a poller doesn't read
             // `total` as a fixed target / compute a bogus percentage.
-            json["totalKnown"] = !_isIndexing;
+            json["totalKnown"] = !indexing;
             json["objectsWalked"] = _totalCount;
             json["status"] = _currentStatus;
-            var operation = _indexOperations.GetSnapshot(IsIndexWorkerAlive());
+            var operation = observedOperation
+                ? new IndexOperationCoordinator.Snapshot
+                {
+                    OperationId = observed.OperationId,
+                    Active = observed.OperationActive,
+                    State = observed.OperationState,
+                    WorkerAlive = observed.WorkerAlive,
+                    Recoverable = observed.Recoverable,
+                    Stalled = observed.Stalled,
+                    StalledAtUtc = observed.StalledAtUtc
+                }
+                : _indexOperations.GetSnapshot(IsIndexWorkerAlive());
             json["operationId"] = operation.OperationId != null ? (JToken)operation.OperationId : JValue.CreateNull();
             json["operationState"] = operation.State;
             json["workerAlive"] = operation.WorkerAlive;
             json["recoverable"] = operation.Recoverable
-                || (string.Equals(_indexCacheService?.GetState()?.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(state?.Status, "Cold", StringComparison.OrdinalIgnoreCase)
                     && string.Equals(operation.State, "Idle", StringComparison.OrdinalIgnoreCase));
             if (operation.StalledAtUtc.HasValue)
                 json["stalledAtUtc"] = operation.StalledAtUtc.Value.ToUniversalTime().ToString("o");
@@ -1658,7 +1683,6 @@ namespace GxMcp.Worker.Services
                 : JValue.CreateNull();
             if (operation.Active && (operation.Stalled || !operation.WorkerAlive))
                 json["recoveryAction"] = "genexus_lifecycle action=index force=true";
-            var state = _indexCacheService?.GetState();
             json["freshness"] = state?.Freshness ?? "stale";
             json["lastSuccessfulScanAt"] = state?.LastSuccessfulScanAt.HasValue == true
                 ? (JToken)state.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
@@ -1668,7 +1692,7 @@ namespace GxMcp.Worker.Services
                 json["cacheValidation"] = _indexCacheService.BuildCacheValidationDiagnostic();
             }
             catch { }
-            json["isBusy"] = _isIndexing || operation.Active || _isOpenInProgress;
+            json["isBusy"] = indexing || operation.Active || _isOpenInProgress;
             // Issue #27 item 3 (measured): when the index is loaded from the warm/delta
             // cache, the in-session walk counters (_totalCount/_processedCount) are never
             // set, so this reported total:0 / processed:0 / objectsWalked:0 even with a
@@ -1678,9 +1702,9 @@ namespace GxMcp.Worker.Services
             // session. A live walk (_isIndexing) keeps its real running progress.
             try
             {
-                if (!_isIndexing && _totalCount == 0)
+                if (!indexing && _totalCount == 0)
                 {
-                    int stateTotal = _indexCacheService?.GetState()?.TotalObjects ?? 0;
+                    int stateTotal = state?.TotalObjects ?? 0;
                     if (stateTotal > 0)
                     {
                         json["total"] = stateTotal;
@@ -1691,7 +1715,7 @@ namespace GxMcp.Worker.Services
                         // (same unset-counter root cause). Fill it from the index state so
                         // the compact status isn't blank when the index is actually usable.
                         if (string.IsNullOrEmpty(json["status"]?.ToString()))
-                            json["status"] = _indexCacheService?.GetState()?.Status ?? "Ready";
+                            json["status"] = state?.Status ?? "Ready";
                     }
                 }
             }

@@ -1145,6 +1145,24 @@ namespace GxMcp.Gateway
         // path returns a coded envelope with diagnosticContext, and the process
         // launch is a replaceable seam so the paths are testable without gxwire.exe.
 
+        /// <summary>Reads bounded Worker index status without hiding error envelopes.</summary>
+        private static async Task<JObject?> ReadLifecycleIndexStatusAsync(
+            string jobId, string toolName, JObject? toolArgs, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            JObject? envelope = await SendWorkerCommandAsync(
+                new JObject
+                {
+                    ["module"] = "KB", ["action"] = "GetIndexStatus",
+                    ["wait"] = 30, ["freshness"] = "current"
+                },
+                35000, $"Timeout waiting for index completion (job={jobId})",
+                env => env,
+                (_, correlationId) => new JObject { ["error"] = "Index status timeout", ["correlationId"] = correlationId },
+                toolName: toolName, toolArgs: toolArgs, trackOperation: false);
+            return envelope?["error"] != null ? envelope : (envelope?["result"] as JObject) ?? envelope;
+        }
+
         /// <summary>
         /// Async lifecycle build intercept (Tasks 4.3 + 4.4). Returns null when the
         /// call is not an async-eligible lifecycle build, or when the caller estimate
@@ -1277,9 +1295,17 @@ namespace GxMcp.Gateway
                     if (!string.IsNullOrEmpty(taskId)) JobRegistry.SetWorkerTaskId(job.Id, taskId);
                     if (string.IsNullOrEmpty(taskId))
                     {
-                        // No taskId means a synchronous long action (validate-kb or a
-                        // forced index refresh) completed inside the worker command.
-                        // Store that terminal payload in the same operation registry.
+                        // BulkIndex acknowledges a background operation, not its completion.
+                        // Keep the lifecycle job live until that exact index is idle/current.
+                        if (string.Equals(lcAction, "index", StringComparison.OrdinalIgnoreCase))
+                        {
+                            await LifecycleIndexCompletion.CompleteJobAsync(
+                                JobRegistry, job, ack,
+                                ct => ReadLifecycleIndexStatusAsync(job.Id, tName, tArgs, ct),
+                                TimeSpan.FromSeconds(ResolveAsyncBuildHardCapSeconds(lcAction)));
+                            return;
+                        }
+                        // Other taskless actions complete inside the Worker command.
                         bool syncSuccess = IsSuccessfulBackgroundToolCompletion(ack)
                             && !string.Equals(ack["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase)
                             && ack["error"] == null;

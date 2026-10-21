@@ -18,22 +18,8 @@ namespace GxMcp.Gateway.Tests
     /// purpose: xunit runs classes in parallel and tests within a class
     /// sequentially, so environment mutation stays race-free.
     /// </summary>
-    public class EngineBackendTests : IDisposable
+    public class EngineBackendTests : EngineEnvironmentTestBase
     {
-        private readonly List<(string Name, string? Value)> _savedEnvironment = new();
-
-        private void SetEngineEnv(string name, string? value)
-        {
-            _savedEnvironment.Add((name, Environment.GetEnvironmentVariable(name)));
-            Environment.SetEnvironmentVariable(name, value);
-        }
-
-        public void Dispose()
-        {
-            foreach (var entry in _savedEnvironment)
-                Environment.SetEnvironmentVariable(entry.Name, entry.Value);
-        }
-
         // ---------------------------------------------------------------- settings
 
         [Fact]

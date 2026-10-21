@@ -19,6 +19,10 @@ namespace GxMcp.Worker.Models
         // keep the cache unavailable without being silently cancelled by a status poll.
         public string OperationId { get; set; }
         public string OperationState { get; set; } = "Idle";
+        // True from lease acquisition until the index operation completes. Availability
+        // (Status/Freshness) is published before the operation is finished, so the two
+        // must be read from one snapshot to describe a run coherently.
+        public bool OperationActive { get; set; }
         public bool WorkerAlive { get; set; }
         public bool Recoverable { get; set; }
         public bool Stalled { get; set; }
@@ -45,7 +49,12 @@ namespace GxMcp.Worker.Models
                 : !string.Equals(status, since, StringComparison.OrdinalIgnoreCase);
             bool freshnessSatisfied = string.IsNullOrEmpty(wantFreshness)
                 || string.Equals(state?.Freshness, wantFreshness, StringComparison.OrdinalIgnoreCase);
-            return statusSatisfied && freshnessSatisfied;
+            // Ready+current is published by MarkIndexComplete before the operation flushes,
+            // stamps the sidecar and completes. A freshness target means "the refresh has
+            // finished", so it also waits for the operation: otherwise the next SDK action is
+            // rejected with KbBusyIndexing straight after waitSatisfied=true.
+            bool operationSettled = string.IsNullOrEmpty(wantFreshness) || !(state?.OperationActive ?? false);
+            return statusSatisfied && freshnessSatisfied && operationSettled;
         }
     }
 }

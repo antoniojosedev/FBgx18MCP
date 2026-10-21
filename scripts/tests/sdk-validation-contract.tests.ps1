@@ -9,6 +9,8 @@ foreach ($required in @(
     'GXMCP_SDK_CI_LICENSE_ACK',
     'validate-gx-sdk.ps1',
     'test-live.ps1',
+    'check-build-warning-baseline.ps1',
+    'rev-parse HEAD',
     "Write-Status 'skip'",
     "Write-Status 'pass'",
     "Write-Status 'fail'",
@@ -28,6 +30,8 @@ try {
     if (-not (Test-Path -LiteralPath $statusPath -PathType Leaf)) { throw 'Skip status artifact was not written.' }
     $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
     if ($status.state -ne 'skip') { throw "Expected skip state, got $($status.state)." }
+    if ($status.commit -notmatch '^[0-9a-f]{40}$') { throw "Status must bind the evidence to the checked-out commit, got '$($status.commit)'." }
+    if ($status.commit -ne (& git -C (Join-Path $PSScriptRoot '../..') rev-parse HEAD).Trim()) { throw 'Status commit does not equal HEAD.' }
 
     $sdk = Join-Path $outputRoot 'fake-sdk'
     $kb = Join-Path $outputRoot 'fake-kb'

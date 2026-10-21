@@ -131,6 +131,40 @@ fn query_filters_by_name_type_and_reference_with_paging() {
 }
 
 #[test]
+fn query_orders_modules_first_then_by_ordinal_name_like_the_sdk_search() {
+    let client = UdmClient::new_in_memory();
+    let writer = UdmWriter::new(Arc::new(client.clone()));
+    for (name, kind) in [
+        ("beta", ObjectKind::Procedure),
+        ("Zeta", ObjectKind::Procedure),
+        ("Alpha", ObjectKind::Procedure),
+        ("ZModule", ObjectKind::Module),
+    ] {
+        writer
+            .create_object(&object(name, kind, &[]))
+            .unwrap_or_else(|error| panic!("create {name}: {error}"));
+    }
+
+    let everything = query_objects(&client, None, None, None, 0).expect("query everything");
+    let names: Vec<&str> = everything
+        .objects
+        .iter()
+        .map(|object| object.name.as_str())
+        .collect();
+    // Module rows first; then ordinal name order, where upper case sorts before lower case.
+    assert_eq!(names, vec!["ZModule", "Alpha", "Zeta", "beta"]);
+
+    let first_page = query_objects(&client, None, None, None, 2).expect("query first page");
+    let page: Vec<&str> = first_page
+        .objects
+        .iter()
+        .map(|object| object.name.as_str())
+        .collect();
+    assert_eq!(page, vec!["ZModule", "Alpha"]);
+    assert!(first_page.truncated);
+}
+
+#[test]
 fn write_replaces_one_part_preserving_the_others_and_bumps_the_version() {
     let client = seeded_client();
 

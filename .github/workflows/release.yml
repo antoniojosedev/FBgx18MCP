@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
   id-token: write
 
 concurrency:
@@ -40,6 +41,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
           ref: ${{ steps.tag.outputs.tag }}
+          # Full history: the release commit must be proven reachable from main.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v6
@@ -59,6 +62,24 @@ jobs:
           fi
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
           echo "Release source commit: $COMMIT"
+
+      # Publication gate, no bypass: runs before any release asset is trusted or npm is
+      # touched, has no skip input, and requires the exact commit to be on main with
+      # the required `test` check green for that SHA (candidate branch/PR checks count
+      # only when the same SHA lands on main).
+      - name: Verify release commit identity and required checks
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch origin/main.' }
+          $runs = Join-Path $env:RUNNER_TEMP 'release-check-runs.ndjson'
+          gh api "repos/$env:GITHUB_REPOSITORY/commits/$env:RELEASE_COMMIT/check-runs?per_page=100" --paginate --jq '.check_runs[]' | Set-Content -LiteralPath $runs -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read check runs for the release commit.' }
+          ./scripts/ci/verify-release-commit.ps1 -Commit $env:RELEASE_COMMIT -Tag $env:RELEASE_TAG -CheckRunsPath $runs
 
       - name: Upgrade npm for Trusted Publishing
         run: |

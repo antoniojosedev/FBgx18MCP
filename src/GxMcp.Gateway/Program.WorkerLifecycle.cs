@@ -1407,6 +1407,7 @@ namespace GxMcp.Gateway
         {
             if (workerEnvelope == null) return false;
             if (workerEnvelope["error"] != null) return false;
+            if (LifecycleIndexCompletion.IsActive(workerEnvelope)) return false;
 
             string? outerStatus = workerEnvelope["status"]?.ToString();
             if (string.Equals(outerStatus, "Error", StringComparison.OrdinalIgnoreCase)
@@ -1428,6 +1429,7 @@ namespace GxMcp.Gateway
             }
 
             if (resultObj == null) return true;
+            if (LifecycleIndexCompletion.IsActive(resultObj)) return false;
             if (resultObj["error"] != null) return false;
             if (resultObj["isError"]?.ToObject<bool?>() == true) return false;
             if (resultObj["cancelled"]?.ToObject<bool?>() == true

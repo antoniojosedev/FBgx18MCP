@@ -7,7 +7,7 @@ $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $PSScriptRoot '../test-live.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw $errors[0] }
-foreach ($name in @('Get-OwnedDescendants')) {
+foreach ($name in @('Get-OwnedDescendants', 'New-LiveGatewayConfig', 'Get-LiveBackendEvidence', 'Get-LiveKbOpenFailure')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing production function: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
@@ -29,6 +29,12 @@ if ($productionSource -notmatch [regex]::Escape("ResolutionPolicy = 'strict'")) 
 if ($productionSource -match 'DefaultKb\s*=|KBs\s*=') {
     throw 'The live config must not auto-open a second KB alias.'
 }
+foreach ($project in @('gatewayProject', 'workerProject')) {
+    $invocation = '& dotnet test $' + $project + ' -c Release --no-build --no-restore'
+    if (-not $productionSource.Contains($invocation)) {
+        throw "Live tests must consume previously compiled Release tests without rebuilding: $project"
+    }
+}
 foreach ($requiredText in @('GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'GXMCP_LIVE_SUMMARY_PATH', 'live-summary.json', 'Show-LiveSummary', 'Assert-LiveGatewayMaster', '-filter $TestFilter', 'gxw32.exe', 'Legacy GXPublic live runs require -SkipBuild', 'live=$Status', "1 'failed'")) {
     if ($productionSource -notmatch [regex]::Escape($requiredText)) { throw "Live entrypoint lost required harness guard: $requiredText" }
 }
@@ -45,10 +51,71 @@ foreach ($requiredText in @('ReadLineAsync', 'pendingRead', 'Stop-LiveProbeProce
     if ($patchProbeSource -notmatch [regex]::Escape($requiredText)) { throw "Issue probe lost required safety guard: $requiredText" }
 }
 if ($patchProbeSource -notmatch '(?m)^exit 0\s*$') { throw 'Issue probe must set an explicit zero exit code after verified cleanup.' }
+$configArguments = @{ GxPath = 'C:\Program Files (x86)\GeneXus\"quoted"'; WorkerExecutable = 'C:\scratch\worker.exe'; HttpPort = 55291 }
+$defaultConfig = New-LiveGatewayConfig @configArguments
+$roundTrip = $defaultConfig | ConvertTo-Json -Depth 5 | ConvertFrom-Json
+if ($roundTrip.GeneXus.InstallationPath -ne $configArguments.GxPath -or
+    $roundTrip.Server.HttpPort -ne 55291 -or -not $roundTrip.Server.McpStdio -or
+    $roundTrip.Environment.ResolutionPolicy -ne 'strict' -or $defaultConfig.Contains('Engine')) {
+    throw 'Default smoke must round-trip paths and exercise the real omitted Engine default.'
+}
+foreach ($backend in @('sdk', 'auto', 'gxengine')) {
+    $config = New-LiveGatewayConfig @configArguments -EngineBackend $backend
+    if ($config.Engine.Backend -ne $backend) { throw "Backend selection lost: $backend" }
+}
+foreach ($key in @('GXMCP_ENGINE_BACKEND', 'GXMCP_ENGINE_FALLBACK', 'GXMCP_ENGINE_EXE', 'GXMCP_ENGINE_TIMEOUT_SECONDS')) {
+    if ($productionSource -notmatch [regex]::Escape($key)) { throw "Live run must isolate and restore inherited $key" }
+}
+if ($productionSource -notmatch 'New-LiveGatewayConfig -GxPath') { throw 'Live entry point must use the tested configuration builder.' }
 function Expect-Failure([scriptblock]$Action) {
     $failed = $false
     try { & $Action } catch { $failed = $true }
     if (-not $failed) { throw 'Expected rejection' }
+}
+$backendLog = Join-Path ([System.IO.Path]::GetTempPath()) ('live-engine-test-' + [guid]::NewGuid().ToString('N') + '.log')
+try {
+    Set-Content -LiteralPath $backendLog -Value '[Engine] genexus_read deferred to the SDK (outside admitted space): versionToken'
+    $fallback = Get-LiveBackendEvidence -GatewayLogPath $backendLog -Backend default
+    if ($fallback.nativeCalls -ne 0 -or $fallback.sdkDeferrals -ne 1 -or $fallback.nativeObserved) { throw 'SDK fallback is not native evidence.' }
+    Expect-Failure { Get-LiveBackendEvidence -GatewayLogPath $backendLog -Backend gxengine -RequireEngineServed }
+    Add-Content -LiteralPath $backendLog -Value '[Engine] genexus_query served by gx-engine: test'
+    $native = Get-LiveBackendEvidence -GatewayLogPath $backendLog -Backend gxengine -RequireEngineServed
+    if ($native.nativeCalls -ne 1 -or -not $native.nativeObserved -or $native.requestedPolicy -ne 'gxengine') { throw 'Native evidence must come from served log entries.' }
+    Expect-Failure { Get-LiveBackendEvidence -GatewayLogPath ($backendLog + '.missing') -Backend default }
+    if ($productionSource -notmatch 'Get-LiveBackendEvidence -GatewayLogPath' -or $productionSource -notmatch 'engine-evidence.json') { throw 'Live entrypoint must persist its observed routing evidence.' }
+} finally {
+    Remove-Item -LiteralPath $backendLog -Force
+}
+$summaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('live-summary-test-' + [guid]::NewGuid().ToString('N'))
+$savedSummaryPath = $env:GXMCP_LIVE_SUMMARY_PATH
+New-Item -ItemType Directory -Path $summaryRoot | Out-Null
+try {
+    $env:GXMCP_LIVE_SUMMARY_PATH = Join-Path $summaryRoot 'summary.json'
+    $summaryLog = Join-Path $summaryRoot 'gateway.log'
+    Set-Content -LiteralPath $summaryLog -Value 'Gateway ready'
+    $summary = @{ initialized = $true; phase = 'ready'; kbAlias = 'kbteste'; selectionState = $null }
+    foreach ($selection in @($null, 'valid', 'absent', 'invalid', 'conflicting')) {
+        $summary.selectionState = $selection
+        $summary | ConvertTo-Json | Set-Content -LiteralPath $env:GXMCP_LIVE_SUMMARY_PATH
+        $expectedFailure = $null -ne $selection -and $selection -ne 'valid'
+        if ((Get-LiveKbOpenFailure -GatewayLogPath $summaryLog) -ne $expectedFailure) {
+            throw "KB readiness must distinguish omitted session selection from explicit invalid selection: '$selection'"
+        }
+    }
+    $summary.selectionState = $null
+    foreach ($field in @('initialized', 'phase', 'kbAlias')) {
+        $original = $summary[$field]
+        $summary[$field] = $null
+        $summary | ConvertTo-Json | Set-Content -LiteralPath $env:GXMCP_LIVE_SUMMARY_PATH
+        if (-not (Get-LiveKbOpenFailure -GatewayLogPath $summaryLog)) { throw "Missing readiness evidence must fail closed: $field" }
+        $summary[$field] = $original
+    }
+    $summary | ConvertTo-Json | Set-Content -LiteralPath $env:GXMCP_LIVE_SUMMARY_PATH
+    Add-Content -LiteralPath $summaryLog -Value 'KB-OPEN-FAIL'
+    if (-not (Get-LiveKbOpenFailure -GatewayLogPath $summaryLog)) { throw 'Explicit KB-open log failure must not be hidden by ready summary.' }
+} finally {
+    $env:GXMCP_LIVE_SUMMARY_PATH = $savedSummaryPath
+    Remove-Item -LiteralPath $summaryRoot -Recurse -Force
 }
 $fixture = [pscustomobject]@{
     schemaVersion = 1; fixtureId = 'synthetic-small'; fixtureRevision = 'seed-r1'

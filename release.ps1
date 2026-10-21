@@ -46,6 +46,9 @@ param(
     [switch]$RequireLive,
     [switch]$RequireBuildAll,
     [switch]$AllowDirty,
+    # Prepare the exact release commit (bump, changelog, metadata) and stop before any
+    # build, tag, push, or publication so CI can validate that SHA first.
+    [switch]$PrepareOnly,
     # Issues explicitly completed by this release. Each issue must carry
     # fixed-pending-release, receives the release URL, and is then closed;
     # omitted issues are never touched.
@@ -787,37 +790,13 @@ function Test-ReleaseBaseAlignment {
         $LocalSubject -ceq "release: $Tag"
 }
 
-Step "Resolving version"
-$pkgPath = Join-Path $root 'package.json'
-if (-not (Test-Path $pkgPath)) { Fail "package.json not found at $pkgPath" }
-$pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
-$currentVersion = $pkg.version
+# Reads the live origin/main head and fails unless local HEAD is that head or the
+# single unpublished `release: <tag>` commit directly on top of it. Used both when a
+# release starts and again immediately before tagging, because the preflight and
+# build between the two take minutes during which main can advance.
+function Assert-ReleaseBaseFresh {
+    param([Parameter(Mandatory = $true)][string]$Tag)
 
-if ($versionWasImplicit) {
-    Warn "No -Version passed; using package.json: $Version"
-}
-if (-not (Test-StrictSemVer $Version)) {
-    Fail "Version '$Version' is not strict semver (X.Y.Z[-prerelease][+build])."
-}
-$tag = "v$Version"
-$allowLegacyAssets = Test-GxMcpReleaseLegacyVersion $Version
-$numericVersion = ([regex]::Match($Version, '^\d+\.\d+\.\d+')).Value
-Ok "Target version: $Version  (tag: $tag)"
-
-$branch = (git rev-parse --abbrev-ref HEAD 2>$null).Trim()
-if ($branch -ne 'main') {
-    if ($DryRun) { Warn "[DRY-RUN] current branch is '$branch'; a real release requires main." }
-    else { Fail "Releases must be cut from the main branch (current: '$branch')." }
-}
-
-Step "Checking release base freshness"
-$remoteTag = @(git ls-remote --tags origin "refs/tags/$tag" 2>$null)
-$remoteTagExitCode = $LASTEXITCODE
-if ($remoteTagExitCode -ne 0) {
-    Fail "Could not check remote tag $tag before preparing the release."
-}
-
-if ($branch -eq 'main' -and -not $remoteTag) {
     $remoteMainOutput = @(git ls-remote --heads origin 'refs/heads/main' 2>$null)
     $remoteMainExitCode = $LASTEXITCODE
     if ($remoteMainExitCode -ne 0 -or $remoteMainOutput.Count -ne 1) {
@@ -853,12 +832,115 @@ if ($branch -eq 'main' -and -not $remoteTag) {
         RemoteMainHead = $remoteMainHead
         LocalParent = $localParent
         LocalSubject = $localSubject
-        Tag = $tag
+        Tag = $Tag
     }
     if (-not (Test-ReleaseBaseAlignment @baseAlignment)) {
         Fail "Local main is stale or diverged from origin/main (local=$localHead, remote=$remoteMainHead). Fetch and fast-forward main before preparing a new release."
     }
-    if ($localHead -ceq $remoteMainHead) {
+    return [pscustomobject]@{ RemoteMainHead = $remoteMainHead; LocalHead = $localHead; AtRemoteHead = ($localHead -ceq $remoteMainHead) }
+}
+
+# Verifies that every required status check is green on the exact release source
+# commit. CI runs on a candidate branch (or PR) carrying that SHA before this script
+# moves main or the tag; only main, the tag, and publication are gated here, so
+# pushing the candidate branch needs no CI first. No bypass: a missing, pending, or
+# failing required check fails the release before anything is tagged or pushed.
+# Unreadable branch rules or check data fail closed instead of reading as absent, and
+# the `test` check from GitHub Actions is required even when protection exposes none.
+function Assert-ReleaseRequiredChecksGreen {
+    param([Parameter(Mandatory = $true)][string]$Commit)
+
+    $branchRaw = @(gh api 'repos/{owner}/{repo}/branches/main' 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $branchRaw.Count -eq 0) {
+        Fail "Could not read the main branch protection; refusing to publish without verifying required CI."
+    }
+    $rulesRaw = @(gh api 'repos/{owner}/{repo}/rules/branches/main' 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Could not read the main branch rules; refusing to publish without verifying required CI."
+    }
+    $rules = if ($rulesRaw.Count -gt 0) { ($rulesRaw -join [Environment]::NewLine) | ConvertFrom-Json } else { @() }
+    $required = @(Get-GxMcpReleaseRequiredCheckContexts -Branch (($branchRaw -join [Environment]::NewLine) | ConvertFrom-Json) -Rules $rules)
+    $runLines = @(gh api --paginate "repos/{owner}/{repo}/commits/$Commit/check-runs?per_page=100" --jq '.check_runs[] | [.id,.name,.status,(.conclusion // ""),(.app.id // 0),(.started_at // ""),.head_sha] | @tsv' 2>$null)
+    if ($LASTEXITCODE -ne 0) { Fail "Could not read check runs for $Commit. A commit GitHub does not know yet has none: run release.ps1 -PrepareOnly, push that SHA as a candidate branch/PR so CI runs on it, then rerun." }
+    $statusLines = @(gh api "repos/{owner}/{repo}/commits/$Commit/status?per_page=100" --jq '.statuses[] | [.context,.state] | @tsv' 2>$null)
+    if ($LASTEXITCODE -ne 0) { Fail "Could not read commit statuses for $Commit." }
+    $checkRuns = @($runLines | Where-Object { $_ } | ForEach-Object {
+        $parts = ([string]$_) -split "`t"
+        if ($parts.Count -lt 7) { Fail "Unexpected check-run record for $Commit; refusing to publish without verifying required CI." }
+        [pscustomobject]@{ id = $parts[0]; name = $parts[1]; status = $parts[2]; conclusion = $parts[3]; app_id = $parts[4]; started_at = $parts[5]; head_sha = $parts[6] }
+    })
+    $statuses = @($statusLines | Where-Object { $_ } | ForEach-Object {
+        $parts = ([string]$_) -split "`t"
+        [pscustomobject]@{ context = $parts[0]; state = $parts[1] }
+    })
+    $verdict = Test-GxMcpReleaseRequiredChecks -RequiredContexts $required -CheckRuns $checkRuns -Statuses $statuses -Commit $Commit
+    if (-not $verdict.Valid) { Fail "Required CI is not green on $Commit ($($verdict.Error)). Wait for or fix CI, then rerun the same version. For an unpublished release commit, run release.ps1 -PrepareOnly, push that SHA as a candidate branch/PR so CI runs on it, then rerun." }
+    Ok "Required checks ($($required -join ', ')) are green on $Commit."
+}
+
+# Last gate before the release becomes visible. Re-reads everything that can go stale
+# while the preflight and packaging run: HEAD must still be the committed source the
+# manifest binds to, origin/main must still be its base, the passed preflight
+# certificate must still describe this commit and these exact artifacts, and required
+# CI must be green on this exact commit.
+function Assert-ReleasePrePublicationFresh {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$SummaryPath
+    )
+
+    $head = (& git rev-parse HEAD 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or $head -cne $SourceCommit) {
+        Fail "HEAD ($head) is no longer the release source commit $SourceCommit; rerun the release so the manifest and preflight bind to the new commit."
+    }
+    [void](Assert-ReleaseBaseFresh -Tag $Tag)
+    $summary = $null
+    if (Test-Path -LiteralPath $SummaryPath -PathType Leaf) {
+        try { $summary = Get-Content -LiteralPath $SummaryPath -Raw | ConvertFrom-Json } catch { $summary = $null }
+    }
+    $fingerprint = Get-GxMcpReleaseArtifactFingerprint -RepositoryRoot $root -Version $Version -AllowLegacy:$allowLegacyAssets
+    $certificateValid = $null -ne $summary -and
+        (Test-GxMcpReleasePreflightCertificate -Summary $summary -Expected (Get-ReleasePreflightInputs -ArtifactFingerprint $fingerprint))
+    if (-not $certificateValid) {
+        Fail "The passed preflight certificate does not match commit $SourceCommit and the current artifacts ($SummaryPath); rerun the complete preflight instead of publishing from an older snapshot."
+    }
+    Assert-ReleaseRequiredChecksGreen -Commit $SourceCommit
+}
+
+Step "Resolving version"
+$pkgPath = Join-Path $root 'package.json'
+if (-not (Test-Path $pkgPath)) { Fail "package.json not found at $pkgPath" }
+$pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+$currentVersion = $pkg.version
+
+if ($versionWasImplicit) {
+    Warn "No -Version passed; using package.json: $Version"
+}
+if (-not (Test-StrictSemVer $Version)) {
+    Fail "Version '$Version' is not strict semver (X.Y.Z[-prerelease][+build])."
+}
+$tag = "v$Version"
+$allowLegacyAssets = Test-GxMcpReleaseLegacyVersion $Version
+$numericVersion = ([regex]::Match($Version, '^\d+\.\d+\.\d+')).Value
+Ok "Target version: $Version  (tag: $tag)"
+
+$branch = (git rev-parse --abbrev-ref HEAD 2>$null).Trim()
+if ($branch -ne 'main') {
+    if ($DryRun) { Warn "[DRY-RUN] current branch is '$branch'; a real release requires main." }
+    else { Fail "Releases must be cut from the main branch (current: '$branch')." }
+}
+
+Step "Checking release base freshness"
+$remoteTag = @(git ls-remote --tags origin "refs/tags/$tag" 2>$null)
+$remoteTagExitCode = $LASTEXITCODE
+if ($remoteTagExitCode -ne 0) {
+    Fail "Could not check remote tag $tag before preparing the release."
+}
+
+if ($branch -eq 'main' -and -not $remoteTag) {
+    $baseState = Assert-ReleaseBaseFresh -Tag $tag
+    if ($baseState.AtRemoteHead) {
         Ok "Local main matches the current origin/main head."
     } else {
         Ok "Pending release commit is directly based on the current origin/main head; resuming is safe."
@@ -948,8 +1030,17 @@ $existingAssetsComplete = $false
 $remoteAssetsNeedRepair = $false
 $publicationAlreadyVerified = $false
 if ($remoteTag) {
-    $remoteReleaseRaw = @(gh release view $tag --json tagName,isDraft,assets 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $remoteReleaseRaw.Count -gt 0) { $releaseExists = $true }
+    # Only GitHub's explicit "release not found" means absent. Any other request
+    # failure leaves the release state unknown, and an unknown state must not fall
+    # through to creating a release or re-uploading assets.
+    $remoteReleaseOutput = @(gh release view $tag --json tagName,isDraft,assets 2>&1)
+    $remoteReleaseExit = $LASTEXITCODE
+    $remoteReleaseRaw = @($remoteReleaseOutput | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+    if ($remoteReleaseExit -eq 0 -and $remoteReleaseRaw.Count -gt 0) {
+        $releaseExists = $true
+    } elseif (($remoteReleaseOutput -join ' ') -notmatch 'release not found') {
+        Fail "Could not determine whether GitHub Release $tag exists (gh exit $remoteReleaseExit); reconcile with scripts\release-doctor.ps1 -Remote before retrying."
+    }
     $remoteRelease = if ($releaseExists) { (($remoteReleaseRaw -join [Environment]::NewLine) | ConvertFrom-Json) } else { $null }
     $assetNames = if ($releaseExists) { @($remoteRelease.assets | ForEach-Object { [string]$_.name }) } else { @() }
     $requiredReleaseAssets = @(Get-GxMcpReleaseRequiredAssetNames -Version $Version -AllowLegacy:$allowLegacyAssets)
@@ -1247,6 +1338,32 @@ Invoke-Cmd 'python' @(
     '--version', $Version
 )
 if ($DryRun) { Warn "[DRY-RUN] would validate package and lockfile versions at $Version." } else { Ok "Package and lockfile versions are synchronized at $Version." }
+
+# -PrepareOnly stops here: the version, changelog, metadata and the single `release: <tag>`
+# commit exist, so that exact SHA can be pushed as a candidate branch/PR and validated by CI.
+# Nothing is built, tagged, pushed, or published. The release is then rerun for the same
+# version, which reuses this commit (no second bump) once required CI is green on it.
+if ($PrepareOnly) {
+    if ($resumeRelease) { Fail "-PrepareOnly cannot be used while $tag exists on origin; the release is already prepared and published or resumable." }
+    if ($DryRun) {
+        Warn "[DRY-RUN] would stop after preparing the release commit (-PrepareOnly); nothing is built or published."
+        Write-ReleaseStatus -Phase 'dry-run-complete' -State 'succeeded' -ExitCode 0 -NextAction 'run-prepare-only'
+        exit 0
+    } else {
+        Ok "Release $tag prepared at commit $releaseSourceCommit. Push that SHA as a candidate branch/PR, wait for required CI, then rerun: .\release.ps1 -Version $Version"
+        Write-Host "    prepared commit: $releaseSourceCommit" -ForegroundColor Cyan
+        Write-ReleaseStatus -Phase 'prepared' -State 'succeeded' -ExitCode 0 -NextAction 'push-candidate-and-run-ci'
+        exit 0
+    }
+}
+
+# Cheap CI-presence check before the multi-minute build and preflight: the release commit is
+# fixed here, so required CI is either already green on this exact SHA or the release cannot
+# be published and building it would only fail later. Re-verified right before tagging.
+if (-not $DryRun -and -not $resumeRelease) {
+    Step "Checking required CI on the release source commit"
+    Assert-ReleaseRequiredChecksGreen -Commit $releaseSourceCommit
+}
 
 $preflightSummaryPath = Join-Path $env:TEMP "gxmcp-release-preflight-$Version.json"
 $preflightGxPath = if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) { $env:GX_PATH } else { Get-GxPrimaryInstallPath -Catalog $gxCatalog }
@@ -1565,9 +1682,27 @@ if ($resumeRelease) {
     Step "Reusing existing tag $tag"
     if ($DryRun) { Warn "[DRY-RUN] would reuse the existing tag $tag." } else { Ok 'Existing local and remote tag reused.' }
 } else {
+    Step "Verifying pre-publication freshness"
+    if ($DryRun) {
+        Warn "[DRY-RUN] would re-verify HEAD, origin/main, the preflight certificate, and required CI on $releaseSourceCommit before tagging."
+    } else {
+        Assert-ReleasePrePublicationFresh -SourceCommit $releaseSourceCommit -Tag $tag -SummaryPath $preflightSummaryPath
+        Ok 'HEAD, origin/main, preflight certificate, and required CI are fresh for the release source commit.'
+    }
+
     Step "Tagging $tag"
-    Invoke-Cmd 'git' @('tag', '-a', $tag, $releaseSourceCommit, '-m', "$tag")
-    if ($DryRun) { Warn "[DRY-RUN] would create local tag $tag." } else { Ok 'Local tag created.' }
+    # A previous run can have created the local tag and then failed to push. Reuse
+    # it only when it already points at this source commit; never move or recreate it.
+    $existingLocalTag = if ($DryRun) { $null } else { (& git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>$null) }
+    if ($existingLocalTag) {
+        if (([string]$existingLocalTag).Trim() -cne $releaseSourceCommit) {
+            Fail "Local tag $tag points at $existingLocalTag, not the release source commit $releaseSourceCommit. Inspect it; the release will not move or delete a tag."
+        }
+        Ok "Local tag $tag already points at the release source commit; reusing it."
+    } else {
+        Invoke-Cmd 'git' @('tag', '-a', $tag, $releaseSourceCommit, '-m', "$tag")
+        if ($DryRun) { Warn "[DRY-RUN] would create local tag $tag." } else { Ok 'Local tag created.' }
+    }
 
     if (-not $DryRun) {
         Step "Pushing main + $tag to origin"

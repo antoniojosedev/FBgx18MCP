@@ -258,6 +258,9 @@ namespace GxMcp.Worker.Services
         private readonly System.Threading.ManualResetEventSlim _stateSignal =
             new System.Threading.ManualResetEventSlim(false);
         private void SignalStateChanged() { try { _stateSignal.Set(); } catch { } }
+        /// <summary>Wakes status waiters when the index operation finishes: a freshness wait
+        /// also depends on the operation, which changes without any cache-state transition.</summary>
+        public void NotifyOperationCompleted() { SignalStateChanged(); }
         /// <summary>Arm the state-change signal before reading state, so a change
         /// that lands before the subsequent WaitStateSignal is not missed.</summary>
         public void ArmStateSignal() { try { _stateSignal.Reset(); } catch { } }
@@ -297,6 +300,7 @@ namespace GxMcp.Worker.Services
                 var activity = kb.GetIndexOperationSnapshot();
                 snapshot.OperationId = activity.OperationId;
                 snapshot.OperationState = activity.State;
+                snapshot.OperationActive = activity.Active;
                 snapshot.WorkerAlive = activity.WorkerAlive;
                 snapshot.Recoverable = activity.Recoverable
                     || (string.Equals(snapshot.Status, "Cold", StringComparison.OrdinalIgnoreCase)

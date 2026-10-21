@@ -206,6 +206,68 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Release doctor failed for mismatched remote npm fixture: $($remoteRaw -join "`n")" }
         $remoteJson = ($remoteRaw -join "`n") | ConvertFrom-Json
         if ($remoteJson.nextAction -eq 'complete') { throw 'Doctor reported completion despite a mismatched remote npm commit.' }
+
+        # A failed request is UNKNOWN, never "missing": only GitHub's explicit "release not
+        # found" and npm's E404 may conclude absence, and unknown state blocks resume.
+        function Invoke-DoctorWithRemote([string]$GhBody, [string]$NpmBody) {
+            Set-Content -LiteralPath (Join-Path $remoteBin 'gh.cmd') -Value $GhBody -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $remoteBin 'npm.cmd') -Value $NpmBody -Encoding ascii
+            $raw = @(& pwsh -NoProfile -File $doctor -Root $fixture -Version 3.0.1 -StatusFile $statusPath -PreflightSummaryPath $preflightPath -Remote -Repository 'lennix1337/Genexus18MCP' -Json)
+            if ($LASTEXITCODE -ne 0) { throw "Release doctor failed for request-failure fixture: $($raw -join "`n")" }
+            return ($raw -join "`n") | ConvertFrom-Json
+        }
+        $failingGh = "@echo off`r`nif /I `"%~1`"==`"release`" (echo HTTP 502 Bad Gateway 1>&2 & exit /b 1)`r`nexit /b 0"
+        $absentGh = "@echo off`r`nif /I `"%~1`"==`"release`" (echo release not found 1>&2 & exit /b 1)`r`nexit /b 0"
+        $failingNpm = "@echo off`r`necho npm ERR! network 1>&2`r`nexit /b 1"
+        $absentNpm = "@echo off`r`necho {`"error`":{`"code`":`"E404`"}}`r`nexit /b 1"
+        $unknown = Invoke-DoctorWithRemote $failingGh $failingNpm
+        if ($null -ne $unknown.remote.releaseExists -or $null -ne $unknown.remote.npmPublished -or @($unknown.remote.errors).Count -lt 2) {
+            throw "Doctor read failed GitHub/npm requests as absence: releaseExists=$($unknown.remote.releaseExists) npmPublished=$($unknown.remote.npmPublished)"
+        }
+        if ($unknown.resumeDecision -ne 'blocked' -or (@($unknown.resumeBlockers) -join ' ') -notmatch 'External state unknown') {
+            throw "Unknown external state must block resume, got $($unknown.resumeDecision)."
+        }
+        $absent = Invoke-DoctorWithRemote $absentGh $absentNpm
+        if ($absent.remote.releaseExists -ne $false -or $absent.remote.npmPublished -ne $false) {
+            throw 'Explicit release-not-found and npm E404 must be recorded as absent.'
+        }
+        if (@($absent.remote.errors | Where-Object { $_ -match 'release state is unknown|registry state is unknown' }).Count -ne 0) {
+            throw 'An explicit absence was reported as unknown state.'
+        }
+
+        # Real npm reports a missing version as E404 on stderr as well as in the --json body
+        # (verified read-only against `npm view genexus-mcp@99.99.99`), so stderr alone must
+        # count as absent. Network and auth failures carry other codes and stay unknown, with
+        # the actual npm error in the diagnostic instead of a bare exit code.
+        $healthyGh = "@echo off`r`nif /I `"%~1`"==`"release`" echo $remoteRelease`r`nif /I `"%~1`"==`"run`" echo $remoteRun`r`nexit /b 0"
+        $stderrAbsent = Invoke-DoctorWithRemote $healthyGh "@echo off`r`necho npm error code E404 1>&2`r`necho npm error 404 No match found for version 3.0.1 1>&2`r`nexit /b 1"
+        if ($stderrAbsent.remote.npmPublished -ne $false -or @($stderrAbsent.remote.errors | Where-Object { $_ -match 'registry state is unknown' }).Count -ne 0) {
+            throw 'An E404 reported only on stderr must be recorded as absent.'
+        }
+        foreach ($failure in @('ENOTFOUND getaddrinfo registry.npmjs.org', 'E401 Unable to authenticate', 'ETIMEDOUT request timed out')) {
+            $failed = Invoke-DoctorWithRemote $healthyGh "@echo off`r`necho npm error code $failure 1>&2`r`nexit /b 1"
+            if ($null -ne $failed.remote.npmPublished -or (@($failed.remote.errors) -join ' ') -notmatch [regex]::Escape($failure.Split(' ')[0])) {
+                throw "npm failure '$failure' must stay unknown and surface npm's stderr: $(@($failed.remote.errors) -join ' ')"
+            }
+            if ($failed.resumeDecision -ne 'blocked') { throw "npm failure '$failure' must block resume." }
+        }
+        $emptyOk = Invoke-DoctorWithRemote $healthyGh "@echo off`r`nexit /b 0"
+        if ($null -ne $emptyOk.remote.npmPublished) { throw 'npm exiting 0 with no output is not proof of absence.' }
+
+        # A fully verified remote publication is complete even when the local status file in
+        # %TEMP% is gone; a local status that failed mid-run is not overridden by it.
+        $healthyNpm = "@echo [{`"version`":`"3.0.1`",`"gitHead`":`"$fixtureCommit`"}]"
+        Set-Content -LiteralPath (Join-Path $remoteBin 'gh.cmd') -Value $healthyGh -Encoding ascii
+        Set-Content -LiteralPath (Join-Path $remoteBin 'npm.cmd') -Value $healthyNpm -Encoding ascii
+        $lostRaw = @(& pwsh -NoProfile -File $doctor -Root $fixture -Version 3.0.1 -StatusFile "$temp\lost-status.json" -PreflightSummaryPath "$temp\lost-preflight.json" -Remote -Repository 'lennix1337/Genexus18MCP' -Json)
+        $lost = ($lostRaw -join "`n") | ConvertFrom-Json
+        if ($lost.nextAction -ne 'complete' -or $lost.resumeDecision -ne 'nothing-to-resume') {
+            throw "A verified remote publication must be complete without a local status file: $($lost.nextAction)/$($lost.resumeDecision)"
+        }
+        $failedStatusPath = Join-Path $temp 'failed-status.json'
+        [ordered]@{ version = '3.0.1'; tag = 'v3.0.1'; phase = 'issue-5-commented'; state = 'failed'; error = 'interrupted' } | ConvertTo-Json | Set-Content -LiteralPath $failedStatusPath -Encoding utf8
+        $failedRaw = @(& pwsh -NoProfile -File $doctor -Root $fixture -Version 3.0.1 -StatusFile $failedStatusPath -PreflightSummaryPath "$temp\lost-preflight.json" -Remote -Repository 'lennix1337/Genexus18MCP' -Json)
+        if ((($failedRaw -join "`n") | ConvertFrom-Json).nextAction -eq 'complete') { throw 'A local failed status (e.g. interrupted issue closure) must not be reported complete.' }
     } finally {
         $env:PATH = $oldRemotePath
         if (Test-Path -LiteralPath $remoteBin) { Remove-Item -LiteralPath $remoteBin -Recurse -Force -ErrorAction SilentlyContinue }
@@ -243,6 +305,58 @@ try {
             throw "Doctor invented a failed phase for $($degenerate.label)."
         }
     }
+    # Resume decision against a real git origin: one unpublished release commit on top of
+    # origin/main with no tag/release/package is safe to resume; the other states are not.
+    $resumeOrigin = Join-Path $temp 'resume-origin.git'
+    $resumeRepo = Join-Path $temp 'resume-repo'
+    $resumeBin = Join-Path $temp 'resume-bin'
+    New-Item -ItemType Directory -Path $resumeBin -Force | Out-Null
+    & git init -q --bare -b main $resumeOrigin
+    & git clone -q $resumeOrigin $resumeRepo 2>$null
+    & git -C $resumeRepo config user.email 'doctor@example.invalid'
+    & git -C $resumeRepo config user.name 'doctor-test'
+    Set-Content -LiteralPath (Join-Path $resumeRepo 'package.json') -Value '{"name":"fixture","version":"3.0.0"}' -Encoding utf8
+    & git -C $resumeRepo add package.json
+    & git -C $resumeRepo commit -q -m 'base'
+    & git -C $resumeRepo push -q origin HEAD:main 2>$null
+    Set-Content -LiteralPath (Join-Path $resumeRepo 'package.json') -Value '{"name":"fixture","version":"3.0.1"}' -Encoding utf8
+    & git -C $resumeRepo commit -q -am 'release: v3.0.1'
+    Set-Content -LiteralPath (Join-Path $resumeBin 'gh.cmd') -Encoding ascii -Value "@echo off`r`nif /I `"%~1`"==`"release`" (echo release not found 1>&2 & exit /b 1)`r`nif /I `"%~1`"==`"run`" echo []`r`nexit /b 0"
+    Set-Content -LiteralPath (Join-Path $resumeBin 'npm.cmd') -Encoding ascii -Value "@echo off`r`necho {`"error`":{`"code`":`"E404`"}}`r`nexit /b 1"
+    $pathBeforeResume = $env:PATH
+    try {
+        $env:PATH = "$resumeBin;$pathBeforeResume"
+        function Get-ResumeVerdict([string]$Version) {
+            $raw = @(& pwsh -NoProfile -File $doctor -Root $resumeRepo -Version $Version -StatusFile "$temp\none.json" -PreflightSummaryPath "$temp\none-preflight.json" -Remote -Repository 'lennix1337/Genexus18MCP' -Json)
+            if ($LASTEXITCODE -ne 0) { throw "Doctor failed for the resume fixture: $($raw -join ' ')" }
+            return ($raw -join "`n") | ConvertFrom-Json
+        }
+        $verdict = Get-ResumeVerdict '3.0.1'
+        if ($verdict.resumeDecision -ne 'safe' -or $verdict.commitVersion -ne '3.0.1' -or $verdict.remote.tagExists -ne $false) {
+            throw "A single unpublished release commit must be safe to resume: $($verdict.resumeDecision) $($verdict.resumeBlockers -join '; ')"
+        }
+        $verdict = Get-ResumeVerdict '3.0.2'
+        if ($verdict.resumeDecision -ne 'blocked' -or ($verdict.resumeBlockers -join ' ') -notmatch 'bump the version again') {
+            throw 'Resuming a different version on top of an unpublished release commit must be blocked.'
+        }
+        & git -C $resumeRepo tag -a v3.0.1 -m v3.0.1 HEAD~1
+        $verdict = Get-ResumeVerdict '3.0.1'
+        if ($verdict.resumeDecision -ne 'blocked' -or ($verdict.resumeBlockers -join ' ') -notmatch 'Local tag') { throw 'A local tag on another commit must block resume.' }
+        & git -C $resumeRepo tag -d v3.0.1 *> $null
+        $moved = Join-Path $temp 'resume-moved'
+        & git clone -q $resumeOrigin $moved 2>$null
+        & git -C $moved config user.email 'doctor@example.invalid'
+        & git -C $moved config user.name 'doctor-test'
+        Set-Content -LiteralPath (Join-Path $moved 'other.txt') -Value 'x' -Encoding ascii
+        & git -C $moved add other.txt
+        & git -C $moved commit -q -m 'main moved'
+        & git -C $moved push -q origin HEAD:main 2>$null
+        $verdict = Get-ResumeVerdict '3.0.1'
+        if ($verdict.resumeDecision -ne 'blocked' -or ($verdict.resumeBlockers -join ' ') -notmatch 'origin/main') { throw 'A moved origin/main must block resume.' }
+    } finally {
+        $env:PATH = $pathBeforeResume
+    }
+
     Write-Host 'release-doctor: local state, artifact readiness, recovery action and read-only contracts passed' -ForegroundColor Green
 } finally {
     if ($null -ne $oldGxPath) { $env:GX_PATH = $oldGxPath } else { Remove-Item Env:GX_PATH -ErrorAction SilentlyContinue }

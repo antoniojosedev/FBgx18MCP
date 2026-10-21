@@ -8,6 +8,11 @@ param(
 
     [switch]$GatewayOnly,
 
+    [ValidateSet('default', 'sdk', 'auto', 'gxengine')]
+    [string]$EngineBackend = 'default',
+
+    [switch]$RequireEngineServed,
+
     [switch]$RunBenchmark,
 
     [string]$BenchmarkBaseline,
@@ -43,6 +48,47 @@ $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'scripts\live-harness.ps1')
 $gxCatalog = Get-GxVersionCatalog -Root $root
 
+function New-LiveGatewayConfig {
+    param(
+        [string]$GxPath,
+        [string]$WorkerExecutable,
+        [int]$HttpPort,
+        [ValidateSet('default', 'sdk', 'auto', 'gxengine')]
+        [string]$EngineBackend = 'default'
+    )
+    $config = [ordered]@{
+        GeneXus = @{ InstallationPath = $GxPath; WorkerExecutable = $WorkerExecutable }
+        Server = @{ HttpPort = $HttpPort; McpStdio = $true; BindAddress = '127.0.0.1' }
+        # The harness opens its explicit KB; declaring another alias would make
+        # strict session resolution ambiguous.
+        Environment = @{ ResolutionPolicy = 'strict' }
+    }
+    if ($EngineBackend -ne 'default') {
+        $config.Engine = @{ Backend = $EngineBackend }
+    }
+    return $config
+}
+
+function Get-LiveBackendEvidence {
+    param([string]$GatewayLogPath, [string]$Backend, [switch]$RequireEngineServed)
+    if (-not (Test-Path -LiteralPath $GatewayLogPath -PathType Leaf)) {
+        throw 'Isolated Gateway log is missing; backend execution is not verified.'
+    }
+    $lines = @(Get-Content -LiteralPath $GatewayLogPath)
+    $nativeCalls = @($lines | Where-Object { $_ -match '\[Engine\].*served by gx-engine' }).Count
+    $sdkDeferrals = @($lines | Where-Object { $_ -match '\[Engine\].*deferred to the SDK' }).Count
+    if ($RequireEngineServed -and $nativeCalls -eq 0) {
+        throw 'No gx-engine-served operation was observed; SDK fallback cannot satisfy a native execution gate.'
+    }
+    return [ordered]@{
+        schemaVersion = 1
+        requestedPolicy = $Backend
+        nativeCalls = $nativeCalls
+        sdkDeferrals = $sdkDeferrals
+        nativeObserved = $nativeCalls -gt 0
+    }
+}
+
 function Show-LiveSummary {
     $summaryPath = $env:GXMCP_LIVE_SUMMARY_PATH
     if ([string]::IsNullOrWhiteSpace($summaryPath) -or -not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
@@ -68,8 +114,12 @@ function Get-LiveKbOpenFailure {
     if (-not [string]::IsNullOrWhiteSpace($summaryPath) -and (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
         try {
             $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
-            if (-not [string]::IsNullOrWhiteSpace([string]$summary.kbAlias) -and
-                [string]$summary.selectionState -ne 'valid') {
+            # Explicit KB operations need no session selection. An omitted
+            # selectionState is not a failed open; require readiness separately.
+            $selectionState = [string]$summary.selectionState
+            if ($summary.initialized -ne $true -or $summary.phase -ne 'ready' -or
+                [string]::IsNullOrWhiteSpace([string]$summary.kbAlias) -or
+                (-not [string]::IsNullOrWhiteSpace($selectionState) -and $selectionState -ne 'valid')) {
                 return $true
             }
         } catch {
@@ -216,10 +266,12 @@ if ($legacyGxPath -and -not $SkipBuild) {
 }
 
 $savedEnvironment = @{}
-foreach ($key in @('GXMCP_TEST_KB', 'GX_PATH', 'GX_PROGRAM_DIR', 'GX_MCP_PORT', 'GX_MCP_STDIO', 'GX_CONFIG_PATH', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'GXMCP_LIVE_SUMMARY_PATH')) {
+$engineEnvironmentKeys = @('GXMCP_ENGINE_BACKEND', 'GXMCP_ENGINE_FALLBACK', 'GXMCP_ENGINE_EXE', 'GXMCP_ENGINE_TIMEOUT_SECONDS')
+foreach ($key in (@('GXMCP_TEST_KB', 'GX_PATH', 'GX_PROGRAM_DIR', 'GX_MCP_PORT', 'GX_MCP_STDIO', 'GX_CONFIG_PATH', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'GXMCP_LIVE_SUMMARY_PATH') + $engineEnvironmentKeys)) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key)
 }
 try {
+foreach ($key in $engineEnvironmentKeys) { [Environment]::SetEnvironmentVariable($key, $null) }
 $env:GXMCP_TEST_KB = $KbPath
 $env:GX_PATH = $GxPath
 $env:GX_PROGRAM_DIR = $GxPath
@@ -284,17 +336,13 @@ $env:GXMCP_LIVE_RPC_TIMEOUT_MS = ($RpcTimeoutSeconds * 1000).ToString()
 $env:GX_CONFIG_PATH = Join-Path $runDirectory 'config.json'
 $env:GXMCP_LIVE_SUMMARY_PATH = Join-Path $runDirectory 'live-summary.json'
 $liveFixtureAlias = 'live-fixture'
-@{
-    GeneXus = @{ InstallationPath = $GxPath; WorkerExecutable = (Join-Path $root 'publish\worker\GxMcp.Worker.exe') }
-    Server = @{ HttpPort = $HttpPort; McpStdio = $true; BindAddress = '127.0.0.1' }
-    # LiveGatewayHarness opens GXMCP_TEST_KB itself. Do not declare an automatic
-    # default here: strict resolution would leave two aliases open and make
-    # calls without an explicit kb fail with KB_AMBIGUOUS.
-    Environment = @{ ResolutionPolicy = 'strict' }
-} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:GX_CONFIG_PATH -Encoding utf8
+New-LiveGatewayConfig -GxPath $GxPath -WorkerExecutable (Join-Path $root 'publish\worker\GxMcp.Worker.exe') `
+    -HttpPort $HttpPort -EngineBackend $EngineBackend |
+    ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $env:GX_CONFIG_PATH -Encoding utf8
+Write-Host "Engine backend under test: $EngineBackend" -ForegroundColor Cyan
 Write-LiveProgress "Gateway live smoke starting; filter=$TestFilter; RPC timeout=${RpcTimeoutSeconds}s"
 Write-Host "`n>>> Gateway live smoke" -ForegroundColor Cyan
-& dotnet test $gatewayProject --no-restore --nologo -v:minimal --filter $TestFilter
+& dotnet test $gatewayProject -c Release --no-build --no-restore --nologo -v:minimal --filter $TestFilter
 if ($LASTEXITCODE -ne 0) {
     if (Get-LiveKbOpenFailure -GatewayLogPath $gatewayLogPath) {
         Fail-Live "Gateway live smoke could not use the explicit KB under this SDK; the gate is unavailable rather than a product failure. Gateway log: $gatewayLogPath" 2
@@ -302,6 +350,9 @@ if ($LASTEXITCODE -ne 0) {
     Fail-Live "Gateway live smoke failed with exit code $LASTEXITCODE. Gateway log: $gatewayLogPath" 1 'failed'
 }
 try {
+    $backendEvidence = Get-LiveBackendEvidence -GatewayLogPath $gatewayLogPath -Backend $EngineBackend -RequireEngineServed:$RequireEngineServed
+    $backendEvidence | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runDirectory 'engine-evidence.json') -Encoding utf8
+    Write-Host "Observed routing: native=$($backendEvidence.nativeCalls), SDK deferrals=$($backendEvidence.sdkDeferrals); policy=$EngineBackend"
     Assert-LiveGatewayMaster -LogPath $gatewayLogPath -RequireStdio
 } catch {
     Fail-Live $_.Exception.Message 1 'failed'
@@ -331,7 +382,7 @@ if (-not $GatewayOnly) {
     Write-LiveProgress "Worker SDK live check starting"
     $workerProject = Join-Path $root 'src\GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj'
     Write-Host "`n>>> Worker SDK live check" -ForegroundColor Cyan
-    & dotnet test $workerProject --no-restore --nologo -v:minimal --filter 'FullyQualifiedName~InProcessBuildRunnerTests.TryResolveTypes_finds_GeneXus_tasks_when_SDK_installed'
+    & dotnet test $workerProject -c Release --no-build --no-restore --nologo -v:minimal --filter 'FullyQualifiedName~InProcessBuildRunnerTests.TryResolveTypes_finds_GeneXus_tasks_when_SDK_installed'
     if ($LASTEXITCODE -ne 0) {
         Fail-Live "Worker SDK live check failed with exit code $LASTEXITCODE." 1 'failed'
     }

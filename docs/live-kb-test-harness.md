@@ -25,6 +25,45 @@ When an indexed read returns `IndexNotReady`, use
 `genexus_lifecycle action=status wait=10` before retrying the read; repeated
 `genexus_whoami` calls are health checks, not an index-readiness barrier.
 
+## Default and backend compatibility smoke
+
+Use the existing harness rather than handwritten Gateway launch/configuration
+commands. It generates JSON configuration, selects an unused isolated port,
+verifies the process image and master role, records per-RPC diagnostics and owns
+cleanup. Logs and configuration stay under ignored `scratchpad/live-*`.
+
+To test the **actual default**, omit `-EngineBackend`: the generated config has
+no Engine section. The harness saves, clears and restores inherited engine
+backend/fallback/executable/timeout overrides so personal settings cannot
+silently change the backend being tested. To compare policies, select `sdk`,
+`auto` or `gxengine` explicitly:
+
+```powershell
+pwsh -NoProfile -File scripts/test-live.ps1 `
+  -KbPath C:\KBs\KBTeste -SkipBuild -GatewayOnly `
+  -TestFilter 'FullyQualifiedName~E2ELiveSmokeTests.Query_DoesNotPullIndexObjects|FullyQualifiedName~OpenIssueLiveTests.LargeSourcePatch|FullyQualifiedName~OpenIssueLiveTests.UnknownReadPart'
+
+# Repeat the same filter serially with each explicit policy when routing changes:
+# -EngineBackend sdk / -EngineBackend auto / -EngineBackend gxengine
+```
+
+Compile the Gateway/Worker Release test projects before the final `build.ps1`.
+The live harness consumes those test binaries with `-c Release --no-build` so a
+post-package test cannot silently rebuild and invalidate artifact fingerprints.
+Use `-SkipBuild` only after building the current source. Those tests cover
+search metadata, read → edit version-token interoperability and unknown-part
+errors; they are a focused regression smoke, not proof of full SDK replacement.
+Record each policy's exit code, structured summary, served-backend logs and
+cleanup result. The harness writes `engine-evidence.json` alongside the live
+summary, counting observed native calls and explicit SDK deferrals from the
+isolated Gateway log. Configured policy alone is not execution evidence. For a
+filter that must exercise a native admitted operation, add `-RequireEngineServed`;
+zero observed native calls fails that gate, even if SDK fallback made every RPC
+succeed. Do not use it for a filter intentionally testing only SDK fallback.
+A skipped test or SDK fallback does not establish native engine behavior. For
+the full release gate, use the canonical release preflight; it also checks the
+default policy with the broader live suite.
+
 ## Provisioning prerequisite
 
 The `LiveDesignSystemRead` regression requires `GXMCP_TEST_KB` and
