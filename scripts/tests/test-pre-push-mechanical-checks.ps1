@@ -65,6 +65,95 @@ foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 
     . ([scriptblock]::Create($functionDefinition.Extent.Text))
 }
 
+# --- release-contract.ps1 dot-source invariant ------------------------------
+# A dot-source must not consume arguments and must not execute top-level code in
+# the caller's scope, so the module stays a pure function library. The pre-push
+# checker dot-sources the contract, so this fork-local guard lives with the
+# checker rather than in the upstream test-release-contract.ps1. The contract is
+# parsed and validated here, before the dot-source below, so an offending file is
+# refused without first executing it in this scope.
+#
+# Upstream binds two named constants at top level (v4.0.0):
+#   $script:GxMcpReleaseWorkflowCheck / $script:GxMcpReleaseWorkflowAppId
+# A literal binding to one of those script-scoped names emits no output, consumes
+# no argument and invokes no command. It is an exception named by the allowlist,
+# not a general licence: any other top-level statement is refused.
+$allowedReleaseContractConstants = @(
+    'script:GxMcpReleaseWorkflowCheck'
+    'script:GxMcpReleaseWorkflowAppId'
+)
+
+function Test-ReleaseContractConstantBinding {
+    param([Parameter(Mandatory = $true)][object]$Statement)
+
+    if ($Statement -isnot [System.Management.Automation.Language.AssignmentStatementAst]) { return $false }
+    if ($Statement.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals) { return $false }
+    $left = $Statement.Left
+    if ($left -isnot [System.Management.Automation.Language.VariableExpressionAst]) { return $false }
+    if ($allowedReleaseContractConstants -notcontains $left.VariablePath.UserPath) { return $false }
+    $value = $Statement.Right
+    if ($value -is [System.Management.Automation.Language.CommandExpressionAst]) { $value = $value.Expression }
+    return $value -is [System.Management.Automation.Language.ConstantExpressionAst]
+}
+
+function Test-ReleaseContractTopLevelStatement {
+    param([Parameter(Mandatory = $true)][object]$Statement)
+
+    if ($Statement -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $true }
+    return Test-ReleaseContractConstantBinding -Statement $Statement
+}
+
+function Assert-ReleaseContractStatementClassification {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][bool]$Accepted,
+        [Parameter(Mandatory = $true)][string]$CaseName
+    )
+
+    $caseTokens = $null; $caseErrors = $null
+    $caseAst = [System.Management.Automation.Language.Parser]::ParseInput($Text, [ref]$caseTokens, [ref]$caseErrors)
+    if ($caseErrors.Count -gt 0) { throw "Fixture '$CaseName' does not parse: $($caseErrors[0].Message)" }
+    $caseStatements = @($caseAst.EndBlock.Statements)
+    if ($caseStatements.Count -ne 1) { throw "Fixture '$CaseName' must be exactly one top-level statement; found $($caseStatements.Count)." }
+    $actual = Test-ReleaseContractTopLevelStatement -Statement $caseStatements[0]
+    if ($actual -ne $Accepted) { throw "Fixture '$CaseName' expected accepted=$Accepted but the guard returned $actual for: $Text" }
+}
+
+foreach ($case in @(
+        @{ text = 'function Get-Thing { }'; accepted = $true; name = 'function' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = ''test'''; accepted = $true; name = 'allowed constant (string)' }
+        @{ text = '$script:GxMcpReleaseWorkflowAppId = 15368'; accepted = $true; name = 'allowed constant (integer)' }
+        @{ text = '$script:GxMcpReleaseWorkflowAppId = -1'; accepted = $true; name = 'allowed constant (negative integer)' }
+        @{ text = 'Get-Location'; accepted = $false; name = 'bare command' }
+        @{ text = 'if ($true) { }'; accepted = $false; name = 'if statement' }
+        @{ text = '$global:GxMcpReleaseWorkflowCheck = ''test'''; accepted = $false; name = 'non-script scope' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck += ''test'''; accepted = $false; name = 'compound assignment' }
+        @{ text = '$script:OtherName = ''test'''; accepted = $false; name = 'name outside the allowlist' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = 1 + 2'; accepted = $false; name = 'binary expression' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = $true'; accepted = $false; name = 'automatic variable' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = $null'; accepted = $false; name = 'null literal' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = Get-Date'; accepted = $false; name = 'command call' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = @(1, 2)'; accepted = $false; name = 'array expression' }
+        @{ text = '$script:GxMcpReleaseWorkflowCheck = $(1)'; accepted = $false; name = 'subexpression' }
+        @{ text = '[string]$script:GxMcpReleaseWorkflowCheck = ''test'''; accepted = $false; name = 'typed assignment' }
+    )) {
+    Assert-ReleaseContractStatementClassification -Text $case.text -Accepted $case.accepted -CaseName $case.name
+}
+
+$contractPath = Join-Path $root 'scripts\release-contract.ps1'
+$contractTokens = $null; $contractParseErrors = $null
+$contractAst = [System.Management.Automation.Language.Parser]::ParseFile($contractPath, [ref]$contractTokens, [ref]$contractParseErrors)
+if ($contractParseErrors.Count -gt 0) { throw "release-contract.ps1 has parse errors: $($contractParseErrors -join '; ')" }
+if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.ProcessBlock) {
+    throw 'release-contract.ps1 must not declare param/begin/process blocks; the dot-source must not consume arguments.'
+}
+foreach ($stmt in $contractAst.EndBlock.Statements) {
+    if (Test-ReleaseContractTopLevelStatement -Statement $stmt) { continue }
+    $snippet = $stmt.Extent.Text.Trim()
+    if ($snippet.Length -gt 120) { $snippet = $snippet.Substring(0, 117) + '...' }
+    throw "release-contract.ps1 must define only functions at top level or bind an allowed release constant (line $($stmt.Extent.StartLineNumber)); found $($stmt.GetType().Name): $snippet"
+}
+
 . (Join-Path $root 'scripts\release-contract.ps1')
 
 # --- Whitespace classifier (pure) -------------------------------------------
@@ -252,42 +341,6 @@ foreach ($pin in @(
     if ([string]$actual -cne [string]$pin.output) {
         throw "Fork pre-push redaction pin regressed for '$($pin.input)': got '$actual'."
     }
-}
-
-# --- release-contract.ps1 dot-source invariant ------------------------------
-# A dot-source must not consume arguments and must not execute top-level code in
-# the caller's scope, so the module stays a pure function library. The pre-push
-# checker dot-sources the contract, so this fork-local guard lives with the
-# checker rather than in the upstream test-release-contract.ps1.
-# Upstream may bind a named constant at top level (v4.0.0 added
-# $script:GxMcpReleaseWorkflowCheck / $script:GxMcpReleaseWorkflowAppId). A
-# constant binding to a script-scoped variable emits no output, consumes no
-# argument and invokes no command, so it keeps the invariant the guard exists
-# to protect. Anything else at top level is still refused.
-function Test-ReleaseContractConstantBinding {
-    param([Parameter(Mandatory = $true)][object]$Statement)
-
-    if ($Statement -isnot [System.Management.Automation.Language.AssignmentStatementAst]) { return $false }
-    if ($Statement.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals) { return $false }
-    $left = $Statement.Left
-    if ($left -isnot [System.Management.Automation.Language.VariableExpressionAst]) { return $false }
-    if (-not $left.VariablePath.UserPath.StartsWith('script:', [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
-    $value = $Statement.Right
-    if ($value -is [System.Management.Automation.Language.CommandExpressionAst]) { $value = $value.Expression }
-    return $value -is [System.Management.Automation.Language.ConstantExpressionAst]
-}
-
-$contractPath = Join-Path $root 'scripts\release-contract.ps1'
-$contractTokens = $null; $contractParseErrors = $null
-$contractAst = [System.Management.Automation.Language.Parser]::ParseFile($contractPath, [ref]$contractTokens, [ref]$contractParseErrors)
-if ($contractParseErrors.Count -gt 0) { throw "release-contract.ps1 has parse errors: $($contractParseErrors -join '; ')" }
-if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.ProcessBlock) {
-    throw 'release-contract.ps1 must not declare param/begin/process blocks; the dot-source must not consume arguments.'
-}
-foreach ($stmt in $contractAst.EndBlock.Statements) {
-    if ($stmt -is [System.Management.Automation.Language.FunctionDefinitionAst]) { continue }
-    if (Test-ReleaseContractConstantBinding -Statement $stmt) { continue }
-    throw "release-contract.ps1 must define only functions at top level (a constant binding to a script-scoped variable is tolerated); found: $($stmt.GetType().Name)"
 }
 
 $corpus = @(
