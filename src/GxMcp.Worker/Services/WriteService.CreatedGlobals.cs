@@ -71,7 +71,11 @@ namespace GxMcp.Worker.Services
         {
             IReadOnlyList<TransactionDslParser.CreatedGlobalIdentity> created;
             try { created = ReadCreatedGlobals(response); }
-            catch { return; }
+            catch (Exception ex)
+            {
+                Logger.Warn("[ROLLBACK-GLOBALS] the created-globals ledger of " + target + " could not be read; no cleanup was attempted: " + ex.Message);
+                return;
+            }
             if (created.Count == 0) return;
             try
             {
@@ -110,7 +114,11 @@ namespace GxMcp.Worker.Services
                 get
                 {
                     try { return _objects?.FindObject(_target, _typeFilter)?.Guid; }
-                    catch { return null; }
+                    catch (Exception ex)
+                    {
+                        Logger.Warn("[ROLLBACK-GLOBALS] target " + _target + " could not be resolved: " + ex.Message);
+                        return null;
+                    }
                 }
             }
 

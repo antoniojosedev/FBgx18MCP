@@ -12,6 +12,12 @@ namespace GxMcp.Worker.Helpers
         public int Index { get; set; }
         public int AttributeId { get; set; }
         public string Expression { get; set; }
+        /// <summary>Why the lookup itself failed; null when it ran and found no such attribute.</summary>
+        public string LookupFailure { get; set; }
+
+        public string Message => LookupFailure == null
+            ? "att:" + AttributeId + " does not resolve in this KB."
+            : "att:" + AttributeId + " could not be looked up: " + LookupFailure;
     }
 
     /// <summary>
@@ -121,10 +127,15 @@ namespace GxMcp.Worker.Helpers
                     return match.Value;
                 }
                 string name = null;
-                try { name = attributeNameById(id); } catch { }
+                string lookupFailure = null;
+                try { name = attributeNameById(id); }
+                catch (Exception ex) { lookupFailure = (ex.InnerException ?? ex).Message; }
                 if (string.IsNullOrWhiteSpace(name))
                 {
-                    unresolved.Add(new UnresolvedAttributeReference { Index = index, AttributeId = id, Expression = expression });
+                    unresolved.Add(new UnresolvedAttributeReference
+                    {
+                        Index = index, AttributeId = id, Expression = expression, LookupFailure = lookupFailure
+                    });
                     return match.Value;
                 }
                 return name;

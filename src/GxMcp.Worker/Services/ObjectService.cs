@@ -340,7 +340,11 @@ namespace GxMcp.Worker.Services
         private static string TryBuildSourceStoreCatalogSignature(SearchIndex index)
         {
             try { return SourceStoreBackfillService.BuildCatalogSignature(index); }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                Logger.Debug("[SourceStore] catalogue signature could not be built: " + ex.Message);
+                return null;
+            }
         }
 
         private void ReleaseSourceStoreBackfillStartGate()

@@ -3379,7 +3379,9 @@ namespace GxMcp.Worker.Services
                         && index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
                         if (AddCalledByCow(targetEntry, entry.Name)) { changed = true; MarkShardDirty(targetIndexKey); }
                     }
-                } catch { }
+                } catch (Exception ex) {
+                    Logger.Debug("[Index] edge " + entry.Name + " -> " + reference.TargetName + " skipped: " + ex.Message);
+                }
             }
 
             // FR#3 (friction-report 2026-05-14): GetReferences misses call sites in Event Start
@@ -3537,7 +3539,11 @@ namespace GxMcp.Worker.Services
 
             System.Collections.IEnumerator parts = null;
             try { parts = ((System.Collections.IEnumerable)obj.Parts)?.GetEnumerator(); }
-            catch { return sourceParts; }
+            catch (Exception ex)
+            {
+                Logger.Debug("[FR#3] Parts of '" + obj.Name + "' could not be enumerated for the textual scan: " + ex.Message);
+                return sourceParts;
+            }
             if (parts == null) return sourceParts;
 
             while (true)
@@ -3549,7 +3555,11 @@ namespace GxMcp.Worker.Services
                 }
                 bool moved;
                 try { moved = parts.MoveNext(); }
-                catch { break; }
+                catch (Exception ex)
+                {
+                    Logger.Debug("[FR#3] Parts enumeration of '" + obj.Name + "' stopped early for the textual scan: " + ex.Message);
+                    break;
+                }
                 if (!moved) break;
 
                 string src = null;

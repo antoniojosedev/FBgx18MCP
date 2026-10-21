@@ -73,7 +73,10 @@ namespace GxMcp.Gateway
         {
             if (string.IsNullOrWhiteSpace(path)) return string.Empty;
             try { return Path.GetFullPath(path!).TrimEnd('\\', '/'); }
-            catch (Exception) { return path!.Trim().TrimEnd('\\', '/'); }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            {
+                return path!.Trim().TrimEnd('\\', '/');
+            }
         }
 
         /// <summary>The scopes of the KB the current call resolved to (see <see cref="EquivalentKbScopes"/>).</summary>
