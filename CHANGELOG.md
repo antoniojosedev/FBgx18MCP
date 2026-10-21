@@ -147,6 +147,7 @@
 
 ### Internal
 
+- `WorkWithSdkAdapter` (3083 lines) is split into partials by concern (core reads, add/remove action, filter read, filter domain resolution, filter add, filter remove, persistence evidence) and `WwpActionService.FormLayout` into the shared runner, `add_table` and `move_control`; every file is under 800 lines and the Worker test count is unchanged. The WorkWith assembly lookup, the number-pair attribute write and the two form-layout WebForm projections no longer use bare `catch`: they catch the specific exception and log or report it (new `WwpFormLayoutFailureTests`).
 - Tool profile byte budget `all` 103200 -> 103300 (measured 103228) for the `genexus_wwp` `set_combo_properties` enum value and `properties` input; the token budget and the other profiles are unchanged.
 - Tool schema budget: the `all` profile byte budget goes from 103000 to 103100 for the `expressions` input of `genexus_properties` (typed Dynamic Combo parameters); measured 103015 bytes. The combined token budget is unchanged.
 - `genexus_wire` execution moved from `Program.ToolDispatch.cs` to `Program.Gxwire.cs`; the executable locator, process launcher and cache-path resolver are a `GxwireToolSeams` the tests replace, so every failure path is covered without a gxwire binary (`GxwireErrorEnvelopeTests`). `GxwireProcessRun` carries `ExitCode` and `ElapsedMs`.

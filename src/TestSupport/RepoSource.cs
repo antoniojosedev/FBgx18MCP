@@ -64,6 +64,22 @@ namespace GxMcp.TestSupport
         }
 
         /// <summary>
+        /// The contents of a partial class split across files: the named file plus its
+        /// <c>&lt;name&gt;.*.cs</c> siblings in the same directory, in ordinal file-name
+        /// order. A source-shape assertion about one type reads the whole type this way
+        /// instead of naming whichever partial currently holds the member.
+        /// </summary>
+        internal static string ReadPartialFiles(params string[] primaryFileSegments)
+        {
+            string primary = PathOf(primaryFileSegments);
+            string stem = Path.GetFileNameWithoutExtension(primary);
+            var files = Directory.GetFiles(Path.GetDirectoryName(primary)!, stem + ".*.cs").ToList();
+            files.Add(primary);
+            files.Sort(StringComparer.Ordinal);
+            return string.Join(Environment.NewLine, files.Select(File.ReadAllText));
+        }
+
+        /// <summary>
         /// A repository file's contents with its comments blanked out, so a
         /// source-shape assertion counts code rather than prose.
         /// </summary>

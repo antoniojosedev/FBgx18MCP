@@ -105,7 +105,7 @@ namespace GxMcp.Worker.Tests
         /// The adapter's text with comments blanked, as the shared member extractor expects.
         private static string AdapterSource()
         {
-            return RepoSource.WithoutComments(RepoSource.Read(AdapterFile));
+            return RepoSource.WithoutComments(RepoSource.ReadPartialFiles(AdapterFile));
         }
 
         /// Binds the builder's parameters by name so a sibling change that appends

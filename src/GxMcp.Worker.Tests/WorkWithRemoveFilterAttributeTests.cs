@@ -826,7 +826,7 @@ namespace GxMcp.Worker.Tests
 
             // The removal orchestration and the native writer never read or write the
             // PatternInstance XML: a missing native surface is a refusal, not a fallback.
-            string adapter = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Compatibility", "WorkWithSdkAdapter.cs");
+            string adapter = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Compatibility", "WorkWithSdkAdapter.FilterRemove.cs");
             int start = adapter.IndexOf("static bool RemoveFilterAttribute(", StringComparison.Ordinal);
             int end = adapter.IndexOf("static bool VerifyFilterAttributeRemoval(", StringComparison.Ordinal);
             Assert.True(start >= 0 && end > start, "the removal members must exist in WorkWithSdkAdapter");
