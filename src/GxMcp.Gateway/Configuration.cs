@@ -358,7 +358,7 @@ namespace GxMcp.Gateway
 
             RejectUnknown(engine, new HashSet<string>(new[] { "Backend", "Fallback", "Executable", "TimeoutSeconds" }, StringComparer.Ordinal), "Engine", path);
 
-            string backend = engine.Value<string>("Backend")?.Trim().ToLowerInvariant() ?? EngineBackendSettings.AutoBackend;
+            string backend = engine.Value<string>("Backend")?.Trim().ToLowerInvariant() ?? EngineBackendSettings.GxEngineBackend;
             if (backend != "auto" && backend != "sdk" && backend != "gxengine")
                 throw new InvalidDataException("Strict config Engine.Backend must be 'auto', 'sdk' or 'gxengine'.");
 
@@ -684,13 +684,14 @@ namespace GxMcp.Gateway
 
     /// <summary>
     /// gx-engine backend policy (docs/engine_backend.md). An absent section
-    /// defaults to auto: admitted builds use gx-engine; other operations use SDK.
+    /// defaults to gxengine: admitted builds, reads and queries use gx-engine;
+    /// everything outside the admitted space uses the SDK.
     /// Only capabilities measured at full parity may be routed to the engine; the
     /// capability gate lives in <see cref="EngineCapabilityRegistry"/>.
     /// </summary>
     public class EngineConfig
     {
-        /// <summary>"auto" (default: admitted builds), "sdk", or "gxengine".</summary>
+        /// <summary>"gxengine" (default: admitted builds, reads, queries), "auto" (admitted builds only), or "sdk" (engine off).</summary>
         [JsonProperty("Backend")]
         public string? Backend { get; set; }
 

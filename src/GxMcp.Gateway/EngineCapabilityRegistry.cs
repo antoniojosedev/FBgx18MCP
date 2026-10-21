@@ -592,7 +592,7 @@ namespace GxMcp.Gateway
     /// The single gate a future SDK-to-engine swap must call. It answers which
     /// backend serves <paramref name="capabilityId"/> under the configured
     /// policy, and never returns a partially-engine path: the engine serves a
-    /// capability only at measured parity. Auto admits only builds; Backend=gxengine with
+    /// capability only at measured parity. Backend=gxengine (default) admits parity capabilities, auto admits only builds; gxengine with
     /// Fallback=error refuses anything else instead of quietly using the SDK.
     /// </summary>
     internal static class EngineRouter

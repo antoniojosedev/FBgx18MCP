@@ -37,7 +37,7 @@ namespace GxMcp.Gateway.Tests
         // ---------------------------------------------------------------- settings
 
         [Fact]
-        public void Settings_DefaultToAutoBackend_WithNoConfigAndNoEnvironment()
+        public void Settings_DefaultToGxEngineBackend_WithNoConfigAndNoEnvironment()
         {
             SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
             SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
@@ -46,7 +46,7 @@ namespace GxMcp.Gateway.Tests
 
             var settings = EngineBackendSettings.Resolve(null);
 
-            Assert.Equal("auto", settings.Backend);
+            Assert.Equal("gxengine", settings.Backend);
             Assert.Equal("sdk", settings.Fallback);
             Assert.Null(settings.Executable);
             Assert.Equal(EngineBackendSettings.DefaultTimeoutSeconds, settings.TimeoutSeconds);
@@ -138,7 +138,21 @@ namespace GxMcp.Gateway.Tests
         [InlineData("str_format", "Sdk")]
         [InlineData("numeric_core", "Sdk")]
         [InlineData("unknown_capability", "Sdk")]
-        public void Router_DefaultAuto_OnlyAdmitsTheBuildCapability(string capabilityId, string expected)
+        public void Router_Auto_OnlyAdmitsTheBuildCapability(string capabilityId, string expected)
+        {
+            SetEngineEnv(EngineBackendSettings.BackendEnvVar, "auto");
+            SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
+
+            var settings = EngineBackendSettings.Resolve(null);
+
+            Assert.Equal(expected, EngineRouter.Decide(capabilityId, settings).Target.ToString());
+        }
+
+        [Theory]
+        [InlineData("parallel_rebuild_all", "Engine")]
+        [InlineData("udm_storage_access", "Engine")]
+        [InlineData("unknown_capability", "Sdk")]
+        public void Router_DefaultGxEngine_AdmitsBuildsAndStorageAccess(string capabilityId, string expected)
         {
             SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
             SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
@@ -493,7 +507,8 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
-        [InlineData(null, "auto")]
+        [InlineData(null, "gxengine")]
+        [InlineData("auto", "auto")]
         [InlineData("gxengine", "gxengine")]
         public void DoctorEngineSection_EnabledButMissing_ReportsUnavailableAndWarns(string? backend, string expected)
         {
@@ -521,7 +536,8 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
-        [InlineData(null, "auto")]
+        [InlineData(null, "gxengine")]
+        [InlineData("auto", "auto")]
         [InlineData("gxengine", "gxengine")]
         public void DoctorEngineSection_EnabledWithStubEngine_ReportsTheProbedVersion(string? backend, string expected)
         {

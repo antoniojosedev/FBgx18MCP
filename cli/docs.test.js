@@ -115,21 +115,22 @@ test('engine guidance separates package builds, fixture speed and full-KB covera
     assert.match(engineReadme, /packaged binary was smoke-tested, not benchmarked/);
 });
 
-test('engine default policy is build-only and preserves SDK opt-out and reconciliation', () => {
+test('engine default policy is gxengine and preserves auto/SDK opt-out and reconciliation', () => {
     const section = markdownSection(read('README.md'), '### Activation Flag & Safety Seam');
-    assert.match(section, /defaults to `"auto"`/);
-    assert.match(section, /Other async\/directed builds/);
+    assert.match(section, /defaults to `"gxengine"`/);
+    assert.match(section, /async\/other directed builds/);
     assert.match(section, /mode=compile_check/);
     assert.match(section, /callers=false/);
     const backend = read('docs/engine_backend.md');
     assert.match(backend, /engine\.scope=target-closure/);
     assert.match(backend, /successful target build does not imply whole-KB success/);
     assert.match(backend, /default `callers=true`/);
-    assert.match(section, /Explicit `"sdk"`/);
+    assert.match(section, /`"auto"` routes only builds/);
+    assert.match(section, /`"sdk"` keeps every operation on the SDK/);
     assert.match(section, /never trigger automatic SDK replay/);
-    assert.match(read('docs/engine_backend.md'), /`Engine\.Backend=auto`/);
-    assert.match(read('src/gx-engine/README.md'), /defaults to `Engine\.Backend=auto`/);
-    assert.match(read('AGENTS.md'), /`Engine\.Backend` defaults to `auto`/);
+    assert.match(read('docs/engine_backend.md'), /`Engine\.Backend=gxengine` \(also when the section is absent\)/);
+    assert.match(read('src/gx-engine/README.md'), /defaults to `Engine\.Backend=gxengine`/);
+    assert.match(read('AGENTS.md'), /`Engine\.Backend` defaults to `gxengine`/);
 });
 
 test('the docs index lists every top-level document and every link resolves', () => {

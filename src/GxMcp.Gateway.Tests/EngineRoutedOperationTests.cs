@@ -141,13 +141,38 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
-        [InlineData("genexus_read", null, @"{ ""name"": ""Alpha"", ""part"": ""Source"" }")]
-        [InlineData("genexus_query", null, @"{ ""query"": ""Alpha"" }")]
-        [InlineData("genexus_edit", null, @"{ ""name"": ""Alpha"", ""content"": ""// changed"" }")]
-        [InlineData("genexus_lifecycle", "build", @"{ ""action"": ""build"" }")]
-        [InlineData("genexus_lifecycle", "build", @"{ ""action"": ""build"", ""wait_until_done"": true, ""target"": ""Alpha"" }")]
-        public async Task DefaultBackend_OtherOperationsStayOnSdkWithoutInvokingEngine(
-            string tool, string? action, string args)
+        [InlineData(null, "genexus_edit", null, @"{ ""name"": ""Alpha"", ""content"": ""// changed"" }")]
+        [InlineData(null, "genexus_lifecycle", "build", @"{ ""action"": ""build"" }")]
+        [InlineData(null, "genexus_lifecycle", "build", @"{ ""action"": ""build"", ""wait_until_done"": true, ""target"": ""Alpha"" }")]
+        [InlineData("auto", "genexus_read", null, @"{ ""name"": ""Alpha"", ""part"": ""Source"" }")]
+        [InlineData("auto", "genexus_query", null, @"{ ""query"": ""Alpha"" }")]
+        [InlineData("auto", "genexus_edit", null, @"{ ""name"": ""Alpha"", ""content"": ""// changed"" }")]
+        [InlineData("auto", "genexus_lifecycle", "build", @"{ ""action"": ""build"" }")]
+        [InlineData("auto", "genexus_lifecycle", "build", @"{ ""action"": ""build"", ""wait_until_done"": true, ""target"": ""Alpha"" }")]
+        public async Task OperationsOutsideTheBackendSpaceStayOnSdkWithoutInvokingEngine(
+            string? backend, string tool, string? action, string args)
+        {
+            string tempDir = NewTempDir();
+            try
+            {
+                SetEngineEnv(EngineBackendSettings.BackendEnvVar, backend);
+                string marker = Path.Combine(tempDir, "ran.txt");
+                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar,
+                    CreateStub(tempDir, "engine.cmd", "@echo off\r\necho ran > \"%~dp0ran.txt\"\r\n" + BuildReportStubBody));
+
+                Assert.Null(await DispatchAsync(tool, action, args, tempDir));
+                Assert.False(File.Exists(marker));
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Theory]
+        [InlineData("genexus_read", @"{ ""name"": ""Alpha"", ""part"": ""Source"" }")]
+        [InlineData("genexus_query", @"{ ""query"": ""Alpha"" }")]
+        public async Task DefaultBackend_AdmittedReadsAndQueriesInvokeTheEngine(string tool, string args)
         {
             string tempDir = NewTempDir();
             try
@@ -155,10 +180,10 @@ namespace GxMcp.Gateway.Tests
                 SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
                 string marker = Path.Combine(tempDir, "ran.txt");
                 SetEngineEnv(EngineBackendSettings.ExecutableEnvVar,
-                    CreateStub(tempDir, "engine.cmd", "@echo off\r\necho ran > \"%~dp0ran.txt\"\r\n" + BuildReportStubBody));
+                    CreateStub(tempDir, "engine.cmd", "@echo off\r\necho ran > \"%~dp0ran.txt\"\r\n"));
 
-                Assert.Null(await DispatchAsync(tool, action, args, tempDir));
-                Assert.False(File.Exists(marker));
+                await DispatchAsync(tool, null, args, tempDir);
+                Assert.True(File.Exists(marker));
             }
             finally
             {

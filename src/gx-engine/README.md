@@ -20,13 +20,12 @@ evidence for are refused by name.
 Use the SDK for workflows outside validated engine coverage; preserve unsupported-object
 refusals and report partial builds as partial, not success.
 
-Gateway routing defaults to `Engine.Backend=auto`: admitted blocking builds/rebuilds
-use gx-engine, including directed `build` requests with `mode=compile_check`,
+Gateway routing defaults to `Engine.Backend=gxengine`: admitted blocking builds/rebuilds
+and part-scoped reads/queries use gx-engine, including directed `build` requests with `mode=compile_check`,
 explicit `callers=false`, and transitive callees. Those requests build only the
 target closure and report `engine.scope=target-closure`; they do not certify the
-whole KB. Other operations and unsupported request shapes stay on SDK.
-Explicit `sdk` disables engine routing; `gxengine` additionally opts into admitted
-reads/queries. Capability and argument gates remain mandatory. See
+whole KB. Edits, async builds and unsupported request shapes stay on SDK.
+`auto` narrows routing to admitted builds; explicit `sdk` disables engine routing. Capability and argument gates remain mandatory. See
 [routing](../../docs/engine_backend.md).
 
 ## SDK-form output
@@ -109,8 +108,8 @@ cargo run --manifest-path src/gx-engine/Cargo.toml -- --version
 `--version` (or `-V`) prints `gx-engine <package version>` and exits without
 reading a project. That line is the Gateway's engine-backend probe contract: the
 MCP Gateway can point at a `gx-engine` executable, verify it, and report it from
-`genexus_doctor`. The default `auto` policy enables only admitted builds;
-`gxengine` also opts into reads/queries. Engine routing requires a registered
+`genexus_doctor`. The default `gxengine` policy enables admitted builds, reads and
+queries; `auto` enables only builds and `sdk` none. Engine routing requires a registered
 consumer and its bounded capability evidence; unsupported requests follow the configured SDK fallback or
 fail closed. A started build with an unknown outcome requires reconciliation,
 not automatic SDK replay. See

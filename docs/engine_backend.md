@@ -7,28 +7,30 @@ before the SDK is removed: flip one setting, see the engine from
 `genexus_doctor`, and let capabilities move to the engine as they reach measured
 parity.
 
-**Default policy.** `Engine.Backend=auto` (also when the section is absent)
-uses gx-engine for admitted blocking `genexus_lifecycle` `build`/`rebuild`
-requests, through `parallel_rebuild_all` / `rebuild-all`. A blocking directed
-`build` is also admitted for `mode=compile_check`, explicit `callers=false`,
-and transitive callees, using a simple or module-qualified object name.
-Reads, queries, edits, and unsupported build request shapes retain the SDK path. This selects the
+**Default policy.** `Engine.Backend=gxengine` (also when the section is absent)
+uses gx-engine for every call inside the admitted space: blocking
+`genexus_lifecycle` `build`/`rebuild` requests (through `parallel_rebuild_all` /
+`rebuild-all`) and part-scoped `genexus_read` / `genexus_query` (through
+`kb-read`/`kb-query`). A blocking directed `build` is also admitted for
+`mode=compile_check`, explicit `callers=false`, and transitive callees, using a
+simple or module-qualified object name. Edits, async builds, and unsupported
+request shapes fall back to the SDK (`Engine.Fallback=sdk`). This selects the
 existing admitted space; it does not expand whole-KB compatibility or guarantee
 that arbitrary objects compile. Build errors/partial reports remain errors,
 not a trigger to replay a started build through the SDK.
 
-`auto` replaced `sdk` as the default in the 4.0.0 line (a breaking default change:
-set `Engine.Backend=sdk` to keep the previous behavior). The evidence behind it is
+`gxengine` replaced `sdk` as the default in the 4.0.0 line (a breaking default change:
+set `Engine.Backend=auto` to route only builds, or `Engine.Backend=sdk` to keep the
+previous behavior and never invoke the engine). The evidence behind it is
 the disposable `KBTeste` KB: whole-KB `rebuild-all` generates and compiles 346/346
 targeted objects with 0 refusals, its 328 C# files match the SDK's output byte for byte,
 and whole-KB generation runs in ~0.62 s against ~36 s for the SDK (paired; see the
 [engine README](../src/gx-engine/README.md#measured-local-sdk-comparison)). A KB with forms
 outside that evidence gets refusals by name, reported as a partial build.
 
-With explicit `Engine.Backend=gxengine`, the engine additionally serves
-admitted `genexus_read` and `genexus_query` from `udm_storage_access`
-(through `kb-read`/`kb-query`). Explicit `Engine.Backend=sdk` disables all
-engine routing, including builds. `genexus_edit` is a registered consumer but stays outside the
+`Engine.Backend=auto` narrows routing to admitted builds; reads and queries go
+back to the SDK. Explicit `Engine.Backend=sdk` disables all engine routing,
+including builds. `genexus_edit` is a registered consumer but stays outside the
 engine space: the engine writer has no live persistence yet, so an engine edit
 would report a save that never reaches the Knowledge Base database
 (`Fallback=error` refuses it, `Fallback=sdk` serves it with the SDK). Everything
@@ -45,7 +47,7 @@ storage facts behind the read path are recorded in
 
 | Key | Values | Default | Meaning |
 | :--- | :--- | :--- | :--- |
-| `Engine.Backend` | `auto`, `sdk`, `gxengine` | `auto` | `auto`: admitted builds use the engine, other operations use SDK. `sdk`: SDK only. `gxengine`: also opt into admitted reads/queries. |
+| `Engine.Backend` | `gxengine`, `auto`, `sdk` | `gxengine` | `gxengine`: admitted builds, reads and queries use the engine; the rest uses SDK. `auto`: only admitted builds use the engine. `sdk`: SDK only, the engine is never invoked. |
 | `Engine.Fallback` | `sdk`, `error` | `sdk` | What happens when a routed capability is not at parity: keep the GeneXus SDK, or refuse the call. `error` is the verification mode. |
 | `Engine.Executable` | path | unset | Explicit `gx-engine.exe`. Authoritative: when the path is missing the probe reports `EngineNotFound` instead of running a different binary. |
 | `Engine.TimeoutSeconds` | positive integer | `120` | Wall-clock budget for one engine invocation (matches the engine's native-compilation deadline). |
@@ -68,14 +70,14 @@ a restart.
 
 ## What changes today
 
-With default `Backend=auto`, only admitted builds are engine candidates.
-Explicit `Backend=gxengine` also enables the read/query operations below.
+With default `Backend=gxengine`, admitted builds, reads and queries are engine
+candidates. `Backend=auto` keeps only the builds.
 Every other tool is untouched. `genexus_doctor` result gains an `engine` block:
 
 - always: `backend`, `fallback`, and `capabilities` — the `parity` / `partial` /
   `unsupported` counts plus `routedOperations`, the operations currently served
   enabled as engine candidates by the selected policy (argument gates still apply);
-- with `Backend=auto|gxengine`: `executable`, `available`, `version` from the
+- with `Backend=gxengine|auto`: `executable`, `available`, `version` from the
   `gx-engine --version` handshake (ten-second budget) or a structured `error`
   with one of `EngineNotFound`, `EngineStartFailed`, `EngineProbeFailed`,
   `EngineVersionUnrecognized`, `EngineTimeout`.
@@ -93,11 +95,11 @@ that order.
 engine may serve, and `EngineRouter.Decide(capabilityId, settings)` is the
 single entry point a swap must call:
 
-- `Backend=auto` (default) → only `parallel_rebuild_all` is eligible; all other
+- `Backend=auto` → only `parallel_rebuild_all` is eligible; all other
   capabilities remain SDK-only, even with `Fallback=error`. Builds still require
   the same parity and argument gates as explicit engine mode.
 - `Backend=sdk` → the SDK serves everything; the engine is never invoked.
-- `Backend=gxengine` + capability at `Parity` → the engine serves it.
+- `Backend=gxengine` (default) + capability at `Parity` → the engine serves it.
 - anything else (partial, unsupported, unknown capability) → the SDK serves it,
   or with `Fallback=error` the call is refused with `EngineCapabilityNotParity`
   and the reason. There is no silently-partial engine path.

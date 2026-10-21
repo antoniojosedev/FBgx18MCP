@@ -74,9 +74,9 @@ Source of truth: `config/gx-versions.json`.
 - For compiler/storage work, read [`src/gx-engine/README.md`](src/gx-engine/README.md);
   for MCP routing, read [`docs/engine_backend.md`](docs/engine_backend.md).
   The objective is independent full SDK replacement; current bounded coverage
-  is not that outcome. `Engine.Backend` defaults to `auto`: admitted blocking
-  builds use gx-engine; other operations use SDK. Explicit `sdk` opts out;
-  `gxengine` also enables admitted reads/queries. Preserve capability/argument
+  is not that outcome. `Engine.Backend` defaults to `gxengine`: admitted blocking
+  builds and part-scoped reads/queries use gx-engine; other operations use SDK.
+  `auto` routes only builds; explicit `sdk` opts out entirely. Preserve capability/argument
   gates, SDK fallback before build start, and reconciliation instead of replay
   after a started build fails or has an uncertain outcome.
 - For performance work or speed claims, read

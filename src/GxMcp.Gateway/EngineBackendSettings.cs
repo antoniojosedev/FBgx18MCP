@@ -31,12 +31,12 @@ namespace GxMcp.Gateway
         /// </summary>
         internal const int DefaultTimeoutSeconds = 120;
 
-        internal string Backend { get; private set; } = AutoBackend;
+        internal string Backend { get; private set; } = GxEngineBackend;
         internal string Fallback { get; private set; } = SdkFallback;
         internal string? Executable { get; private set; }
         internal int TimeoutSeconds { get; private set; } = DefaultTimeoutSeconds;
 
-        /// <summary>Auto admits builds only; gxengine also admits eligible reads/queries.</summary>
+        /// <summary>gxengine (default) admits eligible builds, reads and queries; auto admits builds only; sdk disables the engine.</summary>
         internal bool EngineEnabled => Backend != SdkBackend;
 
         /// <summary>
