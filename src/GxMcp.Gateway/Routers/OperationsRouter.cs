@@ -509,6 +509,12 @@ namespace GxMcp.Gateway.Routers
                 case "genexus_object_context":
                     return new { module = "ObjectContext", action = "Run", target = args?["name"]?.ToString(), @params = args };
 
+                // genexus_wire is Gateway-owned and file-based; only pack_task on the open native KB
+                // falls through to this route (Program.DispatchToolCallCoreAsync), and the Worker answers
+                // it from the SDK-backed index. Every selector travels in @params.
+                case "genexus_wire":
+                    return new { module = "Wire", action = "PackTask", @params = args };
+
                 // genexus_types — Domain/SDT introspection + value validation.
                 default:
                     return null;

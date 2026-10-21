@@ -731,9 +731,7 @@ namespace GxMcp.Worker.Services
                         if (requireObjectSave)
                         {
                             var isolation = _writeService.InspectEventsIsolation(target, typeFilter);
-                            dryRunBody["objectSaveIsolation"] = isolation;
-                            dryRunBody["persistabilityVerified"] = isolation["verified"]?.Value<bool>() == true;
-                            if (isolation["blocker"] != null) dryRunBody["writeBlocker"] = isolation["blocker"];
+                            PatchPersistenceReceipt.AttachObjectSavePreviewScope(dryRunBody, isolation, matchCount);
                         }
                         dryRunBody["requestedHash"] = dryRunEvidence.RequestedHash;
                         dryRunBody["persistedHash"] = dryRunEvidence.PersistedHash;
@@ -1364,11 +1362,15 @@ namespace GxMcp.Worker.Services
         }
 
         // issue #542: WriteService's Structure branch reports its own rollback attempt as
-        // plain top-level fields (no `rollback` object). Recognize that shape so the patch
-        // receipt reflects it and no second textual rollback runs on the same object.
+        // plain top-level fields. Recognize that shape so the patch receipt reflects it
+        // and no second textual rollback runs on the same object. The writer's
+        // RollbackFullWriteFailure may already have attached an "atomic" `rollback`
+        // object next to the flag (the re-read matched the pre-write snapshot, so no
+        // further save was needed) — a GX18 U16 proof showed that object on every
+        // refused Structure patch, so its presence must not hide the attempt.
         internal static bool IsWriterRollbackReported(JObject writePayload)
         {
-            if (writePayload == null || writePayload["rollback"] != null) return false;
+            if (writePayload == null) return false;
             return writePayload["rollbackAttempted"]?.Value<bool?>() == true;
         }
 
@@ -1712,7 +1714,11 @@ namespace GxMcp.Worker.Services
                         foreach (string evidenceName in new[]
                         {
                             "postSaveVerification", "verification", "saveAttempted", "saved",
-                            "persisted", "source", "content", "persistedHash", "persistedSnippet"
+                            "persisted", "source", "content", "persistedHash", "persistedSnippet",
+                            // issue #542: the Structure writer's verified-rollback receipt is
+                            // emitted as plain extras of the canonical error envelope; without
+                            // this lift IsWriterRollbackReported never sees the attempt.
+                            "rollbackAttempted", "rolledBack", "rollbackError", "unappliedMembers"
                         })
                         {
                             if (jo[evidenceName] == null && errorObject[evidenceName] != null)

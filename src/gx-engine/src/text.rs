@@ -20,9 +20,101 @@ impl Text {
         &self.0
     }
 
-    pub fn trim_spaces(self) -> Self {
+    pub fn trim_spaces(&self) -> Self {
         // GeneXus Trim preserves tabs and NBSP in the measured .NET path.
-        Self(self.0.trim_matches(' ').to_owned())
+        Self(self.trim_str().to_owned())
+    }
+
+    #[inline(always)]
+    pub fn trim_str(&self) -> &str {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        if len == 0 {
+            return "";
+        }
+        if bytes[0] != b' ' && bytes[len - 1] != b' ' {
+            return &self.0;
+        }
+        let mut start = 0;
+        while start < len && bytes[start] == b' ' {
+            start += 1;
+        }
+        let mut end = len;
+        while end > start && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+        &self.0[start..end]
+    }
+
+    #[inline(always)]
+    pub fn trim_slice(&self) -> &[u8] {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        let mut start = 0;
+        while start < len && bytes[start] == b' ' {
+            start += 1;
+        }
+        let mut end = len;
+        while end > start && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+        &bytes[start..end]
+    }
+
+    #[inline(always)]
+    pub fn trim_start_str(&self) -> &str {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        if len == 0 || bytes[0] != b' ' {
+            return &self.0;
+        }
+        let mut start = 1;
+        while start < len && bytes[start] == b' ' {
+            start += 1;
+        }
+        &self.0[start..]
+    }
+
+    #[inline(always)]
+    pub fn trim_start_slice(&self) -> &[u8] {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        if len == 0 || bytes[0] != b' ' {
+            return bytes;
+        }
+        let mut start = 1;
+        while start < len && bytes[start] == b' ' {
+            start += 1;
+        }
+        &bytes[start..]
+    }
+
+    #[inline(always)]
+    pub fn trim_end_str(&self) -> &str {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        if len == 0 || bytes[len - 1] != b' ' {
+            return &self.0;
+        }
+        let mut end = len - 1;
+        while end > 0 && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+        &self.0[..end]
+    }
+
+    #[inline(always)]
+    pub fn trim_end_slice(&self) -> &[u8] {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        if len == 0 || bytes[len - 1] != b' ' {
+            return bytes;
+        }
+        let mut end = len - 1;
+        while end > 0 && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+        &bytes[..end]
     }
 
     pub fn utf16_length(&self) -> usize {
@@ -50,52 +142,113 @@ impl Text {
     /// negative length takes everything from the start. Positions count
     /// characters; the admitted corpus is CP1252, where one character is one
     /// native unit, so astral text stays outside the measured set.
-    pub fn substring(&self, start: i64, length: i64) -> Self {
-        let chars: Vec<char> = self.0.chars().collect();
-        if start < 1 || start as usize > chars.len() {
-            return Self(String::new());
+    #[inline(always)]
+    pub fn substring_str(&self, start: i64, length: i64) -> &str {
+        if start < 1 {
+            return "";
         }
+        let bytes = self.0.as_bytes();
         let from = (start - 1) as usize;
+        if from >= bytes.len() {
+            return "";
+        }
         let take = if length < 0 {
-            chars.len() - from
+            bytes.len() - from
         } else {
-            (length as usize).min(chars.len() - from)
+            (length as usize).min(bytes.len() - from)
         };
-        Self(chars[from..from + take].iter().collect())
+        let to = from + take;
+        if bytes[..to].is_ascii() {
+            return &self.0[from..to];
+        }
+        let from_idx = (start - 1) as usize;
+        let mut char_iter = self.0.char_indices().skip(from_idx);
+        let Some((byte_start, _)) = char_iter.next() else {
+            return "";
+        };
+        let byte_end = if length < 0 {
+            self.0.len()
+        } else if length == 0 {
+            byte_start
+        } else {
+            match char_iter.nth((length - 1) as usize) {
+                Some((end, _)) => end,
+                None => self.0.len(),
+            }
+        };
+        &self.0[byte_start..byte_end]
+    }
+
+    #[inline(always)]
+    pub fn substring_slice(&self, start: i64, length: i64) -> &[u8] {
+        if start < 1 {
+            return &[];
+        }
+        let bytes = self.0.as_bytes();
+        let from = (start - 1) as usize;
+        if from >= bytes.len() {
+            return &[];
+        }
+        let take = if length < 0 {
+            bytes.len() - from
+        } else {
+            (length as usize).min(bytes.len() - from)
+        };
+        let to = from + take;
+        if bytes[..to].is_ascii() {
+            return &bytes[from..to];
+        }
+        self.substring_str(start, length).as_bytes()
+    }
+
+    #[inline(always)]
+    pub fn substring_fast(&self, start: usize, length: usize) -> &[u8] {
+        let bytes = self.0.as_bytes();
+        if start == 0 || start > bytes.len() {
+            return &[];
+        }
+        let from = start - 1;
+        let take = length.min(bytes.len() - from);
+        &bytes[from..from + take]
+    }
+
+    #[inline]
+    pub fn substring(&self, start: i64, length: i64) -> Self {
+        Self(self.substring_str(start, length).to_owned())
     }
 
     /// Native `Upper`: per-character mapping that keeps the original character
     /// when its uppercase mapping expands to several characters (`ß` stays
     /// `ß`); `µ` still maps to the single-character Greek capital mu.
     pub fn to_upper(&self) -> Self {
-        Self(
-            self.0
-                .chars()
-                .map(|c| {
-                    let mut mapped = c.to_uppercase();
-                    match (mapped.next(), mapped.next()) {
-                        (Some(upper), None) => upper,
-                        _ => c,
-                    }
-                })
-                .collect(),
-        )
+        if self.0.is_ascii() {
+            return Self(self.0.to_ascii_uppercase());
+        }
+        let mut out = String::with_capacity(self.0.len());
+        for c in self.0.chars() {
+            let mut mapped = c.to_uppercase();
+            match (mapped.next(), mapped.next()) {
+                (Some(upper), None) => out.push(upper),
+                _ => out.push(c),
+            }
+        }
+        Self(out)
     }
 
     /// Native `Lower`, with the same single-character keep rule as `to_upper`.
     pub fn to_lower(&self) -> Self {
-        Self(
-            self.0
-                .chars()
-                .map(|c| {
-                    let mut mapped = c.to_lowercase();
-                    match (mapped.next(), mapped.next()) {
-                        (Some(lower), None) => lower,
-                        _ => c,
-                    }
-                })
-                .collect(),
-        )
+        if self.0.is_ascii() {
+            return Self(self.0.to_ascii_lowercase());
+        }
+        let mut out = String::with_capacity(self.0.len());
+        for c in self.0.chars() {
+            let mut mapped = c.to_lowercase();
+            match (mapped.next(), mapped.next()) {
+                (Some(lower), None) => out.push(lower),
+                _ => out.push(c),
+            }
+        }
+        Self(out)
     }
 
     /// Native `StrReplace`: case-sensitive, non-overlapping left-to-right
@@ -113,12 +266,12 @@ impl Text {
 
     /// Native `LTrim`: trims leading spaces (' ') only.
     pub fn trim_start_spaces(&self) -> Self {
-        Self(self.0.trim_start_matches(' ').to_owned())
+        Self(self.trim_start_str().to_owned())
     }
 
     /// Native `RTrim`: trims trailing spaces (' ') only.
     pub fn trim_end_spaces(&self) -> Self {
-        Self(self.0.trim_end_matches(' ').to_owned())
+        Self(self.trim_end_str().to_owned())
     }
 
     /// Native `PadL`: trims text, then pads on the left with repeated fill until size.
@@ -131,21 +284,24 @@ impl Text {
         if size > MAX_TEXT_BYTES {
             return Err("pad_left size exceeds 1 MiB resource limit".into());
         }
-        let trimmed = self.0.trim_matches(' ');
+        let trimmed = self.trim_str();
         let len = trimmed.len();
         if size <= len {
             return Ok(Self(trimmed[..size].to_owned()));
         }
         let needed = size - len;
         let fill_str = if fill.0.is_empty() { " " } else { &fill.0 };
-        let count = needed / fill_str.len() + 1;
-        let mut repeated = String::with_capacity(count * fill_str.len());
-        for _ in 0..count {
-            repeated.push_str(fill_str);
+        let mut result = String::with_capacity(size);
+        let mut rem = needed;
+        while rem >= fill_str.len() {
+            result.push_str(fill_str);
+            rem -= fill_str.len();
         }
-        let mut result = repeated[..needed].to_owned();
+        if rem > 0 {
+            result.push_str(&fill_str[..rem]);
+        }
         result.push_str(trimmed);
-        Ok(Self(result[..size].to_owned()))
+        Ok(Self(result))
     }
 
     /// Native `PadR`: trims trailing spaces, then pads on the right with repeated fill until size.
@@ -158,20 +314,304 @@ impl Text {
         if size > MAX_TEXT_BYTES {
             return Err("pad_right size exceeds 1 MiB resource limit".into());
         }
-        let rtrimmed = self.0.trim_end_matches(' ');
+        let rtrimmed = self.trim_end_str();
         if size <= rtrimmed.len() {
             return Ok(Self(rtrimmed[..size].to_owned()));
         }
         let needed = size - rtrimmed.len();
         let fill_str = if fill.0.is_empty() { " " } else { &fill.0 };
-        let count = needed / fill_str.len() + 1;
-        let mut repeated = String::with_capacity(count * fill_str.len());
-        for _ in 0..count {
-            repeated.push_str(fill_str);
+        let mut result = String::with_capacity(size);
+        result.push_str(rtrimmed);
+        let mut rem = needed;
+        while rem >= fill_str.len() {
+            result.push_str(fill_str);
+            rem -= fill_str.len();
         }
-        let mut result = rtrimmed.to_owned();
-        result.push_str(&repeated[..needed]);
-        Ok(Self(result[..size].to_owned()))
+        if rem > 0 {
+            result.push_str(&fill_str[..rem]);
+        }
+        Ok(Self(result))
+    }
+
+    #[inline(always)]
+    pub fn pad_left_slice<'a>(
+        &self,
+        size: i64,
+        fill: &Self,
+        buf: &'a mut [u8; 64],
+    ) -> Result<&'a [u8], String> {
+        if size <= 0 {
+            return Ok(&[]);
+        }
+        let size = size as usize;
+        if size > 64 {
+            return Err("pad_left buffer overflow".into());
+        }
+        let trimmed = self.trim_slice();
+        let len = trimmed.len();
+        if size <= len {
+            let dest = &mut buf[..size];
+            dest.copy_from_slice(&trimmed[..size]);
+            return Ok(dest);
+        }
+        let needed = size - len;
+        let fill_bytes = if fill.0.is_empty() {
+            b" " as &[u8]
+        } else {
+            fill.0.as_bytes()
+        };
+        if fill_bytes.len() == 1 {
+            buf[..needed].fill(fill_bytes[0]);
+            buf[needed..size].copy_from_slice(trimmed);
+            return Ok(&buf[..size]);
+        }
+        let mut idx = 0;
+        while idx + fill_bytes.len() <= needed {
+            buf[idx..idx + fill_bytes.len()].copy_from_slice(fill_bytes);
+            idx += fill_bytes.len();
+        }
+        if idx < needed {
+            let rem = needed - idx;
+            buf[idx..idx + rem].copy_from_slice(&fill_bytes[..rem]);
+            idx += rem;
+        }
+        buf[idx..idx + len].copy_from_slice(trimmed);
+        Ok(&buf[..size])
+    }
+
+    #[inline(always)]
+    pub fn pad_left_fast<'a>(&self, size: usize, fill: &Self, buf: &'a mut [u8; 64]) -> &'a [u8] {
+        let trimmed = self.trim_slice();
+        let len = trimmed.len();
+        if size <= len {
+            let dest = &mut buf[..size];
+            dest.copy_from_slice(&trimmed[..size]);
+            return dest;
+        }
+        let needed = size - len;
+        let fill_bytes = if fill.0.is_empty() {
+            b" " as &[u8]
+        } else {
+            fill.0.as_bytes()
+        };
+        if fill_bytes.len() == 1 {
+            buf[..needed].fill(fill_bytes[0]);
+            buf[needed..size].copy_from_slice(trimmed);
+            return &buf[..size];
+        }
+        &buf[..size]
+    }
+
+    #[inline(always)]
+    pub fn pad_left_bytes<'a>(
+        &self,
+        size: i64,
+        fill: &Self,
+        buf: &'a mut [u8; 64],
+    ) -> Result<&'a str, String> {
+        let slice = self.pad_left_slice(size, fill, buf)?;
+        Ok(std::str::from_utf8(slice).unwrap_or(""))
+    }
+
+    #[inline(always)]
+    pub fn pad_right_slice<'a>(
+        &self,
+        size: i64,
+        fill: &Self,
+        buf: &'a mut [u8; 64],
+    ) -> Result<&'a [u8], String> {
+        if size <= 0 {
+            return Ok(&[]);
+        }
+        let size = size as usize;
+        if size > 64 {
+            return Err("pad_right buffer overflow".into());
+        }
+        let rtrimmed = self.trim_end_slice();
+        let len = rtrimmed.len();
+        if size <= len {
+            let dest = &mut buf[..size];
+            dest.copy_from_slice(&rtrimmed[..size]);
+            return Ok(dest);
+        }
+        buf[..len].copy_from_slice(rtrimmed);
+        let fill_bytes = if fill.0.is_empty() {
+            b" " as &[u8]
+        } else {
+            fill.0.as_bytes()
+        };
+        if fill_bytes.len() == 1 {
+            buf[len..size].fill(fill_bytes[0]);
+            return Ok(&buf[..size]);
+        }
+        let mut idx = len;
+        while idx + fill_bytes.len() <= size {
+            buf[idx..idx + fill_bytes.len()].copy_from_slice(fill_bytes);
+            idx += fill_bytes.len();
+        }
+        if idx < size {
+            let rem = size - idx;
+            buf[idx..idx + rem].copy_from_slice(&fill_bytes[..rem]);
+        }
+        Ok(&buf[..size])
+    }
+
+    #[inline(always)]
+    pub fn pad_right_fast<'a>(&self, size: usize, fill: &Self, buf: &'a mut [u8; 64]) -> &'a [u8] {
+        let rtrimmed = self.trim_end_slice();
+        let len = rtrimmed.len();
+        if size <= len {
+            let dest = &mut buf[..size];
+            dest.copy_from_slice(&rtrimmed[..size]);
+            return dest;
+        }
+        buf[..len].copy_from_slice(rtrimmed);
+        let fill_bytes = if fill.0.is_empty() {
+            b" " as &[u8]
+        } else {
+            fill.0.as_bytes()
+        };
+        if fill_bytes.len() == 1 {
+            buf[len..size].fill(fill_bytes[0]);
+            return &buf[..size];
+        }
+        &buf[..size]
+    }
+
+    #[inline(always)]
+    pub fn pad_right_bytes<'a>(
+        &self,
+        size: i64,
+        fill: &Self,
+        buf: &'a mut [u8; 64],
+    ) -> Result<&'a str, String> {
+        let slice = self.pad_right_slice(size, fill, buf)?;
+        Ok(std::str::from_utf8(slice).unwrap_or(""))
+    }
+
+    #[inline(always)]
+    pub fn concat_with_sep_slice<'a>(
+        &self,
+        other: &Self,
+        sep: Option<&Self>,
+        buf: &'a mut [u8; 64],
+    ) -> Result<&'a [u8], String> {
+        let left = self.trim_end_slice();
+        let sep_bytes = sep.map(|s| s.0.as_bytes()).unwrap_or(b"");
+        let right = other.0.as_bytes();
+        let l_len = left.len();
+        let s_len = sep_bytes.len();
+        let r_len = right.len();
+        let total_len = l_len + s_len + r_len;
+        if total_len > 64 {
+            return Err("concat buffer overflow".into());
+        }
+        buf[..l_len].copy_from_slice(left);
+        buf[l_len..l_len + s_len].copy_from_slice(sep_bytes);
+        buf[l_len + s_len..total_len].copy_from_slice(right);
+        Ok(&buf[..total_len])
+    }
+
+    #[inline(always)]
+    pub fn concat_with_sep_fast<'a>(
+        &self,
+        other: &Self,
+        sep: Option<&Self>,
+        buf: &'a mut [u8; 64],
+    ) -> &'a [u8] {
+        let left = self.trim_end_slice();
+        let sep_bytes = sep.map(|s| s.0.as_bytes()).unwrap_or(b"");
+        let right = other.0.as_bytes();
+        let l_len = left.len();
+        let s_len = sep_bytes.len();
+        let r_len = right.len();
+        let total_len = l_len + s_len + r_len;
+        buf[..l_len].copy_from_slice(left);
+        buf[l_len..l_len + s_len].copy_from_slice(sep_bytes);
+        buf[l_len + s_len..total_len].copy_from_slice(right);
+        &buf[..total_len]
+    }
+
+    #[inline(always)]
+    pub fn concat_with_sep_bytes<'a>(
+        &self,
+        other: &Self,
+        sep: Option<&Self>,
+        buf: &'a mut [u8; 64],
+    ) -> Result<&'a str, String> {
+        let slice = self.concat_with_sep_slice(other, sep, buf)?;
+        Ok(std::str::from_utf8(slice).unwrap_or(""))
+    }
+
+    #[inline(always)]
+    pub fn concat_slice<'a>(
+        &self,
+        other: &Self,
+        buf: &'a mut [u8; 64],
+    ) -> Result<&'a [u8], String> {
+        let l_len = self.0.len();
+        let r_len = other.0.len();
+        let total_len = l_len + r_len;
+        if total_len > 64 {
+            return Err("concat buffer overflow".into());
+        }
+        buf[..l_len].copy_from_slice(self.0.as_bytes());
+        buf[l_len..total_len].copy_from_slice(other.0.as_bytes());
+        Ok(&buf[..total_len])
+    }
+
+    #[inline(always)]
+    pub fn concat_fast<'a>(&self, other: &Self, buf: &'a mut [u8; 64]) -> &'a [u8] {
+        let l_len = self.0.len();
+        let r_len = other.0.len();
+        let total_len = l_len + r_len;
+        buf[..l_len].copy_from_slice(self.0.as_bytes());
+        buf[l_len..total_len].copy_from_slice(other.0.as_bytes());
+        &buf[..total_len]
+    }
+
+    #[inline(always)]
+    pub fn concat_bytes<'a>(&self, other: &Self, buf: &'a mut [u8; 64]) -> Result<&'a str, String> {
+        let slice = self.concat_slice(other, buf)?;
+        Ok(std::str::from_utf8(slice).unwrap_or(""))
+    }
+
+    #[inline(always)]
+    pub fn to_upper_slice<'a>(&'a self, buf: &'a mut [u8; 64]) -> &'a [u8] {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        if len <= 64 {
+            let dst = &mut buf[..len];
+            dst.copy_from_slice(bytes);
+            dst.make_ascii_uppercase();
+            return dst;
+        }
+        bytes
+    }
+
+    #[inline(always)]
+    pub fn to_upper_bytes<'a>(&'a self, buf: &'a mut [u8; 64]) -> &'a str {
+        let slice = self.to_upper_slice(buf);
+        std::str::from_utf8(slice).unwrap_or(self.0.as_str())
+    }
+
+    #[inline(always)]
+    pub fn to_lower_slice<'a>(&'a self, buf: &'a mut [u8; 64]) -> &'a [u8] {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        if len <= 64 {
+            let dst = &mut buf[..len];
+            dst.copy_from_slice(bytes);
+            dst.make_ascii_lowercase();
+            return dst;
+        }
+        bytes
+    }
+
+    #[inline(always)]
+    pub fn to_lower_bytes<'a>(&'a self, buf: &'a mut [u8; 64]) -> &'a str {
+        let slice = self.to_lower_slice(buf);
+        std::str::from_utf8(slice).unwrap_or(self.0.as_str())
     }
 
     /// Native `Space`: returns a string consisting of N spaces (' ').
@@ -203,51 +643,108 @@ impl Text {
     }
 
     /// Native `StartsWith`: ordinal comparison.
+    #[inline(always)]
     pub fn starts_with(&self, prefix: &Self) -> bool {
-        self.0.starts_with(&prefix.0)
+        self.0.as_bytes().starts_with(prefix.0.as_bytes())
     }
 
     /// Native `EndsWith`: ordinal comparison.
+    #[inline(always)]
     pub fn ends_with(&self, suffix: &Self) -> bool {
-        self.0.ends_with(&suffix.0)
+        self.0.as_bytes().ends_with(suffix.0.as_bytes())
     }
 
     /// Native `Contains`: ordinal comparison.
+    #[inline(always)]
     pub fn contains(&self, needle: &Self) -> bool {
-        self.0.contains(&needle.0)
+        let n = needle.0.as_bytes();
+        if n.is_empty() {
+            return true;
+        }
+        let h = self.0.as_bytes();
+        if n.len() > h.len() {
+            return false;
+        }
+        let first = n[0];
+        let limit = h.len() - n.len();
+        let mut offset = 0;
+        while offset <= limit {
+            if h[offset] == first && &h[offset..offset + n.len()] == n {
+                return true;
+            }
+            offset += 1;
+        }
+        false
     }
 
     /// Native `StringSearch` / `StrSearch` / `IndexOf`: 1-based index (0 if not found).
+    #[inline(always)]
     pub fn str_search(&self, find: &Self, start: i64) -> i64 {
-        let s1 = &self.0;
-        let s2 = &find.0;
+        let s1 = self.0.as_bytes();
+        let s2 = find.0.as_bytes();
         let start = if start <= 0 { 1 } else { start };
-        if start as usize > s1.len() {
+        let from = (start - 1) as usize;
+        if from >= s1.len() {
             return 0;
         }
-        let start_idx = (start - 1) as usize;
-        if let Some(pos) = s1[start_idx..].find(s2) {
-            (start_idx + pos + 1) as i64
-        } else {
-            0
+        if s2.is_empty() {
+            return start;
         }
+        if s2.len() > s1.len() - from {
+            return 0;
+        }
+        let first = s2[0];
+        let limit = s1.len() - s2.len();
+        let mut offset = from;
+        while offset <= limit {
+            if s1[offset] == first && &s1[offset..offset + s2.len()] == s2 {
+                return (offset + 1) as i64;
+            }
+            offset += 1;
+        }
+        0
     }
 
     /// Native `Left`: returns initial `size` characters. Negative size yields empty.
-    pub fn left(&self, size: i64) -> Self {
+    #[inline(always)]
+    pub fn left_str(&self, size: i64) -> &str {
         if size <= 0 {
-            return Self(String::new());
+            return "";
         }
         let size = size as usize;
         let len = self.0.len();
         if size >= len {
-            return self.clone();
+            return &self.0;
         }
-        Self(self.0[..size].to_owned())
+        &self.0[..size]
+    }
+
+    #[inline(always)]
+    pub fn left_slice(&self, size: i64) -> &[u8] {
+        if size <= 0 {
+            return &[];
+        }
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        let size = (size as usize).min(len);
+        &bytes[..size]
+    }
+
+    #[inline(always)]
+    pub fn left_slice_fast(&self, size: usize) -> &[u8] {
+        let bytes = self.0.as_bytes();
+        let size = size.min(bytes.len());
+        &bytes[..size]
+    }
+
+    #[inline]
+    pub fn left(&self, size: i64) -> Self {
+        Self(self.left_str(size).to_owned())
     }
 
     /// Native `Right`: returns trailing `size` characters. Negative size throws ArgumentOutOfRangeException.
-    pub fn right(&self, size: i64) -> Result<Self, String> {
+    #[inline(always)]
+    pub fn right_str(&self, size: i64) -> Result<&str, String> {
         if size < 0 {
             return Err(
                 "ArgumentOutOfRangeException: startIndex cannot be larger than length of string"
@@ -257,10 +754,44 @@ impl Text {
         let size = size as usize;
         let len = self.0.len();
         if size >= len {
-            return Ok(self.clone());
+            return Ok(&self.0);
         }
         let start = len - size;
-        Ok(Self(self.0[start..].to_owned()))
+        Ok(&self.0[start..])
+    }
+
+    #[inline(always)]
+    pub fn right_slice(&self, size: i64) -> Result<&[u8], String> {
+        if size < 0 {
+            return Err(
+                "ArgumentOutOfRangeException: startIndex cannot be larger than length of string"
+                    .into(),
+            );
+        }
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        let size = size as usize;
+        if size >= len {
+            return Ok(bytes);
+        }
+        let start = len - size;
+        Ok(&bytes[start..])
+    }
+
+    #[inline(always)]
+    pub fn right_slice_fast(&self, size: usize) -> &[u8] {
+        let bytes = self.0.as_bytes();
+        let len = bytes.len();
+        if size >= len {
+            return bytes;
+        }
+        let start = len - size;
+        &bytes[start..]
+    }
+
+    #[inline]
+    pub fn right(&self, size: i64) -> Result<Self, String> {
+        self.right_str(size).map(|s| Self(s.to_owned()))
     }
 
     /// Native `Asc`: returns ASCII/Unicode code point of first character (32 for empty string).

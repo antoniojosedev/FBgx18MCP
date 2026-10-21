@@ -54,6 +54,7 @@ namespace GxMcp.Worker.Services
         private readonly Structure.AuthoringService _authoringService;
         private readonly FormatService _formatService;
         private readonly PropertyService _propertyService;
+        private readonly ControlParametersService _controlParametersService;
         // Issue #62 — atomic create/update (variables + rules + parms + properties + source in one validated op).
         private readonly AtomicCreateService _atomicCreateService;
         private readonly DataViewService _dataViewService;
@@ -129,6 +130,8 @@ namespace GxMcp.Worker.Services
         private readonly SecurityObjectAuditService _securityObjectAuditService;
         // genexus_dfd / genexus_impact / genexus_object_context — read-only views over the table relations and the caller graph.
         private readonly GraphToolsService _graphToolsService;
+        // genexus_wire action=pack_task on a native KB — orientation bundle from the SDK-backed index (read-only).
+        private readonly WirePackTaskService _wirePackTaskService;
         // genexus_gxserver action=pipeline_* — CI pipelines over IContinuousIntegrationService.
         private readonly CiPipelineService _ciPipelineService;
         // genexus_analyze mode=table_relations — table↔transaction relations over ITablesService.
@@ -206,6 +209,7 @@ namespace GxMcp.Worker.Services
             _analyzeService = new AnalyzeService(_kbService, _objectService, _indexCacheService, _navigationService, _uiService, callerGraphService);
             _buildService.SetCallerGraphService(callerGraphService);
             _graphToolsService = new GraphToolsService(_kbService, _objectService, _indexCacheService, callerGraphService);
+            _wirePackTaskService = new WirePackTaskService(_indexCacheService, _graphToolsService, _objectService);
             _summarizeService = new SummarizeService(_kbService, _objectService);
             _injectionService = new InjectionService(_kbService, _objectService, _analyzeService);
             _patternAnalysisService = new PatternAnalysisService(_objectService);
@@ -237,6 +241,7 @@ namespace GxMcp.Worker.Services
             _writeService.SetStructureService(_structureService);
             _authoringService = new Structure.AuthoringService(_objectService);
             _propertyService = new PropertyService(_objectService);
+            _controlParametersService = new ControlParametersService(_objectService, _writeService);
             _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);
             _atomicCreateService = new AtomicCreateService(_objectService, _writeService, _propertyService, _saveSpecifyOrchestrator, _historyService);
             _dataViewService = new DataViewService(_kbService, _objectService);
@@ -459,11 +464,12 @@ namespace GxMcp.Worker.Services
                 if (metadataError == null && objects != null)
                     objectCount = objects.Count;
             }
-            catch
+            catch (Exception ex)
             {
                 // The direct GXPublic operation will surface the provider error;
                 // the readiness flag only prevents the native-index gate from
                 // hiding that more useful error envelope.
+                Logger.Debug("[LegacyIndex] metadata query failed while marking the index ready: " + ex.Message);
             }
 
             _indexCacheService.MarkIndexComplete(objectCount);
@@ -692,7 +698,13 @@ namespace GxMcp.Worker.Services
             string result;
             try
             {
-                string raw = DispatchInternal(request);
+                string raw;
+                // Part initialization mutates SDK-wide definitions even for reads.
+                // Writers acquire the gate in WriteService, before their post-write
+                // async specification/preview orchestration runs outside that scope.
+                bool sourceRead = string.Equals(method0, "read", StringComparison.OrdinalIgnoreCase);
+                using (sourceRead ? SdkGate.Enter() : null)
+                    raw = DispatchInternal(request);
                 JToken token = GxMcp.Worker.Helpers.McpResponseNormalizer.NormalizeToken(
                     raw, out bool rewritten);
                 // The idempotency cache and the string contract keep the original bytes when
@@ -993,6 +1005,7 @@ namespace GxMcp.Worker.Services
                 ["dfd"] = (request, method, action, target, payload, args) => _graphToolsService.Dfd(args ?? new JObject()),
                 ["impact"] = (request, method, action, target, payload, args) => _graphToolsService.Impact(args ?? new JObject()),
                 ["objectcontext"] = (request, method, action, target, payload, args) => _graphToolsService.ObjectContext(args ?? new JObject()),
+                ["wire"] = (request, method, action, target, payload, args) => _wirePackTaskService.Run(args ?? new JObject()),
                 ["themeclasses"] = Handle_ThemeClasses,
                 ["usercontrols"] = Handle_UserControls,
                 ["wwpaction"] = Handle_WwpAction,
@@ -1173,6 +1186,8 @@ namespace GxMcp.Worker.Services
             // could only time out (`since=Ready`) while the delta was still running.
             string wantFreshness = args?["freshness"]?.ToString();
             bool waitSatisfied = false;
+            // The snapshot the wait decided on is the one the reply describes.
+            Models.IndexState observedState = null;
             if (waitSec > 0)
             {
                 // Issue #27 item 3 (DX): two block modes.
@@ -1188,7 +1203,8 @@ namespace GxMcp.Worker.Services
                 while (true)
                 {
                     _indexCacheService.ArmStateSignal();
-                    if (Models.IndexWaitPolicy.IsSatisfied(_indexCacheService.GetState(), since, wantFreshness))
+                    observedState = _indexCacheService.GetState();
+                    if (Models.IndexWaitPolicy.IsSatisfied(observedState, since, wantFreshness))
                     {
                         waitSatisfied = true;
                         break;
@@ -1202,8 +1218,11 @@ namespace GxMcp.Worker.Services
             // Merge the state-machine status so callers have a stable field
             // to pass back as `since` (the legacy `status` string is descriptive
             // prose, not a stable enum).
-            var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
-            statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
+            if (!waitSatisfied) observedState = _indexCacheService.GetState();
+            var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus(
+                // Only a cache wired to its KbService embeds the operation snapshot.
+                _indexCacheService.KbService != null ? observedState : null));
+            statusJson["indexStatus"] = observedState?.Status ?? "Cold";
             // Issue #209: a bounded wait reports whether its target was actually reached,
             // so the caller can distinguish "index is current now" from "timed out".
             if (waitSec > 0)
@@ -1796,6 +1815,15 @@ namespace GxMcp.Worker.Services
                 ?? (request?["params"] as JObject)?["correlationId"]?.ToString()
                 ?? ReadDiagnosticContext.CurrentCorrelationId;
 
+            if (action == "CertifyRecovery" && GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                return Models.McpResponse.Err(
+                    code: "UNSUPPORTED_IN_GENEXUS_VERSION",
+                    message: "The COM driver cannot confirm an independent SDK refresh, so it cannot certify a recovery read.",
+                    hint: GxMcp.Worker.Compatibility.DynamicSdkBridge.GetComAlternativeGuidance("genexus_read"),
+                    target: target);
+            }
+
             if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
             {
                 string unsupportedRefresh = ObjectService.FreshReadUnsupportedResponse(
@@ -1862,6 +1890,8 @@ namespace GxMcp.Worker.Services
                 string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter,
                     args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), conditional,
                     args?["refresh"]?.ToObject<bool?>() ?? false, correlationId);
+                if (RequestsRecoveryCertificate(args))
+                    readJson = AttachRecoveryCertificate(readJson, target, typeFilter, args);
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
                 // cache (which stores the pre-attach payload) and (b) doesn't burn
@@ -1883,6 +1913,16 @@ namespace GxMcp.Worker.Services
                     return readJson;
                 }
             }
+            if (action == "CertifyRecovery")
+            {
+                // A recovery re-read that answers with its certificate and no content. It
+                // only reads and hashes: nothing is written, specified or built.
+                return _objectService.CertifyRecoveryRead(
+                    target, args?["part"]?.ToString(),
+                    args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(),
+                    args?["type"]?.ToString() ?? request?["type"]?.ToString(),
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
+            }
             if (action == "ExtractParts")
             {
                 var partsTok = args?["parts"] as JArray;
@@ -1897,6 +1937,39 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
+        /// Internal transport flag the Gateway sets on a read that covers a post-timeout
+        /// fence: the read also answers with the pre-cut certificate of what the SDK holds.
+        /// </summary>
+        internal static bool RequestsRecoveryCertificate(JObject args)
+            => args?["certifyRecovery"]?.ToObject<bool?>() == true;
+
+        /// <summary>
+        /// Adds <c>recoveryCertificate</c> to a single-part read. The certificate is built
+        /// by a separate fresh SDK read of the whole part, so it never depends on the page
+        /// this read returned. When it cannot be produced nothing is added: the Gateway
+        /// treats a missing certificate as "not proven" and falls back to the page itself.
+        /// </summary>
+        private string AttachRecoveryCertificate(string readJson, string target, string typeFilter, JObject args)
+        {
+            try
+            {
+                var read = JObject.Parse(readJson);
+                if (read["error"] != null || read["notModified"]?.Value<bool?>() == true) return readJson;
+                var certified = JObject.Parse(_objectService.CertifyRecoveryRead(
+                    target, args?["part"]?.ToString(),
+                    args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), typeFilter,
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString()));
+                if (!(certified["result"]?["recoveryCertificate"] is JObject certificate)) return readJson;
+                read["recoveryCertificate"] = certificate;
+                return read.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch
+            {
+                return readJson;
+            }
+        }
+
+        /// <summary>
         /// Issue #357 — turns the routed read arguments into a conditional-read
         /// request, or <c>null</c> for an ordinary read.
         /// <para>
@@ -1907,7 +1980,7 @@ namespace GxMcp.Worker.Services
         /// told why in <c>conditional.reason</c>.
         /// </para>
         /// </summary>
-        private static ConditionalReadService.Request BuildConditionalReadRequest(JObject args)
+        internal static ConditionalReadService.Request BuildConditionalReadRequest(JObject args)
         {
             string token = args?["ifUnchangedSince"]?.ToString();
             bool authoritative = args?["requireAuthoritativeRead"]?.ToObject<bool?>() == true;
@@ -2852,6 +2925,35 @@ namespace GxMcp.Worker.Services
                     args["query"]?.ToString());
             }
 
+            // The parameters of a Dynamic Combo Box / Dynamic List Box are a typed parameter list,
+            // not a scalar: they have their own read (ordered expressions) and write (expressions[]).
+            if (!string.IsNullOrWhiteSpace(target) && !string.IsNullOrWhiteSpace(args?["control"]?.ToString()))
+            {
+                bool isSet = string.Equals(action, "Set", StringComparison.OrdinalIgnoreCase) || string.Equals(action, "SetMultiple", StringComparison.OrdinalIgnoreCase);
+                string requestedProperty = args?["propertyName"]?.ToString();
+                if (isSet && args?["expressions"] is JArray requestedExpressions)
+                {
+                    if (!string.IsNullOrWhiteSpace(requestedProperty) && !ControlParametersService.IsParametersProperty(requestedProperty))
+                        return Models.McpResponse.Err(code: "ExpressionsNotApplicable", target: target,
+                            message: "expressions applies only to propertyName=" + ControlParametersService.PropertyName + ".",
+                            hint: "Omit propertyName, or set it to " + ControlParametersService.PropertyName + ".");
+                    return _controlParametersService.Set(
+                        target,
+                        args?["control"]?.ToString(),
+                        requestedExpressions,
+                        args?["expectedVersion"]?.ToString(),
+                        args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                        propType);
+                }
+                if (isSet && ControlParametersService.IsParametersProperty(requestedProperty))
+                    return Models.McpResponse.Err(code: "ExpressionsRequired", target: target,
+                        message: ControlParametersService.PropertyName + " is a parameter list, not a scalar value.",
+                        hint: "Pass expressions:[\"AttributeName\", \"&Variable\", \"'literal'\"]: the complete ordered list, which replaces the current one.");
+                if (!isSet && ControlParametersService.IsParametersProperty(requestedProperty) && !Helpers.JsonUtil.IsSupplied(args?["propertyNames"]))
+                    return _controlParametersService.Get(target, args?["control"]?.ToString(), propType);
+            }
+
             if (string.IsNullOrWhiteSpace(target))
             {
                 return Models.McpResponse.Err(
@@ -3329,8 +3431,9 @@ namespace GxMcp.Worker.Services
 
         private string Handle_WorkWith(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            // genexus_workwith — Standard WorkWith (WorkWith for Web) typed action authoring (issue #455).
-            // list_actions|add_action over the standard WorkWith PatternInstance; dryRun supported.
+            // genexus_workwith — Standard WorkWith (WorkWith for Web) typed authoring (issues #455, #538, #559, #586).
+            // list_actions|add_action|remove_action|list_filters|add_filter_attribute|remove_filter_attribute
+            // over the standard WorkWith PatternInstance; dryRun supported.
             return _workWithService.Run(target, args ?? new JObject());
         }
 

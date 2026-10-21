@@ -1,0 +1,4 @@
+Event Start
+        //HeaderBC.Object = PageHeader.Create()
+        Msg('You are not authorized to do this action')
+Endevent

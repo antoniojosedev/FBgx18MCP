@@ -178,9 +178,17 @@ namespace GxMcp.Gateway
                     // shapes fall back to the structural error.
                     if (string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase))
                     {
-                        obj["isTruncated"] = true;
-                        obj["truncatedByGateway"] = true;
-                        obj["message"] = "Response exceeded the gateway budget even after trimming; re-request with a smaller `limit` or use offset/limit pagination for exact bytes.";
+                        // Claim a cut only when this call really made one (the field trims
+                        // above already flagged it). An explicit full read keeps its source
+                        // whole up to 200000 characters, so a part of ~81k characters plus
+                        // its envelope crosses 80000 without losing a byte: marking that as
+                        // truncatedByGateway told the caller it saw less than it did and
+                        // made the post-timeout recovery check refuse the read.
+                        if (obj["truncatedByGateway"]?.Value<bool?>() == true)
+                        {
+                            obj["isTruncated"] = true;
+                            obj["message"] = "Response exceeded the gateway budget even after trimming; re-request with a smaller `limit` or use offset/limit pagination for exact bytes.";
+                        }
                         return obj;
                     }
                     // Fallback to ensuring valid JSON structure when heavily nested Strings overfill

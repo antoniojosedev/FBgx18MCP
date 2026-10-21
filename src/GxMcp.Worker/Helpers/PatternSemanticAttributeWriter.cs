@@ -281,6 +281,41 @@ namespace GxMcp.Worker.Helpers
                 || ValuesEquivalent(resultingValue, value);
         }
 
+        /// <summary>
+        /// Resets an attribute to its default through the same change command (a null new value
+        /// is what the command turns into <c>ResetProperty</c>). Used to clear a property whose
+        /// SDK converter has no object for the empty text.
+        /// </summary>
+        internal static bool ResetSemanticAttribute(object element, string attributeName, string expectedString)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(attributeName)) return false;
+            object attributes = ReadProperty(element, "Attributes");
+            if (attributes == null) return false;
+            string expected = expectedString ?? string.Empty;
+            if (string.Equals(ReadAttribute(attributes, attributeName) ?? string.Empty, expected, StringComparison.Ordinal)) return true;
+
+            Type commandType = element.GetType().Assembly.GetType("Artech.Packages.Patterns.Objects.ChangeAttributeValueCommand", false);
+            ConstructorInfo constructor = commandType?.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .FirstOrDefault(c =>
+                {
+                    ParameterInfo[] parameters = c.GetParameters();
+                    return parameters.Length == 4
+                        && parameters[0].ParameterType.IsInstanceOfType(element)
+                        && parameters[1].ParameterType == typeof(string)
+                        && parameters[2].ParameterType == typeof(object)
+                        && parameters[3].ParameterType == typeof(object);
+                });
+            if (constructor == null) return false;
+
+            object command = constructor.Invoke(new object[] { element, attributeName, ReadAttributeObject(attributes, attributeName), null });
+            MethodInfo safeMethod = commandType.GetMethod("IsSafeToExecute", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (safeMethod != null && safeMethod.ReturnType == typeof(bool) && !(bool)safeMethod.Invoke(command, null)) return false;
+            MethodInfo executeMethod = commandType.GetMethod("Execute", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (executeMethod == null) return false;
+            executeMethod.Invoke(command, null);
+            return string.Equals(ReadAttribute(attributes, attributeName) ?? string.Empty, expected, StringComparison.Ordinal);
+        }
+
         private static bool ValuesEquivalent(object left, object right)
         {
             if (left == null || right == null) return false;

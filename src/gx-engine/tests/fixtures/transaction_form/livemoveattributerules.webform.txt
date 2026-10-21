@@ -1,0 +1,91 @@
+<GxMultiForm rootId="2" version="html:15.0.0;layout:17.11.0">
+  <Form id="2" type="layout">
+    <detail PanelType="Web">
+      <layout id="d483322c-3470-450c-adae-1ca51391bd34">
+        <table id="47c0ab05-bc4d-4058-bf7b-405a0e8b0a24" controlName="MainTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100,&quot;offset&quot;:0}],[{&quot;width&quot;:100,&quot;offset&quot;:0}],[{&quot;width&quot;:100,&quot;offset&quot;:0}]]}]">
+          <row id="da4aa64b-1223-4bab-88ce-957b3495de27">
+            <cell id="0c42d56a-b26b-40fd-88c8-faf164f8fddb">
+              <table id="261470d2-5bef-4ad7-8e3a-135e65cbf8c4" controlName="TitleContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-216" tableType="Responsive" responsiveSizes="[]">
+                <row id="d03cc20f-3f2f-4f49-9a88-7a772241a437">
+                  <cell id="d7b241ad-8e96-4ccd-b837-dcabd2e3b3c8">
+                    <textblock controlName="Title" caption="Live Move Attribute Rules" class="d52f9833-90c9-4096-8e42-27485741f78a-119" />
+                  </cell>
+                </row>
+                <row id="08ade9e5-ad0c-4fec-8513-318109a64c8b">
+                  <cell id="deed0a8b-3106-4dc1-8c19-4045811dbc0c">
+                    <errorviewer controlName="ErrorViewer" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row id="a355146b-9ed5-452b-ad89-ed49ff786c1f">
+            <cell id="c7af091b-9a71-41c8-80f1-01555d13a66f">
+              <table id="a2713274-7be5-48ad-9835-4687d7b6e2ac" controlName="FormContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-84" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:75,&quot;offset&quot;:25}],[{&quot;width&quot;:100,&quot;offset&quot;:0}],[{&quot;width&quot;:100}],[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+                <row id="4bc08e13-8b82-49c9-b07f-a769077aaf0a">
+                  <cell id="ba754d1c-c88a-4bdb-a75b-81f1ae25541d" cellControlName="ToolbarCell" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-83">
+                    <actiongroup controlName="Toolbar" />
+                  </cell>
+                </row>
+                <row id="04cbe66f-5696-4d05-8c68-ee9d34a087e3">
+                  <cell id="a9867a21-ab5e-431e-a7b0-d3ec0385383d" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-450">
+                    <data attribute="att:30" labelCaption="=LiveMoveAttributeRulesId.ContextualTitle" />
+                  </cell>
+                </row>
+                <row id="c2c70859-f391-4ae4-a2dd-73db4f196944">
+                  <cell id="2e748ca4-42c6-4884-a16f-916569ca4668" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-81">
+                    <data attribute="att:32" labelCaption="=LiveMoveAttributeRulesDescription.ContextualTitle" />
+                  </cell>
+                </row>
+                <row id="119ff0a0-ab97-4840-a46d-a69be14cc4da">
+                  <cell id="c9969a11-4764-4929-aa28-a3e492b433bb" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-81">
+                    <data attribute="att:31" labelCaption="=LiveMoveAttributeRulesCode.ContextualTitle" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row id="6d4bb07e-5d7f-4eb9-ab47-0430f0f78125">
+            <cell id="f8876e19-f456-44b4-b617-d804639dd015" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-80" hAlign="Right" vAlign="Middle">
+              <actiongroup controlName="FormButtons" />
+            </cell>
+          </row>
+        </table>
+        <actionGroups>
+          <actionGroup controlName="FormButtons" class="">
+            <item>
+              <action controlName="btn_enter" onClickEvent="Enter" caption="GX_BtnEnter" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-263" />
+            </item>
+            <item>
+              <action controlName="btn_cancel" onClickEvent="Cancel" caption="GX_BtnCancel" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-270" />
+            </item>
+            <item>
+              <action controlName="btn_delete" onClickEvent="Delete" caption="GX_BtnDelete" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-270" />
+            </item>
+          </actionGroup>
+          <actionGroup controlName="Toolbar">
+            <item>
+              <actionGroup controlName="NavButtons">
+                <item>
+                  <action controlName="btn_first" onClickEvent="First" caption="" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-299 d52f9833-90c9-4096-8e42-27485741f78a-125" />
+                </item>
+                <item>
+                  <action controlName="btn_previous" onClickEvent="Previous" caption="" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-299 d52f9833-90c9-4096-8e42-27485741f78a-128" />
+                </item>
+                <item>
+                  <action controlName="btn_next" onClickEvent="Next" caption="" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-299 d52f9833-90c9-4096-8e42-27485741f78a-127" />
+                </item>
+                <item>
+                  <action controlName="btn_last" onClickEvent="Last" caption="" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-299 d52f9833-90c9-4096-8e42-27485741f78a-126" />
+                </item>
+                <item>
+                  <action controlName="btn_select" onClickEvent="Select" caption="GX_BtnSelect" class="d52f9833-90c9-4096-8e42-27485741f78a-262 d52f9833-90c9-4096-8e42-27485741f78a-268" />
+                </item>
+              </actionGroup>
+            </item>
+          </actionGroup>
+        </actionGroups>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

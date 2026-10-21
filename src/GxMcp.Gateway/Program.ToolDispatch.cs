@@ -93,7 +93,10 @@ namespace GxMcp.Gateway
             JObject timeoutPayload)
         {
             if (recovery == null || string.IsNullOrWhiteSpace(kbAlias)
-                || !IsMutatingTool(toolName ?? string.Empty, toolArgs))
+                || !IsMutatingTool(toolName ?? string.Empty, toolArgs)
+                // A preview that cannot persist leaves nothing to reconcile; fencing the
+                // object would block the real write that follows the preview.
+                || OperationClassifier.IsEffectFreeDryRunPreview(toolName, toolArgs))
                 return false;
 
             var targets = EnumerateMutationRecoveryTargets(toolName ?? string.Empty, toolArgs).ToList();
@@ -151,6 +154,8 @@ namespace GxMcp.Gateway
             JToken? idToken,
             CancellationToken transportCancellation)
         {
+            if (transportCancellation.IsCancellationRequested)
+                throw new PreDispatchCancelledException(transportCancellation);
             string tName = tcParams["name"]?.ToString() ?? "";
             var tArgs = tcParams["arguments"] as JObject;
             string kbScope = _currentKb.Value?.NormalizedAlias ?? "";
@@ -184,13 +189,22 @@ namespace GxMcp.Gateway
             if (isMutating && !IsMutationPreview(tArgs))
             {
                 RecoveryRequirement? recoveryRequirement = null;
+                // Every scope the KB's fences may carry: a fence recorded under the folder
+                // alias by a call that addressed the KB by path still blocks the write.
+                IReadOnlyList<string> fenceScopes = _mutationRecovery.Count > 0
+                    ? CurrentKbScopes()
+                    : Array.Empty<string>();
                 foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName, tArgs))
                 {
-                    if (_mutationRecovery.TryGet(kbScope, recoveryTarget.Target, recoveryTarget.Part, out var found))
+                    foreach (var fenceScope in fenceScopes.Count > 0 ? (IEnumerable<string>)fenceScopes : new[] { kbScope })
                     {
-                        recoveryRequirement = found;
-                        break;
+                        if (_mutationRecovery.TryGet(fenceScope, recoveryTarget.Target, recoveryTarget.Part, out var found))
+                        {
+                            recoveryRequirement = found;
+                            break;
+                        }
                     }
+                    if (recoveryRequirement != null) break;
                 }
                 if (recoveryRequirement != null)
                 {
@@ -252,21 +266,8 @@ namespace GxMcp.Gateway
                 // must not pay an exclusive cross-process lock, a full re-parse and a
                 // directory glob on every call. The mutating branch above keeps the
                 // unconditional Refresh(); the two are deliberately different.
-                bool ReadCoversPart(string part)
-                {
-                    if (tArgs?["part"] is { } partToken && partToken.Type != JTokenType.Null)
-                        return string.Equals(partToken.ToString(), part, StringComparison.OrdinalIgnoreCase);
-                    if (tArgs?["parts"] is JArray requestedParts)
-                        return requestedParts.OfType<JToken>().Any(item =>
-                            string.Equals(item.ToString(), part, StringComparison.OrdinalIgnoreCase));
-                    // No part selector is a complete-object read.
-                    return true;
-                }
-                foreach (var observed in _mutationRecovery.FindForRead(kbScope, tArgs))
-                {
-                    if (ReadCoversPart(observed.Part))
-                        recoveryReads.Add((observed.Target, observed.Part, observed));
-                }
+                if (_mutationRecovery.Count > 0)
+                    recoveryReads.AddRange(FindCoveredRecoveryReads(_mutationRecovery, CurrentKbScopes(), tArgs));
                 requireAuthoritativeRead = recoveryReads.Count > 0;
                 // A cached response cannot reconcile an uncertain persisted write.
                 isLiveTool |= !_mutationRecovery.IsHealthy || _mutationRecovery.Count > 0;
@@ -338,6 +339,17 @@ namespace GxMcp.Gateway
             // uncached one. Each leg is still recorded in ToolLatencyStats.
             JObject? multiKbResult = await TryDispatchMultiKbDiscoveryAsync(tName, tArgs, transportCancellation);
             if (multiKbResult != null) return multiKbResult;
+
+            // gx-engine real routing (docs/engine_backend.md): with Engine.Backend=gxengine,
+            // the parity capabilities that declare product consumers serve their operations
+            // here — before the SDK index gate, which must not short-circuit a read, query or
+            // lifecycle build the engine can answer without the worker index. A call outside
+            // the admitted space (or a failed engine invocation) returns null and continues on
+            // the SDK path, or refuses under Engine.Fallback=error. Returns null when the
+            // backend is sdk or the tool is not one of the routed consumers.
+            JObject? engineRoutedResult = await TryDispatchEngineRoutedOperationAsync(
+                tName, lcAction, tArgs, _currentKb.Value?.Path, _currentKb.Value?.Alias, transportCancellation);
+            if (engineRoutedResult != null) return engineRoutedResult;
 
             // v2.6.9 perf: gateway-side fast-fail for SDK-bound tools when
             // the worker is still doing its initial BulkIndex on the STA thread.
@@ -448,7 +460,11 @@ namespace GxMcp.Gateway
             }
 
             // Gateway-served tools (factored method below; null = fall through).
-            JObject? gatewayResult = await TryDispatchGatewayToolAsync(tName, tArgs, sessionId, sessionContextEnabled);
+            // genexus_wire action=pack_task on the open native KB is the one Gateway-owned call
+            // the Worker answers (SDK-backed index, no text tree): fall through to the worker command below.
+            JObject? gatewayResult = GxwireNativePackTask.Applies(tName, tArgs, _currentKb.Value?.Path)
+                ? null
+                : await TryDispatchGatewayToolAsync(tName, tArgs, sessionId, sessionContextEnabled);
             if (gatewayResult != null) return gatewayResult;
 
             // Async lifecycle build (factored TryDispatchAsyncLifecycleBuildAsync below).
@@ -517,8 +533,11 @@ namespace GxMcp.Gateway
                 // Set on the routed command, not on tArgs: the caller's arguments
                 // must keep describing what they asked for, and no pre-routing
                 // decision (cache key, gateway-served tools, timeouts) may observe
-                // this internal fence.
-                workerCmd["_requireAuthoritativeRead"] = true;
+                // this internal fence. The names are the ones the Worker reads (it
+                // receives the whole routed command as its arguments): the previous
+                // `_requireAuthoritativeRead` spelling was never read, so a
+                // conditional token could still turn a fenced read into "not modified".
+                ApplyRecoveryReadFlags(workerCmd);
             }
             AttachClientRequestIdentity(workerCmd, tArgs);
             int timeoutMs = GetToolTimeoutMs(tName, tArgs);
@@ -558,6 +577,13 @@ namespace GxMcp.Gateway
                     JToken? finalResult = null;
                     var omittedMutationFields = new JArray();
                     JToken? workerPayload = resultObj["result"] ?? resultObj["error"];
+                    // The Worker's pre-cut certificate of what the SDK holds. Taken here,
+                    // before any budget, trim or size guard can touch the payload, so the
+                    // decision to clear a fence does not depend on how much of the part
+                    // the caller is allowed to see.
+                    JObject? recoveryCertificate = recoveryReads.Count > 0
+                        ? ExtractRecoveryCertificate(workerPayload)
+                        : null;
                     bool includePersistedText = IsMutatingTool(tName, tArgs)
                         && (tArgs?["includePersistedText"]?.Value<bool?>() ?? false);
                     JToken shapedPayload = workerPayload ?? JValue.CreateNull();
@@ -641,36 +667,17 @@ namespace GxMcp.Gateway
 
                     // Reconcile only content that actually survives the wire guards.
                     if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase)
-                        && IsCompleteMutationRecoveryRead(finalResult))
+                        && recoveryReads.Count > 0)
                     {
-                        if (IsFullObjectMutationRecoveryRead(finalResult))
+                        int fencesCleared = ConfirmRecoveryReadWithCertificate(
+                            _mutationRecovery, kbScope, finalResult, recoveryCertificate, recoveryReads);
+                        if (finalResult is JObject clearedPayload)
                         {
-                            // A versioned FullObjectRead is complete evidence for
-                            // every part of the object, not just the default Source
-                            // key used to find the request.
-                            var fullParts = (finalResult as JObject)?["result"]?["parts"] as JObject;
-                            var availableParts = (finalResult as JObject)?["result"]?["availableParts"] as JArray;
-                            foreach (var recoveryTarget in recoveryReads)
-                            {
-                                var pending = recoveryTarget.Observed;
-                                if (pending == null) continue;
-                                bool partWasRead = fullParts != null
-                                    && fullParts.Properties().Any(property =>
-                                        string.Equals(property.Name, pending.Part, StringComparison.OrdinalIgnoreCase));
-                                bool emptyPartWasEnumerated = availableParts != null
-                                    && availableParts.Any(part => string.Equals(part?.ToString(), pending.Part, StringComparison.OrdinalIgnoreCase));
-                                if (!partWasRead && !emptyPartWasEnumerated) continue;
-                                _mutationRecovery.ConfirmRead(
-                                    kbScope,
-                                    pending.Target,
-                                    pending.Part,
-                                    pending);
-                            }
-                        }
-                        else
-                        {
-                            foreach (var recoveryTarget in recoveryReads)
-                                _mutationRecovery.ConfirmRead(kbScope, recoveryTarget.Target, recoveryTarget.Part, recoveryTarget.Observed);
+                            clearedPayload["recoveryFenceCleared"] = fencesCleared > 0;
+                            // Which fences this read covered, and what the version says about
+                            // the write that timed out (clearing a fence does not say it landed).
+                            clearedPayload["recoveryFences"] = DescribeRecoveryFences(
+                                _mutationRecovery, finalResult, recoveryCertificate, recoveryReads);
                         }
                     }
                     if (!isErr && propertiesRecoveryRead && finalResult is JObject propertyPayload)
@@ -1028,7 +1035,33 @@ namespace GxMcp.Gateway
             {
                 JObject wireResult = await ExecuteGxwireToolAsync(tArgs, sessionId, sessionContextEnabled);
                 bool isErr = wireResult["error"] != null || string.Equals(wireResult["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase);
-                return BuildToolResultContent(wireResult, isErr, tName, tArgs);
+                try
+                {
+                    return BuildToolResultContent(wireResult, isErr, tName, tArgs);
+                }
+                catch (Exception shapeEx)
+                {
+                    // The envelope itself is the last thing that can throw on this
+                    // path; if it does, the client still gets a coded answer and
+                    // not the transport's bare `Internal error` (#593).
+                    Log($"[genexus_wire] envelope shaping failed: {shapeEx.GetType().Name}: {shapeEx.Message}");
+                    var fallback = new JObject
+                    {
+                        ["status"] = "error",
+                        ["error"] = GxwireErrorCodes.UnexpectedException,
+                        ["code"] = GxwireErrorCodes.UnexpectedException,
+                        ["message"] = "genexus_wire produced a result the gateway could not shape into a response: "
+                            + GxwireTool.Head(shapeEx.Message, GxwireTool.GxwireExceptionMessageChars),
+                        ["originalCode"] = wireResult["code"]?.ToString() ?? wireResult["error"]?.ToString(),
+                        ["diagnosticContext"] = new JObject
+                        {
+                            ["tool"] = "genexus_wire",
+                            ["stage"] = "envelope",
+                            ["exceptionType"] = shapeEx.GetType().Name
+                        }
+                    };
+                    return BuildToolResultContent(fallback, true, tName, tArgs);
+                }
             }
 
             if (string.Equals(tName, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
@@ -1108,342 +1141,26 @@ namespace GxMcp.Gateway
             return null;
         }
 
-        internal static Task<JObject> ExecuteGxwireToolAsyncForTest(JObject? tArgs) =>
-            ExecuteGxwireToolAsync(tArgs, "test-session", false);
+        // genexus_wire execution lives in Program.Gxwire.cs (#593): every failure
+        // path returns a coded envelope with diagnosticContext, and the process
+        // launch is a replaceable seam so the paths are testable without gxwire.exe.
 
-        internal static async Task<JObject> ExecuteGxwireToolAsync(
-            JObject? tArgs,
-            string sessionId,
-            bool sessionContextEnabled)
+        /// <summary>Reads bounded Worker index status without hiding error envelopes.</summary>
+        private static async Task<JObject?> ReadLifecycleIndexStatusAsync(
+            string jobId, string toolName, JObject? toolArgs, CancellationToken cancellationToken)
         {
-            string? exePath = LocateGxwireExecutable();
-            if (string.IsNullOrEmpty(exePath))
-            {
-                return new JObject
+            cancellationToken.ThrowIfCancellationRequested();
+            JObject? envelope = await SendWorkerCommandAsync(
+                new JObject
                 {
-                    ["status"] = "error",
-                    ["error"] = "GxwireNotFound",
-                    ["message"] = "gxwire.exe binary not found. Build gxwire via 'cargo build --release' or run build.ps1 to generate publish/gxwire.exe."
-                };
-            }
-
-            string action = tArgs?["action"]?.ToString()?.Trim() ?? "pack_task";
-            string format = tArgs?["format"]?.ToString()?.Trim() ?? "xml";
-            int budget = tArgs?["token_budget"]?.ToObject<int?>() ?? 1200;
-            bool full = tArgs?["full"]?.ToObject<bool?>() ?? false;
-
-            string? kbDir = null;
-            if (tArgs?["dir"] != null && !string.IsNullOrWhiteSpace(tArgs["dir"]?.ToString()))
-            {
-                kbDir = tArgs["dir"]?.ToString();
-            }
-            else if (tArgs?["kb"] != null && !string.IsNullOrWhiteSpace(tArgs["kb"]?.ToString()))
-            {
-                kbDir = ResolveKbPath(tArgs["kb"]!.ToString()!);
-            }
-            else if (_currentKb.Value != null && !string.IsNullOrWhiteSpace(_currentKb.Value.Path))
-            {
-                kbDir = _currentKb.Value.Path;
-            }
-            else if (!string.IsNullOrWhiteSpace(_activeConfig?.Environment?.KBPath))
-            {
-                kbDir = _activeConfig.Environment.KBPath;
-            }
-
-            if (!string.Equals(action, "doctor", StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.IsNullOrWhiteSpace(kbDir) || !Directory.Exists(kbDir))
-                {
-                    return new JObject
-                    {
-                        ["status"] = "error",
-                        ["error"] = "KB_CONTEXT_REQUIRED",
-                        ["message"] = "No Knowledge Base path resolved or directory does not exist. Open a KB with genexus_kb or specify 'kb'/'dir'."
-                    };
-                }
-
-                // A native Knowledge Base keeps its object sources in the KB
-                // database, not in files. Walking its folder would index
-                // generated output - gigabytes of it - and the resulting graph
-                // would be inferred from whatever text happened to be there,
-                // which reads exactly like a real graph and is not one (#499).
-                var nativeKb = NativeKnowledgeBaseEvidence.Describe(kbDir!);
-                if (nativeKb != null)
-                {
-                    return new JObject
-                    {
-                        ["status"] = "error",
-                        ["error"] = "GXWIRE_REQUIRES_TEXT_SOURCE_TREE",
-                        ["message"] = "genexus_wire reads GeneXus sources from files, but this is a native Knowledge Base: its object sources live in the KB database, not on disk. Indexing the folder would read generated output, not the Knowledge Base.",
-                        ["path"] = kbDir,
-                        ["evidence"] = new JArray(nativeKb),
-                        ["hint"] = "Point genexus_wire at a text source tree instead - a GeneXus XML/text export of the same Knowledge Base (the directory holding the .txt/.gxd/.xml/.trn/.wp object files). Read the sources through the SDK instead: genexus_read, genexus_query, genexus_search_source, genexus_analyze and genexus_inspect all work against this Knowledge Base as-is.",
-                        ["sdkAlternative"] = new JArray("genexus_read", "genexus_query", "genexus_search_source", "genexus_analyze", "genexus_inspect")
-                    };
-                }
-            }
-
-            // The index goes to the MCP cache directory, never into the analysed
-            // folder. The published contract declares genexus_wire read-only, and
-            // with a native KB that folder is the Knowledge Base itself (#499).
-            string? gxwireCachePath = null;
-            try { gxwireCachePath = GxwireCacheLocation.Resolve(kbDir); }
-            catch (Exception ex)
-            {
-                // Not fatal: gxwire still works, it just falls back to its own
-                // in-tree default and stops being read-only. Reported, not hidden.
-                Console.Error.WriteLine("[genexus_wire] could not resolve a cache path outside the analysed directory: " + ex.Message);
-            }
-
-            var argsBuilder = new StringBuilder();
-
-            switch (action.ToLowerInvariant())
-            {
-                case "doctor":
-                    argsBuilder.Append("--doctor");
-                    if (!string.IsNullOrWhiteSpace(kbDir))
-                    {
-                        argsBuilder.Append($" --dir \"{kbDir}\"");
-                    }
-                    argsBuilder.Append($" --format {format}");
-                    break;
-
-                case "status":
-                    argsBuilder.Append($"--dir \"{kbDir}\" --format {format}");
-                    break;
-
-                case "index":
-                    argsBuilder.Append($"--index --dir \"{kbDir}\"");
-                    break;
-
-                case "callers":
-                    string target = tArgs?["target"]?.ToString() ?? tArgs?["symbol"]?.ToString() ?? tArgs?["name"]?.ToString() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(target))
-                    {
-                        return new JObject { ["status"] = "error", ["error"] = "TargetRequired", ["message"] = "Action 'callers' requires 'target'." };
-                    }
-                    argsBuilder.Append($"--callers \"{target}\" --dir \"{kbDir}\" --format {format} --token-budget {budget}");
-                    if (full) argsBuilder.Append(" --full");
-                    break;
-
-                case "impact":
-                    string impactTarget = tArgs?["target"]?.ToString() ?? tArgs?["symbol"]?.ToString() ?? tArgs?["name"]?.ToString() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(impactTarget))
-                    {
-                        return new JObject { ["status"] = "error", ["error"] = "TargetRequired", ["message"] = "Action 'impact' requires 'target'." };
-                    }
-                    argsBuilder.Append($"--impact \"{impactTarget}\" --dir \"{kbDir}\" --format {format} --token-budget {budget}");
-                    if (full) argsBuilder.Append(" --full");
-                    break;
-
-                case "for":
-                    string forTask = tArgs?["task"]?.ToString() ?? tArgs?["query"]?.ToString() ?? tArgs?["target"]?.ToString() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(forTask))
-                    {
-                        return new JObject { ["status"] = "error", ["error"] = "TaskRequired", ["message"] = "Action 'for' requires 'task'." };
-                    }
-                    argsBuilder.Append($"--for \"{forTask}\" --dir \"{kbDir}\" --format {format} --token-budget {budget}");
-                    if (full) argsBuilder.Append(" --full");
-                    break;
-
-                case "pack_task":
-                case "pack-task":
-                    string packTask = tArgs?["task"]?.ToString() ?? tArgs?["query"]?.ToString() ?? tArgs?["target"]?.ToString() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(packTask))
-                    {
-                        return new JObject { ["status"] = "error", ["error"] = "TaskRequired", ["message"] = "Action 'pack_task' requires 'task'." };
-                    }
-                    argsBuilder.Append($"--pack-task \"{packTask}\" --dir \"{kbDir}\" --format {format} --token-budget {budget}");
-                    if (full) argsBuilder.Append(" --full");
-                    break;
-
-                case "slice":
-                    string sliceTarget = tArgs?["target"]?.ToString() ?? tArgs?["symbol"]?.ToString() ?? tArgs?["name"]?.ToString() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(sliceTarget))
-                    {
-                        return new JObject { ["status"] = "error", ["error"] = "TargetRequired", ["message"] = "Action 'slice' requires 'target' (e.g. 'ProcName:VarName')." };
-                    }
-                    argsBuilder.Append($"--slice \"{sliceTarget}\" --dir \"{kbDir}\" --format {format} --token-budget {budget}");
-                    break;
-
-                case "safe_delete":
-                case "safe-delete":
-                    string delTarget = tArgs?["target"]?.ToString() ?? tArgs?["symbol"]?.ToString() ?? tArgs?["name"]?.ToString() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(delTarget))
-                    {
-                        return new JObject { ["status"] = "error", ["error"] = "TargetRequired", ["message"] = "Action 'safe_delete' requires 'target'." };
-                    }
-                    argsBuilder.Append($"--safe-delete \"{delTarget}\" --dir \"{kbDir}\" --format {format}");
-                    break;
-
-                case "path":
-                case "trace":
-                    string fromSym = tArgs?["from"]?.ToString() ?? tArgs?["source"]?.ToString() ?? tArgs?["origin"]?.ToString() ?? string.Empty;
-                    string toSym = tArgs?["to"]?.ToString() ?? tArgs?["target"]?.ToString() ?? tArgs?["destination"]?.ToString() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(fromSym) || string.IsNullOrWhiteSpace(toSym))
-                    {
-                        return new JObject { ["status"] = "error", ["error"] = "PathEndpointsRequired", ["message"] = "Action 'path' requires 'from' and 'to' parameters." };
-                    }
-                    argsBuilder.Append($"--from \"{fromSym}\" --to \"{toSym}\" --dir \"{kbDir}\" --format {format}");
-                    if (full) argsBuilder.Append(" --full");
-                    break;
-
-                default:
-                    return new JObject
-                    {
-                        ["status"] = "error",
-                        ["error"] = $"Unknown action '{action}'.",
-                        ["hint"] = "Supported: pack_task, status, for, callers, impact, path, slice, safe_delete, index, doctor."
-                    };
-            }
-
-            // Appended once, after every action has contributed its own flags, so
-            // no action can be added later that forgets to keep the analysed
-            // directory read-only.
-            if (!string.IsNullOrWhiteSpace(gxwireCachePath))
-            {
-                argsBuilder.Append($" --cache-path \"{gxwireCachePath}\"");
-            }
-
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = exePath,
-                    Arguments = argsBuilder.ToString(),
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8
-                };
-
-                using var proc = Process.Start(psi);
-                if (proc == null)
-                {
-                    return new JObject
-                    {
-                        ["status"] = "error",
-                        ["error"] = "ProcessStartFailed",
-                        ["message"] = "Failed to spawn gxwire process."
-                    };
-                }
-
-                GxwireProcessRun run;
-                try
-                {
-                    run = await GxwireProcessRunner.RunAsync(proc, GxwireProcessRunner.ResolveTimeoutSeconds(action));
-                }
-                finally
-                {
-                    // The runner kills on timeout, but a cancellation can also
-                    // arrive from outside (client disconnect, shutdown). Either
-                    // way the child must not outlive the gateway, otherwise it
-                    // keeps indexing with no owner (issue #498).
-                    GxwireProcessRunner.TryKillProcessTree(proc);
-                }
-
-                if (run.TimedOut)
-                {
-                    return new JObject
-                    {
-                        ["status"] = "error",
-                        ["error"] = "GxwireTimeout",
-                        ["message"] = $"gxwire exceeded its {run.TimeoutSeconds}s budget and was terminated. The partial index on disk is reused on the next call.",
-                        ["action"] = action,
-                        ["timeoutSeconds"] = run.TimeoutSeconds,
-                        ["next"] = "Retry with a larger GXMCP_GXWIRE_TIMEOUT_SECONDS for action=index, or run the index in smaller directories."
-                    };
-                }
-
-                string stdout = run.StandardOutput;
-                string stderr = run.StandardError;
-                if (proc.ExitCode != 0)
-                {
-                    return new JObject
-                    {
-                        ["status"] = "error",
-                        ["error"] = "GxwireExecutionFailed",
-                        ["exitCode"] = proc.ExitCode,
-                        ["stderr"] = stderr.Trim(),
-                        ["stdout"] = stdout.Trim()
-                    };
-                }
-
-                string trimmedStdout = stdout.Trim();
-                if (string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        var parsedJson = JToken.Parse(trimmedStdout);
-                        return new JObject
-                        {
-                            ["status"] = "ok",
-                            ["action"] = action,
-                            ["engine"] = "gxwire",
-                            ["data"] = parsedJson
-                        };
-                    }
-                    catch
-                    {
-                        // Fallback if raw text wasn't JSON
-                    }
-                }
-
-                return new JObject
-                {
-                    ["status"] = "ok",
-                    ["action"] = action,
-                    ["engine"] = "gxwire",
-                    ["format"] = format,
-                    ["output"] = trimmedStdout
-                };
-            }
-            catch (Exception ex)
-            {
-                return new JObject
-                {
-                    ["status"] = "error",
-                    ["error"] = "GxwireException",
-                    ["message"] = ex.Message
-                };
-            }
-        }
-
-        private static string? LocateGxwireExecutable()
-        {
-            string appDir = AppContext.BaseDirectory;
-            string candidate = Path.Combine(appDir, "gxwire.exe");
-            if (File.Exists(candidate)) return candidate;
-
-            string candidatePublish = Path.GetFullPath(Path.Combine(appDir, "..", "..", "..", "..", "..", "publish", "gxwire.exe"));
-            if (File.Exists(candidatePublish)) return candidatePublish;
-
-            string candidateRust = Path.GetFullPath(Path.Combine(appDir, "..", "..", "..", "..", "..", "src", "gxwire", "target", "release", "gxwire.exe"));
-            if (File.Exists(candidateRust)) return candidateRust;
-
-            string candidateCwd = Path.Combine(Directory.GetCurrentDirectory(), "publish", "gxwire.exe");
-            if (File.Exists(candidateCwd)) return candidateCwd;
-
-            string candidateCwdRust = Path.Combine(Directory.GetCurrentDirectory(), "src", "gxwire", "target", "release", "gxwire.exe");
-            if (File.Exists(candidateCwdRust)) return candidateCwdRust;
-
-            string? pathEnv = Environment.GetEnvironmentVariable("PATH");
-            if (!string.IsNullOrEmpty(pathEnv))
-            {
-                foreach (string p in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-                {
-                    try
-                    {
-                        string onPath = Path.Combine(p, "gxwire.exe");
-                        if (File.Exists(onPath)) return onPath;
-                    }
-                    catch { }
-                }
-            }
-
-            return null;
+                    ["module"] = "KB", ["action"] = "GetIndexStatus",
+                    ["wait"] = 30, ["freshness"] = "current"
+                },
+                35000, $"Timeout waiting for index completion (job={jobId})",
+                env => env,
+                (_, correlationId) => new JObject { ["error"] = "Index status timeout", ["correlationId"] = correlationId },
+                toolName: toolName, toolArgs: toolArgs, trackOperation: false);
+            return envelope?["error"] != null ? envelope : (envelope?["result"] as JObject) ?? envelope;
         }
 
         /// <summary>
@@ -1578,9 +1295,17 @@ namespace GxMcp.Gateway
                     if (!string.IsNullOrEmpty(taskId)) JobRegistry.SetWorkerTaskId(job.Id, taskId);
                     if (string.IsNullOrEmpty(taskId))
                     {
-                        // No taskId means a synchronous long action (validate-kb or a
-                        // forced index refresh) completed inside the worker command.
-                        // Store that terminal payload in the same operation registry.
+                        // BulkIndex acknowledges a background operation, not its completion.
+                        // Keep the lifecycle job live until that exact index is idle/current.
+                        if (string.Equals(lcAction, "index", StringComparison.OrdinalIgnoreCase))
+                        {
+                            await LifecycleIndexCompletion.CompleteJobAsync(
+                                JobRegistry, job, ack,
+                                ct => ReadLifecycleIndexStatusAsync(job.Id, tName, tArgs, ct),
+                                TimeSpan.FromSeconds(ResolveAsyncBuildHardCapSeconds(lcAction)));
+                            return;
+                        }
+                        // Other taskless actions complete inside the Worker command.
                         bool syncSuccess = IsSuccessfulBackgroundToolCompletion(ack)
                             && !string.Equals(ack["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase)
                             && ack["error"] == null;

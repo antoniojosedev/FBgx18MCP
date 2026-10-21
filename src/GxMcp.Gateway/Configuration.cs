@@ -49,6 +49,7 @@ namespace GxMcp.Gateway
         private static readonly object _reloadLock = new object();
         private static System.Threading.Timer? _reloadDebounceTimer;
         private static Configuration? _lastValidConfiguration;
+        public static Configuration? LastValidConfiguration => _lastValidConfiguration;
         public static event Action<Configuration>? OnConfigurationChanged;
 
         // Gateway environment-variable matrix. Structural values belong in a strict
@@ -357,9 +358,9 @@ namespace GxMcp.Gateway
 
             RejectUnknown(engine, new HashSet<string>(new[] { "Backend", "Fallback", "Executable", "TimeoutSeconds" }, StringComparer.Ordinal), "Engine", path);
 
-            string backend = engine.Value<string>("Backend")?.Trim().ToLowerInvariant() ?? "sdk";
-            if (backend != "sdk" && backend != "gxengine")
-                throw new InvalidDataException("Strict config Engine.Backend must be 'sdk' or 'gxengine'.");
+            string backend = engine.Value<string>("Backend")?.Trim().ToLowerInvariant() ?? EngineBackendSettings.GxEngineBackend;
+            if (backend != "auto" && backend != "sdk" && backend != "gxengine")
+                throw new InvalidDataException("Strict config Engine.Backend must be 'auto', 'sdk' or 'gxengine'.");
 
             string fallback = engine.Value<string>("Fallback")?.Trim().ToLowerInvariant() ?? "sdk";
             if (fallback != "sdk" && fallback != "error")
@@ -682,14 +683,15 @@ namespace GxMcp.Gateway
     }
 
     /// <summary>
-    /// Experimental gx-engine backend switch (docs/engine_backend.md). An absent
-    /// section means the GeneXus SDK serves every operation, which is the default.
+    /// gx-engine backend policy (docs/engine_backend.md). An absent section
+    /// defaults to gxengine: admitted builds, reads and queries use gx-engine;
+    /// everything outside the admitted space uses the SDK.
     /// Only capabilities measured at full parity may be routed to the engine; the
     /// capability gate lives in <see cref="EngineCapabilityRegistry"/>.
     /// </summary>
     public class EngineConfig
     {
-        /// <summary>"sdk" (default) or "gxengine".</summary>
+        /// <summary>"gxengine" (default: admitted builds, reads, queries), "auto" (admitted builds only), or "sdk" (engine off).</summary>
         [JsonProperty("Backend")]
         public string? Backend { get; set; }
 

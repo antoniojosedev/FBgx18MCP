@@ -1,0 +1,1 @@
+{"root":{"name":"Trn353","attributes":[{"name":"Trn353Id","is_key":true,"data_type":{"kind":"numeric","precision":4,"scale":0}}]}}

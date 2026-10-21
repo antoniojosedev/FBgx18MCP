@@ -239,7 +239,14 @@ namespace GxMcp.Gateway.Tests
             // Issues #541, #551, #552, #559: 38500 -> 39000 for genexus_workwith filter authoring,
             // genexus_create attribute typing (dataType/length/decimals/basedOn), and genexus_wwp
             // tabs/userAction layout parameter enhancements. Measured ~38783 tokens; ~217 headroom.
-            Assert.True(approxTokens < 39000, $"tool_definitions.json is ~{approxTokens} tokens; budget 39000.");
+            // Unreleased 4.0 work (#586/#587/#588/#595 workwith/wwp inputs, genexus_wire targets,
+            // genexus_wwp set_combo_properties) had pushed this to ~39895 tokens through five budget
+            // bumps (39000 -> 40000). The review before 4.0 trimmed redundant description text and
+            // restated tool summaries as one purpose sentence (no schema-shape change), reaching
+            // ~39621 tokens. The v3.16.0 budget of 39000 needs ~2500 more characters out of
+            // descriptions whose remaining text is not duplicated elsewhere in the schema, so the
+            // budget stays at 39700 (~79 headroom) instead of cutting guidance clients rely on.
+            Assert.True(approxTokens < 39700, $"tool_definitions.json is ~{approxTokens} tokens; budget 39700.");
         }
 
         [Theory]
@@ -264,10 +271,30 @@ namespace GxMcp.Gateway.Tests
         // With genexus_wire added to core/standard/authoring/devops/all and purpose summaries from origin/main:
         // Measured all ~99400, core=26678, standard ~60500, authoring ~68000, devops=52066 bytes.
         // Issue #455 adds genexus_workwith: all measured 100907, authoring measured 69808.
-        [InlineData("all", 102000)]
+        // Issue #588 adds the genexus_workwith `default` filter input: authoring 70500 -> 71000
+        // (measured 70527); the other profiles stayed within their budgets.
+        // Issue #586 adds genexus_workwith remove_filter_attribute (enum, removeConditions,
+        // example): authoring 70500 -> 71000, measured 70509 bytes.
+        // Issue #595 adds genexus_wwp add_table/move_control inputs: all 102000 -> 103000,
+        // authoring 70500 -> 71500, ui 50000 -> 50500 (ui measured 50001).
+        // Measured together (#586/#588/#595): all 102473, authoring 71374 bytes.
+        // all 103000 -> 103100 for the `expressions` array on genexus_properties (typed parameter list
+        // of a Dynamic Combo Box). Measured 103015 bytes; the global token budget does not move.
+        // genexus_wire.targets (#499 follow-up, pack_task on a native KB): ~100 bytes per profile;
+        // all 103100 -> 103200 (measured 103121), devops 52500 -> 52700 (measured 52598).
+        // The unreleased 4.0 work had raised these through six bumps (all 103300, authoring 72000,
+        // ui 50500, devops 52700). The pre-4.0 review trimmed redundant description text and
+        // restated tool summaries as one purpose sentence (published summaries are sentence-bounded,
+        // ToolProfileFilter.MaxToolSummaryLength) without changing any schema shape. ui (49982) and
+        // devops (52379) are back under their v3.16.0 budgets; all (102618) and authoring (71074)
+        // stay ~618 / ~574 bytes above the v3.16.0 budgets (102000 / 70500): the remaining excess is
+        // the property names, types, enums and 40-character published descriptions of the new
+        // genexus_wwp/genexus_workwith/genexus_wire inputs, which cannot shrink without changing
+        // the schema. Headroom over the measured size is ~132 / ~126 bytes.
+        [InlineData("all", 102750)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
-        [InlineData("authoring", 70500)]
+        [InlineData("authoring", 71200)]
         [InlineData("devops", 52500)]
         [InlineData("ui", 50000)]
         [InlineData("db", 40000)]

@@ -18,26 +18,12 @@ namespace GxMcp.Gateway.Tests
     /// purpose: xunit runs classes in parallel and tests within a class
     /// sequentially, so environment mutation stays race-free.
     /// </summary>
-    public class EngineBackendTests : IDisposable
+    public class EngineBackendTests : EngineEnvironmentTestBase
     {
-        private readonly List<(string Name, string? Value)> _savedEnvironment = new();
-
-        private void SetEngineEnv(string name, string? value)
-        {
-            _savedEnvironment.Add((name, Environment.GetEnvironmentVariable(name)));
-            Environment.SetEnvironmentVariable(name, value);
-        }
-
-        public void Dispose()
-        {
-            foreach (var entry in _savedEnvironment)
-                Environment.SetEnvironmentVariable(entry.Name, entry.Value);
-        }
-
         // ---------------------------------------------------------------- settings
 
         [Fact]
-        public void Settings_DefaultToSdkBackend_WithNoConfigAndNoEnvironment()
+        public void Settings_DefaultToGxEngineBackend_WithNoConfigAndNoEnvironment()
         {
             SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
             SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
@@ -46,11 +32,11 @@ namespace GxMcp.Gateway.Tests
 
             var settings = EngineBackendSettings.Resolve(null);
 
-            Assert.Equal("sdk", settings.Backend);
+            Assert.Equal("gxengine", settings.Backend);
             Assert.Equal("sdk", settings.Fallback);
             Assert.Null(settings.Executable);
             Assert.Equal(EngineBackendSettings.DefaultTimeoutSeconds, settings.TimeoutSeconds);
-            Assert.False(settings.EngineEnabled);
+            Assert.True(settings.EngineEnabled);
             Assert.False(settings.RejectUnsupported);
         }
 
@@ -132,6 +118,37 @@ namespace GxMcp.Gateway.Tests
         // ------------------------------------------------------------- router gate
 
         [Theory]
+        [InlineData("parallel_rebuild_all", "Engine")]
+        [InlineData("PARALLEL_REBUILD_ALL", "Engine")]
+        [InlineData("udm_storage_access", "Sdk")]
+        [InlineData("str_format", "Sdk")]
+        [InlineData("numeric_core", "Sdk")]
+        [InlineData("unknown_capability", "Sdk")]
+        public void Router_Auto_OnlyAdmitsTheBuildCapability(string capabilityId, string expected)
+        {
+            SetEngineEnv(EngineBackendSettings.BackendEnvVar, "auto");
+            SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
+
+            var settings = EngineBackendSettings.Resolve(null);
+
+            Assert.Equal(expected, EngineRouter.Decide(capabilityId, settings).Target.ToString());
+        }
+
+        [Theory]
+        [InlineData("parallel_rebuild_all", "Engine")]
+        [InlineData("udm_storage_access", "Engine")]
+        [InlineData("unknown_capability", "Sdk")]
+        public void Router_DefaultGxEngine_AdmitsBuildsAndStorageAccess(string capabilityId, string expected)
+        {
+            SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
+            SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
+
+            var settings = EngineBackendSettings.Resolve(null);
+
+            Assert.Equal(expected, EngineRouter.Decide(capabilityId, settings).Target.ToString());
+        }
+
+        [Theory]
         [InlineData("str_format")]
         [InlineData("numeric_core")]
         [InlineData("native_kb_read")]
@@ -178,14 +195,14 @@ namespace GxMcp.Gateway.Tests
                 Engine = new EngineConfig { Backend = "gxengine", Fallback = "sdk" }
             });
 
-            var decision = EngineRouter.Decide("procedure_pipeline", settings);
+            var decision = EngineRouter.Decide("unregistered_capability", settings);
 
             Assert.Equal(EngineRouteTarget.Sdk, decision.Target);
             Assert.Null(decision.Code);
         }
 
         [Theory]
-        [InlineData("procedure_pipeline")]
+        [InlineData("unregistered_capability")]
         [InlineData("unknown_capability")]
         public void Router_NonParityCapability_IsRejected_WhenFallbackIsError(string capabilityId)
         {
@@ -452,14 +469,17 @@ namespace GxMcp.Gateway.Tests
         // ------------------------------------------------------------ doctor view
 
         [Fact]
-        public void DoctorEngineSection_DefaultBackend_IsStaticAndSdkOnly()
+        public void DoctorEngineSection_ExplicitSdkBackend_IsStaticAndSdkOnly()
         {
             SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
             SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
             SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, null);
             SetEngineEnv(EngineBackendSettings.TimeoutEnvVar, null);
 
-            var section = Program.BuildEngineDoctorSection(null);
+            var section = Program.BuildEngineDoctorSection(new Configuration
+            {
+                Engine = new EngineConfig { Backend = "sdk" }
+            });
 
             Assert.Equal("sdk", section["backend"]?.ToString());
             Assert.Equal("sdk", section["fallback"]?.ToString());
@@ -472,20 +492,23 @@ namespace GxMcp.Gateway.Tests
             Assert.IsType<JArray>(section["capabilities"]!["routedOperations"]);
         }
 
-        [Fact]
-        public void DoctorEngineSection_EnabledButMissing_ReportsUnavailableAndWarns()
+        [Theory]
+        [InlineData(null, "gxengine")]
+        [InlineData("auto", "auto")]
+        [InlineData("gxengine", "gxengine")]
+        public void DoctorEngineSection_EnabledButMissing_ReportsUnavailableAndWarns(string? backend, string expected)
         {
             string tempDir = NewTempDir();
             try
             {
-                SetEngineEnv(EngineBackendSettings.BackendEnvVar, "gxengine");
+                SetEngineEnv(EngineBackendSettings.BackendEnvVar, backend);
                 SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, Path.Combine(tempDir, "nope.exe"));
 
                 var doctor = Program.BuildGatewayDoctorEnvelope(null);
 
                 Assert.Equal("ok", doctor["status"]?.ToString());
                 var engine = doctor["result"]!["engine"]!;
-                Assert.Equal("gxengine", engine["backend"]?.ToString());
+                Assert.Equal(expected, engine["backend"]?.ToString());
                 Assert.False(engine["available"]!.Value<bool>());
                 Assert.Equal("EngineNotFound", engine["error"]!["code"]?.ToString());
 
@@ -498,21 +521,29 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
-        [Fact]
-        public void DoctorEngineSection_EnabledWithStubEngine_ReportsTheProbedVersion()
+        [Theory]
+        [InlineData(null, "gxengine")]
+        [InlineData("auto", "auto")]
+        [InlineData("gxengine", "gxengine")]
+        public void DoctorEngineSection_EnabledWithStubEngine_ReportsTheProbedVersion(string? backend, string expected)
         {
             string tempDir = NewTempDir();
             try
             {
                 string stub = CreateStub(tempDir, "engine.cmd", "@echo off\r\necho gx-engine 9.9.9\r\n");
-                SetEngineEnv(EngineBackendSettings.BackendEnvVar, "gxengine");
+                SetEngineEnv(EngineBackendSettings.BackendEnvVar, backend);
                 SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, stub);
 
                 var doctor = Program.BuildGatewayDoctorEnvelope(null);
 
                 Assert.Equal("ok", doctor["status"]?.ToString());
                 var engine = doctor["result"]!["engine"]!;
-                Assert.Equal("gxengine", engine["backend"]?.ToString());
+                Assert.Equal(expected, engine["backend"]?.ToString());
+                var routed = engine["capabilities"]!["routedOperations"]!.Values<string>().ToArray();
+                if (expected == "auto")
+                    Assert.Equal(new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild" }, routed);
+                else
+                    Assert.Contains("genexus_read", routed);
                 Assert.True(engine["available"]!.Value<bool>());
                 Assert.Equal("9.9.9", engine["version"]?.ToString());
                 Assert.Equal(stub, engine["executable"]?.ToString());
@@ -526,19 +557,26 @@ namespace GxMcp.Gateway.Tests
 
         // ----------------------------------------------------- strict config rules
 
-        [Fact]
-        public void StrictConfig_AcceptsAValidEngineSection()
+        [Theory]
+        [InlineData("auto")]
+        [InlineData("sdk")]
+        [InlineData("gxengine")]
+        public void StrictConfig_AcceptsAValidEngineSection(string backend)
         {
             string tempDir = NewTempDir();
             try
             {
                 string configPath = Path.Combine(tempDir, "config.json");
-                File.WriteAllText(configPath, StrictConfigWithEngine(@"""Engine"": { ""Backend"": ""gxengine"", ""Fallback"": ""error"", ""TimeoutSeconds"": 30 }"));
+                File.WriteAllText(configPath, StrictConfigWithEngine(
+                    new JProperty("Engine", new JObject
+                    {
+                        ["Backend"] = backend, ["Fallback"] = "error", ["TimeoutSeconds"] = 30
+                    }).ToString()));
 
                 var config = ParseConfig(configPath);
 
                 Assert.NotNull(config.Engine);
-                Assert.Equal("gxengine", config.Engine!.Backend);
+                Assert.Equal(backend, config.Engine!.Backend);
                 Assert.Equal("error", config.Engine.Fallback);
                 Assert.Equal(30, config.Engine.TimeoutSeconds);
             }

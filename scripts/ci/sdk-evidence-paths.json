@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "description": "Changed paths that alter Engine.Backend routing or defaults. A pull request touching any of them needs passing protected-runner SDK/live evidence before the required test check can succeed. Patterns are PowerShell -like wildcards over repository-relative forward-slash paths.",
+  "patterns": [
+    "src/GxMcp.Gateway/Engine*.cs",
+    "src/GxMcp.Gateway/GxEngine*.cs",
+    "src/GxMcp.Gateway/Configuration.cs",
+    "src/GxMcp.Gateway/Program.ToolDispatch.cs"
+  ]
+}

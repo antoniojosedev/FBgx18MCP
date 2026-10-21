@@ -1,0 +1,8 @@
+&X = 10
+&R = &X + POB97435900(&X)
+msg("B_left_result=" + &R.ToString().Trim(), status)
+msg("B_left_x=" + &X.ToString().Trim(), status)
+&X = 10
+&R = POB97435900(&X) + &X
+msg("B_right_result=" + &R.ToString().Trim(), status)
+msg("B_right_x=" + &X.ToString().Trim(), status)

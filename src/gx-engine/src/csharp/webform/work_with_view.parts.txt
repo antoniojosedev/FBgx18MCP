@@ -1,0 +1,98 @@
+@@@ CONDITIONS
+@@name@@Id = &@@name@@Id;
+
+@@@ RULES
+parm(in:&@@name@@Id, in:&TabCode);
+
+@@@ EVENTS
+Event Start
+
+	If not IsAuthorized(&PgmName)
+		NotAuthorized(&PgmName)
+	Endif
+
+	For each
+		Where @@name@@Id = &@@name@@Id
+		Form.Caption = @@name@@Id.ToString()
+		ViewAll.Link = WW@@name@@.Link()
+		&Exists = True
+
+	When none
+		Form.Caption = "Record not found"
+		ViewAll.Visible = false
+		&Exists = False
+	Endfor
+	&LoadAllTabs = false
+
+	If &Exists
+		&SelectedTabCode = &TabCode
+		Tab.ActivePageControlName = &SelectedTabCode
+		Do 'Load Tab'
+	Endif
+EndEvent
+
+Event Tab.TabChanged
+	&SelectedTabCode = Tab.ActivePageControlName
+	&LoadAllTabs = false
+	Do 'Load Tab'
+EndEvent
+
+Sub 'Load Tab'
+	if &LoadAllTabs or &SelectedTabCode = '' or&SelectedTabCode = "General"
+		GeneralWC.Object = @@name@@General.Create(&@@name@@Id)
+	endif
+EndSub
+
+@@@ VARIABLES
+<Variables><StandardVariable Id="1" Name="Today"><Properties><Property><Name>Name</Name><Value>Today</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;6&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="2" Name="Time"><Properties><Property><Name>Name</Name><Value>Time</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>8</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="3" Name="Pgmname"><Properties><Property><Name>Name</Name><Value>Pgmname</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>128</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="4" Name="Pgmdesc"><Properties><Property><Name>Name</Name><Value>Pgmdesc</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>256</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><Variable Id="5" Name="IsAuthorized"><Properties><Property><Name>Name</Name><Value>IsAuthorized</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;15&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="6" Name="TabCode"><Properties><Property><Name>Name</Name><Value>TabCode</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>idBasedOn</Name><Value>guid:7396ea52-298a-484a-8465-1631dbbfb0e2</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="7" Name="SelectedTabCode"><Properties><Property><Name>Name</Name><Value>SelectedTabCode</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>idBasedOn</Name><Value>guid:7396ea52-298a-484a-8465-1631dbbfb0e2</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="8" Name="Tabs"><Properties><Property><Name>Name</Name><Value>Tabs</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="9" Name="Tab"><Properties><Property><Name>Name</Name><Value>Tab</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="10" Name="Exists" Description="Exists"><Properties><Property><Name>Name</Name><Value>Exists</Value></Property><Property><Name>Description</Name><Value>Exists</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;15&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="11" Name="LoadAllTabs" Description="LoadAllTabs"><Properties><Property><Name>Name</Name><Value>LoadAllTabs</Value></Property><Property><Name>Description</Name><Value>LoadAllTabs</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;15&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="12" Name="@@name@@Id"><Properties><Property><Name>Name</Name><Value>@@name@@Id</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>idBasedOn</Name><Value>attribute:@@k_id@@</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable></Variables>
+@@@ WEBFORM
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form type="layout">
+    <detail PanelType="Web">
+      <layout>
+        <table controlName="MainTable" class="class:Table" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:50,&quot;offset&quot;:17}],[{&quot;width&quot;:83,&quot;offset&quot;:8}]]},{&quot;scale&quot;:&quot;xs&quot;,&quot;rows&quot;:[[],[{&quot;width&quot;:100}],[{&quot;width&quot;:83,&quot;offset&quot;:8}]]}]">
+          <row>
+            <cell>
+              <table controlName="TableTop" class="class:TableTopSearch" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:33,&quot;offset&quot;:17},{&quot;width&quot;:33}]]}]">
+                <row>
+                  <cell>
+                    <textblock controlName="ViewTitle" caption="@@name@@ Information" class="class:Subtitle" />
+                  </cell>
+                  <cell cellClass="class:ViewActionsBackCell" hAlign="Right">
+                    <textblock controlName="ViewAll" caption="@@name@@s" class="class:BtnTextBlockBack" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row>
+            <cell>
+              <table controlName="TabTable_1" class="class:ViewTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:50}],[{&quot;width&quot;:100}]]},{&quot;scale&quot;:&quot;xs&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+                <row>
+                  <cell>
+                    <data attribute="att:@@k_id@@" labelCaption="Id" class="class:ReadonlyAttribute" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlType&lt;/Name&gt;&lt;Value&gt;Edit&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;InputType&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;DataSourceFrom&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row>
+            <cell>
+              <tab controlName="Tab" class="WWTab" historyManagement="True">
+                <item itemControlName="General" caption="General">
+                  <table controlName="TableGeneral" class="class:TabsFormContainer" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]}]">
+                    <row>
+                      <cell>
+                        <component controlName="GeneralWC" />
+                      </cell>
+                    </row>
+                  </table>
+                </item>
+              </tab>
+            </cell>
+          </row>
+        </table>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

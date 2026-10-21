@@ -87,6 +87,24 @@ namespace GxMcp.Worker.Services
             return result;
         }
 
+        // The validator's own messages are the only account of why it refused a form. They used
+        // to be returned to the caller and nowhere else, so a refusal that never reached the
+        // caller (or was reshaped on the way) left the Worker log with no trace of its cause.
+        private static void LogValidationMessages(string phase, WebFormPreSaveValidator.ValidationReport report)
+        {
+            if (report == null) return;
+            try
+            {
+                Logger.Info("[WebFormValidate] " + phase + " available=" + report.ValidatorAvailable
+                    + " messages=" + (report.Messages?.Count ?? 0) + (string.IsNullOrWhiteSpace(report.Error) ? string.Empty : " error=" + SanitizeVisualSaveText(report.Error)));
+                if (report.Messages == null) return;
+                foreach (var message in report.Messages.Take(20))
+                    Logger.Info("[WebFormValidate]   " + (message.Severity ?? "Information") + ": " + SanitizeVisualSaveText(message.Message)
+                        + (string.IsNullOrWhiteSpace(message.Source) ? string.Empty : " (" + SanitizeVisualSaveText(message.Source) + ")"));
+            }
+            catch { }
+        }
+
         private static void AttachWebFormValidation(JObject payload, WebFormPreSaveValidator.ValidationReport report)
         {
             if (payload == null || report == null) return;
@@ -115,7 +133,9 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         WebFormXmlHelper.ApplyEditableXml(webFormPart, normalizedInput, baselineXml: baselineXml);
-                        return WebFormPreSaveValidator.ValidateDetailed(webFormPart);
+                        var prospective = WebFormPreSaveValidator.ValidateDetailed(webFormPart);
+                        LogValidationMessages("prospective", prospective);
+                        return prospective;
                     }
                     finally
                     {
@@ -433,6 +453,11 @@ namespace GxMcp.Worker.Services
                     Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "BEFORE-SAVE");
 
                     JObject webFormPartSaveError = null;
+                    // The SDK's own refusal of the object save (e.g. an attribute reference
+                    // that does not resolve in the KB). It used to reach only the worker log
+                    // before the fallback save ran, so the client saw a bare verification
+                    // mismatch with nothing to act on.
+                    JObject forceSaveError = null;
                     try
                     {
                         webFormPart.Save();
@@ -469,6 +494,7 @@ namespace GxMcp.Worker.Services
                     {
                         var inner = fsEx.InnerException ?? fsEx;
                         Logger.Info("[VisualWrite] obj.Save(ForceSave) threw: " + inner.GetType().Name + ": " + inner.Message + " — falling back to EnsureSave.");
+                        forceSaveError = BuildVisualSaveErrorEvidence(fsEx, "obj.Save(ForceSave)");
                         obj.EnsureSave(true);
                     }
 
@@ -530,7 +556,7 @@ namespace GxMcp.Worker.Services
                                 "Visual write verification failed",
                                 target,
                                 partName,
-                                "The SDK save path completed, but the persisted WebForm XML does not match the requested content. Diff: " + (visualDiff ?? "n/a"),
+                                DescribeVisualVerificationMismatch(persistedXml, visualDiff, forceSaveError ?? webFormPartSaveError),
                                 obj,
                                 visualStructured);
                             // The transaction is already committed at this point. Keep
@@ -540,7 +566,7 @@ namespace GxMcp.Worker.Services
                             {
                                 var verifyJobj = JObject.Parse(visualVerifyErr);
                                 var errObj = verifyJobj["error"] as JObject ?? verifyJobj;
-                                if (webFormPartSaveError != null) errObj["sdkSaveError"] = webFormPartSaveError;
+                                AttachVisualSaveError(errObj, webFormPartSaveError, forceSaveError);
                                 if (sdkCommitCompleted)
                                 {
                                     AttachVisualCommitEvidence(verifyJobj, committed: true, verified: false);
@@ -570,7 +596,7 @@ namespace GxMcp.Worker.Services
                         {
                             var sdkErrJobj = JObject.Parse(sdkErr);
                             var errObj = sdkErrJobj["error"] as JObject ?? sdkErrJobj;
-                            errObj["sdkSaveError"] = webFormPartSaveError;
+                            AttachVisualSaveError(errObj, webFormPartSaveError, forceSaveError);
                             if (sdkCommitCompleted)
                             {
                                 AttachVisualCommitEvidence(sdkErrJobj, committed: true, verified: false);
@@ -597,6 +623,9 @@ namespace GxMcp.Worker.Services
                         ["persistenceState"] = sdkCommitCompleted ? "Committed" : "NotPersisted",
                         ["persistedVerified"] = strictVerify && sdkCommitCompleted
                     };
+                    // The write verified (or verification was skipped) even though the first
+                    // save call threw and the fallback save ran. Say so instead of hiding it.
+                    if (forceSaveError != null) okResp["forceSaveFallback"] = forceSaveError;
                     AttachWebFormValidation(okResp, validationReport);
                     if (forceWrite && WebFormPreSaveValidator.HasErrors(validationReport.Messages))
                     {
@@ -784,6 +813,111 @@ namespace GxMcp.Worker.Services
             // commit; persistedVerified/verified describe content equivalence.
             response["persisted"] = committed;
             response["persistedVerified"] = verified;
+        }
+
+        private const int VisualSaveErrorTextLimit = 500;
+
+        private static readonly System.Text.RegularExpressions.Regex VisualSaveWindowsPath =
+            new System.Text.RegularExpressions.Regex(
+                @"(?:[A-Za-z]:\\|\\\\)[^\s'""<>|]+",
+                System.Text.RegularExpressions.RegexOptions.Compiled,
+                TimeSpan.FromSeconds(1));
+
+        private static readonly System.Text.RegularExpressions.Regex VisualSaveAttributeRef =
+            new System.Text.RegularExpressions.Regex(
+                @"\batt:\d+\b",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+                TimeSpan.FromSeconds(1));
+
+        // One line, no local paths, bounded. SDK messages are the cause the caller needs, but they
+        // can quote machine paths; those add nothing to the diagnosis.
+        internal static string SanitizeVisualSaveText(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            string text;
+            try { text = VisualSaveWindowsPath.Replace(value, "<path>"); }
+            catch (System.Text.RegularExpressions.RegexMatchTimeoutException) { text = value; }
+            text = System.Text.RegularExpressions.Regex.Replace(text, @"\s*[\r\n]+\s*", " ").Trim();
+            return text.Length <= VisualSaveErrorTextLimit
+                ? text
+                : text.Substring(0, VisualSaveErrorTextLimit) + "…[truncated]";
+        }
+
+        // The SDK's refusal of a save call: exception type, the first inner message (the wrapper
+        // around it is usually reflection noise) and the whole chain.
+        internal static JObject BuildVisualSaveErrorEvidence(Exception ex, string where)
+        {
+            if (ex == null) return null;
+            var first = ex.InnerException ?? ex;
+            return new JObject
+            {
+                ["where"] = where,
+                ["type"] = first.GetType().FullName,
+                ["message"] = SanitizeVisualSaveText(first.Message),
+                ["chain"] = SanitizeVisualSaveText(FormatExceptionChain(ex))
+            };
+        }
+
+        // The mismatch text for a verification failure. An empty persisted side is reported as what
+        // it is (the part could not be read back), not as a content difference.
+        internal static string DescribeVisualVerificationMismatch(string persistedXml, string visualDiff, JObject sdkSaveError)
+        {
+            string diff = visualDiff ?? "n/a";
+            if (string.IsNullOrWhiteSpace(persistedXml))
+                diff += " The persisted WebForm could not be read back after the save, so what was persisted is unknown: read the part again before retrying.";
+
+            if (sdkSaveError == null)
+                return "The SDK save path completed, but the persisted WebForm XML does not match the requested content. Diff: " + diff;
+
+            string type = sdkSaveError["type"]?.ToString();
+            string message = sdkSaveError["message"]?.ToString();
+            return "The SDK reported a save error (" + (string.IsNullOrEmpty(type) ? "unknown type" : type)
+                + ": " + (string.IsNullOrEmpty(message) ? "no message" : message)
+                + ") and the persisted WebForm XML does not match the requested content. Diff: " + diff;
+        }
+
+        // Actionable guidance for the commonest SDK refusal: a reference the KB cannot resolve.
+        internal static string BuildVisualSaveRejectedHint(JObject sdkSaveError)
+        {
+            string message = sdkSaveError?["message"]?.ToString();
+            if (string.IsNullOrWhiteSpace(message)) return null;
+
+            System.Text.RegularExpressions.Match attribute;
+            try { attribute = VisualSaveAttributeRef.Match(message); }
+            catch (System.Text.RegularExpressions.RegexMatchTimeoutException) { attribute = System.Text.RegularExpressions.Match.Empty; }
+            bool unknown = message.IndexOf("desconhecido", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("unknown", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (attribute.Success && unknown)
+                // "Unknown" is what the SDK says when it cannot resolve the reference at that moment. It
+                // is not proof that the id is absent: a valid att:<id> is refused the same way when the
+                // SDK looks it up by NAME (the stored form replayed as if a person had typed it). So the
+                // hint says what to check, not that the id is wrong.
+                return "The SDK rejected the reference " + attribute.Value + " while saving. Either that attribute id does not exist in this KB, "
+                    + "or the SDK resolved a stored att:<id> as an attribute name; check the id against the KB (genexus_structure get_visual) first. "
+                    + "Also check the attribute ids in the XML you sent, including PATTERN_ELEMENT_CUSTOM_PROPERTIES and TokenDataList parameters, "
+                    + "and read the part again to confirm what was persisted.";
+
+            return "The SDK rejected the save; the error above is its own message. Read the part again to confirm what was persisted before retrying.";
+        }
+
+        // Puts the SDK's own save error on a failure envelope. webFormPart.Save() keeps its original
+        // sdkSaveError slot; the object-level save error takes it when that one did not fail.
+        internal static void AttachVisualSaveError(JObject errObj, JObject webFormPartSaveError, JObject forceSaveError)
+        {
+            if (errObj == null) return;
+            var primary = webFormPartSaveError ?? forceSaveError;
+            if (primary == null) return;
+
+            errObj["sdkSaveError"] = primary;
+            if (webFormPartSaveError != null && forceSaveError != null) errObj["forceSaveError"] = forceSaveError;
+            errObj["sdkSaveRejected"] = true;
+
+            string hint = BuildVisualSaveRejectedHint(forceSaveError ?? webFormPartSaveError);
+            if (!string.IsNullOrEmpty(hint))
+            {
+                string current = errObj["hint"]?.ToString();
+                errObj["hint"] = string.IsNullOrEmpty(current) ? hint : current + " " + hint;
+            }
         }
 
         internal static void AddVersioningRestoreStep(JObject response, string target, string partName)

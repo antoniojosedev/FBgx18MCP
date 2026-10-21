@@ -94,8 +94,8 @@ fn measure(rows: &[Row]) -> Pass {
     for row in rows {
         match format_str(row.value, row.width, row.scale) {
             Ok(text) => {
-                for unit in text.encode_utf16() {
-                    chars += 1;
+                chars += text.len() as u64;
+                for &unit in text.as_bytes() {
                     hash ^= u64::from(unit);
                     hash = hash.wrapping_mul(FNV_PRIME);
                 }

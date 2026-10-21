@@ -10,12 +10,20 @@ namespace GxMcp.Gateway
     /// </summary>
     internal readonly struct GxwireProcessRun
     {
-        internal GxwireProcessRun(string standardOutput, string standardError, bool timedOut, int timeoutSeconds)
+        internal GxwireProcessRun(
+            string standardOutput,
+            string standardError,
+            bool timedOut,
+            int timeoutSeconds,
+            int? exitCode = null,
+            long elapsedMs = 0)
         {
             StandardOutput = standardOutput;
             StandardError = standardError;
             TimedOut = timedOut;
             TimeoutSeconds = timeoutSeconds;
+            ExitCode = exitCode;
+            ElapsedMs = elapsedMs;
         }
 
         internal string StandardOutput { get; }
@@ -25,6 +33,15 @@ namespace GxMcp.Gateway
         internal bool TimedOut { get; }
 
         internal int TimeoutSeconds { get; }
+
+        /// <summary>
+        /// The child's exit code, or <c>null</c> when it was terminated by the
+        /// budget and never reported one of its own (#593).
+        /// </summary>
+        internal int? ExitCode { get; }
+
+        /// <summary>Wall-clock time the run took, including a timed-out run.</summary>
+        internal long ElapsedMs { get; }
     }
 
     /// <summary>
@@ -72,6 +89,7 @@ namespace GxMcp.Gateway
             if (timeoutSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutSeconds));
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            var stopwatch = Stopwatch.StartNew();
 
             Task<string> stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token);
             Task<string> stderrTask = proc.StandardError.ReadToEndAsync(cts.Token);
@@ -90,14 +108,35 @@ namespace GxMcp.Gateway
                     standardOutput: string.Empty,
                     standardError: string.Empty,
                     timedOut: true,
-                    timeoutSeconds: timeoutSeconds);
+                    timeoutSeconds: timeoutSeconds,
+                    exitCode: null,
+                    elapsedMs: stopwatch.ElapsedMilliseconds);
             }
 
             return new GxwireProcessRun(
                 standardOutput: stdoutTask.Result,
                 standardError: stderrTask.Result,
                 timedOut: false,
-                timeoutSeconds: timeoutSeconds);
+                timeoutSeconds: timeoutSeconds,
+                exitCode: TryReadExitCode(proc),
+                elapsedMs: stopwatch.ElapsedMilliseconds);
+        }
+
+        /// <summary>
+        /// The exit code is read here, while the handle is known to be valid, so
+        /// the caller never has to touch the <see cref="Process"/> after the run
+        /// and turn a reporting step into an <see cref="InvalidOperationException"/>.
+        /// </summary>
+        private static int? TryReadExitCode(Process proc)
+        {
+            try
+            {
+                return proc.HasExited ? proc.ExitCode : (int?)null;
+            }
+            catch (InvalidOperationException)
+            {
+                return null;
+            }
         }
 
         /// <summary>

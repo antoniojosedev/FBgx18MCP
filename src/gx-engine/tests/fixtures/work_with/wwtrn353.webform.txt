@@ -1,0 +1,54 @@
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form id="1" type="layout">
+    <detail PanelType="Web">
+      <layout id="e78e685f-ab48-45b3-872f-9cdc2042a569">
+        <table id="d2bd193f-8fba-43a0-ae80-9f23b7cb626b" controlName="MainTable" class="d52f9833-90c9-4096-8e42-27485741f78a-462" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+          <row id="76377329-9a3a-4fb8-8373-242bd5cc793a">
+            <cell id="b110a2c6-9d2e-451f-ae2d-8167ff3c296b">
+              <table id="9f8e4675-9d63-4c87-8802-2b1498499f72" controlName="TableTop" class="d52f9833-90c9-4096-8e42-27485741f78a-463" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;xs&quot;,&quot;rows&quot;:[[{&quot;width&quot;:58},{&quot;width&quot;:42}]]},{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:17,&quot;offset&quot;:8,&quot;move&quot;:1},{&quot;width&quot;:25},{&quot;width&quot;:50,&quot;move&quot;:2}]]}]">
+                <row id="d9f413bc-5e34-4da0-8e6b-277ac57ef8f7">
+                  <cell id="4fd953d7-abd7-4192-aebe-0745487e36d2">
+                    <textblock controlName="TitleText" caption="Trn353s" class="d52f9833-90c9-4096-8e42-27485741f78a-198" />
+                  </cell>
+                  <cell id="efb10211-c585-43cc-a99a-e184f1d1597f" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-466" hAlign="Right">
+                    <actiongroup controlName="Actions" />
+                  </cell>
+                  <cell id="1498d5a2-5c43-496f-8a59-11b9fa6ef999">
+                    <data attribute="var:11" labelPosition="None" class="d52f9833-90c9-4096-8e42-27485741f78a-470" inviteMessage="Id" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row id="7ab44f40-8710-4f05-953e-b5c932090db6">
+            <cell id="8399efaf-729f-4a9b-b896-96c08ada8181" cellControlName="GridCell" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-471">
+              <table id="7a55cb70-c5ad-4d9c-bbfa-ecbc38ac72e2" controlName="GridTable" class="d52f9833-90c9-4096-8e42-27485741f78a-443 d52f9833-90c9-4096-8e42-27485741f78a-454" tableType="Responsive" responsiveSizes="[]">
+                <row id="b274319d-09b2-46c0-b74b-13b2f549f86a">
+                  <cell id="a7bb95fc-ac26-4fb6-b922-a2d2d370f3a3">
+                    <errorviewer controlName="ErrorViewer" />
+                  </cell>
+                </row>
+                <row id="86c4618c-d189-4480-ae92-0ba39e791cca">
+                  <cell id="a54c1be5-690f-4837-9988-8e07972bc2d1">
+                    <simplegrid id="d84b9273-7320-45ae-8c00-2686788df011" controlName="Grid" class="d52f9833-90c9-4096-8e42-27485741f78a-224" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlOrder&lt;/Name&gt;&lt;Value&gt;&amp;lt;TokenDataList&amp;gt;&amp;lt;TokenData&amp;gt;&amp;lt;Token&amp;gt;39&amp;lt;/Token&amp;gt;&amp;lt;Id&amp;gt;0&amp;lt;/Id&amp;gt;&amp;lt;/TokenData&amp;gt;&amp;lt;TokenData&amp;gt;&amp;lt;Token&amp;gt;2&amp;lt;/Token&amp;gt;&amp;lt;Word&amp;gt;Trn353Id&amp;lt;/Word&amp;gt;&amp;lt;Id&amp;gt;61&amp;lt;/Id&amp;gt;&amp;lt;/TokenData&amp;gt;&amp;lt;TokenData&amp;gt;&amp;lt;Token&amp;gt;25&amp;lt;/Token&amp;gt;&amp;lt;Word&amp;gt; &#xD;&#xA;&amp;lt;/Word&amp;gt;&amp;lt;Id&amp;gt;0&amp;lt;/Id&amp;gt;&amp;lt;/TokenData&amp;gt;&amp;lt;/TokenDataList&amp;gt;&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;MaxRows&lt;/Name&gt;&lt;Value&gt;10&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;InfiniteScrolling&lt;/Name&gt;&lt;Value&gt;One page at a time&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;">
+                      <item id="5cca73bf-2ae3-421c-8bf7-745365b6d78c" attribute="att:61" titleExp="Id" class="d52f9833-90c9-4096-8e42-27485741f78a-472" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlType&lt;/Name&gt;&lt;Value&gt;Edit&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;InputType&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;DataSourceFrom&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-473&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColVisible&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                      <item id="23761c8c-f798-4cf7-b9b9-bec1fcbe2105" attribute="var:12" titleExp="" class="d52f9833-90c9-4096-8e42-27485741f78a-207 d52f9833-90c9-4096-8e42-27485741f78a-461" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-242&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColReadOnly&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                      <item id="2034de6a-9e63-4b19-9b28-f2214da941ab" attribute="var:13" titleExp="" class="d52f9833-90c9-4096-8e42-27485741f78a-207 d52f9833-90c9-4096-8e42-27485741f78a-461" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-242&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColReadOnly&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                    </simplegrid>
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+        </table>
+        <actionGroups>
+          <actionGroup controlName="Actions">
+            <item>
+              <action controlName="BtnInsert" onClickEvent="'DoInsert'" caption="GXM_insert" class="d52f9833-90c9-4096-8e42-27485741f78a-467" />
+            </item>
+          </actionGroup>
+        </actionGroups>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

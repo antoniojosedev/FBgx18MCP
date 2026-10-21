@@ -34,7 +34,7 @@ fn cli() -> Command {
 fn help_and_bad_arguments_have_correct_exit_status() {
     let output = cli().arg("--help").output().unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("No native KB access"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Supports native UDM KB access"));
     for args in [vec!["unknown"], vec!["check"], vec!["emit", "a", "b"]] {
         assert!(!cli().args(args).output().unwrap().status.success());
     }

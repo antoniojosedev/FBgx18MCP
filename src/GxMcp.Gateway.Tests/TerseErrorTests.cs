@@ -1,3 +1,4 @@
+using System.Linq;
 using GxMcp.Gateway;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -13,6 +14,33 @@ namespace GxMcp.Gateway.Tests
             var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
             foreach (var property in input.Properties())
                 Assert.True(JToken.DeepEquals(property.Value, trimmed[property.Name]), property.Name);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_PreservesIsolatedSaveFailureDiagnostics()
+        {
+            // The envelope the Worker builds for a failed isolated Events save: the terse
+            // projection keeps the first message line only, so the stage, the exception
+            // and the SDK's own messages must survive as fields or the caller sees "Erro".
+            var input = JObject.Parse(@"{
+                ""code"":""ObjectSaveIncomplete"",
+                ""message"":""Isolated Events save failed during part-save: src0059: Esperando 'EndFor'"",
+                ""savePhase"":""part-save"",""verificationPhase"":""post-commit-verification"",
+                ""diagnostics"":[{""code"":""src0294"",""message"":""Unknown function 'SetEmpty'"",""object"":""SamplePanel"",""part"":""Events"",""rawLine"":2,""column"":16}],
+                ""exceptionType"":""System.Exception"",
+                ""innerMessages"":[""inner""],""innerExceptionTypes"":[""System.ArgumentException""],
+                ""sdkMessages"":[{""code"":""src0059"",""part"":""Events"",""rawLine"":12,""severity"":""Error"",""message"":""src0059: Esperando 'EndFor'""}],
+                ""sourceValidationErrors"":[{""code"":""src0059"",""rawLine"":12,""message"":""src0059: Esperando 'EndFor'""}],
+                ""originalError"":""Erro"",""sdkMessagesTruncated"":true,""sdkMessagesError"":""unavailable"",
+                ""verificationFailure"":{""savePhase"":""post-commit-reread"",""exceptionType"":""System.Exception""},
+                ""saveFailureMessage"":""Isolated Events save failed during part-save: x""
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            foreach (var property in input.Properties().Where(p => p.Name != "message"))
+                Assert.True(JToken.DeepEquals(property.Value, trimmed[property.Name]), property.Name);
+            Assert.Equal("Isolated Events save failed during part-save: src0059: Esperando 'EndFor'", (string)trimmed["message"]!);
         }
 
         [Fact]
@@ -99,6 +127,44 @@ namespace GxMcp.Gateway.Tests
             Assert.True(trimmed["rollback"]!["verified"]!.ToObject<bool>());
             Assert.True(trimmed["rolledBack"]!.ToObject<bool>());
             Assert.Equal("123", trimmed["versionToken"]!.ToString());
+        }
+
+        // Issue #557 (GX18 U16 proof): the Worker labelled the explicit-normalized
+        // Structure mismatch with error.mismatchKind, but the terse projection dropped
+        // it, so the caller only saw the generic WriteNotPersisted.
+        [Fact]
+        public void TrimErrorEnvelope_WriteNotPersisted_PreservesMismatchKind()
+        {
+            var input = JObject.Parse(@"{
+                ""code"":""WriteNotPersisted"",""message"":""post-save mismatch"",
+                ""saved"":true,""verified"":false,""mismatchKind"":""sdk-generated-description""
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.Equal("sdk-generated-description", trimmed["mismatchKind"]!.ToString());
+        }
+
+        // Issue #542 (GX18 U16 proof): the Structure writer's rollback evidence reached the
+        // Worker envelope but the terse projection dropped unappliedMembers,
+        // rollbackAttempted and rollbackError, so the caller saw rolledBack=true without
+        // knowing which member the SDK refused or why a revert could not be verified.
+        [Fact]
+        public void TrimErrorEnvelope_WriteNotPersisted_PreservesStructureRollbackEvidence()
+        {
+            var input = JObject.Parse(@"{
+                ""code"":""WriteNotPersisted"",""message"":""post-save mismatch"",
+                ""persistedVerified"":false,""rolledBack"":false,
+                ""unappliedMembers"":[""codigo : VARCHAR(40)""],
+                ""rollbackAttempted"":true,""rollbackError"":""Rollback write failed: cause""
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.Equal(new[] { "codigo : VARCHAR(40)" }, trimmed["unappliedMembers"]!.ToObject<string[]>());
+            Assert.True(trimmed["rollbackAttempted"]!.ToObject<bool>());
+            Assert.Equal("Rollback write failed: cause", trimmed["rollbackError"]!.ToString());
+            Assert.False(trimmed["rolledBack"]!.ToObject<bool>());
         }
 
         [Fact]

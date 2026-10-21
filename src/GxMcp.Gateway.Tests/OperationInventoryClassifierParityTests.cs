@@ -24,6 +24,14 @@ namespace GxMcp.Gateway.Tests
                 new JObject { ["action"] = "journal_repair", ["dryRun"] = true });
             AssertPolicy(inventory, "genexus_connection_recover", "journal_repair",
                 new JObject { ["action"] = "journal_repair", ["dryRun"] = false });
+            AssertPolicy(inventory, "genexus_connection_recover", "recovery_read_complete",
+                new JObject { ["action"] = "recovery_read_complete" });
+            AssertPolicy(inventory, "genexus_connection_recover", "recovery_read_complete",
+                new JObject { ["action"] = "recovery_read_complete", ["dryRun"] = JValue.CreateNull() });
+            AssertPolicy(inventory, "genexus_connection_recover", "recovery_read_complete",
+                new JObject { ["action"] = "recovery_read_complete", ["dryRun"] = true });
+            AssertPolicy(inventory, "genexus_connection_recover", "recovery_read_complete",
+                new JObject { ["action"] = "recovery_read_complete", ["dryRun"] = false });
             AssertPolicy(inventory, "genexus_connection_recover", "recover", new JObject());
             AssertPolicy(inventory, "genexus_worker_reload", null, new JObject());
         }
@@ -37,7 +45,8 @@ namespace GxMcp.Gateway.Tests
                     ? entry["action"]?.Type == JTokenType.Null
                     : string.Equals(entry["action"]?.Value<string>(), action, StringComparison.Ordinal));
 
-            if (string.Equals(action, "journal_repair", StringComparison.Ordinal))
+            if (string.Equals(action, "journal_repair", StringComparison.Ordinal)
+                || string.Equals(action, "recovery_read_complete", StringComparison.Ordinal))
             {
                 bool apply = args["dryRun"]?.Type == JTokenType.Boolean
                     && args["dryRun"]!.Value<bool>() == false;

@@ -1,0 +1,2 @@
+parm(out:&pPlan070TrnId);
+order(Plan070TrnId); 

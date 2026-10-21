@@ -53,6 +53,8 @@ fn ascending_for_is_inclusive_and_preserves_iterator_after_loop() {
 
 #[test]
 fn for_requires_a_matching_terminator_and_numeric_iterator() {
+    // `Step 0` is still refused here through `compile` (format_version 2, the typed backend). The C#
+    // emitter admits Step 0 for the SDK shape: see tests/csharp_sdk_builtins.rs.
     for source in [
         "For &I = 1 To 3\nPrint(&I)",
         "EndFor",

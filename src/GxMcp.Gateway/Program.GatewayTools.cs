@@ -703,6 +703,10 @@ namespace GxMcp.Gateway
                 if (journalResult != null)
                     return BuildToolTextResponse(idToken, journalResult,
                         journalResult["error"] != null, toolName, args, payloadOwned: true);
+                // Certifies a complete SDK read and clears one fence; never restarts a
+                // Worker, so it must not fall into the worker-recovery logic below.
+                if (string.Equals(args?["action"]?.ToString(), RecoveryReadCompletion.ActionName, StringComparison.Ordinal))
+                    return await HandleRecoveryReadCompleteAsync(idToken, toolName, args).ConfigureAwait(false);
                 JObject payload;
                 bool isError = false;
                 try

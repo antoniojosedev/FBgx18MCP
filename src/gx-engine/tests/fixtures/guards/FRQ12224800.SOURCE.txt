@@ -1,0 +1,3 @@
+For &I = 1 To 3
+  msg("date_iterator_entered", status)
+EndFor

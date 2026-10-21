@@ -11,6 +11,39 @@ GitHub Release because a change looks ready. Shipping requires the maintainer's
 explicit request for that change. A prior approval never carries to a later
 release. Before a release, `CHANGELOG.md` must contain a substantive
 `## Unreleased` section; `release.ps1` promotes it into the exact version entry.
+For a prepared but unpublished same-version release, keep the substantive notes
+in that version's entry and resume it; do not duplicate them or bump again.
+
+## Source and backend acceptance
+
+Before a backend/default release, complete the
+[backend compatibility checklist](../CODING_STANDARDS.md#backend-and-default-changes).
+Use the [isolated live harness](live-kb-test-harness.md#default-and-backend-compatibility-smoke)
+for the same read → edit, query and error-contract tests across the default,
+`sdk`, `auto` and `gxengine` policies. A configured backend label is not proof
+that the backend served the request; retain routing evidence with the live
+summary. Preserve the exact source commit and artifact fingerprint.
+
+Obtain required checks on a candidate branch before advancing main. Required
+checks apply to administrators as well; release authorization does not bypass
+branch protection. A missing, skipped or unavailable required SDK/live result
+blocks publication. Run one canonical preflight after integration, reconcile
+failed/interrupted effects, and reuse only the exact-input evidence allowed by
+the resume contract below.
+
+When launching the canonical script through a logging shell, preserve its exit
+code rather than returning the exit code of the log printer:
+
+```bash
+pwsh -NoProfile -File scripts/release.ps1 > "$log" 2>&1
+rc=$?
+tail -40 "$log"
+exit "$rc"
+```
+
+A background start confirms dispatch only. Continue through the completion
+notification, publication read-back, asset checks and npm visibility before
+reporting success.
 
 ## Standard release execution
 

@@ -455,7 +455,7 @@ namespace GxMcp.Gateway
         private static readonly object _logLock = new object();
         private static readonly System.Threading.SemaphoreSlim _stdoutGate = new System.Threading.SemaphoreSlim(1, 1);
         private static Configuration? _activeConfig;
-        internal static Configuration? ActiveConfig => _activeConfig;
+        internal static Configuration? ActiveConfig => Configuration.LastValidConfiguration ?? _activeConfig;
         // .gx_mirror watcher: rooted in a static field for the process lifetime (same
         // pattern as the tool_definitions watcher in McpRouter) and disposed on
         // ProcessExit. Debounce state lives with it — editors fire multiple Changed
@@ -736,6 +736,7 @@ namespace GxMcp.Gateway
 
             var config = Configuration.Load();
             _activeConfig = config;
+            Configuration.OnConfigurationChanged += newConfig => { _activeConfig = newConfig; };
             bool isStdio = config.Server?.McpStdio ?? true;
             bool isStdioIsolated = string.Equals(config.GatewayMode ?? config.Server?.TransportMode, "stdio-isolated", StringComparison.OrdinalIgnoreCase);
             bool sharedGatewayExplicit = (config.Server?.SharedGateway == true)

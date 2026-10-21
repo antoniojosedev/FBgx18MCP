@@ -1,0 +1,103 @@
+@@@ CONDITIONS
+@@name@@Id >= &@@name@@Id when not &@@name@@Id.IsEmpty();
+
+@@@ RULES
+
+@@@ EVENTS
+Event Start
+
+	If not IsAuthorized(&PgmName)
+		NotAuthorized(&PgmName)
+	Endif
+
+	Grid.Rows = 10
+	&Update = "GXM_update"
+	&Delete = "GX_BtnDelete"
+	Form.Caption = '@@name@@s'
+
+	Do 'PrepareTransaction'
+	Grid.LoadSessionState()
+EndEvent
+
+Event Refresh
+	Grid.SaveSessionState()
+EndEvent
+
+Event Grid.Load
+	&Update.Link = @@name@@.Link(TrnMode.Update, @@name@@Id)
+	&Delete.Link = @@name@@.Link(TrnMode.Delete, @@name@@Id)
+	@@name@@Id.Link = View@@name@@.Link(@@name@@Id, "")
+EndEvent
+
+Event 'DoInsert'
+	@@name@@(TrnMode.Insert, nullvalue(@@name@@Id))
+EndEvent
+
+Sub 'PrepareTransaction'
+	&TrnContext = new()
+	&TrnContext.CallerObject = &Pgmname
+	&TrnContext.CallerOnDelete = True
+	&TrnContext.CallerURL = &HTTPRequest.ScriptName + !"?" + &HTTPRequest.QueryString
+	&TrnContext.TransactionName = !"@@name@@"
+
+	&Session.Set(!"TrnContext", &TrnContext.ToXml())
+EndSub
+
+
+@@@ VARIABLES
+<Variables><StandardVariable Id="1" Name="Today"><Properties><Property><Name>Name</Name><Value>Today</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;6&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="2" Name="Time"><Properties><Property><Name>Name</Name><Value>Time</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>8</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="3" Name="Pgmname"><Properties><Property><Name>Name</Name><Value>Pgmname</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>128</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><StandardVariable Id="4" Name="Pgmdesc"><Properties><Property><Name>Name</Name><Value>Pgmdesc</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>IsStandardVariable</Name><Value>True</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property><Property><Name>Length</Name><Value>256</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></StandardVariable><Variable Id="5" Name="IsAuthorized"><Properties><Property><Name>Name</Name><Value>IsAuthorized</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;15&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="6" Name="Session"><Properties><Property><Name>Name</Name><Value>Session</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;255&lt;/DataType&gt;&lt;Guid&gt;31&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="7" Name="HTTPRequest"><Properties><Property><Name>Name</Name><Value>HTTPRequest</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;255&lt;/DataType&gt;&lt;Guid&gt;21&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="8" Name="GridState"><Properties><Property><Name>Name</Name><Value>GridState</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;254&lt;/DataType&gt;&lt;Guid&gt;&amp;lt;StructureTypeReference&amp;gt;&amp;lt;Type&amp;gt;guid:e4cc8497-2f3c-4852-9a3d-54ecc953ccc7&amp;lt;/Id&amp;gt;&amp;lt;/StructureTypeReference&amp;gt;&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="9" Name="TrnContext"><Properties><Property><Name>Name</Name><Value>TrnContext</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;254&lt;/DataType&gt;&lt;Guid&gt;&amp;lt;StructureTypeReference&amp;gt;&amp;lt;Type&amp;gt;guid:a660ec17-05af-4659-8c50-50db237c3b29&amp;lt;/Id&amp;gt;&amp;lt;/StructureTypeReference&amp;gt;&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="10" Name="TrnContextAtt"><Properties><Property><Name>Name</Name><Value>TrnContextAtt</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;254&lt;/DataType&gt;&lt;Guid&gt;&amp;lt;StructureTypeReference&amp;gt;&amp;lt;Type&amp;gt;guid:ffe53be2-8506-4270-86c7-2452745210ef&amp;lt;/Id&amp;gt;&amp;lt;/StructureTypeReference&amp;gt;&lt;/Guid&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="11" Name="@@name@@Id"><Properties><Property><Name>Name</Name><Value>@@name@@Id</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>idBasedOn</Name><Value>attribute:@@k_id@@</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="12" Name="Update"><Properties><Property><Name>Name</Name><Value>Update</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="13" Name="Delete"><Properties><Property><Name>Name</Name><Value>Delete</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable><Variable Id="14" Name="ADVANCED_LABEL_TEMPLATE"><Properties><Property><Name>Name</Name><Value>ADVANCED_LABEL_TEMPLATE</Value></Property><Property><Name>OBJ_TYPE</Name><Value>id_OTYPE_VAR</Value></Property><Property><Name>ATTCUSTOMTYPE</Name><Value>&lt;AttCustomType&gt;&lt;DataType&gt;5&lt;/DataType&gt;&lt;/AttCustomType&gt;</Value></Property></Properties><Documentation>&lt;WikiPage&gt;&lt;Modified&gt;0001-01-01T00:00:00&lt;/Modified&gt;&lt;Revision&gt;0&lt;/Revision&gt;&lt;/WikiPage&gt;</Documentation></Variable></Variables>
+@@@ WEBFORM
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form type="layout">
+    <detail PanelType="Web">
+      <layout>
+        <table controlName="MainTable" class="class:BodyContainer" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+          <row>
+            <cell>
+              <table controlName="TableTop" class="class:TableTopSearch" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;xs&quot;,&quot;rows&quot;:[[{&quot;width&quot;:58},{&quot;width&quot;:42}]]},{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:17,&quot;offset&quot;:8,&quot;move&quot;:1},{&quot;width&quot;:25},{&quot;width&quot;:50,&quot;move&quot;:2}]]}]">
+                <row>
+                  <cell>
+                    <textblock controlName="TitleText" caption="@@name@@s" class="class:Subtitle" />
+                  </cell>
+                  <cell cellClass="class:WWActionsCell" hAlign="Right">
+                    <actiongroup controlName="Actions" />
+                  </cell>
+                  <cell>
+                    <data attribute="var:11" labelPosition="None" class="class:FilterSearchAttribute" inviteMessage="Id" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+          <row>
+            <cell cellControlName="GridCell" cellClass="class:ViewGridCellAdvanced">
+              <table controlName="GridTable" class="class:ContainerFluid class:WWAdvancedContainer" tableType="Responsive" responsiveSizes="[]">
+                <row>
+                  <cell>
+                    <errorviewer controlName="ErrorViewer" />
+                  </cell>
+                </row>
+                <row>
+                  <cell>
+                    <simplegrid controlName="Grid" class="class:WorkWith" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlOrder&lt;/Name&gt;&lt;Value&gt;&amp;lt;TokenDataList&amp;gt;&amp;lt;TokenData&amp;gt;&amp;lt;Token&amp;gt;39&amp;lt;/Token&amp;gt;&amp;lt;Id&amp;gt;0&amp;lt;/Id&amp;gt;&amp;lt;/TokenData&amp;gt;&amp;lt;TokenData&amp;gt;&amp;lt;Token&amp;gt;2&amp;lt;/Token&amp;gt;&amp;lt;Word&amp;gt;@@name@@Id&amp;lt;/Word&amp;gt;&amp;lt;Id&amp;gt;@@k_id@@&amp;lt;/Id&amp;gt;&amp;lt;/TokenData&amp;gt;&amp;lt;TokenData&amp;gt;&amp;lt;Token&amp;gt;25&amp;lt;/Token&amp;gt;&amp;lt;Word&amp;gt; &#xD;&#xA;&amp;lt;/Word&amp;gt;&amp;lt;Id&amp;gt;0&amp;lt;/Id&amp;gt;&amp;lt;/TokenData&amp;gt;&amp;lt;/TokenDataList&amp;gt;&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;MaxRows&lt;/Name&gt;&lt;Value&gt;10&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;InfiniteScrolling&lt;/Name&gt;&lt;Value&gt;One page at a time&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;">
+                      <item attribute="att:@@k_id@@" titleExp="Id" class="class:DescriptionAttribute" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ControlType&lt;/Name&gt;&lt;Value&gt;Edit&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;InputType&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;DataSourceFrom&lt;/Name&gt;&lt;Value&gt;Values&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;class:WWColumn&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColVisible&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                      <item attribute="var:12" titleExp="" class="class:TextActionAttribute class:TextLikeLink" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;class:WWTextActionColumn&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColReadOnly&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                      <item attribute="var:13" titleExp="" class="class:TextActionAttribute class:TextLikeLink" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;class:WWTextActionColumn&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColReadOnly&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                    </simplegrid>
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+        </table>
+        <actionGroups>
+          <actionGroup controlName="Actions">
+            <item>
+              <action controlName="BtnInsert" onClickEvent="'DoInsert'" caption="GXM_insert" class="class:BtnAdd" />
+            </item>
+          </actionGroup>
+        </actionGroups>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

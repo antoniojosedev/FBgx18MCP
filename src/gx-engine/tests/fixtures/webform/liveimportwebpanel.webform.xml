@@ -1,0 +1,19 @@
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form id="1" type="layout">
+    <detail PanelType="Web">
+      <layout id="19c3d6ba-8535-4ab1-b4cf-3130bfdc9589">
+        <table id="38306351-215a-4bf0-940c-60e2553f40a5" controlName="MainTable" class="d52f9833-90c9-4096-8e42-27485741f78a-453" tableType="Responsive">
+          <row id="ccb33834-4460-47ad-b758-bde0cbeba371">
+            <cell id="ef4dd512-4236-4fe7-a0fe-cd36ace476d0" />
+          </row>
+          <row id="5666d13a-bfa8-4178-bf8b-8b99c6376ded">
+            <cell id="7a8a62c3-3f73-454f-a120-5bb4eac4ff32" />
+          </row>
+          <row id="d6b5d597-11e4-474f-84ae-e1554e316f04">
+            <cell id="13733249-9693-4d36-8cac-6b15df249f02" />
+          </row>
+        </table>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

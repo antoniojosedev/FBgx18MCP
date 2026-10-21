@@ -1,10 +1,8 @@
 using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -13,12 +11,30 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Compatibility
 {
+    /// Which reader produced a ListActions/ListFilters result. Read responses and write
+    /// receipts copy this instead of claiming an in-memory instance reread for every
+    /// path: the XML projection is a read of the same in-memory part, not evidence of
+    /// the typed instance state (issue #589).
+    internal enum WorkWithReadSource
+    {
+        /// The typed WorkWithInstance loaded from the in-memory PatternInstance part.
+        NativeInstance,
+        /// XML projection: the Artech.Patterns.WorkWith assembly could not be resolved.
+        XmlProjectionNativeUnavailable,
+        /// XML projection: WorkWithInstance or its Load member was not found, or Load returned null.
+        XmlProjectionNativeInstanceAbsent,
+        /// XML projection: the typed instance exposed no Levels collection.
+        XmlProjectionNativeLevelsAbsent,
+        /// XML projection: the native read threw (logged at Debug).
+        XmlProjectionNativeReadFailed
+    }
+
     /// <summary>
     /// Compatibility adapter for standard GeneXus WorkWith (WorkWith for Web).
     /// Uses Artech.Patterns.WorkWith.WorkWithInstance when available on the STA thread,
     /// and provides structured XML fallback for test and headless environments.
     /// </summary>
-    internal static class WorkWithSdkAdapter
+    internal static partial class WorkWithSdkAdapter
     {
         private static Assembly _cachedAssembly;
         private static bool _assemblyResolved;
@@ -46,6 +62,83 @@ namespace GxMcp.Worker.Compatibility
 
         internal const string FallbackDefaultNormalization =
             "XML fallback preserves existing pattern XML defaults verbatim without normalization.";
+
+        internal const string InMemoryInstanceRereadSource = "in_memory_instance_reread";
+        internal const string XmlProjectionSource = "xml_projection";
+
+        internal static string ReadSourceLabel(WorkWithReadSource source)
+        {
+            return source == WorkWithReadSource.NativeInstance ? InMemoryInstanceRereadSource : XmlProjectionSource;
+        }
+
+        /// Why the XML projection was read instead of the typed instance; null on the native route.
+        internal static string ReadSourceReason(WorkWithReadSource source)
+        {
+            switch (source)
+            {
+                case WorkWithReadSource.XmlProjectionNativeUnavailable: return "native_sdk_unavailable";
+                case WorkWithReadSource.XmlProjectionNativeInstanceAbsent: return "native_instance_absent";
+                case WorkWithReadSource.XmlProjectionNativeLevelsAbsent: return "native_levels_absent";
+                case WorkWithReadSource.XmlProjectionNativeReadFailed: return "native_read_failed";
+                default: return null;
+            }
+        }
+
+        /// Writes `field` with the source label and, on the XML projection, `<field>Reason`.
+        internal static void DescribeReadSource(JObject target, string field, WorkWithReadSource source)
+        {
+            target[field] = ReadSourceLabel(source);
+            string reason = ReadSourceReason(source);
+            if (reason != null) target[field + "Reason"] = reason;
+        }
+
+        private static string DescribeRereadScope(WorkWithReadSource source)
+        {
+            return source == WorkWithReadSource.NativeInstance
+                ? "post-write in-memory instance re-read"
+                : "post-write PatternInstance XML projection re-read";
+        }
+
+        /// Loads the typed WorkWithInstance for a read. When it returns false, `fallback`
+        /// says why the caller must read the XML projection instead; a throwing Load is
+        /// reported, not rethrown.
+        private static bool TryLoadNativeInstance(KBObject instanceObj, string operation, out Type wwiType, out object wwi, out WorkWithReadSource fallback)
+        {
+            wwiType = null;
+            wwi = null;
+            var asm = GetWorkWithAssembly();
+            if (asm == null)
+            {
+                fallback = WorkWithReadSource.XmlProjectionNativeUnavailable;
+                return false;
+            }
+
+            try
+            {
+                wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
+                var loadMethod = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
+                wwi = loadMethod?.Invoke(null, new object[] { instanceObj });
+                if (wwi == null)
+                {
+                    fallback = WorkWithReadSource.XmlProjectionNativeInstanceAbsent;
+                    return false;
+                }
+
+                fallback = WorkWithReadSource.NativeInstance;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogNativeReadFallback(operation, ex);
+                fallback = WorkWithReadSource.XmlProjectionNativeReadFailed;
+                return false;
+            }
+        }
+
+        private static void LogNativeReadFallback(string operation, Exception ex)
+        {
+            Logger.Debug("[WorkWithSdkAdapter] Native " + operation + " failed, falling back to XML: " + ex.Message);
+        }
 
         internal static Assembly GetWorkWithAssembly()
         {
@@ -79,7 +172,13 @@ namespace GxMcp.Worker.Compatibility
 
                     _cachedAssembly = Assembly.Load("Artech.Patterns.WorkWith");
                 }
-                catch { }
+                // A machine without the WorkWith package is a supported configuration: the
+                // adapter then reports XmlProjectionNativeUnavailable. The cause stays in the log.
+                catch (Exception ex) when (ex is IOException || ex is BadImageFormatException || ex is ArgumentException
+                    || ex is UnauthorizedAccessException || ex is System.Security.SecurityException)
+                {
+                    Logger.Debug("[WorkWithSdkAdapter] Artech.Patterns.WorkWith could not be loaded: " + ex.GetType().Name + ": " + ex.Message);
+                }
                 _assemblyResolved = true;
                 return _cachedAssembly;
             }
@@ -87,9 +186,10 @@ namespace GxMcp.Worker.Compatibility
 
         internal static bool IsNativeSdkAvailable => GetWorkWithAssembly() != null;
 
-        public static bool ListActions(KBObject instanceObj, PatternAnalysisService patterns, out JArray tabsArray, out string error)
+        public static bool ListActions(KBObject instanceObj, PatternAnalysisService patterns, out JArray tabsArray, out WorkWithReadSource source, out string error)
         {
             tabsArray = null;
+            source = WorkWithReadSource.NativeInstance;
             error = null;
 
             if (instanceObj == null)
@@ -98,98 +198,108 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
-            var asm = GetWorkWithAssembly();
-            if (asm != null)
+            return ListActionsCore(
+                instanceObj,
+                () => patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _),
+                out tabsArray,
+                out source,
+                out error);
+        }
+
+        /// Native-first read with the XML projection as fallback. `readPatternXml` is the
+        /// seam that lets every path run without a Knowledge Base; `source` names the
+        /// reader that produced `tabsArray`.
+        internal static bool ListActionsCore(KBObject instanceObj, Func<string> readPatternXml, out JArray tabsArray, out WorkWithReadSource source, out string error)
+        {
+            tabsArray = null;
+            error = null;
+
+            if (TryLoadNativeInstance(instanceObj, "ListActions", out var wwiType, out var wwi, out source))
             {
                 try
                 {
-                    var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                    if (wwiType != null)
-                    {
-                        var loadMethod = wwiType.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                        object wwi = loadMethod != null ? loadMethod.Invoke(null, new object[] { instanceObj }) : null;
-                        if (wwi != null)
-                        {
-                            var levelsProp = wwiType.GetProperty("Levels");
-                            var levels = levelsProp?.GetValue(wwi, null) as IEnumerable;
-                            var tabsList = new JArray();
-                            if (levels != null)
-                            {
-                                foreach (var level in levels)
-                                {
-                                    var view = level.GetType().GetProperty("View")?.GetValue(level, null);
-                                    if (view == null) continue;
-                                    var tabs = view.GetType().GetProperty("Tabs")?.GetValue(view, null) as IEnumerable;
-                                    if (tabs == null) continue;
-                                    foreach (var tab in tabs)
-                                    {
-                                        string code = tab.GetType().GetProperty("Code")?.GetValue(tab, null)?.ToString() ?? "";
-                                        string name = tab.GetType().GetProperty("Name")?.GetValue(tab, null)?.ToString() ?? code;
-                                        string type = tab.GetType().GetProperty("Type")?.GetValue(tab, null)?.ToString() ?? "Tabular";
-                                        var tabObj = new JObject
-                                        {
-                                            ["code"] = code,
-                                            ["name"] = name,
-                                            ["type"] = type
-                                        };
-                                        var actions = tab.GetType().GetProperty("Actions")?.GetValue(tab, null) as IEnumerable;
-                                        var actionsArray = new JArray();
-                                        if (actions != null)
-                                        {
-                                            foreach (var act in actions)
-                                            {
-                                                string actName = act.GetType().GetProperty("Name")?.GetValue(act, null)?.ToString() ?? "";
-                                                string caption = act.GetType().GetProperty("Caption")?.GetValue(act, null)?.ToString();
-                                                string procName = act.GetType().GetProperty("GxobjectName")?.GetValue(act, null)?.ToString();
-                                                if (string.IsNullOrEmpty(procName))
-                                                {
-                                                    var gxObj = act.GetType().GetProperty("Gxobject")?.GetValue(act, null) as KBObject;
-                                                    procName = gxObj?.Name;
-                                                }
-                                                string condition = act.GetType().GetProperty("Condition")?.GetValue(act, null)?.ToString();
-                                                var parameters = act.GetType().GetProperty("Parameters")?.GetValue(act, null) as IEnumerable;
-                                                var paramList = new JArray();
-                                                if (parameters != null)
-                                                {
-                                                    foreach (var p in parameters)
-                                                    {
-                                                        string pName = p.GetType().GetProperty("Name")?.GetValue(p, null)?.ToString();
-                                                        if (!string.IsNullOrEmpty(pName)) paramList.Add(pName);
-                                                    }
-                                                }
-                                                actionsArray.Add(new JObject
-                                                {
-                                                    ["name"] = actName,
-                                                    ["caption"] = caption ?? actName,
-                                                    ["procedure"] = procName ?? "",
-                                                    ["condition"] = condition ?? "",
-                                                    ["parameters"] = paramList
-                                                });
-                                            }
-                                        }
-                                        tabObj["actions"] = actionsArray;
-                                        tabsList.Add(tabObj);
-                                    }
-                                }
-                            }
-                            tabsArray = tabsList;
-                            return true;
-                        }
-                    }
+                    tabsArray = ReadNativeTabs(wwiType, wwi);
+                    return true;
                 }
                 catch (Exception ex)
                 {
-                    Logger.Debug("[WorkWithSdkAdapter] Native ListActions failed, falling back to XML: " + ex.Message);
+                    LogNativeReadFallback("ListActions", ex);
+                    source = WorkWithReadSource.XmlProjectionNativeReadFailed;
                 }
             }
 
-            string xml = patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
+            string xml = readPatternXml?.Invoke();
             if (string.IsNullOrWhiteSpace(xml))
             {
                 error = "PatternInstanceXmlEmpty";
                 return false;
             }
             return TryListActionsFromXml(xml, out tabsArray, out error);
+        }
+
+        private static JArray ReadNativeTabs(Type wwiType, object wwi)
+        {
+            var levels = wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable;
+            var tabsList = new JArray();
+            if (levels == null) return tabsList;
+
+            foreach (var level in levels)
+            {
+                var view = level.GetType().GetProperty("View")?.GetValue(level, null);
+                if (view == null) continue;
+                var tabs = view.GetType().GetProperty("Tabs")?.GetValue(view, null) as IEnumerable;
+                if (tabs == null) continue;
+                foreach (var tab in tabs)
+                {
+                    string code = tab.GetType().GetProperty("Code")?.GetValue(tab, null)?.ToString() ?? "";
+                    string name = tab.GetType().GetProperty("Name")?.GetValue(tab, null)?.ToString() ?? code;
+                    string type = tab.GetType().GetProperty("Type")?.GetValue(tab, null)?.ToString() ?? "Tabular";
+                    var tabObj = new JObject
+                    {
+                        ["code"] = code,
+                        ["name"] = name,
+                        ["type"] = type
+                    };
+                    var actions = tab.GetType().GetProperty("Actions")?.GetValue(tab, null) as IEnumerable;
+                    var actionsArray = new JArray();
+                    if (actions != null)
+                    {
+                        foreach (var act in actions)
+                        {
+                            string actName = act.GetType().GetProperty("Name")?.GetValue(act, null)?.ToString() ?? "";
+                            string caption = act.GetType().GetProperty("Caption")?.GetValue(act, null)?.ToString();
+                            string procName = act.GetType().GetProperty("GxobjectName")?.GetValue(act, null)?.ToString();
+                            if (string.IsNullOrEmpty(procName))
+                            {
+                                var gxObj = act.GetType().GetProperty("Gxobject")?.GetValue(act, null) as KBObject;
+                                procName = gxObj?.Name;
+                            }
+                            string condition = act.GetType().GetProperty("Condition")?.GetValue(act, null)?.ToString();
+                            var parameters = act.GetType().GetProperty("Parameters")?.GetValue(act, null) as IEnumerable;
+                            var paramList = new JArray();
+                            if (parameters != null)
+                            {
+                                foreach (var p in parameters)
+                                {
+                                    string pName = p.GetType().GetProperty("Name")?.GetValue(p, null)?.ToString();
+                                    if (!string.IsNullOrEmpty(pName)) paramList.Add(pName);
+                                }
+                            }
+                            actionsArray.Add(new JObject
+                            {
+                                ["name"] = actName,
+                                ["caption"] = caption ?? actName,
+                                ["procedure"] = procName ?? "",
+                                ["condition"] = condition ?? "",
+                                ["parameters"] = paramList
+                            });
+                        }
+                    }
+                    tabObj["actions"] = actionsArray;
+                    tabsList.Add(tabObj);
+                }
+            }
+            return tabsList;
         }
 
         internal static bool TryListActionsFromXml(string xml, out JArray tabsArray, out string error)
@@ -259,1538 +369,5 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
         }
-
-        public static bool AddAction(
-            KBObject instanceObj,
-            PatternAnalysisService patterns,
-            WriteService write,
-            string tabCode,
-            string actionName,
-            string caption,
-            KBObject procObj,
-            string condition,
-            IReadOnlyList<string> parameters,
-            bool dryRun,
-            out JObject result,
-            out string errorCode,
-            out string errorMessage)
-        {
-            result = null;
-            errorCode = null;
-            errorMessage = null;
-
-            if (instanceObj == null)
-            {
-                errorCode = "NullInstance";
-                errorMessage = "WorkWith PatternInstance object is null.";
-                return false;
-            }
-
-            // Step 1: Pre-check tab existence and duplicate action
-            if (!ListActions(instanceObj, patterns, out var tabs, out var listError))
-            {
-                errorCode = listError ?? "ListActionsFailed";
-                errorMessage = $"Could not inspect tabs for WorkWith instance '{instanceObj.Name}': {listError}";
-                return false;
-            }
-
-            var targetTab = tabs.FirstOrDefault(t =>
-                string.Equals(t["code"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(t["name"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)) as JObject;
-
-            if (targetTab == null)
-            {
-                errorCode = "TabNotFound";
-                errorMessage = $"Tab '{tabCode}' was not found in WorkWith instance '{instanceObj.Name}'. Available tabs: {string.Join(", ", tabs.Select(t => t["code"]?.ToString()))}.";
-                return false;
-            }
-
-            var existingActions = targetTab["actions"] as JArray;
-            if (existingActions != null && existingActions.Any(a => string.Equals(a["name"]?.ToString(), actionName, StringComparison.OrdinalIgnoreCase)))
-            {
-                errorCode = "ActionAlreadyExists";
-                errorMessage = $"Action '{actionName}' already exists on tab '{tabCode}' in WorkWith instance '{instanceObj.Name}'.";
-                return false;
-            }
-
-            // Step 2: Build plan / preflight
-            var plan = BuildActionPlan(instanceObj.Name, tabCode, actionName, caption, procObj?.Name, condition, parameters, procObj);
-            plan["route"] = IsNativeSdkAvailable ? "native-sdk" : "xml-fallback";
-            plan["defaultNormalization"] = IsNativeSdkAvailable
-                ? NativeDefaultNormalization
-                : FallbackDefaultNormalization;
-
-            var sigAdv = plan["signatureAdvisory"] as JObject;
-            if (sigAdv != null && sigAdv["arityMatches"]?.ToObject<bool>() == false)
-            {
-                result = plan;
-                errorCode = "ArityMismatch";
-                errorMessage = sigAdv["warning"]?.ToString() ?? $"Target Procedure '{procObj?.Name}' parameter count mismatch.";
-                return false;
-            }
-
-            if (dryRun)
-            {
-                result = plan;
-                return true;
-            }
-
-            // Step 3: Real write
-            bool nativeSucceeded = false;
-            var asm = GetWorkWithAssembly();
-            if (asm != null)
-            {
-                try
-                {
-                    var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                    var loadMethod = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                    object wwi = loadMethod?.Invoke(null, new object[] { instanceObj });
-                    if (wwi != null)
-                    {
-                        var levels = wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable;
-                        object sdkTab = null;
-                        if (levels != null)
-                        {
-                            foreach (var level in levels)
-                            {
-                                var view = level.GetType().GetProperty("View")?.GetValue(level, null);
-                                if (view == null) continue;
-                                var tabColl = view.GetType().GetProperty("Tabs")?.GetValue(view, null);
-                                if (tabColl == null) continue;
-                                var findTabMethod = tabColl.GetType().GetMethod("FindTab", new[] { typeof(string) });
-                                sdkTab = findTabMethod?.Invoke(tabColl, new object[] { tabCode });
-                                if (sdkTab != null) break;
-                            }
-                        }
-
-                        if (sdkTab != null)
-                        {
-                            var addActionMethod = sdkTab.GetType().GetMethod("AddAction", new[] { typeof(string) });
-                            var newAction = addActionMethod?.Invoke(sdkTab, new object[] { actionName });
-                            if (newAction != null)
-                            {
-                                newAction.GetType().GetProperty("Caption")?.SetValue(newAction, caption ?? actionName, null);
-                                if (procObj != null)
-                                    newAction.GetType().GetProperty("Gxobject")?.SetValue(newAction, procObj, null);
-                                if (!string.IsNullOrEmpty(condition))
-                                    newAction.GetType().GetProperty("Condition")?.SetValue(newAction, condition, null);
-
-                                if (parameters != null && parameters.Count > 0)
-                                {
-                                    var addParamMethod = newAction.GetType().GetMethod("AddParameter", new[] { typeof(string) });
-                                    foreach (var p in parameters)
-                                    {
-                                        addParamMethod?.Invoke(newAction, new object[] { p });
-                                    }
-                                }
-
-                                var saveToMethod = wwiType.GetMethod("SaveTo", new[] { instanceObj.GetType() })
-                                    ?? wwiType.GetMethod("SaveTo");
-                                saveToMethod?.Invoke(wwi, new object[] { instanceObj });
-
-                                instanceObj.Save();
-                                nativeSucceeded = true;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warn("[WorkWithSdkAdapter] Native AddAction failed, falling back to XML: " + ex.Message);
-                }
-            }
-
-            if (!nativeSucceeded)
-            {
-                string currentXml = patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
-                if (string.IsNullOrWhiteSpace(currentXml))
-                {
-                    errorCode = "PatternInstanceXmlEmpty";
-                    errorMessage = "Could not read PatternInstance XML for " + instanceObj.Name;
-                    return false;
-                }
-
-                if (!TryAddActionToXml(currentXml, tabCode, actionName, caption, procObj, condition, parameters, out string newXml, out errorCode, out errorMessage))
-                {
-                    return false;
-                }
-
-                if (write != null)
-                {
-                    var writeResult = write.WriteObject(instanceObj.Name, "PatternInstance", newXml, dryRun: false, allowGridStructure: true);
-                    var writeJson = JObject.Parse(writeResult);
-                    if (writeJson["error"] != null)
-                    {
-                        errorCode = writeJson["error"]?["code"]?.ToString() ?? "PatternSaveFailed";
-                        errorMessage = writeJson["error"]?["message"]?.ToString() ?? "Failed to save PatternInstance";
-                        return false;
-                    }
-                }
-                else
-                {
-                    instanceObj.Save();
-                }
-            }
-
-            // Step 4: Verification reread
-            if (!ListActions(instanceObj, patterns, out var verifyTabs, out _))
-            {
-                errorCode = "VerificationReadFailed";
-                errorMessage = "Action was saved, but verification re-read failed.";
-                return false;
-            }
-
-            if (verifyTabs.Count < tabs.Count)
-            {
-                errorCode = "VerificationFailed";
-                errorMessage = $"Instance tabs were truncated after write: expected at least {tabs.Count} tabs, found {verifyTabs.Count}.";
-                return false;
-            }
-
-            var verifiedTab = verifyTabs.FirstOrDefault(t =>
-                string.Equals(t["code"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(t["name"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)) as JObject;
-            var verifiedActions = verifiedTab?["actions"] as JArray;
-            var verifiedAct = verifiedActions?.FirstOrDefault(a => string.Equals(a["name"]?.ToString(), actionName, StringComparison.OrdinalIgnoreCase)) as JObject;
-
-            if (verifiedAct == null)
-            {
-                errorCode = "VerificationFailed";
-                errorMessage = $"Action '{actionName}' was not found in the verified post-write state.";
-                return false;
-            }
-
-            string expectedCaption = caption ?? actionName;
-            string expectedProcedure = procObj?.Name ?? "";
-            string expectedCondition = condition ?? "";
-            var expectedParams = (parameters ?? Array.Empty<string>()).ToList();
-
-            if (!VerifyActionMatches(verifiedAct, actionName, caption, procObj?.Name, condition, parameters, out string mismatchDetail))
-            {
-                errorCode = "VerificationMismatch";
-                errorMessage = $"Action '{actionName}' was persisted, but post-save verification failed: {mismatchDetail}";
-                return false;
-            }
-
-            result = new JObject
-            {
-                ["instance"] = instanceObj.Name,
-                ["tab"] = tabCode,
-                ["action"] = verifiedAct.DeepClone(),
-                ["requestedAction"] = new JObject
-                {
-                    ["name"] = actionName,
-                    ["caption"] = expectedCaption,
-                    ["procedure"] = expectedProcedure,
-                    ["condition"] = expectedCondition,
-                    ["parameters"] = new JArray(expectedParams)
-                },
-                ["saved"] = true,
-                ["persisted"] = true,
-                ["verified"] = true,
-                ["verification"] = new JObject
-                {
-                    ["scope"] = "tab_action_reread",
-                    ["fieldsCompared"] = new JArray("name", "caption", "procedure", "condition", "parameters"),
-                    ["allFieldsMatched"] = true,
-                    ["observedSource"] = "in_memory_instance_reread"
-                },
-                ["route"] = nativeSucceeded ? "native-sdk" : "xml-fallback",
-                ["verificationScope"] = "action definition, target tab actions collection, neighbor tabs integrity, and post-write instance re-read",
-                ["defaultNormalization"] = nativeSucceeded
-                    ? NativeDefaultNormalization
-                    : FallbackDefaultNormalization,
-                ["derivedObjectRegeneration"] = "WorkWith instance definition persisted. Note: On GeneXus 18/17, derived WebComponents (e.g. <Trn>General) may require IDE Apply or build to re-project the new action control."
-            };
-            return true;
-        }
-
-        internal static JObject BuildActionPlan(
-            string instanceName,
-            string tabCode,
-            string actionName,
-            string caption,
-            string procName,
-            string condition,
-            IReadOnlyList<string> parameters,
-            KBObject procObj = null)
-        {
-            var sigAdvisory = TryInspectSignatureAdvisory(procObj, parameters);
-            bool arityOk = sigAdvisory == null || sigAdvisory["arityMatches"]?.ToObject<bool>() != false;
-
-            var validations = new JObject
-            {
-                ["targetObjectResolved"] = true,
-                ["workWithInstanceResolved"] = true,
-                ["tabExists"] = true,
-                ["actionNameFormatValid"] = true,
-                ["actionNameUniqueOnTab"] = true,
-                ["procedureResolved"] = !string.IsNullOrEmpty(procName),
-                ["procedureTypeValid"] = true,
-                ["arityMatches"] = arityOk
-            };
-
-            var validationLimits = new JObject
-            {
-                ["signatureAndTypes"] = "Procedure parameter types and signature binding against parm() rule are not validated or compiled.",
-                ["conditionExpression"] = "Condition expression syntax and semantics are not compiled or evaluated.",
-                ["parameterExpressions"] = "Parameter expressions syntax and semantics are not compiled or evaluated."
-            };
-
-            var plan = new JObject
-            {
-                ["instance"] = instanceName,
-                ["tab"] = tabCode,
-                ["actionName"] = actionName,
-                ["caption"] = caption ?? actionName,
-                ["procedure"] = procName ?? "",
-                ["parameters"] = new JArray(parameters ?? Array.Empty<string>()),
-                ["condition"] = condition ?? "",
-                ["valid"] = arityOk,
-                ["validations"] = validations,
-                ["validationLimits"] = validationLimits
-            };
-
-            if (sigAdvisory != null)
-            {
-                plan["signatureAdvisory"] = sigAdvisory;
-            }
-
-            return plan;
-        }
-
-        internal static JObject TryInspectSignatureAdvisory(KBObject procObj, IReadOnlyList<string> parameters)
-        {
-            if (procObj == null) return null;
-            try
-            {
-                var parts = procObj.Parts;
-                if (parts == null) return null;
-
-                KBObjectPart rulesPart = null;
-                foreach (KBObjectPart p in parts)
-                {
-                    if (p != null && (string.Equals(p.TypeDescriptor?.Name, "Rules", StringComparison.OrdinalIgnoreCase)
-                        || p.GetType().Name.IndexOf("RulesPart", StringComparison.OrdinalIgnoreCase) >= 0))
-                    {
-                        rulesPart = p;
-                        break;
-                    }
-                }
-
-                if (rulesPart == null) return null;
-
-                string rulesSrc = rulesPart.GetType().GetProperty("Source")?.GetValue(rulesPart, null) as string;
-                if (!string.IsNullOrWhiteSpace(rulesSrc))
-                {
-                    var sig = GeneXusSignatureParser.Parse(rulesSrc);
-                    if (sig != null && !string.IsNullOrEmpty(sig.ParmRule))
-                    {
-                        int expectedCount = sig.Parameters != null ? sig.Parameters.Count : 0;
-                        int suppliedCount = parameters != null ? parameters.Count : 0;
-                        var advisory = new JObject
-                        {
-                            ["parmRule"] = sig.ParmRule,
-                            ["expectedParameterCount"] = expectedCount,
-                            ["suppliedParameterCount"] = suppliedCount,
-                            ["arityMatches"] = (expectedCount == suppliedCount)
-                        };
-                        if (expectedCount != suppliedCount)
-                        {
-                            advisory["warning"] = $"Target Procedure '{procObj.Name}' declares {expectedCount} parameter(s) in its parm() rule, but {suppliedCount} parameter(s) were supplied in add_action.";
-                        }
-                        return advisory;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Debug("[WorkWithSdkAdapter] Signature advisory inspection failed: " + ex.Message);
-            }
-            return null;
-        }
-
-        internal static bool VerifyActionMatches(
-            JObject verifiedAct,
-            string actionName,
-            string caption,
-            string procName,
-            string condition,
-            IReadOnlyList<string> parameters,
-            out string mismatchDetail)
-        {
-            mismatchDetail = null;
-            if (verifiedAct == null)
-            {
-                mismatchDetail = "Action not found in verified state.";
-                return false;
-            }
-
-            string expectedCaption = caption ?? actionName;
-            string expectedProcedure = procName ?? "";
-            string expectedCondition = condition ?? "";
-            var expectedParams = (parameters ?? Array.Empty<string>()).ToList();
-
-            string observedName = verifiedAct["name"]?.ToString() ?? "";
-            string observedCaption = verifiedAct["caption"]?.ToString() ?? "";
-            string observedProcedure = verifiedAct["procedure"]?.ToString() ?? "";
-            string observedCondition = verifiedAct["condition"]?.ToString() ?? "";
-            var observedParams = (verifiedAct["parameters"] as JArray)?.Select(p => p.ToString()).ToList() ?? new List<string>();
-
-            if (!string.Equals(observedName, actionName, StringComparison.OrdinalIgnoreCase))
-            {
-                mismatchDetail = $"Action name mismatch: expected '{actionName}', observed '{observedName}'.";
-                return false;
-            }
-
-            if (!string.Equals(observedCaption, expectedCaption, StringComparison.Ordinal))
-            {
-                mismatchDetail = $"Caption mismatch: expected '{expectedCaption}', observed '{observedCaption}'.";
-                return false;
-            }
-
-            if (!string.Equals(observedProcedure, expectedProcedure, StringComparison.OrdinalIgnoreCase))
-            {
-                mismatchDetail = $"Procedure mismatch: expected '{expectedProcedure}', observed '{observedProcedure}'.";
-                return false;
-            }
-
-            if (!string.Equals(observedCondition, expectedCondition, StringComparison.Ordinal))
-            {
-                mismatchDetail = $"Condition mismatch: expected '{expectedCondition}', observed '{observedCondition}'.";
-                return false;
-            }
-
-            if (!observedParams.SequenceEqual(expectedParams, StringComparer.Ordinal))
-            {
-                mismatchDetail = $"Parameters mismatch: expected [{string.Join(", ", expectedParams)}], observed [{string.Join(", ", observedParams)}].";
-                return false;
-            }
-
-            return true;
-        }
-
-        internal static bool TryAddActionToXml(
-            string xml,
-            string tabCode,
-            string actionName,
-            string caption,
-            KBObject procObj,
-            string condition,
-            IReadOnlyList<string> parameters,
-            out string newXml,
-            out string errorCode,
-            out string errorMessage)
-        {
-            newXml = null;
-            errorCode = null;
-            errorMessage = null;
-
-            try
-            {
-                var doc = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
-                var tabElem = doc.Descendants().FirstOrDefault(e =>
-                    string.Equals(e.Name.LocalName, "tab", StringComparison.OrdinalIgnoreCase) &&
-                    (string.Equals((string)e.Attribute("code"), tabCode, StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals((string)e.Attribute("name"), tabCode, StringComparison.OrdinalIgnoreCase)));
-
-                if (tabElem == null)
-                {
-                    errorCode = "TabNotFound";
-                    errorMessage = $"Tab '{tabCode}' not found in XML.";
-                    return false;
-                }
-
-                var actionsElem = tabElem.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "actions", StringComparison.OrdinalIgnoreCase));
-                if (actionsElem == null)
-                {
-                    actionsElem = new XElement("actions");
-                    tabElem.Add(actionsElem);
-                }
-
-                var existingAct = actionsElem.Elements().FirstOrDefault(e =>
-                    string.Equals(e.Name.LocalName, "action", StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals((string)e.Attribute("name"), actionName, StringComparison.OrdinalIgnoreCase));
-
-                if (existingAct != null)
-                {
-                    errorCode = "ActionAlreadyExists";
-                    errorMessage = $"Action '{actionName}' already exists on tab '{tabCode}'.";
-                    return false;
-                }
-
-                string gxobjectVal = procObj != null ? $"{procObj.Guid}-{procObj.Name}" : "";
-                var newAct = new XElement("action",
-                    new XAttribute("name", actionName),
-                    new XAttribute("caption", caption ?? actionName));
-
-                if (!string.IsNullOrEmpty(gxobjectVal)) newAct.Add(new XAttribute("gxobject", gxobjectVal));
-                if (!string.IsNullOrEmpty(condition)) newAct.Add(new XAttribute("condition", condition));
-
-                if (parameters != null && parameters.Count > 0)
-                {
-                    var paramsElem = new XElement("parameters");
-                    foreach (var p in parameters)
-                    {
-                        paramsElem.Add(new XElement("parameter", new XAttribute("name", p)));
-                    }
-                    newAct.Add(paramsElem);
-                }
-
-                actionsElem.Add(newAct);
-                newXml = doc.ToString(SaveOptions.DisableFormatting);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                errorCode = "XmlMutationFailed";
-                errorMessage = ex.Message;
-                return false;
-            }
-        }
-
-        public static bool RemoveAction(
-            KBObject instanceObj,
-            PatternAnalysisService patterns,
-            WriteService write,
-            string tabCode,
-            string actionName,
-            bool dryRun,
-            out JObject result,
-            out string errorCode,
-            out string errorMessage)
-        {
-            result = null;
-            errorCode = null;
-            errorMessage = null;
-
-            if (instanceObj == null)
-            {
-                errorCode = "NullInstance";
-                errorMessage = "WorkWith PatternInstance object is null.";
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(tabCode))
-            {
-                errorCode = "MissingTab";
-                errorMessage = "tab is required for remove_action.";
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(actionName))
-            {
-                errorCode = "MissingActionName";
-                errorMessage = "actionName is required for remove_action.";
-                return false;
-            }
-
-            // Step 1: Pre-check tab existence and action existence
-            if (!ListActions(instanceObj, patterns, out var tabs, out var listError))
-            {
-                errorCode = listError ?? "ListActionsFailed";
-                errorMessage = $"Could not inspect tabs for WorkWith instance '{instanceObj.Name}': {listError}";
-                return false;
-            }
-
-            var targetTab = tabs.FirstOrDefault(t =>
-                string.Equals(t["code"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(t["name"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)) as JObject;
-
-            if (targetTab == null)
-            {
-                errorCode = "TabNotFound";
-                errorMessage = $"Tab '{tabCode}' was not found in WorkWith instance '{instanceObj.Name}'. Available tabs: {string.Join(", ", tabs.Select(t => t["code"]?.ToString()))}.";
-                return false;
-            }
-
-            var existingActions = targetTab["actions"] as JArray;
-            var targetAction = existingActions?.FirstOrDefault(a => string.Equals(a["name"]?.ToString(), actionName, StringComparison.OrdinalIgnoreCase)) as JObject;
-
-            if (targetAction == null)
-            {
-                errorCode = "ActionNotFound";
-                string available = existingActions != null && existingActions.Count > 0
-                    ? string.Join(", ", existingActions.Select(a => a["name"]?.ToString()))
-                    : "(none)";
-                errorMessage = $"Action '{actionName}' was not found on tab '{tabCode}' in WorkWith instance '{instanceObj.Name}'. Available actions: {available}.";
-                return false;
-            }
-
-            var validations = new JObject
-            {
-                ["targetObjectResolved"] = true,
-                ["workWithInstanceResolved"] = true,
-                ["tabExists"] = true,
-                ["actionFound"] = true
-            };
-
-            var plan = new JObject
-            {
-                ["instance"] = instanceObj.Name,
-                ["tab"] = tabCode,
-                ["actionName"] = actionName,
-                ["action"] = targetAction,
-                ["valid"] = true,
-                ["validations"] = validations,
-                ["route"] = IsNativeSdkAvailable ? "native-sdk" : "xml-fallback",
-                ["defaultNormalization"] = IsNativeSdkAvailable ? NativeDefaultNormalization : FallbackDefaultNormalization
-            };
-
-            // Step 2: Handle dryRun
-            if (dryRun)
-            {
-                result = plan;
-                return true;
-            }
-
-            // Step 3: Real remove
-            bool nativeSucceeded = false;
-            var asm = GetWorkWithAssembly();
-            if (asm != null)
-            {
-                try
-                {
-                    var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                    var loadMethod = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                    object wwi = loadMethod?.Invoke(null, new object[] { instanceObj });
-                    if (wwi != null)
-                    {
-                        var levels = wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable;
-                        object sdkTab = null;
-                        if (levels != null)
-                        {
-                            foreach (var level in levels)
-                            {
-                                var view = level.GetType().GetProperty("View")?.GetValue(level, null);
-                                if (view == null) continue;
-                                var tabColl = view.GetType().GetProperty("Tabs")?.GetValue(view, null);
-                                if (tabColl == null) continue;
-                                var findTabMethod = tabColl.GetType().GetMethod("FindTab", new[] { typeof(string) });
-                                sdkTab = findTabMethod?.Invoke(tabColl, new object[] { tabCode });
-                                if (sdkTab != null) break;
-                            }
-                        }
-
-                        if (sdkTab != null)
-                        {
-                            var removeActionMethod = sdkTab.GetType().GetMethod("RemoveAction", new[] { typeof(string) });
-                            if (removeActionMethod != null)
-                            {
-                                removeActionMethod.Invoke(sdkTab, new object[] { actionName });
-                            }
-                            else
-                            {
-                                var actionsProp = sdkTab.GetType().GetProperty("Actions");
-                                var actionsList = actionsProp?.GetValue(sdkTab, null) as IEnumerable;
-                                if (actionsList != null)
-                                {
-                                    object actionToRemove = null;
-                                    foreach (var act in actionsList)
-                                    {
-                                        string name = act.GetType().GetProperty("Name")?.GetValue(act, null) as string;
-                                        if (string.Equals(name, actionName, StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            actionToRemove = act;
-                                            break;
-                                        }
-                                    }
-                                    if (actionToRemove != null)
-                                    {
-                                        var removeMethod = actionsList.GetType().GetMethod("Remove", new[] { actionToRemove.GetType() })
-                                            ?? actionsList.GetType().GetMethod("Remove");
-                                        removeMethod?.Invoke(actionsList, new object[] { actionToRemove });
-                                    }
-                                }
-                            }
-
-                            var saveToMethod = wwiType.GetMethod("SaveTo", new[] { instanceObj.GetType() })
-                                ?? wwiType.GetMethod("SaveTo");
-                            saveToMethod?.Invoke(wwi, new object[] { instanceObj });
-
-                            instanceObj.Save();
-                            nativeSucceeded = true;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warn("[WorkWithSdkAdapter] Native RemoveAction failed, falling back to XML: " + ex.Message);
-                }
-            }
-
-            if (!nativeSucceeded)
-            {
-                string currentXml = patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
-                if (string.IsNullOrWhiteSpace(currentXml))
-                {
-                    errorCode = "PatternInstanceXmlEmpty";
-                    errorMessage = "Could not read PatternInstance XML for " + instanceObj.Name;
-                    return false;
-                }
-
-                if (!TryRemoveActionFromXml(currentXml, tabCode, actionName, out string newXml, out errorCode, out errorMessage))
-                {
-                    return false;
-                }
-
-                if (write != null)
-                {
-                    var writeResult = write.WriteObject(instanceObj.Name, "PatternInstance", newXml, dryRun: false, allowGridStructure: true);
-                    var writeJson = JObject.Parse(writeResult);
-                    if (writeJson["error"] != null)
-                    {
-                        errorCode = writeJson["error"]?["code"]?.ToString() ?? "PatternSaveFailed";
-                        errorMessage = writeJson["error"]?["message"]?.ToString() ?? "Failed to save PatternInstance";
-                        return false;
-                    }
-                }
-                else
-                {
-                    instanceObj.Save();
-                }
-            }
-
-            // Step 4: Verification reread
-            if (!ListActions(instanceObj, patterns, out var verifyTabs, out _))
-            {
-                errorCode = "VerificationReadFailed";
-                errorMessage = "Action was removed, but verification re-read failed.";
-                return false;
-            }
-
-            if (verifyTabs.Count < tabs.Count)
-            {
-                errorCode = "VerificationFailed";
-                errorMessage = $"Instance tabs were truncated after write: expected at least {tabs.Count} tabs, found {verifyTabs.Count}.";
-                return false;
-            }
-
-            var verifiedTab = verifyTabs.FirstOrDefault(t =>
-                string.Equals(t["code"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(t["name"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)) as JObject;
-            var verifiedActions = verifiedTab?["actions"] as JArray;
-            var verifiedAct = verifiedActions?.FirstOrDefault(a => string.Equals(a["name"]?.ToString(), actionName, StringComparison.OrdinalIgnoreCase)) as JObject;
-
-            if (verifiedAct != null)
-            {
-                errorCode = "VerificationFailed";
-                errorMessage = $"Action '{actionName}' was still present in the verified post-write state.";
-                return false;
-            }
-
-            if (existingActions != null)
-            {
-                foreach (var neighbor in existingActions)
-                {
-                    string neighborName = neighbor["name"]?.ToString();
-                    if (string.Equals(neighborName, actionName, StringComparison.OrdinalIgnoreCase)) continue;
-                    if (verifiedActions == null || !verifiedActions.Any(a => string.Equals(a["name"]?.ToString(), neighborName, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        errorCode = "VerificationFailed";
-                        errorMessage = $"Neighbor action '{neighborName}' was unexpectedly lost after removing '{actionName}'.";
-                        return false;
-                    }
-                }
-            }
-
-            result = new JObject
-            {
-                ["instance"] = instanceObj.Name,
-                ["tab"] = tabCode,
-                ["removedAction"] = actionName,
-                ["remainingActions"] = verifiedActions ?? new JArray(),
-                ["verified"] = true,
-                ["route"] = nativeSucceeded ? "native-sdk" : "xml-fallback",
-                ["defaultNormalization"] = nativeSucceeded ? NativeDefaultNormalization : FallbackDefaultNormalization
-            };
-
-            return true;
-        }
-
-        internal static bool TryRemoveActionFromXml(
-            string xml,
-            string tabCode,
-            string actionName,
-            out string newXml,
-            out string errorCode,
-            out string errorMessage)
-        {
-            newXml = null;
-            errorCode = null;
-            errorMessage = null;
-
-            try
-            {
-                var doc = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
-                var tabElem = doc.Descendants().FirstOrDefault(e =>
-                    string.Equals(e.Name.LocalName, "tab", StringComparison.OrdinalIgnoreCase) &&
-                    (string.Equals((string)e.Attribute("code"), tabCode, StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals((string)e.Attribute("name"), tabCode, StringComparison.OrdinalIgnoreCase)));
-
-                if (tabElem == null)
-                {
-                    errorCode = "TabNotFound";
-                    errorMessage = $"Tab '{tabCode}' not found in XML.";
-                    return false;
-                }
-
-                var actionsElem = tabElem.Elements().FirstOrDefault(e => string.Equals(e.Name.LocalName, "actions", StringComparison.OrdinalIgnoreCase));
-                var existingAct = actionsElem?.Elements().FirstOrDefault(e =>
-                    string.Equals(e.Name.LocalName, "action", StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals((string)e.Attribute("name"), actionName, StringComparison.OrdinalIgnoreCase));
-
-                if (existingAct == null)
-                {
-                    errorCode = "ActionNotFound";
-                    errorMessage = $"Action '{actionName}' not found on tab '{tabCode}'.";
-                    return false;
-                }
-
-                existingAct.Remove();
-                newXml = doc.ToString(SaveOptions.DisableFormatting);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                errorCode = "XmlMutationFailed";
-                errorMessage = ex.Message;
-                return false;
-            }
-        }
-
-        internal sealed class FilterLevelCandidate
-        {
-            public string Id;
-            public bool HasSelection;
-            public object Filter;
-        }
-
-        private static string LevelIdOrDefault(string id, int index)
-        {
-            if (!string.IsNullOrWhiteSpace(id)) return id;
-            return index == 0 ? "Root" : "Level" + index;
-        }
-
-        /// Fail-closed Level selection shared by the native and XML readers and by the
-        /// native writer: one Level resolves implicitly, two or more require `level`.
-        internal static bool TryResolveFilterLevel(
-            IList<FilterLevelCandidate> candidates,
-            string levelId,
-            out FilterLevelCandidate resolved,
-            out string error,
-            out string errorMessage)
-        {
-            resolved = null;
-            error = null;
-            errorMessage = null;
-            string available = string.Join(", ", candidates.Select(c => c.Id));
-
-            if (!string.IsNullOrWhiteSpace(levelId))
-            {
-                resolved = candidates.FirstOrDefault(c => string.Equals(c.Id, levelId, StringComparison.OrdinalIgnoreCase));
-                if (resolved == null)
-                {
-                    error = "FilterLevelNotFound";
-                    errorMessage = candidates.Count == 0
-                        ? $"Level '{levelId}' was not found: the WorkWith instance has no Levels."
-                        : $"Level '{levelId}' was not found in the WorkWith instance. Available levels: {available}.";
-                    return false;
-                }
-            }
-            else if (candidates.Count == 0)
-            {
-                error = "FilterLevelNotFound";
-                errorMessage = "The WorkWith instance has no Levels.";
-                return false;
-            }
-            else if (candidates.Count > 1)
-            {
-                error = "FilterLevelAmbiguous";
-                errorMessage = $"The WorkWith instance has {candidates.Count} Levels; pass `level` to choose one. Candidates: {available}.";
-                return false;
-            }
-            else
-            {
-                resolved = candidates[0];
-            }
-
-            if (!resolved.HasSelection)
-            {
-                error = "WorkWithSelectionMissing";
-                errorMessage = $"Level '{resolved.Id}' has no selection node.";
-                resolved = null;
-                return false;
-            }
-
-            if (resolved.Filter == null)
-            {
-                error = "WorkWithFilterNotPresent";
-                errorMessage = $"Standard WorkWith filter node is not present on the selection of Level '{resolved.Id}'. Create the filter in the GeneXus IDE.";
-                resolved = null;
-                return false;
-            }
-
-            return true;
-        }
-
-        public static bool ListFilters(KBObject instanceObj, PatternAnalysisService patterns, string levelId, out JObject filters, out string error, out string errorMessage)
-        {
-            filters = null;
-            error = null;
-            errorMessage = null;
-
-            if (instanceObj == null)
-            {
-                error = "NullInstance";
-                errorMessage = "WorkWith PatternInstance object is null.";
-                return false;
-            }
-
-            var asm = GetWorkWithAssembly();
-            if (asm != null)
-            {
-                try
-                {
-                    var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                    var loadMethod = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                    object wwi = loadMethod?.Invoke(null, new object[] { instanceObj });
-                    var levels = wwi != null ? wwiType.GetProperty("Levels")?.GetValue(wwi, null) as IEnumerable : null;
-                    if (levels != null)
-                    {
-                        if (!TryResolveFilterLevel(CollectNativeFilterLevels(levels), levelId, out var resolved, out error, out errorMessage))
-                            return false;
-
-                        filters = ReadNativeFilter(resolved);
-                        return true;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Debug("[WorkWithSdkAdapter] Native ListFilters failed, falling back to XML: " + ex.Message);
-                }
-            }
-
-            string xml = patterns?.ReadPatternPartXml(instanceObj, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
-            if (string.IsNullOrWhiteSpace(xml))
-            {
-                error = "PatternInstanceXmlEmpty";
-                errorMessage = "PatternInstance XML was empty; filters could not be read.";
-                return false;
-            }
-
-            return TryListFiltersFromXml(xml, levelId, out filters, out error, out errorMessage);
-        }
-
-        private static List<FilterLevelCandidate> CollectNativeFilterLevels(IEnumerable levels)
-        {
-            var candidates = new List<FilterLevelCandidate>();
-            int index = 0;
-            foreach (var lvl in levels)
-            {
-                string id = lvl.GetType().GetProperty("Id")?.GetValue(lvl, null)?.ToString()
-                    ?? lvl.GetType().GetProperty("Name")?.GetValue(lvl, null)?.ToString();
-                var selection = lvl.GetType().GetProperty("Selection")?.GetValue(lvl, null);
-                candidates.Add(new FilterLevelCandidate
-                {
-                    Id = LevelIdOrDefault(id, index),
-                    HasSelection = selection != null,
-                    Filter = selection?.GetType().GetProperty("Filter")?.GetValue(selection, null)
-                });
-                index++;
-            }
-            return candidates;
-        }
-
-        private static JObject ReadNativeFilter(FilterLevelCandidate level)
-        {
-            object filter = level.Filter;
-            var attrsArray = new JArray();
-            var filterAttrs = filter.GetType().GetProperty("Attributes")?.GetValue(filter, null) as IEnumerable;
-            if (filterAttrs != null)
-            {
-                foreach (var fa in filterAttrs)
-                {
-                    string faName = fa.GetType().GetProperty("Name")?.GetValue(fa, null)?.ToString() ?? "";
-                    string faDesc = fa.GetType().GetProperty("Description")?.GetValue(fa, null)?.ToString();
-                    string faDom = fa.GetType().GetProperty("DomainName")?.GetValue(fa, null)?.ToString()
-                        ?? fa.GetType().GetProperty("Domain")?.GetValue(fa, null)?.ToString();
-                    string faVar = fa.GetType().GetProperty("VariableName")?.GetValue(fa, null)?.ToString();
-
-                    attrsArray.Add(new JObject
-                    {
-                        ["name"] = faName,
-                        ["description"] = faDesc ?? faName,
-                        ["domain"] = faDom ?? "",
-                        ["variableName"] = faVar ?? ("&" + faName)
-                    });
-                }
-            }
-
-            var condsArray = new JArray();
-            var conds = filter.GetType().GetProperty("Conditions")?.GetValue(filter, null) as IEnumerable;
-            if (conds != null)
-            {
-                foreach (var c in conds)
-                {
-                    string val = c.GetType().GetProperty("Value")?.GetValue(c, null)?.ToString();
-                    if (!string.IsNullOrWhiteSpace(val))
-                        condsArray.Add(val);
-                }
-            }
-
-            return new JObject
-            {
-                ["level"] = level.Id,
-                ["attributes"] = attrsArray,
-                ["conditions"] = condsArray
-            };
-        }
-
-        /// Read-only XML projection of the standard WorkWith filter, used when the native
-        /// surface is unavailable. The real nodes are `filterAttribute` under `attributes`
-        /// and `condition` under `conditions` (see PatternChildOrderReconciler).
-        internal static bool TryListFiltersFromXml(string xml, string levelId, out JObject filters, out string error, out string errorMessage)
-        {
-            filters = null;
-            error = null;
-            errorMessage = null;
-            try
-            {
-                var doc = XDocument.Parse(xml);
-                if (!TryResolveFilterLevel(CollectXmlFilterLevels(doc), levelId, out var resolved, out error, out errorMessage))
-                    return false;
-
-                var filter = (XElement)resolved.Filter;
-                var attrsArray = new JArray();
-                var attrsContainer = ChildNamed(filter, "attributes");
-                if (attrsContainer != null)
-                {
-                    foreach (var a in attrsContainer.Elements().Where(e => HasLocalName(e, "filterAttribute")))
-                    {
-                        string aName = (string)a.Attribute("name") ?? "";
-                        attrsArray.Add(new JObject
-                        {
-                            ["name"] = aName,
-                            ["description"] = (string)a.Attribute("description") ?? aName,
-                            ["domain"] = StripObjectReferenceGuid((string)a.Attribute("domain")) ?? "",
-                            ["variableName"] = (string)a.Attribute("variableName") ?? ("&" + aName)
-                        });
-                    }
-                }
-
-                var condsArray = new JArray();
-                var condsContainer = ChildNamed(filter, "conditions");
-                if (condsContainer != null)
-                {
-                    foreach (var c in condsContainer.Elements().Where(e => HasLocalName(e, "condition")))
-                    {
-                        string val = (string)c.Attribute("value");
-                        if (!string.IsNullOrWhiteSpace(val)) condsArray.Add(val);
-                    }
-                }
-
-                filters = new JObject
-                {
-                    ["level"] = resolved.Id,
-                    ["attributes"] = attrsArray,
-                    ["conditions"] = condsArray
-                };
-                return true;
-            }
-            catch (Exception ex)
-            {
-                error = "XmlParseError: " + ex.Message;
-                errorMessage = "PatternInstance XML could not be parsed: " + ex.Message;
-                return false;
-            }
-        }
-
-        private static List<FilterLevelCandidate> CollectXmlFilterLevels(XDocument doc)
-        {
-            var candidates = new List<FilterLevelCandidate>();
-            var levels = doc.Descendants().Where(e => HasLocalName(e, "level")).ToList();
-            if (levels.Count == 0)
-            {
-                // Some XML variants store Selection directly under root
-                var directSelection = doc.Descendants().FirstOrDefault(e => HasLocalName(e, "selection"));
-                if (directSelection != null)
-                    candidates.Add(new FilterLevelCandidate { Id = "Root", HasSelection = true, Filter = ChildNamed(directSelection, "filter") });
-                return candidates;
-            }
-
-            int index = 0;
-            foreach (var lvl in levels)
-            {
-                var selection = ChildNamed(lvl, "selection");
-                candidates.Add(new FilterLevelCandidate
-                {
-                    Id = LevelIdOrDefault((string)lvl.Attribute("id") ?? (string)lvl.Attribute("name"), index),
-                    HasSelection = selection != null,
-                    Filter = selection != null ? ChildNamed(selection, "filter") : null
-                });
-                index++;
-            }
-            return candidates;
-        }
-
-        private static bool HasLocalName(XElement element, string localName)
-        {
-            return string.Equals(element.Name.LocalName, localName, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static XElement ChildNamed(XElement parent, string localName)
-        {
-            return parent.Elements().FirstOrDefault(e => HasLocalName(e, localName));
-        }
-
-        /// Pattern XML stores object references as `{guid}-{Name}`; readers report the name.
-        private static string StripObjectReferenceGuid(string reference)
-        {
-            if (string.IsNullOrEmpty(reference)) return reference;
-            var parts = reference.Split(new[] { '-' }, 6);
-            return parts.Length == 6 && Guid.TryParse(string.Join("-", parts, 0, 5), out _) ? parts[5] : reference;
-        }
-
-        private static readonly Regex FilterAttributeNamePattern = new Regex(@"^&?[a-zA-Z_][a-zA-Z0-9_]*$", RegexOptions.Compiled);
-
-        /// Deterministic request validation: identifier shape of the filter attribute name
-        /// (an optional leading `&` marks a variable), no empty condition, and no condition
-        /// repeated within the request or against the conditions already on the filter.
-        internal static bool ValidateFilterRequest(
-            string attributeName,
-            IList<string> conditions,
-            JArray existingConditions,
-            out string errorCode,
-            out string errorMessage)
-        {
-            errorCode = null;
-            errorMessage = null;
-
-            if (string.IsNullOrWhiteSpace(attributeName) || !FilterAttributeNamePattern.IsMatch(attributeName))
-            {
-                errorCode = "InvalidFilterAttributeName";
-                errorMessage = $"Filter attribute name '{attributeName}' is not a valid identifier (letters, digits and underscore, optionally prefixed with '&').";
-                return false;
-            }
-
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            if (existingConditions != null)
-            {
-                foreach (var existing in existingConditions)
-                    seen.Add(existing.ToString());
-            }
-
-            if (conditions == null) return true;
-            for (int i = 0; i < conditions.Count; i++)
-            {
-                string condition = conditions[i];
-                if (string.IsNullOrWhiteSpace(condition))
-                {
-                    errorCode = "FilterConditionEmpty";
-                    errorMessage = $"conditions[{i}] is empty; every filter condition must be a non-empty expression.";
-                    return false;
-                }
-
-                if (!seen.Add(condition))
-                {
-                    errorCode = "FilterConditionDuplicate";
-                    errorMessage = $"conditions[{i}] '{condition}' repeats another condition in the request or one already present on the filter.";
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        /// Filter authoring writes only through the native WorkWith SDK. Authoring the
-        /// filter through raw PatternInstance XML is exactly what the structural preflight
-        /// refuses, so there is deliberately no XML write fallback here (issue #559).
-        public static bool AddFilterAttribute(
-            KBObject instanceObj,
-            PatternAnalysisService patterns,
-            string levelId,
-            string attributeName,
-            string description,
-            string domain,
-            IList<string> conditions,
-            bool dryRun,
-            out JObject result,
-            out string errorCode,
-            out string errorMessage)
-        {
-            result = null;
-            errorCode = null;
-            errorMessage = null;
-
-            if (instanceObj == null)
-            {
-                errorCode = "NullInstance";
-                errorMessage = "WorkWith PatternInstance object is null.";
-                return false;
-            }
-
-            if (!ListFilters(instanceObj, patterns, levelId, out var existingFilters, out errorCode, out errorMessage))
-                return false;
-
-            var existingAttrs = existingFilters["attributes"] as JArray ?? new JArray();
-            var existingConditions = existingFilters["conditions"] as JArray;
-            string resolvedLevel = existingFilters["level"]?.ToString();
-
-            if (!ValidateFilterRequest(attributeName, conditions, existingConditions, out errorCode, out errorMessage))
-                return false;
-
-            if (existingAttrs.Any(a => string.Equals(a["name"]?.ToString(), attributeName, StringComparison.OrdinalIgnoreCase)))
-            {
-                errorCode = "FilterAttributeAlreadyExists";
-                errorMessage = $"Filter attribute '{attributeName}' already exists in WorkWith instance '{instanceObj.Name}'.";
-                return false;
-            }
-
-            var plan = BuildFilterPlan(instanceObj.Name, resolvedLevel, attributeName, description, domain, conditions);
-
-            if (GetWorkWithAssembly() == null)
-            {
-                result = plan;
-                errorCode = "WorkWithSdkUnavailable";
-                errorMessage = "Native WorkWith filter authoring is unavailable: the Artech.Patterns.WorkWith assembly could not be resolved. Filter writes have no XML fallback.";
-                return false;
-            }
-
-            if (dryRun)
-            {
-                result = plan;
-                return true;
-            }
-
-            if (!TryAddFilterAttributeNative(instanceObj, resolvedLevel, attributeName, description, domain, conditions, out errorCode, out errorMessage))
-                return false;
-
-            if (!ListFilters(instanceObj, patterns, resolvedLevel, out var verifyFilters, out _, out _))
-            {
-                errorCode = "VerificationReadFailed";
-                errorMessage = "Filter attribute was saved, but verification re-read failed.";
-                return false;
-            }
-
-            var verifiedAttrs = verifyFilters["attributes"] as JArray ?? new JArray();
-            var verifiedConditions = verifyFilters["conditions"] as JArray ?? new JArray();
-            int expectedAttributeCount = existingAttrs.Count + 1;
-            if (verifiedAttrs.Count < expectedAttributeCount)
-            {
-                errorCode = "VerificationFailed";
-                errorMessage = $"Filter attributes were truncated after write: expected at least {expectedAttributeCount}, found {verifiedAttrs.Count}.";
-                return false;
-            }
-
-            var verifiedAttr = verifiedAttrs.FirstOrDefault(a => string.Equals(a["name"]?.ToString(), attributeName, StringComparison.OrdinalIgnoreCase)) as JObject;
-            if (verifiedAttr == null)
-            {
-                errorCode = "VerificationFailed";
-                errorMessage = $"Filter attribute '{attributeName}' was not found in the verified post-write state.";
-                return false;
-            }
-
-            if (!VerifyFilterAttributeMatches(verifiedAttr, verifiedConditions, attributeName, description, domain, conditions, out string mismatchDetail))
-            {
-                errorCode = "VerificationMismatch";
-                errorMessage = $"Filter attribute '{attributeName}' was persisted, but post-save verification failed: {mismatchDetail}";
-                return false;
-            }
-
-            result = BuildFilterReceipt(instanceObj.Name, resolvedLevel, verifiedAttr, verifiedConditions, attributeName, description, domain, conditions);
-            return true;
-        }
-
-        internal static JObject BuildFilterPlan(
-            string instanceName,
-            string level,
-            string attributeName,
-            string description,
-            string domain,
-            IList<string> conditions)
-        {
-            var filterAttribute = new JObject { ["name"] = attributeName };
-            if (!string.IsNullOrWhiteSpace(description)) filterAttribute["description"] = description;
-            if (!string.IsNullOrWhiteSpace(domain)) filterAttribute["domain"] = domain;
-
-            return new JObject
-            {
-                ["instance"] = instanceName,
-                ["level"] = level,
-                ["filterAttribute"] = filterAttribute,
-                ["conditions"] = new JArray(conditions ?? Array.Empty<string>()),
-                ["route"] = "native-sdk",
-                ["validations"] = new JObject
-                {
-                    ["targetObjectResolved"] = true,
-                    ["workWithInstanceResolved"] = true,
-                    ["levelResolved"] = true,
-                    ["filterPresent"] = true,
-                    ["attributeNameFormatValid"] = true,
-                    ["attributeNameUnique"] = true,
-                    ["conditionsNonEmptyAndUnique"] = true
-                },
-                ["validationLimits"] = new JObject
-                {
-                    ["attributeName"] = "The filter attribute name is stored as given; it is not resolved against KB attributes or variables.",
-                    ["domain"] = "The Domain is stored as given; it is not resolved against KB Domains.",
-                    ["conditionExpressions"] = "Filter condition expressions are not compiled or evaluated."
-                },
-                ["defaultNormalization"] = NativeDefaultNormalization
-            };
-        }
-
-        private sealed class NativeFilterSurface
-        {
-            public MethodInfo Load;
-            public PropertyInfo Levels;
-            public MethodInfo SaveTo;
-            public MethodInfo AddFilterAttribute;
-            public MethodInfo AddCondition;
-            public PropertyInfo Description;
-            public PropertyInfo DomainName;
-        }
-
-        private static bool TryResolveNativeFilterSurface(
-            Type instanceType,
-            bool needsDescription,
-            bool needsDomain,
-            bool needsConditions,
-            out NativeFilterSurface surface,
-            out string missingMember)
-        {
-            surface = null;
-            missingMember = null;
-            var asm = GetWorkWithAssembly();
-            if (asm == null)
-            {
-                missingMember = "the Artech.Patterns.WorkWith assembly could not be resolved";
-                return false;
-            }
-
-            try
-            {
-                var wwiType = asm.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
-                var filterType = asm.GetType("Artech.Patterns.WorkWith.FilterElement");
-                var resolved = new NativeFilterSurface
-                {
-                    Load = wwiType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static),
-                    Levels = wwiType?.GetProperty("Levels"),
-                    SaveTo = (instanceType != null ? wwiType?.GetMethod("SaveTo", new[] { instanceType }) : null)
-                        ?? wwiType?.GetMethod("SaveTo"),
-                    AddFilterAttribute = filterType?.GetMethod("AddFilterAttribute", new[] { typeof(string) }),
-                    AddCondition = filterType?.GetMethod("AddCondition", new[] { typeof(string) })
-                };
-                var attributeType = resolved.AddFilterAttribute?.ReturnType;
-                resolved.Description = attributeType?.GetProperty("Description");
-                resolved.DomainName = new[] { attributeType?.GetProperty("DomainName"), attributeType?.GetProperty("Domain") }
-                    .FirstOrDefault(p => p != null && p.CanWrite && p.PropertyType == typeof(string));
-
-                var missing = new List<string>();
-                if (wwiType == null) missing.Add("WorkWithInstance");
-                if (resolved.Load == null) missing.Add("WorkWithInstance.Load");
-                if (resolved.Levels == null) missing.Add("WorkWithInstance.Levels");
-                if (resolved.SaveTo == null) missing.Add("WorkWithInstance.SaveTo");
-                if (filterType == null) missing.Add("FilterElement");
-                if (resolved.AddFilterAttribute == null) missing.Add("FilterElement.AddFilterAttribute(string)");
-                if (needsConditions && resolved.AddCondition == null) missing.Add("FilterElement.AddCondition(string)");
-                if (needsDescription && (resolved.Description == null || !resolved.Description.CanWrite)) missing.Add("FilterAttributeElement.Description setter");
-                if (needsDomain && resolved.DomainName == null) missing.Add("FilterAttributeElement.DomainName string setter");
-                if (missing.Count > 0)
-                {
-                    missingMember = "unresolved member(s): " + string.Join(", ", missing);
-                    return false;
-                }
-
-                surface = resolved;
-                return true;
-            }
-            catch (Exception ex)
-            {
-                missingMember = "surface reflection failed: " + ex.Message;
-                return false;
-            }
-        }
-
-        /// Native write: every SDK member is resolved before the typed model is touched,
-        /// and nothing is saved unless every requested piece was applied.
-        internal static bool TryAddFilterAttributeNative(
-            KBObject instanceObj,
-            string levelId,
-            string attributeName,
-            string description,
-            string domain,
-            IList<string> conditions,
-            out string errorCode,
-            out string errorMessage)
-        {
-            errorCode = null;
-            errorMessage = null;
-            bool hasDescription = !string.IsNullOrWhiteSpace(description);
-            bool hasDomain = !string.IsNullOrWhiteSpace(domain);
-            bool hasConditions = conditions != null && conditions.Count > 0;
-
-            if (!TryResolveNativeFilterSurface(instanceObj?.GetType(), hasDescription, hasDomain, hasConditions, out var surface, out string missingMember))
-            {
-                errorCode = "WorkWithSdkUnavailable";
-                errorMessage = "Native WorkWith filter authoring is unavailable: " + missingMember + ". Filter writes have no XML fallback.";
-                return false;
-            }
-
-            bool writtenToPart = false;
-            try
-            {
-                object wwi = surface.Load.Invoke(null, new object[] { instanceObj });
-                if (wwi == null)
-                {
-                    errorCode = "WorkWithFilterAuthoringFailed";
-                    errorMessage = "WorkWithInstance.Load returned null for the PatternInstance.";
-                    return false;
-                }
-
-                var levels = surface.Levels.GetValue(wwi, null) as IEnumerable;
-                var candidates = levels != null ? CollectNativeFilterLevels(levels) : new List<FilterLevelCandidate>();
-                if (!TryResolveFilterLevel(candidates, levelId, out var resolved, out errorCode, out errorMessage))
-                    return false;
-
-                object newAttribute = surface.AddFilterAttribute.Invoke(resolved.Filter, new object[] { attributeName });
-                if (newAttribute == null)
-                {
-                    errorCode = "WorkWithFilterAuthoringFailed";
-                    errorMessage = "FilterElement.AddFilterAttribute returned null; nothing was saved.";
-                    return false;
-                }
-
-                if (hasDescription) surface.Description.SetValue(newAttribute, description, null);
-                if (hasDomain) surface.DomainName.SetValue(newAttribute, domain, null);
-                if (hasConditions)
-                {
-                    foreach (var condition in conditions)
-                        surface.AddCondition.Invoke(resolved.Filter, new object[] { condition });
-                }
-
-                surface.SaveTo.Invoke(wwi, new object[] { instanceObj });
-                writtenToPart = true;
-                instanceObj.Save();
-                return true;
-            }
-            catch (Exception ex)
-            {
-                var cause = ex is TargetInvocationException invocation && invocation.InnerException != null ? invocation.InnerException : ex;
-                errorCode = "WorkWithFilterAuthoringFailed";
-                errorMessage = "Native WorkWith filter authoring failed: " + cause.Message
-                    + (writtenToPart
-                        ? " The typed model was written to the in-memory PatternInstance part but Save failed; reopen the object before retrying."
-                        : " Nothing was saved.");
-                return false;
-            }
-        }
-
-        private static string[] ComparedFilterFields(string description, string domain)
-        {
-            var fields = new List<string> { "name" };
-            if (!string.IsNullOrWhiteSpace(description)) fields.Add("description");
-            if (!string.IsNullOrWhiteSpace(domain)) fields.Add("domain");
-            fields.Add("conditions");
-            return fields.ToArray();
-        }
-
-        internal static bool VerifyFilterAttributeMatches(
-            JObject observedAttribute,
-            JArray observedConditions,
-            string attributeName,
-            string description,
-            string domain,
-            IList<string> conditions,
-            out string mismatchDetail)
-        {
-            mismatchDetail = null;
-            if (observedAttribute == null)
-            {
-                mismatchDetail = "Filter attribute not found in verified state.";
-                return false;
-            }
-
-            string observedName = observedAttribute["name"]?.ToString() ?? "";
-            if (!string.Equals(observedName, attributeName, StringComparison.OrdinalIgnoreCase))
-            {
-                mismatchDetail = $"Filter attribute name mismatch: expected '{attributeName}', observed '{observedName}'.";
-                return false;
-            }
-
-            if (!string.IsNullOrWhiteSpace(description))
-            {
-                string observedDescription = observedAttribute["description"]?.ToString() ?? "";
-                if (!string.Equals(observedDescription, description, StringComparison.Ordinal))
-                {
-                    mismatchDetail = $"Description mismatch: expected '{description}', observed '{observedDescription}'.";
-                    return false;
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(domain))
-            {
-                string observedDomain = observedAttribute["domain"]?.ToString() ?? "";
-                if (!string.Equals(observedDomain, domain, StringComparison.OrdinalIgnoreCase))
-                {
-                    mismatchDetail = $"Domain mismatch: expected '{domain}', observed '{observedDomain}'.";
-                    return false;
-                }
-            }
-
-            var observed = observedConditions?.Select(c => c.ToString()).ToList() ?? new List<string>();
-            foreach (var condition in conditions ?? Array.Empty<string>())
-            {
-                if (!observed.Contains(condition, StringComparer.Ordinal))
-                {
-                    mismatchDetail = $"Condition '{condition}' was not found in the verified filter conditions [{string.Join(", ", observed)}].";
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        internal static JObject BuildFilterReceipt(
-            string instanceName,
-            string level,
-            JObject observedAttribute,
-            JArray observedConditions,
-            string attributeName,
-            string description,
-            string domain,
-            IList<string> conditions)
-        {
-            return new JObject
-            {
-                ["instance"] = instanceName,
-                ["level"] = level,
-                ["filterAttribute"] = observedAttribute.DeepClone(),
-                ["conditions"] = observedConditions.DeepClone(),
-                ["requested"] = new JObject
-                {
-                    ["name"] = attributeName,
-                    ["description"] = description ?? "",
-                    ["domain"] = domain ?? "",
-                    ["conditions"] = new JArray(conditions ?? Array.Empty<string>())
-                },
-                ["saved"] = true,
-                ["persisted"] = true,
-                ["verified"] = true,
-                ["verification"] = new JObject
-                {
-                    ["scope"] = "filter_attribute_reread",
-                    ["fieldsCompared"] = new JArray(ComparedFilterFields(description, domain)),
-                    ["allFieldsMatched"] = true,
-                    ["observedSource"] = "in_memory_instance_reread"
-                },
-                ["route"] = "native-sdk",
-                ["verificationScope"] = "filter attribute definition, the Level's filter conditions, filter attribute count integrity, and post-write in-memory instance re-read",
-                ["defaultNormalization"] = NativeDefaultNormalization,
-                ["derivedObjectRegeneration"] = "not_guaranteed"
-            };
-        }
-
     }
 }

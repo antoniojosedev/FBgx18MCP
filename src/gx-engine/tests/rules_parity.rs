@@ -310,6 +310,12 @@ fn procedure_with_comments_and_rules_in_catalog() {
                 source: r#"{"Res":{"kind":"numeric","precision":10,"scale":0}}"#.into(),
             },
         ],
+        system_root: false,
+        refusal: None,
+        not_generated: None,
+        library: false,
+        main: None,
+        module_path: Vec::new(),
     };
 
     let calc = KbObject {
@@ -338,6 +344,12 @@ fn procedure_with_comments_and_rules_in_catalog() {
                 source: r#"{"Input":{"kind":"numeric","precision":10,"scale":0},"Result":{"kind":"numeric","precision":10,"scale":0}}"#.into(),
             },
         ],
+        system_root: false,
+        refusal: None,
+        not_generated: None,
+        library: false,
+        main: None,
+        module_path: Vec::new(),
     };
 
     catalog
@@ -355,7 +367,7 @@ fn procedure_with_comments_and_rules_in_catalog() {
 }
 
 #[test]
-fn transaction_with_rules_in_catalog() {
+fn procedure_using_a_transaction_with_rules_is_refused() {
     let mut catalog = Catalog::empty();
     let structure = TransactionStructure::new(TransactionLevel {
         name: "Customer".into(),
@@ -404,6 +416,12 @@ fn transaction_with_rules_in_catalog() {
                 .into(),
             },
         ],
+        system_root: false,
+        refusal: None,
+        not_generated: None,
+        library: false,
+        main: None,
+        module_path: Vec::new(),
     };
 
     let proc = KbObject {
@@ -424,20 +442,26 @@ fn transaction_with_rules_in_catalog() {
                 source: r#"{"Cust":{"kind":"record","schema":"Customer"}}"#.into(),
             },
         ],
+        system_root: false,
+        refusal: None,
+        not_generated: None,
+        library: false,
+        main: None,
+        module_path: Vec::new(),
     };
 
     catalog
         .apply(0, &[Edit::Upsert(trn), Edit::Upsert(proc)])
         .unwrap();
 
-    let project =
+    // The Procedure uses a Transaction, which is web UI: the build is refused by name, never built.
+    let err =
         gx_engine::kb::project_from_catalog(&catalog, &ObjectId::new("proc_main").unwrap(), None)
-            .unwrap();
-
-    assert_eq!(project.record_types.len(), 1);
-    assert_eq!(project.record_types[0].name, "CUSTOMER");
-    let emitted = gx_engine::compile(&project).unwrap();
-    assert!(emitted.contains("\"CUSTOMER\""));
+            .expect_err("a Procedure that uses a Transaction must be refused");
+    assert!(
+        err.contains("web UI") && err.to_ascii_uppercase().contains("CUSTOMER"),
+        "the refusal names the Transaction: {err}"
+    );
 }
 
 #[test]

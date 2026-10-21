@@ -1,0 +1,1 @@
+Trn353Id >= &Trn353Id when not &Trn353Id.IsEmpty();

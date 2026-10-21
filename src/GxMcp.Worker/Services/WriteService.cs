@@ -506,6 +506,24 @@ namespace GxMcp.Worker.Services
             _lastWriteAtUtc[target] = DateTime.UtcNow;
         }
 
+        // Opaque, comparable form of "the newest write this Worker made to any of these
+        // targets". A recovery read samples it before and after reading and records the
+        // first sample: a write that lands later makes the stamp differ, which is how a
+        // certificate learns it describes a version that is no longer current. Several
+        // keys because a write is stamped under the name the caller used, which need not
+        // be the name the SDK resolves.
+        internal static string TargetWriteStamp(params string[] targets)
+        {
+            long newest = 0;
+            foreach (string target in targets ?? Array.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(target)) continue;
+                if (_lastWriteAtUtc.TryGetValue(target, out var writtenAt) && writtenAt.Ticks > newest)
+                    newest = writtenAt.Ticks;
+            }
+            return "w" + newest.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         private static void MarkTargetDirty(string target)
         {
             if (string.IsNullOrWhiteSpace(target)) return;
@@ -673,6 +691,7 @@ namespace GxMcp.Worker.Services
         // IWriteServiceFacade adapter — translates JObject args into the canonical WriteObject call.
         public string WriteObject(string target, JObject args)
         {
+            using var sdkGate = SdkGate.Enter();
             var facadeArgs = NormalizeFacadeArgs(args);
 
             string facadeValidationError = ValidateRequireObjectSaveArgs(target, facadeArgs);
@@ -1175,6 +1194,7 @@ namespace GxMcp.Worker.Services
 
         public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool forceWrite = false, string baseVersion = null, string verifyMode = null, bool requireObjectSave = false, bool allowGridStructure = false)
         {
+            using var sdkGate = SdkGate.Enter();
             partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
             if (requireObjectSave) preferFastSourceSave = false;
             // A blank verifyMode means "omitted": the gateway serializes an absent argument as a
@@ -1757,6 +1777,7 @@ namespace GxMcp.Worker.Services
                     var objToUpdate = _objectService.FindObject(target, typeFilter);
                     if (objToUpdate != null && (objToUpdate is global::Artech.Genexus.Common.Objects.Transaction || objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)))
                     {
+                        IReadOnlyList<GxMcp.Worker.Parsers.TransactionDslParser.CreatedGlobalIdentity> createdGlobals = null;
                         try {
                             string preSnapshot = null;
                             if (objToUpdate.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
@@ -1764,6 +1785,11 @@ namespace GxMcp.Worker.Services
                                 try { preSnapshot = GxMcp.Worker.Helpers.StructureParser.SerializeToText(objToUpdate); } catch { }
                             }
                             StructureParser.ParseFromText(objToUpdate, decodedCode);
+                            // issue #592 — the globals this parse created outlive the parse:
+                            // the Transaction save comes next and is verified afterwards.
+                            // Carry their identities on the receipt so a rollback after a
+                            // failed verification can undo them, and the caller can see them.
+                            createdGlobals = GxMcp.Worker.Parsers.TransactionDslParser.TakeCommittedGlobals();
                             objToUpdate.EnsureSave();
                             StampObjectRevisionDates(objToUpdate, objToUpdate.Model as global::Artech.Architecture.Common.Objects.KBModel);
                             // Friction-report 05-13 #2: a Structure write on an SDT or Transaction
@@ -1882,6 +1908,7 @@ namespace GxMcp.Worker.Services
                                     ["rolledBack"] = rolledBack
                                 };
                                 if (rollbackError != null) notPersisted["rollbackError"] = rollbackError;
+                                AttachCreatedGlobals(notPersisted, createdGlobals);
                                 return Models.McpResponse.Err(
                                     code: "WriteNotPersisted",
                                     message: roundTripError,
@@ -1895,6 +1922,7 @@ namespace GxMcp.Worker.Services
                                 ["details"] = "Structure DSL successfully applied",
                                 ["persistedVerified"] = true
                             };
+                            AttachCreatedGlobals(okPayload, createdGlobals);
                             return Models.McpResponse.Ok(
                                 target: target,
                                 code: "WriteApplied",
@@ -1923,6 +1951,10 @@ namespace GxMcp.Worker.Services
                                 target: target);
                         } catch (Exception ex) {
                             Logger.Error("[DEBUG-SAVE] Error parsing Structure DSL: " + ex.Message);
+                            // A failure after the parse (save step) leaves the parse's globals
+                            // in the KB; keep them on the envelope so the rollback can undo them.
+                            var syntaxExtra = new JObject();
+                            AttachCreatedGlobals(syntaxExtra, createdGlobals);
                             return Models.McpResponse.Err(
                                 code: "StructureSyntaxInvalid",
                                 message: $"Invalid Structure Syntax: {ex.Message}",
@@ -1931,7 +1963,8 @@ namespace GxMcp.Worker.Services
                                     tool: "genexus_read",
                                     args: new JObject { ["name"] = target, ["part"] = "Structure" },
                                     why: "Returns the current Structure DSL so you can diff against your attempted change.")),
-                                target: target);
+                                target: target,
+                                extra: syntaxExtra.HasValues ? syntaxExtra : null);
                         }
                     }
                 }

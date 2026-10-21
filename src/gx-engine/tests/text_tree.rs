@@ -49,7 +49,7 @@ fn test_export_procedure_to_text_file() {
     assert_eq!(snapshot.files.len(), 1);
 
     let file = &snapshot.files[0];
-    assert_eq!(file.path, "Objects/Procedures/CALCSUM.prc");
+    assert_eq!(file.path, "Objects/Procedures/CalcSum.prc");
     assert_eq!(file.kind, ObjectKind::Procedure);
     assert!(file.content.contains("=== Rules ==="));
     assert!(file.content.contains("Parm(in:&A, in:&B, out:&Result);"));
@@ -62,7 +62,7 @@ fn test_export_procedure_to_text_file() {
     let imported = import_text_tree_to_catalog(&snapshot).expect("import catalog");
     assert_eq!(imported.objects().count(), 1);
     let imported_proc = imported.get(&proc_id).expect("proc in catalog");
-    assert_eq!(imported_proc.name, "CALCSUM");
+    assert_eq!(imported_proc.name, "CalcSum");
     assert_eq!(imported_proc.kind, ObjectKind::Procedure);
     assert_eq!(imported_proc.source_parts.len(), 3);
 }
@@ -154,7 +154,7 @@ fn test_export_transaction_to_text_file() {
     let imported = import_text_tree_to_catalog(&snapshot).expect("import catalog");
     assert_eq!(imported.objects().count(), 1);
     let imported_trn = imported.get(&trn_id).expect("trn in catalog");
-    assert_eq!(imported_trn.name, "CUSTOMER");
+    assert_eq!(imported_trn.name, "Customer");
     assert_eq!(imported_trn.kind, ObjectKind::Transaction);
 
     let struct_part = imported_trn
@@ -225,7 +225,7 @@ fn test_export_domain_and_attribute_to_text_files() {
     let imported = import_text_tree_to_catalog(&snapshot).expect("import catalog");
     assert_eq!(imported.objects().count(), 2);
     let imported_att = imported.get(&att_id).expect("att in catalog");
-    assert_eq!(imported_att.name, "CUSTID");
+    assert_eq!(imported_att.name, "CustId");
     assert_eq!(imported_att.references.len(), 1);
     assert_eq!(imported_att.references[0].kind, ReferenceKind::BasedOn);
     assert_eq!(imported_att.references[0].target, dom_id);
@@ -262,7 +262,7 @@ fn test_export_sdt_to_text_file() {
     let imported = import_text_tree_to_catalog(&snapshot).expect("import catalog");
     assert_eq!(imported.objects().count(), 1);
     let imported_sdt = imported.get(&sdt_id).expect("sdt in catalog");
-    assert_eq!(imported_sdt.name, "PRODUCTSDT");
+    assert_eq!(imported_sdt.name, "ProductSDT");
     let fields_part = &imported_sdt.source_parts[0];
     assert!(fields_part.source.contains("ProductId"));
     assert!(fields_part.source.contains("Price"));
@@ -318,9 +318,9 @@ fn test_export_dataprovider_and_dataselector() {
     let imported = import_text_tree_to_catalog(&snapshot).expect("import catalog");
     assert_eq!(imported.objects().count(), 2);
     let imported_dp = imported.get(&dp_id).expect("dp in catalog");
-    assert_eq!(imported_dp.name, "CUSTOMERDP");
+    assert_eq!(imported_dp.name, "CustomerDP");
     let imported_ds = imported.get(&ds_id).expect("ds in catalog");
-    assert_eq!(imported_ds.name, "ACTIVECUSTOMERS");
+    assert_eq!(imported_ds.name, "ActiveCustomers");
 }
 
 #[test]
@@ -354,7 +354,7 @@ fn test_export_design_system_object() {
     let imported = import_text_tree_to_catalog(&snapshot).expect("import catalog");
     assert_eq!(imported.objects().count(), 1);
     let imported_dso = imported.get(&dso_id).expect("dso in catalog");
-    assert_eq!(imported_dso.name, "THEMEBASE");
+    assert_eq!(imported_dso.name, "ThemeBase");
     assert_eq!(imported_dso.kind, ObjectKind::DesignSystem);
 }
 

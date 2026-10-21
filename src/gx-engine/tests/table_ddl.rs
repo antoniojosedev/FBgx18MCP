@@ -867,3 +867,93 @@ fn test_exportfile_xml_to_physical_table_ddl() {
     assert!(ddl.contains("  [CustomerName] CHAR(50) NOT NULL,"));
     assert!(ddl.contains("  PRIMARY KEY ([CustomerId])"));
 }
+
+#[test]
+fn database_ddl_creates_referenced_tables_before_their_dependents() {
+    let mut parent = Table::new("Parent");
+    parent.add_column(
+        TableColumn::new(
+            "Id",
+            DataType::Numeric {
+                precision: 4,
+                scale: 0,
+            },
+        )
+        .key(true),
+    );
+    let mut child = Table::new("Child");
+    child.add_column(
+        TableColumn::new(
+            "Id",
+            DataType::Numeric {
+                precision: 4,
+                scale: 0,
+            },
+        )
+        .key(true),
+    );
+    child.add_foreign_key(TableForeignKey::new(
+        "FK_Child_Parent",
+        vec!["Id".into()],
+        "Parent",
+        vec!["Id".into()],
+    ));
+    for dialect in [
+        SqlDialect::SqlServer,
+        SqlDialect::PostgreSql,
+        SqlDialect::Oracle,
+        SqlDialect::Ansi,
+    ] {
+        let ddl = generate_database_ddl(&[child.clone(), parent.clone()], dialect).unwrap();
+        let parent_create = format!("CREATE TABLE {}", dialect.quote_identifier("Parent"));
+        let child_create = format!("CREATE TABLE {}", dialect.quote_identifier("Child"));
+        assert!(
+            ddl.find(&parent_create).unwrap() < ddl.find(&child_create).unwrap(),
+            "{ddl}"
+        );
+    }
+}
+
+#[test]
+fn database_ddl_refuses_missing_cyclic_and_duplicate_tables() {
+    let make = |name: &str, target: &str| {
+        let mut table = Table::new(name);
+        table.add_column(
+            TableColumn::new(
+                "Id",
+                DataType::Numeric {
+                    precision: 4,
+                    scale: 0,
+                },
+            )
+            .key(true),
+        );
+        table.add_foreign_key(TableForeignKey::new(
+            format!("FK_{name}_{target}"),
+            vec!["Id".into()],
+            target,
+            vec!["Id".into()],
+        ));
+        table
+    };
+    let child = make("Child", "Parent");
+    assert!(
+        generate_database_ddl(std::slice::from_ref(&child), SqlDialect::SqlServer)
+            .unwrap_err()
+            .contains("missing table 'Parent'")
+    );
+    assert!(
+        generate_database_ddl(
+            &[child.clone(), make("Parent", "Child")],
+            SqlDialect::SqlServer
+        )
+        .unwrap_err()
+        .contains("cyclic foreign-key")
+    );
+    assert!(
+        generate_database_ddl(&[child, make("child", "Parent")], SqlDialect::SqlServer)
+            .unwrap_err()
+            .contains("duplicate table")
+    );
+    assert!(generate_database_ddl(&[make("Self", "SELF")], SqlDialect::SqlServer).is_ok());
+}

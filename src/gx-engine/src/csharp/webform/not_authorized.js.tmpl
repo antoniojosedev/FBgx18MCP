@@ -1,0 +1,42 @@
+gx.evt.autoSkip = false;
+gx.define('@@class_path@@', false, function () {
+   this.ServerClass =  "@@class_path@@" ;
+   this.PackageName =  "GeneXus.Programs" ;
+   this.ServerFullClass =  "@@class_path@@.aspx" ;
+   this.setObjectType("web");
+   this.hasEnterEvent = false;
+   this.skipOnEnter = false;
+   this.autoRefresh = true;
+   this.fullAjax = true;
+   this.supportAjaxEvents =  true ;
+   this.ajaxSecurityToken =  true ;
+   this.DSO =  "@@theme@@" ;
+   this.SetStandaloneVars=function()
+   {
+      this.GxObject=gx.fn.getControlValue("vGXOBJECT") ;
+   };
+   this.e13@@lid@@2_client=function()
+   {
+      return this.executeServerEvent("ENTER", true, null, false, false);
+   };
+   this.e14@@lid@@2_client=function()
+   {
+      return this.executeServerEvent("CANCEL", true, null, false, false);
+   };
+   this.GXValidFnc = [];
+   var GXValidFnc = this.GXValidFnc ;
+   this.GXCtrlIds=[3,6,12,15];
+   this.GXLastCtrlId =15;
+   GXValidFnc[3]={ id: 3, fld:"TABLE1",grid:0};
+   GXValidFnc[6]={ id: 6, fld:"TITLETEXT", format:0,grid:0, ctrltype: "textblock"};
+   GXValidFnc[12]={ id: 12, fld:"TABLE2",grid:0};
+   GXValidFnc[15]={ id: 15, fld:"TABLE3",grid:0};
+   this.GxObject = "" ;
+   this.Events = {"e13@@lid@@2_client": ["ENTER", true] ,"e14@@lid@@2_client": ["CANCEL", true]};
+   this.EvtParms["REFRESH"] = [[],[]];
+   this.EvtParms["ENTER"] = [[],[]];
+   this.setVCMap("GxObject", "vGXOBJECT", 0, "svchar", 256, 0);
+   this.Initialize( );
+   this.setComponent({id: "HEADERBC" ,GXClass: null , Prefix: "W0002" , lvl: 1 });
+});
+gx.wi( function() { gx.createParentObj(this.@@class_path@@);});

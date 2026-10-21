@@ -93,6 +93,33 @@ pwsh -NoProfile -File .\scripts\release-doctor.ps1 -Version <X.Y.Z> `
   registry state before retrying. The workflow is idempotent for an already
   published exact version.
 
+For guarded recovery, `scripts/release-resume.ps1 -Version <X.Y.Z> -PrintOnly`
+asks the remote doctor for a safe command without executing it. Remove
+`-PrintOnly` only when authorized to resume. Unknown GitHub/npm state, mismatched
+commits/tags, or an incomplete certificate blocks recovery; it does not authorize
+retrying an uncertain publication. `-SkipBuild -SkipTests` is derived only from a
+matching complete passed certificate.
+
+Before any tag or main push, the release checks the source SHA, base freshness,
+artifact certificate, and required CI checks again. Prepare the final release SHA
+without building, tagging, pushing, or publishing:
+
+```powershell
+pwsh -NoProfile -File .\release.ps1 -Version <X.Y.Z> -PrepareOnly
+```
+
+Push that prepared SHA to a candidate branch within the authorized repository,
+then validate it before rerunning the same version without `-PrepareOnly`.
+The normal release also checks CI before its expensive build/preflight;
+checks on another commit cannot authorize publication. CI does **not**
+run on a bare candidate push: open a PR or explicitly dispatch `ci.yml` against
+that candidate ref. For an already prepared, unpushed release commit, dispatching
+against the candidate branch preserves its exact SHA (a PR merge SHA may differ).
+The candidate must include the final version/changelog source state; any amendment
+invalidates previous check evidence. Only after those checks pass may the canonical
+release entrypoint advance main and publish. Main's required checks also apply
+to administrators; do not bypass them.
+
 For issue collection, live SDK/KB evidence, warning baselines, detached status
 files, and merge discipline, use `release_protocol.md` and its linked guides.
 Contributors should open a PR against `main`; only the maintainer publishes.

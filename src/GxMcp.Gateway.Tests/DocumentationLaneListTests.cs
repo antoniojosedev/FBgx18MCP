@@ -7,8 +7,8 @@ using Xunit;
 namespace GxMcp.Gateway.Tests
 {
     /// <summary>
-    /// Guards the copy-pasteable validation-lane block that ships in both
-    /// <c>AGENTS.md</c> and <c>CODING_STANDARDS.md</c>.
+    /// Guards the canonical validation-lane block in <c>CODING_STANDARDS.md</c>
+    /// and the <c>AGENTS.md</c> pointer to that single source of truth.
     ///
     /// <para>Two failure modes, both of which only show up after someone pastes the
     /// block into a terminal:</para>
@@ -43,7 +43,18 @@ namespace GxMcp.Gateway.Tests
 
         /// <summary>Documents that carry the lane block, by repo-root-relative name.</summary>
         public static IEnumerable<object[]> LaneDocuments =>
-            new[] { new object[] { "AGENTS.md" }, new object[] { "CODING_STANDARDS.md" } };
+            new[] { new object[] { "CODING_STANDARDS.md" } };
+
+        [Fact]
+        public void AgentGuide_LinksCanonicalLanesWithoutDuplicatingCommands()
+        {
+            string guide = RepoSource.Read("AGENTS.md");
+            Assert.Contains("(CODING_STANDARDS.md#validation-lanes)", guide);
+            Assert.Contains("Run `.\\build.ps1` **last**", guide);
+            Assert.DoesNotContain(ReadFencedBlocks(guide.Replace("\r\n", "\n").Split('\n')),
+                block => block.Body.Any(line => line.TrimStart().StartsWith(BuildCommand, StringComparison.Ordinal)));
+            Assert.NotEmpty(SingleLaneBlock("CODING_STANDARDS.md").Body);
+        }
 
         [Theory]
         [MemberData(nameof(LaneDocuments))]

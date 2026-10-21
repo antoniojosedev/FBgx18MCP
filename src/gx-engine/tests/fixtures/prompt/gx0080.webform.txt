@@ -1,0 +1,88 @@
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form id="1" type="layout">
+    <detail PanelType="Web">
+      <layout id="e1c895e1-ee0e-4cba-afd3-62b60952b789">
+        <table id="d1938a23-359a-4293-a433-e229acac931a" controlName="Main" class="d52f9833-90c9-4096-8e42-27485741f78a-443 d52f9833-90c9-4096-8e42-27485741f78a-486" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:25},{&quot;width&quot;:75}]]}]">
+          <row id="a091bfac-6cb7-4338-ad84-b2a063fb6a95">
+            <cell id="4bac717c-9004-4567-bedd-bb76f3158c21" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-174">
+              <table id="584b0eb2-b202-4f40-b648-d3e6974f45c4" controlName="AdvancedContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-6" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+                <row id="4609a400-5f7c-4776-ac01-0be9a899c075">
+                  <cell id="9ff23633-edb3-4a1e-af9d-7880dea55db0">
+                    <table id="49167af7-8f1d-4298-b62b-cdb3886537a0" controlName="LiveMoveAttributeRules2IdFilterContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-5 d52f9833-90c9-4096-8e42-27485741f78a-485" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+                      <row id="de11a0d1-486f-419b-9201-05cd67bd94c1">
+                        <cell id="96100943-9dd3-4c3a-84fc-30d466f4179a">
+                          <textblock controlName="LblLiveMoveAttributeRules2IdFilter" caption="=LiveMoveAttributeRules2Id.Title" class="d52f9833-90c9-4096-8e42-27485741f78a-488 d52f9833-90c9-4096-8e42-27485741f78a-239" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;GxFormat&lt;/Name&gt;&lt;Value&gt;HTML&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                        </cell>
+                      </row>
+                      <row id="ec6e00c3-a2d5-432f-897c-ed493825c684">
+                        <cell id="286c589d-171f-4295-bf07-07b6493963df" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-489">
+                          <data attribute="var:6" labelPosition="None" />
+                        </cell>
+                      </row>
+                    </table>
+                  </cell>
+                </row>
+                <row id="8368c53b-eca8-4e15-aa2c-87112b50caca">
+                  <cell id="ffc87f79-6edb-4f62-8c8a-cb3bf5346a10">
+                    <table id="5c211ac6-684b-42ee-acef-688a2690b51f" controlName="LiveMoveAttributeRules2DescriptionFilterContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-5 d52f9833-90c9-4096-8e42-27485741f78a-485" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+                      <row id="fa30ce9f-aeb8-4be3-abd6-9b3741202e1b">
+                        <cell id="e7f58951-9a77-44f0-9663-0fbba33ce730">
+                          <textblock controlName="LblLiveMoveAttributeRules2DescriptionFilter" caption="=LiveMoveAttributeRules2Description.Title" class="d52f9833-90c9-4096-8e42-27485741f78a-488 d52f9833-90c9-4096-8e42-27485741f78a-239" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;GxFormat&lt;/Name&gt;&lt;Value&gt;HTML&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                        </cell>
+                      </row>
+                      <row id="2e66fdea-e900-4a68-8745-c031c2121f0c">
+                        <cell id="f040d51d-d0a9-4a34-b59c-bdb1db92ccce" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-489">
+                          <data attribute="var:7" labelPosition="None" />
+                        </cell>
+                      </row>
+                    </table>
+                  </cell>
+                </row>
+                <row id="2fc7b693-ee5b-4679-befb-1f8392289f7d">
+                  <cell id="ef884554-4870-42dc-8d7a-cb573cf3c46e">
+                    <table id="5ec6321d-b68d-4d97-909e-abd7d881272e" controlName="LiveMoveAttributeRules2CodeFilterContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-5 d52f9833-90c9-4096-8e42-27485741f78a-485" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+                      <row id="3b2aeb5d-5fba-45de-8b30-75cbf9c57ce4">
+                        <cell id="79aa6e7b-63c7-451a-a4e2-74cf7e613416">
+                          <textblock controlName="LblLiveMoveAttributeRules2CodeFilter" caption="=LiveMoveAttributeRules2Code.Title" class="d52f9833-90c9-4096-8e42-27485741f78a-488 d52f9833-90c9-4096-8e42-27485741f78a-239" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;GxFormat&lt;/Name&gt;&lt;Value&gt;HTML&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                        </cell>
+                      </row>
+                      <row id="55d51888-00f1-4a04-92be-ada57aed3099">
+                        <cell id="179f7df3-ac84-45ef-992b-96d0f0cc63e3" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-489">
+                          <data attribute="var:8" labelPosition="None" />
+                        </cell>
+                      </row>
+                    </table>
+                  </cell>
+                </row>
+              </table>
+            </cell>
+            <cell id="529807d3-7abd-4af9-a495-1f2c3b6da032" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-491">
+              <table id="0fc1bacf-0826-4566-9809-65c9fd251cd9" controlName="GridTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;visible&quot;:false}],[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]},{&quot;scale&quot;:&quot;xs&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]},{&quot;scale&quot;:&quot;md&quot;,&quot;rows&quot;:[[{&quot;visible&quot;:false}]]},{&quot;scale&quot;:&quot;lg&quot;,&quot;rows&quot;:[[{&quot;visible&quot;:false}]]}]">
+                <row id="34d4736c-563a-4910-8a0c-093b4635bca7">
+                  <cell id="08238d9d-be56-43c0-85d0-c03c3058e654" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-493">
+                    <action controlName="BtnToggle" onClickEvent="'Toggle'" caption="|||" class="d52f9833-90c9-4096-8e42-27485741f78a-47" />
+                  </cell>
+                </row>
+                <row id="26718ccf-16e6-4797-84c5-c114692c643f">
+                  <cell id="ba44dd97-e924-4682-a45c-7e0a4aadec1d">
+                    <simplegrid id="7b39b894-6016-4d38-bb62-6ceb87a05065" controlName="Grid1" class="d52f9833-90c9-4096-8e42-27485741f78a-175" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;MaxRows&lt;/Name&gt;&lt;Value&gt;10&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;">
+                      <item id="d0d14419-658d-48ae-963d-7a68425c86c6" attribute="var:5" titleExp="" class="d52f9833-90c9-4096-8e42-27485741f78a-196" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-494&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ReturnOnClick&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                      <item id="0b50dfda-87ec-411d-baef-7e26dbd49cb5" attribute="att:33" titleExp="=LiveMoveAttributeRules2Id.ContextualTitle" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-473&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                      <item id="1a373e92-7270-45c4-aa45-b09f898fbda4" attribute="att:34" titleExp="=LiveMoveAttributeRules2Description.ContextualTitle" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-473 d52f9833-90c9-4096-8e42-27485741f78a-153&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                      <item id="31de9b7d-0b60-4913-a20e-661017a5e582" attribute="att:35" titleExp="=LiveMoveAttributeRules2Code.ContextualTitle" class="d52f9833-90c9-4096-8e42-27485741f78a-472" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-473&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ReturnOnClick&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColReadOnly&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                    </simplegrid>
+                  </cell>
+                </row>
+                <row id="fa80e854-e800-4d04-af1a-ab4b792c8482">
+                  <cell id="072932ab-4b89-4385-8b24-65ed92b0a5f3">
+                    <action controlName="btn_cancel" onClickEvent="Cancel" caption="GX_BtnCancel" class="d52f9833-90c9-4096-8e42-27485741f78a-27" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+        </table>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

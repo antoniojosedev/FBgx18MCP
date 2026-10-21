@@ -64,15 +64,22 @@ foreach ($entry in @{
 }
 
 $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+# Nothing may run between the canonical script and its exit status: any trailing
+# statement (or a pipeline/log filter around the call) would replace the release's
+# failure with its own success. A missing status is treated as a failure, never as 0.
 $exitCode = 1
 Push-Location $root
 try {
+    $global:LASTEXITCODE = $null
     if ($pwsh) {
         & $pwsh.Source -NoProfile -File $canonical @($forwarded)
+        if ($null -ne $LASTEXITCODE) { $exitCode = [int]$LASTEXITCODE }
     } else {
+        # In-process run: a script that finishes normally leaves $LASTEXITCODE stale, so
+        # success is read from $? and only a failing run consults the numeric code.
         & $canonical @($forwarded)
+        if ($?) { $exitCode = 0 } elseif ($LASTEXITCODE) { $exitCode = [int]$LASTEXITCODE }
     }
-    $exitCode = $LASTEXITCODE
 } finally {
     Pop-Location
 }

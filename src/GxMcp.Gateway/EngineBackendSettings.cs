@@ -20,6 +20,7 @@ namespace GxMcp.Gateway
         internal const string ExecutableEnvVar = "GXMCP_ENGINE_EXE";
         internal const string TimeoutEnvVar = "GXMCP_ENGINE_TIMEOUT_SECONDS";
 
+        internal const string AutoBackend = "auto";
         internal const string SdkBackend = "sdk";
         internal const string GxEngineBackend = "gxengine";
         internal const string SdkFallback = "sdk";
@@ -30,14 +31,13 @@ namespace GxMcp.Gateway
         /// </summary>
         internal const int DefaultTimeoutSeconds = 120;
 
-        internal string Backend { get; private set; } = SdkBackend;
+        internal string Backend { get; private set; } = GxEngineBackend;
         internal string Fallback { get; private set; } = SdkFallback;
         internal string? Executable { get; private set; }
         internal int TimeoutSeconds { get; private set; } = DefaultTimeoutSeconds;
 
-        /// <summary>True when the configuration asks the engine to serve eligible capabilities.</summary>
-        internal bool EngineEnabled =>
-            string.Equals(Backend, GxEngineBackend, StringComparison.OrdinalIgnoreCase);
+        /// <summary>gxengine (default) admits eligible builds, reads and queries; auto admits builds only; sdk disables the engine.</summary>
+        internal bool EngineEnabled => Backend != SdkBackend;
 
         /// <summary>
         /// True when a capability the engine cannot serve must fail instead of
@@ -87,8 +87,8 @@ namespace GxMcp.Gateway
         private static string NormalizeBackend(string value, string source)
         {
             string normalized = value.Trim().ToLowerInvariant();
-            if (normalized == SdkBackend || normalized == GxEngineBackend) return normalized;
-            Program.Log($"[Gateway] WARNING: {source} must be 'sdk' or 'gxengine' (got '{value}'); keeping 'sdk'.");
+            if (normalized == AutoBackend || normalized == SdkBackend || normalized == GxEngineBackend) return normalized;
+            Program.Log($"[Gateway] WARNING: {source} must be 'auto', 'sdk' or 'gxengine' (got '{value}'); keeping 'sdk'.");
             return SdkBackend;
         }
 

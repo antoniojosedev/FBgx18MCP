@@ -44,7 +44,8 @@ namespace GxMcp.Gateway.Tests
             // The Worker is net48 and cannot be referenced from here, so this pins the
             // production receipt builder's source; its behaviour is exercised by
             // WorkWithServiceTests.BuildFilterReceipt_ReportsNativeRouteAndInMemoryRereadScope.
-            string adapter = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Compatibility", "WorkWithSdkAdapter.cs");
+            string adapter = GxMcp.TestSupport.RepoSource.WithoutComments(
+                GxMcp.TestSupport.RepoSource.ReadPartialFiles("src", "GxMcp.Worker", "Compatibility", "WorkWithSdkAdapter.cs"));
             int builder = adapter.IndexOf("static JObject BuildFilterReceipt(", StringComparison.Ordinal);
             Assert.True(builder >= 0, "the filter receipt builder must exist in WorkWithSdkAdapter");
 

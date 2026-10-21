@@ -117,29 +117,38 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 
 ## Experimental `gx-engine` (Rust SDK Replacement Project)
 
-`src/gx-engine` is an experimental, independent Rust compiler and runtime designed to progressively replace the proprietary GeneXus SDK with an open, high-performance native toolchain ([Plan 129](plans/129-independent-rust-toolchain.md)).
+`src/gx-engine` is an independent, high-performance Rust compiler and runtime designed to completely replace the proprietary GeneXus SDK, eliminate the legacy 32-bit STA worker, and deliver sub-20s builds ([Plan 130](plans/130-direct-udm-kb-engine.md), [Plan 129](plans/129-independent-rust-toolchain.md)).
 
 ### 🎮 Decompilation / Parity Progress
 
-Similar to video game decompilation projects, progress is measured capability-by-capability against verified differential runs of the official GeneXus SDK in clean Knowledge Bases.
+Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. On the disposable `KBTeste` KB, a whole-KB Rebuild All now generates and compiles every targeted object (**346/346, 0 skipped, 0 refused**) and the C# the SDK writes for that KB is reproduced **byte for byte (328/328 files)**, together with the web scripts, `gxcfg.js`, messages and runtime configuration. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds and field-limited type-only queries; reads/edits and other shapes use SDK fallback; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
 
-```text
-Overall SDK Replacement: [🟩🟩🟩🟩🟩⬜⬜⬜⬜⬜] 50.0% weighted (69.6% total areas touched: 39/56)
-```
+### What builds today
 
-| Subsystem | Progress | Status | Covered / Total |
-| :--- | :---: | :---: | :---: |
-| **Language & Runtime Core** (Math, Decimals, Text, Dates, Calendar) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 8 / 8 areas |
-| **Control Flow & Procedure Pipeline** (`If`, `Iif`, `For`, `For In`, `Exit`, `Case`, `Sub`/`Do`, `Call`/`.UDP`, `IsEmpty`/`SetEmpty`/`Nullvalue`) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 6 / 6 areas |
-| **Structured Data & Collections** (SDT, `Add`, `Remove`, `Clear`, `IndexOf`, `Item`, `ToJson`, `FromJson`, `ToXml`, `FromXml`) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 5 / 5 areas |
-| **Portable KB Catalog & XML Projection** (Procedures, SDT, Domain, Attribute, Transaction, Rules in `ExportFile` XML and portable catalog) | `[🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩] 100.0%` | Native Parity | 6 / 6 areas |
-| **Specifier & SQL Navigation** (Physical Tables, DDL, Navigation, `For Each`) | `[🟩🟩🟩🟩🟩🟩🟩🟩⬜⬜]  75.0%` | Navigation & Query Plan | 6 / 8 areas |
-| **Native KB Database Storage** (`.gxi`, `GXLOCK`, `DATA*`) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported (SDK-only) | 0 / 5 areas |
-| **Full GeneXus Surface** (UI, Events, Generators) | `[⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜]   0.0%` | Unsupported | 0 / 18 areas |
+| Lane | Verified evidence | Boundary |
+| :--- | :--- | :--- |
+| Package build | `build.ps1` built Gateway, Worker, gxwire and gx-engine; local publish/backend engine hashes match. | Building the MCP distribution is not building every object in a KB. |
+| Selected-object build | Five alternating local SDK/engine pairs regenerated and compiled `DCM37961700`; core APIs and actual CLI output matched. SDK median **14.756s**, engine **0.230s** (**64.19×**). | Synthetic warm fixture; AUTO_CLOSE=OFF on both sides, original ON restored. The packaged binary was not benchmarked; it passed a separate build/run smoke. |
+| Full native KB build (`KBTeste`) | `rebuild-all`: **346 generated / 346 compiled, 0 skipped, 0 refused**. Against the SDK's own output for the same KB: **328/328 C# files byte-identical, 0 missing**; 24/24 web `.js`, `gxcfg.js`, `messages.eng.txt/.js`, `log.config`, `log.console.config` (+ `bin/` copies) and `CloudServices.config` byte-identical. | One oracle KB. The engine also writes 18 files the SDK's current output lacks (13 SDT classes identical to an earlier SDK generation, sidebar/program-name SDTs it reaches, 2 assembly-info files). Developer Menu not written (its object selection is not established). |
+
+Use the SDK for required workflows outside validated engine coverage. See
+[Plan 131](plans/131-sdk-performance-benchmark.md) for the exact binary, commands,
+samples and caveats; [engine routing](docs/engine_backend.md) for default/explicit backend behavior.
+
+| Subsystem | Evidence boundary / remaining work |
+| :--- | :--- |
+| Language, runtime, control flow, SDTs and collections | Bounded native differential corpora; not exhaustive GeneXus semantics. |
+| Portable catalog and XML projection | Fixture-backed support; does not establish native KB round-trip parity. |
+| Specifier, SQL navigation and datastore behavior | Portable tests do not prove complete live SDK navigation or database behavior. |
+| Native UDM storage | Live read evidence and targeted tests; not a general SDK persistence replacement. |
+| C# generation and Rebuild All | Live generated-object checks pass within a bounded set; refusals, missing objects and SDK-oracle gaps remain. |
+| Web UI, Transactions, Reports and BCs | Partial implementations; a successful compile is not end-to-end product parity. |
+
+See the [current acceptance/evidence ledger](plans/129-implementation-progress.md#current-acceptance-status--2026-10-18) for the tested binary, scope, failures and next actions.
 
 #### Gateway Capability Registry Gates
 
-The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) where operations are classified by measured parity before any traffic can be routed:
+The MCP Gateway exposes a capability gate (`EngineCapabilityRegistry`). The `Parity` labels below describe registered, bounded evidence, not complete SDK equivalence; routing boundaries and fallbacks are documented in [engine_backend.md](docs/engine_backend.md):
 
 | Capability | Status | Evidence & Performance |
 | :--- | :---: | :--- |
@@ -150,7 +159,7 @@ The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) wh
 | `text_extended_functions` | 🟩 **Parity** | `LTrim`/`RTrim`/`PadL`/`PadR`/`Space`/`Concat`/`StartsWith`/`EndsWith`/`Contains`/`StrSearch`: 95 native `StringUtil` oracle rows verified (exact ASCII space trim, left/right pad truncation, single-sided concat trim, ordinal comparisons, 1-based index clamping). |
 | `numeric_math_functions` | 🟩 **Parity** | `Int`/`Round`/`Trunc`/`Val`/`Left`/`Right`/`Asc`/`Chr`/`NotNumeric`/`LTrimStr`: 107 native `NumberUtil` and `StringUtil` oracle rows verified (`Math.Floor`, `AwayFromZero` with negative digit support, truncation toward zero, numeric string parsing, ASCII char conversions). |
 | `collection_operations` | 🟩 **Parity** | `Add`/`Remove`/`Clear`/`IndexOf`, `For In` iteration and `Exit`: 24 native `GxSimpleCollection` and `GXBaseCollection` oracle rows verified (1-based indexing, insertion, out-of-bounds silent removal, element aliasing in loops, loop exit). |
-| `calendar_operations` | 🟩 **Parity** | `Day`/`Month`/`Year`/`Hour`/`Minute`/`Sec`/`Dow`, `AddYr`/`AddMth`/`DAdd`/`TAdd`, `DDiff`/`TDiff`, `Age`, `EndOfMonth`, `ResetTime`, and `.ToString()`: 83 native `DateTimeUtil` oracle rows verified (1=Sunday DOW, leap clamping, second rollover, whole-day truncated DDiff, completed years Age). |
+| `calendar_operations` | 🟩 **Parity** | `Day`/`Month`/`Year`/`Hour`/`Minute`/`Sec`/`Dow`, `AddYr`/`AddMth`/`DAdd`/`TAdd`, `DDiff`/`TDiff`, `Age`, `EndOfMonth`, `ResetTime`, `CToD`/`DToC`/`TToC`, and `.ToString()`: 133 native `DateTimeUtil` oracle rows verified (1=Sunday DOW, leap clamping, second rollover, whole-day truncated DDiff, completed years Age, measured `CToD` parse grammar with the environment two-digit-year window, ISO `yyyy-MM-dd` and `yyyy-MM-ddTHH:mm:ss` exchange pictures). |
 | `subroutine_control_flow` | 🟩 **Parity** | `Sub 'Name' ... EndSub` and `Do 'Name'`: 13 native-verified tests (procedure-scoped variable mutation, case-insensitive resolution, quote styles, nested subroutine calls, early `Return` propagation via `returnInSub` semantics, depth limit 128). |
 | `conditional_and_state_operations` | 🟩 **Parity** | `Iif(cond, trueExpr, falseExpr)` short-circuit conditional, universal `.IsEmpty()`/`IsEmpty()` and `.SetEmpty()` across all types, `Nullvalue(&var)`, `.UDP(...)` calls, and `Format`/`NewLine`/`Replicate`/`CharAt`/`StrSearchRev`/`.LastIndexOf`/`BoolToStr`/`ToBoolean`/`StrToBool`: 57 native `StringUtil` and state oracle rows verified. |
 | `sdt_and_collection_json` | 🟩 **Parity** | `&sdt.ToJson()`, `&sdt.FromJson()`, `&col.ToJson()`, `&col.FromJson()`: 32 native `GxUserType` and `GXBaseCollection<T>` oracle rows verified (compact representation, escaped strings, `"0000-00-00"` empty dates, case-insensitive keys, partial updates, and safe array repopulation). |
@@ -161,18 +170,24 @@ The MCP Gateway exposes a strict capability gate (`EngineCapabilityRegistry`) wh
 | `transaction_control` | 🟩 **Parity** | Database transaction control procedural statements (`Commit` and `Rollback`, bare keywords or call syntax `Commit()`, `Rollback()` with optional semicolons): 7 native-verified integration tests (conditionals, loops, subroutines, while loops, format_version 1 fail-closed rejection, compiled executable execution, and ExportFile XML exchange). |
 | `physical_table_ddl` | 🟩 **Parity** | Physical Table schema normalization and multi-dialect SQL DDL generation (`CREATE TABLE`, primary keys, parent-child and cross-transaction foreign keys, indexes, ANSI/SQL Server/PostgreSQL/Oracle data types): 9 native-verified integration tests without database writes. |
 | `sql_navigation` | 🟩 **Parity** | Specifier, base table inference, For Each navigation, extended table joins, and multi-dialect SQL query planning (ANSI, SQL Server, PostgreSQL, Oracle): 10 native-verified integration tests, 13 frontend tests, fail-closed diagnostics (`spc0004`, `spc0005`), and zero SQL writes. |
-| `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟨 **Partial** | Independently implemented in portable compiler and tested with synthetic or bounded fixtures; pending full parity claims. |
-| `native_kb_read`, `general_gx_surface` | ⬜ **Unsupported** | Not yet implemented in Rust. Always served 100% by the GeneXus SDK / Worker. |
-
+| `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟩 **Parity** | Foundational runtime capabilities behind the four Native Parity subsystems above; each `EngineCapabilityRegistry` entry lists its native differential corpus or bounded portable fixture (`decimal_oracle`, `numeric_math`, `text_extended`, `calendar_ops`, `date_conversions`, `collection_ops`, `subroutines`, `exchange`, `sdt_xml`, `catalog`). |
+| `udm_storage_access` | 🟩 **Parity** (bounded reads) | Direct native UDM reads without COM/STA Worker (`knowledgebase.connection`, SQL Server, LocalDB); registered read/query consumers. Live engine writes are not implemented: `genexus_edit` remains SDK-backed or is refused under strict engine verification. Portable writer/lock tests are not live persistence evidence. |
+| `csharp_emitter` | **Bounded coverage** | C# generation and Roslyn compilation tests for supported object forms; unsupported native forms still fail closed. Compilation alone does not establish SDK behavior parity. |
+| `parallel_rebuild_all` | **Bounded coverage** | Parallel specification, C# emission and compilation; consumers `genexus_lifecycle.build` / `rebuild`. `KBTeste` Rebuild All: 346/346 compiled, 0 skipped/refused; paired speed ratios below are `KBTeste`-only and do not establish full SDK parity. |
 
 ### ⚡ Performance Benchmarks (gx-engine vs. GeneXus SDK)
 
-Every performance comparison requires **exact output parity** verified before measuring timings (zero mismatches, identical hash/byte output). The initial differential benchmarks measured on local Windows x86_64 hardware:
+A speed comparison requires the same input workload, target, dependency closure, observable results and success criteria. Independent generators need not emit byte-identical source or assemblies. Keep full SDK specify/generate/compile timings separate from compile-only MSBuild timings and bounded runtime microbenchmarks. On the disposable `KBTeste`, a whole-KB Rebuild All with a full compile measures 51.7× against the SDK's specify + generate alone (median of a paired run); the selected-object result meets 50× only within its stated warm-fixture scope. Historical microbenchmarks do not establish a whole-KB speed goal:
 
 | Benchmark Workload | GeneXus SDK (.NET / MSBuild) | `gx-engine` (Rust) | Speedup / Gain | Verification & Oracle |
 | :--- | :---: | :---: | :---: | :--- |
+| **Warm selected-object C# build** (`DCM37961700`) | **14,755.9 ms** *(local specify + generate + Rebuild/Publish)* | **229.9 ms** *(live read + emit + guarded compiler replay, setup included)* | **64.19×** | Five alternating pairs; bounded API and direct CLI checks, stable sources. Synthetic fixture, AUTO_CLOSE=OFF; not cold/full-KB or packaged-binary performance. [Protocol](plans/131-sdk-performance-benchmark.md). |
 | **`Str()` Numeric Picture Formatting** (Microbenchmark) | 274 – 286 ns / row *(1.75 ms / pass)* | **121 – 130 ns / row** *(0.75 ms / pass)* | **~2.25x faster** | 6,152 rows (`str_matrix.tsv`), 80,235 chars, identical FNV-1a UTF-16 hash (`0xb9e1b48fb72067b0`), 0 mismatches against official `GeneXus.Classes.Core` runtime. |
-| **End-to-end Procedure Compilation & Build** | 10,930 ms *(SDK stages)*<br>16,366 ms *(MSBuild total)* | **223 ms** *(Rust parse + emit + rustc link)* | **~49x faster** | Synthetic `RustTimingProbe` in authorized `KBTeste` (`21 * 2 = 42`). Identical exit 0 and stdout `42`. |
+| **Live KB Metadata & Part Hydration** | 12,000 – 18,000 ms *(serial COM STA)* | **320 ms** *(direct TDS queries)* | **> 35x faster** | Verified on live LocalDB `GX_KB_KBTeste` (`test_udm_real_kb_live_read_procedure`). |
+| **Whole-KB generation** (`KBTeste`, specify + generate, no compile; earlier engine binary) | **33.4 – 39.9 s** *(MSBuild `SpecifyAllOnly` + `GenerateOnly`, 3 runs)* | **0.61 – 0.68 s** *(`rebuild-all --skip-compile`, 3 runs alternating with the SDK runs; ~0.45 s of it is the KB catalog read)* | **~58× (median pair)** | Paired, one machine, 2026-10-21; neither side compiles; engine output unchanged after the SDK runs. Not a 50× claim: output parity is 328/328 C# identical with 20 extra files and no Developer Menu, so full SDK parity is unverified. The previous engine binary measured 1.29 – 1.40 s (12 alternating runs). |
+| **Whole-KB Rebuild All, nothing changed** (`KBTeste`, 346 classes) | **42.2 s** median *(32.3 – 46.2 s; MSBuild `SpecifyAllOnly` + `GenerateOnly`, no compile, 3 runs)* | **289 ms** median *(271 – 306 ms, 9 runs: catalog ~150 ms + emit ~70 ms; compile skipped as up to date)* | **~146× (median)** | Paired and alternating, one machine, 2026-10-21, database held open by an idle connection as an opened KB holds it. The SDK side does not compile, the engine side does (or proves its outputs current). Output parity: 328/328 C# identical, 20 extra files, 0 missing; full SDK parity unverified. Script `bench-s42.py`. |
+| **Whole-KB Rebuild All, forced full compile** (`KBTeste`, 346 classes) | **42.2 s** median *(same SDK runs, no compile)* | **816 ms** median *(739 – 989 ms, 9 runs: direct `csc` with `/shared` and `/skipanalyzers+`, ~0.6 – 0.7 s)* | **~51.7× (median)** | Same paired run; the compile record is removed before each sample so all 346 classes compile again. The ratio is a median of medians: against the fastest SDK run (32.3 s) and slowest engine run it is ~33×. A first build into a new folder takes ~1.9 s (`dotnet build`); a cold compiler server was measured once at ~22.8 s. The former 480,000 ms / 1,250 ms (>380×) comparison had no matched IDE measurement and stays withdrawn. |
+| **Historical arithmetic fixture build** | 10,930 ms *(SDK stages)*<br>16,366 ms *(MSBuild process wall)* | **223 ms** *(Rust CLI + rustc build)* | **Not a whole-SDK speed ratio** | `RustTimingProbe` (`21 * 2 = 42`), three recorded samples, exit/output checked. Different pipelines and targets; the former ~49× stage/build ratio applies only to that tiny fixture. [Evidence and caveats](src/gx-engine/VALIDATION.md#verified-custom-msbuild--sdk-pipeline). |
 | **Generated Artifact Startup & Execution** | 123.06 ms *(CLR bootstrap + run)* | **5.75 ms** *(native binary bootstrap)* | **~21x faster** | Cold process launch and console output for the compiled arithmetic procedure artifact. |
 
 #### 📈 Benchmark Protocol & How to Record Improvements
@@ -189,21 +204,21 @@ As new capabilities reach parity and additional optimizations land, follow this 
 ### Activation Flag & Safety Seam
 
 > [!IMPORTANT]
-> **Zero Automatic Routing:** By default, `Engine.Backend` is `"sdk"`. The Gateway serves 100% of tool calls through the official GeneXus SDK. Even when `gxengine` is enabled, the router fails closed: only capabilities with measured `Parity` and an explicitly registered consumer can route to the engine; everything else stays on the SDK.
+> **Engine-first:** `Engine.Backend` defaults to `"gxengine"`. Blocking `genexus_lifecycle` builds/rebuilds inside the admitted space use gx-engine, and so do admitted type-only `genexus_query` calls selecting only `name`/`type` fields. A directed `build` with `mode=compile_check`, explicit `callers=false` and transitive callees also uses gx-engine, building only the target closure. Edits, async/other directed builds, all reads, `usedby:` searches, ranked fuzzy queries and unsupported request shapes fall back to the SDK. Capability and argument gates still apply. Build errors or uncertain outcomes after engine start never trigger automatic SDK replay. `"auto"` routes only builds to the engine; `"sdk"` keeps every operation on the SDK and never invokes the engine.
 
-To test or benchmark the engine from a source checkout, configure `config.json`:
+No backend setting is needed. To narrow routing to builds (`"auto"`) or turn the engine off (`"sdk"`), configure `config.json`:
 
 ```json
 {
   "Engine": {
-    "Backend": "gxengine",
+    "Backend": "auto",
     "Fallback": "sdk",
     "TimeoutSeconds": 120
   }
 }
 ```
 
-- **`Engine.Backend`**: `"sdk"` (default) or `"gxengine"` (opt-in).
+- **`Engine.Backend`**: `"gxengine"` (default: admitted builds and field-limited type-only queries; reads/edits use SDK fallback), `"auto"` (admitted builds only), or `"sdk"` (SDK only, engine never invoked).
 - **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK when not at parity) or `"error"` (fails closed with `EngineCapabilityNotParity` for strict verification).
 - **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, `capabilities`, and `routedOperations`.
 
@@ -284,7 +299,7 @@ A quick map of what the agent can do against your real KB through the **60 tools
 | Area | What the agent can do |
 |---|---|
 | 🔎 **Explore** | Search & list objects, read any part (source, rules, events, structure, docs, pattern XML), inspect metadata & callers, regex-search source, view the navigation report |
-| 🧭 **Orient & trace** | Rank the objects a task touches, list direct and transitive callers, trace the shortest call path between two objects, check blast radius and safe-delete, follow one variable's data flow. Runs on exported sources through `genexus_wire` (read-only, token-budgeted) |
+| 🧭 **Orient & trace** | Rank the objects a task touches, list direct and transitive callers, trace the shortest call path between two objects, check blast radius and safe-delete, follow one variable's data flow. Runs on exported sources through `genexus_wire` (read-only, token-budgeted); `pack_task` also works directly on the open native KB |
 | ✏️ **Edit code** | Edit any object part (`full`/`patch`/`ops` modes), variables CRUD, format, create & delete objects, scaffold a Procedure from a **curl command**, edit + rebuild callers in one shot |
 | 🗄️ **Author the data model** | Transaction structure (DSL), **unique/non-unique indexes** (create & drop), **attribute formulas & subtypes**, level Description/Image attributes, **Domain enum values**, folders & modules, table↔transaction relations & redundant-attribute detection |
 | 🧩 **Author other objects** | External Object methods & properties, Menu options, REST API objects, WorkWithPlus / WorkWith patterns, typed .NET generator references |
@@ -551,7 +566,7 @@ The worker exposes **60 tools** to the MCP router, grouped by capability below. 
 **Architecture discovery & call graph**
 - `genexus_wire` — read-only, token-budgeted call-graph engine (bundled `gxwire.exe`). Actions: `pack_task` (default; one-shot orientation bundle for a task), `for` (intent ranking with domain synonyms such as `fat` → `faturamento`), `status` (graph size and top hubs), `callers` (direct and transitive), `impact` (blast radius, writers, readers), `path` (shortest call path from `from` to `to`), `slice` (definitions and uses of one variable, `target` = `Object:Variable`), `safe_delete` (blockers before deleting a symbol), `index` (rebuild the cache), `doctor` (engine and cache diagnostics)
 
-`genexus_wire` does not go through the Worker or the GeneXus SDK. The Gateway runs `gxwire.exe` on the target folder (`dir`, `kb`, or the active KB path) and returns its output. It reads exported source text (`.prc`, `.trn`, `.wp`, `.sdp`, `.xml`, `.txt`, `.gx`, `.gxd`) with regex heuristics, so answers reflect the exported files, not the live KB; an empty folder returns `empty="true"`. Use it to decide where to look and what a change touches. Use `genexus_query` to search live objects and `genexus_read` to read their parts. Parameters: `task` (`pack_task`, `for`), `target` (`callers`, `impact`, `slice`, `safe_delete`), `from`/`to` (`path`), `format`, `token_budget` (default 1200), `full`, `kb`/`dir`. `format` is `toon` (compact, recommended), `xml` (default), `json`, or `mermaid`; mermaid renders `status`, `callers`, `impact`, `path` and `pack_task`, and other actions return XML. The only file it writes is `.gxwire_cache.bin` in the target folder, on `index` and when the cache is stale.
+`genexus_wire` goes through neither the Worker nor the GeneXus SDK, with one exception: `action=pack_task` on the native KB the session has open is answered by that KB's Worker from the SDK-backed index, with no text export. Pass `targets` (object names, `Type:Name` to disambiguate) and/or name the objects in `task`; the result lists the resolved objects with their direct callers and callees, and names every object it could not resolve, found ambiguous, skipped or left out of the token budget. It is read-only and reads no part body. For every other action the Gateway runs `gxwire.exe` on the target folder (`dir`, `kb`, or the active KB path) and returns its output; a native KB folder is refused with `GXWIRE_REQUIRES_TEXT_SOURCE_TREE`, so point `dir` at an exported text tree. It reads exported source text (`.prc`, `.trn`, `.wp`, `.sdp`, `.xml`, `.txt`, `.gx`, `.gxd`) with regex heuristics, so answers reflect the exported files, not the live KB; an empty folder returns `empty="true"`. Use it to decide where to look and what a change touches. Use `genexus_query` to search live objects and `genexus_read` to read their parts. Parameters: `task` (`pack_task`, `for`), `target` (`callers`, `impact`, `slice`, `safe_delete`), `from`/`to` (`path`), `format`, `token_budget` (default 1200), `full`, `kb`/`dir`. `format` is `toon` (compact, recommended), `xml` (default), `json`, or `mermaid`; mermaid renders `status`, `callers`, `impact`, `path` and `pack_task`, and other actions return XML. The only file it writes is `.gxwire_cache.bin` in the target folder, on `index` and when the cache is stale.
 
 **Search & discovery**
 - `genexus_query` — object search (prefixes `name:`, `type:`, `usedby:`, `parent:`, …)

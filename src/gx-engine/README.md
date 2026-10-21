@@ -1,8 +1,92 @@
-# gx-engine (experimental)
+# gx-engine — independent compiler & build engine
 
-**Goal: fully replace the GeneXus SDK and toolchain with an independent Rust implementation.** [Plan 129](../../plans/129-independent-rust-toolchain.md) covers KB/storage, authoring, language/types, specification/navigation, generation, runtime, and builds. No capability is permanently assigned to the proprietary SDK.
+**Goal: fully replace the GeneXus SDK and toolchain with an independent safe Rust implementation.** [Plan 130](../../plans/130-direct-udm-kb-engine.md) covers direct native KB/UDM storage access, full object modeling, native C# (.NET) code generation, and parallel Rebuild All. No capability is permanently assigned to the proprietary SDK or 32-bit STA worker.
 
-**Current coverage:** an independently implemented compiler/build driver for an explicit portable format, including numeric/logical/text/calendar operations, bounded records, nested record schemas, and collections. It does not load the GeneXus SDK, open native KB databases, or invoke MSBuild. Full replacement is the destination, not the current compatibility claim; this bounded implementation is not yet a drop-in SDK replacement or a full GeneXus compiler. Portable compiler support and native-verified behavior are separate claims; see [plan 129 progress](../../plans/129-implementation-progress.md) for measured GeneXus observations and pending parity checks.
+**Experimental capability areas (full SDK parity is not established):**
+- **Native UDM KB Access:** Reads physical GeneXus UDM SQL databases (`knowledgebase.connection`, SQL Server, LocalDB) without spawning `GxMcp.Worker.exe` or COM STA processes. Decodes 11-byte envelopes, decompresses RFC 1952 GZip blobs and reconstructs source code from `<TokenDataList>`. Live writer persistence is not implemented: native writes are refused, not reported as saved; the SDK remains the supported editing path.
+- **Object modeling:** Implements admitted forms of Procedures, Transactions, Business Components, WebPanels, Reports, SDTs, Events, Rules and Structure. Coverage differs by pipeline; unsupported native forms still produce refusals/errors rather than approximate builds.
+- **Native C# (.NET) Generator:** Emits standard GeneXus C# classes (`GXProcedure`, `GXWebObjectStub`, `GXDataComponent`, `GxUserType`) and Visual Studio solution files (`.sln`, `Directory.build.props`, `.csproj`) targeting `net8.0`/`net9.0`, fully diffable against IDE output and verified by Roslyn compilation.
+- **Parallel rebuild pipeline:** Scoped-thread parallel specification and C# emission followed by compilation. Available via CLI: `gx-engine rebuild-all --kb <path> --output <dir>`. A successful supported closure does not establish full-KB coverage or a general build-time guarantee.
+
+## Build coverage and routing
+
+The goal remains independent full SDK replacement; **full SDK replacement is not established**.
+On the disposable `KBTeste` KB, `rebuild-all` generates and compiles every targeted object
+(**346/346, 0 skipped, 0 refused**), and its output matches what the GeneXus 18 SDK writes for
+the same KB byte for byte: **328/328 C# files**, 24/24 web scripts, `gxcfg.js`,
+`messages.eng.txt/.js`, `log.config`, `log.console.config` (and their `bin/` copies) and
+`CloudServices.config`. That is one oracle KB, not every KB: forms the engine has no SDK
+evidence for are refused by name.
+Use the SDK for workflows outside validated engine coverage; preserve unsupported-object
+refusals and report partial builds as partial, not success.
+
+Gateway routing defaults to `Engine.Backend=gxengine`: admitted blocking builds/rebuilds
+and field-limited type-only queries use gx-engine, including directed `build` requests with `mode=compile_check`,
+explicit `callers=false`, and transitive callees. Those requests build only the
+target closure and report `engine.scope=target-closure`; they do not certify the
+whole KB. Reads, edits, async builds and unsupported request shapes stay on SDK.
+`auto` narrows routing to admitted builds; explicit `sdk` disables engine routing. Capability and argument gates remain mandatory. See
+[routing](../../docs/engine_backend.md).
+
+## SDK-form output
+
+What a whole-KB run writes, and from what:
+
+| Output | Source | Matched against |
+| :--- | :--- | :--- |
+| Procedures, DataProviders, Transactions (custom, default, key-only forms), Work With family, prompts `Gx00N0`, NotAuthorized, masters, plain WebPanels | KB parts read directly from UDM | KBTeste SDK output, 328/328 `.cs` identical |
+| Web scripts (`*.js`) and `gxcfg.js` | KB parts; `NetModel/Web/GXCFG.WEB` | 24/24 `.js` identical |
+| SDT classes (`type_Sdt*.cs`) | SDT structures; only SDTs a generated object reaches, and never a GeneXus library SDT the runtime assemblies (`GxClasses*.dll`) already define | 13 KBTeste SDK SDTs identical |
+| Enumerated domain classes (`gxdomain*.cs`) | Domain enum rows | `general/gxdomainpage.cs` identical |
+| `messages.eng.txt` / `.js` | KB `TranslationMessage` entities + install `Library/GAM/Platforms/NetCoreSql/messages.eng.resources` (`GX18_INSTALL_DIR`, default `C:/Program Files (x86)/GeneXus/GeneXus18`) | identical; English-only KBs only |
+| `log.config`, `log.console.config` (+ `bin/`), `CloudServices.config` | Stored model properties; unstored ones take the .NET generator defaults | identical; other log targets/providers refused |
+
+Reachability follows the SDK: a Procedure stored as not main, or an SDT, is generated only when a
+generated object reaches it (SDK `spc0217`). Not written: the Developer Menu (`DeveloperMenu.xml`
+emitter exists, but which objects the SDK lists is not established) and the SDK's `.bld`/`GX*PRO41`
+bookkeeping files.
+
+## Measured local SDK comparison
+
+**Whole-KB Rebuild All** (`KBTeste`, 346 classes), paired and alternating on one machine,
+2026-10-21, with the database held open by an idle connection as an opened KB holds it
+(`bench-s42.py`). The SDK side runs specify + generate only (MSBuild `SpecifyAllOnly` +
+`GenerateOnly`); its own compile is blocked by GeneXus Cloud here, so the engine side, which
+does compile, is measured against less work than it does:
+
+| | Runs | Median | Range | Ratio |
+| :--- | :---: | :---: | :---: | :---: |
+| GeneXus SDK (specify + generate, no compile) | 3 | 42.2 s | 32.3 – 46.2 s | |
+| gx-engine, nothing changed (compile proven up to date) | 9 | 289 ms | 271 – 306 ms | ~146× |
+| gx-engine, forced full compile of all 346 classes | 9 | 816 ms | 739 – 989 ms | ~51.7× |
+
+The ratios are medians against medians; the fastest SDK run against the slowest forced-compile run
+is ~33×. Output parity of the same run: 328/328 C# files identical to the SDK, 20 extra, 0
+missing; the Developer Menu is not written, so full SDK parity is unverified and this is not a
+full-replacement claim.
+
+Where the time went: the catalog read is ~150 ms (from ~3.1 s): every KB read of a run shares a
+persistent `sqlcmd` session, only the entity types the engine serves are read (2 MB of part hex
+instead of 62 MB), on four parallel sessions decoded with a lookup table, while the build
+environment is read alongside. A web class that differs from the file on disk only by its
+generation stamp is not rewritten, so an unchanged KB leaves every compiler input unchanged and
+the compile is skipped. A real compile replays the kept compiler command directly (`csc /shared`,
+`/skipanalyzers+` when no analyzer diagnostic can fail the build; same DLL). The first build into a
+new output folder runs `dotnet build` (~1.9 s); a cold compiler server was measured once at
+~22.8 s. An earlier binary measured generation alone (`--skip-compile`) at 0.61 – 0.68 s against
+SDK 33.4 – 39.9 s (~58×).
+
+A five-pair **warm, selected-object** local MSBuild comparison measured SDK median
+14.756s versus gx-engine 0.230s (**64.19x**), including engine database setup.
+Both paths regenerated/recompiled C# and produced matching direct CLI output and
+core APIs. The input is the synthetic `DCM37961700` subroutine fixture; this is
+**not** a full-application, cold-build, or full-SDK replacement claim. Both paths
+used AUTO_CLOSE=OFF during the benchmark; the original ON setting was restored.
+The first engine/MSBuild bootstrap took 1.254s and is reported separately. The
+packaged binary was smoke-tested, not benchmarked; its hash differs from the timed
+binary. See
+[Plan 131](../../plans/131-sdk-performance-benchmark.md) for commands, all
+samples, output checks, cache conditions, failures and outstanding gates.
 
 ## Local use
 
@@ -24,10 +108,13 @@ cargo run --manifest-path src/gx-engine/Cargo.toml -- --version
 `--version` (or `-V`) prints `gx-engine <package version>` and exits without
 reading a project. That line is the Gateway's engine-backend probe contract: the
 MCP Gateway can point at a `gx-engine` executable, verify it, and report it from
-`genexus_doctor` while the SDK continues to serve every operation. Routing any
-operation to this binary is gated by the Gateway's capability registry — only
-capabilities measured at full parity may be served by the engine; everything
-else stays on the GeneXus SDK. See
+`genexus_doctor`. The default `gxengine` policy enables admitted builds,
+type-only queries selecting only `name`/`type` fields; `auto` enables only builds
+and `sdk` none. All reads, `usedby:` and ranked fuzzy searches remain on SDK
+fallback until native response/identity/freshness/token parity is verified. Engine routing requires a registered
+consumer and its bounded capability evidence; unsupported requests follow the configured SDK fallback or
+fail closed. A started build with an unknown outcome requires reconciliation,
+not automatic SDK replay. See
 [docs/engine_backend.md](../../docs/engine_backend.md) for the switch, the
 current capability table and the rules for adding a capability.
 
@@ -318,7 +405,14 @@ zero. Empty uses the .NET minimum-day sentinel: adding one day yields 0001-01-02
 Arithmetic outside 0001..9999 and fractional offsets fail with controlled errors.
 Date display/conversion: `Print(&date)` renders the measured native
 `&date.ToString()` picture (`MM/dd/yy` with zero padding; empty renders
-`"  /  /  "`). Text concatenation with dates and database dates are not implemented. Unassigned reads remain errors rather than implicit initialization.
+`"  /  /  "`). `CToD(text)` parses the measured native grammar — three numeric
+components joined by any mix of `-`, `/` or `.`; `yyyy`-first when the first
+component has four digits, otherwise `M/d/[yy]yy`; a trailing time after a
+space or `T` is accepted only when the time itself is valid — and yields empty
+for every other form; `DToC(date)` renders the ISO exchange picture
+`yyyy-MM-dd` with the empty sentinel `"0000-00-00"`. `tests/date_conversions.rs`
+runs 39 native `DateTimeUtil.CToD2` rows and 6 `DToC2` rows. Text concatenation
+with dates and database dates are not implemented. Unassigned reads remain errors rather than implicit initialization.
 
 Two-digit years have **no implicit window**. Set project-level
 `"date_two_digit_year_max":2039` only when matching that measured environment;
@@ -338,8 +432,11 @@ and Difference. Typed helper parameters/returns use the same schema. The shared
 explicit year-window setting applies here too. Values are timezone-free and have
 integral-second precision; `Print(&dateTime)` renders the measured native
 `&dateTime.ToString()` picture (`MM/dd/yy hh:mm AM/PM`, 12-hour with seconds
-dropped; empty renders `"  /  /   12:00 AM"`). Fractional components/offsets,
-timezone conversions, `Str`-style time formatting, millisecond storage and
+dropped; empty renders `"  /  /   12:00 AM"`). `TToC(dateTime)` renders the ISO
+exchange picture `yyyy-MM-ddTHH:mm:ss` (empty renders `"0000-00-00T00:00:00"`,
+5 native `TToC2` rows in the same fixture). Fractional components/offsets,
+timezone conversions, `Str`-style time formatting, millisecond storage,
+`CToT` (its context-less native helper substitutes the current date) and
 other calendar methods are not admitted.
 
 Native construction keeps a valid time when the date is invalid (minimum date,

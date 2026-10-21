@@ -1,0 +1,54 @@
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form id="1" type="layout">
+    <detail PanelType="Web">
+      <layout id="28ed6c96-da62-43a1-9af1-1d7c83204ba4">
+        <table id="e8abe036-c148-4beb-96bb-90594e10170e" controlName="Main" class="d52f9833-90c9-4096-8e42-27485741f78a-443 d52f9833-90c9-4096-8e42-27485741f78a-486" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:25},{&quot;width&quot;:75}]]}]">
+          <row id="90f759e4-44cd-404a-bcd9-dbf6d3a8f65f">
+            <cell id="40fc468b-6d80-4d21-9b14-68f942ce6e58" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-174">
+              <table id="80fe76f7-b892-440c-a16c-9c42e2bdaf20" controlName="AdvancedContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-6" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]}]">
+                <row id="59524191-4af3-4ef9-8928-7de38f2c0a9e">
+                  <cell id="6f181e77-6b75-4e83-90d1-63e57711ef5c">
+                    <table id="2454ccc3-8969-45c4-a42d-3589fd05e9f2" controlName="Plan070TrnIdFilterContainer" class="d52f9833-90c9-4096-8e42-27485741f78a-5 d52f9833-90c9-4096-8e42-27485741f78a-485" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]}]">
+                      <row id="536add2c-4e84-4ecd-9a5c-2ae02a6307eb">
+                        <cell id="1253dfcb-ad0e-4dbb-9ed5-67d4125a2c1a">
+                          <textblock controlName="LblPlan070TrnIdFilter" caption="=Plan070TrnId.Title" class="d52f9833-90c9-4096-8e42-27485741f78a-488 d52f9833-90c9-4096-8e42-27485741f78a-239" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;GxFormat&lt;/Name&gt;&lt;Value&gt;HTML&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                        </cell>
+                      </row>
+                      <row id="b0c51446-6b3d-48f5-a22a-78e2f7edad79">
+                        <cell id="a2b3f47d-8f90-48e2-b713-5c1de874b376" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-489">
+                          <data attribute="var:6" labelPosition="None" />
+                        </cell>
+                      </row>
+                    </table>
+                  </cell>
+                </row>
+              </table>
+            </cell>
+            <cell id="ae5613d5-a5aa-4f02-9d0d-98335b18ad4a" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-491">
+              <table id="803e3094-16f1-43d1-855e-eb9b555f6216" controlName="GridTable" tableType="Responsive" responsiveSizes="[{&quot;scale&quot;:&quot;sm&quot;,&quot;rows&quot;:[[{&quot;visible&quot;:false}],[{&quot;width&quot;:100}],[{&quot;width&quot;:100}]]},{&quot;scale&quot;:&quot;xs&quot;,&quot;rows&quot;:[[{&quot;width&quot;:100}]]},{&quot;scale&quot;:&quot;md&quot;,&quot;rows&quot;:[[{&quot;visible&quot;:false}]]},{&quot;scale&quot;:&quot;lg&quot;,&quot;rows&quot;:[[{&quot;visible&quot;:false}]]}]">
+                <row id="dcdcec45-21ed-40e8-9da3-666a3d6d9084">
+                  <cell id="d9bc0975-86bf-4524-8cd8-8887bf69897c" cellClass="d52f9833-90c9-4096-8e42-27485741f78a-493">
+                    <action controlName="BtnToggle" onClickEvent="'Toggle'" caption="|||" class="d52f9833-90c9-4096-8e42-27485741f78a-47" />
+                  </cell>
+                </row>
+                <row id="aeea722f-ed36-49ea-a68c-1889dcef3cb8">
+                  <cell id="cfc50e66-ed62-497c-b519-e545ccd858d3">
+                    <simplegrid id="f6cf5855-2474-4094-b582-99fce0fce485" controlName="Grid1" class="d52f9833-90c9-4096-8e42-27485741f78a-175" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;MaxRows&lt;/Name&gt;&lt;Value&gt;10&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;">
+                      <item id="eab2f66d-5ef1-4660-8d84-b95d38bf5be0" attribute="var:5" titleExp="" class="d52f9833-90c9-4096-8e42-27485741f78a-196" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-494&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ReturnOnClick&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                      <item id="b8b1e892-9125-4e67-a8e4-680565770e6e" attribute="att:11" titleExp="=Plan070TrnId.ContextualTitle" PATTERN_ELEMENT_CUSTOM_PROPERTIES="&lt;Properties&gt;&lt;Property&gt;&lt;Name&gt;ColumnClass&lt;/Name&gt;&lt;Value&gt;d52f9833-90c9-4096-8e42-27485741f78a-473&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ReturnOnClick&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;Property&gt;&lt;Name&gt;ColReadOnly&lt;/Name&gt;&lt;Value&gt;True&lt;/Value&gt;&lt;/Property&gt;&lt;/Properties&gt;" />
+                    </simplegrid>
+                  </cell>
+                </row>
+                <row id="d59b9a88-80b6-43c3-a40b-a418c7e23bf0">
+                  <cell id="927e11e8-badf-4541-9545-ebfa53d92cb7">
+                    <action controlName="btn_cancel" onClickEvent="Cancel" caption="GX_BtnCancel" class="d52f9833-90c9-4096-8e42-27485741f78a-27" />
+                  </cell>
+                </row>
+              </table>
+            </cell>
+          </row>
+        </table>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

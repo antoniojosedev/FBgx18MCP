@@ -1,0 +1,32 @@
+Event Start
+	If not IsAuthorized(&PgmName)
+		NotAuthorized(&PgmName)
+	Endif
+	Do 'PrepareTransaction'
+EndEvent
+
+Event Load
+EndEvent
+
+Event 'DoUpdate'
+	Trn353(TrnMode.Update, Trn353Id)
+EndEvent
+
+Event 'DoDelete'
+	Trn353(TrnMode.Delete, Trn353Id)
+EndEvent
+
+Sub 'PrepareTransaction'
+	&TrnContext = new()
+	&TrnContext.CallerObject = &Pgmname
+	&TrnContext.CallerOnDelete = False
+	&TrnContext.CallerURL = &HTTPRequest.ScriptName + !"?" + &HTTPRequest.QueryString
+	&TrnContext.TransactionName = !"Trn353"
+
+	&TrnContextAtt = new()
+	&TrnContextAtt.AttributeName = !"Trn353Id"
+	&TrnContextAtt.AttributeValue = &Trn353Id.ToString()
+	&TrnContext.Attributes.Add(&TrnContextAtt)
+
+	&Session.Set(!"TrnContext", &TrnContext.ToXml())
+EndSub

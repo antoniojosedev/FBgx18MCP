@@ -1,0 +1,15 @@
+<GxMultiForm rootId="2" version="html:15.0.0;layout:17.11.0">
+  <Form id="2" type="layout">
+    <detail PanelType="Web">
+      <layout id="b83d341f-01d8-4cf3-bb99-ed6c34ce0a2a">
+        <table id="134a16bd-b088-435a-b809-02db45aeb72e" controlName="MainTable" class="d52f9833-90c9-4096-8e42-27485741f78a-443 d52f9833-90c9-4096-8e42-27485741f78a-179" tableType="Responsive">
+          <row id="f77b6170-bed8-4be2-9b58-4530472e81c8">
+            <cell id="9678235e-b471-4787-a972-a63ba24adf7b">
+              <contentholder controlName="ContentHolder" />
+            </cell>
+          </row>
+        </table>
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

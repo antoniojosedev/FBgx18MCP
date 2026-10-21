@@ -94,6 +94,11 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_api", "routes_clone")]
         [InlineData("genexus_api", "routes_update")]
         [InlineData("genexus_navigation", "view")]
+        [InlineData("genexus_workwith", "add_filter_attribute")]
+        [InlineData("genexus_workwith", "remove_filter_attribute")]   // issue #586
+        [InlineData("genexus_wwp", "add_tab")]
+        [InlineData("genexus_wwp", "add_table")]        // issue #595
+        [InlineData("genexus_wwp", "move_control")]     // issue #595
         public void MutatingActions_AreDetected(string toolName, string action)
         {
             var args = new JObject { ["action"] = action };
@@ -188,6 +193,24 @@ namespace GxMcp.Gateway.Tests
                 $"expected {toolName} action={action} to be treated as read-only");
         }
 
+        // issue #595: the typed layout writes preview with dryRun like the other WWP writes.
+        [Theory]
+        [InlineData("add_table")]
+        [InlineData("move_control")]
+        public void WorkWithPlusLayout_DryRun_DoesNotInvalidate(string action)
+        {
+            Assert.False(Program.IsMutatingTool("genexus_wwp", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = true
+            }));
+            Assert.True(Program.IsMutatingTool("genexus_wwp", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = false
+            }));
+        }
+
         [Theory]
         [InlineData("create")]
         [InlineData("update")]
@@ -222,6 +245,27 @@ namespace GxMcp.Gateway.Tests
             {
                 ["action"] = action,
                 ["dryRun"] = true
+            }));
+        }
+
+        // Issue #586: the filter removal is a documented preview-capable write, so a
+        // dryRun keeps the cache warm while a real write (or an omitted dryRun) clears it.
+        [Fact]
+        public void WorkWith_RemoveFilterAttribute_InvalidatesOnlyWhenWriting()
+        {
+            Assert.False(Program.IsMutatingTool("genexus_workwith", new JObject
+            {
+                ["action"] = "remove_filter_attribute",
+                ["dryRun"] = true
+            }));
+            Assert.True(Program.IsMutatingTool("genexus_workwith", new JObject
+            {
+                ["action"] = "remove_filter_attribute",
+                ["dryRun"] = false
+            }));
+            Assert.True(Program.IsMutatingTool("genexus_workwith", new JObject
+            {
+                ["action"] = "remove_filter_attribute"
             }));
         }
 

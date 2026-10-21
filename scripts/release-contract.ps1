@@ -266,6 +266,17 @@ function Format-GxMcpReleaseProcessSmokeBindingFailure {
     return ($lines -join [Environment]::NewLine)
 }
 
+# Releases before 3.0.0 predate the checksum, VSIX and npm gitHead contract; every
+# major from 3 up must satisfy it.
+function Test-GxMcpReleaseLegacyVersion {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    if ($Version.Trim().TrimStart('v') -notmatch '^(?<major>\d+)\.') {
+        throw "Release version '$Version' is not semver."
+    }
+    return [int]$Matches.major -lt 3
+}
+
 function Get-GxMcpReleaseRequiredAssetNames {
     param(
         [Parameter(Mandatory = $true)][string]$Version,
@@ -918,6 +929,89 @@ function Test-GxMcpReleaseWorkflowRun {
     return [string]$Run.headSha -ceq $ExpectedCommit -and
         [string]$Run.headBranch -ceq $Tag -and
         [string]$Run.event -cin $allowedEvents
+}
+
+# The release workflow (scripts/ci/verify-release-commit.ps1) hard-requires this check from
+# GitHub Actions on the exact release SHA, whatever branch protection currently exposes.
+# Checking it locally means a red or missing result stops the release before anything is
+# tagged instead of after the tag and GitHub Release already exist.
+$script:GxMcpReleaseWorkflowCheck = 'test'
+$script:GxMcpReleaseWorkflowAppId = 15368
+
+# Required status-check names for the release branch. Classic branch protection
+# (GET branches/main -> .protection) and repository rulesets (GET rules/branches/main)
+# are both readable without admin rights; either may be the one in force, so the
+# union is required. The workflow check is always included, so protection that is hidden
+# from the token or later removed cannot turn this into "nothing required". Emits a
+# sorted, unique list; callers wrap it in @().
+function Get-GxMcpReleaseRequiredCheckContexts {
+    param(
+        [AllowNull()][object]$Branch,
+        [AllowNull()][object]$Rules
+    )
+
+    $contexts = New-Object System.Collections.Generic.List[string]
+    [void]$contexts.Add($script:GxMcpReleaseWorkflowCheck)
+    $protection = Get-GxMcpReleaseFieldValue -Object $Branch -Name 'protection'
+    $classic = Get-GxMcpReleaseFieldValue -Object $protection -Name 'required_status_checks'
+    foreach ($name in @(Get-GxMcpReleaseFieldValue -Object $classic -Name 'contexts')) { if ($name) { [void]$contexts.Add([string]$name) } }
+    foreach ($check in @(Get-GxMcpReleaseFieldValue -Object $classic -Name 'checks')) {
+        $name = Get-GxMcpReleaseFieldValue -Object $check -Name 'context'
+        if ($name) { [void]$contexts.Add([string]$name) }
+    }
+    foreach ($rule in @($Rules)) {
+        if ([string](Get-GxMcpReleaseFieldValue -Object $rule -Name 'type') -cne 'required_status_checks') { continue }
+        $parameters = Get-GxMcpReleaseFieldValue -Object $rule -Name 'parameters'
+        foreach ($check in @(Get-GxMcpReleaseFieldValue -Object $parameters -Name 'required_status_checks')) {
+            $name = Get-GxMcpReleaseFieldValue -Object $check -Name 'context'
+            if ($name) { [void]$contexts.Add([string]$name) }
+        }
+    }
+    return @($contexts | Sort-Object -Unique)
+}
+
+# Decides whether every required context is green on one commit, with the same rules as the
+# release workflow: the newest run by started_at wins, and the workflow check must be a
+# completed/success run created by GitHub Actions (app 15368) bound to exactly this commit.
+# neutral, skipped, a run from another app, or a commit status cannot stand in for it, and
+# an in-progress or absent context is not green. CheckRuns are objects with
+# id/name/status/conclusion/app_id/started_at/head_sha; Statuses have context/state.
+function Test-GxMcpReleaseRequiredChecks {
+    param(
+        [string[]]$RequiredContexts,
+        [AllowNull()][object[]]$CheckRuns,
+        [AllowNull()][object[]]$Statuses,
+        [Parameter(Mandatory = $true)][string]$Commit
+    )
+
+    $problems = New-Object System.Collections.Generic.List[string]
+    foreach ($context in @($RequiredContexts)) {
+        $isWorkflowCheck = $context -ceq $script:GxMcpReleaseWorkflowCheck
+        $runs = @($CheckRuns | Where-Object {
+            $null -ne $_ -and [string]$_.name -ceq $context -and
+            (-not $isWorkflowCheck -or [string]$_.app_id -ceq [string]$script:GxMcpReleaseWorkflowAppId)
+        } | Sort-Object `
+            @{ Expression = { ConvertTo-GxMcpReleaseDateTimeOffset $_.started_at }; Descending = $true }, `
+            @{ Expression = { [int64]$_.id }; Descending = $true })
+        $statusEntries = @($Statuses | Where-Object { $null -ne $_ -and [string]$_.context -ceq $context })
+        if ($runs.Count -gt 0) {
+            $latest = $runs[0]
+            if ([string]$latest.head_sha -cne $Commit) { [void]$problems.Add("$context is bound to $($latest.head_sha), not $Commit") }
+            elseif ([string]$latest.status -cne 'completed') { [void]$problems.Add("$context is $($latest.status)") }
+            elseif ([string]$latest.conclusion -cne 'success') { [void]$problems.Add("$context concluded $($latest.conclusion)") }
+        } elseif ($isWorkflowCheck) {
+            [void]$problems.Add("$context has no check run from GitHub Actions (app $($script:GxMcpReleaseWorkflowAppId))")
+        } elseif ($statusEntries.Count -gt 0) {
+            if ([string]$statusEntries[0].state -cne 'success') { [void]$problems.Add("$context state is $($statusEntries[0].state)") }
+        } else {
+            [void]$problems.Add("$context has no result")
+        }
+    }
+    return [pscustomobject]@{
+        Valid = $problems.Count -eq 0
+        Problems = @($problems)
+        Error = if ($problems.Count -eq 0) { $null } else { 'required checks are not green: ' + ($problems -join '; ') }
+    }
 }
 
 function Get-GxMcpVsCodeUpdateMutexName {

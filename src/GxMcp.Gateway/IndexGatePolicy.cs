@@ -39,10 +39,20 @@ namespace GxMcp.Gateway
         internal static IReadOnlySet<string> IndexDependentTools => IndexDependentToolSet;
 
         private static bool IsIndexDependentTool(string? toolName, JObject? args = null)
+            => IsIndexDependentTool(toolName, args, _currentKb.Value?.Path);
+
+        internal static bool IsIndexDependentToolForTest(string? toolName, JObject? args, string? openKbPath)
+            => IsIndexDependentTool(toolName, args, openKbPath);
+
+        private static bool IsIndexDependentTool(string? toolName, JObject? args, string? openKbPath)
         {
             if (string.IsNullOrWhiteSpace(toolName)) return false;
             if (IsIdentityBoundReadAvailableDuringIndexing(toolName, args)) return false;
             if (IndexDependentToolSet.Contains(toolName)) return true;
+
+            // genexus_wire is Gateway-owned and file-based, except pack_task on the open native KB,
+            // which the Worker answers from the search index and so waits for it like the other index reads.
+            if (GxwireNativePackTask.Applies(toolName, args, openKbPath)) return true;
 
             string? action = args?["action"]?.ToString();
             if (string.Equals(toolName, "genexus_db", StringComparison.OrdinalIgnoreCase))

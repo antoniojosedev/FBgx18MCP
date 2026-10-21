@@ -1,0 +1,19 @@
+Event Load
+	//init sidebar properties
+	SidebarMenu.Title = !"Unanimo"
+	SidebarMenu.DistanceToTop = 60
+	&sidebarItems = General.UI.SidebarItemsDP()
+EndEvent
+
+Event SidebarMenu.ItemClick
+	&target = SidebarMenu.SelectedItemTarget
+	Link(&target)
+EndEvent
+
+Event SidebarMenu.GetState
+	if SidebarMenu.isCollapsed
+		Content.Class = !"expandible-container" + !" expanded"
+	else
+		Content.Class = !"expandible-container"
+	endif
+EndEvent

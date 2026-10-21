@@ -15,6 +15,8 @@ enum Kind {
     DateTime,
     Record,
     Collection,
+    /// A GeneXus type this backend does not emit (GUID, BITMAP, geospatial): refused, never emitted.
+    Unsupported,
 }
 
 fn kind(data_type: &DataType) -> Kind {
@@ -25,8 +27,40 @@ fn kind(data_type: &DataType) -> Kind {
         DataType::Date {} => Kind::Date,
         DataType::DateTime {} => Kind::DateTime,
         DataType::Numeric { .. } => Kind::Numeric,
-        DataType::Character { .. } | DataType::Varchar { .. } => Kind::Text,
+        DataType::Character { .. } | DataType::Varchar { .. } | DataType::LongVarchar { .. } => {
+            Kind::Text
+        }
+        DataType::Guid {}
+        | DataType::Image {}
+        | DataType::Geospatial {}
+        | DataType::BaseCollection { .. } => Kind::Unsupported,
     }
+}
+
+/// Refuses a procedure, record or variable whose type this backend does not emit.
+fn reject_unsupported_types(canonical: &Project) -> Result<(), String> {
+    let unsupported = |data_type: &DataType| -> Result<(), String> {
+        if kind(data_type) == Kind::Unsupported {
+            return Err(format!(
+                "type {data_type:?} is not supported by the native typed backend"
+            ));
+        }
+        Ok(())
+    };
+    for procedure in &canonical.procedures {
+        for data_type in procedure.variables.values() {
+            unsupported(data_type)?;
+        }
+        if let Some(return_type) = &procedure.return_type {
+            unsupported(return_type)?;
+        }
+    }
+    for record in &canonical.record_types {
+        for data_type in record.fields.values() {
+            unsupported(data_type)?;
+        }
+    }
+    Ok(())
 }
 
 struct Emitter<'a> {
@@ -55,12 +89,20 @@ fn parameters(procedure: &ProcedureSource) -> Vec<(ParamMode, &str)> {
 fn record_field_variant(data_type: &DataType) -> Result<&'static str, String> {
     match data_type {
         DataType::Numeric { .. } => Ok("Numeric"),
-        DataType::Character { .. } | DataType::Varchar { .. } => Ok("Text"),
+        DataType::Character { .. } | DataType::Varchar { .. } | DataType::LongVarchar { .. } => {
+            Ok("Text")
+        }
         DataType::Boolean {} => Ok("Boolean"),
         DataType::Date {} => Ok("Date"),
         DataType::DateTime {} => Ok("DateTime"),
         DataType::Record { .. } => Ok("Record"),
         DataType::Collection { .. } => Ok("Collection"),
+        DataType::Guid {}
+        | DataType::Image {}
+        | DataType::Geospatial {}
+        | DataType::BaseCollection { .. } => Err(format!(
+            "type {data_type:?} is not supported by the native typed backend"
+        )),
     }
 }
 
@@ -96,6 +138,9 @@ fn empty_value(
         Kind::DateTime => "DateTime::empty()",
         Kind::Record | Kind::Collection => {
             return Err("container default requires a declared schema".into());
+        }
+        Kind::Unsupported => {
+            return Err("type is not supported by the native typed backend".into());
         }
     }
     .into())
@@ -149,6 +194,7 @@ pub(crate) fn emit_parsed(
     canonical: &Project,
     parsed: &[crate::frontend::Procedure],
 ) -> Result<String, String> {
+    reject_unsupported_types(canonical)?;
     if canonical.procedures.iter().any(|p| {
         crate::frontend::is_typed_builtin(&p.name)
             && (p.name != "NEW" || !canonical.record_types.is_empty())
@@ -193,7 +239,9 @@ pub(crate) fn emit_parsed(
             }
         }
     }
-    let mut output = String::from("#![forbid(unsafe_code)]\n#[allow(dead_code)]\nmod types {\n");
+    let mut output = String::from("#![forbid(unsafe_code)]\n#[allow(dead_code)]\nmod decimal {\n");
+    output.push_str(include_str!("decimal.rs"));
+    output.push_str("\n}\nmod types {\n");
     output.push_str(include_str!("types.rs"));
     output.push_str("\n}\nmod text {\n");
     output.push_str(include_str!("text.rs"));
@@ -386,6 +434,9 @@ fn rust_type(data_type: &DataType) -> &'static str {
         Kind::DateTime => "DateTime",
         Kind::Record => "Record",
         Kind::Collection => "Collection",
+        // Rejected by `reject_unsupported_types` before any emission; a generated program that reached
+        // this name would not compile.
+        Kind::Unsupported => "UnsupportedGeneXusType",
     }
 }
 
@@ -396,8 +447,14 @@ fn boundary(data_type: &DataType, value: &str) -> String {
         | DataType::DateTime {}
         | DataType::Character { .. }
         | DataType::Varchar { .. }
+        | DataType::LongVarchar { .. }
         | DataType::Record { .. }
-        | DataType::Collection { .. } => value.into(),
+        | DataType::Collection { .. }
+        // Unsupported types are rejected before emission (`reject_unsupported_types`).
+        | DataType::Guid {}
+        | DataType::Image {}
+        | DataType::Geospatial {}
+        | DataType::BaseCollection { .. } => value.into(),
         DataType::Numeric { precision, scale } => {
             format!("NumericType::new({precision}, {scale})?.assign({value})?")
         }
@@ -665,26 +722,13 @@ impl Emitter<'_> {
         Ok(value)
     }
 
-    fn lower(
+    fn lower_container_expr(
         &self,
         expr: &Expr,
         assigned: &mut BTreeSet<String>,
         prelude: &mut String,
-    ) -> Result<(Kind, String), String> {
+    ) -> Result<Option<(Kind, String)>, String> {
         let result = match expr {
-            Expr::EmptyDate => (Kind::Date, "Date::empty()".into()),
-            Expr::Integer(value) => (
-                Kind::Numeric,
-                format!("{:?}.parse::<Decimal>()?", value.to_string()),
-            ),
-            Expr::Decimal(text) => (Kind::Numeric, format!("{text:?}.parse::<Decimal>()?")),
-            Expr::Boolean(value) => (Kind::Boolean, value.to_string()),
-            Expr::Text(value) => (Kind::Text, format!("Text::new({value:?})?")),
-            Expr::Attribute(_) => {
-                return Err(
-                    "Attribute expressions require specifier navigation and are not admitted in standalone typed binaries".into(),
-                );
-            }
             Expr::Member(receiver, field) => {
                 let field_type = self.member_type(receiver, field)?;
                 if matches!(self.expression_type(receiver)?, DataType::Collection { .. }) {
@@ -740,26 +784,18 @@ impl Emitter<'_> {
                     format!("({value}).utf16_length().to_string().parse::<Decimal>()?"),
                 )
             }
-            Expr::Variable(name) => {
-                let (slot, data_type) = self.variable(name)?;
-                if !assigned.contains(name) && !self.is_sub {
-                    return Err(format!("typed variable {name} read before assignment"));
-                }
-                let target = if self.is_sub {
-                    format!("(*self.v{slot})")
-                } else {
-                    format!("v{slot}")
-                };
-                let value = if matches!(
-                    kind(data_type),
-                    Kind::Text | Kind::Record | Kind::Collection
-                ) {
-                    format!("{target}.clone()")
-                } else {
-                    target
-                };
-                (kind(data_type), value)
-            }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    fn lower_date_expr(
+        &self,
+        expr: &Expr,
+        assigned: &mut BTreeSet<String>,
+        prelude: &mut String,
+    ) -> Result<Option<(Kind, String)>, String> {
+        let result = match expr {
             Expr::DateShift(method, receiver, offset) => {
                 let (receiver_kind, receiver) = self.lower(receiver, assigned, prelude)?;
                 if !matches!(receiver_kind, Kind::Date | Kind::DateTime) {
@@ -814,6 +850,9 @@ impl Emitter<'_> {
                         Kind::Record => {
                             return Err("IsEmpty() is not supported on records directly".into());
                         }
+                        Kind::Unsupported => {
+                            return Err("IsEmpty() is not supported on this type".into());
+                        }
                     };
                     (Kind::Boolean, code)
                 } else {
@@ -835,6 +874,18 @@ impl Emitter<'_> {
                     )
                 }
             }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    fn lower_builtin_call(
+        &self,
+        expr: &Expr,
+        assigned: &mut BTreeSet<String>,
+        prelude: &mut String,
+    ) -> Result<Option<(Kind, String)>, String> {
+        let result = match expr {
             Expr::Call(name, args) if name == "STR" => {
                 if !(1..=3).contains(&args.len()) {
                     return Err("Str expects one to three arguments".into());
@@ -1318,6 +1369,39 @@ impl Emitter<'_> {
                     ),
                 )
             }
+            Expr::Call(name, args) if name == "CTOD" => {
+                if args.len() != 1 {
+                    return Err("CToD expects exactly one Character argument".into());
+                }
+                let value = self.lower_expect(&args[0], assigned, Kind::Text, prelude)?;
+                (
+                    Kind::Date,
+                    format!(
+                        "Date::parse_cto_d(({value}).trim_str(), {:?})",
+                        self.date_two_digit_year_max
+                    ),
+                )
+            }
+            Expr::Call(name, args) if name == "DTOC" => {
+                if args.len() != 1 {
+                    return Err("DToC expects exactly one Date argument".into());
+                }
+                let (kind, value) = self.lower(&args[0], assigned, prelude)?;
+                if kind != Kind::Date {
+                    return Err("DToC argument must be Date".into());
+                }
+                (Kind::Text, format!("Text::new(&({value}).to_iso_text())?"))
+            }
+            Expr::Call(name, args) if name == "TTOC" => {
+                if args.len() != 1 {
+                    return Err("TToC expects exactly one DateTime argument".into());
+                }
+                let (kind, value) = self.lower(&args[0], assigned, prelude)?;
+                if kind != Kind::DateTime {
+                    return Err("TToC argument must be DateTime".into());
+                }
+                (Kind::Text, format!("Text::new(&({value}).to_iso_text())?"))
+            }
             Expr::Call(name, args) if name == "IIF" => {
                 if args.len() != 3 {
                     return Err(
@@ -1361,6 +1445,9 @@ impl Emitter<'_> {
                     Kind::Record => {
                         return Err("IsEmpty is not supported on records directly".into());
                     }
+                    Kind::Unsupported => {
+                        return Err("IsEmpty is not supported on this type".into());
+                    }
                 };
                 (Kind::Boolean, code)
             }
@@ -1375,13 +1462,18 @@ impl Emitter<'_> {
                 };
                 match target_type {
                     DataType::Numeric { .. } => (Kind::Numeric, "\"0\".parse::<Decimal>()?".into()),
-                    DataType::Character { .. } | DataType::Varchar { .. } => {
-                        (Kind::Text, "Text::new(\"\")?".into())
+                    DataType::Character { .. }
+                    | DataType::Varchar { .. }
+                    | DataType::LongVarchar { .. } => (Kind::Text, "Text::new(\"\")?".into()),
+                    DataType::Guid {} | DataType::Image {} | DataType::Geospatial {} => {
+                        return Err("Nullvalue is not supported on this type".into());
                     }
                     DataType::Boolean {} => (Kind::Boolean, "false".into()),
                     DataType::Date {} => (Kind::Date, "Date::empty()".into()),
                     DataType::DateTime {} => (Kind::DateTime, "DateTime::empty()".into()),
-                    DataType::Record { .. } | DataType::Collection { .. } => {
+                    DataType::Record { .. }
+                    | DataType::Collection { .. }
+                    | DataType::BaseCollection { .. } => {
                         return Err("Nullvalue requires a scalar variable or field".into());
                     }
                 }
@@ -1539,6 +1631,61 @@ impl Emitter<'_> {
                     )
                 }
             }
+            _ => return Ok(None),
+        };
+        Ok(Some(result))
+    }
+
+    fn lower(
+        &self,
+        expr: &Expr,
+        assigned: &mut BTreeSet<String>,
+        prelude: &mut String,
+    ) -> Result<(Kind, String), String> {
+        if let Some(result) = self.lower_container_expr(expr, assigned, prelude)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.lower_date_expr(expr, assigned, prelude)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.lower_builtin_call(expr, assigned, prelude)? {
+            return Ok(result);
+        }
+        let result = match expr {
+            Expr::Paren(inner) => return self.lower(inner, assigned, prelude),
+            Expr::EmptyDate => (Kind::Date, "Date::empty()".into()),
+            Expr::Integer(value) => (
+                Kind::Numeric,
+                format!("{:?}.parse::<Decimal>()?", value.to_string()),
+            ),
+            Expr::Decimal(text) => (Kind::Numeric, format!("{text:?}.parse::<Decimal>()?")),
+            Expr::Boolean(value) => (Kind::Boolean, value.to_string()),
+            Expr::Text(value) => (Kind::Text, format!("Text::new({value:?})?")),
+            Expr::Attribute(_) => {
+                return Err(
+                    "Attribute expressions require specifier navigation and are not admitted in standalone typed binaries".into(),
+                );
+            }
+            Expr::Variable(name) => {
+                let (slot, data_type) = self.variable(name)?;
+                if !assigned.contains(name) && !self.is_sub {
+                    return Err(format!("typed variable {name} read before assignment"));
+                }
+                let target = if self.is_sub {
+                    format!("(*self.v{slot})")
+                } else {
+                    format!("v{slot}")
+                };
+                let value = if matches!(
+                    kind(data_type),
+                    Kind::Text | Kind::Record | Kind::Collection
+                ) {
+                    format!("{target}.clone()")
+                } else {
+                    target
+                };
+                (kind(data_type), value)
+            }
             Expr::Call(name, args) => {
                 let (result, value) = self.lower_call(name, args, assigned, prelude, false)?;
                 (result.expect("function calls return a value"), value)
@@ -1554,6 +1701,12 @@ impl Emitter<'_> {
             Expr::Binary(left, operator, right) => {
                 self.binary(left, *operator, right, assigned, prelude)?
             }
+            Expr::Member(..)
+            | Expr::CloneRecord(..)
+            | Expr::CollectionItem(..)
+            | Expr::TextLength(..)
+            | Expr::DateShift(..)
+            | Expr::DateMethod(..) => unreachable!("handled by helper methods"),
         };
         Ok(result)
     }
@@ -1571,7 +1724,9 @@ impl Emitter<'_> {
                 Kind::Numeric => Ok("\"0\".parse::<Decimal>()?".into()),
                 Kind::Text => Ok("Text::new(\"\")?".into()),
                 Kind::Boolean => Ok("false".into()),
-                Kind::Record | Kind::Collection => Err("typed value mismatch".into()),
+                Kind::Record | Kind::Collection | Kind::Unsupported => {
+                    Err("typed value mismatch".into())
+                }
             };
         }
         let (actual, source) = self.expression(expr, assigned)?;
@@ -1761,8 +1916,16 @@ impl Emitter<'_> {
                         | DataType::DateTime {}
                         | DataType::Character { .. }
                         | DataType::Varchar { .. }
+                        | DataType::LongVarchar { .. }
                         | DataType::Record { .. }
                         | DataType::Collection { .. } => writeln!(output, "{target} = {value};"),
+                        // Rejected by `reject_unsupported_types` before emission.
+                        DataType::Guid {}
+                        | DataType::Image {}
+                        | DataType::Geospatial {}
+                        | DataType::BaseCollection { .. } => {
+                            return Err("type is not supported by the native typed backend".into());
+                        }
                         DataType::Numeric { precision, scale } => writeln!(
                             output,
                             "{target} = NumericType::new({precision}, {scale})?.assign({value})?;"
@@ -2035,5 +2198,51 @@ impl Emitter<'_> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::Project;
+    use serde_json::json;
+
+    fn project_with_variable(kind: serde_json::Value) -> Project {
+        Project::from_json(
+            &json!({
+                "format_version": 2,
+                "entry": "Main",
+                "procedures": [{
+                    "name": "Main",
+                    "params": [],
+                    "variables": { "V": kind },
+                    "source": "&V = 'text'\n&V = &V\n"
+                }]
+            })
+            .to_string(),
+        )
+        .expect("the project decodes")
+    }
+
+    #[test]
+    fn a_longvarchar_variable_is_emitted_as_text() {
+        let project = project_with_variable(json!({ "kind": "long_varchar" }));
+        let code = crate::compile(&project).expect("LONGVARCHAR is text in the native backend");
+        assert!(code.contains("Text"), "{code}");
+    }
+
+    #[test]
+    fn guid_image_and_geospatial_variables_are_refused_by_the_native_backend() {
+        for kind in [
+            json!({ "kind": "guid" }),
+            json!({ "kind": "image" }),
+            json!({ "kind": "geospatial" }),
+        ] {
+            let project = project_with_variable(kind.clone());
+            let error = crate::compile(&project).expect_err("no native form for this type");
+            assert!(
+                error.contains("not supported by the native typed backend"),
+                "{kind}: {error}"
+            );
+        }
     }
 }

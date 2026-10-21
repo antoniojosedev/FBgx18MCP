@@ -64,6 +64,32 @@ try {
     Write-TestStatus 'running'
     & pwsh -NoProfile -File (Join-Path $root 'scripts\release-status.ps1') -Path $path -WaitSeconds 0 *> $null
     if ($LASTEXITCODE -ne 2) { throw 'Running status must return timeout/in-progress exit 2.' }
+    # -PrepareOnly succeeds without publishing, so the missing publication evidence is not a failure.
+    Remove-Item -LiteralPath "$path.publication.json" -Force
+    $prepared = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $prepared.state = 'succeeded'; $prepared.phase = 'prepared'; $prepared.publicationState = 'not-started'; $prepared.nextAction = 'push-candidate-and-run-ci'
+    $prepared | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+    $output = @(& pwsh -NoProfile -File (Join-Path $root 'scripts\release-status.ps1') -Path $path -RepositoryRoot $artifactRoot)
+    if ($LASTEXITCODE -ne 0 -or ($output -join "`n") -notmatch 'phase=prepared state=succeeded') { throw "A prepared release must report success (exit $LASTEXITCODE): $($output -join ' ')" }
+    $prepared.phase = 'complete'
+    $prepared | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+    & pwsh -NoProfile -File (Join-Path $root 'scripts\release-status.ps1') -Path $path -RepositoryRoot $artifactRoot *> $null
+    if ($LASTEXITCODE -ne 1) { throw 'A completed release without publication evidence must still fail.' }
+    Write-TestStatus 'running'
+    # A release process that died without recording a result must not read as running forever.
+    $deadProcess = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-Command', 'exit 0') -PassThru -WindowStyle Hidden
+    $deadProcess.WaitForExit()
+    $interrupted = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $interrupted.pid = $deadProcess.Id
+    $interrupted.updatedAtUtc = [DateTime]::UtcNow.AddMinutes(-5).ToString('o')
+    $interrupted | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+    $output = @(& pwsh -NoProfile -File (Join-Path $root 'scripts\release-status.ps1') -Path $path -RepositoryRoot $artifactRoot)
+    if ($LASTEXITCODE -ne 1 -or ($output -join "`n") -notmatch 'never recorded a result') { throw "Status of a dead release process must fail (exit $LASTEXITCODE): $($output -join ' ')" }
+    # ...but a fresh status inside the launcher-to-child handoff window is still running.
+    $interrupted.updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $interrupted | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding utf8
+    & pwsh -NoProfile -File (Join-Path $root 'scripts\release-status.ps1') -Path $path -RepositoryRoot $artifactRoot *> $null
+    if ($LASTEXITCODE -ne 2) { throw 'A freshly written running status must stay in progress inside the grace window.' }
     $releaseSource = Get-Content (Join-Path $root 'release.ps1') -Raw
     foreach ($marker in @('\[DRY-RUN\] would create GitHub release', 'if \(\$DryRun\)', 'DetachedStdoutLog', 'DetachedStderrLog', 'stdoutLog', 'stderrLog', 'StatusFile')) {
         if ($releaseSource -notmatch $marker) { throw "Detached release handoff is missing: $marker" }

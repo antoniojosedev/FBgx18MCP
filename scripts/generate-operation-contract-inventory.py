@@ -189,6 +189,25 @@ def operation_fields(tool: str, action: str | None, kind: str, preview_actions: 
             "kind": "readOnly", "effects": "file.read", "execution": "gateway",
             "retry": "safe", "cache": "never", "invalidation": [], "previewSupported": False,
         }
+    if tool == "genexus_connection_recover" and action == "recovery_read_complete":
+        # Reads one part through the Worker (nothing is written to the KB) and, only
+        # when dryRun is explicitly false, rewrites the recovery journal.
+        preview = {
+            "kind": "readOnly", "effects": "kb.read", "execution": "gateway",
+            "retry": "safe", "cache": "never", "invalidation": [], "previewSupported": True,
+        }
+        applied = {
+            "kind": "mutating", "effects": "file.write", "execution": "gateway",
+            "retry": "operation_key", "cache": "never", "invalidation": ["files"],
+            "previewSupported": True,
+        }
+        return {
+            **preview,
+            "variants": [
+                {"selector": {"dryRun": "not false"}, **preview},
+                {"selector": {"dryRun": False}, **applied},
+            ],
+        }
     if tool == "genexus_connection_recover" and action == "journal_repair":
         preview = {
             "kind": "readOnly", "effects": "file.read", "execution": "gateway",

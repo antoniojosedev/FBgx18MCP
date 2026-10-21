@@ -372,6 +372,54 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
+        /// <summary>
+        /// Only a layout form is known to break on the replay (its attribute references are ids, and
+        /// the editable form spells them by name). A legacy HTML form keeps the path it has always had.
+        /// </summary>
+        internal static bool IsLayoutFormPart(object part)
+        {
+            try { return LayoutFormModel.IsLayoutForm(WebFormSdkReflection.GetPartDocument(part)); }
+            catch (Exception ex)
+            {
+                // Treated as a legacy form: the replay stays pending, which is the old behaviour.
+                Logger.Warn("[LayoutFix] could not tell whether the part is a layout form: " + (ex.InnerException ?? ex).Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Setting <c>EditableContent</c> raises <c>m_EditableToStoredNeeded</c>, which makes the
+        /// part's save run <c>EditableToStored()</c>: the IDE's conversion of text a person edited,
+        /// where an attribute reference is spelled by NAME. The XML this worker writes is the
+        /// STORED form (<c>attribute="att:226"</c>), already pushed to the model by
+        /// <c>DeserializeDataFromDocument()</c>, so the replay resolves "att:226" as an attribute
+        /// called "att:226" and the SDK refuses the save with "Atributo desconhecido 'att:226'",
+        /// for a valid id, on every layout form that binds an attribute. The typed writer already
+        /// clears the flag for the same reason; the raw rewrite did not.
+        /// </summary>
+        internal static void ClearPendingEditableToStored(object part)
+        {
+            try
+            {
+                var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+                var type = part.GetType();
+                var flag = type.GetField("m_EditableToStoredNeeded", flags);
+                if (flag == null || flag.FieldType != typeof(bool)) return;
+                if (!(bool)flag.GetValue(part)) return;
+
+                flag.SetValue(part, false);
+                var content = type.GetField("m_EditableContent", flags);
+                var document = WebFormSdkReflection.GetPartDocument(part);
+                if (content != null && content.FieldType == typeof(string) && document != null)
+                    content.SetValue(part, document.OuterXml);
+                Logger.Info("[LayoutFix] cleared m_EditableToStoredNeeded after DeserializeDataFromDocument (stored-form XML; no name-based replay on save).");
+            }
+            catch (Exception ex)
+            {
+                Logger.Info("[LayoutFix] could not clear m_EditableToStoredNeeded: " + (ex.InnerException ?? ex).Message);
+            }
+        }
+
         private static void PushDocumentToStoredModel(object part)
         {
             var type = part.GetType();
@@ -409,6 +457,7 @@ namespace GxMcp.Worker.Helpers
                         string.Equals(m.Name, "InvalidateLastModification", StringComparison.Ordinal) &&
                         m.GetParameters().Length == 0);
                     try { invalidate?.Invoke(part, null); } catch { }
+                    if (IsLayoutFormPart(part)) ClearPendingEditableToStored(part);
                     return;
                 }
                 catch (Exception ex)

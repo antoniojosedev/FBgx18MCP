@@ -1,0 +1,1 @@
+{"root":{"name":"TrnGroupProbeBase","attributes":[{"name":"TrnGroupProbeBaseId","is_key":true,"data_type":{"kind":"numeric","precision":4,"scale":0}},{"name":"GpBaseId","is_key":false,"data_type":{"kind":"numeric","precision":8,"scale":0}},{"name":"GpBaseDesc","is_key":false,"data_type":{"kind":"varchar","length":40}}]}}

@@ -614,6 +614,24 @@ try {
         throw 'release-preflight.ps1 must report the enriched binding failure.'
     }
 
+    foreach ($case in @(
+        @{ Version = '2.9.9'; Legacy = $true },
+        @{ Version = 'v1.0.0'; Legacy = $true },
+        @{ Version = '3.0.0'; Legacy = $false },
+        @{ Version = '3.16.0'; Legacy = $false },
+        @{ Version = '4.0.0'; Legacy = $false },
+        @{ Version = 'v10.2.1'; Legacy = $false }
+    )) {
+        if ((Test-GxMcpReleaseLegacyVersion $case.Version) -ne $case.Legacy) {
+            throw "Release version $($case.Version) legacy classification must be $($case.Legacy): only majors below 3 skip the strict asset contract."
+        }
+    }
+    foreach ($script in @('release.ps1', 'scripts/release-doctor.ps1', 'scripts/release-preflight.ps1', 'scripts/release-status.ps1', 'scripts/verify-release-publication.ps1')) {
+        if ((Get-Content -LiteralPath (Join-Path $root $script) -Raw) -match "notmatch '\^3") {
+            throw "$script must classify legacy releases with Test-GxMcpReleaseLegacyVersion, not a 3.x prefix match."
+        }
+    }
+
     Write-Host 'release-contract: canonical fingerprint, full preflight identity, exact workflow matching, dual-shape field probes, credential redaction and process-smoke binding diagnostics passed' -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }

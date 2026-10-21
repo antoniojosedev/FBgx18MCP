@@ -91,9 +91,12 @@ namespace GxMcp.Worker.Services
                 case "add_filter_attribute":
                     return ExecuteAddFilterAttribute(name, instanceObj, args);
 
+                case "remove_filter_attribute":
+                    return ExecuteRemoveFilterAttribute(name, instanceObj, args);
+
                 default:
                     return McpResponse.Err(code: "UnknownAction",
-                        message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action, remove_action, list_filters, add_filter_attribute.",
+                        message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action, remove_action, list_filters, add_filter_attribute, remove_filter_attribute.",
                         nextSteps: new JArray(McpResponse.NextStep("genexus_workwith",
                             new JObject { ["action"] = "list_actions", ["name"] = name },
                             "List actions on the target WorkWith object.")),
@@ -104,7 +107,7 @@ namespace GxMcp.Worker.Services
         private string ExecuteListFilters(string target, KBObject instanceObj, JObject args)
         {
             string level = args?["level"]?.ToString();
-            if (!WorkWithSdkAdapter.ListFilters(instanceObj, _patterns, level, out var filters, out var error, out var errorMessage))
+            if (!WorkWithSdkAdapter.ListFilters(instanceObj, _patterns, level, out var filters, out var source, out var error, out var errorMessage))
             {
                 return McpResponse.Err(code: error ?? "ListFiltersFailed",
                     message: errorMessage ?? $"Failed to list filters for '{instanceObj.Name}': {error}",
@@ -112,11 +115,13 @@ namespace GxMcp.Worker.Services
                     target: target);
             }
 
-            return McpResponse.Ok(target: target, code: "WorkWithFiltersRead", result: new JObject
+            var result = new JObject
             {
                 ["instance"] = instanceObj.Name,
                 ["filters"] = filters
-            });
+            };
+            WorkWithSdkAdapter.DescribeReadSource(result, "observedSource", source);
+            return McpResponse.Ok(target: target, code: "WorkWithFiltersRead", result: result);
         }
 
         private string ExecuteAddFilterAttribute(string target, KBObject instanceObj, JObject args)
@@ -128,6 +133,8 @@ namespace GxMcp.Worker.Services
 
             string description = args?["description"]?.ToString();
             string domain = args?["domain"]?.ToString();
+            // Canonical input name is the schema's `default` (issue #588); stored, not compiled.
+            string defaultValue = args?["default"]?.ToString();
             string condition = args?["condition"]?.ToString();
             var conditionsToken = args?["conditions"] as JArray;
             var conditions = conditionsToken != null
@@ -139,15 +146,17 @@ namespace GxMcp.Worker.Services
 
             bool dryRun = args?["dryRun"]?.ToObject<bool?>() == true;
 
+            // `domain` (and the Attribute-vs-variable classification behind the advisory)
+            // resolve through the same object lookup every other tool uses: name, GUID
+            // or `Type:Name`, honouring the type filter (issue #587).
+            WorkWithSdkAdapter.FilterObjectLookup lookup = (nameOrGuid, typeName) =>
+                WorkWithSdkAdapter.FilterKbObjectRef.FromKbObject(_objects.FindObject(nameOrGuid, typeName));
+
             if (dryRun)
             {
-                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, level, attribute, description, domain, conditions, dryRun: true, out var plan, out var errCode, out var errMsg))
+                if (!WorkWithSdkAdapter.AddFilterAttribute(instanceObj, _patterns, level, attribute, description, domain, defaultValue, conditions, lookup, dryRun: true, out var plan, out var errCode, out var errMsg))
                 {
-                    return McpResponse.Err(
-                        code: errCode ?? "AddFilterAttributePlanFailed",
-                        message: errMsg ?? "Failed to create add_filter_attribute plan.",
-                        target: target,
-                        extra: plan != null ? new JObject { ["plan"] = plan, ["dryRun"] = true } : null);
+                    return FilterAttributeError(target, errCode ?? "AddFilterAttributePlanFailed", errMsg ?? "Failed to create add_filter_attribute plan.", plan, dryRun: true, domain);
                 }
 
                 return McpResponse.Ok(target: target, code: "WorkWithFilterPlan", result: new JObject
@@ -160,33 +169,138 @@ namespace GxMcp.Worker.Services
             lock (WriteService.AcquirePerTargetLock(instanceObj.Name))
             {
                 KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
-                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, level, attribute, description, domain, conditions, dryRun: false, out var receipt, out var errCode, out var errMsg))
+                if (!WorkWithSdkAdapter.AddFilterAttribute(freshInstance, _patterns, level, attribute, description, domain, defaultValue, conditions, lookup, dryRun: false, out var receipt, out var errCode, out var errMsg))
                 {
-                    return McpResponse.Err(
-                        code: errCode ?? "AddFilterAttributeFailed",
-                        message: errMsg ?? "Failed to add filter attribute.",
-                        target: target,
-                        extra: receipt != null ? new JObject { ["plan"] = receipt } : null);
+                    return FilterAttributeError(target, errCode ?? "AddFilterAttributeFailed", errMsg ?? "Failed to add filter attribute.", receipt, dryRun: false, domain);
                 }
 
                 return McpResponse.Ok(target: target, code: "WorkWithFilterAdded", result: receipt);
             }
         }
 
+        private static string FilterAttributeError(string target, string code, string message, JObject plan, bool dryRun, string domain)
+        {
+            JObject extra = null;
+            if (plan != null)
+            {
+                extra = new JObject { ["plan"] = plan };
+                if (dryRun) extra["dryRun"] = true;
+            }
+
+            bool domainNotFound = string.Equals(code, "FilterDomainNotFound", StringComparison.Ordinal);
+            return McpResponse.Err(
+                code: code,
+                message: message,
+                hint: domainNotFound
+                    ? "Pass the name or GUID of an existing Domain (list_filters reports the plain Domain name of existing filter attributes), or omit `domain`."
+                    : null,
+                nextSteps: domainNotFound
+                    ? new JArray(McpResponse.NextStep("genexus_list_objects",
+                        new JObject { ["type"] = "Domain", ["query"] = domain ?? "" },
+                        "Lists Domains matching the name."))
+                    : null,
+                target: target,
+                extra: extra,
+                errorExtra: plan?["domainAdvisory"] as JObject);
+        }
+
+        /// remove_filter_attribute (issue #586): the inverse of add_filter_attribute with
+        /// the same validation and receipt discipline. Native SDK write only; the adapter
+        /// refuses with WorkWithSdkUnavailable instead of falling back to XML.
+        private string ExecuteRemoveFilterAttribute(string target, KBObject instanceObj, JObject args)
+        {
+            string level = args?["level"]?.ToString();
+            string attribute = args?["attribute"]?.ToString()?.Trim();
+            if (string.IsNullOrWhiteSpace(attribute))
+                return McpResponse.Err(code: "MissingAttribute", message: "attribute is required for remove_filter_attribute.", target: target);
+
+            var removeConditionsToken = args?["removeConditions"] as JArray;
+            var removeConditions = removeConditionsToken != null
+                ? removeConditionsToken.Select(t => t.ToString()).ToList()
+                : new List<string>();
+
+            bool dryRun = args?["dryRun"]?.ToObject<bool?>() == true;
+
+            if (dryRun)
+            {
+                if (!WorkWithSdkAdapter.RemoveFilterAttribute(instanceObj, _patterns, level, attribute, removeConditions, dryRun: true, out var plan, out var errCode, out var errMsg))
+                    return RemoveFilterAttributeError(target, errCode, errMsg, plan, dryRun: true);
+
+                return McpResponse.Ok(target: target, code: "WorkWithFilterRemovalPlan", result: new JObject
+                {
+                    ["plan"] = plan,
+                    ["dryRun"] = true
+                });
+            }
+
+            lock (WriteService.AcquirePerTargetLock(instanceObj.Name))
+            {
+                KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
+                if (!WorkWithSdkAdapter.RemoveFilterAttribute(freshInstance, _patterns, level, attribute, removeConditions, dryRun: false, out var receipt, out var errCode, out var errMsg))
+                    return RemoveFilterAttributeError(target, errCode, errMsg, receipt, dryRun: false);
+
+                // A reread that failed after Save keeps the receipt trio with verified:false;
+                // the code says so instead of reporting a verified removal.
+                bool verified = receipt?["verified"]?.ToObject<bool?>() == true;
+                return McpResponse.Ok(target: target, code: verified ? "WorkWithFilterAttributeRemoved" : "WorkWithFilterAttributeRemovedUnverified", result: receipt);
+            }
+        }
+
+        private static string RemoveFilterAttributeError(string target, string errCode, string errMsg, JObject detail, bool dryRun)
+        {
+            string code = errCode ?? (dryRun ? "RemoveFilterAttributePlanFailed" : "RemoveFilterAttributeFailed");
+            JObject extra = null;
+            if (detail != null)
+            {
+                extra = new JObject();
+                extra[string.Equals(code, "VerificationMismatch", StringComparison.Ordinal) ? "receipt" : "plan"] = detail;
+                if (dryRun) extra["dryRun"] = true;
+            }
+
+            string hint = null;
+            switch (code)
+            {
+                case "FilterAttributeReferencedByConditions":
+                    hint = "Pass the exact text of each referencing condition in removeConditions to remove it together with the attribute; conditions not listed are never removed.";
+                    break;
+                case "FilterAttributeReferencedByAttributeDefault":
+                    hint = "Change the neighbor filter attribute default in the GeneXus IDE before removing this attribute.";
+                    break;
+                case "WorkWithFilterNotPresent":
+                    hint = "Create the filter node on Selection in the GeneXus IDE.";
+                    break;
+                case "WorkWithSdkUnavailable":
+                    hint = "Filter removal writes only through the native WorkWith SDK; there is no XML fallback.";
+                    break;
+            }
+
+            return McpResponse.Err(
+                code: code,
+                message: errMsg ?? (dryRun ? "Failed to create remove_filter_attribute plan." : "Failed to remove filter attribute."),
+                hint: hint,
+                nextSteps: new JArray(McpResponse.NextStep("genexus_workwith",
+                    new JObject { ["action"] = "list_filters", ["name"] = target },
+                    "Read the current filter attributes and conditions of the Level.")),
+                target: target,
+                extra: extra);
+        }
+
         private string ExecuteListActions(string target, KBObject instanceObj)
         {
-            if (!WorkWithSdkAdapter.ListActions(instanceObj, _patterns, out var tabs, out var error))
+            if (!WorkWithSdkAdapter.ListActions(instanceObj, _patterns, out var tabs, out var source, out var error))
             {
                 return McpResponse.Err(code: error ?? "ListActionsFailed",
                     message: $"Failed to list actions for '{instanceObj.Name}': {error}",
                     target: target);
             }
 
-            return McpResponse.Ok(target: target, code: "WorkWithActionsRead", result: new JObject
+            var result = new JObject
             {
                 ["instance"] = instanceObj.Name,
                 ["tabs"] = tabs
-            });
+            };
+            WorkWithSdkAdapter.DescribeReadSource(result, "observedSource", source);
+            return McpResponse.Ok(target: target, code: "WorkWithActionsRead", result: result);
         }
 
         private string ExecuteAddAction(string target, KBObject instanceObj, JObject args)

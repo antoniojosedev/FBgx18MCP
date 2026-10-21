@@ -10,6 +10,10 @@
 *.txt
 *.bak
 !LICENSE.txt
+# Engine test fixtures are text files that the tests read: keep them visible to git.
+!src/gx-engine/tests/fixtures/**/*.txt
+# gx-engine web templates embedded with include_str!: the build fails without them.
+!src/gx-engine/src/csharp/webform/*.txt
 *.zip
 publish.zip.sha256
 *.xpz

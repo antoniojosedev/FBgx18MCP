@@ -472,11 +472,11 @@ styles AppDSO (BaseDSO) {
     // Retrieve from catalog and verify kind
     let retrieved_app = catalog.get(&app_id).expect("AppDSO exists");
     assert_eq!(retrieved_app.kind, ObjectKind::DesignSystem);
-    assert_eq!(retrieved_app.name, "APPDSO");
+    assert_eq!(retrieved_app.name, "AppDSO");
 
     let retrieved_base = catalog.get(&base_id).expect("BaseDSO exists");
     assert_eq!(retrieved_base.kind, ObjectKind::DesignSystem);
-    assert_eq!(retrieved_base.name, "BASEDSO");
+    assert_eq!(retrieved_base.name, "BaseDSO");
 
     // Parse and render
     let base_part = retrieved_base

@@ -16,16 +16,21 @@ $tests = @(
     'test-release-preflight.ps1',
     'test-pre-push-mechanical-checks.ps1',
     'test-release-workflow.ps1',
+    'test-ci-workflow-policy.ps1',
     'test-pr-preflight-ripwire.ps1',
     'test-pr-push.ps1',
     'test-pr-review-tooling.ps1',
     'test-integration-preflight.ps1',
     'test-release-status.ps1',
+    'test-release-exit-codes.ps1',
+    'test-release-freshness.ps1',
+    'test-release-resume.ps1',
     'test-release-publication.ps1',
     'test-release-doctor.ps1',
     'test-warning-baseline.ps1',
     'test-line-endings.ps1',
     'test-live-matrix.test.ps1',
+    'test-workwith-persistence-smoke.ps1',
     'test-run-gate.ps1'
 )
 foreach ($name in $tests) {

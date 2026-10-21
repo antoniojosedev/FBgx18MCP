@@ -1,0 +1,9 @@
+<GxMultiForm rootId="1" version="html:15.0.0;layout:17.11.0">
+  <Form id="1" type="layout">
+    <detail PanelType="Web">
+      <layout>
+        <table controlName="MainTable" tableType="Responsive" />
+      </layout>
+    </detail>
+  </Form>
+</GxMultiForm>

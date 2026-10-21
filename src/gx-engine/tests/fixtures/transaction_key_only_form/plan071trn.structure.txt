@@ -1,0 +1,1 @@
+{"root":{"name":"Plan071Trn","attributes":[{"name":"Plan071TrnId","is_key":true,"data_type":{"kind":"numeric","precision":4,"scale":0}}]}}

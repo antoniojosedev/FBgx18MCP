@@ -1,0 +1,13 @@
+AV8First = new SdtRustFreshSdt091817(context);
+context.StatusMessage( "default="+StringUtil.Trim( StringUtil.Str( (decimal)(AV8First.gxTpr_Amount), 10, 0)) );
+AV8First.gxTpr_Amount = 7;
+AV9Second = AV8First;
+AV9Second.gxTpr_Amount = 9;
+context.StatusMessage( "alias_first="+StringUtil.Trim( StringUtil.Str( (decimal)(AV8First.gxTpr_Amount), 10, 0)) );
+context.StatusMessage( "alias_second="+StringUtil.Trim( StringUtil.Str( (decimal)(AV9Second.gxTpr_Amount), 10, 0)) );
+AV9Second = (SdtRustFreshSdt091817)(AV8First.Clone());
+AV9Second.gxTpr_Amount = 11;
+context.StatusMessage( "clone_first="+StringUtil.Trim( StringUtil.Str( (decimal)(AV8First.gxTpr_Amount), 10, 0)) );
+context.StatusMessage( "clone_second="+StringUtil.Trim( StringUtil.Str( (decimal)(AV9Second.gxTpr_Amount), 10, 0)) );
+AV8First = new SdtRustFreshSdt091817(context);
+AV9Second = new SdtRustFreshSdt091817(context);

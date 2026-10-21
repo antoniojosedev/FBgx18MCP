@@ -5,9 +5,9 @@
 //! maps GeneXus data types to standard SQL dialects, and emits clean, inspectable
 //! DDL without executing any database writes.
 
-use crate::catalog::{Catalog, ObjectKind};
+use crate::catalog::{Catalog, KbObject, ObjectKind};
 use crate::model::DataType;
-use crate::transaction::{TransactionLevel, TransactionStructure};
+use crate::transaction::{KeyReference, TransactionLevel, TransactionStructure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,6 +72,13 @@ impl SqlDialect {
                 }
             }
             DataType::Character { length } => Ok(format!("CHAR({length})")),
+            // No DDL type for these is evidenced for any dialect; a column of one is refused.
+            DataType::LongVarchar { .. }
+            | DataType::Guid {}
+            | DataType::Image {}
+            | DataType::Geospatial {} => Err(format!(
+                "no evidenced SQL column type for {data_type:?} in this dialect"
+            )),
             DataType::Varchar { length } => match self {
                 SqlDialect::Oracle => Ok(format!("VARCHAR2({length})")),
                 SqlDialect::SqlServer | SqlDialect::PostgreSql | SqlDialect::Ansi => {
@@ -90,7 +97,9 @@ impl SqlDialect {
                     Ok("TIMESTAMP".into())
                 }
             },
-            DataType::Record { schema } | DataType::Collection { schema } => Err(format!(
+            DataType::Record { schema }
+            | DataType::Collection { schema }
+            | DataType::BaseCollection { schema, .. } => Err(format!(
                 "cannot map complex type '{schema}' directly to relational table column"
             )),
         }
@@ -471,253 +480,11 @@ impl Table {
     }
 }
 
-/// Derives relational physical `Table` schemas from a `TransactionStructure`.
-///
-/// Follows GeneXus relational table derivation:
-/// - Root level maps to the root Table with its primary key.
-/// - Child levels inherit parent primary keys as both primary key parts and Foreign Keys.
-/// - Formula attributes are omitted from physical storage.
-/// - Attribute data types are resolved using the provided `attribute_resolver` when not inline.
-pub fn derive_tables_from_transaction(
-    structure: &TransactionStructure,
-    attribute_resolver: impl Fn(&str) -> Option<DataType>,
-) -> Result<Vec<Table>, String> {
-    structure.validate()?;
-    let mut tables = Vec::new();
-    let inherited_keys = Vec::new();
-    derive_level_table(
-        &structure.root,
-        None,
-        &inherited_keys,
-        &attribute_resolver,
-        &mut tables,
-        0,
-    )?;
-    Ok(tables)
-}
+mod derive;
 
-fn derive_level_table(
-    level: &TransactionLevel,
-    parent_table_name: Option<&str>,
-    inherited_keys: &[TableColumn],
-    resolver: &impl Fn(&str) -> Option<DataType>,
-    tables: &mut Vec<Table>,
-    depth: usize,
-) -> Result<(), String> {
-    if depth > 16 {
-        return Err("Transaction level nesting depth exceeds limit of 16".into());
-    }
-
-    let table_name = match parent_table_name {
-        None => level.name.clone(),
-        Some(parent) => {
-            if level
-                .name
-                .to_ascii_uppercase()
-                .starts_with(&parent.to_ascii_uppercase())
-            {
-                level.name.clone()
-            } else {
-                format!("{parent}{}", level.name)
-            }
-        }
-    };
-
-    let mut columns: Vec<TableColumn> = Vec::new();
-    let mut primary_key: Vec<String> = Vec::new();
-    let mut seen_col_names = BTreeSet::new();
-
-    // 1. Add inherited parent primary keys (for child tables)
-    for parent_key in inherited_keys.iter() {
-        let mut key_col = parent_key.clone();
-        key_col.is_key = true;
-        key_col.is_nullable = false;
-        primary_key.push(key_col.name.clone());
-        seen_col_names.insert(key_col.name.to_ascii_uppercase());
-        columns.push(key_col);
-    }
-
-    // 2. Add attributes from this level
-    for attr in &level.attributes {
-        // Skip formula attributes (in GeneXus formulas are virtual/non-stored)
-        if attr.formula.is_some() {
-            continue;
-        }
-
-        let upper_name = attr.name.to_ascii_uppercase();
-        if seen_col_names.contains(&upper_name) {
-            // Already present from inherited keys
-            continue;
-        }
-
-        let data_type = if let Some(ref dt) = attr.data_type {
-            dt.clone()
-        } else if let Some(dt) = resolver(&attr.name) {
-            dt
-        } else {
-            return Err(format!(
-                "cannot resolve data type for attribute '{}' in level '{}'",
-                attr.name, level.name
-            ));
-        };
-
-        let col = TableColumn {
-            name: attr.name.clone(),
-            data_type,
-            is_key: attr.is_key,
-            is_nullable: if attr.is_key { false } else { attr.is_nullable },
-            description: None,
-        };
-
-        if attr.is_key {
-            primary_key.push(col.name.clone());
-        }
-
-        seen_col_names.insert(upper_name);
-        columns.push(col);
-    }
-
-    // 3. Foreign key to parent table (for child tables)
-    let mut foreign_keys = Vec::new();
-    if let Some(parent) = parent_table_name.filter(|_| !inherited_keys.is_empty()) {
-        let parent_pk_names: Vec<String> = inherited_keys.iter().map(|k| k.name.clone()).collect();
-        let fk_name = format!("FK_{table_name}_{parent}");
-        foreign_keys.push(TableForeignKey::new(
-            fk_name,
-            parent_pk_names.clone(),
-            parent,
-            parent_pk_names,
-        ));
-    }
-
-    // 4. Primary index
-    let mut indexes = Vec::new();
-    let pk_index_name = format!("U{table_name}");
-    let mut pk_index = TableIndex::new(pk_index_name, primary_key.clone(), true);
-    pk_index.is_primary = true;
-    indexes.push(pk_index);
-
-    let table = Table {
-        name: table_name.clone(),
-        description: level.description.clone(),
-        columns,
-        primary_key,
-        foreign_keys,
-        indexes,
-    };
-    table.validate()?;
-    tables.push(table);
-
-    // 5. Descend to child levels with accumulated primary keys
-    let mut current_level_keys = Vec::new();
-    for col in &tables.last().unwrap().columns {
-        if col.is_key {
-            current_level_keys.push(col.clone());
-        }
-    }
-
-    for child in &level.levels {
-        derive_level_table(
-            child,
-            Some(&table_name),
-            &current_level_keys,
-            resolver,
-            tables,
-            depth + 1,
-        )?;
-    }
-
-    Ok(())
-}
-
-/// Derives all physical tables across all Transactions in a `Catalog`.
-///
-/// Automatically resolves attribute types through Catalog Attributes and Domains,
-/// infers cross-transaction foreign keys where non-key attributes match another table's primary key,
-/// and returns tables in dependency order.
-pub fn derive_tables_from_catalog(catalog: &Catalog) -> Result<Vec<Table>, String> {
-    let mut all_tables = Vec::new();
-    let mut table_names = BTreeSet::new();
-
-    // Map attribute name -> DataType using catalog Attributes and Domains
-    let resolve_attr = |name: &str| -> Option<DataType> {
-        let mut visited = BTreeSet::new();
-        crate::kb::resolve_domain_or_attribute_data_type(catalog, name, &mut visited, 0).ok()
-    };
-
-    for obj in catalog.objects() {
-        if obj.kind != ObjectKind::Transaction {
-            continue;
-        }
-
-        let structure_part = obj
-            .source_parts
-            .iter()
-            .find(|p| p.name == "STRUCTURE")
-            .ok_or_else(|| {
-                format!(
-                    "Transaction '{}' requires a STRUCTURE part to derive tables",
-                    obj.name
-                )
-            })?;
-
-        let structure: TransactionStructure = serde_json::from_str(&structure_part.source)
-            .map_err(|e| format!("invalid Transaction STRUCTURE on '{}': {e}", obj.name))?;
-
-        let derived = derive_tables_from_transaction(&structure, resolve_attr)?;
-        for tbl in derived {
-            let key = tbl.name.to_ascii_uppercase();
-            if table_names.insert(key) {
-                all_tables.push(tbl);
-            }
-        }
-    }
-
-    // Infer cross-transaction foreign keys:
-    // If table A has a non-key column whose name matches the single primary key of table B,
-    // and no foreign key exists yet, add a foreign key and index!
-    let mut primary_keys: BTreeMap<String, (String, String)> = BTreeMap::new();
-    for tbl in &all_tables {
-        if tbl.primary_key.len() == 1 {
-            let pk_name = tbl.primary_key[0].clone();
-            primary_keys.insert(pk_name.to_ascii_uppercase(), (tbl.name.clone(), pk_name));
-        }
-    }
-
-    for tbl in &mut all_tables {
-        let current_table_name = tbl.name.clone();
-        for col in &tbl.columns {
-            if col.is_key {
-                continue;
-            }
-            let col_upper = col.name.to_ascii_uppercase();
-            if let Some((target_tbl, target_pk)) = primary_keys.get(&col_upper) {
-                if target_tbl.eq_ignore_ascii_case(&current_table_name) {
-                    continue;
-                }
-                // Check if FK already exists
-                let already_exists = tbl
-                    .foreign_keys
-                    .iter()
-                    .any(|fk| fk.referenced_table.eq_ignore_ascii_case(target_tbl));
-                if !already_exists {
-                    let fk_name = format!("FK_{current_table_name}_{target_tbl}");
-                    tbl.foreign_keys.push(TableForeignKey::new(
-                        fk_name,
-                        vec![col.name.clone()],
-                        target_tbl.clone(),
-                        vec![target_pk.clone()],
-                    ));
-                    let idx_name = format!("I{current_table_name}_{target_tbl}");
-                    tbl.indexes
-                        .push(TableIndex::new(idx_name, vec![col.name.clone()], false));
-                }
-            }
-        }
-    }
-
-    Ok(all_tables)
-}
+pub use derive::{
+    derive_tables_from_catalog, derive_tables_from_transaction, derive_tables_partial,
+};
 
 /// Generates complete SQL DDL for a set of tables in dependency order.
 pub fn generate_database_ddl(tables: &[Table], dialect: SqlDialect) -> Result<String, String> {
@@ -728,10 +495,47 @@ pub fn generate_database_ddl(tables: &[Table], dialect: SqlDialect) -> Result<St
         tables.len()
     ));
 
+    let mut pending: Vec<&Table> = tables.iter().collect();
+    let mut created = BTreeSet::new();
+    let mut names = BTreeSet::new();
     for table in tables {
         table.validate()?;
-        let ddl = table.to_full_ddl(dialect)?;
-        sections.push(ddl);
+        if !names.insert(table.name.to_ascii_uppercase()) {
+            return Err(format!("duplicate table '{}' in database DDL", table.name));
+        }
+    }
+    for table in tables {
+        for fk in &table.foreign_keys {
+            if !names.contains(&fk.referenced_table.to_ascii_uppercase()) {
+                return Err(format!(
+                    "Table '{}' references missing table '{}'",
+                    table.name, fk.referenced_table
+                ));
+            }
+        }
+    }
+    while !pending.is_empty() {
+        let next = pending
+            .iter()
+            .position(|table| {
+                table.foreign_keys.iter().all(|fk| {
+                    fk.referenced_table.eq_ignore_ascii_case(&table.name)
+                        || created.contains(&fk.referenced_table.to_ascii_uppercase())
+                })
+            })
+            .ok_or_else(|| {
+                format!(
+                    "cyclic foreign-key dependencies among tables: {}",
+                    pending
+                        .iter()
+                        .map(|table| table.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+        let table = pending.remove(next);
+        sections.push(table.to_full_ddl(dialect)?);
+        created.insert(table.name.to_ascii_uppercase());
     }
 
     Ok(sections.join("\n\n"))

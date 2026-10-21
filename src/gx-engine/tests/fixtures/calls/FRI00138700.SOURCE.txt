@@ -1,0 +1,5 @@
+&Calls = 0
+For &I = FRH00138700(&Calls) To 3 Step 1
+  msg("dynamic_start_i=" + &I.ToString().Trim() + ";calls=" + &Calls.ToString().Trim(), status)
+EndFor
+msg("dynamic_start_after_i=" + &I.ToString().Trim() + ";calls=" + &Calls.ToString().Trim(), status)

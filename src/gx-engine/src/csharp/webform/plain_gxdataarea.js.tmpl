@@ -1,0 +1,35 @@
+gx.evt.autoSkip = false;
+gx.define('@@CLASS@@', false, function () {
+   this.ServerClass =  "@@CLASS@@" ;
+   this.PackageName =  "GeneXus.Programs" ;
+   this.ServerFullClass =  "@@CLASS@@.aspx" ;
+   this.setObjectType("web");
+   this.hasEnterEvent = false;
+   this.skipOnEnter = false;
+   this.autoRefresh = true;
+   this.fullAjax = true;
+   this.supportAjaxEvents =  true ;
+   this.ajaxSecurityToken =  true ;
+   this.DSO =  "@@THEME@@" ;
+   this.SetStandaloneVars=function()
+   {
+   };
+   this.e12@@ID@@2_client=function()
+   {
+      return this.executeServerEvent("ENTER", true, null, false, false);
+   };
+   this.e13@@ID@@2_client=function()
+   {
+      return this.executeServerEvent("CANCEL", true, null, false, false);
+   };
+   this.GXValidFnc = [];
+   var GXValidFnc = this.GXValidFnc ;
+   this.GXCtrlIds=[@@IDS@@];
+   this.GXLastCtrlId =@@LAST@@;
+@@CONTROLS@@
+   this.Events = {"e12@@ID@@2_client": ["ENTER", true] ,"e13@@ID@@2_client": ["CANCEL", true]};
+   this.EvtParms["REFRESH"] = [[],[]];
+   this.EvtParms["ENTER"] = [[],[]];
+   this.Initialize( );
+});
+gx.wi( function() { gx.createParentObj(this.@@CLASS@@);});

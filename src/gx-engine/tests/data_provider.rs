@@ -318,7 +318,7 @@ Product
         .get(&dp_id)
         .expect("DataProvider object exists in catalog");
     assert_eq!(retrieved.kind, ObjectKind::DataProvider);
-    assert_eq!(retrieved.name, "PRODUCTDP");
+    assert_eq!(retrieved.name, "ProductDP");
 
     let source_part = retrieved
         .source_parts

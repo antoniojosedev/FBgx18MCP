@@ -75,6 +75,68 @@ test('the README release section describes the release flow that actually ships'
     assert.match(section, /OIDC Trusted Publishing/);
 });
 
+test('engine documentation keeps fixture results distinct from SDK replacement', () => {
+    const section = markdownSection(read('README.md'), '## Experimental `gx-engine` (Rust SDK Replacement Project)');
+
+    assert.doesNotMatch(section, /Overall SDK Replacement:[^\n]*100(?:\.0)?%/);
+    assert.doesNotMatch(section, /\*\*>\s*380x faster\*\*/);
+    assert.match(section, /Full SDK replacement is not verified/);
+    assert.match(section, /64\.19×/);
+    assert.match(section, /plans\/131-sdk-performance-benchmark\.md/);
+    assert.match(section, /plans\/129-implementation-progress\.md#current-acceptance-status--2026-10-18/);
+    assert.match(section, /Historical arithmetic fixture build/);
+    assert.match(section, /Different pipelines and targets/);
+});
+
+test('engine guidance separates package builds, fixture speed and full-KB coverage', () => {
+    const coverage = markdownSection(read('README.md'), '### What builds today');
+    assert.match(coverage, /Package build/);
+    assert.match(coverage, /Selected-object build/);
+    assert.match(coverage, /Full native KB build/);
+    assert.match(coverage, /346 generated \/ 346 compiled, 0 skipped, 0 refused/);
+    assert.match(coverage, /328\/328 C# files byte-identical/);
+    assert.match(coverage, /One oracle KB/);
+    assert.match(coverage, /packaged binary.*not benchmarked/);
+
+    const guidance = markdownSection(read('AGENTS.md'), '## gx-engine development');
+    assert.match(guidance, /full SDK replacement/);
+    assert.match(guidance, /refusals/);
+    assert.match(guidance, /Engine\.Backend/);
+    assert.match(guidance, /disposable/);
+    for (const document of ['src/gx-engine/README.md', 'docs/engine_backend.md', 'plans/131-sdk-performance-benchmark.md']) {
+        assert.ok(guidance.includes(`](${document})`), `Missing agent pointer: ${document}`);
+        assert.ok(fs.existsSync(path.join(repoRoot, document)), `Missing agent document: ${document}`);
+    }
+
+    const engineReadme = read('src/gx-engine/README.md');
+    const engineCoverage = markdownSection(engineReadme, '## Build coverage and routing');
+    assert.match(engineCoverage, /full SDK replacement is not established/);
+    assert.doesNotMatch(engineReadme, /Full Object Model:\*\* Complete support|compilation in < 20s/);
+    assert.match(engineReadme, /packaged binary was smoke-tested, not benchmarked/);
+});
+
+test('engine default policy is gxengine and preserves auto/SDK opt-out and reconciliation', () => {
+    const section = markdownSection(read('README.md'), '### Activation Flag & Safety Seam');
+    assert.match(section, /defaults to `"gxengine"`/);
+    assert.match(section, /async\/other directed builds/);
+    assert.match(section, /mode=compile_check/);
+    assert.match(section, /callers=false/);
+    const backend = read('docs/engine_backend.md');
+    assert.match(backend, /engine\.scope=target-closure/);
+    assert.match(backend, /successful target build does not imply whole-KB success/);
+    assert.match(backend, /default `callers=true`/);
+    assert.match(section, /`"auto"` routes only builds/);
+    assert.match(section, /`"sdk"` keeps every operation on the SDK/);
+    assert.match(section, /never trigger automatic SDK replay/);
+    assert.match(section, /admitted type-only `genexus_query` calls/);
+    assert.match(section, /all reads/);
+    assert.match(backend, /No read shape is currently admitted/);
+    assert.match(backend, /all object-name\/text searches \(including\s+`exactMatch:true`\)/);
+    assert.match(read('docs/engine_backend.md'), /`Engine\.Backend=gxengine` \(also when the section is absent\)/);
+    assert.match(read('src/gx-engine/README.md'), /defaults to `Engine\.Backend=gxengine`/);
+    assert.match(read('AGENTS.md'), /`Engine\.Backend` defaults to `gxengine`/);
+});
+
 test('the docs index lists every top-level document and every link resolves', () => {
     const docsDir = path.join(repoRoot, 'docs');
     const index = read('docs/README.md');

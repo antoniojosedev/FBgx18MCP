@@ -1,0 +1,1 @@
+Parm(in:&A, in:&B, out:&Result);

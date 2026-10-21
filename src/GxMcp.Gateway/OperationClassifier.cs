@@ -96,7 +96,7 @@ namespace GxMcp.Gateway
                     mutating: Array.Empty<string>()),
                 ["genexus_connection_recover"] = Contract(
                     readOnly: new[] { "journal_status" },
-                    mutating: new[] { "recover", "journal_repair" }),
+                    mutating: new[] { "recover", "journal_repair", "recovery_read_complete" }),
                 ["genexus_data_view"] = Contract(
                     readOnly: new[] { "inspect", "dry_run" },
                     mutating: new[] { "create", "update", "delete" }),
@@ -193,12 +193,12 @@ namespace GxMcp.Gateway
                 ["genexus_wwp"] = Contract(
                     readOnly: new[] { "list", "settings_templates", "settings_read", "list_tabs", "tab_schema" },
                     mutating: new[] { "add_action", "add_user_action", "update_action", "move_action", "remove_action",
-                        "add_tab", "move_tab", "remove_tab", "set_table_type", "add_grid_attribute",
-                        "move_grid_column", "add_grid_variable", "add_grid",
+                        "add_tab", "move_tab", "remove_tab", "set_table_type", "add_table", "move_control", "add_grid_attribute",
+                        "move_grid_column", "add_grid_variable", "add_grid", "set_combo_properties",
                         "replace_web_component_with_user_action", "settings_edit" }),
                 ["genexus_workwith"] = Contract(
                     readOnly: new[] { "list_actions", "list_filters" },
-                    mutating: new[] { "add_action", "remove_action", "add_filter_attribute" }),
+                    mutating: new[] { "add_action", "remove_action", "add_filter_attribute", "remove_filter_attribute" }),
                 ["genexus_sandbox"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "create", "remove" }),
@@ -214,6 +214,7 @@ namespace GxMcp.Gateway
             "genexus_module:install",
             "genexus_module:install_builtin",
             "genexus_connection_recover:journal_repair",
+            "genexus_connection_recover:recovery_read_complete",
             "genexus_data_view:create",
             "genexus_data_view:update",
             "genexus_data_view:delete",
@@ -277,14 +278,18 @@ namespace GxMcp.Gateway
             "genexus_wwp:move_tab",
             "genexus_wwp:remove_tab",
             "genexus_wwp:set_table_type",
+            "genexus_wwp:add_table",
+            "genexus_wwp:move_control",
             "genexus_wwp:add_grid_attribute",
             "genexus_wwp:move_grid_column",
             "genexus_wwp:add_grid_variable",
             "genexus_wwp:add_grid",
+            "genexus_wwp:set_combo_properties",
             "genexus_wwp:replace_web_component_with_user_action",
             "genexus_workwith:add_action",
             "genexus_workwith:remove_action",
             "genexus_workwith:add_filter_attribute",
+            "genexus_workwith:remove_filter_attribute",
             "genexus_generator_reference:add",
             "genexus_generator_reference:remove"
         };
@@ -441,6 +446,39 @@ namespace GxMcp.Gateway
                 && HasKnownSideEffects(effectiveTool, effectiveArgs["action"]?.ToString(), effectiveArgs);
         }
 
+        // Tools that take no `action` but have a documented dryRun preview shown not to
+        // persist. genexus_edit routes (patch, ops, full-part, JSON-Patch, parts[], targets[])
+        // all forward dryRun and the Worker returns before the SDK save. The changeSet route
+        // is excluded in IsEffectFreeDryRunPreview: it is driven by changeSet.action, so a
+        // top-level dryRun does not stop changeSet.action=apply from writing. Do not add a tool
+        // here on the strength of an accepted `dryRun` argument alone (see #280/#489).
+        private static readonly HashSet<string> EffectFreeDryRunPreviewTools =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "genexus_edit" };
+
+        /// <summary>
+        /// True when the call is a dryRun preview of a tool whose preview is known not to
+        /// persist, so an unfinished or cancelled run leaves nothing to reconcile. This is
+        /// deliberately narrower than <see cref="Program.IsMutationPreview"/>, which trusts any
+        /// dryRun flag for the write gate: a recovery fence is the backstop for an unknown commit
+        /// state, so it is only waived for tools on <see cref="EffectFreeDryRunPreviewTools"/>.
+        /// An unparseable dryRun counts as a write.
+        /// </summary>
+        internal static bool IsEffectFreeDryRunPreview(string? toolName, JObject? args)
+        {
+            if (string.IsNullOrWhiteSpace(toolName) || args == null) return false;
+
+            var effectiveArgs = NormalizeArguments(toolName, args, out var canonical);
+            if (!EffectFreeDryRunPreviewTools.Contains(canonical)) return false;
+            if (effectiveArgs["changeSet"] != null) return false;
+
+            JToken? dryRun = effectiveArgs["dryRun"];
+            return dryRun != null
+                && (dryRun.Type == JTokenType.Boolean
+                    ? dryRun.Value<bool>()
+                    : dryRun.Type == JTokenType.String
+                        && bool.TryParse(dryRun.ToString(), out bool parsed) && parsed);
+        }
+
         /// <summary>The gateway-owned KB management tool.</summary>
         internal const string KbTool = "genexus_kb";
 
@@ -519,6 +557,22 @@ namespace GxMcp.Gateway
         internal static OperationContract Describe(string toolName, JObject? args)
         {
             var effectiveArgs = NormalizeArguments(toolName, args, out var canonical);
+            if (string.Equals(canonical, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
+                && effectiveArgs["action"]?.ToString() == "recovery_read_complete")
+            {
+                // Reads the part through the Worker (nothing is written to the KB) and, only
+                // when dryRun is explicitly false, rewrites the recovery journal.
+                bool preview = effectiveArgs["dryRun"]?.ToObject<bool?>() != false;
+                return new OperationContract
+                {
+                    CanonicalName = canonical,
+                    Kind = preview ? OperationKind.ReadOnly : OperationKind.Mutating,
+                    Effects = preview ? "kb.read" : "file.write",
+                    Execution = "gateway", Retry = preview ? "safe" : "operation_key",
+                    Cache = "never", Invalidation = preview ? Array.Empty<string>() : new[] { "files" },
+                    PreviewSupported = true
+                };
+            }
             if (string.Equals(canonical, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
                 && (effectiveArgs["action"]?.ToString() == "journal_status"
                     || effectiveArgs["action"]?.ToString() == "journal_repair"))
@@ -635,7 +689,8 @@ namespace GxMcp.Gateway
                 && effectiveArgs["action"] == null)
                 effectiveArgs["action"] = "recover";
             if (string.Equals(canonicalTool, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
-                && effectiveArgs["action"]?.ToString() == "journal_repair"
+                && (effectiveArgs["action"]?.ToString() == "journal_repair"
+                    || effectiveArgs["action"]?.ToString() == "recovery_read_complete")
                 && effectiveArgs["dryRun"] == null)
                 effectiveArgs["dryRun"] = true;
             return effectiveArgs;

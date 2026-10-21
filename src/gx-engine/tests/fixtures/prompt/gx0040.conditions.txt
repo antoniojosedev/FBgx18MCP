@@ -1,0 +1,1 @@
+Plan070TrnId >= &cPlan070TrnId ;

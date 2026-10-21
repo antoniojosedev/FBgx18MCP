@@ -1,17 +1,17 @@
 using System;
-using System.Collections.Concurrent;
 using System.IO;
-using System.Text;
 using System.Threading;
 
 namespace GxMcp.Worker.Helpers
 {
     // PERFORMANCE (W-A1): previously every Log() call took a global lock + File.AppendAllText
     // synchronously. With ~194 call sites across the Worker, that turned every hot path into a
-    // disk-bound critical section. The async writer below decouples the producers from disk I/O:
-    //  - producers push lines into a BlockingCollection (lock-free under contention),
-    //  - a single background writer drains the queue in batches and appends with one open file
+    // disk-bound critical section. The async writer decouples the producers from disk I/O:
+    //  - producers hand lines to a single AsyncLogWriter (a short gate around BlockingCollection.Add),
+    //  - its background thread drains the queue in batches and appends with one open file
     //    handle per batch.
+    // Logger stays the static facade: it owns the destination, the one-time rotation, GXMCP_SYNC_LOG,
+    // formatting and the stderr mirror, and it delegates to exactly one writer instance (issue #605).
     // Console.Error.WriteLine is preserved for each line so the Gateway capture path is unchanged
     // and so a crash never loses the very latest log line.
     public static class Logger
@@ -39,8 +39,7 @@ namespace GxMcp.Worker.Helpers
                 return fallback;
             }
         }
-        private static readonly BlockingCollection<string> _queue = new BlockingCollection<string>();
-        private static readonly Thread _writer;
+        private static readonly AsyncLogWriter _writer;
 
         // Diagnostics: with GXMCP_SYNC_LOG=1 every line is also appended synchronously
         // to the log file, so a hard worker crash (e.g. an uncatchable SDK
@@ -80,12 +79,9 @@ namespace GxMcp.Worker.Helpers
                 }
             }
 
-            _writer = new Thread(WriterLoop)
-            {
-                IsBackground = true,
-                Name = "LoggerWriter"
-            };
-            _writer.Start();
+            // The destination is fixed for the life of the facade. If creating or starting the writer
+            // fails, the exception surfaces as TypeInitializationException (no partial facade, no fallback).
+            _writer = new AsyncLogWriter(LogFile);
 
             // Ensure pending lines flush on process exit (best-effort; daemon thread).
             try { AppDomain.CurrentDomain.ProcessExit += (_, __) => Shutdown(); } catch { }
@@ -105,8 +101,18 @@ namespace GxMcp.Worker.Helpers
         public static void Error(string message) => Enqueue("ERROR", message);
         public static void Debug(string message) => Enqueue("DEBUG", message);
 
+        // Test seam (issue #594): lets a unit test count the lines a code path emits
+        // (level, message) without capturing stderr or the log file. Null in production.
+        internal static Action<string, string> TestSink;
+
         private static void Enqueue(string level, string message)
         {
+            var sink = TestSink;
+            if (sink != null)
+            {
+                try { sink(level, message); } catch { }
+            }
+
             // ISO-8601 with milliseconds + offset so build phase stalls diff
             // cleanly against external clocks; phase tag lets the agent grep
             // a build trace by phase. Phase-empty case avoids the "[" + phase
@@ -127,39 +133,14 @@ namespace GxMcp.Worker.Helpers
                 try { File.AppendAllText(LogFile, line + Environment.NewLine); } catch { }
             }
 
-            if (_queue.IsAddingCompleted) return;
-            try { _queue.Add(line); }
-            catch (InvalidOperationException) { /* writer shutting down — drop silently */ }
-        }
-
-        private static void WriterLoop()
-        {
-            var batch = new StringBuilder(8192);
-            foreach (var first in _queue.GetConsumingEnumerable())
-            {
-                batch.Clear();
-                batch.AppendLine(first);
-
-                // Drain anything else that's already queued so we issue one I/O per batch.
-                while (batch.Length < 64 * 1024 && _queue.TryTake(out var next))
-                {
-                    batch.AppendLine(next);
-                }
-
-                try
-                {
-                    File.AppendAllText(LogFile, batch.ToString());
-                }
-                catch
-                {
-                    // Silent fallback (disk full / locked): lines already went to stderr.
-                }
-            }
+            // Writer shutting down: the line is refused and dropped silently (the stderr mirror already has it).
+            _writer.Enqueue(line);
         }
 
         public static void Shutdown()
         {
-            try { _queue.CompleteAdding(); } catch { }
+            try { _writer.CompleteAdding(); } catch { }
+            // Best effort: a false result (the thread is still draining) is ignored.
             try { _writer.Join(TimeSpan.FromSeconds(2)); } catch { }
         }
     }

@@ -1,0 +1,39 @@
+Event Start
+
+	If not IsAuthorized(&PgmName)
+		NotAuthorized(&PgmName)
+	Endif
+
+	Grid.Rows = 10
+	&Update = "GXM_update"
+	&Delete = "GX_BtnDelete"
+	Form.Caption = 'Trn353s'
+
+	Do 'PrepareTransaction'
+	Grid.LoadSessionState()
+EndEvent
+
+Event Refresh
+	Grid.SaveSessionState()
+EndEvent
+
+Event Grid.Load
+	&Update.Link = Trn353.Link(TrnMode.Update, Trn353Id)
+	&Delete.Link = Trn353.Link(TrnMode.Delete, Trn353Id)
+	Trn353Id.Link = ViewTrn353.Link(Trn353Id, "")
+EndEvent
+
+Event 'DoInsert'
+	Trn353(TrnMode.Insert, nullvalue(Trn353Id))
+EndEvent
+
+Sub 'PrepareTransaction'
+	&TrnContext = new()
+	&TrnContext.CallerObject = &Pgmname
+	&TrnContext.CallerOnDelete = True
+	&TrnContext.CallerURL = &HTTPRequest.ScriptName + !"?" + &HTTPRequest.QueryString
+	&TrnContext.TransactionName = !"Trn353"
+
+	&Session.Set(!"TrnContext", &TrnContext.ToXml())
+EndSub
+

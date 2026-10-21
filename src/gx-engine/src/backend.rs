@@ -324,6 +324,7 @@ fn collect_expr(expression: &Expr, depth: usize, budget: &mut AstBudget) -> Resu
     }
     budget.visit()?;
     match expression {
+        Expr::Paren(inner) => collect_expr(inner, depth, budget)?,
         Expr::Integer(_)
         | Expr::Decimal(_)
         | Expr::Text(_)
@@ -560,6 +561,16 @@ fn validate_expr(
         ));
     }
     match expression {
+        Expr::Paren(inner) => validate_expr(
+            inner,
+            depth,
+            procedure_index,
+            entry_index,
+            procedure_indices,
+            procedures,
+            infos,
+            assigned,
+        ),
         Expr::Integer(_) => Ok(()),
         Expr::Decimal(_)
         | Expr::Text(_)
@@ -823,6 +834,10 @@ fn rust_expr(
         ));
     }
     match expression {
+        Expr::Paren(inner) => Ok(format!(
+            "({})",
+            rust_expr(inner, procedure_index, procedure_indices, infos, depth + 1)?
+        )),
         Expr::Decimal(_)
         | Expr::Text(_)
         | Expr::Boolean(_)

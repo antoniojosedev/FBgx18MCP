@@ -84,7 +84,7 @@ function Invoke-GhJson {
 }
 
 function Get-RequiredAssetNames([string]$PackageVersion) {
-    return @(Get-GxMcpReleaseRequiredAssetNames -Version $PackageVersion -AllowLegacy:($PackageVersion -notmatch '^3\.'))
+    return @(Get-GxMcpReleaseRequiredAssetNames -Version $PackageVersion -AllowLegacy:(Test-GxMcpReleaseLegacyVersion $PackageVersion))
 }
 
 function Get-ReleaseAssetState {
@@ -93,7 +93,7 @@ function Get-ReleaseAssetState {
     if ($release.isDraft) { throw "GitHub release $Tag is still a draft." }
     $expectedReleaseUrl = "https://github.com/lennix1337/Genexus18MCP/releases/tag/$Tag"
     if ([string]$release.url -cne $expectedReleaseUrl) { throw "GitHub release URL mismatch: expected $expectedReleaseUrl, got $($release.url)." }
-    $allowLegacy = $Version -notmatch '^3\.'
+    $allowLegacy = Test-GxMcpReleaseLegacyVersion $Version
     $assetState = Get-GxMcpReleaseAssetVerification -Assets @($release.assets) -RepositoryRoot $ArtifactRoot -Version $Version -AllowLegacy:$allowLegacy
     if (-not $assetState.isValid) { throw "GitHub release assets do not match the local release transaction: $($assetState.error)" }
     $evidence.releaseUrl = [string]$release.url
@@ -202,7 +202,7 @@ function Wait-ReleaseWorkflow {
 function Wait-ReleaseNpmVersion {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $attempt = 0
-    $allowLegacy = $Version -notmatch '^3\.'
+    $allowLegacy = Test-GxMcpReleaseLegacyVersion $Version
     while ($true) {
         $attempt++
         $raw = @(& npm view "genexus-mcp@$Version" version gitHead --json --fetch-retries=0 --fetch-timeout=5000 2>$null)
@@ -248,7 +248,7 @@ try {
         tagCommit = $evidence.tagCommit
     }
     $evidence.state = 'verified'
-    $publicationCheck = Test-GxMcpReleasePublicationEvidence -Status $statusForEvidence -Publication $evidence -RepositoryRoot $ArtifactRoot -AllowLegacy:($Version -notmatch '^3\.')
+    $publicationCheck = Test-GxMcpReleasePublicationEvidence -Status $statusForEvidence -Publication $evidence -RepositoryRoot $ArtifactRoot -AllowLegacy:(Test-GxMcpReleaseLegacyVersion $Version)
     if (-not $publicationCheck.Valid) { throw "Publication evidence contract failed: $($publicationCheck.Error)" }
     $evidence.endedAtUtc = [DateTime]::UtcNow.ToString('o')
     Save-Evidence

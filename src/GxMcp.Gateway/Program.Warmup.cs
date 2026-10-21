@@ -474,19 +474,37 @@ namespace GxMcp.Gateway
                 30000,
                 "Warmup list timeout",
                 workerResponse => workerResponse,
-                (_, correlationId) => new JObject
-                {
-                    ["error"] = new JObject
-                    {
-                        ["message"] = "Warmup list operation timed out.",
-                        ["correlationId"] = correlationId
-                    }
-                },
+                (_, correlationId) => BuildWarmupListTimeoutResponse(correlationId),
                 toolName: "gateway_warmup_list",
                 trackOperation: false);
 
+            if (IsWarmupListTimeout(listResponse)) throw new WarmupProbeTimeoutException();
             return ExtractWarmupProbeObjectName(listResponse?["result"]);
         }
+
+        // Issue #593: a transport timeout means the worker's SDK lane is saturated (a very
+        // large KB still opening or indexing). Unlike an IndexNotReady reply, retrying only
+        // queues more work on that worker, so the bounded wait ends the warm pass instead.
+        internal sealed class WarmupProbeTimeoutException : Exception
+        {
+            public WarmupProbeTimeoutException() : base("Warmup list operation timed out.") { }
+        }
+
+        private const string WarmupListTimeoutCode = "WarmupListTimeout";
+
+        internal static JObject BuildWarmupListTimeoutResponse(string? correlationId) => new JObject
+        {
+            ["error"] = new JObject
+            {
+                ["code"] = WarmupListTimeoutCode,
+                ["message"] = "Warmup list operation timed out.",
+                ["correlationId"] = correlationId
+            }
+        };
+
+        internal static bool IsWarmupListTimeout(JToken? response) =>
+            response is JObject obj
+            && (obj["error"] as JObject)?["code"]?.ToString() == WarmupListTimeoutCode;
 
         // Any reply shape that carries no listable object — the IndexNotReady envelope
         // while indexing, an error envelope, empty results — yields null so the caller
@@ -523,6 +541,11 @@ namespace GxMcp.Gateway
                 try
                 {
                     name = await resolve().ConfigureAwait(false);
+                }
+                catch (WarmupProbeTimeoutException)
+                {
+                    Log($"[Warmup] probe list timed out on attempt {attempt}; skipping the first-touch warm pass (worker busy).");
+                    return null;
                 }
                 catch
                 {

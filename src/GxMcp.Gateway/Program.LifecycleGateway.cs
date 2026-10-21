@@ -779,8 +779,7 @@ namespace GxMcp.Gateway
                             ? "Cancelled by client; the non-preemptible worker was recycled. Re-read the object before another write."
                             : "Cancelled by client; no live worker remained to recycle. Re-read the object before another write.");
                     if (existed
-                        && (IsAsyncMutationTool(cancelledToolName)
-                            || IsAsyncGxServerAction(cancelledToolName, cancelledToolArgs))
+                        && ShouldFenceCancelledOperation(cancelledToolName, cancelledToolArgs)
                         && !string.IsNullOrWhiteSpace(workerAlias))
                     {
                         foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(cancelledToolName!, cancelledToolArgs))
@@ -791,17 +790,8 @@ namespace GxMcp.Gateway
                                 cancelledToolArgs?["baseVersion"]?.ToString() ?? cancelledToolArgs?["expectedVersion"]?.ToString());
                     }
 
-                    var cancelPayload = new JObject
-                    {
-                        ["status"] = existed ? "Cancelled" : "NotFound",
-                        ["operationId"] = operationId,
-                        ["abandonedRequestId"] = abandonedRequestId,
-                        ["recycledWorker"] = workerRecycled,
-                        ["reReadRequired"] = existed,
-                        ["message"] = existed
-                            ? "Operation reached terminal Cancelled state. The worker was recycled when it was still executing the non-preemptible SDK call; re-read the target before another write."
-                            : "Operation not found in tracker (may have completed and been pruned, or never existed)."
-                    };
+                    var cancelPayload = BuildTrackerCancelPayload(
+                        operationId, abandonedRequestId, workerRecycled, existed, cancelledToolName, cancelledToolArgs);
                     return BuildToolTextResponse(idToken, cancelPayload, isError: !existed, toolName: "genexus_lifecycle", toolArgs: args, payloadOwned: true);
                 }
 

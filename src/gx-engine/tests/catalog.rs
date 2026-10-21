@@ -1,6 +1,7 @@
 use gx_engine::catalog::{
     Catalog, Edit, KbObject, ObjectId, ObjectKind, Reference, ReferenceKind, SourcePart,
 };
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -85,7 +86,8 @@ fn rename_keeps_identity_and_references_and_orders_dependencies_first() {
         Ok(2)
     );
     let renamed = catalog.get(&id("target")).expect("same stable identity");
-    assert_eq!(renamed.name, "RENAMEDTARGET");
+    // The name keeps the case it was given: names are stored as-is, and the emitter uses them in C#.
+    assert_eq!(renamed.name, "RenamedTarget");
     assert_eq!(renamed.id, id("target"));
     assert_eq!(
         catalog.get(&id("caller")).unwrap().references[0].target,
@@ -322,4 +324,141 @@ fn rejects_duplicate_parts_references_and_oversize_json() {
             .unwrap_err()
             .contains("exceeds the")
     );
+}
+
+#[test]
+fn object_names_keep_their_stored_case_through_a_snapshot() {
+    // Regression: `normalize_name` upper-cased names on the snapshot path (`AddDeviceGroups` became
+    // `ADDDEVICEGROUPS`), while the KB path keeps the stored case. The emitter writes names into C# class
+    // names, so a snapshot-loaded catalog emitted different classes. The round trip must keep the case.
+    let mut objects = BTreeMap::new();
+    objects.insert(
+        id("procedure-1"),
+        object("procedure-1", "AddDeviceGroups", ObjectKind::Procedure),
+    );
+    let catalog = Catalog::from_objects_map(objects);
+    let json = catalog.to_json().unwrap();
+    let loaded = Catalog::from_json(&json).unwrap();
+    assert_eq!(
+        loaded.get(&id("procedure-1")).unwrap().name,
+        "AddDeviceGroups"
+    );
+    assert_eq!(loaded.to_json().unwrap(), json);
+}
+
+#[test]
+fn object_names_stay_unique_regardless_of_case() {
+    // Validation changed to keep case; uniqueness must still be case-insensitive.
+    let mut objects = BTreeMap::new();
+    objects.insert(
+        id("procedure-1"),
+        object("procedure-1", "AddDeviceGroups", ObjectKind::Procedure),
+    );
+    objects.insert(
+        id("procedure-2"),
+        object("procedure-2", "ADDDEVICEGROUPS", ObjectKind::Procedure),
+    );
+    let error = Catalog::from_objects_map(objects).to_json().unwrap_err();
+    assert!(error.contains("duplicate object name"), "{error}");
+}
+
+/// A procedure whose parts and references are out of canonical order, as the KB reader can produce them.
+fn out_of_order_catalog() -> Catalog {
+    let mut procedure = KbObject::new(id("main-1"), "Main", ObjectKind::Procedure);
+    procedure.source_parts = vec![
+        SourcePart {
+            name: "VARIABLES".into(),
+            source: "{}".into(),
+        },
+        SourcePart {
+            name: "SOURCE".into(),
+            source: "Print(1)".into(),
+        },
+        SourcePart {
+            name: "RULES".into(),
+            source: String::new(),
+        },
+    ];
+    procedure.references = vec![
+        Reference {
+            kind: ReferenceKind::Calls,
+            target: id("zeta-2"),
+        },
+        Reference {
+            kind: ReferenceKind::Uses,
+            target: id("alpha-3"),
+        },
+        Reference {
+            kind: ReferenceKind::Calls,
+            target: id("alpha-2"),
+        },
+    ];
+    // The JSON path validates references, so every target exists.
+    let mut objects = BTreeMap::new();
+    for target in [
+        KbObject::new(id("zeta-2"), "Zeta2", ObjectKind::Procedure),
+        KbObject::new(id("alpha-2"), "Alpha2", ObjectKind::Procedure),
+        KbObject::new(id("alpha-3"), "Alpha3", ObjectKind::StructuredDataType),
+    ] {
+        objects.insert(target.id.clone(), target);
+    }
+    objects.insert(procedure.id.clone(), procedure);
+    Catalog::from_objects_map(objects)
+}
+
+#[test]
+fn a_snapshot_round_trip_is_the_catalog_that_was_saved_order_included() {
+    let dir = temp_dir();
+    let path = dir.join("snapshot.catalog.json");
+    let catalog = out_of_order_catalog();
+
+    catalog.save_snapshot_atomic(&path).expect("save snapshot");
+    let loaded = Catalog::load_snapshot(&path).expect("load snapshot");
+
+    assert_eq!(
+        loaded, catalog,
+        "a snapshot must reproduce the live catalog exactly"
+    );
+    let main = loaded.get(&id("main-1")).expect("main procedure");
+    let parts: Vec<&str> = main.source_parts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(parts, ["VARIABLES", "SOURCE", "RULES"]);
+    let targets: Vec<&str> = main.references.iter().map(|r| r.target.as_str()).collect();
+    assert_eq!(targets, ["zeta-2", "alpha-3", "alpha-2"]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_json_path_still_sorts_while_the_snapshot_path_keeps_order() {
+    // Contrast guard: the portable JSON contract is canonical (sorted), the snapshot is the reader's order.
+    let catalog = out_of_order_catalog();
+
+    let sorted = Catalog::from_json(&catalog.to_json().unwrap()).unwrap();
+    let main = sorted.get(&id("main-1")).unwrap();
+    let parts: Vec<&str> = main.source_parts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(parts, ["RULES", "SOURCE", "VARIABLES"]);
+
+    let dir = temp_dir();
+    let path = dir.join("snapshot.catalog.json");
+    catalog.save_snapshot_atomic(&path).unwrap();
+    assert_eq!(Catalog::load_snapshot(&path).unwrap(), catalog);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_snapshot_with_a_repeated_identity_is_rejected() {
+    let dir = temp_dir();
+    let path = dir.join("snapshot.catalog.json");
+    let object = r#"{"id":"same-1","name":"Main","kind":"procedure"}"#;
+    fs::write(
+        &path,
+        format!(r#"{{"format_version":1,"revision":1,"objects":[{object},{object}]}}"#),
+    )
+    .unwrap();
+
+    let error = Catalog::load_snapshot(&path).unwrap_err();
+    assert!(
+        error.contains("duplicate object identity 'same-1'"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(&dir);
 }

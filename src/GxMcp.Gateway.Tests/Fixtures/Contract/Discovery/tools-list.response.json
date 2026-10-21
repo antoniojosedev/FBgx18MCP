@@ -9,7 +9,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Use this for cross-object semantic analysis. mode=context (alias deep_context) returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs… Full guidance: genexus://kb/tool-help/genexus_analyze",
+      "description": "Use to run cross-object semantic analysis: impact, callers, hierarchy, navigation, linter, summary, explain, theme_classes and context (360° task context). Full guidance: genexus://kb/tool-help/genexus_analyze",
       "inputSchema": {
         "properties": {
           "code": {
@@ -373,7 +373,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Author members of object types the structure DSL doesn't cover. add_external_method / add_external_property add a method (with parameters) or property to an External Object; add_menu_option adds an… Full guidance: genexus://kb/tool-help/genexus_authoring",
+      "description": "Author members of object types the structure DSL does not cover: External Object methods/properties, Menu options and Data Selector conditions. Full guidance: genexus://kb/tool-help/genexus_authoring",
       "inputSchema": {
         "properties": {
           "action": {
@@ -584,23 +584,53 @@
         "properties": {
           "action": {
             "default": "recover",
-            "description": "Worker recovery, journal inspection or…",
+            "description": "Worker recovery, journal repair, or…",
             "enum": [
               "recover",
               "journal_status",
-              "journal_repair"
+              "journal_repair",
+              "recovery_read_complete"
             ],
+            "type": "string"
+          },
+          "baseVersion": {
+            "description": "versionToken.",
             "type": "string"
           },
           "dryRun": {
             "default": true,
-            "description": "Preview journal_repair; explicitly…",
+            "description": "Preview by default; false persists.",
             "type": "boolean"
+          },
+          "entityKey": {
+            "description": "Entity key.",
+            "type": "string"
           },
           "force": {
             "default": false,
             "description": "Recover ALL workers, even responsive…",
             "type": "boolean"
+          },
+          "guid": {
+            "description": "GUID.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Fenced object.",
+            "type": "string"
+          },
+          "operationId": "<operation-id>",
+          "part": {
+            "description": "Part.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Path.",
+            "type": "string"
+          },
+          "type": {
+            "description": "Type.",
+            "type": "string"
           }
         },
         "type": "object"
@@ -614,7 +644,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Creation. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object with one HTTP-verb block per object; type='Folder'/'Module'… Full guidance: genexus://kb/tool-help/genexus_create",
+      "description": "Create KB objects (Transaction, Procedure, WebPanel, SDT, API, Domain, Dashboard, Folder, Module) and generate popups, SD panels, templates and scaffolds. Full guidance: genexus://kb/tool-help/genexus_create",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1291,7 +1321,7 @@
             "type": "boolean"
           },
           "baseVersion": {
-            "description": "Optimistic concurrency: pass the…",
+            "description": "Optimistic concurrency: the…",
             "type": "string"
           },
           "changeSet": {
@@ -1386,7 +1416,7 @@
             "type": "boolean"
           },
           "indentation": {
-            "description": "patch.indentation may also be passed at…",
+            "description": "Top-level alias of patch.indentation,…",
             "type": "object"
           },
           "kb": {
@@ -1534,7 +1564,7 @@
             "type": "boolean"
           },
           "scope": {
-            "description": "patch.scope may also be passed at the…",
+            "description": "Top-level alias of patch.scope, honored…",
             "type": "object"
           },
           "targets": {
@@ -2956,7 +2986,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Build, validate, index, or poll the KB. action=build_all runs the native incremental Build All for the entire selected KB (ForceRebuild=false); it rejects target, refuses silent reorganization, and… Full guidance: genexus://kb/tool-help/genexus_lifecycle",
+      "description": "Build, validate, index or poll the KB (build, build_all, rebuild, specify, validate, index, status, result); long operations are async with operationId. Full guidance: genexus://kb/tool-help/genexus_lifecycle",
       "inputSchema": {
         "properties": {
           "action": {
@@ -3403,7 +3433,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "GeneXus Module Manager over the SDK's IModuleManagerService. action=list (read-only: installed Module KB objects) | install (opcFile=<path to .opc file>, or name[+version] to install a named module)… Full guidance: genexus://kb/tool-help/genexus_module",
+      "description": "GeneXus Module Manager over IModuleManagerService: list, install, update, package and publish modules, and manage module servers. Full guidance: genexus://kb/tool-help/genexus_module",
       "inputSchema": {
         "properties": {
           "action": {
@@ -3605,7 +3635,7 @@
             "type": "string"
           },
           "control": {
-            "description": "Optional layout control, variable…",
+            "description": "Optional layout control (name, att:<id>…",
             "type": "string"
           },
           "destKind": {
@@ -3627,6 +3657,13 @@
           "expectedVersion": {
             "description": "set: versionToken from an authoritative…",
             "type": "string"
+          },
+          "expressions": {
+            "description": "With control +…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "folder": {
             "description": "move: destination alias with Folder…",
@@ -3731,7 +3768,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Search objects in active KB. Prefixes: name:, type:, usedby:, parent:, parentPath:, description:. name:\"X\" (or bare quoted \"X\") demands exact-name match — use it when you know the object's name. Full guidance: genexus://kb/tool-help/genexus_query",
+      "description": "Search objects in the active KB by the prefixes name:, type:, usedby:, parent:, parentPath: and description:; name:\"X\" (or bare quoted \"X\") demands an exact-name match. Full guidance: genexus://kb/tool-help/genexus_query",
       "inputSchema": {
         "properties": {
           "axiCompact": {
@@ -3766,7 +3803,7 @@
             "type": "string"
           },
           "kbs": {
-            "description": "Federated read-only discovery over an…",
+            "description": "Federated read-only search over an…",
             "items": {
               "type": "string"
             },
@@ -3824,7 +3861,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Read object code and metadata. Omitting 'part' (RECOMMENDED) returns the COMPLETE object in 1 call (rules with parm, source/events, variables, structure, called signatures) tailored to the object… Full guidance: genexus://kb/tool-help/genexus_read",
+      "description": "Read object code and metadata; omitting 'part' (RECOMMENDED) returns the COMPLETE object in 1 call, tailored to its type. Full guidance: genexus://kb/tool-help/genexus_read",
       "inputSchema": {
         "properties": {
           "entityKey": {
@@ -3946,7 +3983,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Run GeneXus refactor: rename, extract procedure, extract local subroutine, or WWP condition set. For KB-wide rename with call-site patching (RenameObject/RenameAttribute), the response includes a… Full guidance: genexus://kb/tool-help/genexus_refactor",
+      "description": "Run a GeneXus refactor: rename objects, attributes or variables, extract a procedure or a local subroutine, or apply a WWP condition set. Full guidance: genexus://kb/tool-help/genexus_refactor",
       "inputSchema": {
         "properties": {
           "action": {
@@ -4285,7 +4322,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or write the structure/data-model of GeneXus objects. update_visual requires expectedVersion for SDT writes. SDT mode=replace previews omitted members as removals and requires allowRemoval=true… Full guidance: genexus://kb/tool-help/genexus_structure",
+      "description": "Read or write the structure/data model of GeneXus objects: Transactions, SDTs, indexes, attributes, levels, Domains (including enumValues) and SubType Groups. Full guidance: genexus://kb/tool-help/genexus_structure",
       "inputSchema": {
         "properties": {
           "action": {
@@ -4894,7 +4931,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "KB context + version + health (worker/index/database) + next-step hints. Call FIRST every session. Lean by default; pass verbose=true ONCE for the inline playbooks + skills catalog of verified… Full guidance: genexus://kb/tool-help/genexus_whoami",
+      "description": "KB context + version + health (worker/index/database) + next-step hints; call FIRST every session. Lean by default; pass verbose=true ONCE for the inline playbooks + skills catalog of verified… Full guidance: genexus://kb/tool-help/genexus_whoami",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -4966,6 +5003,13 @@
           "target": {
             "description": "Symbol name (e.g. 'CustomerProc' or…",
             "type": "string"
+          },
+          "targets": {
+            "description": "Native KB pack_task: object names…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "task": {
             "description": "Intent / task description in natural…",
@@ -5061,18 +5105,19 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed authoring and removal of actions, action parameters and selection filters for standard WorkWith pattern instances. action=list_actions|add_action|remove_action|list_filters|add_filter_attribute. Full guidance: genexus://kb/tool-help/genexus_workwith",
+      "description": "Typed authoring and removal of standard WorkWith actions, parameters and selection filters, kept strictly separate from WorkWithPlus (genexus_wwp). Full guidance: genexus://kb/tool-help/genexus_workwith",
       "inputSchema": {
         "properties": {
           "action": {
             "default": "list_actions",
-            "description": "Operation to perform: list_actions…",
+            "description": "Operation: list_actions, add_action…",
             "enum": [
               "list_actions",
               "add_action",
               "remove_action",
               "list_filters",
-              "add_filter_attribute"
+              "add_filter_attribute",
+              "remove_filter_attribute"
             ],
             "type": "string"
           },
@@ -5099,12 +5144,16 @@
             },
             "type": "array"
           },
+          "default": {
+            "description": "Optional default value expression of…",
+            "type": "string"
+          },
           "description": {
             "description": "Optional description of the filter…",
             "type": "string"
           },
           "domain": {
-            "description": "Optional Domain name for the filter…",
+            "description": "Optional Domain for the filter…",
             "type": "string"
           },
           "dryRun": {
@@ -5135,6 +5184,13 @@
             "description": "Target Procedure name or GUID to invoke…",
             "type": "string"
           },
+          "removeConditions": {
+            "description": "remove_filter_attribute only: exact…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "tab": {
             "default": "General",
             "description": "Target tab code on the View (default…",
@@ -5155,7 +5211,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed WorkWithPlus action, form-level action, tab, grid, native table-type, and structural edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and… Full guidance: genexus://kb/tool-help/genexus_wwp",
+      "description": "Typed WorkWithPlus edits (actions, tabs, grids, tables, settings) with dryRun, optimistic concurrency, post-save reread and rollback. Full guidance: genexus://kb/tool-help/genexus_wwp",
       "inputSchema": {
         "properties": {
           "action": {
@@ -5171,10 +5227,13 @@
               "move_tab",
               "remove_tab",
               "set_table_type",
+              "add_table",
+              "move_control",
               "add_grid_attribute",
               "move_grid_column",
               "add_grid_variable",
               "add_grid",
+              "set_combo_properties",
               "list_tabs",
               "tab_schema",
               "replace_web_component_with_user_action",
@@ -5186,6 +5245,10 @@
           },
           "actionName": {
             "description": "Action name. add_user_action derives…",
+            "type": "string"
+          },
+          "after": {
+            "description": "add_table/move_control: place after…",
             "type": "string"
           },
           "attribute": {
@@ -5217,7 +5280,7 @@
             "type": "string"
           },
           "children": {
-            "description": "add_tab controls; flat children are…",
+            "description": "add_tab/add_table controls; add_tab…",
             "items": {
               "additionalProperties": false,
               "properties": {
@@ -5245,6 +5308,10 @@
                   "type": "boolean"
                 },
                 "controlEmptyItemText": {
+                  "type": "string"
+                },
+                "controlName": {
+                  "description": "type=textBlock: control name.",
                   "type": "string"
                 },
                 "controlType": {
@@ -5275,7 +5342,8 @@
                     "variable",
                     "userAction",
                     "table",
-                    "attribute"
+                    "attribute",
+                    "textBlock"
                   ],
                   "type": "string"
                 }
@@ -5306,8 +5374,17 @@
             "description": "add_user_action: form-level action…",
             "type": "string"
           },
+          "controlKind": {
+            "description": "move_control: kind of the control when…",
+            "enum": [
+              "textBlock",
+              "variable",
+              "attribute"
+            ],
+            "type": "string"
+          },
           "controlName": {
-            "description": "Tab ControlName.",
+            "description": "Tab ControlName; move_control: the…",
             "type": "string"
           },
           "controlType": {
@@ -5368,6 +5445,10 @@
             "description": "add/update: button icon.",
             "type": "string"
           },
+          "includeInPanel": {
+            "description": "add_table: render the table as a panel.",
+            "type": "boolean"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"
@@ -5399,9 +5480,18 @@
             "description": "Settings node path returned by…",
             "type": "string"
           },
+          "numberOfColumns": {
+            "description": "add_table: columns of the new table…",
+            "minimum": 1,
+            "type": "integer"
+          },
           "offset": {
             "minimum": 0,
             "type": "integer"
+          },
+          "panelTitle": {
+            "description": "add_table: panel title (implies…",
+            "type": "string"
           },
           "parameters": {
             "description": "add_user_action with callObject:…",
@@ -5422,6 +5512,10 @@
           "procedure": {
             "description": "add/update: associated Procedure;…",
             "type": "string"
+          },
+          "properties": {
+            "description": "set_combo_properties: Parameters,…",
+            "type": "object"
           },
           "property": {
             "description": "Exact SDK property name.",
@@ -5446,6 +5540,10 @@
           },
           "sourceName": {
             "description": "replace_web_component_with_user_action:…",
+            "type": "string"
+          },
+          "tableName": {
+            "description": "add_table: name of the new table;…",
             "type": "string"
           },
           "tablePath": {

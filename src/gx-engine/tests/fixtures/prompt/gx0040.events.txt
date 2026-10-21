@@ -1,0 +1,33 @@
+Event Start
+	Form.Caption = Format("GXSPC_SelectionList", "Plan070 Trn")
+	&ADVANCED_LABEL_TEMPLATE = "%1 <strong>%2</strong>"
+EndEvent
+
+Event 'Toggle'
+	if AdvancedContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainer
+		AdvancedContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainer + !" " + StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerVisible
+		BtnToggle.Class += !" " + StyleClass:d52f9833-90c9-4096-8e42-27485741f78aBtnToggleActive
+	else
+		AdvancedContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainer
+		BtnToggle.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aBtnToggle
+	endif
+Endevent
+
+Event LblPlan070TrnIdFilter.Click
+	if Plan070TrnIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem
+		Plan070TrnIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem + !" " + StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItemExpanded
+		&cPlan070TrnId.Visible = true
+	else
+		Plan070TrnIdFilterContainer.Class = StyleClass:d52f9833-90c9-4096-8e42-27485741f78aAdvancedContainerItem
+		&cPlan070TrnId.Visible = false
+	endif
+EndEvent
+
+Event Load
+	&LinkSelection.FromImage(selectRow)
+EndEvent
+
+Event Enter
+	&pPlan070TrnId = Plan070TrnId
+	Return
+EndEvent

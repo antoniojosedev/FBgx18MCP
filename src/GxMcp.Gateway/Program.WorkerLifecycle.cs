@@ -1156,6 +1156,34 @@ namespace GxMcp.Gateway
                    || string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>
+        /// A cancelled tracked operation leaves an unknown commit state only when it could have
+        /// written: an effect-free dryRun preview is cancelled without a fence.
+        /// </summary>
+        internal static bool ShouldFenceCancelledOperation(string? toolName, JObject? args)
+            => (IsAsyncMutationTool(toolName) || IsAsyncGxServerAction(toolName, args))
+                && !OperationClassifier.IsEffectFreeDryRunPreview(toolName, args);
+
+        /// <summary>
+        /// Reply to <c>genexus_lifecycle action=cancel</c> for a tracked operation. A cancelled
+        /// effect-free preview asks for no re-read: it changed nothing and was not fenced.
+        /// </summary>
+        internal static JObject BuildTrackerCancelPayload(
+            string operationId, string? abandonedRequestId, bool workerRecycled, bool existed,
+            string? cancelledToolName, JObject? cancelledToolArgs)
+            => new JObject
+            {
+                ["status"] = existed ? "Cancelled" : "NotFound",
+                ["operationId"] = operationId,
+                ["abandonedRequestId"] = abandonedRequestId,
+                ["recycledWorker"] = workerRecycled,
+                ["reReadRequired"] = existed
+                    && !OperationClassifier.IsEffectFreeDryRunPreview(cancelledToolName, cancelledToolArgs),
+                ["message"] = existed
+                    ? "Operation reached terminal Cancelled state. The worker was recycled when it was still executing the non-preemptible SDK call; re-read the target before another write."
+                    : "Operation not found in tracker (may have completed and been pruned, or never existed)."
+            };
+
         internal static bool IsAsyncObjectTextAction(JObject? args)
         {
             string? action = args?["action"]?.ToString()?.ToLowerInvariant();
@@ -1379,6 +1407,7 @@ namespace GxMcp.Gateway
         {
             if (workerEnvelope == null) return false;
             if (workerEnvelope["error"] != null) return false;
+            if (LifecycleIndexCompletion.IsActive(workerEnvelope)) return false;
 
             string? outerStatus = workerEnvelope["status"]?.ToString();
             if (string.Equals(outerStatus, "Error", StringComparison.OrdinalIgnoreCase)
@@ -1400,6 +1429,7 @@ namespace GxMcp.Gateway
             }
 
             if (resultObj == null) return true;
+            if (LifecycleIndexCompletion.IsActive(resultObj)) return false;
             if (resultObj["error"] != null) return false;
             if (resultObj["isError"]?.ToObject<bool?>() == true) return false;
             if (resultObj["cancelled"]?.ToObject<bool?>() == true

@@ -115,6 +115,21 @@ class OperationContractInventoryTests(unittest.TestCase):
         self.assertEqual(repair["variants"][1]["effects"], "file.write")
         self.assertEqual(repair["variants"][1]["invalidation"], ["files"])
 
+        # Reads one part through the Worker and rewrites only the recovery journal when
+        # dryRun is explicitly false: never a KB write, a process write or an execution.
+        certified = recovery["recovery_read_complete"]
+        self.assertEqual(certified["kind"], "readOnly")
+        self.assertEqual(certified["effects"], "kb.read")
+        self.assertTrue(certified["previewSupported"])
+        self.assertEqual([variant["selector"] for variant in certified["variants"]],
+                         [{"dryRun": "not false"}, {"dryRun": False}])
+        self.assertEqual(certified["variants"][0]["kind"], "readOnly")
+        self.assertEqual(certified["variants"][0]["retry"], "safe")
+        self.assertEqual(certified["variants"][1]["kind"], "mutating")
+        self.assertEqual(certified["variants"][1]["effects"], "file.write")
+        self.assertEqual(certified["variants"][1]["retry"], "operation_key")
+        self.assertEqual(certified["variants"][1]["invalidation"], ["files"])
+
         for tool_name in ("genexus_connection_recover", "genexus_worker_reload"):
             action = tools[tool_name]["actions"][0]
             self.assertEqual(action["execution"], "gateway")

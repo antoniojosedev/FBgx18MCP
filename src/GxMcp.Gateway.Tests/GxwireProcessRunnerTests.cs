@@ -123,6 +123,35 @@ namespace GxMcp.Gateway.Tests
             Assert.False(run.TimedOut);
             Assert.Equal("hello", run.StandardOutput.Trim());
             Assert.Equal("warn", run.StandardError.Trim());
+            Assert.Equal(0, run.ExitCode);
+            Assert.True(run.ElapsedMs >= 0);
+        }
+
+        [Fact]
+        public async Task FailingChild_ReportsItsExitCodeInTheRun()
+        {
+            // Issue #593: the caller used to read proc.ExitCode after the run and
+            // report nothing else; the run itself now carries the code so the
+            // envelope can be built without touching the Process again.
+            using var proc = StartChild("-c", "import sys;sys.stderr.write('bad');sys.exit(3)");
+
+            var run = await GxwireProcessRunner.RunAsync(proc, 30);
+
+            Assert.False(run.TimedOut);
+            Assert.Equal(3, run.ExitCode);
+            Assert.Equal("bad", run.StandardError.Trim());
+        }
+
+        [Fact]
+        public async Task TimedOutChild_HasNoExitCodeButAnElapsedTime()
+        {
+            using var proc = StartChild("-c", "import time;time.sleep(120)");
+
+            var run = await GxwireProcessRunner.RunAsync(proc, 1);
+
+            Assert.True(run.TimedOut);
+            Assert.Null(run.ExitCode);
+            Assert.True(run.ElapsedMs >= 900, $"elapsed should cover the budget, got {run.ElapsedMs} ms");
         }
 
         [Fact]

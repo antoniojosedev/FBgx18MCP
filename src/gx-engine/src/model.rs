@@ -6,13 +6,46 @@ const FORMAT_VERSION: u32 = 1;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DataType {
     Boolean {},
-    Record { schema: String },
-    Collection { schema: String },
+    Record {
+        schema: String,
+    },
+    Collection {
+        schema: String,
+    },
+    /// A variable of an SDT whose root is a collection (`AttCollection True` on the root level). The SDK
+    /// declares it `GXBaseCollection<Sdt<schema>>`, creates it with `new GXBaseCollection<..>(context,
+    /// "<item>", "<namespace>")` and adds to it with `Add(item, 0)`. `schema` is the item class
+    /// (`<SDT>_<item>`), `item` the collection item name, and `namespace` the XML namespace argument: the SDT's
+    /// stored `ExternalNamespace`, else the Knowledge Base's name.
+    BaseCollection {
+        schema: String,
+        item: String,
+        namespace: String,
+    },
     Date {},
     DateTime {},
-    Numeric { precision: u8, scale: u8 },
-    Character { length: u32 },
-    Varchar { length: u32 },
+    Numeric {
+        precision: u8,
+        scale: u8,
+    },
+    Character {
+        length: u32,
+    },
+    Varchar {
+        length: u32,
+    },
+    /// GeneXus `LONGVARCHAR` (stored code 8). The SDK's C# type is `string`, as for VARCHAR
+    /// (`Nemo` type mapping: code 8 -> `string`), so its family is text. It has no length: the stored
+    /// rows carry only the type code (`<AttCustomType><DataType>8</DataType></AttCustomType>`).
+    LongVarchar {},
+    /// GeneXus `GUID` (stored code 45). The SDK's C# type is `Guid` (`Guid.Empty` default).
+    Guid {},
+    /// GeneXus `BITMAP` / image (stored code 7). The SDK's C# type is `string` (an image path or
+    /// URL); an SDT member of this type also carries a `_gxi` companion string.
+    Image {},
+    /// GeneXus `GEOGRAPHY`, `GEOPOINT`, `GEOLINE` and `GEOPOLYGON` (stored codes 102 to 105). The SDK's
+    /// C# type is `Geospatial` for all four.
+    Geospatial {},
 }
 
 const MAX_PROJECT_BYTES: usize = 1024 * 1024;
@@ -317,6 +350,27 @@ pub(crate) fn validate_data_type(data_type: &DataType) -> Result<(), String> {
             }
             Ok(())
         }
+        DataType::BaseCollection {
+            schema,
+            item,
+            namespace,
+        } => {
+            if !is_identifier(schema) {
+                return Err("collection item class must be an ASCII identifier".into());
+            }
+            // C# also treats Unicode line/paragraph separators as newlines in string literals.
+            let literal_safe = |s: &str| {
+                !s.is_empty()
+                    && !s.contains(['"', '\\', '\u{2028}', '\u{2029}'])
+                    && !s.chars().any(char::is_control)
+            };
+            if !literal_safe(item) || !literal_safe(namespace) {
+                return Err(
+                    "collection item and namespace must be non-empty and literal-safe".into(),
+                );
+            }
+            Ok(())
+        }
         DataType::Numeric { precision, scale } => {
             crate::types::NumericType::new(*precision, *scale).map(|_| ())
         }
@@ -326,7 +380,26 @@ pub(crate) fn validate_data_type(data_type: &DataType) -> Result<(), String> {
             }
             Ok(())
         }
+        DataType::LongVarchar {}
+        | DataType::Guid {}
+        | DataType::Image {}
+        | DataType::Geospatial {} => Ok(()),
     }
+}
+
+/// The types whose C# form is evidenced for a variable and for an SDT member, but for which no
+/// transaction or web panel attribute form is evidenced. Such an attribute is refused by name.
+pub(crate) fn require_attribute_form(data_type: &DataType) -> Result<(), String> {
+    let name = match data_type {
+        DataType::LongVarchar { .. } => "longvarchar",
+        DataType::Guid {} => "guid",
+        DataType::Image {} => "image",
+        DataType::Geospatial {} => "geospatial",
+        _ => return Ok(()),
+    };
+    Err(format!(
+        "{name} attributes have no evidenced transaction or web panel form in this build"
+    ))
 }
 
 fn validate_record_graph(record_types: &[RecordType]) -> Result<(), String> {
@@ -506,8 +579,8 @@ mod tests {
         assert!(Project::from_json(&invalid_length).is_err());
 
         let non_ascii = project_json(
-            "máin",
-            r#"[{"name":"máin","params":[],"source":"Return 0"}]"#,
+            "mÃ¡in",
+            r#"[{"name":"mÃ¡in","params":[],"source":"Return 0"}]"#,
         );
         assert!(Project::from_json(&non_ascii).is_err());
     }
@@ -595,5 +668,29 @@ mod tests {
         assert_eq!(procedures[0].name, "MAIN");
         assert_eq!(procedures[1].name, "DOUBLE");
         assert_eq!(procedures[1].params, ["NUMBER"]);
+    }
+
+    #[test]
+    fn new_gx_types_deserialize_validate_and_have_no_attribute_form() {
+        use super::{DataType, require_attribute_form, validate_data_type};
+        for (json, expected) in [
+            (r#"{"kind":"long_varchar"}"#, DataType::LongVarchar {}),
+            (r#"{"kind":"guid"}"#, DataType::Guid {}),
+            (r#"{"kind":"image"}"#, DataType::Image {}),
+            (r#"{"kind":"geospatial"}"#, DataType::Geospatial {}),
+        ] {
+            let data_type: DataType = serde_json::from_str(json).expect("the kind is admitted");
+            assert_eq!(data_type, expected);
+            validate_data_type(&data_type).expect("a valid declaration");
+            // A transaction or web panel attribute of these types has no evidenced form: refused by name.
+            let error = require_attribute_form(&data_type).expect_err("no attribute form");
+            assert!(
+                error.contains("no evidenced transaction or web panel form"),
+                "{error}"
+            );
+        }
+        // Variables and SDT members of these types are admitted, so the attribute check is not global.
+        require_attribute_form(&DataType::Varchar { length: 10 })
+            .expect("varchar has an attribute form");
     }
 }

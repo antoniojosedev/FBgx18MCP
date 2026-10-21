@@ -103,6 +103,8 @@ From the shipped `WorkWithInstance.xml`:
   <Attribute Name="name"        Type="code(Expressions)" NotNull="true" />
   <Attribute Name="description" Type="string" />
   <Attribute Name="domain"      Type="reference(Domain)" />
+  <Attribute Name="default"     Type="string" Category="Values" />
+  <!-- allValue, datePicker, displayFlat and prompt omitted here -->
 </ElementType>
 
 <ElementType Name="Condition" KeyAttribute="value">
@@ -111,7 +113,11 @@ From the shipped `WorkWithInstance.xml`:
 ```
 
 `attributes` and `conditions` are both `Optional="false"`, so a `Filter` always carries
-both. The reporter's read snippet has both, and the shape matches node for node — so the
+both. The `default` attribute (described in the schema as "Default value. Must be an
+expression of the same type of the attribute/variable.") is the serialized form of the
+settable `FilterAttributeElement.Default` string listed above; an earlier revision of
+this excerpt left it out, which is what
+[#588](https://github.com/lennix1337/Genexus18MCP/issues/588) corrected. The reporter's read snippet has both, and the shape matches node for node — so the
 typed API and the serialized document are two views of one model, not two contracts.
 
 ## Why this should be a typed action, not a relaxed XML gate
@@ -137,6 +143,18 @@ any regenerated derived objects.
   `SaveTo(patternInstance)` followed by the SDK's instance save persists and re-reads as
   the reporter wants is not executed here: no KB in `C:\KBs` has a standard WorkWith
   applied, and mutating a user's KB is not authorized.
+  Issue [#590](https://github.com/lennix1337/Genexus18MCP/issues/590) keeps this an
+  explicit limit: the write receipts verify by rereading the typed instance from the
+  same in-memory object (`WorkWithInstance.Load(instanceObj)` after `Save`), declare it
+  in `persistenceEvidence` (`independentPersistedReread: false`,
+  `provesDurability: false`), and the restart proof is
+  `scripts/workwith_persistence_smoke.ps1` (write, `genexus_worker_reload`, reread on
+  the new Worker). The existing fresh path (`ObjectService.FindObjectFreshByIdentity`,
+  which invalidates the SDK object cache and refuses to return the same managed
+  instance) is the candidate for an in-process independent reread -
+  `WorkWithInstance.Load(freshInstance)` rather than the XML projection - but it has
+  not been executed against a WorkWith instance and stays a follow-up until that smoke
+  has passed.
 - **Regeneration.** Whether the derived XLS procedure regenerates from the new filter is
   a generator question, separate from authoring — and the issue already scopes that as a
   separate capability.

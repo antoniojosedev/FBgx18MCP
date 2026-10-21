@@ -313,6 +313,15 @@ namespace GxMcp.Worker.Helpers
                     {
                         continue;
                     }
+                    // A layout control's custom-properties payload: the SDK stores the same
+                    // properties in its own order (and may respell the token list), so two
+                    // payloads with the same properties and values are the same payload. Raw
+                    // string comparison read that reordering as a lost write.
+                    if (string.Equals(ax[i].Name.LocalName, CustomPropertiesPayload.AttributeName, StringComparison.Ordinal) &&
+                        CustomPropertiesPayload.SemanticallyEqual(ax[i].Value, ay[i].Value))
+                    {
+                        continue;
+                    }
                     // Issue #122: Color attribute equivalence (e.g. BackColor="144; 238; 144|" vs "144, 238, 144" or "#90EE90")
                     if (ColorHelper.IsColorAttributeName(ax[i].Name.LocalName) &&
                         ColorHelper.IsColorEquivalent(ax[i].Value, ay[i].Value))

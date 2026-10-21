@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
@@ -71,6 +72,32 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("error", ctxJson["status"]?.ToString());
             Assert.Equal("AmbiguousName", ctxJson["error"]?["code"]?.ToString());
             Assert.Equal("'Customer' matches 2 objects; select one with guid, path or type.", ctxJson["error"]?["message"]?.ToString());
+        }
+
+        [Fact]
+        public void ObjectContext_References_KeepTheirPublishedShape()
+        {
+            // The references block is shared with the native genexus_wire pack_task; its published shape
+            // (names, fieldTrust, read, truncated per side) must not gain or lose a field for object_context.
+            var indexCache = BuildIndex(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Caller", Type = "Procedure", Guid = "00000000-0000-0000-0000-000000000031", Path = "Root Module/Caller", Calls = new List<string> { "Subject" }, IsEnriched = true },
+                new SearchIndex.IndexEntry { Name = "Subject", Type = "Procedure", Guid = "00000000-0000-0000-0000-000000000032", Path = "Root Module/Subject", Calls = new List<string> { "Callee" }, IsEnriched = true },
+                new SearchIndex.IndexEntry { Name = "Callee", Type = "Procedure", Guid = "00000000-0000-0000-0000-000000000033", Path = "Root Module/Callee", IsEnriched = true }
+            });
+            var graphTools = new GraphToolsService(null, null, indexCache, new CallerGraphService(indexCache));
+
+            var json = JObject.Parse(graphTools.ObjectContext(new JObject { ["name"] = "Subject" }));
+
+            var references = (JObject)json["result"]["references"];
+            foreach (string side in new[] { "callers", "callees" })
+            {
+                var block = (JObject)references[side];
+                Assert.Equal(new[] { "fieldTrust", "names", "read", "truncated" },
+                    block.Properties().Select(p => p.Name).OrderBy(n => n).ToArray());
+            }
+            Assert.Equal(new[] { "Caller" }, references["callers"]["names"].Select(n => (string)n).ToArray());
+            Assert.Equal(new[] { "Callee" }, references["callees"]["names"].Select(n => (string)n).ToArray());
         }
 
         [Fact]

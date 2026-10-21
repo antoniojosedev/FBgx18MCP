@@ -1,0 +1,4 @@
+&X = 1
+&PairResult = POP97435900(&X, POB97435900(&X))
+msg("A_result=" + &PairResult.ToString().Trim(), status)
+msg("A_x_after=" + &X.ToString().Trim(), status)
