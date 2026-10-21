@@ -9,6 +9,8 @@ foreach ($required in @(
     'GXMCP_SDK_CI_LICENSE_ACK',
     'validate-gx-sdk.ps1',
     'test-live.ps1',
+    'check-build-warning-baseline.ps1',
+    'rev-parse HEAD',
     "Write-Status 'skip'",
     "Write-Status 'pass'",
     "Write-Status 'fail'",
@@ -28,6 +30,8 @@ try {
     if (-not (Test-Path -LiteralPath $statusPath -PathType Leaf)) { throw 'Skip status artifact was not written.' }
     $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
     if ($status.state -ne 'skip') { throw "Expected skip state, got $($status.state)." }
+    if ($status.commit -notmatch '^[0-9a-f]{40}$') { throw "Status must bind the evidence to the checked-out commit, got '$($status.commit)'." }
+    if ($status.commit -ne (& git -C (Join-Path $PSScriptRoot '../..') rev-parse HEAD).Trim()) { throw 'Status commit does not equal HEAD.' }
 
     $sdk = Join-Path $outputRoot 'fake-sdk'
     $kb = Join-Path $outputRoot 'fake-kb'
@@ -85,6 +89,47 @@ try {
     Assert-SdkValidation 1 'GXMCP_SDK_ASSEMBLY_MISSING'
     $spec.assemblies = @()
     Assert-SdkValidation 1 'GXMCP_SDK_MANIFEST_INVALID'
+
+    # Exercise the CI entrypoint from an empty test-output tree, not a developer's warm bin/obj.
+    $probeRoot = Join-Path $outputRoot 'clean-checkout'
+    $probeCi = Join-Path $probeRoot 'scripts/ci'
+    New-Item -ItemType Directory -Path $probeCi -Force | Out-Null
+    $probeScript = Join-Path $probeCi 'sdk-validation.ps1'
+    Copy-Item -LiteralPath $scriptPath -Destination $probeScript
+    $probeHost = Join-Path $outputRoot 'invoke-clean-sdk-lane.ps1'
+    @'
+param($ScriptPath, $Sdk, $Kb, $Fixture, $OutputRoot, $BuildExit)
+function dotnet {
+    if ($args[0] -ne 'build' -or $args[1] -notlike '*GxMcp.Worker.Tests.csproj' -or
+        $args -notcontains 'Release' -or $args -notcontains "-p:GX_PATH=$Sdk") {
+        throw 'Worker live tests must be built in Release against the selected SDK.'
+    }
+    Add-Content (Join-Path $OutputRoot 'calls.txt') 'worker-build'
+    $global:LASTEXITCODE = [int]$BuildExit
+}
+function pwsh {
+    $scriptName = [IO.Path]::GetFileName([string]$args[2])
+    Add-Content (Join-Path $OutputRoot 'calls.txt') $scriptName
+    $global:LASTEXITCODE = 0
+    if ($scriptName -eq 'test-live.ps1' -and
+        -not (Get-Content (Join-Path $OutputRoot 'calls.txt')).Contains('worker-build')) {
+        $global:LASTEXITCODE = 9
+    }
+}
+& $ScriptPath -GxPath $Sdk -KbPath $Kb -FixtureManifest $Fixture -OutputRoot $OutputRoot
+exit $LASTEXITCODE
+'@ | Set-Content -LiteralPath $probeHost -Encoding utf8
+    foreach ($buildExit in @(0, 7)) {
+        $probeOutput = Join-Path $outputRoot "probe-$buildExit"
+        & pwsh -NoProfile -File $probeHost $probeScript $sdk $kb $manifest $probeOutput $buildExit
+        $expectedExit = if ($buildExit -eq 0) { 0 } else { 1 }
+        if ($LASTEXITCODE -ne $expectedExit) { throw "Clean-checkout SDK lane expected exit $expectedExit, got $LASTEXITCODE." }
+        $probeStatus = Get-Content (Join-Path $probeOutput 'status.json') -Raw | ConvertFrom-Json
+        $expectedState = if ($buildExit -eq 0) { 'pass' } else { 'fail' }
+        if ($probeStatus.state -ne $expectedState) { throw "Clean-checkout SDK lane expected $expectedState." }
+        $calls = @(Get-Content (Join-Path $probeOutput 'calls.txt'))
+        if ($buildExit -ne 0 -and $calls -contains 'test-live.ps1') { throw 'Failed test compilation must block the live lane.' }
+    }
 }
 finally {
     $env:GXMCP_SDK_CI_LICENSE_ACK = $oldAck

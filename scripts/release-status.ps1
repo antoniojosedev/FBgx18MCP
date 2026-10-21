@@ -31,9 +31,22 @@ function Get-SafePublication([object]$Value) {
     }
 }
 
+# A release process killed mid-run leaves state=running forever. Report it as failed once
+# its pid is gone; the grace period covers the launcher-to-child pid handoff of -Detach.
+function Set-InterruptedStatus([object]$Status) {
+    if ($null -eq $Status -or [string]$Status.state -ne 'running' -or -not $Status.pid) { return }
+    if ($null -ne (Get-Process -Id ([int]$Status.pid) -ErrorAction SilentlyContinue)) { return }
+    $updated = if ($Status.updatedAtUtc -is [DateTime]) { [DateTimeOffset]$Status.updatedAtUtc } else { [DateTimeOffset]::Parse([string]$Status.updatedAtUtc) }
+    if (([DateTimeOffset]::UtcNow - $updated).TotalSeconds -lt 10) { return }
+    $Status.state = 'failed'
+    $Status.error = "Release process $($Status.pid) is gone but never recorded a result (phase '$($Status.phase)'); inspect the logs and run scripts\release-doctor.ps1 -Remote."
+    if ($null -eq $Status.exitCode) { $Status.exitCode = 1 }
+}
+
 $status = $null
 do {
     $status = Read-ReleaseStatus
+    Set-InterruptedStatus $status
     if ($null -ne $status -and $status.state -in @('succeeded', 'failed')) { break }
     if ((Get-Date) -ge $deadline) { break }
     Start-Sleep -Seconds 1
@@ -63,10 +76,21 @@ if (Test-Path -LiteralPath $publicationPath -PathType Leaf) {
     }
 }
 
-$evidenceCheck = Test-GxMcpReleasePublicationEvidence -Status $status -Publication $publication -RepositoryRoot $RepositoryRoot -AllowLegacy:(Test-GxMcpReleaseLegacyVersion ([string]$status.version))
+# A release that failed on its own version argument records a non-semver version; reporting
+# that failure must not itself crash on the same value.
+$allowLegacyEvidence = $false
+$versionIsSemver = $true
+try { $allowLegacyEvidence = Test-GxMcpReleaseLegacyVersion ([string]$status.version) } catch { $versionIsSemver = $false }
+$evidenceCheck = if ($versionIsSemver) {
+    Test-GxMcpReleasePublicationEvidence -Status $status -Publication $publication -RepositoryRoot $RepositoryRoot -AllowLegacy:$allowLegacyEvidence
+} else {
+    [pscustomobject]@{ Valid = $false; Error = "status version '$($status.version)' is not semver" }
+}
 $status | Add-Member -NotePropertyName publicationEvidenceValid -NotePropertyValue ([bool]$evidenceCheck.Valid) -Force
 $status | Add-Member -NotePropertyName publicationEvidenceError -NotePropertyValue (Protect-StatusMessage $evidenceCheck.Error) -Force
-if (-not $evidenceCheck.Valid -and ([string]$status.state -eq 'succeeded' -or ($publication -and [string]$publication.state -eq 'failed'))) {
+# -PrepareOnly and -DryRun runs succeed without publishing, so they have no publication evidence.
+$publishedNothing = [string]$status.phase -in @('prepared', 'dry-run-complete')
+if (-not $evidenceCheck.Valid -and -not $publishedNothing -and ([string]$status.state -eq 'succeeded' -or ($publication -and [string]$publication.state -eq 'failed'))) {
     $status.state = 'failed'
     $status.error = "Publication verification failed: $($evidenceCheck.Error)"
 }

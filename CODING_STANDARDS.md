@@ -60,6 +60,9 @@ python -m unittest discover -s scripts/tests
 python scripts/validate-tool-contracts.py
 python scripts/generate-operation-contract-inventory.py --check
 python scripts/verify-release-metadata.py --root . --version <package.json version>
+cargo fmt --manifest-path src/gx-engine/Cargo.toml --check
+cargo clippy --manifest-path src/gx-engine/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src/gx-engine/Cargo.toml
 npm test
 npm run lint
 Push-Location src/nexus-ide
@@ -93,8 +96,35 @@ running it after `build.ps1` breaks the publish↔source byte identity and
 `Get-GxMcpReleaseProcessSmokeFingerprint` returns empty — which fails
 `test-release-preflight.ps1` for a reason unrelated to the change under test.
 
+**Clean-checkout prerequisites.** A lane that invokes tests with `--no-build`
+must compile every selected test project before the final package build; do not
+rely on a developer's existing `bin/obj`. Regression-test missing outputs and
+compilation failure without skipping the live check.
+
 **Review signal.** A commit whose message cites counts for some lanes but not
 others is unverified. Ask for the missing lane's output, not for a claim about it.
+
+## Backend and default changes
+
+A backend is substitutable only when the same public operation has compatible
+observable behavior. Before changing routing or a default, record:
+
+- The affected operation/argument admission table and SDK fallback boundaries.
+- Shared behavioral tests against `sdk`, `auto`, and `gxengine`: read → edit
+  with the returned version token, exact/fuzzy search and metadata, unknown-part
+  errors, stale-write rejection, and unsupported-operation fallback.
+- Live results from the packaged binary on an explicit disposable KB; verify
+  which backend served each operation, not merely the configured backend.
+- Required CI results for the exact source commit, including Rust and relevant
+  SDK/live evidence. A skipped or unavailable lane is not a passing gate.
+
+Argument normalization and projection must match the reference backend for that
+specific operation; do not trim inputs or omit response fields merely because a
+different operation supports that transformation.
+
+Unit counts, capability labels and byte-identical generated files do not replace
+this contract evidence. Keep snapshots unchanged unless the public contract
+intentionally changes; test the negative/error paths as well as success.
 
 ## Guards must be able to fail
 
@@ -123,6 +153,12 @@ failed phase would certify a release that ran nothing.
 Absence of evidence is reported as absence. When a contract is unverifiable on
 this host, say so and name what would unblock it, rather than merging on the
 strength of the build being green.
+
+A background-command acknowledgement is not operation completion. An observing
+job must retain the operation identity and verify a coherent terminal state;
+readiness labels alone cannot override active work. Observer cancellation or a
+timeout does not prove that the underlying operation stopped. Regression tests
+must hold the operation active after acceptance and reject premature success.
 
 ## Scope
 

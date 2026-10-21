@@ -508,7 +508,7 @@ namespace GxMcp.Gateway
                 status: EngineCapabilityStatus.Parity,
                 evidence: "src/gx-engine/src/udm/mod.rs; src/gx-engine/tests/udm_decoder.rs (19/19 tests); src/gx-engine/tests/udm_reader_writer.rs (10/10 tests, live LocalDB read verified)",
                 consumers: new[] { "genexus_read", "genexus_query", "genexus_edit" },
-                notes: "Direct reading, hydration, transactional writing, and multi-user State locks against native UDM databases."),
+                notes: "Native storage decoding and hydration; the gateway admits only field-limited type-filter queries. All MCP reads and edits defer to SDK or fail closed pending identity/freshness/token parity and persistent writes. This storage label is not full MCP response parity."),
 
             new EngineCapability(
                 id: "csharp_emitter",

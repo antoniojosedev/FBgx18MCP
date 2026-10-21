@@ -141,6 +141,27 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(25, command["pageSize"]?.ToObject<int>());
         }
 
+        [Theory]
+        [InlineData("Starting")]
+        [InlineData("Building")]
+        [InlineData("Cancelling")]
+        public void IndexStartAcknowledgementIsNotSuccessfulCompletion(string operationState)
+        {
+            var acknowledgement = new JObject
+            {
+                ["status"] = "ok",
+                ["code"] = "LiteStarted",
+                ["result"] = new JObject
+                {
+                    ["operationId"] = "idx-test",
+                    ["operationState"] = operationState,
+                    ["workerAlive"] = true
+                }
+            };
+
+            Assert.False(Program.IsSuccessfulBackgroundToolCompletion(acknowledgement));
+        }
+
         [Fact]
         public void LongActionsRemainAsyncWhenWaitUntilDoneOrSmallEstimateIsRequested()
         {

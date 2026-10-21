@@ -128,6 +128,10 @@ test('engine default policy is gxengine and preserves auto/SDK opt-out and recon
     assert.match(section, /`"auto"` routes only builds/);
     assert.match(section, /`"sdk"` keeps every operation on the SDK/);
     assert.match(section, /never trigger automatic SDK replay/);
+    assert.match(section, /admitted type-only `genexus_query` calls/);
+    assert.match(section, /all reads/);
+    assert.match(backend, /No read shape is currently admitted/);
+    assert.match(backend, /all object-name\/text searches \(including\s+`exactMatch:true`\)/);
     assert.match(read('docs/engine_backend.md'), /`Engine\.Backend=gxengine` \(also when the section is absent\)/);
     assert.match(read('src/gx-engine/README.md'), /defaults to `Engine\.Backend=gxengine`/);
     assert.match(read('AGENTS.md'), /`Engine\.Backend` defaults to `gxengine`/);

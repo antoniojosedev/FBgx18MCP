@@ -10,8 +10,8 @@ parity.
 **Default policy.** `Engine.Backend=gxengine` (also when the section is absent)
 uses gx-engine for every call inside the admitted space: blocking
 `genexus_lifecycle` `build`/`rebuild` requests (through `parallel_rebuild_all` /
-`rebuild-all`) and part-scoped `genexus_read` / `genexus_query` (through
-`kb-read`/`kb-query`). A blocking directed `build` is also admitted for
+`rebuild-all`) and field-limited type-only `genexus_query` requests (through
+`kb-query`). Reads stay on SDK fallback until response parity is verified. A blocking directed `build` is also admitted for
 `mode=compile_check`, explicit `callers=false`, and transitive callees, using a
 simple or module-qualified object name. Edits, async builds, and unsupported
 request shapes fall back to the SDK (`Engine.Fallback=sdk`). This selects the
@@ -47,7 +47,7 @@ storage facts behind the read path are recorded in
 
 | Key | Values | Default | Meaning |
 | :--- | :--- | :--- | :--- |
-| `Engine.Backend` | `gxengine`, `auto`, `sdk` | `gxengine` | `gxengine`: admitted builds, reads and queries use the engine; the rest uses SDK. `auto`: only admitted builds use the engine. `sdk`: SDK only, the engine is never invoked. |
+| `Engine.Backend` | `gxengine`, `auto`, `sdk` | `gxengine` | `gxengine`: admitted builds and field-limited type-only queries use the engine; reads/edits and the rest use SDK fallback. `auto`: only admitted builds use the engine. `sdk`: SDK only, the engine is never invoked. |
 | `Engine.Fallback` | `sdk`, `error` | `sdk` | What happens when a routed capability is not at parity: keep the GeneXus SDK, or refuse the call. `error` is the verification mode. |
 | `Engine.Executable` | path | unset | Explicit `gx-engine.exe`. Authoritative: when the path is missing the probe reports `EngineNotFound` instead of running a different binary. |
 | `Engine.TimeoutSeconds` | positive integer | `120` | Wall-clock budget for one engine invocation (matches the engine's native-compilation deadline). |
@@ -70,8 +70,10 @@ a restart.
 
 ## What changes today
 
-With default `Backend=gxengine`, admitted builds, reads and queries are engine
-candidates. `Backend=auto` keeps only the builds.
+With default `Backend=gxengine`, admitted builds and field-limited type-only
+queries can be served natively. The registry also lists reads/edits as candidates,
+but their argument gate always defers or refuses them pending parity.
+`Backend=auto` keeps only the builds.
 Every other tool is untouched. `genexus_doctor` result gains an `engine` block:
 
 - always: `backend`, `fallback`, and `capabilities` — the `parity` / `partial` /
@@ -113,7 +115,7 @@ not re-annotated here when a later differential moves a status:
 
 | Capability | Status | Evidence / note |
 | :--- | :--- | :--- |
-| `udm_storage_access` | parity (routed) | Direct native UDM storage access: connection parser + envelope decoder + token reconstructor + reader/writer; `src/gx-engine/src/udm/mod.rs`, `src/gx-engine/tests/udm_decoder.rs` (19/19), `src/gx-engine/tests/udm_reader_writer.rs` (10/10), `src/gx-engine/tests/kb_ops.rs` (10/10) plus a live KBTeste read. Serves `genexus_read`/`genexus_query`; `genexus_edit` is registered but held outside the served space while engine writes have no live persistence (see below). |
+| `udm_storage_access` | parity (routed) | Direct native UDM storage access: connection parser + envelope decoder + token reconstructor + reader/writer; `src/gx-engine/src/udm/mod.rs`, `src/gx-engine/tests/udm_decoder.rs` (19/19), `src/gx-engine/tests/udm_reader_writer.rs` (10/10), `src/gx-engine/tests/kb_ops.rs` (10/10) plus a live KBTeste read. Routes only admitted field-limited `genexus_query` shapes. `genexus_read` is registered but held outside the served space pending SDK identity/freshness/token parity; `genexus_edit` is likewise held back while engine writes have no live persistence (see below). Storage capability status is not full MCP response parity. |
 | `parallel_rebuild_all` | parity (routed) | Parallel specification + Roslyn compilation; `src/gx-engine/src/rebuild.rs`, `src/gx-engine/tests/rebuild_pipeline.rs` (5/5: sub-second 24-proc parallel rebuild). Serves `genexus_lifecycle` `build`/`rebuild`. |
 | `str_format` | parity | Numeric `Str` pictures: native `double`→`(decimal)` (15-digit) bound pipeline reproduced; 36,246 in-domain native rows across six scans, 0 mismatches; `src/gx-engine/tests/fixtures/str_matrix.tsv` (6,152 rows) plus the full bound table in `src/gx-engine/fixtures/str-bounds-native.tsv`. No consumer yet. |
 | `numeric_render` | parity | Implicit `&var.ToString()`/`Print(&numericVar)`: native measured equal to `Str(value, precision, scale)` (padding included) over 120 KBTeste cases across precision 1..18 boundary families, scale corners and the width 15..18 narrowed-bound regime; `src/gx-engine/tests/fixtures/numeric_render_native.tsv` + `src/gx-engine/tests/numeric_render_native.rs`. Expressions/record members/date components keep the untyped display path. No consumer yet. |
@@ -174,44 +176,50 @@ it propagates cancellation without SDK fallback, whether it arrives before
 launch or during an engine read/build. Nothing routes through the engine unless
 the registry marks the capability `Parity`.
 
-### `genexus_read` → `kb-read`
+### `genexus_read` → SDK fallback
 
-Admitted: one object by `name` (or its `objectName` alias), with an explicit
-`part` or `parts[]` (`Source`, `Rules`, `Events`, `Conditions`, `Variables`,
-`Structure`, `WebForm`, `PatternInstance`), an optional `type` checked against
-the stored kind, and `refresh` (an engine read is always fresh).
+No read shape is currently admitted to native MCP routing, including `parts[]`
+and explicit `fields`. The SDK returns identity and freshness metadata even
+when `fields` is supplied; it does not implement a read-field projection.
+Single-part reads also return the `versionToken` that SDK edits compare exactly.
+The engine cannot yet reproduce that envelope, timestamp/parent identity or SDK
+text normalization. A selected subset of fields is not equivalent for the same
+request, so reads use SDK fallback unchanged, or fail closed under
+`Engine.Fallback=error`. Unknown-part errors remain owned by the SDK.
 
-Outside: `guid`/`entityKey`/`path` lookups, `targets[]`, `ifUnchangedSince`,
-`offset`/`limit` paging, full-object reads (no `part`, or `all`/`full`/
-`summary`/`360`), and a `kb` naming a different Knowledge Base.
-
-Shape: single part → the ExtractSource-shaped payload (`name`, `type`, `part`,
-`source`, `isBase64`, `isEmpty`, `truncated`, `offset`, `limit`, `totalLines`,
-`totalBytes`); `parts[]` → a `parts` object with lowercase keys. There is no
-`versionToken` (the SDK token cannot be computed off the engine, and an engine
-write does not take one). A part the object does not have fails with
-`ObjectPartNotFound` listing `availableParts` — unlike the SDK path, the engine
-resolves no part aliases (`Layout` does not resolve to `WebForm`). Only the eight
-mapped part kinds are served and listed; other stored parts (`Documentation`,
-`Help`, `Layout`, …) have no engine part kind and report as missing rather than
-being decoded approximately. See [`udm_storage_notes.md`](udm_storage_notes.md).
+The standalone `kb-read` CLI is still available for experimental storage work;
+its existence is not native MCP read-parity evidence. See
+[`udm_storage_notes.md`](udm_storage_notes.md).
 
 ### `genexus_query` → `kb-query`
 
-Admitted: one exact object name, `type:X`, `usedby:Y`, `typeFilter`, and
-`limit` (default 50, engine cap 200), combined freely out of name/type/usedby.
-`exactMatch` may be absent or `true`.
+Admitted: one bare `type:X` filter, or `typeFilter` without a `type:` term.
+Calls must explicitly select `fields` limited to `name` and `type`, the only row
+fields supplied by the engine. A supplied `limit` must be 1..200 (default 50).
+`exactMatch` has no effect for a query without a name term. A nonempty external
+`typeFilter` must have no leading/trailing whitespace: the SDK preserves it
+verbatim, so normalization would change its match set. Type tokens use the
+alias table in `EngineQueryContract`; unsupported spellings defer. `webpanel` and
+`wp` also defer: the native catalog includes objects absent from the SDK's
+WebPanel result set. A fresh, settled SDK index is required before comparing
+result sets; a ready label during active indexing is not parity evidence.
 
-Outside: fuzzy/text queries (`exactMatch:false`, multi-term, wildcards,
-`description:`/`parent:`/`folder:` prefixes), an empty query, `domainFilter`,
-`sort`, `since`/`modifiedBefore`, `cursor`/`cursors`, `kbs` federation and its
-budget arguments. Documented deviation: the SDK path falls back to fuzzy index
-search after a direct-lookup miss, and the engine answers exact-only, so
-`exactMatch:false` stays outside the space instead of returning a subset.
+Outside: reads, empty results, all object-name/text searches (including
+`exactMatch:true`), `usedby:`, wildcards/quoted/qualified names, and unsupported
+filters/paging/federation arguments. The SDK's exact-name branch uses a different
+envelope and limit semantics, so it stays on SDK. Default query projections also
+require identity fields (`path`, `lastUpdate`); without explicit supported
+`fields`, queries stay on SDK. Missing identity fields are never silently
+substituted. `usedby:` stays on SDK because its result unions same-named targets
+and SDK-only call/table edges. Empty engine answers are not authoritative for
+the SDK's broader catalog and therefore defer as well.
 
-Shape: `results[]` with `name`/`type` (no `guid`/`path`/`lastUpdate`), `count`,
-`total`, `hasMore`/`truncated`, and the `pagination` block (offset 0, no
-cursors). Results are name-sorted.
+Shape: projected `results[]`, counts, `hasMore`, `pagination` including
+`nextOffset` when another page exists, and `_meta.match_quality`. There is no top-level `truncated` or
+`suggested_next`. Modules sort first, followed by ordinal name order. Focused
+stub-engine tests prove admission and envelope guards, not live SDK result/text
+equality or full search parity. Unsupported calls use SDK unchanged or fail
+closed with `EngineOperationOutsideAdmittedSpace` under `Engine.Fallback=error`.
 
 ### `genexus_edit` → `kb-write` (held outside the served space)
 

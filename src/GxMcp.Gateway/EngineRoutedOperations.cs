@@ -19,9 +19,10 @@ namespace GxMcp.Gateway
     /// gx-engine instead of the SDK Worker:
     ///
     /// <list type="bullet">
-    /// <item><c>udm_storage_access</c> serves <c>genexus_read</c>,
-    /// <c>genexus_query</c> and <c>genexus_edit</c> through the engine's
-    /// <c>kb-read</c>/<c>kb-query</c>/<c>kb-write</c> invocations.</item>
+    /// <item><c>udm_storage_access</c> registers <c>genexus_read</c>,
+    /// <c>genexus_query</c> and <c>genexus_edit</c>, but serves only a bare
+    /// <c>type:</c> <c>genexus_query</c> through the engine's <c>kb-query</c>
+    /// invocation; reads and edits are held outside the served space.</item>
     /// <item><c>parallel_rebuild_all</c> serves
     /// <c>genexus_lifecycle.build</c> and <c>genexus_lifecycle.rebuild</c>
     /// through the engine's <c>rebuild-all</c> invocation.</item>
@@ -58,8 +59,6 @@ namespace GxMcp.Gateway
 
         internal const string EngineOutsideSpaceCode = "EngineOperationOutsideAdmittedSpace";
         internal const string EngineInvocationFailedCode = "EngineInvocationFailed";
-        internal const string EnginePartNotFoundCode = "ObjectPartNotFound";
-        internal const string EngineTypeMismatchCode = "ObjectTypeMismatch";
 
         /// <summary>
         /// Engine builds are serialized: two concurrent rebuild-all runs would
@@ -67,11 +66,9 @@ namespace GxMcp.Gateway
         /// </summary>
         private static readonly SemaphoreSlim EngineBuildGate = new SemaphoreSlim(1, 1);
 
-        // The admitted argument space of each served operation. `genexus_edit` has
-        // none: it is held outside the engine entirely (see DispatchEngineEdit).
-        private static readonly EngineAdmittedSpace ReadSpace = new EngineAdmittedSpace(
-            "read", "name", "objectName", "type", "part", "parts", "kb", "refresh");
-
+        // The admitted argument space of each served operation. `genexus_read` and
+        // `genexus_edit` have none: they are held outside the engine entirely (see
+        // DispatchEngineRead and DispatchEngineEdit).
         private static readonly EngineAdmittedSpace QuerySpace = new EngineAdmittedSpace(
             "query", "query", "typeFilter", "limit", "exactMatch", "kb");
 
@@ -164,7 +161,7 @@ namespace GxMcp.Gateway
                 switch (operationKey)
                 {
                     case "genexus_read":
-                        return await DispatchEngineReadAsync(context).ConfigureAwait(false);
+                        return DispatchEngineRead(context);
                     case "genexus_query":
                         return await DispatchEngineQueryAsync(context).ConfigureAwait(false);
                     case "genexus_edit":
@@ -194,121 +191,54 @@ namespace GxMcp.Gateway
         }
 
         // ------------------------------------------------------------------
-        // genexus_read -> kb-read
+        // genexus_read -> kb-read (held outside the served space)
         // ------------------------------------------------------------------
 
-        private async Task<JObject?> DispatchEngineReadAsync(EngineRouteContext ctx)
+        /// <summary>
+        /// Every SDK read answers with an `identity` block, `readFreshness` and, for a
+        /// single part, the `versionToken` that `genexus_edit` compares for exact
+        /// equality; the SDK also ignores `fields` on a read, so a field selection
+        /// cannot make a smaller engine answer equivalent. The engine supplies none of
+        /// them (the token needs the SDK LastUpdate, parent identity and SDK part text,
+        /// and Variables/Structure/WebForm text differs from storage), so no read shape
+        /// is admitted until that parity exists. Fail-closed: `Fallback=error` refuses,
+        /// `Fallback=sdk` uses the SDK.
+        /// </summary>
+        private JObject? DispatchEngineRead(EngineRouteContext ctx) =>
+            EngineOutsideResult(ctx,
+                "an SDK read returns identity, readFreshness and versionToken (and ignores `fields`), which the engine cannot supply yet; the SDK path must serve `genexus_read`");
+
+        /// <summary>
+        /// The reason a query argument set is outside the engine space: an
+        /// unlisted argument, or a `kb` that is not the session's Knowledge Base.
+        /// </summary>
+        private static string? RefusalForArguments(EngineRouteContext ctx, EngineAdmittedSpace space)
         {
             JObject args = ctx.Args ?? new JObject();
-            string? name = FirstNonEmpty(EngineArgString(args, "name"), EngineArgString(args, "objectName"));
-            if (string.IsNullOrWhiteSpace(name))
-                return EngineOutsideResult(ctx, "`name` (or its `objectName` alias) is required by the engine read path");
-            string? unsupportedArgument = ReadSpace.RefusalFor(args);
-            if (unsupportedArgument != null) return EngineOutsideResult(ctx, unsupportedArgument);
-            if (!EngineKbArgMatches(ctx, args))
-                return EngineOutsideResult(ctx, $"`kb` selects a different Knowledge Base than the session's ('{ctx.KbAlias ?? ctx.KbPath}')");
+            string? unsupportedArgument = space.RefusalFor(args);
+            if (unsupportedArgument != null) return unsupportedArgument;
+            return EngineKbArgMatches(ctx, args)
+                ? null
+                : $"`kb` selects a different Knowledge Base than the session's ('{ctx.KbAlias ?? ctx.KbPath}')";
+        }
 
-            string? partsError = EngineReadRequestedParts(args, out List<string> requestedParts);
-            if (partsError != null) return EngineOutsideResult(ctx, partsError);
-            if (requestedParts.Count == 0)
-                return EngineOutsideResult(ctx, "full-object reads (no `part`/`parts`) are outside the engine read space yet; request explicit parts (Source, Rules, Events, Conditions, Variables, Structure, WebForm, PatternInstance)");
-            string? fullAlias = requestedParts.FirstOrDefault(part =>
-                part.Equals("all", StringComparison.OrdinalIgnoreCase)
-                || part.Equals("full", StringComparison.OrdinalIgnoreCase)
-                || part.Equals("summary", StringComparison.OrdinalIgnoreCase)
-                || part.Equals("360", StringComparison.OrdinalIgnoreCase));
-            if (fullAlias != null)
-                return EngineOutsideResult(ctx, $"full-object read aliases (`part={fullAlias}`) are outside the engine read space yet");
-
-            var engineArgs = new List<string> { "--diagnostics=json", "kb-read", ctx.KbPath, name! };
-            engineArgs.Add("--parts");
-            engineArgs.Add(string.Join(",", requestedParts));
-
-            GxEngineInvocation invocation = await GxEngineClient.InvokeAsync(ctx.Settings, engineArgs, ctx.CancellationToken).ConfigureAwait(false);
-            if (!invocation.Ok) return EngineInvocationFailureResult(ctx, invocation);
-            if (!TryParseEngineJson(invocation.StandardOutput, out JObject? json, out string? parseError) || json == null)
-                return EngineInvocationFailureResult(ctx, GxEngineInvocation.Failure(
-                    invocation.Executable, "EngineOutputUnrecognized",
-                    $"kb-read did not produce a JSON object on stdout ({parseError}).",
-                    stdout: invocation.StandardOutput));
-
-            string typeName = json["type"]?.ToString() ?? "";
-            string? requestedType = EngineArgString(args, "type");
-            if (!string.IsNullOrWhiteSpace(requestedType) && !EngineTypeNamesMatch(requestedType!, typeName))
-                return _buildToolResult(
-                    EngineErrorPayload(EngineTypeMismatchCode,
-                        $"object '{name}' is a {typeName}, not a {requestedType}.",
-                        ctx.Settings, ctx.CapabilityId, ctx.OperationKey, null),
-                    true, ctx.ToolName, ctx.Args);
-
-            var partTexts = new List<(string StoredName, string Source)>();
-            if (json["parts"] is JArray partsArray)
-            {
-                foreach (var entry in partsArray.OfType<JObject>())
-                    partTexts.Add((entry["name"]?.ToString() ?? "", entry["source"]?.ToString() ?? ""));
-            }
-            List<string> missing = (json["missing_parts"] as JArray)?
-                .Select(token => token.ToString())
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .ToList() ?? new List<string>();
-            List<string> available = (json["available_parts"] as JArray)?
-                .Select(token => token.ToString())
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .ToList() ?? new List<string>();
-
-            if (partTexts.Count == 0 && missing.Count > 0)
-            {
-                var unavailable = EngineErrorPayload(EnginePartNotFoundCode,
-                    $"part(s) {string.Join(", ", missing)} not found on '{name}'.",
-                    ctx.Settings, ctx.CapabilityId, ctx.OperationKey, null);
-                unavailable["availableParts"] = new JArray(available.Select(EngineFriendlyPartName));
-                return _buildToolResult(unavailable, true, ctx.ToolName, ctx.Args);
-            }
-
-            if (requestedParts.Count == 1)
-            {
-                string storedName = partTexts.Count > 0 ? partTexts[0].StoredName : requestedParts[0];
-                string text = partTexts.Count > 0 ? partTexts[0].Source : "";
-                int lines = CountTextLines(text);
-                var payload = new JObject
-                {
-                    ["name"] = json["name"]?.ToString() ?? name,
-                    ["type"] = typeName,
-                    ["part"] = EngineFriendlyPartName(storedName),
-                    ["source"] = text,
-                    ["isBase64"] = false,
-                    ["isEmpty"] = text.Length == 0,
-                    ["truncated"] = false,
-                    ["isTruncatedByWorker"] = false,
-                    ["offset"] = 0,
-                    ["limit"] = lines,
-                    ["totalLines"] = lines,
-                    ["totalBytes"] = Encoding.UTF8.GetByteCount(text),
-                    ["engine"] = EngineInfoBlock(ctx, invocation.Executable),
-                };
-                if (missing.Count > 0) payload["missingParts"] = new JArray(missing);
-                _log($"[Engine] genexus_read served by gx-engine: {name} (part {storedName})");
-                return _buildToolResult(payload, false, ctx.ToolName, ctx.Args);
-            }
-
-            var partsObject = new JObject();
-            foreach (var (storedName, source) in partTexts)
-                partsObject[EngineFriendlyPartName(storedName).ToLowerInvariant()] = source;
-
-            var multiPayload = new JObject
-            {
-                ["name"] = json["name"]?.ToString() ?? name,
-                ["type"] = typeName,
-                ["parts"] = partsObject,
-                ["engine"] = EngineInfoBlock(ctx, invocation.Executable),
-            };
-            if (missing.Count > 0)
-            {
-                multiPayload["missingParts"] = new JArray(missing);
-                multiPayload["availableParts"] = new JArray(available.Select(EngineFriendlyPartName));
-            }
-            _log($"[Engine] genexus_read served by gx-engine: {name} (parts {string.Join(",", requestedParts)})");
-            return _buildToolResult(multiPayload, false, ctx.ToolName, ctx.Args);
+        /// <summary>
+        /// Runs one query invocation and parses its JSON answer. A null JSON
+        /// means the call failed: <c>Failure</c> is then the result to return
+        /// (null when the fallback continues on the SDK).
+        /// </summary>
+        private async Task<(JObject? Json, GxEngineInvocation Invocation, JObject? Failure)> InvokeEngineJsonAsync(
+            EngineRouteContext ctx, List<string> engineArgs, string command)
+        {
+            GxEngineInvocation invocation = await GxEngineClient.InvokeAsync(
+                ctx.Settings, engineArgs, ctx.CancellationToken).ConfigureAwait(false);
+            if (!invocation.Ok) return (null, invocation, EngineInvocationFailureResult(ctx, invocation));
+            if (TryParseEngineJson(invocation.StandardOutput, out JObject? json, out string? parseError) && json != null)
+                return (json, invocation, null);
+            return (null, invocation, EngineInvocationFailureResult(ctx, GxEngineInvocation.Failure(
+                invocation.Executable, "EngineOutputUnrecognized",
+                $"{command} did not produce a JSON object on stdout ({parseError}).",
+                stdout: invocation.StandardOutput)));
         }
 
         // ------------------------------------------------------------------
@@ -318,117 +248,20 @@ namespace GxMcp.Gateway
         private async Task<JObject?> DispatchEngineQueryAsync(EngineRouteContext ctx)
         {
             JObject args = ctx.Args ?? new JObject();
-            string? unsupportedArgument = QuerySpace.RefusalFor(args);
-            if (unsupportedArgument != null) return EngineOutsideResult(ctx, unsupportedArgument);
-            if (!EngineKbArgMatches(ctx, args))
-                return EngineOutsideResult(ctx, $"`kb` selects a different Knowledge Base than the session's ('{ctx.KbAlias ?? ctx.KbPath}')");
-            if (args["exactMatch"]?.ToObject<bool?>() == false)
-                return EngineOutsideResult(ctx, "`exactMatch:false` (fuzzy/text search) is outside the engine query space yet");
+            string? argumentRefusal = RefusalForArguments(ctx, QuerySpace);
+            if (argumentRefusal != null) return EngineOutsideResult(ctx, argumentRefusal);
 
-            string query = EngineArgString(args, "query") ?? "";
-            string? objectName = null;
-            string? objectType = null;
-            string? usedBy = null;
-            string[] tokens = query.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (string raw in tokens)
-            {
-                string token = raw.Trim();
-                if (token.Length == 0) continue;
-                int colon = token.IndexOf(':');
-                if (colon > 0)
-                {
-                    string prefix = token.Substring(0, colon).ToLowerInvariant();
-                    string value = token.Substring(colon + 1).Trim();
-                    if (value.Length == 0)
-                        return EngineOutsideResult(ctx, $"`{prefix}:` requires a value in the engine query space");
-                    if (prefix == "type")
-                    {
-                        if (objectType != null) return EngineOutsideResult(ctx, "multiple `type:` filters are outside the engine query space yet");
-                        objectType = value;
-                    }
-                    else if (prefix == "usedby")
-                    {
-                        if (usedBy != null) return EngineOutsideResult(ctx, "multiple `usedby:` filters are outside the engine query space yet");
-                        usedBy = value;
-                    }
-                    else
-                    {
-                        return EngineOutsideResult(ctx, $"query prefix `{prefix}:` is outside the engine query space yet (supported: `type:`, `usedby:` and one exact object name)");
-                    }
-                }
-                else
-                {
-                    if (objectName != null)
-                        return EngineOutsideResult(ctx, "multi-term text queries are outside the engine query space yet (one exact object name, `type:` and `usedby:` are supported)");
-                    objectName = token;
-                }
-            }
+            string? planRefusal = EngineQueryContract.TryPlan(args, out EngineQueryPlan? plan);
+            if (planRefusal != null || plan == null) return EngineOutsideResult(ctx, planRefusal ?? "the query could not be planned");
 
-            string? typeFilter = EngineArgString(args, "typeFilter");
-            if (!string.IsNullOrWhiteSpace(typeFilter))
-            {
-                if (objectType != null)
-                    return EngineOutsideResult(ctx, "`typeFilter` combined with a `type:` query term is ambiguous in the engine query space");
-                objectType = typeFilter;
-            }
+            var (json, invocation, failure) = await InvokeEngineJsonAsync(
+                ctx, EngineQueryContract.ToEngineArguments(ctx.KbPath, plan), "kb-query").ConfigureAwait(false);
+            if (json == null) return failure;
 
-            if (objectName == null && objectType == null && usedBy == null)
-                return EngineOutsideResult(ctx, "an empty query is outside the engine query space yet; pass an exact object name, `type:X` or `usedby:Y`");
-
-            int limit = args["limit"]?.ToObject<int?>() ?? 0;
-            if (limit < 0) limit = 0;
-
-            var engineArgs = new List<string> { "--diagnostics=json", "kb-query", ctx.KbPath };
-            if (objectName != null) { engineArgs.Add("--name"); engineArgs.Add(objectName); }
-            if (objectType != null) { engineArgs.Add("--type"); engineArgs.Add(objectType); }
-            if (usedBy != null) { engineArgs.Add("--usedby"); engineArgs.Add(usedBy); }
-            if (limit > 0)
-            {
-                engineArgs.Add("--limit");
-                engineArgs.Add(limit.ToString(CultureInfo.InvariantCulture));
-            }
-
-            GxEngineInvocation invocation = await GxEngineClient.InvokeAsync(ctx.Settings, engineArgs, ctx.CancellationToken).ConfigureAwait(false);
-            if (!invocation.Ok) return EngineInvocationFailureResult(ctx, invocation);
-            if (!TryParseEngineJson(invocation.StandardOutput, out JObject? json, out string? parseError) || json == null)
-                return EngineInvocationFailureResult(ctx, GxEngineInvocation.Failure(
-                    invocation.Executable, "EngineOutputUnrecognized",
-                    $"kb-query did not produce a JSON object on stdout ({parseError}).",
-                    stdout: invocation.StandardOutput));
-
-            var results = new JArray();
-            if (json["objects"] is JArray objects)
-            {
-                foreach (var entry in objects.OfType<JObject>())
-                {
-                    results.Add(new JObject
-                    {
-                        ["name"] = entry["name"]?.ToString(),
-                        ["type"] = entry["type"]?.ToString(),
-                    });
-                }
-            }
-            int total = json["total"]?.ToObject<int?>() ?? results.Count;
-            bool truncated = json["truncated"]?.ToObject<bool?>() ?? false;
-
-            var payload = new JObject
-            {
-                ["results"] = results,
-                ["count"] = results.Count,
-                ["total"] = total,
-                ["hasMore"] = truncated,
-                ["truncated"] = truncated,
-                ["pagination"] = new JObject
-                {
-                    ["offset"] = 0,
-                    ["limit"] = limit > 0 ? limit : 50,
-                    ["returned"] = results.Count,
-                    ["total"] = total,
-                    ["hasMore"] = truncated,
-                },
-                ["engine"] = EngineInfoBlock(ctx, invocation.Executable),
-            };
-            _log($"[Engine] genexus_query served by gx-engine: query='{query}' ({results.Count}/{total})");
+            if (!EngineQueryContract.TryShape(plan, json, EngineInfoBlock(ctx, invocation.Executable), out JObject? payload, out string? shapeRefusal)
+                || payload == null)
+                return EngineOutsideResult(ctx, shapeRefusal ?? "the engine answer could not be shaped");
+            _log($"[Engine] genexus_query served by gx-engine: query='{EngineArgString(args, "query")}' ({payload["count"]}/{payload["total"]})");
             return _buildToolResult(payload, false, ctx.ToolName, ctx.Args);
         }
 
@@ -709,7 +542,11 @@ namespace GxMcp.Gateway
         /// </summary>
         private JObject? EngineOutsideResult(EngineRouteContext ctx, string reason)
         {
-            if (!ctx.Settings.RejectUnsupported) return null;
+            if (!ctx.Settings.RejectUnsupported)
+            {
+                _log($"[Engine] {ctx.OperationKey} deferred to the SDK (outside admitted space): {reason}");
+                return null;
+            }
             string message = $"The engine path does not serve this call yet: {reason}. Engine.Fallback=error refuses the SDK path.";
             _log($"[Engine] {ctx.OperationKey} refused (outside admitted space): {reason}");
             return _buildToolResult(
@@ -859,30 +696,6 @@ namespace GxMcp.Gateway
                    $"{notGenerated} without a generator, {refused} refused; nothing was reported as built for them.";
         }
 
-        private static string? EngineReadRequestedParts(JObject args, out List<string> parts)
-        {
-            parts = new List<string>();
-            JToken? partToken = args["part"];
-            if (partToken != null && partToken.Type != JTokenType.Null)
-            {
-                if (partToken.Type != JTokenType.String) return "`part` must be a string part name";
-                string value = partToken.ToString().Trim();
-                if (value.Length > 0) parts.Add(value);
-            }
-            JToken? partsToken = args["parts"];
-            if (partsToken != null && partsToken.Type != JTokenType.Null)
-            {
-                if (!(partsToken is JArray array)) return "`parts` must be an array of part names";
-                foreach (JToken entry in array)
-                {
-                    if (entry.Type != JTokenType.String) return "`parts` entries must be strings";
-                    string value = entry.ToString().Trim();
-                    if (value.Length > 0) parts.Add(value);
-                }
-            }
-            return null;
-        }
-
         private static bool EngineKbArgMatches(EngineRouteContext ctx, JObject args)
         {
             string? kbArg = EngineArgString(args, "kb");
@@ -899,51 +712,6 @@ namespace GxMcp.Gateway
                 && string.Equals(identifier!.Trim(), candidate, StringComparison.OrdinalIgnoreCase));
         }
 
-        /// <summary>Maps a stored part name onto the SDK-facing spelling.</summary>
-        internal static string EngineFriendlyPartName(string? storageName)
-        {
-            string name = (storageName ?? "").Trim();
-            switch (name.ToUpperInvariant())
-            {
-                case "SOURCE": return "Source";
-                case "RULES": return "Rules";
-                case "EVENTS": return "Events";
-                case "CONDITIONS": return "Conditions";
-                case "VARIABLES": return "Variables";
-                case "STRUCTURE": return "Structure";
-                case "WEBFORM": return "WebForm";
-                case "PATTERNINSTANCE": return "PatternInstance";
-                default: return name;
-            }
-        }
-
-        /// <summary>
-        /// Compares requested and stored type names, treating the SDK's
-        /// StructuredDataType spelling and the engine's SDT as the same kind.
-        /// </summary>
-        internal static bool EngineTypeNamesMatch(string requested, string stored)
-        {
-            return string.Equals(NormalizeEngineTypeName(requested), NormalizeEngineTypeName(stored), StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string NormalizeEngineTypeName(string? value)
-        {
-            string name = (value ?? "").Trim();
-            if (string.Equals(name, "StructuredDataType", StringComparison.OrdinalIgnoreCase)) return "SDT";
-            return name;
-        }
-
-        private static int CountTextLines(string text)
-        {
-            if (text.Length == 0) return 0;
-            int lines = 1;
-            foreach (char ch in text)
-            {
-                if (ch == '\n') lines++;
-            }
-            return lines;
-        }
-
         internal static bool EngineArgPresent(JToken? token)
         {
             if (token == null || token.Type == JTokenType.Null) return false;
@@ -958,15 +726,6 @@ namespace GxMcp.Gateway
             JToken? token = args?[name];
             if (token == null || token.Type == JTokenType.Null) return null;
             return token.ToString();
-        }
-
-        private static string? FirstNonEmpty(params string?[] values)
-        {
-            foreach (string? value in values)
-            {
-                if (!string.IsNullOrWhiteSpace(value)) return value;
-            }
-            return null;
         }
     }
 }

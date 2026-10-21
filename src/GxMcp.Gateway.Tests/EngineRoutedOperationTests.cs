@@ -13,48 +13,22 @@ namespace GxMcp.Gateway.Tests
     /// <summary>
     /// Guards the real gx-engine routing seam (docs/engine_backend.md): with
     /// Engine.Backend=gxengine the registered consumers
-    /// (genexus_read, genexus_query, genexus_lifecycle.build,
-    /// genexus_lifecycle.rebuild) are served by the engine when the call is
-    /// inside the admitted space, and are either handed back to the SDK path or
-    /// refused under Fallback=error when it is not. `genexus_edit` is registered
-    /// as a consumer but deliberately held outside the served space while the
-    /// engine cannot persist a write to a live Knowledge Base database, so it
-    /// always refuses (error) or falls back (sdk) - never a silent no-op.
+    /// (genexus_query, genexus_lifecycle.build, genexus_lifecycle.rebuild) are
+    /// served by the engine when the call is inside the admitted space, and are
+    /// either handed back to the SDK path or refused under Fallback=error when it
+    /// is not. `genexus_read` and `genexus_edit` are registered as consumers but
+    /// deliberately held outside the served space (the engine cannot supply the
+    /// SDK read identity/freshness/versionToken, nor persist a write to a live
+    /// Knowledge Base database), so they always refuse (error) or fall back (sdk)
+    /// - never a silent no-op.
     ///
     /// Every stub engine here is a .cmd that echoes canned JSON, so the tests
     /// exercise the full Gateway↔process contract without cargo or a KB. The
     /// assembly disables test parallelization (TestCollections.cs), so the
     /// GXMCP_ENGINE_* environment mutation is race-free.
     /// </summary>
-    public class EngineRoutedOperationTests : IDisposable
+    public class EngineRoutedOperationTests : EngineRoutingTestBase
     {
-        private readonly List<(string Name, string? Value)> _savedEnvironment = new();
-
-        public EngineRoutedOperationTests()
-        {
-            // Baseline: engine routed, SDK fallback, so the routing-specific
-            // assertions below only change what they are about.
-            SetEngineEnv(EngineBackendSettings.BackendEnvVar, "gxengine");
-            SetEngineEnv(EngineBackendSettings.FallbackEnvVar, "sdk");
-            SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, null);
-            SetEngineEnv(EngineBackendSettings.TimeoutEnvVar, null);
-        }
-
-        private void SetEngineEnv(string name, string? value)
-        {
-            _savedEnvironment.Add((name, Environment.GetEnvironmentVariable(name)));
-            Environment.SetEnvironmentVariable(name, value);
-        }
-
-        public void Dispose()
-        {
-            // Reverse order: a test (and the constructor baseline) may set the same
-            // variable more than once, and only the last-set value reflects the
-            // state that existed before this instance touched it.
-            for (int i = _savedEnvironment.Count - 1; i >= 0; i--)
-                Environment.SetEnvironmentVariable(_savedEnvironment[i].Name, _savedEnvironment[i].Value);
-        }
-
         // ------------------------------------------------------- operation keys
 
         [Theory]
@@ -169,28 +143,6 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
-        [Theory]
-        [InlineData("genexus_read", @"{ ""name"": ""Alpha"", ""part"": ""Source"" }")]
-        [InlineData("genexus_query", @"{ ""query"": ""Alpha"" }")]
-        public async Task DefaultBackend_AdmittedReadsAndQueriesInvokeTheEngine(string tool, string args)
-        {
-            string tempDir = NewTempDir();
-            try
-            {
-                SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
-                string marker = Path.Combine(tempDir, "ran.txt");
-                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar,
-                    CreateStub(tempDir, "engine.cmd", "@echo off\r\necho ran > \"%~dp0ran.txt\"\r\n"));
-
-                await DispatchAsync(tool, null, args, tempDir);
-                Assert.True(File.Exists(marker));
-            }
-            finally
-            {
-                TryDeleteDirectory(tempDir);
-            }
-        }
-
         [Fact]
         public async Task DefaultBackend_MissingEngineFallsBackBeforeBuildStarts()
         {
@@ -246,172 +198,17 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
-        // --------------------------------------------------------------- read
-
-        [Fact]
-        public async Task Read_ServedByTheEngine_MapsThePartAndCarriesTheEngineMarker()
-        {
-            string tempDir = NewTempDir();
-            try
-            {
-                string stub = CreateStub(tempDir, "engine.cmd", ReadStubBody);
-                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, stub);
-
-                var result = await DispatchAsync("genexus_read", null,
-                    @"{ ""name"": ""Alpha"", ""part"": ""Source"" }", tempDir);
-
-                Assert.NotNull(result);
-                Assert.False(result!["isError"]!.Value<bool>());
-                var payload = PayloadOf(result);
-                Assert.Equal("Alpha", payload["name"]?.ToString());
-                Assert.Equal("Procedure", payload["type"]?.ToString());
-                Assert.Equal("Source", payload["part"]?.ToString());
-                Assert.Equal("// alpha", payload["source"]?.ToString());
-                Assert.False(payload["isEmpty"]!.Value<bool>());
-                Assert.Equal("gxengine", payload["engine"]?["backend"]?.ToString());
-                Assert.Equal("udm_storage_access", payload["engine"]?["capability"]?.ToString());
-                Assert.Equal("genexus_read", payload["engine"]?["operation"]?.ToString());
-                Assert.Equal("sdk", payload["engine"]?["fallback"]?.ToString());
-            }
-            finally
-            {
-                TryDeleteDirectory(tempDir);
-            }
-        }
-
-        [Fact]
-        public async Task Read_MultipleParts_MapsLowercasePartKeys()
-        {
-            string tempDir = NewTempDir();
-            try
-            {
-                string stub = CreateStub(tempDir, "engine.cmd",
-                    "@echo off\r\n" +
-                    "echo {\"name\":\"Alpha\",\"type\":\"Procedure\",\"parts\":[{\"name\":\"SOURCE\",\"source\":\"// alpha\"},{\"name\":\"RULES\",\"source\":\"parm();\"}],\"missing_parts\":[],\"available_parts\":[\"SOURCE\",\"RULES\"]}\r\n");
-                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, stub);
-
-                var result = await DispatchAsync("genexus_read", null,
-                    @"{ ""name"": ""Alpha"", ""parts"": [""Source"", ""Rules""] }", tempDir);
-
-                Assert.NotNull(result);
-                var payload = PayloadOf(result!);
-                Assert.Equal("// alpha", payload["parts"]?["source"]?.ToString());
-                Assert.Equal("parm();", payload["parts"]?["rules"]?.ToString());
-            }
-            finally
-            {
-                TryDeleteDirectory(tempDir);
-            }
-        }
-
-        [Fact]
-        public async Task Read_RequestedTypeMismatch_IsRefusedAsObjectTypeMismatch()
-        {
-            string tempDir = NewTempDir();
-            try
-            {
-                string stub = CreateStub(tempDir, "engine.cmd",
-                    "@echo off\r\n" +
-                    "echo {\"name\":\"Alpha\",\"type\":\"Transaction\",\"parts\":[{\"name\":\"SOURCE\",\"source\":\"// t\"}],\"missing_parts\":[],\"available_parts\":[\"SOURCE\"]}\r\n");
-                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, stub);
-
-                var result = await DispatchAsync("genexus_read", null,
-                    @"{ ""name"": ""Alpha"", ""part"": ""Source"", ""type"": ""Procedure"" }", tempDir);
-
-                Assert.NotNull(result);
-                Assert.True(result!["isError"]!.Value<bool>());
-                var payload = PayloadOf(result);
-                Assert.Equal("ObjectTypeMismatch", payload["error"]?.ToString());
-            }
-            finally
-            {
-                TryDeleteDirectory(tempDir);
-            }
-        }
-
-        [Fact]
-        public async Task Read_MissingPart_ListsTheAvailableParts()
-        {
-            string tempDir = NewTempDir();
-            try
-            {
-                string stub = CreateStub(tempDir, "engine.cmd",
-                    "@echo off\r\n" +
-                    "echo {\"name\":\"Alpha\",\"type\":\"Procedure\",\"parts\":[],\"missing_parts\":[\"WebForm\"],\"available_parts\":[\"SOURCE\",\"RULES\"]}\r\n");
-                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, stub);
-
-                var result = await DispatchAsync("genexus_read", null,
-                    @"{ ""name"": ""Alpha"", ""part"": ""WebForm"" }", tempDir);
-
-                Assert.NotNull(result);
-                Assert.True(result!["isError"]!.Value<bool>());
-                var payload = PayloadOf(result);
-                Assert.Equal("ObjectPartNotFound", payload["error"]?.ToString());
-                var available = (JArray)payload["availableParts"]!;
-                Assert.Contains(available, part => part.ToString() == "Source");
-                Assert.Contains(available, part => part.ToString() == "Rules");
-            }
-            finally
-            {
-                TryDeleteDirectory(tempDir);
-            }
-        }
-
-        [Fact]
-        public async Task Read_FullObjectRequest_FallsBackToTheSdkUnderSdkFallback()
-        {
-            string tempDir = NewTempDir();
-            try
-            {
-                string stub = CreateStub(tempDir, "engine.cmd", ReadStubBody);
-                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, stub);
-
-                // No part/parts: the full-object read is outside the admitted space
-                // and must never be approximated by a raw-parts answer.
-                var result = await DispatchAsync("genexus_read", null,
-                    @"{ ""name"": ""Alpha"" }", tempDir);
-
-                Assert.Null(result);
-            }
-            finally
-            {
-                TryDeleteDirectory(tempDir);
-            }
-        }
-
-        [Fact]
-        public async Task Read_FullObjectRequest_IsRefusedUnderErrorFallback()
-        {
-            string tempDir = NewTempDir();
-            try
-            {
-                string stub = CreateStub(tempDir, "engine.cmd", ReadStubBody);
-                SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, stub);
-                SetEngineEnv(EngineBackendSettings.FallbackEnvVar, "error");
-
-                var result = await DispatchAsync("genexus_read", null,
-                    @"{ ""name"": ""Alpha"" }", tempDir);
-
-                Assert.NotNull(result);
-                Assert.True(result!["isError"]!.Value<bool>());
-                var payload = PayloadOf(result);
-                Assert.Equal("EngineOperationOutsideAdmittedSpace", payload["error"]?.ToString());
-                Assert.Equal("udm_storage_access", payload["engine"]?["capability"]?.ToString());
-            }
-            finally
-            {
-                TryDeleteDirectory(tempDir);
-            }
-        }
-
         // -------------------------------------------------------------- query
 
-        [Fact]
-        public async Task Query_ServedByTheEngine_ProjectsResultsAndPassesTheFilters()
+        [Theory]
+        [InlineData(null)] // The default must route without an explicit backend opt-in.
+        [InlineData("gxengine")]
+        public async Task Query_ServedByTheEngine_ProjectsResultsAndPassesTheFilters(string? backend)
         {
             string tempDir = NewTempDir();
             try
             {
+                SetEngineEnv(EngineBackendSettings.BackendEnvVar, backend);
                 string stub = CreateStub(tempDir, "engine.cmd",
                     "@echo off\r\n" +
                     "echo %* > \"%~dp0args.txt\"\r\n" +
@@ -419,7 +216,7 @@ namespace GxMcp.Gateway.Tests
                 SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, stub);
 
                 var result = await DispatchAsync("genexus_query", null,
-                    @"{ ""query"": ""type:Procedure"", ""limit"": 10 }", tempDir);
+                    @"{ ""query"": ""type:Procedure"", ""limit"": 10, ""fields"": [""name"", ""type""] }", tempDir);
 
                 Assert.NotNull(result);
                 var payload = PayloadOf(result!);
@@ -805,9 +602,9 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
-        [InlineData("sdk", "genexus_read", true)]
-        [InlineData("error", "genexus_read", true)]
-        [InlineData("sdk", "genexus_read", false)]
+        [InlineData("sdk", "genexus_query", true)]
+        [InlineData("error", "genexus_query", true)]
+        [InlineData("sdk", "genexus_query", false)]
         [InlineData("sdk", "genexus_lifecycle", true)]
         [InlineData("error", "genexus_lifecycle", true)]
         [InlineData("sdk", "genexus_lifecycle", false)]
@@ -829,7 +626,9 @@ namespace GxMcp.Gateway.Tests
                 bool lifecycle = tool == "genexus_lifecycle";
                 var args = lifecycle
                     ? new JObject { ["action"] = "build", ["wait_until_done"] = admitted }
-                    : new JObject { ["name"] = "Alpha", ["part"] = admitted ? "Source" : "all" };
+                    : admitted
+                        ? new JObject { ["query"] = "type:Procedure", ["fields"] = new JArray("name", "type") }
+                        : new JObject { ["query"] = "Alpha" };
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
                     Program.TryDispatchEngineRoutedOperationAsync(
                         tool, lifecycle ? "build" : null, args,
@@ -897,8 +696,8 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
-        [InlineData("sdk", "genexus_read")]
-        [InlineData("error", "genexus_read")]
+        [InlineData("sdk", "genexus_query")]
+        [InlineData("error", "genexus_query")]
         [InlineData("sdk", "genexus_lifecycle")]
         [InlineData("error", "genexus_lifecycle")]
         public async Task CancelledEngineInvocation_DoesNotFallBack(string fallback, string tool)
@@ -922,7 +721,7 @@ namespace GxMcp.Gateway.Tests
                 bool lifecycle = tool == "genexus_lifecycle";
                 var args = lifecycle
                     ? JObject.Parse(@"{ ""action"": ""build"", ""wait_until_done"": true }")
-                    : JObject.Parse(@"{ ""name"": ""Alpha"", ""part"": ""Source"" }");
+                    : JObject.Parse(@"{ ""query"": ""type:Procedure"", ""fields"": [""name"", ""type""] }");
                 var dispatch = Program.TryDispatchEngineRoutedOperationAsync(
                     tool, lifecycle ? "build" : null, args,
                     tempDir, "kb-alias", cancellation.Token);
@@ -1224,14 +1023,6 @@ namespace GxMcp.Gateway.Tests
         // ------------------------------------------------- admitted argument space
 
         [Theory]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'targets':['Beta'] }", "targets")]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'guid':'g' }", "guid")]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'entityKey':'k' }", "entityKey")]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'path':'p' }", "path")]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'ifUnchangedSince':'x' }", "ifUnchangedSince")]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'offset':5 }", "offset")]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'limit':5 }", "limit")]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'part':'Source', 'unlistedArgument':'x' }", "unlistedArgument")]
         [InlineData("genexus_query", null, "{ 'query':'Alpha', 'kbs':['a'] }", "kbs")]
         [InlineData("genexus_query", null, "{ 'query':'Alpha', 'cursor':'c' }", "cursor")]
         [InlineData("genexus_query", null, "{ 'query':'Alpha', 'cursors':{'a':'c'} }", "cursors")]
@@ -1317,9 +1108,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'objectName':'Alpha', 'type':'Procedure', 'part':'Source', 'refresh':true, 'kb':'kb-alias', 'fields':['name'], 'axiCompact':true }")]
-        [InlineData("genexus_read", null, "{ 'name':'Alpha', 'parts':['Source','Rules'], 'limit':null, 'targets':[] }")]
-        [InlineData("genexus_query", null, "{ 'query':'type:Procedure', 'typeFilter':'', 'limit':10, 'exactMatch':true, 'kb':'kb-alias', 'axiCompact':true }")]
+        [InlineData("genexus_query", null, "{ 'query':'type:Procedure', 'typeFilter':'', 'limit':10, 'exactMatch':true, 'kb':'kb-alias', 'fields':['name','type'], 'axiCompact':true }")]
         [InlineData("genexus_lifecycle", "build", "{ 'wait_until_done':true, 'estimated_seconds':5, 'dryRun':false, 'deploy':false, 'skipFullDeploy':true, 'kb':'kb-alias', 'fields':['status'] }")]
         [InlineData("genexus_lifecycle", "rebuild", "{ 'wait_until_done':true, 'fastIncremental':false }")]
         public async Task ListedArguments_AreServedByTheEngine(string tool, string? action, string argsJson)
@@ -1327,8 +1116,7 @@ namespace GxMcp.Gateway.Tests
             string tempDir = NewTempDir();
             try
             {
-                string body = tool == "genexus_read" ? ReadStubBody
-                    : tool == "genexus_query" ? "@echo off\r\necho {\"objects\":[],\"total\":0,\"truncated\":false}\r\n"
+                string body = tool == "genexus_query" ? "@echo off\r\necho {\"objects\":[{\"name\":\"Alpha\",\"type\":\"Procedure\"}],\"total\":1,\"truncated\":false}\r\n"
                     : BuildReportStubBody;
                 SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, CreateStub(tempDir, "engine.cmd", body));
                 SetEngineEnv(EngineBackendSettings.FallbackEnvVar, "error");
@@ -1360,41 +1148,9 @@ namespace GxMcp.Gateway.Tests
             Assert.False(EngineRoutedOperations.TryParseEngineJson("no json here", out _, out _));
         }
 
-        [Theory]
-        [InlineData("Procedure", "procedure", true)]
-        [InlineData("StructuredDataType", "SDT", true)]
-        [InlineData("Procedure", "Transaction", false)]
-        public void EngineTypeNamesMatch_HandlesSdkSpellings(string requested, string stored, bool expected)
-        {
-            Assert.Equal(expected, EngineRoutedOperations.EngineTypeNamesMatch(requested, stored));
-        }
-
-        private static Task<JObject?> DispatchAsync(string tool, string? action, string argsJson, string kbPath)
-        {
-            return Program.TryDispatchEngineRoutedOperationAsync(
-                tool, action, JObject.Parse(argsJson), kbPath, "kb-alias", CancellationToken.None);
-        }
-
-        private static JObject PayloadOf(JObject toolResult)
-        {
-            string text = toolResult["content"]![0]!["text"]!.ToString();
-            return JObject.Parse(text);
-        }
-
-        private static string ReadStubBody =>
-            "@echo off\r\n" +
-            "echo {\"name\":\"Alpha\",\"type\":\"Procedure\",\"parts\":[{\"name\":\"SOURCE\",\"source\":\"// alpha\"}],\"missing_parts\":[],\"available_parts\":[\"SOURCE\",\"RULES\"]}\r\n";
-
         private static string BuildReportStubBody =>
             "@echo off\r\n" +
             "echo {\"catalog_load_ms\":5,\"read_ms\":1,\"spec_ms\":2,\"emit_ms\":3,\"compile_ms\":4,\"total_ms\":10,\"procedures_count\":1,\"transactions_count\":1,\"sdts_count\":0,\"webpanels_count\":1,\"total_objects\":3,\"errors\":[],\"warnings\":[],\"emitted_files\":[\"a.cs\",\"b.cs\"]}\r\n";
-
-        private static string NewTempDir()
-        {
-            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-engine-routing-tests-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(tempDir);
-            return tempDir;
-        }
 
         private static string FindUp(params string[] relativeSegments)
         {
@@ -1408,24 +1164,6 @@ namespace GxMcp.Gateway.Tests
                 dir = parent.FullName;
             }
             throw new FileNotFoundException("fixture not found: " + string.Join("/", relativeSegments));
-        }
-
-        private static string CreateStub(string directory, string name, string content)
-        {
-            string path = Path.Combine(directory, name);
-            File.WriteAllText(path, content, Encoding.ASCII);
-            return path;
-        }
-
-        private static void TryDeleteDirectory(string path)
-        {
-            try
-            {
-                if (Directory.Exists(path)) Directory.Delete(path, true);
-            }
-            catch
-            {
-            }
         }
     }
 }

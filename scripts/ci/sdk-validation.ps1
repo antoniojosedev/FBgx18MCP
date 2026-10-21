@@ -11,11 +11,19 @@ $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $statusPath = Join-Path $OutputRoot 'status.json'
 $logPath = Join-Path $OutputRoot 'sdk-validation.log'
 
+# The commit the evidence belongs to; the required check compares it with the run's commit.
+function Get-EvidenceCommit {
+    $commit = (& git -C $root rev-parse HEAD 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { return 'unknown' }
+    return $commit
+}
+
 function Write-Status([string]$State, [string]$Reason, [int]$ExitCode) {
     $status = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         state = $State
         reason = $Reason
+        commit = Get-EvidenceCommit
         exitCode = $ExitCode
         completedAtUtc = [datetime]::UtcNow.ToString('o')
     }
@@ -63,11 +71,22 @@ try {
         -GxPath $env:GX_PATH -Manifest (Join-Path $root 'config\sdk-compatibility.json') 2>&1 | Tee-Object -FilePath $logPath
     if ($LASTEXITCODE -ne 0) { throw "SDK compatibility validator failed with exit code $LASTEXITCODE." }
 
+    # The real Release rebuild, compared by (code, file, line) with the baseline;
+    # manifest-only validation on a hosted runner proves just that the file is well formed.
+    & pwsh -NoProfile -File (Join-Path $root 'scripts\check-build-warning-baseline.ps1') `
+        -GxPath $env:GX_PATH 2>&1 | Tee-Object -FilePath $logPath -Append
+    if ($LASTEXITCODE -ne 0) { throw "Release build warning baseline failed with exit code $LASTEXITCODE." }
+
+    # The live harness deliberately uses --no-build; a clean runner has no Worker test assembly.
+    $workerTests = Join-Path $root 'src\GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj'
+    & dotnet build $workerTests -c Release --nologo "-p:GX_PATH=$env:GX_PATH" 2>&1 | Tee-Object -FilePath $logPath -Append
+    if ($LASTEXITCODE -ne 0) { throw "Worker live-test build failed with exit code $LASTEXITCODE." }
+
     & pwsh -NoProfile -File (Join-Path $root 'scripts\test-live.ps1') `
         -KbPath $env:GXMCP_TEST_KB -FixtureManifest $env:GXMCP_TEST_FIXTURE -GxPath $env:GX_PATH 2>&1 | Tee-Object -FilePath $logPath -Append
     if ($LASTEXITCODE -ne 0) { throw "Live Worker validation failed with exit code $LASTEXITCODE." }
 
-    Write-Status 'pass' 'SDK fingerprint and live Worker validation completed.' 0
+    Write-Status 'pass' 'SDK fingerprint, Release warning baseline and live Worker validation completed.' 0
     exit 0
 }
 catch {

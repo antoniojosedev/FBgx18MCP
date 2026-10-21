@@ -207,7 +207,8 @@ pub fn read_object(
 
 /// Queries active objects by exact name, type and/or recorded reference.
 /// Only object descriptors and references are read — no stored part is
-/// decoded. Results are sorted by name (case-insensitive) and paged by `limit`.
+/// decoded. Results list Module objects first, then sort by ordinal name (the
+/// SDK search order), and are paged by `limit`.
 pub fn query_objects(
     client: &UdmClient,
     name: Option<&str>,
@@ -284,10 +285,13 @@ pub fn query_objects(
         })
         .collect();
 
+    // The SDK search orders a term-less query by score and then by ordinal name:
+    // Module rows score 1000 and every other row 1. Paging with `limit` must
+    // select the same page, so the engine sorts the same way.
     matched.sort_by(|left, right| {
-        left.name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
+        (left.kind != ObjectKind::Module)
+            .cmp(&(right.kind != ObjectKind::Module))
+            .then_with(|| left.name.cmp(&right.name))
     });
 
     let total = matched.len();

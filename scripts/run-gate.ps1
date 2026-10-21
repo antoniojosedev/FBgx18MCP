@@ -20,6 +20,12 @@ param(
 # Wait exit codes: 0 passed, 1 failed, 2 still running, 3 died without a result.
 
 $ErrorActionPreference = 'Stop'
+# The Run action relies on $PSNativeCommandUseErrorActionPreference (PowerShell 7.3+) so a failed
+# native command cannot be masked by a later successful one. On 7.0-7.2 the variable is silently
+# ignored and a failing gate could read as passed, so refuse to start rather than misreport.
+if ($Action -in @('Start', 'Run') -and $PSVersionTable.PSVersion -lt [version]'7.3') {
+    throw "run-gate.ps1 requires PowerShell 7.3 or later (found $($PSVersionTable.PSVersion)); older versions cannot fail a gate on a native command's exit code reliably."
+}
 $WorkingDirectory = [IO.Path]::GetFullPath($WorkingDirectory)
 $GateDirectory = [IO.Path]::GetFullPath($GateDirectory)
 New-Item -ItemType Directory -Path $GateDirectory -Force | Out-Null
@@ -70,10 +76,18 @@ switch ($Action) {
         $exitCode = 1
         try {
             $global:LASTEXITCODE = 0
+            # A native command that fails mid-chain must fail the gate even when a later
+            # command succeeds and overwrites $LASTEXITCODE (`pwsh -File x.ps1; cmd /c exit 0`
+            # would otherwise report passed). Stop-on-native-error makes the first nonzero
+            # exit terminate the command and carry its code into the catch below.
+            $ErrorActionPreference = 'Stop'
+            $PSNativeCommandUseErrorActionPreference = $true
             & ([scriptblock]::Create($Command)) *>&1 | Out-File -LiteralPath $logPath -Encoding utf8
             $exitCode = if ($global:LASTEXITCODE) { [int]$global:LASTEXITCODE } else { 0 }
         } catch {
             $_ | Out-String | Add-Content -LiteralPath $logPath -Encoding utf8
+            $nativeExit = if ($_.Exception.PSObject.Properties['ExitCode']) { [int]$_.Exception.ExitCode } else { 0 }
+            if ($nativeExit -ne 0) { $exitCode = $nativeExit } elseif ($global:LASTEXITCODE) { $exitCode = [int]$global:LASTEXITCODE }
         }
         Write-Status @{
             status = if ($exitCode -eq 0) { 'passed' } else { 'failed' }

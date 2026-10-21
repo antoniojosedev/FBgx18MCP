@@ -20,17 +20,30 @@ Required runner environment:
   [`live-kb-test-harness.md`](live-kb-test-harness.md).
 
 The job runs `scripts/ci/sdk-validation.ps1`. It first runs
-`scripts/validate-gx-sdk.ps1` against `config/sdk-compatibility.json`, then builds
-and runs the existing live Gateway/Worker validation. The script creates an
+`scripts/validate-gx-sdk.ps1` against `config/sdk-compatibility.json`, then compares
+the real Release rebuild warning baseline and runs the existing live Gateway/Worker validation. The script creates an
 ignored run directory and isolated config, restores process environment variables,
 and removes the directory in `finally`; it never copies or publishes SDK bytes.
 
 The lane writes `status.json` and `sdk-validation.log` under the runner temp
 artifact directory. Status is explicit:
 
-- `pass`: fingerprint and live Worker validation completed.
+- `pass`: fingerprint, Release warning baseline, and live Worker validation completed.
 - `skip`: a required licensed-machine or fixture precondition is unavailable.
 - `fail`: a precondition or validation failed; the job fails.
+
+Status schema v2 includes `commit`, the exact checked-out SHA. The required
+`test` job depends on every critical lane, including `rust-engine`. For a backend
+routing/default change, it accepts SDK evidence only when the SDK job succeeds,
+reports `state=pass`, and its commit equals the run's `GITHUB_SHA`. Disabled,
+skipped, missing, or stale evidence blocks the gate. Local logs alone are not a
+remote CI attestation.
+
+The SDK job never executes fork pull-request code. A maintainer must review a
+fork change and place the trusted candidate on a branch in this repository
+before the protected runner can validate it. With no registered licensed runner,
+leave the lane disabled and report the release blocked; never post a synthetic
+passing status or relax the required check to publish.
 
 The workflow uploads the status and log with retention, and writes the skip reason
 to the Actions job summary. A disabled lane is visible as `skipped` rather than

@@ -120,6 +120,9 @@ $remoteState = [ordered]@{
     checked = [bool]$Remote
     tagExists = $null
     tagCommit = $null
+    originMainHead = $null
+    releaseExists = $null
+    npmPublished = $null
     releaseUrl = $null
     assets = @()
     assetVerification = $null
@@ -132,20 +135,37 @@ $remoteState = [ordered]@{
     errors = @()
 }
 if ($Remote) {
+    # Absence is concluded only from an explicit, successful negative answer. A failed
+    # request leaves the field $null (unknown) and records an error, so a network or
+    # auth failure can never be read as "tag/release/package is missing".
     try {
         $tagLines = @(& git -C $root ls-remote --tags origin "refs/tags/$Tag^{}" 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $tagLines.Count -gt 0) {
+        if ($LASTEXITCODE -ne 0) { throw "git ls-remote for tag $tag failed (exit $LASTEXITCODE); tag state is unknown." }
+        if ($tagLines.Count -gt 0) {
             $remoteState.tagExists = $true
             $remoteState.tagCommit = (($tagLines[0].ToString().Trim()) -split '\s+')[0]
         } else { $remoteState.tagExists = $false }
     } catch { $remoteState.errors += Protect-DoctorMessage $_.Exception.Message }
     try {
-        $releaseRaw = @(& gh release view $tag --repo $Repository --json tagName,url,assets,isDraft,publishedAt 2>$null)
-        if ($LASTEXITCODE -ne 0) { throw "gh release view failed for $tag." }
-        $release = (($releaseRaw -join [Environment]::NewLine) | ConvertFrom-Json)
-        $remoteState.releaseUrl = [string]$release.url
-        $remoteState.assets = @($release.assets | ForEach-Object { [string]$_.name } | Sort-Object)
-        $remoteState.assetVerification = Get-GxMcpReleaseAssetVerification -Assets @($release.assets) -RepositoryRoot $root -Version $Version -AllowLegacy:(Test-GxMcpReleaseLegacyVersion $Version)
+        $mainLines = @(& git -C $root ls-remote --heads origin 'refs/heads/main' 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $mainLines.Count -ne 1) { throw "git ls-remote for origin/main failed (exit $LASTEXITCODE); base state is unknown." }
+        $remoteState.originMainHead = (($mainLines[0].ToString().Trim()) -split '\s+')[0]
+    } catch { $remoteState.errors += Protect-DoctorMessage $_.Exception.Message }
+    try {
+        $releaseOutput = @(& gh release view $tag --repo $Repository --json tagName,url,assets,isDraft,publishedAt 2>&1)
+        $releaseExit = $LASTEXITCODE
+        $releaseRaw = @($releaseOutput | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+        if ($releaseExit -ne 0 -and ($releaseOutput -join ' ') -match 'release not found') {
+            $remoteState.releaseExists = $false
+        } elseif ($releaseExit -ne 0) {
+            throw "gh release view failed for $tag (exit $releaseExit); release state is unknown."
+        } else {
+            $remoteState.releaseExists = $true
+            $release = (($releaseRaw -join [Environment]::NewLine) | ConvertFrom-Json)
+            $remoteState.releaseUrl = [string]$release.url
+            $remoteState.assets = @($release.assets | ForEach-Object { [string]$_.name } | Sort-Object)
+            $remoteState.assetVerification = Get-GxMcpReleaseAssetVerification -Assets @($release.assets) -RepositoryRoot $root -Version $Version -AllowLegacy:(Test-GxMcpReleaseLegacyVersion $Version)
+        }
     } catch { $remoteState.errors += Protect-DoctorMessage $_.Exception.Message }
     try {
         $runRaw = @(& gh run list --repo $Repository --workflow release.yml --limit 50 --json databaseId,status,conclusion,headSha,headBranch,event,createdAt,url 2>$null)
@@ -164,12 +184,25 @@ if ($Remote) {
         }
     } catch { $remoteState.errors += Protect-DoctorMessage $_.Exception.Message }
     try {
-        $npmRaw = @(& npm view "genexus-mcp@$Version" version gitHead --json --fetch-retries=0 --fetch-timeout=5000 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $npmRaw.Count -gt 0) {
+        # Read-only registry query. stderr is captured (not discarded): npm reports "not
+        # published" as E404 on stdout (--json) and stderr, while network/auth failures carry
+        # other codes (ENOTFOUND, ETIMEDOUT, E401...) that must stay "unknown", never "absent".
+        $npmOutput = @(& npm view "genexus-mcp@$Version" version gitHead --json --fetch-retries=0 --fetch-timeout=5000 2>&1)
+        $npmExit = $LASTEXITCODE
+        $npmRaw = @($npmOutput | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
+        $npmText = ($npmOutput | ForEach-Object { [string]$_ }) -join "`n"
+        if ($npmExit -eq 0 -and $npmRaw.Count -gt 0) {
             $npmRecord = (($npmRaw -join [Environment]::NewLine) | ConvertFrom-Json)
             if ($npmRecord -is [array]) { $npmRecord = @($npmRecord)[0] }
+            $remoteState.npmPublished = $true
             $remoteState.npmVersion = [string]$npmRecord.version
             $remoteState.npmGitHead = [string]$npmRecord.gitHead
+        } elseif ($npmExit -ne 0 -and $npmText -match '(^|\W)E404(\W|$)|404 No match found') {
+            $remoteState.npmPublished = $false
+        } else {
+            $npmDetail = (($npmText -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -First 2) -join ' | ')
+            if ($npmDetail.Length -gt 300) { $npmDetail = $npmDetail.Substring(0, 300) }
+            throw "npm view genexus-mcp@$Version failed (exit $npmExit): $npmDetail; registry state is unknown."
         }
     } catch { $remoteState.errors += Protect-DoctorMessage $_.Exception.Message }
 }
@@ -223,7 +256,14 @@ function Quote-DoctorArgument([string]$Value) {
 $retryParts = @('pwsh', '-NoProfile', '-File', (Join-Path $root 'release.ps1'), '-Version', $Version)
 $retryCommand = ($retryParts | ForEach-Object { Quote-DoctorArgument $_ }) -join ' '
 $nextAction = 'start-release'
-if ($status -and [string](Get-OptionalValue $status 'state') -eq 'succeeded' -and $publicationState -eq 'verified' -and
+# A publication that GitHub and npm both confirm is complete whether or not this machine still
+# has the local status file (it lives in %TEMP%); remote truth must not depend on it. A local
+# status that says the run failed or is still running is left to the branches below, since an
+# interrupted issue-closure step is invisible to the remote checks.
+$statusState = if ($status) { [string](Get-OptionalValue $status 'state') } else { $null }
+if ($Remote -and $remotePublicationValid -and (-not $status -or $statusState -eq 'succeeded')) {
+    $nextAction = 'complete'
+} elseif ($status -and [string](Get-OptionalValue $status 'state') -eq 'succeeded' -and $publicationState -eq 'verified' -and
     $publicationEvidenceValid -and (-not $Remote -or $remotePublicationValid)) {
     $nextAction = 'complete'
 } elseif ($status -and [string](Get-OptionalValue $status 'state') -eq 'failed') {
@@ -252,6 +292,38 @@ if ($preflightMatchesInputs) {
     $retryCommand = ($retryParts | ForEach-Object { Quote-DoctorArgument $_ }) -join ' '
 }
 
+# Local commit facts and resume safety. Resume is offered only when every external fact it
+# depends on was actually read (-Remote, no failed request) and nothing would re-bump the
+# version, move a tag, or publish twice. Unknown is a blocker, never "missing".
+$headSubject = ((& git -C $root log -1 --format=%s 2>$null) -join '').Trim()
+$headParent = ((& git -C $root rev-parse -q --verify 'HEAD^' 2>$null) -join '').Trim()
+$localTagCommit = ((& git -C $root rev-parse -q --verify "refs/tags/$tag^{commit}" 2>$null) -join '').Trim()
+$commitVersion = if ($headSubject -match '^release: v(?<v>\S+)$') { $Matches.v } else { $null }
+$resumeBlockers = New-Object System.Collections.Generic.List[string]
+if ($commitVersion -and $commitVersion -cne $Version) {
+    [void]$resumeBlockers.Add("HEAD is the release commit for v$commitVersion; resuming v$Version would bump the version again.")
+}
+if (-not $Remote) {
+    [void]$resumeBlockers.Add('External tag/release/npm state was not read; rerun with -Remote.')
+}
+foreach ($remoteError in @($remoteState.errors)) { [void]$resumeBlockers.Add("External state unknown: $remoteError") }
+if ($localTagCommit -and $localTagCommit -cne $head) {
+    [void]$resumeBlockers.Add("Local tag $tag points at $localTagCommit, not HEAD $head.")
+}
+if ($Remote -and $remoteState.tagExists -eq $true -and $remoteState.tagCommit -cne $head) {
+    [void]$resumeBlockers.Add("Remote tag $tag is pinned to $($remoteState.tagCommit), not HEAD $head.")
+}
+if ($Remote -and $remoteState.tagExists -eq $false -and $remoteState.originMainHead) {
+    $baseAligned = $head -ceq $remoteState.originMainHead -or
+        ($headParent -ceq $remoteState.originMainHead -and $headSubject -ceq "release: $tag")
+    if (-not $baseAligned) {
+        [void]$resumeBlockers.Add("HEAD is not origin/main ($($remoteState.originMainHead)) or the single unpublished release commit on top of it.")
+    }
+}
+$resumeBlockerList = @($resumeBlockers)
+$resumeDecision = if ($nextAction -eq 'complete') { 'nothing-to-resume' } elseif ($resumeBlockerList.Count -gt 0) { 'blocked' } else { 'safe' }
+$gateRecords = @($preflightPhases | ForEach-Object { [ordered]@{ name = $_.name; status = $_.status; exitCode = Get-OptionalValue $_ 'exitCode' } })
+
 $result = [ordered]@{
     schemaVersion = 'gxmcp-release-doctor/1'
     generatedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -272,9 +344,16 @@ $result = [ordered]@{
     artifactFingerprint = $currentArtifactFingerprint
     requiredArtifactsReady = $requiredArtifactsReady
     preflightMatchesInputs = [bool]$preflightMatchesInputs
+    headSubject = $headSubject
+    commitVersion = $commitVersion
+    localTagCommit = if ($localTagCommit) { $localTagCommit } else { $null }
+    gates = $gateRecords
     remote = $remoteState
     nextAction = $nextAction
+    resumeDecision = $resumeDecision
+    resumeBlockers = $resumeBlockerList
     retryCommand = $retryCommand
+    retryArguments = @($retryParts | Select-Object -Skip 3)
 }
 
 if ($Json) {
@@ -297,6 +376,8 @@ if ($Remote) {
     Write-Host "npmVersion=$($remoteState.npmVersion) npmGitHead=$($remoteState.npmGitHead) remotePublicationValid=$($remoteState.publicationValid)"
     foreach ($errorMessage in @($remoteState.errors)) { Write-Host "remoteDiagnostic=$errorMessage" -ForegroundColor Yellow }
 }
-Write-Host "nextAction=$nextAction" -ForegroundColor Green
+foreach ($gate in $gateRecords) { Write-Host ("gate {0}: {1} exit={2}" -f $gate.name, $gate.status, $gate.exitCode) }
+Write-Host "nextAction=$nextAction resumeDecision=$resumeDecision" -ForegroundColor Green
+foreach ($blocker in $resumeBlockerList) { Write-Host "resumeBlocker=$blocker" -ForegroundColor Yellow }
 Write-Host "retryCommand=$retryCommand" -ForegroundColor Green
 exit 0

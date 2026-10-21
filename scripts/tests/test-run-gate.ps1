@@ -33,6 +33,23 @@ try {
     $result = & pwsh -NoProfile -File $gate Wait -Name bad -GateDirectory $gates -TimeoutSeconds 60 2>&1 | Out-String
     if ($LASTEXITCODE -ne 1 -or $result -notmatch 'failed exit=7') { throw "Failing gate misreported (exit $LASTEXITCODE): $result" }
 
+    # A failing native command followed by a succeeding one must still fail the gate: the later
+    # exit 0 used to overwrite $LASTEXITCODE, which is how a failed release looked like a pass.
+    [void](Invoke-Gate Start 'chain' 'pwsh -NoProfile -Command "exit 7"; cmd /c exit 0')
+    $result = & pwsh -NoProfile -File $gate Wait -Name chain -GateDirectory $gates -TimeoutSeconds 60 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 1 -or $result -notmatch 'failed exit=7') { throw "Failure masked by a later successful command (exit $LASTEXITCODE): $result" }
+    # A failure followed by logging/pipeline filters keeps its own exit code too.
+    [void](Invoke-Gate Start 'tail' 'pwsh -NoProfile -Command "exit 9"; Write-Output done | Select-Object -Last 1')
+    $result = & pwsh -NoProfile -File $gate Wait -Name tail -GateDirectory $gates -TimeoutSeconds 60 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 1 -or $result -notmatch 'failed exit=9') { throw "Failure masked by trailing output (exit $LASTEXITCODE): $result" }
+
+    # Without PowerShell 7.3 $PSNativeCommandUseErrorActionPreference is ignored and the failure-masking
+    # cases above would pass silently, so the script must refuse older hosts before doing any work.
+    $gateSource = Get-Content -LiteralPath $gate -Raw
+    if ($gateSource -notmatch "PSVersion -lt \[version\]'7\.3'" -or $gateSource.IndexOf("'7.3'") -gt $gateSource.IndexOf('switch ($Action)')) {
+        throw 'run-gate.ps1 must reject PowerShell older than 7.3 before starting or running a gate.'
+    }
+
     # A slow gate makes Wait return "still running" (exit 2) instead of blocking past its budget.
     [void](Invoke-Gate Start 'slow' 'Start-Sleep -Seconds 30')
     $result = & pwsh -NoProfile -File $gate Wait -Name slow -GateDirectory $gates -TimeoutSeconds 5 2>&1 | Out-String

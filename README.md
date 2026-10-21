@@ -121,7 +121,7 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 
 ### 🎮 Decompilation / Parity Progress
 
-Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. On the disposable `KBTeste` KB, a whole-KB Rebuild All now generates and compiles every targeted object (**346/346, 0 skipped, 0 refused**) and the C# the SDK writes for that KB is reproduced **byte for byte (328/328 files)**, together with the web scripts, `gxcfg.js`, messages and runtime configuration. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds, reads and queries; SDK fallback for the rest; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
+Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. On the disposable `KBTeste` KB, a whole-KB Rebuild All now generates and compiles every targeted object (**346/346, 0 skipped, 0 refused**) and the C# the SDK writes for that KB is reproduced **byte for byte (328/328 files)**, together with the web scripts, `gxcfg.js`, messages and runtime configuration. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds and field-limited type-only queries; reads/edits and other shapes use SDK fallback; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
 
 ### What builds today
 
@@ -204,7 +204,7 @@ As new capabilities reach parity and additional optimizations land, follow this 
 ### Activation Flag & Safety Seam
 
 > [!IMPORTANT]
-> **Engine-first:** `Engine.Backend` defaults to `"gxengine"`. Blocking `genexus_lifecycle` builds/rebuilds inside the admitted space use gx-engine, and so do part-scoped `genexus_read` and `genexus_query` calls. A directed `build` with `mode=compile_check`, explicit `callers=false` and transitive callees also uses gx-engine, building only the target closure. Edits, async/other directed builds, full-object reads and unsupported request shapes fall back to the SDK. Capability and argument gates still apply. Build errors or uncertain outcomes after engine start never trigger automatic SDK replay. `"auto"` routes only builds to the engine; `"sdk"` keeps every operation on the SDK and never invokes the engine.
+> **Engine-first:** `Engine.Backend` defaults to `"gxengine"`. Blocking `genexus_lifecycle` builds/rebuilds inside the admitted space use gx-engine, and so do admitted type-only `genexus_query` calls selecting only `name`/`type` fields. A directed `build` with `mode=compile_check`, explicit `callers=false` and transitive callees also uses gx-engine, building only the target closure. Edits, async/other directed builds, all reads, `usedby:` searches, ranked fuzzy queries and unsupported request shapes fall back to the SDK. Capability and argument gates still apply. Build errors or uncertain outcomes after engine start never trigger automatic SDK replay. `"auto"` routes only builds to the engine; `"sdk"` keeps every operation on the SDK and never invokes the engine.
 
 No backend setting is needed. To narrow routing to builds (`"auto"`) or turn the engine off (`"sdk"`), configure `config.json`:
 
@@ -218,7 +218,7 @@ No backend setting is needed. To narrow routing to builds (`"auto"`) or turn the
 }
 ```
 
-- **`Engine.Backend`**: `"gxengine"` (default: admitted builds, reads and queries), `"auto"` (admitted builds only), or `"sdk"` (SDK only, engine never invoked).
+- **`Engine.Backend`**: `"gxengine"` (default: admitted builds and field-limited type-only queries; reads/edits use SDK fallback), `"auto"` (admitted builds only), or `"sdk"` (SDK only, engine never invoked).
 - **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK when not at parity) or `"error"` (fails closed with `EngineCapabilityNotParity` for strict verification).
 - **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, `capabilities`, and `routedOperations`.
 

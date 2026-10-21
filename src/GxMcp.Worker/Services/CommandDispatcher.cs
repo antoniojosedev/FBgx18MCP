@@ -1186,6 +1186,8 @@ namespace GxMcp.Worker.Services
             // could only time out (`since=Ready`) while the delta was still running.
             string wantFreshness = args?["freshness"]?.ToString();
             bool waitSatisfied = false;
+            // The snapshot the wait decided on is the one the reply describes.
+            Models.IndexState observedState = null;
             if (waitSec > 0)
             {
                 // Issue #27 item 3 (DX): two block modes.
@@ -1201,7 +1203,8 @@ namespace GxMcp.Worker.Services
                 while (true)
                 {
                     _indexCacheService.ArmStateSignal();
-                    if (Models.IndexWaitPolicy.IsSatisfied(_indexCacheService.GetState(), since, wantFreshness))
+                    observedState = _indexCacheService.GetState();
+                    if (Models.IndexWaitPolicy.IsSatisfied(observedState, since, wantFreshness))
                     {
                         waitSatisfied = true;
                         break;
@@ -1215,8 +1218,11 @@ namespace GxMcp.Worker.Services
             // Merge the state-machine status so callers have a stable field
             // to pass back as `since` (the legacy `status` string is descriptive
             // prose, not a stable enum).
-            var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
-            statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
+            if (!waitSatisfied) observedState = _indexCacheService.GetState();
+            var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus(
+                // Only a cache wired to its KbService embeds the operation snapshot.
+                _indexCacheService.KbService != null ? observedState : null));
+            statusJson["indexStatus"] = observedState?.Status ?? "Cold";
             // Issue #209: a bounded wait reports whether its target was actually reached,
             // so the caller can distinguish "index is current now" from "timed out".
             if (waitSec > 0)

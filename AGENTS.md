@@ -10,9 +10,10 @@ Genexus18MCP is a two-process MCP server exposing Knowledge Bases from the
 officially supported native-SDK majors and catalogued legacy versions through
 their selected driver. The default SDK route does not parse KB files or scrape
 IDE state; native edits use the same SDK paths as the IDE, while legacy paths use
-explicit reflection/COM adapters without changing the MCP contract. The experimental
-gx-engine route has independent native UDM readers and compiler paths; admitted
-blocking builds use it by default, while other operations retain the SDK.
+explicit reflection/COM adapters without changing the MCP contract. The default
+experimental gx-engine route uses independent native UDM readers and compiler
+paths for admitted blocking builds and field-limited type-only queries; unsupported
+operations retain the SDK. See the gx-engine pointers below for admission rules.
 
 ```text
 MCP clients (Claude/Cursor/…)
@@ -75,7 +76,8 @@ Source of truth: `config/gx-versions.json`.
   for MCP routing, read [`docs/engine_backend.md`](docs/engine_backend.md).
   The objective is independent full SDK replacement; current bounded coverage
   is not that outcome. `Engine.Backend` defaults to `gxengine`: admitted blocking
-  builds and part-scoped reads/queries use gx-engine; other operations use SDK.
+  builds and field-limited type-only queries use gx-engine. Reads and edits use
+  SDK fallback until native identity, freshness and token parity is verified.
   `auto` routes only builds; explicit `sdk` opts out entirely. Preserve capability/argument
   gates, SDK fallback before build start, and reconciliation instead of replay
   after a started build fails or has an uncertain outcome.
@@ -128,88 +130,23 @@ Source of truth: `config/gx-versions.json`.
 
 ## Build and test
 
-For Worker builds, set the SDK path in the current PowerShell session:
+Read [`CODING_STANDARDS.md` → Validation lanes](CODING_STANDARDS.md#validation-lanes)
+for the complete check matrix and evidence rules. Start with the narrowest
+behavior test; an authorized release uses the canonical preflight described in
+[`docs/release_protocol.md`](docs/release_protocol.md), not repeated manual suites.
+Run `.\build.ps1` **last** to preserve the published Worker/x86 fingerprint.
 
-```powershell
-$env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus16'
-dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
+SDK compatibility changes require a Worker build, focused tests and live smoke
+for each installed major, with `GX_PATH` selecting that major's installation.
+Use [`scripts/test-live-matrix.ps1`](scripts/test-live-matrix.ps1) and
+[`docs/live-kb-test-harness.md`](docs/live-kb-test-harness.md) for explicit KB/SDK
+selection and passed/unavailable/failed evidence. A missing SDK or skipped live
+test is not compatibility evidence. Catalog additions require a verified build
+and live smoke, not a matching version string.
 
-$env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus17Trial'
-dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
-
-$env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus18'
-dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
-```
-
-The Worker must be built and focused-tested once per installed major when
-changing SDK compatibility. The Gateway package build uses the SDK selected by
-`GX_PATH` (the catalog's primary major is the normal distribution default). A
-new major is not considered supported merely because its version string starts
-with a number; add it to `config/gx-versions.json` only after its Worker build
-and live-KB smoke pass.
-
-For a fixture-backed compatibility check across installed majors, use
-`scripts/test-live-matrix.ps1`; it selects every catalog major by default,
-accepts `-Majors` and `-GxPathMap`, builds the artifact once, and records
-`passed`, `unavailable`, or `failed` per major. Release preflight selects this
-mode through `-LiveMajors`/`-LiveGxPathMap` or the matching environment variables;
-see `docs/live-kb-test-harness.md` for fixture and evidence rules.
-
-```powershell
-dotnet build Genexus18MCP.sln -v:minimal
-dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
-dotnet build src\GxMcp.Gateway\GxMcp.Gateway.csproj
-dotnet test Genexus18MCP.sln
-dotnet test src\GxMcp.Worker.Tests --filter "FullyQualifiedName~PropertyService"
-dotnet test src\GxMcp.Gateway.Tests --filter "FullyQualifiedName~McpRouter"
-pwsh -NoProfile -File scripts\tests\run-release-script-tests.ps1
-python -m unittest discover -s scripts\tests
-python scripts/validate-tool-contracts.py
-python scripts/generate-operation-contract-inventory.py --check
-python scripts/verify-release-metadata.py --root . --version <package.json version>
-cargo test --manifest-path src\gx-engine\Cargo.toml
-cargo clippy --manifest-path src\gx-engine\Cargo.toml --all-targets -- -D warnings
-cargo fmt --manifest-path src\gx-engine\Cargo.toml --check
-npm test
-npm run lint
-npm run test:one -- "test name pattern"
-Push-Location src\nexus-ide
-npm ci
-npm run compile
-npm run lint
-npm test
-Pop-Location
-pwsh -NoProfile -File scripts\check-build-warning-baseline.ps1 -ValidateOnly
-pwsh -NoProfile -File scripts\mcp_llm_contract_smoke.ps1
-pwsh -NoProfile -File scripts\coverage\collect.ps1
-pwsh -NoProfile -File scripts\coverage\assert-threshold.ps1 -CoverageRoot artifacts\coverage -MinLineRatePercent 60
-.\build.ps1                                                       # last; see ordering below
-```
-
-A change is validated when **every** lane above is green, not the lanes you
-remember. The PowerShell and Python suites catch contract drift the .NET, CLI and
-Nexus suites are blind to — a live-test class missing its `ProcessSmoke` trait
-passes every .NET lane and is rejected by the release preflight guard.
-
-This block is the operator's **full** set. `.github/workflows/ci.yml` enforces a
-*subset* of it: an entry is here because CI runs it, because an operator needs it
-before a release, or because CI cannot run it locally — not because every line is
-a CI step. When CI gains a lane, add it here in the same change. CI additionally
-runs the protected SDK/live lane (`.\scripts\ci\sdk-validation.ps1`), which needs
-the self-hosted `gx-sdk-18` runner and is therefore not listed above.
-
-The Nexus-IDE lane is **not** optional. On a 3.x release the `.vsix` it builds is a
-required release asset, and `.github/workflows/release.yml` byte-compares it
-against the copy inside `publish.zip`.
-
-Run `.\build.ps1` **last**. A solution-level `dotnet test -c Release` rebuilds
-the Worker outside the `x86` platform the solution maps it to, breaking the
-publish↔source byte identity so the release fingerprint comes back empty and
-`test-release-preflight.ps1` fails for a reason unrelated to your change.
-
-Use the narrowest decisive test first, then the repository-wide checks. Known
-flaky tests are documented in the test section of `docs/agent_playbook.md`.
-Review-time rules live in [`CODING_STANDARDS.md`](CODING_STANDARDS.md).
+Backend/default changes additionally require the
+[behavioral compatibility checklist](CODING_STANDARDS.md#backend-and-default-changes).
+Known test limitations live in [`docs/agent_playbook.md`](docs/agent_playbook.md).
 
 ## Live Knowledge Bases for validation
 
@@ -281,9 +218,9 @@ genexus_kb action=open path=<KB root>   then   action=select to bind the session
 - Prefer bounded output for routine checks: `dotnet test ...
   --logger "console;verbosity=minimal"`. Repeat with normal verbosity only
   when the focused check fails or no test-run banner is present.
-- Live PowerShell entry points require PowerShell 7+ and fail immediately with
-  a clear message under Windows PowerShell 5.1. Use `pwsh`, never silently
-  substitute a legacy host whose cmdlets differ.
+- Use `pwsh` for PowerShell entry points, never Windows PowerShell 5.1.
+  `scripts/run-gate.ps1` requires PowerShell 7.3+ so a failed native command
+  cannot be masked by a later success; live entry points require 7+.
 If a build/test fails with `MSB3027` or `MSB3021` naming the Gateway/Worker exe,
 use the scoped permission below; do not kill unrelated processes.
 
