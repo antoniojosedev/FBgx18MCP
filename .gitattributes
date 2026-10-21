@@ -22,4 +22,3 @@ src/gx-engine/tests/fixtures/sdk_form/*.js -text
 src/gx-engine/tests/fixtures/sdk_form/*.txt -text
 src/gx-engine/tests/fixtures/sdk_form/*.xml -text
 src/gx-engine/tests/fixtures/sdk_form/*.config -text
-src/gx-engine/tests/fixtures/sdk_form/developer_menu/** -text

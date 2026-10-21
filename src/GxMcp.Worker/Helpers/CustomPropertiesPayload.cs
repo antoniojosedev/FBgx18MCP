@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace GxMcp.Worker.Helpers
@@ -37,7 +38,7 @@ namespace GxMcp.Worker.Helpers
                 }
                 return true;
             }
-            catch
+            catch (XmlException)
             {
                 payload = null;
                 return false;
@@ -104,16 +105,17 @@ namespace GxMcp.Worker.Helpers
         private static bool ValuesEqual(string a, string b)
         {
             if (string.Equals(a, b, StringComparison.Ordinal)) return true;
-            return string.Equals(Canonical(a), Canonical(b), StringComparison.Ordinal);
+            return string.Equals(CanonicalXmlOrText(a), CanonicalXmlOrText(b), StringComparison.Ordinal);
         }
 
-        private static string Canonical(string value)
+        /// <summary>The value's XML without formatting, or its trimmed text when it is not XML.</summary>
+        internal static string CanonicalXmlOrText(string value)
         {
             if (string.IsNullOrWhiteSpace(value)) return string.Empty;
             string trimmed = value.Trim();
             if (!trimmed.StartsWith("<", StringComparison.Ordinal)) return trimmed;
             try { return XDocument.Parse(trimmed).Root.ToString(SaveOptions.DisableFormatting); }
-            catch { return trimmed; }
+            catch (XmlException) { return trimmed; }
         }
     }
 }

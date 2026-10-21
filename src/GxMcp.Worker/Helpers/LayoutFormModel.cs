@@ -64,19 +64,15 @@ namespace GxMcp.Worker.Helpers
         internal static XmlElement FindDetailElement(XmlDocument document)
         {
             if (document?.DocumentElement == null) return null;
-            try
+            foreach (XmlNode form in document.SelectNodes("//*[local-name()='Form']"))
             {
-                foreach (XmlNode form in document.SelectNodes("//*[local-name()='Form']"))
-                {
-                    var element = form as XmlElement;
-                    if (element == null) continue;
-                    if (!string.Equals(element.GetAttribute("type"), LayoutFormType, StringComparison.OrdinalIgnoreCase)) continue;
-                    foreach (XmlNode child in element.ChildNodes)
-                        if (child is XmlElement detail && string.Equals(detail.LocalName, "detail", StringComparison.Ordinal))
-                            return detail;
-                }
+                var element = form as XmlElement;
+                if (element == null) continue;
+                if (!string.Equals(element.GetAttribute("type"), LayoutFormType, StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (XmlNode child in element.ChildNodes)
+                    if (child is XmlElement detail && string.Equals(detail.LocalName, "detail", StringComparison.Ordinal))
+                        return detail;
             }
-            catch { }
             return null;
         }
 
@@ -253,13 +249,17 @@ namespace GxMcp.Worker.Helpers
             if (binding.StartsWith("&", StringComparison.Ordinal)) return binding.Substring(1);
             var match = AttRef.Match(binding);
             if (!match.Success) return null;
+            if (!int.TryParse(match.Groups[1].Value, out int id)) return null;
             try
             {
-                int id = int.Parse(match.Groups[1].Value);
                 var attribute = Artech.Genexus.Common.Objects.Attribute.Get(obj.Model, id);
                 return attribute?.Name;
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                Logger.Debug("[LayoutModel] attribute " + binding + " could not be resolved: " + (ex.InnerException ?? ex).Message);
+                return null;
+            }
         }
 
         /// <summary>An att:&lt;id&gt; or a GUID: spellings that only a layout control can answer to.</summary>
@@ -307,19 +307,33 @@ namespace GxMcp.Worker.Helpers
                 object value = bag.GetPropertyValue(name);
                 return Empty(value?.ToString());
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                Logger.Debug("[LayoutModel] property '" + name + "' could not be read: " + (ex.InnerException ?? ex).Message);
+                return null;
+            }
         }
 
         private static string Empty(string value) => string.IsNullOrEmpty(value) ? null : value;
 
         private static string SafeString(Func<string> read)
         {
-            try { return read(); } catch { return null; }
+            try { return read(); }
+            catch (Exception ex)
+            {
+                Logger.Debug("[LayoutModel] element member could not be read: " + (ex.InnerException ?? ex).Message);
+                return null;
+            }
         }
 
         private static T SafeGet<T>(Func<T> read) where T : class
         {
-            try { return read(); } catch { return null; }
+            try { return read(); }
+            catch (Exception ex)
+            {
+                Logger.Debug("[LayoutModel] element member could not be read: " + (ex.InnerException ?? ex).Message);
+                return null;
+            }
         }
     }
 }

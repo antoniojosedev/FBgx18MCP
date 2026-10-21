@@ -379,7 +379,12 @@ namespace GxMcp.Worker.Helpers
         internal static bool IsLayoutFormPart(object part)
         {
             try { return LayoutFormModel.IsLayoutForm(WebFormSdkReflection.GetPartDocument(part)); }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                // Treated as a legacy form: the replay stays pending, which is the old behaviour.
+                Logger.Warn("[LayoutFix] could not tell whether the part is a layout form: " + (ex.InnerException ?? ex).Message);
+                return false;
+            }
         }
 
         /// <summary>

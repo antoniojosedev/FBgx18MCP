@@ -25,7 +25,11 @@ namespace GxMcp.Worker.Services
         public string ChildType(string parentType, string childName)
         {
             try { return _root.FindSpecificationType(parentType)?.TryFindChildElement(childName)?.Type; }
-            catch (Exception) { return null; }
+            catch (Exception ex)
+            {
+                Logger.Debug("[PatternSpec] child type of '" + childName + "' under '" + parentType + "' unavailable: " + ex.Message);
+                return null;
+            }
         }
 
         // Declared by the type or, to stay on the lenient side, by any type derived from it.
@@ -42,7 +46,11 @@ namespace GxMcp.Worker.Services
                     Collect(type, names, new HashSet<string>(StringComparer.Ordinal));
                 }
             }
-            catch (Exception) { names = null; }
+            catch (Exception ex)
+            {
+                Logger.Debug("[PatternSpec] attributes of type '" + typeName + "' unavailable: " + ex.Message);
+                names = null;
+            }
             _attributes[typeName] = names;
             return names;
         }

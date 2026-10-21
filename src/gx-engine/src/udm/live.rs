@@ -23,8 +23,10 @@ fn sqlcmd_command(info: &KbConnectionInfo) -> std::process::Command {
         }
         AuthMode::SqlServer { user, password } => {
             cmd.arg("-U").arg(user);
+            // The password travels in the child's environment, not argv, so it is
+            // not visible in the process list.
             if let Some(p) = password {
-                cmd.arg("-P").arg(p);
+                cmd.env("SQLCMDPASSWORD", p);
             }
         }
     }
@@ -166,6 +168,36 @@ impl Drop for ReadSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sql_password_is_passed_by_environment_not_argv() {
+        let info = KbConnectionInfo {
+            server_instance: "srv".into(),
+            db_name: "db".into(),
+            auth_mode: AuthMode::SqlServer {
+                user: "sa".into(),
+                password: Some("s3cret-pw".into()),
+            },
+            create_db_in_kb_folder: None,
+            directory: None,
+            data_file: None,
+            log_file: None,
+            host_name: None,
+            detach_on_close: None,
+        };
+        let command = sqlcmd_command(&info);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().all(|a| a != "-P" && !a.contains("s3cret-pw")));
+        assert!(args.contains(&"-U".to_string()));
+        let password = command
+            .get_envs()
+            .find(|(k, _)| *k == "SQLCMDPASSWORD")
+            .and_then(|(_, v)| v);
+        assert_eq!(password, Some(std::ffi::OsStr::new("s3cret-pw")));
+    }
 
     #[test]
     fn persistent_select_batches_reject_sqlcmd_directives() {

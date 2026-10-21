@@ -143,7 +143,12 @@ reporting per-pass timings - after two hot-path fixes the measured medians are
 
 ## Served operations and admitted space
 
-Each routed operation admits a deliberately narrow argument space. A call
+Each routed operation admits a deliberately narrow argument space, declared as
+one list of supported arguments per operation (`EngineAdmittedSpace` in
+`src/GxMcp.Gateway/EngineRoutedOperations.cs`). Any other requested argument
+— including one the engine does not know yet — is outside the space; the refusal
+message names it and lists the supported arguments. `null`, blank, empty and
+`false` values request nothing. A call
 outside it is never approximated: with `Fallback=sdk` it continues on the SDK
 path unchanged, and with `Fallback=error` it is refused with
 `EngineOperationOutsideAdmittedSpace` naming the reason. The same rule applies

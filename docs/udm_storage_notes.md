@@ -268,7 +268,7 @@ lost when the process exits. Two guards make that impossible to miss:
   writes are not implemented for live storage; refusing a write that would not
   persist`.
 - The Gateway holds `genexus_edit` outside the engine space
-  (`Program.EngineRouting.cs`): `Fallback=error` refuses the call, `Fallback=sdk`
+  (`EngineRoutedOperations.cs`): `Fallback=error` refuses the call, `Fallback=sdk`
   serves it with the SDK. The capability stays registered, but no engine edit is
   ever reported as a save.
 
