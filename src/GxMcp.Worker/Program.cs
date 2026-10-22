@@ -688,6 +688,10 @@ namespace GxMcp.Worker
                 || string.Equals(method, "ping", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(method, "doctor", StringComparison.OrdinalIgnoreCase))
                 return true;
+            // gx-engine routing reads the active-model snapshot before every engine call.
+            if (string.Equals(method, "kbversion", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(action, "ActiveModel", StringComparison.OrdinalIgnoreCase))
+                return true;
             if (string.Equals(method, "control", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(action, "Cancel", StringComparison.OrdinalIgnoreCase))
                 return true;

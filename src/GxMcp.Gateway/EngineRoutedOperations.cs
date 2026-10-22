@@ -16,17 +16,24 @@ namespace GxMcp.Gateway
     ///
     /// When <c>Engine.Backend=gxengine</c>, the parity capabilities that declare
     /// product consumers in <see cref="EngineCapabilityRegistry"/> are served by
-    /// gx-engine instead of the SDK Worker:
+    /// gx-engine instead of the SDK Worker (evidence-gated native routes):
     ///
     /// <list type="bullet">
-    /// <item><c>udm_storage_access</c> registers <c>genexus_read</c>,
-    /// <c>genexus_query</c> and <c>genexus_edit</c>, but serves only a bare
-    /// <c>type:</c> <c>genexus_query</c> through the engine's <c>kb-query</c>
-    /// invocation; reads and edits are held outside the served space.</item>
+    /// <item><c>udm_type_query</c> serves only a bare <c>type:</c>
+    /// <c>genexus_query</c> through the engine's <c>kb-query</c> invocation.</item>
     /// <item><c>parallel_rebuild_all</c> serves
     /// <c>genexus_lifecycle.build</c> and <c>genexus_lifecycle.rebuild</c>
     /// through the engine's <c>rebuild-all</c> invocation.</item>
     /// </list>
+    ///
+    /// <c>genexus_read</c> and <c>genexus_edit</c> are not native routes: they are
+    /// held outside the engine by the explicit deferral policy in
+    /// <see cref="DeferredOperationCapabilityIds"/>, which is routing policy and
+    /// not an evidence claim (the engine serves neither, so they never count as
+    /// parity or as routed operations). Under <c>gxengine</c> they are refused with
+    /// <c>EngineOperationOutsideAdmittedSpace</c> when <c>Engine.Fallback=error</c>
+    /// and handed to the SDK when <c>Engine.Fallback=sdk</c>; <c>auto</c> and
+    /// <c>sdk</c> leave them on the SDK untouched.
     ///
     /// Each operation admits a documented, deliberately narrow argument space
     /// (see docs/engine_backend.md, "Served operations and admitted space"). A
@@ -50,12 +57,21 @@ namespace GxMcp.Gateway
         internal EngineRoutedOperations(
             Func<Configuration?> activeConfig,
             Action<string> log,
-            Func<JToken, bool, string?, JObject?, JObject> buildToolResult)
+            Func<JToken, bool, string?, JObject?, JObject> buildToolResult,
+            Func<string, CancellationToken, Task<EngineActiveModel?>>? activeModel = null)
         {
             _activeConfig = activeConfig;
             _log = log;
             _buildToolResult = buildToolResult;
+            _activeModel = activeModel;
         }
+
+        /// <summary>
+        /// Reads the active KB version of the Worker's SDK session for a Knowledge Base path (null when
+        /// no ready Worker reports one). Every engine invocation names it, so the engine serves the
+        /// Design model the SDK serves; see <see cref="EngineActiveModel"/>.
+        /// </summary>
+        private readonly Func<string, CancellationToken, Task<EngineActiveModel?>>? _activeModel;
 
         internal const string EngineOutsideSpaceCode = "EngineOperationOutsideAdmittedSpace";
         internal const string EngineInvocationFailedCode = "EngineInvocationFailed";
@@ -66,9 +82,38 @@ namespace GxMcp.Gateway
         /// </summary>
         private static readonly SemaphoreSlim EngineBuildGate = new SemaphoreSlim(1, 1);
 
+        /// <summary>
+        /// Operations deliberately held outside the engine, mapped to the capability
+        /// record that documents why (<c>udm_storage_access</c>: MCP read parity and
+        /// persistent writes are not established). This is routing policy kept apart
+        /// from <see cref="EngineCapabilityStatus"/>: the record stays Partial and
+        /// declares no consumer, so a deferral can never read as parity. An operation
+        /// listed here is never served by the engine; see DispatchEngineRead and
+        /// DispatchEngineEdit.
+        /// </summary>
+        internal static readonly IReadOnlyDictionary<string, string> DeferredOperationCapabilityIds =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["genexus_read"] = "udm_storage_access",
+                ["genexus_edit"] = "udm_storage_access",
+            };
+
+        /// <summary>
+        /// True when the deferral policy applies under <paramref name="settings"/>:
+        /// only <c>Backend=gxengine</c> holds read/edit outside the engine (refusal or
+        /// SDK fallback). <c>sdk</c> and <c>auto</c> never reach the engine path.
+        /// </summary>
+        internal static bool DeferralApplies(EngineBackendSettings settings) =>
+            settings.EngineEnabled && settings.Backend != EngineBackendSettings.AutoBackend;
+
+        /// <summary>The deferred operations in force under <paramref name="settings"/> (doctor reports these).</summary>
+        internal static IReadOnlyList<string> DeferredOperationsFor(EngineBackendSettings settings) =>
+            DeferralApplies(settings)
+                ? DeferredOperationCapabilityIds.Keys.OrderBy(key => key, StringComparer.Ordinal).ToArray()
+                : Array.Empty<string>();
+
         // The admitted argument space of each served operation. `genexus_read` and
-        // `genexus_edit` have none: they are held outside the engine entirely (see
-        // DispatchEngineRead and DispatchEngineEdit).
+        // `genexus_edit` have none: they are deferred (DeferredOperationCapabilityIds).
         private static readonly EngineAdmittedSpace QuerySpace = new EngineAdmittedSpace(
             "query", "query", "typeFilter", "limit", "exactMatch", "kb");
 
@@ -98,14 +143,16 @@ namespace GxMcp.Gateway
         }
 
         /// <summary>
-        /// The parity capability that declares <paramref name="operationKey"/> as
-        /// a consumer, or null when no registered capability serves it. The
-        /// registry stays the single source of truth: routing follows it instead
-        /// of duplicating the mapping here.
+        /// The capability id an operation reports and is routed under: the deferral
+        /// record for a deferred operation, otherwise the parity capability that
+        /// declares <paramref name="operationKey"/> as a consumer; null when neither
+        /// exists. The registry stays the single source of truth for served routes:
+        /// routing follows it instead of duplicating the mapping here.
         /// </summary>
         internal static string? EngineCapabilityIdForOperation(string operationKey)
         {
             if (string.IsNullOrWhiteSpace(operationKey)) return null;
+            if (DeferredOperationCapabilityIds.TryGetValue(operationKey, out string? deferredId)) return deferredId;
             return EngineCapabilityRegistry.All
                 .Where(capability => capability.MayRouteToEngine)
                 .FirstOrDefault(capability => capability.Consumers.Any(
@@ -134,17 +181,27 @@ namespace GxMcp.Gateway
             if (capabilityId == null) return null;
 
             EngineBackendSettings settings = EngineBackendSettings.Resolve(_activeConfig());
-            EngineRouteDecision decision = EngineRouter.Decide(capabilityId, settings);
-
-            if (decision.Target == EngineRouteTarget.Reject)
+            if (DeferredOperationCapabilityIds.ContainsKey(operationKey))
             {
-                var rejected = EngineErrorPayload(
-                    decision.Code ?? EngineRouter.NotParityCode,
-                    decision.Message ?? $"Engine capability '{capabilityId}' is not at parity.",
-                    settings, capabilityId, operationKey, null);
-                return _buildToolResult(rejected, true, toolName, toolArgs);
+                // Explicit deferral policy, not an evidence-gated route: it skips the
+                // parity gate (its record is Partial on purpose) and only the backend
+                // switch decides whether the fail-closed read/edit dispatch is reached.
+                if (!DeferralApplies(settings)) return null;
             }
-            if (decision.Target == EngineRouteTarget.Sdk) return null;
+            else
+            {
+                EngineRouteDecision decision = EngineRouter.Decide(capabilityId, settings);
+
+                if (decision.Target == EngineRouteTarget.Reject)
+                {
+                    var rejected = EngineErrorPayload(
+                        decision.Code ?? EngineRouter.NotParityCode,
+                        decision.Message ?? $"Engine capability '{capabilityId}' is not at parity.",
+                        settings, capabilityId, operationKey, null);
+                    return _buildToolResult(rejected, true, toolName, toolArgs);
+                }
+                if (decision.Target == EngineRouteTarget.Sdk) return null;
+            }
 
             if (cancellationToken.IsCancellationRequested)
                 throw new PreDispatchCancelledException(cancellationToken);
@@ -182,7 +239,7 @@ namespace GxMcp.Gateway
                 cancellationToken.ThrowIfCancellationRequested();
                 // A report-shaping failure must not replay a completed engine build
                 // on the SDK. Before invocation, the configured fallback still applies.
-                _log($"[Engine] routing failed for {operationKey}: {ex.Message}");
+                _log($"[Engine] routing failed for {operationKey}: {ex.GetType().Name}: {EngineFailureText.ForLog(ex.Message)}");
                 if (!settings.RejectUnsupported && !context.BuildInvocationCompleted) return null;
                 var failure = EngineErrorPayload(EngineInvocationFailedCode, ex.Message, settings, capabilityId, operationKey, null);
                 if (context.BuildInvocationCompleted) RequireEngineBuildReconciliation(failure);
@@ -230,8 +287,11 @@ namespace GxMcp.Gateway
         private async Task<(JObject? Json, GxEngineInvocation Invocation, JObject? Failure)> InvokeEngineJsonAsync(
             EngineRouteContext ctx, List<string> engineArgs, string command)
         {
+            engineArgs.AddRange(await ActiveVersionArgumentsAsync(ctx).ConfigureAwait(false));
             GxEngineInvocation invocation = await GxEngineClient.InvokeAsync(
                 ctx.Settings, engineArgs, ctx.CancellationToken).ConfigureAwait(false);
+            string? versionScope = EngineActiveModel.VersionScopeRefusal(invocation);
+            if (versionScope != null) return (null, invocation, EngineVersionScopeResult(ctx, versionScope));
             if (!invocation.Ok) return (null, invocation, EngineInvocationFailureResult(ctx, invocation));
             if (TryParseEngineJson(invocation.StandardOutput, out JObject? json, out string? parseError) && json != null)
                 return (json, invocation, null);
@@ -349,9 +409,38 @@ namespace GxMcp.Gateway
             {
                 if (ctx.CancellationToken.IsCancellationRequested)
                     throw new PreDispatchCancelledException(ctx.CancellationToken);
+                // Sampled inside the gate: a build that queued behind another must name the version
+                // active when it starts, not the one active when it was requested.
+                EngineActiveModel? sampledModel = await SampleActiveModelAsync(ctx).ConfigureAwait(false);
+                if (sampledModel != null) engineArgs.AddRange(sampledModel.EngineArguments());
                 GxEngineInvocation invocation = await GxEngineClient.InvokeAsync(ctx.Settings, engineArgs, ctx.CancellationToken).ConfigureAwait(false);
                 ctx.BuildInvocationCompleted = true;
                 ctx.CancellationToken.ThrowIfCancellationRequested();
+                // Exit 4: the engine refused the KB version in force before reading or writing anything,
+                // so the call is outside the engine space like any other refused argument.
+                string? versionScope = EngineActiveModel.VersionScopeRefusal(invocation);
+                if (versionScope != null) return EngineVersionScopeResult(ctx, versionScope);
+                // Exit 5 with the exact credentials-preflight contract: the engine stopped before any
+                // catalog read, output or build effect, so this is the one started-process failure that
+                // is proven to have changed nothing. Checked before the active-version re-read, which
+                // only matters to a build that may have run.
+                string? sqlCredentialsMessage = EngineSqlCredentialsPreflight.UnavailableMessage(invocation);
+                if (sqlCredentialsMessage != null) return EngineSqlCredentialsUnavailableResult(ctx, action, invocation, sqlCredentialsMessage);
+                // A started process may have written outputs for the sampled version; if the session's
+                // active version moved or can no longer be confirmed, no report below is trustworthy.
+                bool neverStarted = invocation.ErrorCode == "EngineNotFound"
+                    || invocation.ErrorCode == "EngineStartFailed";
+                if (!neverStarted && sampledModel != null
+                    && !await ActiveModelUnchangedAsync(ctx, sampledModel).ConfigureAwait(false))
+                {
+                    var changed = EngineErrorPayload(
+                        EngineInvocationFailedCode,
+                        $"the active KB version (Design model {sampledModel.DesignModelId}, KB version {sampledModel.KbVersionId}) changed or could not be confirmed while the engine build ran; its outcome is uncertain.",
+                        ctx.Settings, ctx.CapabilityId, ctx.OperationKey, invocation);
+                    changed["action"] = action;
+                    RequireEngineBuildReconciliation(changed);
+                    return _buildToolResult(changed, true, ctx.ToolName, ctx.Args);
+                }
                 bool haveReport = TryParseEngineJson(invocation.StandardOutput, out JObject? report, out _)
                     && IsRecognizedEngineBuildReport(report!);
                 int errorCount = (report?["errors"] as JArray)?.Count ?? 0;
@@ -416,9 +505,6 @@ namespace GxMcp.Gateway
 
                 // Only a proven pre-start failure is safe to replay on the SDK.
                 // A running process can have built files even without a JSON report.
-                bool neverStarted = invocation.ErrorCode == "EngineNotFound"
-                    || invocation.ErrorCode == "EngineStartFailed";
-                if (neverStarted && !ctx.Settings.RejectUnsupported) return null;
                 string outageCode = invocation.Ok || inconsistentReport
                     ? "EngineOutputUnrecognized"
                     : (string.IsNullOrWhiteSpace(invocation.ErrorCode) ? EngineInvocationFailedCode : invocation.ErrorCode!);
@@ -426,6 +512,8 @@ namespace GxMcp.Gateway
                     ? "rebuild-all reported success but did not exit successfully; its outcome is uncertain."
                     : invocation.Ok ? "rebuild-all produced no recognized JSON report on stdout."
                     : invocation.ErrorMessage ?? "gx-engine rebuild failed.";
+                LogEngineLifecycleFailure(ctx, action, outageCode, outageMessage, invocation, neverStarted);
+                if (neverStarted && !ctx.Settings.RejectUnsupported) return null;
                 var outage = EngineErrorPayload(
                     outageCode, outageMessage,
                     ctx.Settings, ctx.CapabilityId, ctx.OperationKey, invocation);
@@ -521,7 +609,7 @@ namespace GxMcp.Gateway
             var payload = new JObject
             {
                 ["error"] = code,
-                ["message"] = message,
+                ["message"] = EngineFailureText.Redact(message),
                 ["engine"] = info,
             };
             if (invocation != null)
@@ -540,15 +628,84 @@ namespace GxMcp.Gateway
         /// Outcome for a call the engine path does not serve yet: Fallback=sdk
         /// continues on the SDK path unchanged (null), Fallback=error refuses.
         /// </summary>
+        /// <summary>
+        /// The engine arguments naming the SDK session's active KB version. None when no ready Worker
+        /// reports one for this Knowledge Base: the engine then serves only a Knowledge Base with a single
+        /// Design model and refuses any other (exit 4) before reading it.
+        /// </summary>
+        private async Task<IEnumerable<string>> ActiveVersionArgumentsAsync(EngineRouteContext ctx) =>
+            (await SampleActiveModelAsync(ctx).ConfigureAwait(false))?.EngineArguments() ?? Array.Empty<string>();
+
+        private async Task<EngineActiveModel?> SampleActiveModelAsync(EngineRouteContext ctx)
+        {
+            if (_activeModel == null) return null;
+            EngineActiveModel? model;
+            try
+            {
+                model = await _activeModel(ctx.KbPath, ctx.CancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ctx.CancellationToken.IsCancellationRequested)
+            {
+                throw new PreDispatchCancelledException(ctx.CancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _log($"[Engine] active KB version not read for {ctx.OperationKey}: {ex.Message}");
+                return null;
+            }
+            if (model == null || !model.Describes(ctx.KbPath))
+            {
+                _log($"[Engine] {ctx.OperationKey}: no active KB version reported for '{ctx.KbPath}'; the engine serves only a KB without versions");
+                return null;
+            }
+            _log($"[Engine] {ctx.OperationKey}: active KB version {model.KbVersionId} ('{model.KbVersionName}'), Design model {model.DesignModelId}");
+            return model;
+        }
+
+        /// <summary>
+        /// Whether the session still reports the Design model and KB version <paramref name="sampled"/>
+        /// named to the engine. A failed read or a vanished snapshot is not confirmation.
+        /// </summary>
+        private async Task<bool> ActiveModelUnchangedAsync(EngineRouteContext ctx, EngineActiveModel sampled)
+        {
+            EngineActiveModel? current;
+            try
+            {
+                current = await _activeModel!(ctx.KbPath, ctx.CancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ctx.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log($"[Engine] {ctx.OperationKey}: active KB version not re-read after the build: {ex.Message}");
+                return false;
+            }
+            bool unchanged = current != null && current.Describes(ctx.KbPath)
+                && current.DesignModelId == sampled.DesignModelId
+                && current.KbVersionId == sampled.KbVersionId;
+            if (!unchanged)
+                _log($"[Engine] {ctx.OperationKey}: active KB version changed or vanished while the build ran");
+            return unchanged;
+        }
+
+        /// <summary>A version-scope refusal of the engine (exit 4): nothing was read or written.</summary>
+        private JObject? EngineVersionScopeResult(EngineRouteContext ctx, string refusal)
+        {
+            ctx.CancellationToken.ThrowIfCancellationRequested();
+            return EngineOutsideResult(ctx, $"the engine does not serve the KB version in force ({refusal})");
+        }
+
         private JObject? EngineOutsideResult(EngineRouteContext ctx, string reason)
         {
             if (!ctx.Settings.RejectUnsupported)
             {
-                _log($"[Engine] {ctx.OperationKey} deferred to the SDK (outside admitted space): {reason}");
+                _log($"[Engine] {ctx.OperationKey} deferred to the SDK (outside admitted space): {EngineFailureText.ForLog(reason)}");
                 return null;
             }
             string message = $"The engine path does not serve this call yet: {reason}. Engine.Fallback=error refuses the SDK path.";
-            _log($"[Engine] {ctx.OperationKey} refused (outside admitted space): {reason}");
+            _log($"[Engine] {ctx.OperationKey} refused (outside admitted space): {EngineFailureText.ForLog(reason)}");
             return _buildToolResult(
                 EngineErrorPayload(EngineOutsideSpaceCode, message, ctx.Settings, ctx.CapabilityId, ctx.OperationKey, null),
                 true, ctx.ToolName, ctx.Args);
@@ -608,9 +765,45 @@ namespace GxMcp.Gateway
         private static string? EngineExcerpt(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return null;
-            string value = text.Trim();
-            const int cap = 800;
-            return value.Length <= cap ? value : value.Substring(0, cap) + "…";
+            return EngineFailureText.Truncate(EngineFailureText.Redact(text).Trim(), 800);
+        }
+
+        /// <summary>
+        /// One bounded, credential-masked log line for an engine lifecycle failure that is neither a
+        /// build report nor a success, so the failing stage is visible without the MCP client's payload.
+        /// </summary>
+        private void LogEngineLifecycleFailure(
+            EngineRouteContext ctx, string action, string code, string message,
+            GxEngineInvocation invocation, bool neverStarted)
+        {
+            string outcome = neverStarted
+                ? (ctx.Settings.RejectUnsupported ? "refused (Engine.Fallback=error)" : "continuing on the SDK (engine never started)")
+                : "reconciliation required, no SDK replay";
+            _log($"[Engine] genexus_lifecycle.{action} engine failed ({code}, exit {(invocation.ExitCode?.ToString() ?? "none")}, timedOut={invocation.TimedOut}): {outcome}. "
+                + $"message: {EngineFailureText.ForLog(message)}; stderr: {EngineFailureText.ForLog(invocation.StandardError)}");
+        }
+
+        /// <summary>
+        /// Outcome for the engine's credentials preflight refusal. Nothing was read, emitted or built, so no
+        /// reconciliation is owed: Fallback=sdk serves the call on the SDK (null), Fallback=error refuses it
+        /// with the engine's own actionable message.
+        /// </summary>
+        private JObject? EngineSqlCredentialsUnavailableResult(
+            EngineRouteContext ctx, string action, GxEngineInvocation invocation, string engineMessage)
+        {
+            if (!ctx.Settings.RejectUnsupported)
+            {
+                _log($"[Engine] genexus_lifecycle.{action} {EngineSqlCredentialsPreflight.Category}: {EngineFailureText.ForLog(engineMessage)}; no KB read or build started, continuing on the SDK (Engine.Fallback=sdk)");
+                return null;
+            }
+            _log($"[Engine] genexus_lifecycle.{action} {EngineSqlCredentialsPreflight.Category}: {EngineFailureText.ForLog(engineMessage)}; no KB read or build started, refused (Engine.Fallback=error)");
+            var refusal = EngineErrorPayload(
+                EngineSqlCredentialsPreflight.ErrorCode, engineMessage,
+                ctx.Settings, ctx.CapabilityId, ctx.OperationKey, invocation);
+            refusal["action"] = action;
+            refusal["hint"] = "The engine stopped before reading the Knowledge Base or building anything, so nothing changed and the call can be repeated. "
+                + "Set Engine.Fallback=sdk to serve this call through the SDK, or Engine.Backend=sdk to turn the engine off.";
+            return _buildToolResult(refusal, true, ctx.ToolName, ctx.Args);
         }
 
         private static JObject EngineBuildReportPayload(JObject report)

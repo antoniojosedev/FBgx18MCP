@@ -95,6 +95,7 @@ fn categories_serialize_as_stable_phase_names_without_native_codes() {
         (DiagnosticCategory::Compilation, "compilation"),
         (DiagnosticCategory::Build, "build"),
         (DiagnosticCategory::Execution, "execution"),
+        (DiagnosticCategory::VersionScope, "version_scope"),
     ] {
         let value = serde_json::to_value(Diagnostic::new(category, "failure")).unwrap();
         assert_eq!(value["category"], expected);

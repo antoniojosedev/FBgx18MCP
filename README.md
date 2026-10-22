@@ -121,15 +121,20 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 
 ### 🎮 Decompilation / Parity Progress
 
-Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. On the disposable `KBTeste` KB, a whole-KB Rebuild All now generates and compiles every targeted object (**346/346, 0 skipped, 0 refused**) and the C# the SDK writes for that KB is reproduced **byte for byte (328/328 files)**, together with the web scripts, `gxcfg.js`, messages and runtime configuration. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds and field-limited type-only queries; reads/edits and other shapes use SDK fallback; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
+Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. At the published 4.0.0 baseline, the disposable `KBTeste` Rebuild All recorded **346/346, 0 skipped, 0 refused** and **byte for byte (328/328 files)** C# agreement, together with web scripts, `gxcfg.js`, messages and runtime configuration. These historical counts do not validate later changes or prove that unsupported database semantics were preserved. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds and field-limited type-only queries; reads/edits and other shapes use SDK fallback; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
 
 ### What builds today
+
+The counts and timings below describe the published 4.0.0 baseline, not a fresh
+validation of uncommitted generator changes. Checked emission now refuses
+unsupported database statements rather than accepting incomplete behavior;
+post-change whole-KB counts and SDK parity must be measured again.
 
 | Lane | Verified evidence | Boundary |
 | :--- | :--- | :--- |
 | Package build | `build.ps1` built Gateway, Worker, gxwire and gx-engine; local publish/backend engine hashes match. | Building the MCP distribution is not building every object in a KB. |
 | Selected-object build | Five alternating local SDK/engine pairs regenerated and compiled `DCM37961700`; core APIs and actual CLI output matched. SDK median **14.756s**, engine **0.230s** (**64.19×**). | Synthetic warm fixture; AUTO_CLOSE=OFF on both sides, original ON restored. The packaged binary was not benchmarked; it passed a separate build/run smoke. |
-| Full native KB build (`KBTeste`) | `rebuild-all`: **346 generated / 346 compiled, 0 skipped, 0 refused**. Against the SDK's own output for the same KB: **328/328 C# files byte-identical, 0 missing**; 24/24 web `.js`, `gxcfg.js`, `messages.eng.txt/.js`, `log.config`, `log.console.config` (+ `bin/` copies) and `CloudServices.config` byte-identical. | One oracle KB. The engine also writes 18 files the SDK's current output lacks (13 SDT classes identical to an earlier SDK generation, sidebar/program-name SDTs it reaches, 2 assembly-info files). Developer Menu not written (its object selection is not established). |
+| Full native KB build (`KBTeste`) | `rebuild-all`: **346 generated / 346 compiled, 0 skipped, 0 refused**. Against the SDK's own output for the same KB: **328/328 C# files byte-identical, 0 missing**; 24/24 web `.js`, `gxcfg.js`, `messages.eng.txt/.js`, `log.config`, `log.console.config` (+ `bin/` copies) and `CloudServices.config` byte-identical. | One oracle KB. Extra SDT and assembly-info output remains outside the matching-file denominator. Developer Menu not written (its object selection is not established). |
 
 Use the SDK for required workflows outside validated engine coverage. See
 [Plan 131](plans/131-sdk-performance-benchmark.md) for the exact binary, commands,
@@ -148,32 +153,26 @@ See the [current acceptance/evidence ledger](plans/129-implementation-progress.m
 
 #### Gateway Capability Registry Gates
 
-The MCP Gateway exposes a capability gate (`EngineCapabilityRegistry`). The `Parity` labels below describe registered, bounded evidence, not complete SDK equivalence; routing boundaries and fallbacks are documented in [engine_backend.md](docs/engine_backend.md):
+The MCP Gateway exposes an evidence gate (`EngineCapabilityRegistry`). See the
+[current capability table](docs/engine_backend.md) for each bounded status,
+consumer and evidence source. Runtime oracle fixtures, portable model tests and
+live MCP compatibility are different kinds of evidence; none is an overall SDK
+replacement percentage.
 
-| Capability | Status | Evidence & Performance |
-| :--- | :---: | :--- |
-| `str_format` | 🟩 **Parity** | `Str()` numeric picture rules: 36,246 native rows verified, 0 diffs. Measured ~121 ns/row vs ~280 ns/row SDK (~2.3x faster). |
-| `numeric_render` | 🟩 **Parity** | `&var.ToString()` / `Print()`: 120 native boundary cases verified (precision 1..18, scale corners, padding). |
-| `date_display` | 🟩 **Parity** | Date/DateTime rendering: 18 native boundary cases verified (`MM/dd/yy`, 12h AM/PM, empty sentinels). |
-| `text_functions` | 🟩 **Parity** | `Substr`/`Upper`/`Lower`/`StrReplace`: 63 native KBTeste cases verified (1-based, expand-casing, exact replace). |
-| `text_extended_functions` | 🟩 **Parity** | `LTrim`/`RTrim`/`PadL`/`PadR`/`Space`/`Concat`/`StartsWith`/`EndsWith`/`Contains`/`StrSearch`: 95 native `StringUtil` oracle rows verified (exact ASCII space trim, left/right pad truncation, single-sided concat trim, ordinal comparisons, 1-based index clamping). |
-| `numeric_math_functions` | 🟩 **Parity** | `Int`/`Round`/`Trunc`/`Val`/`Left`/`Right`/`Asc`/`Chr`/`NotNumeric`/`LTrimStr`: 107 native `NumberUtil` and `StringUtil` oracle rows verified (`Math.Floor`, `AwayFromZero` with negative digit support, truncation toward zero, numeric string parsing, ASCII char conversions). |
-| `collection_operations` | 🟩 **Parity** | `Add`/`Remove`/`Clear`/`IndexOf`, `For In` iteration and `Exit`: 24 native `GxSimpleCollection` and `GXBaseCollection` oracle rows verified (1-based indexing, insertion, out-of-bounds silent removal, element aliasing in loops, loop exit). |
-| `calendar_operations` | 🟩 **Parity** | `Day`/`Month`/`Year`/`Hour`/`Minute`/`Sec`/`Dow`, `AddYr`/`AddMth`/`DAdd`/`TAdd`, `DDiff`/`TDiff`, `Age`, `EndOfMonth`, `ResetTime`, `CToD`/`DToC`/`TToC`, and `.ToString()`: 133 native `DateTimeUtil` oracle rows verified (1=Sunday DOW, leap clamping, second rollover, whole-day truncated DDiff, completed years Age, measured `CToD` parse grammar with the environment two-digit-year window, ISO `yyyy-MM-dd` and `yyyy-MM-ddTHH:mm:ss` exchange pictures). |
-| `subroutine_control_flow` | 🟩 **Parity** | `Sub 'Name' ... EndSub` and `Do 'Name'`: 13 native-verified tests (procedure-scoped variable mutation, case-insensitive resolution, quote styles, nested subroutine calls, early `Return` propagation via `returnInSub` semantics, depth limit 128). |
-| `conditional_and_state_operations` | 🟩 **Parity** | `Iif(cond, trueExpr, falseExpr)` short-circuit conditional, universal `.IsEmpty()`/`IsEmpty()` and `.SetEmpty()` across all types, `Nullvalue(&var)`, `.UDP(...)` calls, and `Format`/`NewLine`/`Replicate`/`CharAt`/`StrSearchRev`/`.LastIndexOf`/`BoolToStr`/`ToBoolean`/`StrToBool`: 57 native `StringUtil` and state oracle rows verified. |
-| `sdt_and_collection_json` | 🟩 **Parity** | `&sdt.ToJson()`, `&sdt.FromJson()`, `&col.ToJson()`, `&col.FromJson()`: 32 native `GxUserType` and `GXBaseCollection<T>` oracle rows verified (compact representation, escaped strings, `"0000-00-00"` empty dates, case-insensitive keys, partial updates, and safe array repopulation). |
-| `sdt_and_collection_xml` | 🟩 **Parity** | `&sdt.ToXml([root])`, `&sdt.FromXml(xml, [root])`, `&col.ToXml([root])`, `&col.FromXml(xml, [root])`: 40 native `GxUserType` and `GXBaseCollection<T>` XML oracle rows verified (indentation, self-closing tags `<Tag />`, XML entity escaping, ISO `yyyy-MM-ddT00:00:00` date/time, booleans, case-insensitive element parsing, empty reset, and fail-closed error returns). |
-| `domain_attribute_projection` | 🟩 **Parity** | Domain (`00972a17-9975-449e-aab1-d26165d51393`) and Attribute (`adbb33c9-0906-4971-833c-998de27e0676`) projection and `BasedOn` resolution in portable catalog and SDK `ExportFile` XML: 10 native-verified integration tests (procedure variables, chained domains, SDT items, cycle detection, domain-cannot-be-based-on-attribute enforcement, and end-to-end `xml-run`). |
-| `transaction_structure_projection` | 🟩 **Parity** | Transaction (`1db606f2-af09-4cf9-a3b5-b481519d28f6`) structure, keys, and multi-level hierarchy projection in portable catalog and `ExportFile` XML: 10 native-verified integration tests (nested levels, root and child primary key enforcement, attribute references, recursion depth limit 16, Business Component `RecordType` schema lowering, procedure interoperability). |
-| `rules_and_parm_parity` | 🟩 **Parity** | GeneXus Rules part (`9b0a32a3-de6d-4be1-a4dd-1b85d3741534`) parser and AST with Parm interface parity in portable catalog and SDK `ExportFile` XML: 10 native-verified integration tests (`Parm`, `Error`, `Msg`, `Default`, `NoAccept`, `Accept`, `Order`, `Prompt`, `Serial`, `Hidden`, single/multi-line comments, strings with semicolons/escaped quotes, fail-closed diagnostics, procedure-scope enforcement, catalog and XML exchange integration). |
-| `transaction_control` | 🟩 **Parity** | Database transaction control procedural statements (`Commit` and `Rollback`, bare keywords or call syntax `Commit()`, `Rollback()` with optional semicolons): 7 native-verified integration tests (conditionals, loops, subroutines, while loops, format_version 1 fail-closed rejection, compiled executable execution, and ExportFile XML exchange). |
-| `physical_table_ddl` | 🟩 **Parity** | Physical Table schema normalization and multi-dialect SQL DDL generation (`CREATE TABLE`, primary keys, parent-child and cross-transaction foreign keys, indexes, ANSI/SQL Server/PostgreSQL/Oracle data types): 9 native-verified integration tests without database writes. |
-| `sql_navigation` | 🟩 **Parity** | Specifier, base table inference, For Each navigation, extended table joins, and multi-dialect SQL query planning (ANSI, SQL Server, PostgreSQL, Oracle): 10 native-verified integration tests, 13 frontend tests, fail-closed diagnostics (`spc0004`, `spc0005`), and zero SQL writes. |
-| `numeric_core`, `text_core`, `calendar_values`, `records_collections`, `procedure_pipeline`, `xml_projection`, `kb_catalog` | 🟩 **Parity** | Foundational runtime capabilities behind the four Native Parity subsystems above; each `EngineCapabilityRegistry` entry lists its native differential corpus or bounded portable fixture (`decimal_oracle`, `numeric_math`, `text_extended`, `calendar_ops`, `date_conversions`, `collection_ops`, `subroutines`, `exchange`, `sdt_xml`, `catalog`). |
-| `udm_storage_access` | 🟩 **Parity** (bounded reads) | Direct native UDM reads without COM/STA Worker (`knowledgebase.connection`, SQL Server, LocalDB); registered read/query consumers. Live engine writes are not implemented: `genexus_edit` remains SDK-backed or is refused under strict engine verification. Portable writer/lock tests are not live persistence evidence. |
-| `csharp_emitter` | **Bounded coverage** | C# generation and Roslyn compilation tests for supported object forms; unsupported native forms still fail closed. Compilation alone does not establish SDK behavior parity. |
-| `parallel_rebuild_all` | **Bounded coverage** | Parallel specification, C# emission and compilation; consumers `genexus_lifecycle.build` / `rebuild`. `KBTeste` Rebuild All: 346/346 compiled, 0 skipped/refused; paired speed ratios below are `KBTeste`-only and do not establish full SDK parity. |
+- Native-runtime oracle rows cover only their recorded inputs, encodings and
+  environment; synthetic library tests alone do not establish native parity.
+- Admitted type-only queries and blocking builds/rebuilds are the current native
+  MCP surface. Reads and edits remain SDK-backed or fail closed; routing a call
+  to a deferral guard is not native implementation coverage.
+- Storage decoding, navigation planning, object modeling and C# emission remain
+  partial. Unsupported database statements must fail generation rather than
+  produce a successful Procedure with missing database behavior.
+
+The published 4.0.0 `KBTeste` result (346 compiled classes, 328 matching SDK C#
+files and 20 extra files) is historical, bounded evidence. It is not a fresh
+validation of later safety changes, all object families or whole-SDK behavior.
+The [full-parity acceptance plan](plans/132-gxengine-full-parity.md) tracks the
+remaining workflows and evidence required.
 
 ### ⚡ Performance Benchmarks (gx-engine vs. GeneXus SDK)
 
@@ -219,8 +218,8 @@ No backend setting is needed. To narrow routing to builds (`"auto"`) or turn the
 ```
 
 - **`Engine.Backend`**: `"gxengine"` (default: admitted builds and field-limited type-only queries; reads/edits use SDK fallback), `"auto"` (admitted builds only), or `"sdk"` (SDK only, engine never invoked).
-- **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK when not at parity) or `"error"` (fails closed with `EngineCapabilityNotParity` for strict verification).
-- **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, `capabilities`, and `routedOperations`.
+- **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK outside admitted native coverage) or `"error"` (fails closed: `EngineCapabilityNotParity` for evidence-gate rejection; `EngineOperationOutsideAdmittedSpace` for read/edit deferrals and unsupported query/build arguments).
+- **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, and `capabilities`. Its `routedOperations` lists served native operations; `deferredOperations` lists read/edit deferrals separately, never as parity.
 
 To run compiler tests or standalone projects from checkout:
 

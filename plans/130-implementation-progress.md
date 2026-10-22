@@ -1,5 +1,7 @@
 # Plan 130: GeneXus SDK Complete Retirement — Implementation Ledger
 
+Historical capability labels below are superseded by [Plan 132](132-gxengine-full-parity.md) and the current registry/table in [engine_backend.md](../docs/engine_backend.md). In particular, `udm_storage_access` is Partial and does not serve MCP reads or edits.
+
 ## Current status — 2026-10-18
 
 **SDK retirement is not complete.** The previous 100% displays and full-build >380× claim below were implementation/fixture summaries, not a valid measurement of SDK replacement. They are superseded by the [current acceptance ledger](129-implementation-progress.md#current-acceptance-status--2026-10-18). Native object refusals, SDT oracle gaps, live persistence/product coverage and a successful matched-workload speed comparison remain open. The 50× build-speed objective is not verified.

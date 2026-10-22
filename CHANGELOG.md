@@ -13,6 +13,38 @@
 
 ### Internal
 
+## v4.0.1 - 2026-10-21
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
+- Read-only generated-artifact comparator with explicit selection counts, SHA-256 inventories, safe atomic report output, and a discoverable project skill.
+- Experimental, unwired read-token formatting primitives using RustCrypto SHA-256 and independently generated Worker/Rust vectors. Native read metadata and token parity remain unverified; Rust now explicitly requires 1.88.
+
+### Changed
+
+- Capability statuses distinguish recorded native evidence from synthetic library coverage; portable subsets are Partial and the blanket SDK-replacement claim is Unsupported.
+- Doctor separates native `routedOperations` from read/edit `deferredOperations`. Type-only query responses identify `udm_type_query`; deferred read/edit refusals keep `udm_storage_access`. Admission, default backend and SDK fallback behavior are unchanged.
+
+### Fixed
+
+- #635: SQL-authenticated native KB access accepts `SQLCMDUSER`/`SQLCMDPASSWORD` from the process environment and rejects missing credentials before sqlcmd can prompt. Passwords remain outside argv/logs; integrated-security connections keep Windows authentication. `rebuild-all` has a dedicated pre-build credential refusal for safe SDK fallback, with structured engine diagnostics and explicit `auto` routing documentation.
+- gx-engine no longer serves the trunk when the SDK session has another KB version active. v4.0.0 always read Design model 1, so with a branch active, engine queries and builds silently answered from the trunk. The Worker now reports the active version and its Design model (`kbversion ActiveModel`, a snapshot read off the SDK thread), the Gateway passes it as `--design-model`/`--kb-version`, and the engine serves that model after checking its stored `KBVersion`. Builds require a single Design model (trunk model 1): supporting build facts are not yet version-pinned, so even a trunk build in a versioned KB stays on the SDK. A KB with versions and no named version, a mismatch, or an unsupported build scope is refused before any read or write (exit 4, `version_scope`) and follows `Engine.Fallback`.
+- Model-version metadata is parsed as complete XML rather than adjacent tag substrings: formatted values retain their version, while duplicated, malformed or non-scalar `KBVersion` properties fail closed instead of becoming trunk. Legacy catalog commands (`kb-check`/`kb-emit`/`kb-build`/`kb-run`, native directory or connection-file input) now require a single Design model and bind its actual id.
+- Engine builds sample the active KB version after acquiring the build gate and recheck it after execution. An observed version change, lost snapshot or failed recheck requires reconciliation, never successful output or automatic SDK replay. Successful Worker snapshot refreshes publish atomically; failed refreshes still clear the snapshot. Snapshot requests reserve only an existing ready Worker, with a two-second send/response budget and no acquisition, respawn or SDK-startup wait.
+- Standalone native queries distinguish WebPanels, MasterPages and WebComponents using active-version `WEB_COMP` metadata before counting and paging. Unknown metadata fails closed; MCP WebPanel routing remains SDK-deferred.
+- Native `kb-read` projects design-class StyleClass wrappers in source responses without changing stored/codegen text. Quoted literals (including escaped quotes), comments and other GUIDs remain unchanged. MCP native reads remain SDK-deferred; this correction is not full read/token parity.
+- `genexus_kb_version` failures now report the SDK root cause (`exceptionType`, `failureTrace`, message unwrapped from reflection wrappers) and log it, instead of the generic "target of an invocation" text. `branch` refuses a development (non-frozen) parent with `KbVersionParentNotFrozen` before calling the SDK; the default parent is the active development version, so branch from a frozen version (`freeze` first).
+- SDK-form Procedure generation refuses unsupported `For Each`, `New`, `Delete` and database attribute assignments, including nested statements and transitive callers, instead of silently discarding database behavior. Checked-emission refusals fail the build (`Failed`); planning skips remain `Partial`, never successful whole-KB builds. Historical KBTeste generation counts are not revalidation of this guard.
+
+### Internal
+
+- Native `kb-read`/`kb-query`/`kb-write` share one SQL reader session for the version check and the operation's reads: about 170 ms to 110 ms per query on `KBTeste`, with byte-identical output on the five sampled reads and queries.
+- Regression and mutation checks cover database refusals, capability evidence/routing, token hashing/construction, comparator input preservation and documentation discovery. Full SDK replacement remains unverified; see Plan 132.
+
 ## v4.0.0 - 2026-10-21
 
 

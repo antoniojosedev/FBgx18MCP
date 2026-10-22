@@ -514,3 +514,45 @@ mod web_theme_tests {
         }
     }
 }
+
+impl UdmClient {
+    /// Every `UdmModel` row with its parent and the `KBVersion` property its latest stored version holds,
+    /// for [`crate::udm::version_scope::select_design_model`]. An in-memory client stores no topology and
+    /// answers with the default Design model alone.
+    pub fn model_topology(
+        &self,
+    ) -> Result<Vec<crate::udm::version_scope::ModelTopologyRow>, String> {
+        use crate::udm::version_scope::ModelTopologyRow;
+        if !self.is_live() {
+            return Ok(vec![ModelTopologyRow {
+                model_id: self.design_model_id(),
+                parent_id: 0,
+                kb_version: None,
+            }]);
+        }
+        // Hex and declared length preserve the complete XML across sqlcmd row delimiters and
+        // encoding. Parse the XML, not adjacent tag spellings: an unreadable version is not trunk.
+        let sql = "SET NOCOUNT ON; SELECT m.ModelId, m.ModelParentId, ISNULL(DATALENGTH(v.EntityVersionProperties), 0), CONVERT(VARCHAR(MAX), CAST(v.EntityVersionProperties AS VARBINARY(MAX)), 2) FROM UdmModel m LEFT JOIN EntityType t ON t.EntityTypeName = 'Udm.Types.Model' LEFT JOIN EntityVersion v ON v.EntityTypeId = t.EntityTypeId AND v.EntityId = m.ModelId AND v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = t.EntityTypeId AND l.EntityId = m.ModelId) ORDER BY m.ModelId";
+        let raw = self.execute_live_sql(sql)?;
+        parse_live_rows(&raw, 4)?
+            .into_iter()
+            .map(|row| {
+                let model_id = parse_live_int(row[0], "ModelId")?;
+                let declared = parse_live_int(row[2], "DATALENGTH(EntityVersionProperties)")?;
+                let declared = usize::try_from(declared)
+                    .map_err(|_| format!("model {model_id} properties length is negative"))?;
+                let bytes = decode_hex_value(row[3].trim(), declared)?;
+                let properties = String::from_utf8(bytes).map_err(|error| {
+                    format!("model {model_id} properties are not UTF-8: {error}")
+                })?;
+                let kb_version = crate::udm::version_scope::version_from_properties(&properties)
+                    .map_err(|error| format!("model {model_id}: {error}"))?;
+                Ok(ModelTopologyRow {
+                    model_id,
+                    parent_id: parse_live_int(row[1], "ModelParentId")?,
+                    kb_version,
+                })
+            })
+            .collect()
+    }
+}

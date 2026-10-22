@@ -3,6 +3,8 @@
 //! This is not a decoder or writer for GeneXus native KB storage. It models stable
 //! object identities, source parts, and explicit references in a bounded JSON file.
 
+mod native;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -552,22 +554,13 @@ impl Catalog {
         if path.is_dir() {
             let conn_file = path.join("knowledgebase.connection");
             if conn_file.exists() {
-                let client = std::sync::Arc::new(
-                    crate::udm::client::UdmClient::connect_kb(path)?.with_persistent_reads(),
-                );
-                let reader = crate::udm::reader::UdmReader::new(client);
-                return reader.read_catalog();
+                return native::load(path);
             }
         } else if path
             .file_name()
             .is_some_and(|f| f == "knowledgebase.connection")
         {
-            let kb_dir = path.parent().unwrap_or(path);
-            let client = std::sync::Arc::new(
-                crate::udm::client::UdmClient::connect_kb(kb_dir)?.with_persistent_reads(),
-            );
-            let reader = crate::udm::reader::UdmReader::new(client);
-            return reader.read_catalog();
+            return native::load(path.parent().unwrap_or(path));
         }
 
         Self::from_json(&read_catalog_text(path)?)

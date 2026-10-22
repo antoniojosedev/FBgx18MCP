@@ -26,18 +26,18 @@ the disposable `KBTeste` KB: whole-KB `rebuild-all` generates and compiles 346/3
 targeted objects with 0 refusals, its 328 C# files match the SDK's output byte for byte,
 and whole-KB generation runs in ~0.62 s against ~36 s for the SDK (paired; see the
 [engine README](../src/gx-engine/README.md#measured-local-sdk-comparison)). A KB with forms
-outside that evidence gets refusals by name, reported as a partial build.
+outside that evidence gets refusals by name, reported as Partial when skipped during planning; checked-emission errors make the build Failed.
 
 `Engine.Backend=auto` narrows routing to admitted builds; reads and queries go
 back to the SDK. Explicit `Engine.Backend=sdk` disables all engine routing,
-including builds. `genexus_edit` is a registered consumer but stays outside the
-engine space: the engine writer has no live persistence yet, so an engine edit
-would report a save that never reaches the Knowledge Base database
+including builds. `genexus_read` and `genexus_edit` are held outside the engine
+by the explicit deferral policy (no capability declares them as consumers): the
+engine writer has no live persistence yet, so an engine edit would report a save that never reaches the Knowledge Base database
 (`Fallback=error` refuses it, `Fallback=sdk` serves it with the SDK). Everything
 else — and every call outside the admitted space documented below — stays on the
 SDK/Worker path, or is refused when `Engine.Fallback=error`. The remaining
-parity capabilities (`str_format`, `numeric_render`, …) still have no product
-consumer, and the gate is built so nothing partial can route. The physical
+native-oracle capabilities (`str_format`, `numeric_render`, …) still have no
+product consumer, and the gate is built so nothing partial can route. The physical
 storage facts behind the read path are recorded in
 [`udm_storage_notes.md`](udm_storage_notes.md).
 
@@ -68,17 +68,67 @@ strict document fails at parse time. The Gateway hot-reloads `config.json` and
 re-resolves these settings on use, so `genexus_doctor` reflects an edit without
 a restart.
 
+## SQL authentication (issue #635)
+
+Native KB access uses `sqlcmd`, not the SDK's private credential store. For
+`IntegratedSecurity=False`, provide both `SQLCMDUSER` and `SQLCMDPASSWORD` in the
+**Gateway process environment** (or the standalone gx-engine process). Explicit
+SQLCMD environment values override the corresponding connection-file fields;
+missing values may come from that file. Empty users/passwords are rejected
+before starting sqlcmd, so it cannot prompt on its batch stdin. Passwords are
+passed only in the child environment, never command-line arguments. Do not put
+passwords in checked-in configuration, MCP arguments, terminal commands or logs;
+use the client's protected environment/secret mechanism and restart the Gateway
+after changing inherited credentials. `IntegratedSecurity=True` keeps Windows
+authentication (`-E`) and ignores SQLCMD credential variables. The engine does
+not silently change authentication identity or retry with Windows authentication.
+
+For `rebuild-all`, missing credentials produce exit **5**, empty stdout, and a
+single JSON diagnostic on stderr under `--diagnostics=json`:
+`category=sql_credentials_unavailable`, an actionable `message`, and `location=null`.
+This dedicated preflight refusal happens before storage reads or build outputs.
+`Engine.Fallback=sdk` logs the refusal and runs the original SDK path;
+`Fallback=error` returns `EngineSqlCredentialsUnavailable`. No password is copied
+from the SDK to the engine. This is not permission to replay generic login errors,
+timeouts, malformed output or failed builds. Existing exit-4 version-scope refusals
+remain safe before build effects; all other failures after a build starts must not
+trigger automatic SDK build replay and may require reconciliation.
+
+### Exactly what `auto` routes
+
+`auto` considers only `genexus_lifecycle` `build`/`rebuild`, with these argument gates:
+
+| Request | Engine candidate under `auto` |
+| :--- | :--- |
+| Whole-KB `build`/`rebuild`, no `target` or `mode` | Yes, if blocking |
+| Targeted `build mode=compile_check callers=false includeCallees=transitive` | Yes, if blocking and target is a simple/module-qualified object name |
+| Normal targeted build, another mode, callers enabled, or non-transitive callees | No; SDK (or refusal under `Fallback=error`) |
+| Async build | No; SDK (or refusal under `Fallback=error`) |
+| Read, query, edit, any other tool/action | SDK; never invokes the engine under `auto` |
+
+Blocking means `wait_until_done=true`, or `estimated_seconds` below the Gateway's
+sync threshold (default 20 seconds). Full deployment (`skipFullDeploy=false`),
+extra arguments and other admitted-space restrictions below still apply. A
+candidate is not a successful build: versioned/multi-Design-model KBs are refused
+before build output and use the configured SDK fallback. `Backend=sdk` disables
+engine invocation entirely. Unsupported/failed SDK builds remain SDK errors.
+
 ## What changes today
 
 With default `Backend=gxengine`, admitted builds and field-limited type-only
-queries can be served natively. The registry also lists reads/edits as candidates,
-but their argument gate always defers or refuses them pending parity.
+queries can be served natively. Reads and edits are not engine candidates: an
+explicit deferral policy (not a capability claim) always hands them to the SDK or
+refuses them under `Fallback=error`, pending response parity and persistent writes.
 `Backend=auto` keeps only the builds.
 Every other tool is untouched. `genexus_doctor` result gains an `engine` block:
 
 - always: `backend`, `fallback`, and `capabilities` — the `parity` / `partial` /
-  `unsupported` counts plus `routedOperations`, the operations currently served
-  enabled as engine candidates by the selected policy (argument gates still apply);
+  `unsupported` counts plus `routedOperations`, the operations the selected policy
+  lets the engine actually serve (argument gates still apply: builds and the
+  type-only query), and `deferredOperations`, the read/edit operations held
+  outside the engine by explicit policy (`genexus_read`, `genexus_edit` under
+  `Backend=gxengine`; empty under `auto` and `sdk`). A deferred operation is never
+  counted as parity or listed as routed;
 - with `Backend=gxengine|auto`: `executable`, `available`, `version` from the
   `gx-engine --version` handshake (ten-second budget) or a structured `error`
   with one of `EngineNotFound`, `EngineStartFailed`, `EngineProbeFailed`,
@@ -106,17 +156,57 @@ single entry point a swap must call:
   or with `Fallback=error` the call is refused with `EngineCapabilityNotParity`
   and the reason. There is no silently-partial engine path.
 
+`genexus_read` and `genexus_edit` are separate from this gate. They are held
+outside the engine by an explicit deferral policy
+(`EngineRoutedOperations.DeferredOperationCapabilityIds`), which reports the
+evidence record `udm_storage_access` (`partial`, no consumer) as their
+`engine.capability` and does not call `EngineRouter.Decide`: `Backend=sdk` and
+`Backend=auto` leave them on the SDK; `Backend=gxengine` refuses them with
+`EngineOperationOutsideAdmittedSpace` under `Fallback=error` and hands them to the
+SDK under `Fallback=sdk`. The policy is routing, not evidence, so it never makes a
+capability `Parity`.
+
 Status is a claim with evidence: a capability may only move to `Parity` after a
 measured native differential, and `EngineBackendTests` fails when an entry cites
 a repository path that does not exist. The entries below keep the evidence
 write-up for their differential; the current status of every capability is owned
-by `EngineCapabilityRegistry` (and the live `genexus_doctor` view), and rows are
-not re-annotated here when a later differential moves a status:
+by `EngineCapabilityRegistry` (and the live `genexus_doctor` view). The registry
+and this table agree as of this revision, and `EngineBackendTests` pins the
+`Parity`, `Unsupported` and non-parity sets by capability id.
+
+**What a status means.** `Parity` is reserved for (a) capabilities whose
+evidence is a recorded native-oracle fixture (`*_native.tsv`: the engine value
+compared row by row with the native runtime, as recorded in
+[`plans/129-implementation-progress.md`](../plans/129-implementation-progress.md);
+`EngineBackendTests` checks the fixture is consumed by a Rust test and that its
+provenance is recorded either in that ledger or in a captured-from-native comment
+in the consuming Rust test, not that the data was re-measured against a live SDK;
+`date_display` is the second kind: its provenance is the Rust capture comment and
+[`src/gx-engine/VALIDATION.md`](../src/gx-engine/VALIDATION.md) (lines ~679-710),
+not the ledger) and (b) the
+routed capability records below, each only for its documented admitted space. A capability whose
+evidence is the engine's own synthetic unit tests is `Partial`: those tests show
+the library behaves as its authors specified, not that it matches the SDK or a
+product operation. Doctor's `parity`/`partial`/`unsupported` counts are an
+inventory of these labels, not a percentage of SDK replacement, and the number of
+entries is not a coverage measure. The routed records are narrow on purpose so a
+broad storage label never becomes a routing gate:
+
+- `udm_type_query` — `Parity` only for the field-limited type-only
+  `genexus_query` described below; consumer `genexus_query`. Its evidence is a
+  recorded, bounded historical SDK-vs-engine differential (see the table row),
+  not a claim for every KB.
+- There is no read/edit capability record: `genexus_read` and `genexus_edit` are
+  covered by the deferral policy described under the capability gate, and the
+  storage record `udm_storage_access` stays `partial`.
+- `parallel_rebuild_all` — `Parity` only for the admitted blocking build/rebuild
+  space and the recorded `KBTeste` differential.
 
 | Capability | Status | Evidence / note |
 | :--- | :--- | :--- |
-| `udm_storage_access` | parity (routed) | Direct native UDM storage access: connection parser + envelope decoder + token reconstructor + reader/writer; `src/gx-engine/src/udm/mod.rs`, `src/gx-engine/tests/udm_decoder.rs` (19/19), `src/gx-engine/tests/udm_reader_writer.rs` (10/10), `src/gx-engine/tests/kb_ops.rs` (10/10) plus a live KBTeste read. Routes only admitted field-limited `genexus_query` shapes. `genexus_read` is registered but held outside the served space pending SDK identity/freshness/token parity; `genexus_edit` is likewise held back while engine writes have no live persistence (see below). Storage capability status is not full MCP response parity. |
-| `parallel_rebuild_all` | parity (routed) | Parallel specification + Roslyn compilation; `src/gx-engine/src/rebuild.rs`, `src/gx-engine/tests/rebuild_pipeline.rs` (5/5: sub-second 24-proc parallel rebuild). Serves `genexus_lifecycle` `build`/`rebuild`. |
+| `udm_type_query` | parity (routed, admitted space only) | Field-limited type-only `genexus_query` through `kb-query`. Recorded historical differential (retained outside Git, not re-run for this revision, one disposable GX18 `KBTeste`, forced and settled SDK index, `Fallback=error`): 19 type tokens × limit 1/10/100 = 57 calls with `fields=[name,type]`; 45 answered natively with `results`, `count`, `total`, `hasMore`, `pagination` and `_meta.match_quality`/`suggested_next` equal to the SDK answer (45 native-served log lines), 6 expected empty-result refusals, 6 `webpanel`/`wp` deferrals, 0 differences. The retained `comparison.json` (`C:/tmp/gx-release4-index-final-parity`, outside Git, not shipped or re-verified by the repository tests) records `gatewaySha256=b1bf724d3f5de9149cd8f768ed786079151390d9667d502c0cb84a9e2b875b86` and `workerSha256=3f725129c7aeb5561c2550c204b579a95d0874590b5941647ce71d114d63e439`. The repository tests (`EngineRoutedOperationTests`, `EngineReadQueryContractTests`, `src/gx-engine/tests/kb_ops.rs`, `src/gx-engine/tests/udm_reader_writer.rs`) are admission/envelope contract tests with a stub engine and storage tests, not that differential. Not a claim for other KBs, name/text search or reads. |
+| `udm_storage_access` | partial | Direct native UDM storage access: connection parser + envelope decoder + token reconstructor + reader/writer; `src/gx-engine/src/udm/mod.rs`, `src/gx-engine/tests/udm_decoder.rs` (19/19), `src/gx-engine/tests/udm_reader_writer.rs` (10/10), plus a bounded live KBTeste read. No consumer: the writer persists nothing to a live KB and MCP read parity (SDK identity, freshness, timestamp/parent identity, part-text normalization, `versionToken`) is not established. |
+| `parallel_rebuild_all` | parity (routed, admitted space only) | Parallel specification + Roslyn compilation; `src/gx-engine/src/rebuild.rs`, `src/gx-engine/tests/rebuild_pipeline.rs` (5/5: sub-second 24-proc parallel rebuild) and the `KBTeste` differential in the [engine README](../src/gx-engine/README.md) (346/346 compiled, 328/328 C# files identical to SDK output). Serves `genexus_lifecycle` `build`/`rebuild`; other Knowledge Bases and runtime behavior of the generated programs are not established. |
 | `str_format` | parity | Numeric `Str` pictures: native `double`→`(decimal)` (15-digit) bound pipeline reproduced; 36,246 in-domain native rows across six scans, 0 mismatches; `src/gx-engine/tests/fixtures/str_matrix.tsv` (6,152 rows) plus the full bound table in `src/gx-engine/fixtures/str-bounds-native.tsv`. No consumer yet. |
 | `numeric_render` | parity | Implicit `&var.ToString()`/`Print(&numericVar)`: native measured equal to `Str(value, precision, scale)` (padding included) over 120 KBTeste cases across precision 1..18 boundary families, scale corners and the width 15..18 narrowed-bound regime; `src/gx-engine/tests/fixtures/numeric_render_native.tsv` + `src/gx-engine/tests/numeric_render_native.rs`. Expressions/record members/date components keep the untyped display path. No consumer yet. |
 | `text_functions` | parity | `Substr`/`Upper`/`Lower`/`StrReplace` plus `.Substring`/`.ToUpper`/`.ToLower`/`.Replace`: 63 recorded KBTeste rows (raw-value substringing with 1-based out-of-range rules, per-character case mapping that keeps characters whose mapping expands, case-sensitive left-to-right non-overlapping replace); `src/gx-engine/tests/fixtures/text_functions_native.tsv` + `src/gx-engine/tests/text_functions.rs`. Non-BMP positions and database-column semantics outside the claim. No consumer yet. |
@@ -124,7 +214,6 @@ not re-annotated here when a later differential moves a status:
 | `numeric_math_functions` | parity | `Int`/`Round`/`Trunc`/`Val`/`Left`/`Right`/`Asc`/`Chr`/`NotNumeric`/`LTrimStr` plus method forms: 107 recorded `GeneXus.Utils.NumberUtil` and `StringUtil` rows (`Math.Floor`, `AwayFromZero` with negative digit support, truncation toward zero, numeric string parsing, ASCII char conversions); `src/gx-engine/tests/fixtures/numeric_math_native.tsv` + `src/gx-engine/tests/numeric_math.rs`. No consumer yet. |
 | `collection_operations` | parity | `Add`/`Remove`/`Clear`/`IndexOf`, `For In` iteration and `Exit`: 24 recorded `GeneXus.Utils.GxSimpleCollection` and `GXBaseCollection` rows (1-based index, index insertion, silent bounds removal, element aliasing in loops, loop exit); `src/gx-engine/tests/fixtures/collection_ops_native.tsv` + `src/gx-engine/tests/collection_ops.rs`. No consumer yet. |
 | `calendar_operations` | parity | `Day`/`Month`/`Year`/`Hour`/`Minute`/`Sec`/`Dow`/`AddYr`/`AddMth`/`DAdd`/`TAdd`/`DDiff`/`TDiff`/`Age`/`EndOfMonth`/`ResetTime` plus method forms: 83 recorded `GeneXus.Utils.DateTimeUtil` rows (components, leap day clamping, day of week indexing 1=Sunday, forward/backward date and second arithmetic, day/second differences, completed years age calculation, end-of-month and time reset); `src/gx-engine/tests/fixtures/calendar_ops_native.tsv` + `src/gx-engine/tests/calendar_ops.rs`. No consumer yet. |
-| `subroutine_control_flow` | parity | Local `Sub 'Name' ... EndSub` definitions and `Do 'Name'` calls: native C# `S111()` and `returnInSub` generation verified in `NetModel/web/general/ui/listprograms.cs`; `src/gx-engine/tests/subroutines.rs` (13/13 tests: shared procedure-scoped variable mutation, case-insensitive resolution, quote styles, nested subroutine calls, early `Return` propagation exiting caller procedure, recursion depth limit 128, and compile-time validation). No consumer yet. |
 | `conditional_and_state_operations` | parity | `Iif(cond, trueExpr, falseExpr)` short-circuit conditional, universal `.IsEmpty()`/`IsEmpty()` and `.SetEmpty()` across `Numeric`, `Text`, `Boolean`, `Date`, `DateTime`, `Collection`, and `Record` members, `Nullvalue(&var)`, `.UDP(...)` calls, and `Format`/`NewLine`/`Replicate`/`CharAt`/`StrSearchRev`/`.LastIndexOf`/`BoolToStr`/`ToBoolean`/`StrToBool`: 57 recorded `GeneXus.Utils.StringUtil` and state oracle rows; `src/gx-engine/tests/fixtures/conditional_state_native.tsv` + `src/gx-engine/tests/conditional_state.rs`. No consumer yet. |
 | `numeric_core` | partial | Signed 64-bit arithmetic and checked overflow; not a Numeric/Decimal compatibility claim. |
 | `text_core` | partial | Len/Trim/comparisons over CP1252 bytes; known encoding divergence on high bytes. |
@@ -133,9 +222,12 @@ not re-annotated here when a later differential moves a status:
 | `procedure_pipeline` | partial | Admitted Procedure compile+run; bounded reachability. |
 | `xml_projection` | partial | SDK `ExportFile` XML projection; bounded depth/item-alias rules. |
 | `kb_catalog` | partial | The engine's own portable catalog format, not a native KB reader. |
-| `native_kb_read` | unsupported | No native KB decoder exists; SDK-only. |
-| `sql_navigation` | unsupported | No specifier/navigation/SQL planning. |
-| `general_gx_surface` | unsupported | Rules, Events and forms outside the admitted subset fail closed. |
+| `native_kb_read` | partial | Text tree/XPZ catalog decoding only; the bounded native storage reader is `udm_storage_access`. Not MCP read parity; `genexus_read` stays on the SDK. |
+| `sql_navigation`, `formula_navigation`, `dml_navigation`, `dataselector_composition` | partial | Specifier/navigation/SQL and DML *plans* from synthetic fixtures; no differential against SDK navigation output and no SQL is executed. |
+| `csharp_emitter` | partial | Emits and compiles C# for the supported forms; no consumer of its own. The `KBTeste` SDK byte comparison is carried by `parallel_rebuild_all`. |
+| `subroutine_control_flow`, `domain_attribute_projection`, `transaction_structure_projection`, `rules_and_parm_parity`, `transaction_control`, `physical_table_ddl` | partial | Frontend/catalog/XML-projection behavior checked by the engine's synthetic tests (subroutines: plus an observation of SDK-generated C# shape); no recorded native execution rows. |
+| `database_reorganization`, `module_namespaces`, `dataprovider_specification`, `object_impact_analysis`, `guid_and_extended_math`, `design_system_tokens_styles`, `structured_diagnostics_catalog`, `text_tree_roundtrip`, `dataview_external_table_mapping`, `output_channels_streaming_buffers`, `webpanel_layout_events`, `code_formatting_linting`, `datastore_provider_profiles`, `gam_security_authorization`, `xpz_package_transfer`, `object_versioning_history`, `gxtest_runner`, `multiagent_locking_leases` | partial | Portable-subset libraries with no product consumer, evidenced only by the engine's own synthetic tests; no SDK differential. These were previously labelled parity and are not SDK or product parity. |
+| `general_gx_surface` | unsupported | Umbrella claim withdrawn; its components are individually partial. Rules, Events and forms outside the admitted subsets fail closed. |
 
 The parity claim is also measurable: `python src/gx-engine/scripts/benchmark.py`
 runs one corpus through the native runtime helper (official
@@ -175,6 +267,60 @@ Request cancellation is different:
 it propagates cancellation without SDK fallback, whether it arrives before
 launch or during an engine read/build. Nothing routes through the engine unless
 the registry marks the capability `Parity`.
+
+### KB versions: the active Design model
+
+A Knowledge Base with versions stores one Design model per version (trunk,
+frozen versions, development branches); the SDK serves the Design model of the
+version its session has active. Before every engine query or build the Gateway
+asks the session KB's Worker for that version (`kbversion ActiveModel`, answered
+off the SDK thread from a snapshot taken at KB open and after `list`, `freeze`,
+`branch`, `set_active` and `revert`; an engine call never starts a Worker or waits
+for SDK startup)
+and passes `--design-model <id> --kb-version <id>`. The engine then:
+
+- serves a query from the named Design model after checking that the model's
+  stored `KBVersion` property names that version;
+- serves a build only when the KB has a single Design model (trunk model 1),
+  with every environment model under it. Supporting attribute/table/message facts
+  are not yet version-pinned, so versioned KB builds stay on the SDK even with
+  the trunk active;
+- without a named version, serves only a Knowledge Base with a single Design
+  model.
+
+Anything else is a version-scope refusal (exit 4, diagnostic category
+`version_scope`) raised before any object is read or output written, so the call
+follows `Engine.Fallback` like any call outside the admitted space: the SDK
+serves it, or `EngineOperationOutsideAdmittedSpace` refuses it. A build refused
+this way needs no reconciliation. v4.0.0 always read Design model 1, so with a
+branch active it answered queries and builds from the trunk without an error.
+
+Verified on a disposable copy of `KBTeste` with a frozen version and a branch:
+the Worker reported version 0 / model 1 for the trunk and version 2 / model 4
+with the branch active (matching the stored `KBVersion` properties), queries
+were served from the named model, and a build with the branch active was refused
+before the engine read anything. Query results of the two models were identical
+on that copy, so the model switch itself is covered by unit tests, not by a
+content difference observed live.
+
+Builds sample the active version only after acquiring the engine build gate.
+After execution, an observed version change or an unavailable recheck of a known
+snapshot makes the outcome uncertain: reconciliation is required and the SDK is
+not replayed. This start/end identity check does not detect a version that changes
+and returns to the original during the build; full concurrent workflow parity is
+not established. Successful `list` refreshes and recaptures publish atomically;
+failed observations clear the snapshot. KB open and mutating version operations
+still clear it before changing scope, so concurrent readers can see unknown.
+Snapshot RPCs reserve the already-ready Worker by identity, never acquire or
+respawn one, and bound both send and response to one two-second budget.
+
+Stored model properties are decoded as full XML, including formatted integer
+values. Missing `KBVersion` (trunk default) is distinct from duplicated, malformed
+or non-scalar metadata, which refuses the operation. Legacy catalog commands
+(`kb-check`, `kb-emit`, `kb-build`, `kb-run`) accept a native KB directory or its
+connection file only when one Design model exists; they bind that model's actual
+id. Their catalog-load refusals use the existing input-error diagnostic, not the
+Gateway's structured exit-4 replay contract. Portable JSON catalogs are unchanged.
 
 ### `genexus_read` → SDK fallback
 
@@ -223,9 +369,9 @@ closed with `EngineOperationOutsideAdmittedSpace` under `Engine.Fallback=error`.
 
 ### `genexus_edit` → `kb-write` (held outside the served space)
 
-Not served today. The capability registers `genexus_edit` as a consumer, but
-`UdmWriter::save_object` mutates the engine's in-process store only: it issues no
-SQL, so an engine-served edit against a live Knowledge Base would report a save
+Not served today. `genexus_edit` is on the deferral policy (no capability record
+declares it as a consumer), and `UdmWriter::save_object` mutates the engine's
+in-process store only: it issues no SQL, so an engine-served edit against a live Knowledge Base would report a save
 that is lost when the process exits. Every call is therefore outside the space:
 `Fallback=error` refuses it with `EngineOperationOutsideAdmittedSpace` naming the
 reason, and `Fallback=sdk` serves it with the SDK unchanged. `gx-engine kb-write`
@@ -360,8 +506,8 @@ switch is a checkout/operator path today, not a shipped artifact.
   write, then an independent read-back); until then `genexus_edit` stays outside
   the engine space.
 - Native KB object access is served through the engine's own UDM storage
-  adapter (`udm_storage_access`, measured against a live KB); a generic native
-  KB decoder (`native_kb_read`) remains unsupported, and the engine never
+  adapter (`udm_storage_access`, a bounded live read; partial, no consumer; read/edit deferral is separate policy); a generic native
+  KB decoder (`native_kb_read`) is not established, and the engine never
   claims an SDK-only surface.
 - Raw SDK exports and private KB data never enter Git; engine evidence lives as
   the recorded differentials, fixtures and hashes already committed under

@@ -390,6 +390,7 @@ impl<'a> CSharpEmitter<'a> {
                 out
             }
             Stmt::ForEach(for_each_stmt) => {
+                self.refuse_database_statement("For Each");
                 let mut out = format!("{indent}/* GeneXus For Each block */\n");
                 for s in &for_each_stmt.body {
                     out.push_str(&self.emit_stmt(s, vars));
@@ -397,12 +398,19 @@ impl<'a> CSharpEmitter<'a> {
                 out
             }
             Stmt::AssignAttribute(attr, expr) => {
+                // The parser reads an attribute assignment only inside a For Each or New, where it writes a
+                // column of the current row. No Procedure statement has a bare attribute field to assign.
+                self.refuse_database_statement(&format!("attribute assignment '{attr}'"));
                 let cs_attr = to_csharp_attr_name(attr);
                 let e = self.emit_expr(expr);
                 format!("{indent}{cs_attr} = {e};\n")
             }
-            Stmt::Delete => format!("{indent}/* delete current row */\n"),
+            Stmt::Delete => {
+                self.refuse_database_statement("Delete");
+                format!("{indent}/* delete current row */\n")
+            }
             Stmt::New(new_stmt) => {
+                self.refuse_database_statement("New");
                 let mut out = format!("{indent}/* new record */\n");
                 for s in &new_stmt.body {
                     out.push_str(&self.emit_stmt(s, vars));

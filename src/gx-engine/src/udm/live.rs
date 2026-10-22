@@ -4,7 +4,25 @@
 
 use crate::udm::connection::{AuthMode, KbConnectionInfo};
 
-fn sqlcmd_command(info: &KbConnectionInfo) -> std::process::Command {
+fn sqlcmd_command(info: &KbConnectionInfo) -> Result<std::process::Command, String> {
+    sqlcmd_command_with_credentials(
+        info,
+        std::env::var_os("SQLCMDUSER"),
+        std::env::var_os("SQLCMDPASSWORD"),
+    )
+}
+
+/// Checks credential availability without starting SQL or touching build outputs.
+/// The CLI uses this only before rebuild-all's first read to prove safe SDK fallback.
+pub fn validate_sqlcmd_auth(info: &KbConnectionInfo) -> Result<(), String> {
+    sqlcmd_command(info).map(|_| ())
+}
+
+fn sqlcmd_command_with_credentials(
+    info: &KbConnectionInfo,
+    user_env: Option<std::ffi::OsString>,
+    password_env: Option<std::ffi::OsString>,
+) -> Result<std::process::Command, String> {
     let mut cmd = std::process::Command::new("sqlcmd");
     cmd.arg("-S").arg(&info.server_instance);
     cmd.arg("-d").arg(&info.db_name);
@@ -20,23 +38,30 @@ fn sqlcmd_command(info: &KbConnectionInfo) -> std::process::Command {
     match &info.auth_mode {
         AuthMode::Integrated => {
             cmd.arg("-E");
+            // Inherited SQL-auth variables must not conflict with explicit Windows auth.
+            cmd.env_remove("SQLCMDUSER").env_remove("SQLCMDPASSWORD");
         }
         AuthMode::SqlServer { user, password } => {
-            cmd.arg("-U").arg(user);
-            // The password travels in the child's environment, not argv, so it is
-            // not visible in the process list.
-            if let Some(p) = password {
-                cmd.env("SQLCMDPASSWORD", p);
+            let user = user_env.unwrap_or_else(|| user.into());
+            let password = password_env.or_else(|| password.as_ref().map(Into::into));
+            if user.to_string_lossy().trim().is_empty()
+                || password.as_ref().is_none_or(|value| value.is_empty())
+            {
+                return Err("SQL authentication requires a non-empty user and password. Set SQLCMDUSER and SQLCMDPASSWORD in the gx-engine/Gateway process environment; the GeneXus private credential store is not read. sqlcmd was not started.".into());
             }
+            // Never let sqlcmd prompt on stdin (which carries SELECT batches in ReadSession).
+            // Credentials travel in the child's environment, never argv or error text.
+            cmd.env("SQLCMDUSER", user);
+            cmd.env("SQLCMDPASSWORD", password.expect("validated password"));
         }
     }
 
-    cmd
+    Ok(cmd)
 }
 
 /// Executes raw SQL against a live SQL Server or LocalDB instance using `sqlcmd`.
 pub fn execute_sqlcmd(info: &KbConnectionInfo, sql: &str) -> Result<String, String> {
-    let output = sqlcmd_command(info)
+    let output = sqlcmd_command(info)?
         .arg("-Q")
         .arg(sql)
         .output()
@@ -76,7 +101,7 @@ impl ReadSession {
     pub fn start(info: &KbConnectionInfo) -> Result<Self, String> {
         use std::io::Read;
         use std::process::Stdio;
-        let mut command = sqlcmd_command(info);
+        let mut command = sqlcmd_command(info)?;
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -185,18 +210,125 @@ mod tests {
             host_name: None,
             detach_on_close: None,
         };
-        let command = sqlcmd_command(&info);
+        let command = sqlcmd_command_with_credentials(&info, None, None).unwrap();
         let args: Vec<_> = command
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert!(args.iter().all(|a| a != "-P" && !a.contains("s3cret-pw")));
-        assert!(args.contains(&"-U".to_string()));
+        assert!(!args.contains(&"-U".to_string()));
+        let user = command
+            .get_envs()
+            .find(|(key, _)| *key == "SQLCMDUSER")
+            .and_then(|(_, value)| value);
+        assert_eq!(user, Some(std::ffi::OsStr::new("sa")));
         let password = command
             .get_envs()
             .find(|(k, _)| *k == "SQLCMDPASSWORD")
             .and_then(|(_, v)| v);
         assert_eq!(password, Some(std::ffi::OsStr::new("s3cret-pw")));
+    }
+
+    fn sql_info() -> KbConnectionInfo {
+        KbConnectionInfo::parse_xml("<ConnectionInformation><ServerInstance>test</ServerInstance><DBName>test</DBName><IntegratedSecurity>false</IntegratedSecurity></ConnectionInformation>").unwrap()
+    }
+
+    #[test]
+    fn missing_credentials_are_rejected_without_a_command_or_secret_in_errors() {
+        for (user, password) in [
+            (None, None),
+            (Some("login-only"), None),
+            (None, Some("secret-only")),
+            (Some(""), Some("secret-only")),
+            (Some("login-only"), Some("")),
+            (Some("  "), Some("secret-only")),
+        ] {
+            let error = sqlcmd_command_with_credentials(
+                &sql_info(),
+                user.map(Into::into),
+                password.map(Into::into),
+            )
+            .unwrap_err();
+            assert!(error.contains("SQLCMDUSER") && error.contains("SQLCMDPASSWORD"));
+            assert!(!error.contains("login-only") && !error.contains("secret-only"));
+        }
+    }
+
+    #[test]
+    fn sql_credentials_from_environment_override_file_without_argv_exposure() {
+        let mut info = sql_info();
+        info.auth_mode = AuthMode::SqlServer {
+            user: "old-user".into(),
+            password: Some("old-password".into()),
+        };
+        let command = sqlcmd_command_with_credentials(
+            &info,
+            Some("env-user".into()),
+            Some("env-password".into()),
+        )
+        .unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        for secret in ["old-user", "old-password", "env-user", "env-password"] {
+            assert!(
+                !args
+                    .iter()
+                    .any(|value| value.to_string_lossy().contains(secret))
+            );
+        }
+        let vars: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            vars[std::ffi::OsStr::new("SQLCMDUSER")],
+            Some(std::ffi::OsStr::new("env-user"))
+        );
+        assert_eq!(
+            vars[std::ffi::OsStr::new("SQLCMDPASSWORD")],
+            Some(std::ffi::OsStr::new("env-password"))
+        );
+    }
+
+    #[test]
+    fn explicit_empty_environment_credentials_do_not_fall_back_to_file_secrets() {
+        let mut info = sql_info();
+        info.auth_mode = AuthMode::SqlServer {
+            user: "file-user".into(),
+            password: Some("file-password".into()),
+        };
+        for (user, password) in [(Some("".into()), None), (None, Some("".into()))] {
+            assert!(sqlcmd_command_with_credentials(&info, user, password).is_err());
+        }
+    }
+
+    #[test]
+    fn environment_user_can_use_a_file_password() {
+        let mut info = sql_info();
+        info.auth_mode = AuthMode::SqlServer {
+            user: "file-user".into(),
+            password: Some("file-password".into()),
+        };
+        let command =
+            sqlcmd_command_with_credentials(&info, Some("env-user".into()), None).unwrap();
+        let vars: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            vars[std::ffi::OsStr::new("SQLCMDUSER")],
+            Some(std::ffi::OsStr::new("env-user"))
+        );
+        assert_eq!(
+            vars[std::ffi::OsStr::new("SQLCMDPASSWORD")],
+            Some(std::ffi::OsStr::new("file-password"))
+        );
+    }
+
+    #[test]
+    fn integrated_auth_clears_inherited_sql_credentials() {
+        let mut info = sql_info();
+        info.auth_mode = AuthMode::Integrated;
+        let command =
+            sqlcmd_command_with_credentials(&info, Some("ignored".into()), Some("ignored".into()))
+                .unwrap();
+        assert!(command.get_args().any(|arg| arg == "-E"));
+        let vars: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(vars[std::ffi::OsStr::new("SQLCMDUSER")], None);
+        assert_eq!(vars[std::ffi::OsStr::new("SQLCMDPASSWORD")], None);
     }
 
     #[test]

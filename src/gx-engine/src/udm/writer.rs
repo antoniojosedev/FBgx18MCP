@@ -13,7 +13,6 @@ use crate::udm::client::{
 };
 use crate::udm::decoder::{UdmPartKind, build_token_data_list, encode_blob};
 use crate::udm::entity_types::EntityTypeResolver;
-use crate::udm::reader::DEFAULT_DESIGN_MODEL_ID;
 use std::sync::Arc;
 
 /// The stored part rows of an object, in write order: the Knowledge Base's own
@@ -85,12 +84,10 @@ pub struct UdmWriter {
 }
 
 impl UdmWriter {
-    /// Creates a writer targeting the default design model (ModelId = 1).
+    /// Creates a writer of the client's Design model (`UdmClient::design_model_id`; ModelId 1 by default).
     pub fn new(client: Arc<UdmClient>) -> Self {
-        Self {
-            client,
-            model_id: DEFAULT_DESIGN_MODEL_ID,
-        }
+        let model_id = client.design_model_id();
+        Self { client, model_id }
     }
 
     /// Creates a writer targeting a specific model ID.

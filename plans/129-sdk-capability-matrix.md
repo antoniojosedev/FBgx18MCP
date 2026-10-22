@@ -1,5 +1,12 @@
 # 129 - SDK capability matrix: full replacement versus gx-engine
 
+> Historical discovery matrix, not the current capability registry. The headline
+> and rows below predate native UDM decoding and Gateway integration; statements
+> such as "nothing calls it" and synthetic "Parity" labels are not current facts.
+> Use [Plan 132](132-gxengine-full-parity.md) for the active replacement acceptance
+> inventory and [engine_backend.md](../docs/engine_backend.md) for actual routing
+> and bounded capability evidence. Retain this matrix as the earlier gap census.
+
 Baseline snapshot: 2026-10-15, repository HEAD `b9de0a5a` with uncommitted `src/gx-engine`,
 `plans/` and scratchpad work. This operation-level matrix has since been reconciled
 against the current nested/collection compiler source and the newer native evidence

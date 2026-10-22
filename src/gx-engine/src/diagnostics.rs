@@ -27,6 +27,12 @@ pub enum DiagnosticCategory {
     Build,
     /// Launching or executing the generated program failed.
     Execution,
+    /// No Design model was selected for the KB version in force (`udm::version_scope`). Raised before
+    /// any object is read or any output is written, with exit code 4.
+    VersionScope,
+    /// Missing SQL credentials, proven by rebuild-all before reads or build outputs.
+    /// Exit 5 allows a host to use SDK fallback without replaying a started build.
+    SqlCredentialsUnavailable,
 }
 
 /// One-based source coordinates when the existing parser error provides them.

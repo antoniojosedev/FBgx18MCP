@@ -51,7 +51,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(code: "KbVersionFailed", message: ex.Message, hint: "Check the worker log for details.");
+                return VersionFailure(ex);
             }
 
             if (kbase == null)
@@ -64,18 +64,31 @@ namespace GxMcp.Worker.Services
 
             switch (action)
             {
-                case "list": return ListVersions(kbase);
+                case "list":
+                    try { return ListVersions(kbase); }
+                    finally { ActiveModelSnapshot.Capture(kbase); }
                 case "changed_objects": return ChangedObjects(kbase, args);
-                case "freeze": return Freeze(kbase, args);
-                case "branch": return Branch(kbase, args);
-                case "set_active": return SetActive(kbase, args);
-                case "revert": return Revert(kbase, args);
+                case "freeze": return ChangingActiveVersion(kbase, () => Freeze(kbase, args));
+                case "branch": return ChangingActiveVersion(kbase, () => Branch(kbase, args));
+                case "set_active": return ChangingActiveVersion(kbase, () => SetActive(kbase, args));
+                case "revert": return ChangingActiveVersion(kbase, () => Revert(kbase, args));
                 default:
                     return McpResponse.Err(
                         code: "BadAction",
                         message: "Unknown action '" + action + "'. Expected one of: list, changed_objects, freeze, branch, set_active, revert.",
                         hint: "Pass action=list to enumerate versions first.");
             }
+        }
+
+        /// <summary>
+        /// Runs a version-tree operation that may change the active version: the engine's view of the
+        /// active Design model is withdrawn first and observed again once the SDK call returns or throws.
+        /// </summary>
+        private static string ChangingActiveVersion(KnowledgeBase kbase, Func<string> operation)
+        {
+            ActiveModelSnapshot.Clear();
+            try { return operation(); }
+            finally { ActiveModelSnapshot.Capture(kbase); }
         }
 
         private string ListVersions(KnowledgeBase kbase)
@@ -99,7 +112,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(code: "KbVersionFailed", message: ex.Message, hint: "Check the worker log for details.");
+                return VersionFailure(ex);
             }
         }
 
@@ -254,10 +267,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(
-                    code: "KbVersionFailed",
-                    message: ex.Message,
-                    hint: "Check the worker log for details. The name may already exist, or the parent version may be invalid.");
+                return VersionFailure(ex, NameOrParentHint);
             }
         }
 
@@ -274,6 +284,8 @@ namespace GxMcp.Worker.Services
             KBVersion parent;
             string err = ResolveOrActive(kbase, args?["parentVersion"]?.ToString(), out parent);
             if (err != null) return err;
+            string parentError = BranchParentError(SafeString(() => parent.Name), TryIsFrozen(parent));
+            if (parentError != null) return parentError;
 
             try
             {
@@ -283,10 +295,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(
-                    code: "KbVersionFailed",
-                    message: ex.Message,
-                    hint: "Check the worker log for details. The name may already exist, or the parent version may be invalid.");
+                return VersionFailure(ex, NameOrParentHint);
             }
         }
 
@@ -320,7 +329,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(code: "KbVersionFailed", message: ex.Message, hint: "Check the worker log for details.");
+                return VersionFailure(ex);
             }
         }
 
@@ -358,7 +367,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(code: "KbVersionFailed", message: ex.Message, hint: "Check the worker log for details.");
+                return VersionFailure(ex);
             }
         }
 
@@ -595,7 +604,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(code: "KbVersionFailed", message: ex.Message, hint: "Check the worker log for details.");
+                return VersionFailure(ex);
             }
             if (version == null)
             {
@@ -657,6 +666,48 @@ namespace GxMcp.Worker.Services
         private static bool SafeBool(Func<bool> f)
         {
             try { return f(); } catch { return false; }
+        }
+
+        private const string WorkerLogHint = "Check the worker log for details.";
+        private const string NameOrParentHint = "Check the worker log for details. The name may already exist, or the parent version may be invalid.";
+
+        /// <summary>
+        /// SDK version calls are partly reflective, so the caught exception is often a
+        /// TargetInvocationException whose message hides the cause. Report and log the root.
+        /// </summary>
+        internal static string VersionFailure(Exception ex, string hint = WorkerLogHint)
+        {
+            GxMcp.Worker.Helpers.ExceptionRoot.Log("[KB-VERSION] failed", ex);
+            Exception root = GxMcp.Worker.Helpers.ExceptionRoot.Unwrap(ex) ?? ex;
+            return McpResponse.Err(
+                code: "KbVersionFailed",
+                message: root.Message,
+                hint: hint,
+                extra: new JObject
+                {
+                    ["exceptionType"] = root.GetType().Name,
+                    ["failureTrace"] = GxMcp.Worker.Helpers.ExceptionRoot.FailureTrace(ex)
+                });
+        }
+
+        /// <summary>
+        /// The SDK rejects a branch whose parent is a development version
+        /// (KBVersion.Save: "development version cannot have a development parent"),
+        /// and the default parent is the active development version. Refuse before
+        /// calling the SDK; an unreadable frozen state is left for the SDK to decide.
+        /// </summary>
+        internal static string BranchParentError(string parentName, bool? parentFrozen)
+        {
+            if (parentFrozen != false) return null;
+            return McpResponse.Err(
+                code: "KbVersionParentNotFrozen",
+                message: "Branch parent '" + parentName + "' is a development version; GeneXus branches only from a frozen version.",
+                hint: "Freeze a version first (action=freeze), then branch with parentVersion=<frozen version name>.");
+        }
+
+        private static bool? TryIsFrozen(KBVersion version)
+        {
+            try { return version?.IsFrozen; } catch { return null; }
         }
 
         private static KBVersion BranchModelCompatible(string name, string description, KBVersion parent, bool includeEnvironments)

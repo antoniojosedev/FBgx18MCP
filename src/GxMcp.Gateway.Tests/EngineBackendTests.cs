@@ -121,6 +121,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("parallel_rebuild_all", "Engine")]
         [InlineData("PARALLEL_REBUILD_ALL", "Engine")]
         [InlineData("udm_storage_access", "Sdk")]
+        [InlineData("udm_type_query", "Sdk")]
         [InlineData("str_format", "Sdk")]
         [InlineData("numeric_core", "Sdk")]
         [InlineData("unknown_capability", "Sdk")]
@@ -136,9 +137,11 @@ namespace GxMcp.Gateway.Tests
 
         [Theory]
         [InlineData("parallel_rebuild_all", "Engine")]
-        [InlineData("udm_storage_access", "Engine")]
+        [InlineData("udm_type_query", "Engine")]
+        [InlineData("udm_storage_access", "Sdk")]
+        [InlineData("csharp_emitter", "Sdk")]
         [InlineData("unknown_capability", "Sdk")]
-        public void Router_DefaultGxEngine_AdmitsBuildsAndStorageAccess(string capabilityId, string expected)
+        public void Router_DefaultGxEngine_AdmitsOnlyTheBuildAndTheTypeQueryCapabilities(string capabilityId, string expected)
         {
             SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
             SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
@@ -185,6 +188,37 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(EngineRouteTarget.Engine, decision.Target);
             Assert.Equal("str_format", decision.CapabilityId);
             Assert.Null(decision.Code);
+        }
+
+        /// <summary>
+        /// The storage record and the library modules that used to be labelled Parity
+        /// without a native oracle must never be routable: not under the default
+        /// policy, and refused (not silently served) under Fallback=error.
+        /// </summary>
+        [Theory]
+        [InlineData("udm_storage_access")]
+        [InlineData("native_kb_read")]
+        [InlineData("sql_navigation")]
+        [InlineData("csharp_emitter")]
+        [InlineData("numeric_core")]
+        [InlineData("general_gx_surface")]
+        public void Router_DowngradedCapability_IsNotServedByTheEngine(string capabilityId)
+        {
+            SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
+            SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
+            var sdkFallback = EngineBackendSettings.Resolve(new Configuration
+            {
+                Engine = new EngineConfig { Backend = "gxengine", Fallback = "sdk" }
+            });
+            Assert.Equal(EngineRouteTarget.Sdk, EngineRouter.Decide(capabilityId, sdkFallback).Target);
+
+            var errorFallback = EngineBackendSettings.Resolve(new Configuration
+            {
+                Engine = new EngineConfig { Backend = "gxengine", Fallback = "error" }
+            });
+            var decision = EngineRouter.Decide(capabilityId, errorFallback);
+            Assert.Equal(EngineRouteTarget.Reject, decision.Target);
+            Assert.Equal(EngineRouter.NotParityCode, decision.Code);
         }
 
         [Fact]
@@ -268,13 +302,258 @@ namespace GxMcp.Gateway.Tests
         public void Registry_RoutedOperationsComeOnlyFromParityCapabilities()
         {
             var routed = EngineCapabilityRegistry.RoutedOperations();
+            var nonParityConsumers = EngineCapabilityRegistry.All
+                .Where(c => c.Status != EngineCapabilityStatus.Parity)
+                .SelectMany(c => c.Consumers)
+                .ToArray();
             var parityConsumers = EngineCapabilityRegistry.All
                 .Where(c => c.Status == EngineCapabilityStatus.Parity)
                 .SelectMany(c => c.Consumers)
                 .ToArray();
 
-            Assert.Equal(parityConsumers.Length, routed.Count);
+            Assert.Equal(
+                parityConsumers.OrderBy(o => o, StringComparer.Ordinal).ToArray(),
+                routed.OrderBy(o => o, StringComparer.Ordinal).ToArray());
+            Assert.Empty(routed.Intersect(nonParityConsumers, StringComparer.OrdinalIgnoreCase));
             Assert.All(routed, operation => Assert.False(string.IsNullOrWhiteSpace(operation)));
+        }
+
+        // Statuses pinned by id, not by count. Moving a capability between these sets is a
+        // deliberate claim change that must come with recorded evidence and a doc update.
+
+        /// <summary>
+        /// Recorded native-oracle fixtures (no consumer): the engine's value is compared
+        /// row by row with the native runtime.
+        /// </summary>
+        private static readonly string[] NativeOracleParityIds =
+        {
+            "str_format", "numeric_render", "date_display", "text_functions", "text_extended_functions",
+            "numeric_math_functions", "collection_operations", "calendar_operations",
+            "conditional_and_state_operations", "sdt_and_collection_json", "sdt_and_collection_xml",
+        };
+
+        /// <summary>Routed operations: each is Parity only for its documented admitted space.</summary>
+        private static readonly string[] RoutedParityIds =
+        {
+            "parallel_rebuild_all", "udm_type_query",
+        };
+
+        private static readonly string[] UnsupportedIds = { "general_gx_surface" };
+
+        [Fact]
+        public void Registry_ParityIsLimitedToNativeOracleFixturesAndTheRoutedAdmittedSpaces()
+        {
+            var parity = EngineCapabilityRegistry.All
+                .Where(c => c.Status == EngineCapabilityStatus.Parity)
+                .Select(c => c.Id)
+                .OrderBy(id => id, StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(
+                NativeOracleParityIds.Concat(RoutedParityIds).OrderBy(id => id, StringComparer.Ordinal).ToArray(),
+                parity);
+
+            Assert.Equal(
+                UnsupportedIds,
+                EngineCapabilityRegistry.All
+                    .Where(c => c.Status == EngineCapabilityStatus.Unsupported)
+                    .Select(c => c.Id)
+                    .ToArray());
+        }
+
+        /// <summary>
+        /// Synthetic library coverage, native storage and the emitter are not SDK/product
+        /// parity: each is named so restoring a blanket Parity label turns this red.
+        /// </summary>
+        [Theory]
+        [InlineData("udm_storage_access")]
+        [InlineData("native_kb_read")]
+        [InlineData("sql_navigation")]
+        [InlineData("formula_navigation")]
+        [InlineData("dml_navigation")]
+        [InlineData("csharp_emitter")]
+        [InlineData("numeric_core")]
+        [InlineData("text_core")]
+        [InlineData("calendar_values")]
+        [InlineData("records_collections")]
+        [InlineData("procedure_pipeline")]
+        [InlineData("xml_projection")]
+        [InlineData("kb_catalog")]
+        [InlineData("subroutine_control_flow")]
+        [InlineData("gam_security_authorization")]
+        [InlineData("gxtest_runner")]
+        [InlineData("multiagent_locking_leases")]
+        [InlineData("object_versioning_history")]
+        [InlineData("database_reorganization")]
+        [InlineData("text_tree_roundtrip")]
+        public void Registry_SyntheticOrBoundedCoverage_IsNotLabelledParity(string capabilityId)
+        {
+            var capability = EngineCapabilityRegistry.Find(capabilityId);
+
+            Assert.NotNull(capability);
+            Assert.Equal(EngineCapabilityStatus.Partial, capability!.Status);
+            Assert.False(capability.MayRouteToEngine);
+            Assert.Empty(capability.Consumers);
+        }
+
+        /// <summary>
+        /// A consumer-less Parity claim has no routed contract to lean on, so it must rest on
+        /// a recorded native fixture whose provenance is traceable in the repository: cited in
+        /// the evidence, loaded by a gx-engine Rust test, and recorded either in the measurement
+        /// ledger (plans/129) or in the consuming test's own capture comment. A filename containing
+        /// "native" proves none of that by itself. This traces recorded provenance; it does not
+        /// re-measure the rows against a live SDK, so it is not newly revalidated parity. Evidence
+        /// may cite the ledger only for a fixture the ledger actually names.
+        /// </summary>
+        [Fact]
+        public void Registry_ConsumerlessParityCitesARecordedNativeFixtureWithTraceableProvenance()
+        {
+            const string ledgerPath = "plans/129-implementation-progress.md";
+            var nativeFixture = new Regex(
+                @"src/gx-engine/(?:tests/)?fixtures/[A-Za-z0-9_\-.]*native[A-Za-z0-9_\-.]*\.tsv",
+                RegexOptions.CultureInvariant);
+            var captureComment = new Regex(@"(?i)(captured|recorded|measured) from[^.]{0,60}(GeneXus|native)", RegexOptions.CultureInvariant);
+
+            string ledger = RepoSource.Read("plans", "129-implementation-progress.md");
+            string repoRoot = Path.GetDirectoryName(Path.GetDirectoryName(RepoSource.PathOf("plans", "129-implementation-progress.md")))!;
+            var rustFiles = Directory.EnumerateFiles(Path.Combine(repoRoot, "src", "gx-engine"), "*.rs", SearchOption.AllDirectories)
+                .Where(file => !file.Contains(Path.DirectorySeparatorChar + "target" + Path.DirectorySeparatorChar))
+                .ToDictionary(file => file, file => File.ReadAllText(file));
+
+            foreach (var capability in EngineCapabilityRegistry.All.Where(c =>
+                c.Status == EngineCapabilityStatus.Parity && c.Consumers.Length == 0))
+            {
+                var fixtures = nativeFixture.Matches(capability.Evidence).Select(m => m.Value).Distinct().ToArray();
+                Assert.True(fixtures.Length > 0,
+                    $"Parity capability '{capability.Id}' has no consumer and cites no recorded native fixture.");
+
+                foreach (string fixture in fixtures)
+                {
+                    string fileName = Path.GetFileName(fixture);
+                    var consumers = rustFiles.Where(f => f.Value.Contains(fileName)).ToArray();
+                    Assert.True(consumers.Length > 0,
+                        $"Fixture '{fileName}' cited by '{capability.Id}' is not loaded by any gx-engine Rust source.");
+
+                    bool ledgerNamesFixture = ledger.Contains(fileName);
+                    Assert.True(
+                        ledgerNamesFixture || consumers.Any(f => captureComment.IsMatch(f.Value)),
+                        $"Fixture '{fileName}' cited by '{capability.Id}' is neither named in {ledgerPath} nor described as captured from the native runtime by its Rust test.");
+                    if (!ledgerNamesFixture)
+                        Assert.DoesNotContain(ledgerPath, capability.Evidence);
+                }
+            }
+        }
+
+        [Fact]
+        public void Registry_NonParityCapabilitiesDeclareNoConsumers()
+        {
+            Assert.All(
+                EngineCapabilityRegistry.All.Where(c => c.Status != EngineCapabilityStatus.Parity),
+                c => Assert.Empty(c.Consumers));
+        }
+
+        /// <summary>
+        /// Pins the operations the engine actually serves and their capability records.
+        /// Read/edit are not in this set: they are deferred by policy (next tests).
+        /// </summary>
+        [Fact]
+        public void Registry_ServedOperationsAndTheirCapabilityRecordsArePinned()
+        {
+            Assert.Equal(
+                new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild", "genexus_query" },
+                EngineCapabilityRegistry.RoutedOperations().OrderBy(o => o, StringComparer.Ordinal).ToArray());
+
+            Assert.Equal(
+                new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild" },
+                EngineCapabilityRegistry.Find("parallel_rebuild_all")!.Consumers);
+            Assert.Equal(new[] { "genexus_query" }, EngineCapabilityRegistry.Find("udm_type_query")!.Consumers);
+            Assert.Empty(EngineCapabilityRegistry.Find("udm_storage_access")!.Consumers);
+
+            // Every consumer is declared by exactly one capability: routing must be unambiguous.
+            var consumers = EngineCapabilityRegistry.All.SelectMany(c => c.Consumers).ToArray();
+            Assert.Equal(consumers.Length, consumers.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        }
+
+        /// <summary>
+        /// The deferral policy is the only place read/edit are named. It reports the original
+        /// storage record as their capability id, and the registry never claims them.
+        /// </summary>
+        [Fact]
+        public void DeferralPolicy_PinsReadAndEditToTheStorageRecordWithoutAnyParityClaim()
+        {
+            Assert.Equal(
+                new[] { "genexus_edit", "genexus_read" },
+                EngineRoutedOperations.DeferredOperationCapabilityIds.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray());
+            Assert.All(
+                EngineRoutedOperations.DeferredOperationCapabilityIds.Values,
+                id => Assert.Equal("udm_storage_access", id));
+
+            var storage = EngineCapabilityRegistry.Find("udm_storage_access")!;
+            Assert.Equal(EngineCapabilityStatus.Partial, storage.Status);
+            Assert.Contains("versionToken", storage.Notes);
+            Assert.Contains("DeferredOperationCapabilityIds", storage.Notes);
+            Assert.Null(EngineCapabilityRegistry.Find("udm_read_edit_deferral"));
+
+            foreach (string deferred in EngineRoutedOperations.DeferredOperationCapabilityIds.Keys)
+            {
+                // No capability, of any status, declares a deferred operation as a consumer, and the
+                // router-visible served set never contains it.
+                Assert.DoesNotContain(EngineCapabilityRegistry.All, c =>
+                    c.Consumers.Contains(deferred, StringComparer.OrdinalIgnoreCase));
+                Assert.DoesNotContain(deferred, EngineCapabilityRegistry.RoutedOperations(), StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        /// <summary>
+        /// A Parity record must serve something: one whose consumers are all deferred (or that
+        /// has none and no native fixture) would count a deferral as parity.
+        /// </summary>
+        [Fact]
+        public void Registry_NoParityRecordIsMadeOfDeferredOperations()
+        {
+            foreach (var capability in EngineCapabilityRegistry.All.Where(c => c.Status == EngineCapabilityStatus.Parity))
+            {
+                Assert.DoesNotContain(capability.Consumers, consumer =>
+                    EngineRoutedOperations.DeferredOperationCapabilityIds.ContainsKey(consumer));
+            }
+        }
+
+        [Fact]
+        public void Registry_QueryParityRecordCitesTheBoundedHistoricalDifferentialHonestly()
+        {
+            var query = EngineCapabilityRegistry.Find("udm_type_query")!;
+
+            Assert.Equal(EngineCapabilityStatus.Parity, query.Status);
+            // The evidence names the recorded differential, its bounds and that it was not re-run;
+            // repository tests are described as contract tests, not as that differential.
+            Assert.Contains("Recorded historical", query.Evidence);
+            Assert.Contains("not re-run", query.Evidence);
+            Assert.Contains("nativeServed=45", query.Evidence);
+            Assert.Contains("0 differences", query.Evidence);
+            Assert.Contains("gatewaySha256=b1bf724d3f5de9149cd8f768ed786079151390d9667d502c0cb84a9e2b875b86", query.Evidence);
+            Assert.Contains("workerSha256=3f725129c7aeb5561c2550c204b579a95d0874590b5941647ce71d114d63e439", query.Evidence);
+            Assert.Contains("not a claim for other KBs", query.Notes);
+            Assert.Contains("stub engine", query.Notes);
+        }
+
+        /// <summary>
+        /// date_display is not named by the plans/129 ledger. Its provenance is the Rust capture
+        /// comment and the measured-rules record in VALIDATION.md; the evidence must cite that
+        /// record, and the documentation must describe the guard as ledger OR capture comment.
+        /// </summary>
+        [Fact]
+        public void Registry_DateDisplayCitesValidationRecordAndDocsDescribeProvenanceAlternatives()
+        {
+            var dateDisplay = EngineCapabilityRegistry.Find("date_display")!;
+            Assert.Contains("src/gx-engine/VALIDATION.md", dateDisplay.Evidence);
+            Assert.DoesNotContain("plans/129-implementation-progress.md", dateDisplay.Evidence);
+
+            string validation = RepoSource.Read("src", "gx-engine", "VALIDATION.md");
+            Assert.Contains("date_display_native.tsv", validation);
+            Assert.Contains("registered as `date_display`", validation);
+
+            string docs = RepoSource.Read("docs", "engine_backend.md");
+            Assert.Contains("either in that ledger or in a captured-from-native comment", docs);
         }
 
         // --------------------------------------------------------------- locator
@@ -492,6 +771,33 @@ namespace GxMcp.Gateway.Tests
             Assert.IsType<JArray>(section["capabilities"]!["routedOperations"]);
         }
 
+        /// <summary>
+        /// Doctor must not present synthetic library coverage as parity: its counts come
+        /// from the pinned status sets, and every other registered capability is Partial.
+        /// </summary>
+        [Fact]
+        public void DoctorEngineSection_CapabilityCountsReflectThePinnedStatusSets()
+        {
+            SetEngineEnv(EngineBackendSettings.BackendEnvVar, null);
+            SetEngineEnv(EngineBackendSettings.FallbackEnvVar, null);
+            SetEngineEnv(EngineBackendSettings.ExecutableEnvVar, null);
+            SetEngineEnv(EngineBackendSettings.TimeoutEnvVar, null);
+
+            var counts = Program.BuildEngineDoctorSection(new Configuration
+            {
+                Engine = new EngineConfig { Backend = "sdk" }
+            })["capabilities"]!;
+
+            int parity = NativeOracleParityIds.Length + RoutedParityIds.Length;
+            Assert.Empty(counts["routedOperations"]!.Values<string>());
+            Assert.Empty(counts["deferredOperations"]!.Values<string>());
+            Assert.Equal(parity, counts["parity"]!.Value<int>());
+            Assert.Equal(UnsupportedIds.Length, counts["unsupported"]!.Value<int>());
+            Assert.Equal(
+                EngineCapabilityRegistry.All.Count - parity - UnsupportedIds.Length,
+                counts["partial"]!.Value<int>());
+        }
+
         [Theory]
         [InlineData(null, "gxengine")]
         [InlineData("auto", "auto")]
@@ -540,10 +846,22 @@ namespace GxMcp.Gateway.Tests
                 var engine = doctor["result"]!["engine"]!;
                 Assert.Equal(expected, engine["backend"]?.ToString());
                 var routed = engine["capabilities"]!["routedOperations"]!.Values<string>().ToArray();
+                var deferred = engine["capabilities"]!["deferredOperations"]!.Values<string>().ToArray();
                 if (expected == "auto")
+                {
                     Assert.Equal(new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild" }, routed);
+                    Assert.Empty(deferred);
+                }
                 else
-                    Assert.Contains("genexus_read", routed);
+                {
+                    // Only genuinely served operations are routed; read/edit are deferred, never routed.
+                    Assert.Equal(
+                        new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild", "genexus_query" },
+                        routed.OrderBy(o => o, StringComparer.Ordinal).ToArray());
+                    Assert.DoesNotContain("genexus_read", routed);
+                    Assert.DoesNotContain("genexus_edit", routed);
+                    Assert.Equal(new[] { "genexus_edit", "genexus_read" }, deferred);
+                }
                 Assert.True(engine["available"]!.Value<bool>());
                 Assert.Equal("9.9.9", engine["version"]?.ToString());
                 Assert.Equal(stub, engine["executable"]?.ToString());

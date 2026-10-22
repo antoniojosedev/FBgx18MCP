@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-read <kb-path> <object> [--parts <Name,Name>]\n  gx-engine kb-query <kb-path> [--name <name>] [--type <ObjectType>] [--usedby <object>] [--limit <n>]\n  gx-engine kb-write <kb-path> <object> --part <Part> --content-file <path> [--type <ObjectType>]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile] [--object <name> [--closure]] [--catalog-cache <dir>] [--web-theme <name>] [--web-generator <banner>] [--web-master <Name=dotted.class.path>]...\n  gx-engine --version\n\nrebuild-all --object <name>: builds that one object alone and is refused by name when it references another object. With --closure, the object and every object its references reach are built, as an executable whose entry point is the object's Main (a parameterless Procedure only). A reference the native reader or emitter does not cover is refused by name, with its path.\nrebuild-all exit codes: 0 complete; 3 partial (web UI objects skipped, a code kind with no generator present, or not compiled; the report lists them); 1 failed.\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access with partial object coverage (refusals are named), C# (.NET) generator, and parallel Rebuild All.\n";
+const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-read <kb-path> <object> [--parts <Name,Name>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-query <kb-path> [--name <name>] [--type <ObjectType>] [--usedby <object>] [--limit <n>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-write <kb-path> <object> --part <Part> --content-file <path> [--type <ObjectType>] [--design-model <id> --kb-version <id>]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile] [--object <name> [--closure]] [--catalog-cache <dir>] [--web-theme <name>] [--web-generator <banner>] [--web-master <Name=dotted.class.path>]... [--design-model <id> --kb-version <id>]\n  gx-engine --version\n\n--design-model/--kb-version: the Design model and KB version the GeneXus session has active. Without them only a KB with a single Design model (no versions) is served. A read serves the named version's Design model; a build covers only the trunk Design model 1 with every environment under it. Anything else is refused before any read or write, with exit code 4.\n\nrebuild-all --object <name>: builds that one object alone and is refused by name when it references another object. With --closure, the object and every object its references reach are built, as an executable whose entry point is the object's Main (a parameterless Procedure only). A reference the native reader or emitter does not cover is refused by name, with its path.\nrebuild-all exit codes: 0 complete; 3 partial (web UI objects skipped, a code kind with no generator present, or not compiled; the report lists them); 1 failed.\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access with partial object coverage (refusals are named), C# (.NET) generator, and parallel Rebuild All.\n";
 
 fn load(path: &str) -> Result<Project, String> {
     let file = File::open(path).map_err(|e| format!("cannot open project: {e}"))?;
@@ -209,6 +209,62 @@ fn execute(
     }
 }
 
+/// Exit code of a `udm::version_scope` refusal: nothing was read or written, so a host may serve the
+/// operation from the GeneXus SDK instead.
+const EXIT_VERSION_SCOPE: u8 = 4;
+const EXIT_SQL_CREDENTIALS_UNAVAILABLE: u8 = 5;
+
+/// The integer value of `flag` at `args[i]`.
+fn parse_id_flag(args: &[String], i: usize, flag: &str) -> Result<i32, String> {
+    let value = args
+        .get(i)
+        .ok_or_else(|| format!("missing argument for {flag}"))?;
+    value
+        .parse::<i32>()
+        .map_err(|_| format!("{flag} expects an integer id, got '{value}'"))
+}
+
+/// The active KB version named by `--design-model` and `--kb-version`, which go together.
+fn active_version(
+    design_model: Option<i32>,
+    kb_version: Option<i32>,
+) -> Result<Option<gx_engine::udm::version_scope::ActiveVersion>, String> {
+    match (design_model, kb_version) {
+        (None, None) => Ok(None),
+        (Some(design_model_id), Some(kb_version_id)) => {
+            Ok(Some(gx_engine::udm::version_scope::ActiveVersion {
+                design_model_id,
+                kb_version_id,
+            }))
+        }
+        _ => Err(
+            "--design-model and --kb-version name the active KB version together: give both or neither"
+                .into(),
+        ),
+    }
+}
+
+/// The Design model `client` serves for `active` (see `udm::version_scope`). A refusal, or a topology
+/// that cannot be read, sets the version-scope category: no object has been read yet.
+fn select_design_model(
+    client: &gx_engine::udm::UdmClient,
+    active: Option<gx_engine::udm::version_scope::ActiveVersion>,
+    scope_use: gx_engine::udm::version_scope::ScopeUse,
+    category: &mut DiagnosticCategory,
+) -> Result<i32, String> {
+    let selected = client
+        .model_topology()
+        .map_err(|error| format!("the KB's model topology could not be read: {error}"))
+        .and_then(|rows| {
+            gx_engine::udm::version_scope::select_design_model(&rows, active, scope_use)
+                .map_err(|refusal| refusal.0)
+        });
+    if selected.is_err() {
+        *category = DiagnosticCategory::VersionScope;
+    }
+    selected
+}
+
 fn connect_udm_kb(kb_path: &str) -> Result<gx_engine::udm::UdmClient, String> {
     let path = std::path::Path::new(kb_path);
     if !path.is_dir() {
@@ -238,10 +294,20 @@ fn execute_kb_ops(
     let mut limit: usize = 0;
     let mut part: Option<String> = None;
     let mut content_file: Option<String> = None;
+    let mut design_model: Option<i32> = None;
+    let mut kb_version: Option<i32> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--design-model" => {
+                i += 1;
+                design_model = Some(parse_id_flag(args, i, "--design-model")?);
+            }
+            "--kb-version" => {
+                i += 1;
+                kb_version = Some(parse_id_flag(args, i, "--kb-version")?);
+            }
             "--parts" => {
                 i += 1;
                 if i >= args.len() {
@@ -309,13 +375,26 @@ fn execute_kb_ops(
         }
         i += 1;
     }
+    let active = active_version(design_model, kb_version)?;
+    // The Design model of the active KB version, selected on the operation's own client before any read.
+    let connect = |kb_path: &str, category: &mut DiagnosticCategory| {
+        // One SQL reader session serves the topology read and the operation's own reads.
+        let client = connect_udm_kb(kb_path)?.with_persistent_reads();
+        let model_id = select_design_model(
+            &client,
+            active,
+            gx_engine::udm::version_scope::ScopeUse::Read,
+            category,
+        )?;
+        Ok::<_, String>(client.with_design_model_id(model_id))
+    };
 
     match command {
         "kb-read" => {
             if positional.len() != 2 {
                 return Err("kb-read requires <kb-path> <object>".into());
             }
-            let client = connect_udm_kb(positional[0])?;
+            let client = connect(positional[0], category)?;
             let result = gx_engine::kb_ops::read_object(&client, positional[1], parts.as_deref())?;
             println!(
                 "{}",
@@ -326,7 +405,7 @@ fn execute_kb_ops(
             if positional.len() != 1 {
                 return Err("kb-query requires <kb-path>".into());
             }
-            let client = connect_udm_kb(positional[0])?;
+            let client = connect(positional[0], category)?;
             let result = gx_engine::kb_ops::query_objects(
                 &client,
                 name.as_deref(),
@@ -358,7 +437,7 @@ fn execute_kb_ops(
                         .ok_or_else(|| format!("unknown object type '{value}'"))?,
                 ),
             };
-            let client = connect_udm_kb(positional[0])?;
+            let client = connect(positional[0], category)?;
             let result = gx_engine::kb_ops::write_object_part(
                 &client,
                 positional[1],
@@ -466,10 +545,20 @@ fn execute_rebuild_all(
     let mut web_generator: Option<String> = None;
     let mut web_masters: std::collections::BTreeMap<String, String> = Default::default();
     let mut catalog_cache: Option<String> = None;
+    let mut design_model: Option<i32> = None;
+    let mut kb_version: Option<i32> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--design-model" => {
+                i += 1;
+                design_model = Some(parse_id_flag(args, i, "--design-model")?);
+            }
+            "--kb-version" => {
+                i += 1;
+                kb_version = Some(parse_id_flag(args, i, "--kb-version")?);
+            }
             "--kb" => {
                 i += 1;
                 if i >= args.len() {
@@ -571,6 +660,28 @@ fn execute_rebuild_all(
 
     if closure && only_object.is_none() {
         return Err("--closure needs --object: the entry object of the closure".into());
+    }
+    let active = active_version(design_model, kb_version)?;
+    // Before any read or output: a build reads the trunk Design model and its environments only.
+    if kb_dir.is_dir() {
+        let connection = gx_engine::udm::connection::KbConnectionInfo::from_kb_dir(kb_dir)?;
+        if let Err(error) = gx_engine::udm::live::validate_sqlcmd_auth(&connection) {
+            // Dedicated refusal contract: nothing has queried storage or created output yet.
+            *category = DiagnosticCategory::SqlCredentialsUnavailable;
+            return Err(error);
+        }
+        let client = gx_engine::udm::client::UdmClient::connect_kb(kb_dir)?;
+        select_design_model(
+            &client,
+            active,
+            gx_engine::udm::version_scope::ScopeUse::Build,
+            category,
+        )?;
+    } else if active.is_some() {
+        return Err(
+            "--design-model and --kb-version apply to a Knowledge Base folder, not a catalog file"
+                .into(),
+        );
     }
     // The catalog load happens before the pipeline, so `total_ms` does not include it; it is reported apart.
     let catalog_started = Instant::now();
@@ -845,6 +956,13 @@ fn main() -> ExitCode {
         Ok(gx_engine::rebuild::RebuildStatus::Partial) => ExitCode::from(EXIT_PARTIAL),
         Ok(gx_engine::rebuild::RebuildStatus::Failed) => ExitCode::FAILURE,
         Err(error) => {
+            let exit = match category {
+                DiagnosticCategory::VersionScope => ExitCode::from(EXIT_VERSION_SCOPE),
+                DiagnosticCategory::SqlCredentialsUnavailable => {
+                    ExitCode::from(EXIT_SQL_CREDENTIALS_UNAVAILABLE)
+                }
+                _ => ExitCode::FAILURE,
+            };
             if json_errors {
                 let diagnostic = Diagnostic::new(category, error);
                 eprintln!(
@@ -854,7 +972,7 @@ fn main() -> ExitCode {
             } else {
                 eprintln!("gx-engine: {error}");
             }
-            ExitCode::FAILURE
+            exit
         }
     }
 }

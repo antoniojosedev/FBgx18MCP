@@ -10,6 +10,9 @@ motivated it.
 
 A tracked text file is edited with the file-editing tool, never by round-tripping
 it through a shell. The shell is for reading and for running commands.
+Never treat a bounded/truncated tool preview as complete file content when
+integrating a change. Verify byte completeness against the source before compiling;
+continuation notices belong to the tool response, not the destination file.
 
 Three distinct corruptions came from doing this the other way, all on files that
 carry history or contracts:
@@ -101,6 +104,11 @@ must compile every selected test project before the final package build; do not
 rely on a developer's existing `bin/obj`. Regression-test missing outputs and
 compilation failure without skipping the live check.
 
+**Artifact identity.** Compare equivalent target/runtime/publish representations.
+A ReadyToRun published DLL is not byte-identical to its IL build. Verify the
+matching RID module identity, native-header state and manifest hashes instead
+of changing production code or replaying a build to satisfy an invalid comparison.
+
 **Review signal.** A commit whose message cites counts for some lanes but not
 others is unverified. Ask for the missing lane's output, not for a claim about it.
 
@@ -126,6 +134,14 @@ Unit counts, capability labels and byte-identical generated files do not replace
 this contract evidence. Keep snapshots unchanged unless the public contract
 intentionally changes; test the negative/error paths as well as success.
 
+A native reader takes its scope (KB version, model, environment) from the
+session the SDK serves, passed by the host and checked against storage, never
+from a hardcoded default. When storage admits more than one scope and none is
+named, refuse before reading, with a code the host can fall back on. Parse
+scope-bearing metadata structurally; malformed or duplicate values must not
+become an absent value/default scope. Validate the full build's supporting facts,
+not just object parts, before admitting a versioned scope.
+
 ## Guards must be able to fail
 
 A regression test that cannot fail is not a guard. Every new guard gets a
@@ -142,6 +158,30 @@ which mutation turns it red.
 
 ## Honest failure modes
 
+A generator must refuse unsupported executable semantics, not replace them with
+comments, empty statements or a bare nested body and report successful generation.
+Propagate nested emitter failures to the artifact writer; a compilable artifact
+is not evidence that database or control-flow behavior was preserved. Regression
+tests must exercise parsed source through the checked generation pipeline and
+verify that refused output is not counted as generated or compiled.
+
+Source projections preserve lexical boundaries using the language's escape rules;
+regress escaped quotes/backslashes and a real expression after the literal.
+Keep presentation projections separate from stored source and codegen inputs.
+Metadata scalar validation must cover the whole XML node, not just its first text
+child; regress comment/processing-instruction boundaries and reject unsupported structure.
+
+Read-only validators must preserve their inputs even when an output path aliases
+an input through a symlink, junction or hardlink. Validate output boundaries and
+publish reports by atomic replacement rather than truncating a potentially
+aliased file; regression-test that input bytes remain unchanged.
+
+Non-interactive subprocesses must validate required credentials before launch;
+never let an authentication prompt consume stdin intended for protocol/batch input.
+Pass secrets via the child environment, not argv/logs. Automatic backend replay
+requires an explicit machine-validated pre-effect refusal, not inferred error text
+or a generic nonzero exit; regression-test malformed refusals and started failures.
+
 A gate that cannot run is `unavailable`, never `pass`. This covers a KB that will
 not open under the selected SDK, a native assembly absent from every install, and
 a live test skipped for want of a fixture.
@@ -149,6 +189,11 @@ a live test skipped for want of a fixture.
 A label may describe a cause; it may never change an outcome. The preflight
 aggregate accepts `unavailable` as an approved terminal status, so downgrading a
 failed phase would certify a release that ran nothing.
+
+An SDK failure response carries the root cause. Catches around reflective or
+wrapped SDK calls report and log through `ExceptionRoot` (message, type, trace),
+never a wrapper's `ex.Message`; a "see the worker log" hint needs a matching log
+line. Known SDK preconditions are refused with a typed code before the call.
 
 Absence of evidence is reported as absence. When a contract is unverifiable on
 this host, say so and name what would unblock it, rather than merging on the

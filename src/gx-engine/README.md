@@ -18,7 +18,7 @@ the same KB byte for byte: **328/328 C# files**, 24/24 web scripts, `gxcfg.js`,
 `CloudServices.config`. That is one oracle KB, not every KB: forms the engine has no SDK
 evidence for are refused by name.
 Use the SDK for workflows outside validated engine coverage; preserve unsupported-object
-refusals and report partial builds as partial, not success.
+refusals: planning skips yield `Partial`, while checked-emission errors yield `Failed`; neither is a successful whole-KB build. Event-bearing WebPanels are refused by the rebuild planner. The separate library-only `WebPanelClass` emitter is not used by rebuild and has no event-parity evidence.
 
 Gateway routing defaults to `Engine.Backend=gxengine`: admitted blocking builds/rebuilds
 and field-limited type-only queries use gx-engine, including directed `build` requests with `mode=compile_check`,
@@ -27,6 +27,22 @@ target closure and report `engine.scope=target-closure`; they do not certify the
 whole KB. Reads, edits, async builds and unsupported request shapes stay on SDK.
 `auto` narrows routing to admitted builds; explicit `sdk` disables engine routing. Capability and argument gates remain mandatory. See
 [routing](../../docs/engine_backend.md).
+
+## SQL-authenticated Knowledge Bases
+
+For `IntegratedSecurity=False`, set `SQLCMDUSER` and `SQLCMDPASSWORD` in the
+parent process environment using your client's protected secret mechanism.
+These override corresponding connection-file fields; both must be nonempty.
+The SDK's private credentials are not read. Missing credentials fail before
+sqlcmd starts (no interactive password prompt); passwords travel only in the
+child environment, never argv. Integrated-security connections still use `-E`
+and ignore SQLCMD credential variables; no silent Windows-auth retry is made.
+
+`--diagnostics=json rebuild-all ...` returns exit **5** and one stderr diagnostic
+with `category=sql_credentials_unavailable`, empty stdout and no build output
+when this credential preflight fails. The Gateway can safely use SDK fallback
+for that exact refusal; generic failures/timeouts after start cannot replay builds.
+See [SQL authentication and auto routing](../../docs/engine_backend.md#sql-authentication-issue-635).
 
 ## SDK-form output
 
@@ -117,6 +133,30 @@ fail closed. A started build with an unknown outcome requires reconciliation,
 not automatic SDK replay. See
 [docs/engine_backend.md](../../docs/engine_backend.md) for the switch, the
 current capability table and the rules for adding a capability.
+
+`kb-read`, `kb-query`, `kb-write` and `rebuild-all` accept `--design-model <id>
+--kb-version <id>`: the Design model and KB version the GeneXus session has
+active. Without them only a Knowledge Base with a single Design model is served.
+A read serves the named version's Design model once its stored `KBVersion`
+matches; a build requires a single Design model (trunk model 1) with every
+environment under it. Supporting build facts are not yet version-pinned, so a KB
+with multiple Design models is refused even with the trunk active. Anything else
+is refused before any object read or output write with exit code 4 and diagnostic
+category `version_scope` (see `src/udm/version_scope.rs`). Model `KBVersion` metadata
+is parsed as XML; malformed, repeated and non-scalar values are not trunk defaults.
+
+Legacy catalog commands (`kb-check`, `kb-emit`, `kb-build`, `kb-run`) also check
+native directory/connection-file inputs and bind the sole Design model's actual
+id. They cannot name an active version, so multi-model KBs are refused through
+their existing input-error contract. Portable JSON catalogs are unaffected.
+
+Standalone `kb-read` projects the evidenced design-class `StyleClass:<type-guid>Name`
+wrapper to `StyleClass:Name` in tokenized source responses, preserving literals
+and comments. Raw reader/codegen inputs are unchanged. This displayed source is
+not round-trip storage text: do not feed it into the in-memory writer. Native
+live writes remain refused. Missing Source parts stay missing rather than aliasing
+Rules; native reads remain outside MCP admission while identity, token and
+freshness parity are unresolved.
 
 ## Machine-readable CLI diagnostics
 
@@ -506,6 +546,27 @@ The library's `IncrementalCompiler` supports both formats and maintains a transa
 ## Evidence and next gates
 
 [Validation and benchmark protocol](VALIDATION.md) documents the reproducible Python oracle, native pipeline measurements, and executed official-GeneXus differential comparisons for the admitted subset. Run `python src/gx-engine/scripts/validate.py --out scratchpad/gx-engine-validation.json` from the repository root. A separate benchmark (`python src/gx-engine/scripts/benchmark.py`) runs the parity capability through both the real GeneXus runtime helper and the engine, re-checks live parity and reports per-pass timings (see VALIDATION.md, "SDK-vs-engine benchmark").
+
+Artifact trees: `scripts/artifact_diff.py` is a read-only byte differential of an engine
+output directory against an SDK output directory (identical / different / engine-only /
+sdk-only, with sizes, SHA-256 and a reported denominator). It takes both roots explicitly,
+never writes either tree, and does no normalisation. Exit 0 = every compared file identical,
+1 = differences, 2 = usage/path error, unreadable/vanished input, any symlink/junction/reparse
+entry, or nothing compared. `--out` is written atomically (temp file + `os.replace`), so a
+symlink or hardlink at the output leaf is replaced, never written through; an output path whose
+parent resolves inside either tree is refused. Scope: only regular files with a selected
+extension are compared; empty directories and directory-only differences are not reported.
+With `--extension`, exit 0 means the *selected* extensions match: check
+`summary.selectionComplete` (true only when no scanned file was excluded on either side; see
+`engineExcludedByExtension`/`sdkExcludedByExtension`) before reading it as tree parity. Fresh-session command (point it at
+freshly generated disposable `C:\KBs\*teste*` offline outputs; keep the report outside Git):
+
+```powershell
+python src/gx-engine/scripts/artifact_diff.py --engine <engine-out> --sdk <sdk-out> --extension .cs --extension .js --out $env:TEMP\artifact-diff.json
+# tests: cd src/gx-engine/scripts; python -m unittest test_artifact_diff
+```
+
+The tool states only what it compared; it does not by itself establish a whole-KB result.
 
 Latest integrated gate: `cargo test` 481 passed, 0 failed, 2 ignored across 48
 harnesses; `cargo clippy --all-targets` and `cargo fmt --check` pass. It includes data view 10, output channel 10, diagnostics catalog 10, text tree roundtrip 10, extended types 10, design system 10, data provider 10, impact analysis 10, reorg impact 9, module resolution 10, dml navigation 10, data selector 9, formula navigation 11, navigation specifier 10, table DDL 9, transaction control 7, rules parity 10, domain attribute 10, transaction structure 10, collection ops 24, calendar ops 83, sdt JSON 32, sdt XML 40, conditional state 57, subroutines 13, numeric math 107, collection indices 3, For 8, LEN 2, typed pipeline 47, `kb_pipeline` 13 (direct `Calls` required for every non-builtin callee), SDK XML exchange 16, the portable CLI check→emit→build→artifact-execution→run acceptance flow 4, diagnostics API 5 and CLI diagnostics 5. Zero SQL writes. This is a portable-subset gate, not SDK replacement validation. Passing compiler tests do

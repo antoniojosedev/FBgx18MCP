@@ -108,11 +108,43 @@ test('engine guidance separates package builds, fixture speed and full-KB covera
         assert.ok(fs.existsSync(path.join(repoRoot, document)), `Missing agent document: ${document}`);
     }
 
+    const artifactSkill = '.agents/skills/gxe-artifact-parity/SKILL.md';
+    assert.ok(guidance.includes(`](${artifactSkill})`), 'Missing artifact-parity skill pointer');
+    assert.match(read(artifactSkill), /^name: gxe-artifact-parity$/m);
+    assert.match(read(artifactSkill), /scripts\/artifact_diff\.py/);
+    assert.ok(fs.existsSync(path.join(repoRoot, 'src/gx-engine/scripts/artifact_diff.py')));
+
     const engineReadme = read('src/gx-engine/README.md');
     const engineCoverage = markdownSection(engineReadme, '## Build coverage and routing');
     assert.match(engineCoverage, /full SDK replacement is not established/);
     assert.doesNotMatch(engineReadme, /Full Object Model:\*\* Complete support|compilation in < 20s/);
     assert.match(engineReadme, /packaged binary was smoke-tested, not benchmarked/);
+});
+
+test('engine SQL authentication guidance distinguishes safe preflight fallback from replay', () => {
+    const guide = read('docs/engine_backend.md');
+    const auth = markdownSection(guide, '## SQL authentication (issue #635)');
+    assert.match(auth, /SQLCMDUSER/);
+    assert.match(auth, /SQLCMDPASSWORD/);
+    assert.match(auth, /private credential store/);
+    assert.match(auth, /exit \*\*5\*\*/);
+    assert.match(auth, /sql_credentials_unavailable/);
+    assert.match(auth, /EngineSqlCredentialsUnavailable/);
+    assert.match(auth, /must not\s+trigger automatic SDK build replay/);
+    const auto = markdownSection(guide, '### Exactly what `auto` routes');
+    assert.match(auto, /compile_check callers=false includeCallees=transitive/);
+    assert.match(auto, /Whole-KB/);
+    assert.match(auto, /estimated_seconds/);
+    assert.match(auto, /Read, query, edit/);
+});
+
+test('engine capability guidance does not duplicate synthetic parity claims', () => {
+    const section = markdownSection(read('README.md'), '#### Gateway Capability Registry Gates');
+    assert.match(section, /\[current capability table\]\(docs\/engine_backend\.md\)/);
+    assert.doesNotMatch(section, /\|\s*`[^`]+`[^\n]*\*\*Parity\*\*/);
+    assert.match(section, /deferral guard is not native implementation coverage/);
+    assert.match(section, /historical, bounded evidence/);
+    assert.match(section, /plans\/132-gxengine-full-parity\.md/);
 });
 
 test('engine default policy is gxengine and preserves auto/SDK opt-out and reconciliation', () => {
@@ -128,6 +160,13 @@ test('engine default policy is gxengine and preserves auto/SDK opt-out and recon
     assert.match(section, /`"auto"` routes only builds/);
     assert.match(section, /`"sdk"` keeps every operation on the SDK/);
     assert.match(section, /never trigger automatic SDK replay/);
+    assert.match(section, /EngineCapabilityNotParity.*evidence-gate rejection/);
+    assert.match(section, /EngineOperationOutsideAdmittedSpace.*read\/edit deferrals/);
+    for (const document of ['src/gx-engine/README.md', 'docs/engine_backend.md']) {
+        const text = read(document);
+        assert.match(text, /planning skips.*Partial|Partial when skipped during planning/);
+        assert.match(text, /checked-emission errors.*Failed/);
+    }
     assert.match(section, /admitted type-only `genexus_query` calls/);
     assert.match(section, /all reads/);
     assert.match(backend, /No read shape is currently admitted/);
