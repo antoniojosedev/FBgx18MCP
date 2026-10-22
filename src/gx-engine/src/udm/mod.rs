@@ -25,8 +25,8 @@ mod enum_domain_tests;
 
 pub use client::{
     EntityTypeRecord, EntityVersionCompositionRecord, EntityVersionRecord, InMemoryDatabase,
-    ModelCrossReferenceRecord, ModelEntityVersionRecord, SYSTEM_ROOT_MODULE_GUID, StateLockRecord,
-    UdmClient, UdmRow, UdmValue,
+    ModelCrossReferenceRecord, ModelEntityVersionRecord, ObjectReadMetadata,
+    SYSTEM_ROOT_MODULE_GUID, StateLockRecord, UdmClient, UdmRow, UdmValue,
 };
 pub use connection::{AuthMode, KbConnectionInfo};
 pub use decoder::{

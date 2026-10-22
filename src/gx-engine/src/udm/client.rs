@@ -11,7 +11,7 @@ use crate::udm::library::ModelParentRecord;
 use crate::udm::live;
 pub use crate::udm::mock::{
     EntityTypeRecord, EntityVersionCompositionRecord, EntityVersionRecord, InMemoryDatabase,
-    ModelCrossReferenceRecord, ModelEntityVersionRecord, StateLockRecord,
+    ModelCrossReferenceRecord, ModelEntityVersionRecord, ObjectReadMetadata, StateLockRecord,
 };
 pub use crate::udm::row::{UdmRow, UdmValue};
 
@@ -23,6 +23,7 @@ mod kb_facts;
 mod live_rows;
 mod model_reads;
 mod prefetch;
+mod read_view;
 mod writes;
 
 pub use kb_facts::AttributeFacts;
@@ -55,6 +56,8 @@ pub struct UdmClient {
     /// Keys answered from memory after a set-wise read; any write clears it.
     bulk: Arc<RwLock<BulkCoverage>>,
     read_session: Option<Arc<Mutex<Option<live::ReadSession>>>>,
+    /// Operation-local serializable reader; a failed session must never be recreated.
+    consistent_read: bool,
     /// The Design model readers and writers of this client target (see `udm::version_scope`).
     design_model_id: i32,
 }
@@ -68,6 +71,7 @@ impl UdmClient {
             live_vocabulary: Arc::new(OnceLock::new()),
             bulk: Arc::new(RwLock::new(BulkCoverage::default())),
             read_session: None,
+            consistent_read: false,
             design_model_id: crate::udm::reader::DEFAULT_DESIGN_MODEL_ID,
         }
     }
@@ -83,6 +87,7 @@ impl UdmClient {
             live_vocabulary: Arc::new(OnceLock::new()),
             bulk: Arc::new(RwLock::new(BulkCoverage::default())),
             read_session: None,
+            consistent_read: false,
             design_model_id: crate::udm::reader::DEFAULT_DESIGN_MODEL_ID,
         }
     }
@@ -96,6 +101,7 @@ impl UdmClient {
             live_vocabulary: Arc::new(OnceLock::new()),
             bulk: Arc::new(RwLock::new(BulkCoverage::default())),
             read_session: None,
+            consistent_read: false,
             design_model_id: crate::udm::reader::DEFAULT_DESIGN_MODEL_ID,
         }
     }
@@ -128,6 +134,12 @@ impl UdmClient {
     /// Returns the target `KbConnectionInfo`, if configured.
     pub fn connection_info(&self) -> Option<&KbConnectionInfo> {
         self.connection_info.as_ref()
+    }
+
+    /// The in-memory store, for unit tests that seed storage rows directly.
+    #[cfg(test)]
+    pub(crate) fn storage_for_test(&self) -> &Arc<RwLock<InMemoryDatabase>> {
+        &self.storage
     }
 
     /// Returns `true` when reads go through a live SQL Server / LocalDB
@@ -173,6 +185,17 @@ impl UdmClient {
 
     /// Executes raw SQL against live SQL Server or LocalDB instance using `sqlcmd`.
     pub fn execute_live_sql(&self, sql: &str) -> Result<String, String> {
+        if self.consistent_read {
+            if self.read_session.is_none() {
+                return Err(
+                    "consistent read session is unavailable; the operation cannot be replayed"
+                        .into(),
+                );
+            }
+            if !sql.trim_start().starts_with("SET NOCOUNT ON; SELECT ") {
+                return Err("consistent reads require a generated SELECT batch".into());
+            }
+        }
         let info = self
             .connection_info
             .as_ref()
@@ -183,6 +206,12 @@ impl UdmClient {
                     .lock()
                     .map_err(|_| "SQL reader session lock poisoned")?;
                 if slot.is_none() {
+                    if self.consistent_read {
+                        return Err(
+                            "consistent read session ended; the operation cannot be replayed"
+                                .into(),
+                        );
+                    }
                     *slot = Some(live::ReadSession::start(info)?);
                 }
                 let result = slot

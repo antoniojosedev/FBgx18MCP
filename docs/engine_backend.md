@@ -37,9 +37,33 @@ engine writer has no live persistence yet, so an engine edit would report a save
 else — and every call outside the admitted space documented below — stays on the
 SDK/Worker path, or is refused when `Engine.Fallback=error`. The remaining
 native-oracle capabilities (`str_format`, `numeric_render`, …) still have no
-product consumer, and the gate is built so nothing partial can route. The physical
-storage facts behind the read path are recorded in
+product consumer, and the gate is built so nothing partial can route. Native
+`kb-read` now composes the SDK single-part `versionToken` for Source, Events,
+Rules and Conditions text and has a tested pagination projection; `genexus_read`
+stays deferred until the rest of the response envelope and object resolution are
+verified. The physical storage facts behind the read path are recorded in
 [`udm_storage_notes.md`](udm_storage_notes.md).
+
+## Coverage accounting
+
+The MCP contract inventory contains **60 tools and 309 operation rows**. Current
+production routing admits a restricted subset of **2 tools (3.3%)**:
+`genexus_query` and `genexus_lifecycle` (`build` / `rebuild`). Those are **3 of
+309 operation rows (1.0%)**, each still subject to the argument and capability
+gates below. These figures count routing breadth, not complete implementation,
+engineering effort, or independently verified SDK replacement.
+
+**0 of 60 tools are certified fully SDK-independent across their complete
+supported contract.** Engine calls still obtain active-version scope from the
+Worker; query filters/projections and lifecycle modes outside the admitted space
+remain SDK-backed. Native CLI reads have bounded differential evidence, but MCP
+reads stay deferred. Native live writes, read-to-edit concurrency, and broad tool
+families remain incomplete or unverified. Gateway-only tools are not gx-engine
+implementations and are not counted as native engine coverage.
+
+Do not derive a completion percentage from unit-test totals, internal capability
+labels, or the inventory's `execution` labels: the latter are dispatch metadata,
+not a certified per-action SDK-dependency audit.
 
 ## Enabling it
 

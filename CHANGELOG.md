@@ -7,11 +7,27 @@
 
 ### Added
 
+- Native `kb-read` now returns the SDK object `versionToken` for a single-part `Source`, `Events`, `Rules` or `Conditions` read of a Procedure, WebPanel or Transaction. The token is composed from the exact active-version `ObjectSaved` timestamp (`OutputTypeId=301`, `OutputTypeVersion=0`, falling back to `ModelEntityVersionTimestamp`), the parent GUID/name/`root`, and the SHA-256 of the full projected source. Ten captured SDK tokens on `KBTeste` match exactly, covering Source, Events, Rules and Conditions in empty and non-empty forms. MCP native reads remain SDK-deferred and no other part shape is admitted.
+
 ### Changed
+
+- Standalone `kb-read` accepts pagination flags only with `--page`; `kb-write` refuses pagination flags instead of ignoring them. Existing cross-command filter flags remain tolerated by the parser. Native MCP routing is unchanged.
 
 ### Fixed
 
+- Standalone native reads now obtain content and token metadata through one private serializable SQL read transaction with fresh caches; a failed or missing session cannot fall back to a new connection. The reader bounds its own lock waits, but writer blocking and active-session handoff remain unverified. MCP reads stay SDK-backed.
+- Native root-module lookup converts SQL GUIDs before applying an empty-string fallback and refuses duplicate or malformed root candidates instead of choosing by row order.
+
+- Standalone native page reads resolve the SDK `Source` alias for a non-generated Procedure with only a stored `Rules` text part. The page keeps the requested `Source` label and the Rules content/token; multiple candidate text parts, duplicate Rules, other object kinds and explicit missing parts remain refused. MCP read routing is unchanged.
+- Native `kb-read` no longer exposes the code-generator-only `VARIABLE_IDS` pseudo-part as an SDK part, and it withholds a `versionToken` for `Variables`, `Structure` and `WebForm` until those engine projections are verified against the SDK text. This prevents a `Variables` read from returning two payloads and prevents a token over non-SDK bytes.
+- Exit-4 version-scope refusal now authorizes SDK replay only for the exact one-line strict JSON diagnostic (`category`, `message`, `location`), with a nonblank message, a null location and empty stdout. Comments, single quotes, trailing commas, extra/missing fields and stderr noise remain ordinary failures with `reconciliationRequired`/`mutationOutcomeUnknown`, so a build that started is never replayed automatically.
+- Engine failure redaction now recognizes JSON-escaped quoted values (`Password=\"hunter2\"`) in raw stderr/stdout excerpts, error messages and sqlcmd `-P` values, while preserving the existing prompt/login exclusions.
+
 ### Internal
+
+- Exit-4 version-scope and exit-5 SQL-credential preflights share one strict single-line diagnostic reader; both are covered by the same exact-shape matrix.
+- Native read metadata is read without decoding parts: one live query joins the exact `ModelEntityVersion` row, its `Entity` GUID, the active-model parent GUID/name and the active-version `ObjectSaved` output. Stored datetimes are parsed to raw .NET ticks with no time-zone conversion; duplicate output/parent rows, present-but-NULL output timestamps and zero-half parents are refused. Standalone `kb-read` wraps the separate source and metadata queries in one private serializable transaction; other direct reader consumers are not certified as atomic.
+- The Worker's read-pagination projection is wired into standalone `kb-read --page --parts <Part> --client mcp`, preserving line semantics, UTF-16 counts, CRLF page joins, truncation markers and explicit `limit=0` slices. Other clients are refused before KB access. The candidate MCP shaper validates page-window consistency and oversized counts; the MCP route remains SDK-deferred pending complete workflow parity.
 
 ## v4.0.1 - 2026-10-21
 

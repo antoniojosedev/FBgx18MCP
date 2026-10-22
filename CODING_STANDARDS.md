@@ -133,6 +133,9 @@ different operation supports that transformation.
 Unit counts, capability labels and byte-identical generated files do not replace
 this contract evidence. Keep snapshots unchanged unless the public contract
 intentionally changes; test the negative/error paths as well as success.
+An operation must remain in its explicit fallback/refusal policy until its
+replacement route is registered and verified. A missing capability lookup must
+not silently bypass `Fallback=error`; regress both fallback modes during promotion.
 
 A native reader takes its scope (KB version, model, environment) from the
 session the SDK serves, passed by the host and checked against storage, never

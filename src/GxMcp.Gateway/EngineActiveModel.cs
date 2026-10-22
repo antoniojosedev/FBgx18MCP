@@ -76,24 +76,18 @@ namespace GxMcp.Gateway
 
         /// <summary>
         /// The engine's version-scope refusal message (category <c>version_scope</c> with exit code 4), or
-        /// null when <paramref name="invocation"/> is anything else.
+        /// null when <paramref name="invocation"/> is anything else. Only the exact strict diagnostic with
+        /// empty stdout authorizes replaying the call on the SDK; a malformed exit 4 is an ordinary failure.
         /// </summary>
-        internal static string? VersionScopeRefusal(GxEngineInvocation invocation)
+        internal static string? VersionScopeRefusal(GxEngineInvocation? invocation)
         {
-            if (invocation == null || invocation.Ok || invocation.ExitCode != VersionScopeExitCode) return null;
-            foreach (string rawLine in (invocation.StandardError ?? string.Empty).Split('\n'))
-            {
-                string line = rawLine.Trim();
-                if (!line.StartsWith("{", StringComparison.Ordinal)) continue;
-                try
-                {
-                    JObject diagnostic = JObject.Parse(line);
-                    if (string.Equals(diagnostic["category"]?.ToString(), "version_scope", StringComparison.Ordinal))
-                        return diagnostic["message"]?.ToString() ?? "the engine refused the KB version in force";
-                }
-                catch (Newtonsoft.Json.JsonException) { }
-            }
-            return null;
+            if (invocation == null || invocation.Ok || invocation.TimedOut) return null;
+            if (invocation.ExitCode != VersionScopeExitCode) return null;
+            if (!string.Equals(invocation.ErrorCode, "EngineCommandFailed", StringComparison.Ordinal)) return null;
+            if (invocation.StandardOutput.Length != 0) return null;
+            return EngineDiagnostic.TryReadSingleLine(invocation.StandardError, "version_scope", out string message)
+                ? message
+                : null;
         }
     }
 }

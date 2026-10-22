@@ -129,6 +129,53 @@ namespace GxMcp.Gateway.Tests
             Assert.NotEqual("EngineOperationOutsideAdmittedSpace", PayloadOf(refused.Result!)["error"]?.ToString());
         }
 
+        [Theory]
+        [InlineData("{'category':'version_scope','message':'x','location':null}")]
+        [InlineData("{/*not the engine protocol*/\"category\":\"version_scope\",\"message\":\"x\",\"location\":null}")]
+        [InlineData("{\"category\":\"version_scope\",\"message\":\"x\",\"location\":null,}")]
+        [InlineData("{\"category\":\"version_scope\",\"message\":\"x\"}")]
+        [InlineData("{\"category\":\"version_scope\",\"message\":\"x\",\"location\":{\"line\":1}}")]
+        [InlineData("{\"category\":\"version_scope\",\"message\":\"  \",\"location\":null}")]
+        [InlineData("{\"category\":\"version_scope\",\"message\":\"x\",\"location\":null,\"detail\":1}")]
+        public async Task AnExit4OutsideTheStrictDiagnosticContractIsNotAReplayAuthorization(string diagnostic)
+        {
+            string stub = "echo " + diagnostic + " 1>&2\r\nexit /b 4";
+
+            var run = await RunAsync("sdk", "genexus_lifecycle", "build", BuildArgs, stub, null);
+
+            Assert.NotNull(run.Result);
+            var payload = PayloadOf(run.Result!);
+            Assert.Equal("EngineCommandFailed", payload["error"]?.ToString());
+            Assert.True(payload["reconciliationRequired"]?.Value<bool>());
+            Assert.True(payload["mutationOutcomeUnknown"]?.Value<bool>());
+        }
+
+        [Fact]
+        public async Task AnExit4WithStdoutIsNotAReplayAuthorization()
+        {
+            string stub = "echo partial output\r\necho " + ScopeRefusal + " 1>&2\r\nexit /b 4";
+
+            var run = await RunAsync("sdk", "genexus_lifecycle", "build", BuildArgs, stub, null);
+
+            Assert.NotNull(run.Result);
+            var payload = PayloadOf(run.Result!);
+            Assert.Equal("EngineCommandFailed", payload["error"]?.ToString());
+            Assert.True(payload["reconciliationRequired"]?.Value<bool>());
+        }
+
+        [Fact]
+        public async Task AnExit4WithNoiseOnStandardErrorIsNotAReplayAuthorization()
+        {
+            string stub = "echo noise 1>&2\r\necho " + ScopeRefusal + " 1>&2\r\nexit /b 4";
+
+            var run = await RunAsync("sdk", "genexus_lifecycle", "build", BuildArgs, stub, null);
+
+            Assert.NotNull(run.Result);
+            var payload = PayloadOf(run.Result!);
+            Assert.Equal("EngineCommandFailed", payload["error"]?.ToString());
+            Assert.True(payload["reconciliationRequired"]?.Value<bool>());
+        }
+
         [Fact]
         public async Task ABuildNamesTheActiveVersion()
         {
