@@ -330,10 +330,12 @@ namespace GxMcp.Worker.Helpers
 
         private enum TypeRelation { Same, Different, Unverifiable }
 
-        // Two reference types ("Attribute:X", "Domain:X", "SDT:X") are the same only when they
-        // name the same target; two basic types only when their normalized text is equal. A
-        // reference compared with a basic type, or a type that is not declared, is left open
-        // instead of guessed.
+        // Two reference types ("Attribute:X", "Domain:X", "SDT:X") are the same only when they name the same
+        // target: a generated helper takes the attribute it was generated for, so another target is drift.
+        // Two basic types agree when they are the same family (VARCHAR(40) receives a LONGVARCHAR, NUMERIC(4)
+        // a NUMERIC(10): GeneXus converts inside a family), and differ across families (a numeric where a
+        // character or a GUID is expected). A reference compared with a basic type, or a type that is not
+        // declared, is left open instead of guessed.
         private static TypeRelation Relate(string parameterType, string argumentType)
         {
             if (string.IsNullOrWhiteSpace(parameterType) || string.IsNullOrWhiteSpace(argumentType))
@@ -343,7 +345,25 @@ namespace GxMcp.Worker.Helpers
             if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return TypeRelation.Same;
             bool leftReference = left.IndexOf(':') >= 0;
             bool rightReference = right.IndexOf(':') >= 0;
-            return leftReference == rightReference ? TypeRelation.Different : TypeRelation.Unverifiable;
+            if (leftReference != rightReference) return TypeRelation.Unverifiable;
+            if (leftReference) return TypeRelation.Different;
+            return string.Equals(Family(left), Family(right), StringComparison.Ordinal) ? TypeRelation.Same : TypeRelation.Different;
+        }
+
+        private static string Family(string basicType)
+        {
+            string token = Regex.Match(basicType, @"^[A-Za-z_][A-Za-z0-9_]*").Value.ToUpperInvariant();
+            switch (token)
+            {
+                case "CHARACTER": case "CHAR": case "VARCHAR": case "LONGVARCHAR":
+                    return "character";
+                case "NUMERIC": case "INTEGER": case "INT": case "SMALLINT": case "BIGINT": case "DECIMAL": case "FLOAT": case "DOUBLE": case "REAL":
+                    return "numeric";
+                case "DATE": case "DATETIME":
+                    return "datetime";
+                default:
+                    return token;
+            }
         }
 
         private static string Canonical(string type)

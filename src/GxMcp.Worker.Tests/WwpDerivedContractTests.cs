@@ -202,6 +202,39 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void BasicTypesOfTheSameFamily_AreCompatible_WhateverTheirLength()
+        {
+            // GeneXus converts inside a family: a VARCHAR(40) variable receives a LONGVARCHAR, NUMERIC(4) a NUMERIC(10).
+            string rules = "parm(in:&A, in:&B);";
+            string helper = "&A : NUMERIC(10)\r\n&B : LONGVARCHAR(2097152)";
+
+            JObject result = Evaluate("LoadDVComboX(&A, &B)", "&A : NUMERIC(4)\r\n&B : VARCHAR(40)", rules, helper);
+
+            Assert.True((bool)result["consistent"]);
+            Assert.Empty(result["mismatches"]);
+        }
+
+        [Fact]
+        public void AFunctionResult_IntoAShorterCharacterVariable_IsConsistent()
+        {
+            JObject result = EvaluateFunction("&Text = LoadDVComboX(&Cond_Owner, &Cond_Tenant, &Cond_Link)",
+                CallerVariables + "\r\n&Text : VARCHAR(40)");
+
+            Assert.True((bool)result["consistent"]);
+        }
+
+        [Fact]
+        public void ANumericWhereACharacterIsExpected_IsStillATypeMismatch()
+        {
+            string rules = "parm(in:&A);";
+
+            JObject result = Evaluate("LoadDVComboX(&A)", "&A : NUMERIC(4)", rules, "&A : VARCHAR(40)");
+
+            Assert.False((bool)result["consistent"]);
+            Assert.Equal("type", (string)result["mismatches"].Single()["kind"]);
+        }
+
+        [Fact]
         public void ACallWithNoMatchingParmRule_IsAnArgumentCountMismatch()
         {
             JObject result = Evaluate("LoadDVComboX(&Cond_Owner)", rules: "// no parm", variables: HelperVariables);
