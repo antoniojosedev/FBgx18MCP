@@ -43,6 +43,15 @@ namespace GxMcp.Worker.Helpers
             internal string Part;
             internal int Line;
             internal List<string> Arguments = new List<string>();
+            /// <summary>
+            /// True when something precedes the call on its line (<c>&amp;x = Helper(...)</c>, <c>If &amp;x = Helper(...)</c>).
+            /// GeneXus lets a procedure whose last parameter is <c>out</c> be used that way, as a function: its
+            /// value is that last parameter, so the call lists one argument fewer than the <c>parm</c> rule.
+            /// A call that opens its line is a statement and lists every parameter.
+            /// </summary>
+            internal bool InExpression;
+            /// <summary>The left side of <c>&amp;x = Helper(...)</c> when the call is an assignment, else null.</summary>
+            internal string ReturnTarget;
         }
 
         /// <summary>One text part of one object that may contain calls to the helper.</summary>
@@ -66,6 +75,10 @@ namespace GxMcp.Worker.Helpers
 
         private static readonly Regex SimpleVariable = new Regex(
             @"^&(?<name>[A-Za-z_][A-Za-z0-9_]*)$", RegexOptions.CultureInvariant);
+
+        // "&x = " (or "x.Value = ") right before the call on the same line; "<=", ">=", "!=" and "==" are not assignments.
+        private static readonly Regex ReturnAssignment = new Regex(
+            @"(?<target>&?[A-Za-z_][A-Za-z0-9_.]*)\s*(?<![<>!=])=(?!=)\s*$", RegexOptions.CultureInvariant);
 
         /// <summary>The declared variables of a Variables part: name (no <c>&amp;</c>) to its type text.</summary>
         internal static Dictionary<string, string> ParseVariables(string variables)
@@ -126,11 +139,16 @@ namespace GxMcp.Worker.Helpers
                 int open = match.Index + match.Length - 1;
                 int close = FindClosingParenthesis(clean, open);
                 if (close < 0) continue;
+                int lineStart = clean.LastIndexOf('\n', Math.Max(0, match.Index - 1)) + 1;
+                string prefix = clean.Substring(lineStart, match.Index - lineStart);
+                Match assignment = ReturnAssignment.Match(prefix);
                 var call = new CallSite
                 {
                     Caller = objectName,
                     Part = partName,
-                    Line = 1 + clean.Take(match.Index).Count(c => c == '\n')
+                    Line = 1 + clean.Take(match.Index).Count(c => c == '\n'),
+                    InExpression = prefix.Trim().Length > 0,
+                    ReturnTarget = assignment.Success ? assignment.Groups["target"].Value : null
                 };
                 string inside = clean.Substring(open + 1, close - open - 1);
                 if (!string.IsNullOrWhiteSpace(inside))
@@ -180,12 +198,33 @@ namespace GxMcp.Worker.Helpers
                         });
                     }
 
-                    if (call.Arguments.Count != parameters.Count)
+                    // A function-style call (&x = Helper(...)) binds the last parameter to the result, so it
+                    // passes one argument fewer, and only an out parameter can be returned that way.
+                    List<Parameter> positional = parameters;
+                    Parameter returned = null;
+                    if (call.InExpression)
+                    {
+                        if (parameters.Count > 0 && parameters[parameters.Count - 1].Direction != "in")
+                        {
+                            returned = parameters[parameters.Count - 1];
+                            positional = parameters.Take(parameters.Count - 1).ToList();
+                        }
+                        else
+                            callMismatches.Add(Mismatch("returnValue", null, call,
+                                "The call uses its result but '" + helperName + "' "
+                                + (parameters.Count == 0 ? "declares no parameter." : "ends with the in parameter '&"
+                                    + parameters[parameters.Count - 1].Name + "', which cannot be returned.")));
+                    }
+
+                    if (call.Arguments.Count != positional.Count)
                         callMismatches.Add(Mismatch("argumentCount", null, call,
                             "The call passes " + call.Arguments.Count + " argument(s) and '" + helperName + "' declares "
-                            + parameters.Count + " parameter(s)."));
+                            + positional.Count + " parameter(s)"
+                            + (returned == null ? "." : " plus the returned out parameter '&" + returned.Name + "'.")));
                     else
-                        CompareArguments(helperName, parameters, call, callerTypes, callMismatches, warnings);
+                        CompareArguments(helperName, positional, call, callerTypes, callMismatches, warnings);
+
+                    if (returned != null) CompareReturn(returned, call, callerTypes, callMismatches, warnings);
 
                     foreach (JToken mismatch in callMismatches) mismatches.Add(mismatch.DeepClone());
                     callReports.Add(new JObject
@@ -193,6 +232,8 @@ namespace GxMcp.Worker.Helpers
                         ["caller"] = call.Caller,
                         ["part"] = call.Part,
                         ["line"] = call.Line,
+                        ["style"] = call.InExpression ? "function" : "statement",
+                        ["returnTarget"] = call.ReturnTarget,
                         ["arguments"] = arguments,
                         ["consistent"] = callMismatches.Count == 0
                     });
@@ -216,6 +257,25 @@ namespace GxMcp.Worker.Helpers
                 ["warnings"] = warnings,
                 ["consistent"] = mismatches.Count == 0
             };
+        }
+
+        // The variable that receives a function-style result must hold what the returned out parameter declares.
+        private static void CompareReturn(Parameter returned, CallSite call, Dictionary<string, string> callerTypes,
+            JArray mismatches, JArray warnings)
+        {
+            if (call.ReturnTarget == null) return; // used inside a larger expression: no variable to compare
+            Match target = SimpleVariable.Match(call.ReturnTarget);
+            if (!target.Success) return; // a property or an attribute: nothing declared to compare with
+            callerTypes.TryGetValue(target.Groups["name"].Value, out string targetType);
+            TypeRelation relation = Relate(returned.Type, targetType);
+            if (relation == TypeRelation.Different)
+                mismatches.Add(Mismatch("returnType", null, call,
+                    "The result is assigned to '" + call.ReturnTarget + "' : " + targetType + " but the returned parameter '&"
+                    + returned.Name + "' is " + returned.Type + "."));
+            else if (relation == TypeRelation.Unverifiable)
+                warnings.Add(Mismatch("returnTypeUnverifiable", null, call,
+                    "The result assigned to '" + call.ReturnTarget + "' cannot be checked against the returned parameter '&"
+                    + returned.Name + "' : " + (returned.Type ?? "(undeclared)") + "."));
         }
 
         private static void CompareArguments(string helperName, List<Parameter> parameters, CallSite call,

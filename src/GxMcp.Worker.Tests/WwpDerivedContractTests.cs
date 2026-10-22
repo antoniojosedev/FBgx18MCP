@@ -46,15 +46,84 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void AMatchingCall_IsConsistent_InBothCallForms()
+        public void AMatchingCall_IsConsistent_AsAStatementAndThroughCall()
         {
-            JObject plain = Evaluate("&x = LoadDVComboX(&Cond_Owner, &Cond_Tenant, &Cond_Link)");
+            JObject plain = Evaluate("LoadDVComboX(&Cond_Owner, &Cond_Tenant, &Cond_Link)");
             JObject viaCall = Evaluate("LoadDVComboX.Call(&Cond_Owner, &Cond_Tenant, &Cond_Link)");
 
             Assert.True((bool)plain["consistent"]);
             Assert.True((bool)viaCall["consistent"]);
             Assert.Equal(1, (int)plain["callCount"]);
             Assert.Empty(plain["mismatches"]);
+        }
+
+        // A helper whose last parameter is out, as the generated LoadDVCombo procedures are, is called as a
+        // function: the assignment receives that parameter, so the call passes one argument fewer.
+        private const string FunctionRules = "parm(in:&Cond_Owner, in:&Cond_Tenant, in:&Cond_Link, out:&Result);";
+
+        private const string FunctionHelperVariables = HelperVariables + "\r\n&Result : LONGVARCHAR(2097152)";
+
+        private const string FunctionCallerVariables = CallerVariables
+            + "\r\n&Result : LONGVARCHAR(2097152)\r\n&Count : NUMERIC(4)";
+
+        private static JObject EvaluateFunction(string events, string callerVariables = FunctionCallerVariables, string rules = FunctionRules) =>
+            Evaluate(events, callerVariables, rules, FunctionHelperVariables);
+
+        [Fact]
+        public void AFunctionStyleCall_PassesTheOutParameterAsTheAssignment_AndIsConsistent()
+        {
+            JObject result = EvaluateFunction("&Result = LoadDVComboX(&Cond_Owner, &Cond_Tenant, &Cond_Link)");
+
+            Assert.True((bool)result["consistent"]);
+            Assert.Equal("function", (string)result["calls"][0]["style"]);
+            Assert.Equal("&Result", (string)result["calls"][0]["returnTarget"]);
+            Assert.Empty(result["mismatches"]);
+        }
+
+        [Fact]
+        public void AFunctionStyleCall_InsideAnotherExpression_IsAlsoOneArgumentFewer()
+        {
+            JObject result = EvaluateFunction("If not LoadDVComboX(&Cond_Owner, &Cond_Tenant, &Cond_Link).IsEmpty()\r\nEndIf\r\n"
+                + "&Count = Len(LoadDVComboX(&Cond_Owner, &Cond_Tenant, &Cond_Link))");
+
+            Assert.True((bool)result["consistent"]);
+        }
+
+        [Fact]
+        public void AFunctionStyleCall_WithTheWrongCount_NamesTheCountItExpected()
+        {
+            JObject result = EvaluateFunction("&Result = LoadDVComboX(&Cond_Owner, &Cond_Tenant)");
+
+            JObject mismatch = (JObject)Assert.Single(result["mismatches"]);
+            Assert.Equal("argumentCount", (string)mismatch["kind"]);
+            Assert.Contains("declares 3 parameter(s) plus the returned out parameter '&Result'", (string)mismatch["message"]);
+        }
+
+        [Fact]
+        public void AFunctionStyleCall_AgainstALastInParameter_IsAReturnValueMismatch()
+        {
+            JObject result = Evaluate("&Result = LoadDVComboX(&Cond_Owner, &Cond_Tenant)");
+
+            Assert.False((bool)result["consistent"]);
+            Assert.Contains(result["mismatches"].Select(m => (string)m["kind"]), kind => kind == "returnValue");
+        }
+
+        [Fact]
+        public void AFunctionStyleCall_AssignedToAVariableOfAnotherType_IsAReturnTypeMismatch()
+        {
+            JObject result = EvaluateFunction("&Count = LoadDVComboX(&Cond_Owner, &Cond_Tenant, &Cond_Link)");
+
+            Assert.False((bool)result["consistent"]);
+            Assert.Equal("returnType", (string)result["mismatches"].Single()["kind"]);
+        }
+
+        [Fact]
+        public void AStatementCallThatListsEveryParameter_IsConsistentWithAnOutParameter()
+        {
+            JObject result = EvaluateFunction("LoadDVComboX(&Cond_Owner, &Cond_Tenant, &Cond_Link, &Result)");
+
+            Assert.True((bool)result["consistent"]);
+            Assert.Equal("statement", (string)result["calls"][0]["style"]);
         }
 
         [Fact]

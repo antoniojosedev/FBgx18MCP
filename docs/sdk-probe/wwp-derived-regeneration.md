@@ -91,6 +91,8 @@ verification (nothing had changed). Unit tests cover the helper detection, the c
 contract (count, order, type, name, comments and strings, nested calls), the capture diff
 and the token comparison.
 
+A read-only `dryRun` against a real application KB (a production WorkWithPlus Transaction with a generated `LoadDVCombo` helper) also ran, and it caught a defect that the synthetic cases had missed: the generated procedure is called as a function (`&Json = Helper(...)`), so the call passes one argument fewer than the `parm` rule and the last `out` parameter is the result. The first version counted that as an argument-count mismatch; the contract check now models the function-style call, its `out` requirement and the type of the receiving variable.
+
 **Not run**: a regeneration that actually rewrites a helper. It needs a KB with the Design
 System imported and a combo whose helper already exists. Until that run, the claim that the
 engine rebuilds the `LoadDVCombo` helper from the current instance is read from the SDK, not
