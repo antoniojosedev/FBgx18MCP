@@ -55,7 +55,7 @@ if ($unavailable.status -ne 'incomplete' -or
     throw 'An unavailable local dependency must be incomplete and block push readiness.'
 }
 
-foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
+foreach ($name in @('Get-PrePushTempRoot', 'Set-RawPhaseTail', 'Get-RawPhaseTail', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-AggregateFailureDetail', 'Get-ReleaseContractAllowlist', 'Test-ReleaseContractConstantBinding', 'Test-ReleaseContractTopLevelStatement', 'Assert-ReleaseContractTopLevelSafe', 'Resolve-CargoExecutable', 'New-RustLaneSummary', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
     $functionDefinition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -73,43 +73,16 @@ foreach ($name in @('Get-PrePushTempRoot', 'New-Phase', 'Invoke-NativeCapture', 
 # parsed and validated here, before the dot-source below, so an offending file is
 # refused without first executing it in this scope.
 #
-# Covered surfaces are the ones that execute on import: the param/begin/process/
-# dynamicparam/clean blocks and the end-block statements. `using` statements are
-# resolved while the file is parsed, before any post-parse guard can inspect
-# them, so that surface is documented as out of reach instead of pretended to be
-# covered. The production checker dot-sources the same contract without this
-# guard: this is a structural assertion over trusted upstream code, not a sandbox
-# for it, and a top-level `exit` there would still terminate the checker.
-#
-# Upstream binds two named constants at top level (v4.0.0):
-#   $script:GxMcpReleaseWorkflowCheck / $script:GxMcpReleaseWorkflowAppId
-# A literal binding to one of those script-scoped names emits no output, consumes
-# no argument and invokes no command. It is an exception named by the allowlist,
-# not a general licence: any other top-level statement is refused.
-$allowedReleaseContractConstants = @(
-    'script:GxMcpReleaseWorkflowCheck'
-    'script:GxMcpReleaseWorkflowAppId'
-)
-
-function Test-ReleaseContractConstantBinding {
-    param([Parameter(Mandatory = $true)][object]$Statement)
-
-    if ($Statement -isnot [System.Management.Automation.Language.AssignmentStatementAst]) { return $false }
-    if ($Statement.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals) { return $false }
-    $left = $Statement.Left
-    if ($left -isnot [System.Management.Automation.Language.VariableExpressionAst]) { return $false }
-    if ($allowedReleaseContractConstants -notcontains $left.VariablePath.UserPath) { return $false }
-    $value = $Statement.Right
-    if ($value -is [System.Management.Automation.Language.CommandExpressionAst]) { $value = $value.Expression }
-    return $value -is [System.Management.Automation.Language.ConstantExpressionAst]
-}
-
-function Test-ReleaseContractTopLevelStatement {
-    param([Parameter(Mandatory = $true)][object]$Statement)
-
-    if ($Statement -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $true }
-    return Test-ReleaseContractConstantBinding -Statement $Statement
-}
+# The guard lives in the checker (Assert-ReleaseContractTopLevelSafe and its
+# predicate) and is extracted above through the same AST seam used for the other
+# production functions. The checker calls it before dot-sourcing the contract, so
+# the production path refuses an offending file instead of executing it. The
+# surfaces covered are the ones that execute on import: param/begin/process/
+# dynamicparam/clean blocks, `using` statements and the end-block statements.
+# `using` is resolved while the file is parsed, so that refusal is detection, not
+# prevention. This is a structural assertion over trusted upstream code, not a
+# sandbox: function bodies are not inspected and a malicious contract still runs
+# at call time.
 
 function Assert-ReleaseContractStatementClassification {
     param(
@@ -167,18 +140,33 @@ if (-not (Test-ReleaseContractTopLevelStatement -Statement $multiStatements[0]))
 if (Test-ReleaseContractTopLevelStatement -Statement $multiStatements[1]) { throw 'The multi-statement fixture must reject its pipeline statement.' }
 
 $contractPath = Join-Path $root 'scripts\release-contract.ps1'
-$contractTokens = $null; $contractParseErrors = $null
-$contractAst = [System.Management.Automation.Language.Parser]::ParseFile($contractPath, [ref]$contractTokens, [ref]$contractParseErrors)
-if ($contractParseErrors.Count -gt 0) { throw "release-contract.ps1 has parse errors: $($contractParseErrors -join '; ')" }
-if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.ProcessBlock -or
-    $contractAst.DynamicParamBlock -or $contractAst.CleanBlock) {
-    throw 'release-contract.ps1 must not declare param/begin/process/dynamicparam/clean blocks; the dot-source must not consume arguments or run top-level code.'
-}
-foreach ($stmt in $contractAst.EndBlock.Statements) {
-    if (Test-ReleaseContractTopLevelStatement -Statement $stmt) { continue }
-    $snippet = $stmt.Extent.Text.Trim()
-    if ($snippet.Length -gt 120) { $snippet = $snippet.Substring(0, 117) + '...' }
-    throw "release-contract.ps1 must define only functions at top level or bind an allowed release constant (line $($stmt.Extent.StartLineNumber)); found $($stmt.GetType().Name): $snippet"
+Assert-ReleaseContractTopLevelSafe -Path $contractPath -CheckerPath $scriptPath
+
+# File-based guard fixtures: using statements and name collisions. The table
+# above exercises the predicate; these exercise the path-based assertion.
+$guardFixtureRoot = Join-Path $env:TEMP ('gxmcp-prepush-guard-' + [guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path $guardFixtureRoot -Force | Out-Null
+    $assertGuardRefusal = {
+        param([string]$Text, [string]$CaseName, [string]$ExpectedPattern)
+
+        $path = Join-Path $guardFixtureRoot (($CaseName -replace '[^A-Za-z0-9_.-]', '-') + '.ps1')
+        [IO.File]::WriteAllText($path, $Text + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+        $message = $null
+        try { Assert-ReleaseContractTopLevelSafe -Path $path -CheckerPath $scriptPath } catch { $message = $_.Exception.Message }
+        if ($null -eq $message) { throw "Guard fixture '$CaseName' was accepted but must be refused." }
+        if ($message -notmatch $ExpectedPattern) { throw "Guard fixture '$CaseName' was refused for the wrong reason: $message" }
+    }
+    & $assertGuardRefusal 'using namespace System.Text' 'using-namespace' 'using statements'
+    & $assertGuardRefusal 'using module NoSuchModule' 'using-module' 'using statements|parse errors'
+    & $assertGuardRefusal 'function Write-TextSummary { }' 'function-collision' 'shadow names'
+    & $assertGuardRefusal 'function Test-Path { }' 'command-collision' 'shadow names'
+
+    $positivePath = Join-Path $guardFixtureRoot 'positive.ps1'
+    [IO.File]::WriteAllText($positivePath, "function Get-UniqueHelper { }`n`$script:GxMcpReleaseWorkflowCheck = 'test'`n`$script:GxMcpReleaseWorkflowAppId = 15368`n", [Text.UTF8Encoding]::new($false))
+    Assert-ReleaseContractTopLevelSafe -Path $positivePath -CheckerPath $scriptPath
+} finally {
+    Remove-Item -LiteralPath $guardFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 . (Join-Path $root 'scripts\release-contract.ps1')
@@ -418,8 +406,32 @@ if ($dotContract.Extent.StartOffset -lt $topLevelTry.Body.Extent.StartOffset -or
     throw 'The contract dot-source must live inside the top-level try block, so a broken contract still emits the summary.'
 }
 
+$guardCalls = @($ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -eq 'Assert-ReleaseContractTopLevelSafe'
+        }, $true))
+if ($guardCalls.Count -ne 1) { throw "Expected exactly one production contract guard call; found $($guardCalls.Count)." }
+$guardCall = $guardCalls[0]
+if ($guardCall.Extent.StartOffset -ge $dotContract.Extent.StartOffset) {
+    throw 'The production guard must run before the contract dot-source, so an offending file is refused before it executes.'
+}
+if ($guardCall.Extent.StartOffset -lt $topLevelTry.Body.Extent.StartOffset -or
+    $guardCall.Extent.EndOffset -gt $topLevelTry.Body.Extent.EndOffset) {
+    throw 'The production guard must live inside the top-level try block, so a refused contract still emits the summary.'
+}
+
 if ($source -match '\[regex\]::Replace') {
     throw 'The checker must not re-implement the shared regex-replacement pattern.'
+}
+if ($source -notmatch 'Protect-GxMcpReleaseText\s+\$json') {
+    throw 'The checker must redact the serialized summary before writing it.'
+}
+if ($source -notmatch 'New-AggregateFailureDetail[\s\S]{0,300}-PhaseStatus \$releasePhase\.status') {
+    throw 'The checker must attach the aggregate failure after the release phase retag.'
+}
+if ($source -notmatch 'New-RustLaneSummary[\s\S]{0,300}-Requested') {
+    throw 'The checker must build the Rust lane summary.'
 }
 # Reuse the checker AST parsed above (F3); do not reparse.
 $checkerAst = $ast
@@ -470,6 +482,83 @@ try {
         if ($path -and (Test-Path -LiteralPath $path)) {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+# C6: a secret inside the last 60 lines must be redacted in the serialized
+# phase object, not only in the log.
+$tailFixturePath = Join-Path $env:TEMP ('gxmcp-prepush-tail-' + [guid]::NewGuid().ToString('N') + '.ps1')
+$tailBody = @'
+for ($i = 1; $i -le 5; $i++) { Write-Output "line $i" }
+Write-Output 'token=TAILSECRET-98765'
+exit 1
+'@
+[IO.File]::WriteAllText($tailFixturePath, $tailBody, [Text.UTF8Encoding]::new($false))
+$tailLogRoot = Join-Path $env:TEMP ('gxmcp-prepush-tail-log-' + [guid]::NewGuid().ToString('N'))
+try {
+    $tailPhase = Invoke-NativePhase -Name 'tail phase' -Executable 'pwsh' -Arguments @('-NoProfile', '-File', $tailFixturePath) -LogRoot $tailLogRoot
+    $tailText = (@($tailPhase.outputTail) -join "`n")
+    if ($tailText -notmatch 'line 5') { throw 'Fixture defect: the tail must include the final lines.' }
+    if ($tailText -match 'TAILSECRET-98765') { throw 'The serialized phase tail must redact a secret inside the 60-line window.' }
+    if ($tailText -notmatch 'token=\[REDACTED\]') { throw 'The serialized phase tail must carry the redaction marker.' }
+    if (($tailPhase | ConvertTo-Json -Depth 5) -match 'TAILSECRET-98765') { throw 'The serialized phase object must not leak the secret.' }
+} finally {
+    foreach ($path in @($tailFixturePath, $tailLogRoot)) {
+        if ($path -and (Test-Path -LiteralPath $path)) {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+$wsRedacted = Invoke-GitWhitespacePhase -Name 'seam redaction' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult (New-CapturedGitResult -Output @('token=WSSECRET-1') -ExitCode 0)
+if ((@($wsRedacted.outputTail) -join "`n") -match 'WSSECRET-1') {
+    throw 'The whitespace phase tail must be redacted.'
+}
+$redactedTailPoints = @([regex]::Matches($source, 'outputTail = @\(\$rawTail \| ForEach-Object \{ Redact-PrePushLogLine')).Count
+if ($redactedTailPoints -ne 4) {
+    throw "Expected four redacted capture points in the checker; found $redactedTailPoints."
+}
+
+# C3: the Rust lane is advisory, opt-in and runs all three checks.
+$rustRoot = Join-Path $env:TEMP ('gxmcp-prepush-rust-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $rustRoot -Force | Out-Null
+$fakeCargo = Join-Path $rustRoot 'fake-cargo.cmd'
+$rustMarker = Join-Path $rustRoot 'calls.txt'
+$fakeBody = "@echo off`r`necho %1>>`"$rustMarker`"`r`nif /I `"%1`"==`"clippy`" exit /b 1`r`nexit /b 0`r`n"
+[IO.File]::WriteAllText($fakeCargo, $fakeBody, [Text.UTF8Encoding]::new($false))
+try {
+    $lane = New-RustLaneSummary -Requested $true -CargoPath $fakeCargo -EnginePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
+    if ($lane.status -ne 'failed' -or -not $lane.ran -or @($lane.checks).Count -ne 3) {
+        throw 'The Rust lane must run all three checks and report the overall failure.'
+    }
+    $laneNames = @($lane.checks | ForEach-Object { $_['name'] }) -join ','
+    if ($laneNames -ne 'fmt,clippy,test') { throw "The Rust lane must run fmt, clippy and test in order; got $laneNames." }
+    if (@($lane.checks | Where-Object { $_['status'] -eq 'failed' }).Count -ne 1) {
+        throw 'Only the intentional clippy probe must fail.'
+    }
+    if ($lane.checks[1]['command'] -notmatch '--locked' -or $lane.checks[2]['command'] -notmatch '--locked') {
+        throw 'clippy and test must pass --locked so the lane cannot rewrite Cargo.lock.'
+    }
+    if (@(Get-Content -LiteralPath $rustMarker).Count -ne 3) {
+        throw 'The Rust lane must run all three checks even after the first failure.'
+    }
+
+    $notRequested = New-RustLaneSummary -Requested $false -CargoPath $fakeCargo -EnginePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
+    if ($notRequested.status -ne 'not-requested' -or $notRequested.ran) {
+        throw 'A lane that was not requested must report not-requested.'
+    }
+    $noCargo = New-RustLaneSummary -Requested $true -CargoPath '' -EnginePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
+    if ($noCargo.status -ne 'not-run' -or $noCargo.note -ne 'cargo-not-found') {
+        throw 'A requested lane without cargo must report not-run.'
+    }
+
+    $advisoryDecision = Get-PrePushDecision -MechanicalFailed $false -MechanicalUnavailable $false -BaseRefAvailable $true -CommitsBehind 0 -WorkingTreeDirty $false
+    if ($advisoryDecision.pushReadiness -ne 'readyLocal' -or $lane.status -ne 'failed') {
+        throw 'A failed Rust lane must not change push readiness.'
+    }
+} finally {
+    if (Test-Path -LiteralPath $rustRoot) {
+        Remove-Item -LiteralPath $rustRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -639,6 +728,22 @@ try {
         throw 'A summary without a phases key must read as an empty phase set with its own status and retention intact, not as an unparsable summary that discards the evidence.'
     }
 
+    $phaselessTail = @('preflight output line', 'fingerprint mismatch')
+    $phaselessAggregate = New-AggregateFailureDetail -PhaseStatus 'failed' -SummaryStatus 'failed' -OutputTail $phaselessTail -AttributedFailureCount 0
+    if ($null -eq $phaselessAggregate -or $phaselessAggregate.status -ne 'failed' -or $phaselessAggregate.detail -notmatch 'fingerprint mismatch') {
+        throw 'A failed phase with no attributed failure must carry an aggregate failure detail.'
+    }
+    $attributedAggregate = New-AggregateFailureDetail -PhaseStatus 'failed' -SummaryStatus 'failed' -OutputTail $phaselessTail -AttributedFailureCount 1
+    if ($null -ne $attributedAggregate) { throw 'An attributed phase failure must not be reported as an aggregate failure.' }
+    $unavailableAggregate = New-AggregateFailureDetail -PhaseStatus 'unavailable' -SummaryStatus 'failed' -OutputTail $phaselessTail -AttributedFailureCount 0
+    if ($null -ne $unavailableAggregate) { throw 'An unavailable phase must not be reported as an aggregate failure.' }
+    $runningAggregate = New-AggregateFailureDetail -PhaseStatus 'failed' -SummaryStatus 'running' -OutputTail @() -AttributedFailureCount 0
+    if ($null -eq $runningAggregate -or $runningAggregate.status -ne 'running') { throw 'A running summary with no failed phase must be reported as an aggregate failure.' }
+    $nullTailAggregate = New-AggregateFailureDetail -PhaseStatus 'failed' -SummaryStatus $null -OutputTail $null -AttributedFailureCount 0
+    if ($null -eq $nullTailAggregate -or $null -ne $nullTailAggregate.status -or $nullTailAggregate.detail -ne '') { throw 'A missing summary must yield a null status and an empty detail.' }
+    $redactedAggregate = New-AggregateFailureDetail -PhaseStatus 'failed' -SummaryStatus 'failed' -OutputTail @('token=abc123') -AttributedFailureCount 0
+    if ((@($redactedAggregate.detail) -join ' ') -match 'abc123') { throw 'The aggregate detail must be redacted.' }
+
     $statuslessOutcome = Read-ReleasePhaseDetails -SummaryPath $statuslessSummaryFixture -PhaseStatus 'failed'
     if ($null -ne $statuslessOutcome.parseError -or $null -ne $statuslessOutcome.details.status -or
         @($statuslessOutcome.details.failedPhases).Count -ne 1 -or
@@ -741,6 +846,10 @@ New-Item -ItemType Directory -Path $collisionRoot -Force | Out-Null
 try {
     $firstPhase = New-Phase -Name 'same name' -Command 'x'
     $secondPhase = New-Phase -Name 'same name' -Command 'x'
+    foreach ($field in @('advisories', 'blocking', 'noiseLines')) {
+        if (-not $firstPhase.Contains($field)) { throw "New-Phase must initialize '$field'." }
+        if (@($firstPhase[$field]).Count -ne 0) { throw "New-Phase must initialize '$field' as an empty array." }
+    }
     $firstLog = Write-PhaseLog -Phase $firstPhase -Lines @('first payload') -LogRoot $collisionRoot
     $secondLog = Write-PhaseLog -Phase $secondPhase -Lines @('second payload') -LogRoot $collisionRoot
     if ((Split-Path -Leaf $firstLog) -ne 'same-name.log') { throw 'The first phase log must keep the plain slug name.' }
@@ -767,18 +876,21 @@ if ([string]::IsNullOrWhiteSpace((Get-PrePushTempRoot -Temp $null))) {
 
 $sentinelRoot = Join-Path $env:TEMP ('gxmcp-prepush-sentinel-' + [guid]::NewGuid().ToString('N'))
 $sentinelScripts = Join-Path $sentinelRoot 'scripts'
+$sentinelMarker = Join-Path $sentinelRoot 'executed.txt'
 try {
     New-Item -ItemType Directory -Path $sentinelScripts -Force | Out-Null
     Copy-Item -LiteralPath $scriptPath -Destination (Join-Path $sentinelScripts 'Invoke-PrePushMechanicalChecks.ps1')
     [IO.File]::WriteAllText(
         (Join-Path $sentinelScripts 'release-contract.ps1'),
-        "throw 'GXMCP_PREPUSH_CONTRACT_SENTINEL'" + [Environment]::NewLine,
+        "[IO.File]::WriteAllText('$sentinelMarker', 'executed')" + [Environment]::NewLine,
         [Text.UTF8Encoding]::new($false))
     $out = & pwsh -NoProfile -File (Join-Path $sentinelScripts 'Invoke-PrePushMechanicalChecks.ps1') -AsJson 2>$null
     $sentinelSummary = $out | ConvertFrom-Json
-    if ($sentinelSummary.reasons -notcontains 'GXMCP_PREPUSH_CONTRACT_SENTINEL') { throw 'A broken contract must surface its error in the summary reasons.' }
-    if ($sentinelSummary.exitCode -ne 1) { throw 'A broken contract must exit 1.' }
-    if (@($sentinelSummary.phases).Count -ne 0) { throw 'A broken contract must abort before any phase runs.' }
+    $sentinelReasons = (@($sentinelSummary.reasons) -join ' ')
+    if ($sentinelReasons -notmatch 'release-contract\.ps1 must') { throw 'The production guard must refuse a top-level command before the contract executes.' }
+    if (Test-Path -LiteralPath $sentinelMarker) { throw 'The sentinel contract executed; the guard did not run before the dot-source.' }
+    if ($sentinelSummary.exitCode -ne 1) { throw 'A refused contract must exit 1.' }
+    if (@($sentinelSummary.phases).Count -ne 0) { throw 'A refused contract must abort before any phase runs.' }
 } finally {
     Remove-Item -LiteralPath $sentinelRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -811,7 +923,14 @@ foreach ($marker in @(
         'Invoke-GitWhitespacePhase',
         'CapturedResult',
         'core.whitespace',
-        '--no-color'
+        '--no-color',
+        'aggregateFailure',
+        'rustLane',
+        'IncludeRustLane',
+        'Assert-ReleaseContractTopLevelSafe',
+        'New-AggregateFailureDetail',
+        'New-RustLaneSummary',
+        '--locked'
     )) {
     if ($source -notmatch [regex]::Escape($marker)) { throw "Checker is missing contract marker: $marker" }
 }

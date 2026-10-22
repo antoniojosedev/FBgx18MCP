@@ -1,10 +1,14 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$BaseRef = 'origin/main',
 
     [int]$ArtifactRetentionDays = 7,
 
-    [switch]$AsJson
+    [switch]$AsJson,
+
+    [switch]$IncludeRustLane,
+
+    [string]$CargoExecutable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +27,31 @@ $startedAtUtc = [DateTime]::UtcNow
 $tempRoot = Get-PrePushTempRoot -Temp $env:TEMP
 $logRoot = Join-Path $tempRoot ('gxmcp-pre-push-' + [guid]::NewGuid().ToString('N'))
 
+# Raw tails are kept out of the serialized summary. They exist only so the
+# release-phase retag can look for "command not found" after outputTail has
+# already been redacted.
+$rawPhaseTails = @{}
+
+function Set-RawPhaseTail {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()][object[]]$Tail
+    )
+
+    if ($null -eq (Get-Variable -Name 'rawPhaseTails' -Scope Script -ErrorAction SilentlyContinue)) {
+        $script:rawPhaseTails = @{}
+    }
+    $script:rawPhaseTails[$Name] = @($Tail)
+}
+
+function Get-RawPhaseTail {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $variable = Get-Variable -Name 'rawPhaseTails' -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $variable) { return @() }
+    return @($variable.Value[$Name])
+}
+
 function New-Phase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -38,6 +67,9 @@ function New-Phase {
         outputTail = @()
         outputPath = $null
         reason = $null
+        advisories = @()
+        noiseLines = @()
+        blocking = @()
     }
 }
 
@@ -157,7 +189,9 @@ function Invoke-NativePhase {
     $result = Invoke-NativeCapture -Executable $Executable -Arguments $Arguments -WorkingDirectory $WorkingDirectory
     $phase.exitCode = $result.exitCode
     $phase.durationSeconds = $result.durationSeconds
-    $phase.outputTail = @($result.output | Select-Object -Last 60)
+    $rawTail = @($result.output | Select-Object -Last 60)
+    Set-RawPhaseTail -Name $Name -Tail $rawTail
+    $phase.outputTail = @($rawTail | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) })
     [void](Write-PhaseLog -Phase $phase -Lines $result.output -LogRoot $LogRoot)
     if ($null -ne $result.error) {
         $phase.reason = $result.error
@@ -352,9 +386,6 @@ function Invoke-GitWhitespacePhase {
     )
 
     $phase = New-Phase -Name $Name -Command (Format-Command -Executable 'git' -Arguments $Arguments)
-    $phase.advisories = @()
-    $phase.noiseLines = @()
-    $phase.blocking = @()
 
     $result = if ($null -ne $CapturedResult) { $CapturedResult } else { Invoke-GitWhitespaceCapture -Arguments $Arguments }
     $output = @(Get-CapturedFieldValue -Result $result -Name 'output' -Default @())
@@ -364,7 +395,9 @@ function Invoke-GitWhitespacePhase {
 
     $phase.exitCode = $exitCode
     $phase.durationSeconds = $durationSeconds
-    $phase.outputTail = @($output | Select-Object -Last 60)
+    $rawTail = @($output | Select-Object -Last 60)
+    Set-RawPhaseTail -Name $Name -Tail $rawTail
+    $phase.outputTail = @($rawTail | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) })
     [void](Write-PhaseLog -Phase $phase -Lines $output -LogRoot $LogRoot)
 
     $classification = Get-WhitespaceClassification -Text ($output -join "`n")
@@ -464,7 +497,9 @@ function Invoke-PowerShellParsePhase {
         }
         $phase.exitCode = if ($errorsFound.Count -eq 0) { 0 } else { 1 }
         $phase.status = if ($errorsFound.Count -eq 0) { 'passed' } else { 'failed' }
-        $phase.outputTail = @($errorsFound | Select-Object -Last 60)
+        $rawTail = @($errorsFound | Select-Object -Last 60)
+        Set-RawPhaseTail -Name $phase.name -Tail $rawTail
+        $phase.outputTail = @($rawTail | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) })
         [void](Write-PhaseLog -Phase $phase -Lines $errorsFound -LogRoot $LogRoot)
         if ($errorsFound.Count -gt 0) {
             $phase.reason = "PowerShell parse errors: $($errorsFound.Count)."
@@ -525,12 +560,12 @@ function Write-TextSummary {
     foreach ($phase in $Summary.phases) {
         $suffix = if ($phase.outputPath) { " (log: $($phase.outputPath))" } else { '' }
         Write-Host ("  [{0}] {1}{2}" -f $phase.status, $phase.name, $suffix)
-        # Read 'advisories' defensively: not every phase carries the key, and under
-        # Set-StrictMode -Version Latest a bare property touch on a phase built by
-        # New-Phase would throw. Phases are ordered dictionaries (New-Phase) whose
-        # keys are not exposed through PSObject.Properties, so the dictionary path
-        # is the one that matches. Hygiene findings are surfaced even when the
-        # phase passed, which is the whole point of the downgrade.
+        # Read keys defensively: phases built outside New-Phase (the tests) may
+        # not carry every key, and under Set-StrictMode -Version Latest a bare
+        # property touch would throw. Phases are ordered dictionaries (New-Phase)
+        # whose keys are not exposed through PSObject.Properties, so the
+        # dictionary path is the one that matches. Hygiene findings are surfaced
+        # even when the phase passed, which is the whole point of the downgrade.
         $advisories = @()
         if ($phase -is [System.Collections.IDictionary]) {
             if ($phase.Contains('advisories')) { $advisories = @($phase['advisories']) }
@@ -541,6 +576,69 @@ function Write-TextSummary {
         foreach ($advisory in $advisories) {
             Write-Host ("    advisory: {0}:{1}: {2}" -f $advisory.path, $advisory.line, $advisory.reason) -ForegroundColor DarkYellow
         }
+
+        $aggregate = $null
+        if ($phase -is [System.Collections.IDictionary] -and $phase.Contains('details') -and $null -ne $phase['details']) {
+            $details = $phase['details']
+            if ($details -is [System.Collections.IDictionary]) {
+                if ($details.Contains('aggregateFailure')) { $aggregate = $details['aggregateFailure'] }
+            } else {
+                $aggregateProperty = $details.PSObject.Properties['aggregateFailure']
+                if ($null -ne $aggregateProperty) { $aggregate = $aggregateProperty.Value }
+            }
+        }
+        if ($null -ne $aggregate) {
+            $aggregateStatus = if ([string]::IsNullOrEmpty([string]$aggregate.status)) { 'status unavailable' } else { [string]$aggregate.status }
+            Write-Host ("    preflight: {0} (no failed phase)" -f $aggregateStatus) -ForegroundColor Red
+            foreach ($line in @(([string]$aggregate.detail) -split "`r?`n")) {
+                if (-not [string]::IsNullOrWhiteSpace($line)) { Write-Host ("      " + $line) -ForegroundColor DarkRed }
+            }
+        }
+    }
+
+    $rustLane = $null
+    if ($Summary -is [System.Collections.IDictionary]) {
+        if ($Summary.Contains('rustLane')) { $rustLane = $Summary['rustLane'] }
+    } else {
+        $rustLaneProperty = $Summary.PSObject.Properties['rustLane']
+        if ($null -ne $rustLaneProperty) { $rustLane = $rustLaneProperty.Value }
+    }
+    if ($null -ne $rustLane -and [string]$rustLane.status -ne 'not-requested') {
+        $rustNote = if ($rustLane.note) { " ($($rustLane.note))" } else { '' }
+        $rustColor = if ($rustLane.status -eq 'passed') { 'Green' } else { 'Yellow' }
+        Write-Host ("  gx-engine Rust lane: {0}{1}" -f $rustLane.status, $rustNote) -ForegroundColor $rustColor
+        foreach ($check in @($rustLane.checks)) {
+            if ($check.status -ne 'passed') {
+                $checkLog = if ($check.outputPath) { " (log: $($check.outputPath))" } else { '' }
+                Write-Host ("    {0}: exit {1}{2}" -f $check.name, $check.exitCode, $checkLog) -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+function New-AggregateFailureDetail {
+    param(
+        [AllowNull()][string]$PhaseStatus,
+        [AllowNull()][object]$SummaryStatus,
+        [AllowNull()][object[]]$OutputTail,
+        [int]$AttributedFailureCount = 0
+    )
+
+    # A phase that failed without any failed phase in its own summary is an
+    # aggregate failure: the preflight exited non-zero after its phases (for
+    # example, the binary-fingerprint binding). The phase lists stay faithful to
+    # real phases; this is a separate, explicitly unattributed detail. The
+    # retag to 'unavailable' happens before this call, so an unavailable phase
+    # never produces one.
+    if ([string]::IsNullOrWhiteSpace($PhaseStatus)) { return $null }
+    if ($PhaseStatus -in @('passed', 'skipped', 'unavailable', 'dry-run')) { return $null }
+    if ($AttributedFailureCount -gt 0) { return $null }
+
+    $tail = @($OutputTail | Where-Object { $null -ne $_ } | Select-Object -Last 20)
+    $detail = @($tail | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) }) -join [Environment]::NewLine
+    return [ordered]@{
+        status = $SummaryStatus
+        detail = $detail
     }
 }
 
@@ -556,6 +654,7 @@ function Read-ReleasePhaseDetails {
         failedPhaseDetails = @()
         skippedPhases = @()
         summaryPath = $null
+        aggregateFailure = $null
     }
     $parseError = $null
     if (Test-Path -LiteralPath $SummaryPath -PathType Leaf) {
@@ -631,6 +730,167 @@ function Read-ReleasePhaseDetails {
     }
 }
 
+function Get-ReleaseContractAllowlist {
+    # The only top-level bindings the fork sanctions in the upstream contract.
+    return @(
+        'script:GxMcpReleaseWorkflowCheck'
+        'script:GxMcpReleaseWorkflowAppId'
+    )
+}
+
+function Test-ReleaseContractConstantBinding {
+    param([Parameter(Mandatory = $true)][object]$Statement)
+
+    if ($Statement -isnot [System.Management.Automation.Language.AssignmentStatementAst]) { return $false }
+    if ($Statement.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals) { return $false }
+    $left = $Statement.Left
+    if ($left -isnot [System.Management.Automation.Language.VariableExpressionAst]) { return $false }
+    if ((Get-ReleaseContractAllowlist) -notcontains $left.VariablePath.UserPath) { return $false }
+    $value = $Statement.Right
+    if ($value -is [System.Management.Automation.Language.CommandExpressionAst]) { $value = $value.Expression }
+    return $value -is [System.Management.Automation.Language.ConstantExpressionAst]
+}
+
+function Test-ReleaseContractTopLevelStatement {
+    param([Parameter(Mandatory = $true)][object]$Statement)
+
+    if ($Statement -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $true }
+    return Test-ReleaseContractConstantBinding -Statement $Statement
+}
+
+function Assert-ReleaseContractTopLevelSafe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$CheckerPath = $PSCommandPath
+    )
+
+    $contractTokens = $null; $contractParseErrors = $null
+    $contractAst = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$contractTokens, [ref]$contractParseErrors)
+    if (@($contractParseErrors).Count -gt 0) { throw "release-contract.ps1 has parse errors: $($contractParseErrors -join '; ')" }
+    if ($contractAst.ParamBlock -or $contractAst.BeginBlock -or $contractAst.ProcessBlock -or
+        $contractAst.DynamicParamBlock -or $contractAst.CleanBlock) {
+        throw 'release-contract.ps1 must not declare param/begin/process/dynamicparam/clean blocks; the dot-source must not consume arguments or run top-level code.'
+    }
+    # using statements are resolved while the file is parsed, before this guard
+    # can inspect them; the refusal is detection, not prevention. The fork
+    # contract declares none.
+    if (@($contractAst.UsingStatements).Count -gt 0) {
+        throw 'release-contract.ps1 must not declare using statements; the contract is a function library, not a module import.'
+    }
+
+    foreach ($stmt in @($contractAst.EndBlock.Statements)) {
+        if (Test-ReleaseContractTopLevelStatement -Statement $stmt) { continue }
+        $snippet = $stmt.Extent.Text.Trim()
+        if ($snippet.Length -gt 120) { $snippet = $snippet.Substring(0, 117) + '...' }
+        throw "release-contract.ps1 must define only functions at top level or bind an allowed release constant (line $($stmt.Extent.StartLineNumber)); found $($stmt.GetType().Name): $snippet. If upstream added a sanctioned binding, update Get-ReleaseContractAllowlist in the checker."
+    }
+
+    $contractFunctions = @($contractAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+            }, $true) | ForEach-Object { $_.Name })
+    if ($contractFunctions.Count -eq 0) { return }
+
+    $checkerAst = $contractAst
+    if (-not [string]::IsNullOrWhiteSpace($CheckerPath) -and (Test-Path -LiteralPath $CheckerPath -PathType Leaf)) {
+        $checkerTokens = $null; $checkerParseErrors = $null
+        $checkerAst = [System.Management.Automation.Language.Parser]::ParseFile($CheckerPath, [ref]$checkerTokens, [ref]$checkerParseErrors)
+    }
+
+    # A contract function shadows the checker's own functions and every command
+    # it invokes, not just same-named functions. The two intentional exports are
+    # exempt; anything else is a collision that would change behavior silently.
+    $checkerFunctions = @($checkerAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+            }, $true) | ForEach-Object { $_.Name })
+    $invokedCommands = @($checkerAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.CommandAst]
+            }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $expectedExports = @('Protect-GxMcpReleaseText', 'Get-GxMcpReleaseFieldValue')
+    $collisions = @($contractFunctions | Where-Object {
+            $name = $_
+            ($checkerFunctions -contains $name) -or
+            (($invokedCommands -contains $name) -and ($expectedExports -notcontains $name))
+        })
+    if ($collisions.Count -gt 0) {
+        throw "release-contract.ps1 defines functions that shadow names used by the checker: $($collisions -join ', '). Rename them upstream or update the guard."
+    }
+}
+
+function Resolve-CargoExecutable {
+    param([AllowNull()][string]$Explicit)
+
+    if (-not [string]::IsNullOrWhiteSpace($Explicit)) { return $Explicit }
+    $command = Get-Command cargo -ErrorAction SilentlyContinue
+    if ($null -eq $command) { return $null }
+    return $command.Source
+}
+
+function New-RustLaneSummary {
+    param(
+        [bool]$Requested,
+        [AllowNull()][string]$CargoPath,
+        [string]$EnginePath,
+        [string]$LogRoot
+    )
+
+    # Advisory by design: the fork policy reports upstream defects instead of
+    # blocking on them, so nothing here feeds mechanicalFailed/unavailable and
+    # nothing enters Summary.phases.
+    if (-not $Requested) {
+        return [ordered]@{ requested = $false; ran = $false; status = 'not-requested'; note = $null; checks = @() }
+    }
+    if ([string]::IsNullOrWhiteSpace($CargoPath)) {
+        return [ordered]@{ requested = $true; ran = $false; status = 'not-run'; note = 'cargo-not-found'; checks = @() }
+    }
+
+    $checks = New-Object System.Collections.Generic.List[object]
+    $specs = @(
+        [ordered]@{ name = 'fmt'; arguments = @('fmt', '--check') }
+        [ordered]@{ name = 'clippy'; arguments = @('clippy', '--all-targets', '--locked', '--', '-D', 'warnings') }
+        [ordered]@{ name = 'test'; arguments = @('test', '--locked') }
+    )
+    foreach ($spec in $specs) {
+        $phase = New-Phase -Name ("gx-engine " + $spec.name) -Command (Format-Command -Executable $CargoPath -Arguments $spec.arguments)
+        $result = Invoke-NativeCapture -Executable $CargoPath -Arguments $spec.arguments -WorkingDirectory $EnginePath
+        $phase.exitCode = $result.exitCode
+        $phase.durationSeconds = $result.durationSeconds
+        $rawTail = @($result.output | Select-Object -Last 20)
+        $phase.outputTail = @($rawTail | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) })
+        [void](Write-PhaseLog -Phase $phase -Lines $result.output -LogRoot $LogRoot)
+        if ($null -ne $result.error) {
+            $phase.status = 'failed'
+            $phase.reason = $result.error
+        } elseif ($result.exitCode -eq 0) {
+            $phase.status = 'passed'
+        } else {
+            $phase.status = 'failed'
+            $phase.reason = "Command exited with code $($result.exitCode)."
+        }
+        [void]$checks.Add([ordered]@{
+                name = $spec.name
+                command = $phase.command
+                status = $phase.status
+                exitCode = $phase.exitCode
+                durationSeconds = $phase.durationSeconds
+                outputPath = $phase.outputPath
+            })
+    }
+
+    $failed = @($checks | Where-Object { $_['status'] -ne 'passed' }).Count -gt 0
+    $laneStatus = if ($failed) { 'failed' } else { 'passed' }
+    $checkArray = $checks.ToArray()
+    return [ordered]@{
+        requested = $true
+        ran = $true
+        status = $laneStatus
+        note = $null
+        checks = $checkArray
+    }
+}
+
 $summary = [ordered]@{
     schemaVersion = 'gxmcp-pre-push/2'
     startedAtUtc = $startedAtUtc.ToString('o')
@@ -655,7 +915,9 @@ $summary = [ordered]@{
         'Semantic review of the changed range'
         'GeneXus IDE and real-KB behavior'
         'Remote CI status and publication'
+        'gxwire Rust lane'
     )
+    rustLane = [ordered]@{ requested = $false; ran = $false; status = 'not-requested'; note = $null; checks = @() }
     localReadiness = 'not-run'
     remoteReadiness = 'unverified'
     pushReadiness = 'blocked'
@@ -670,6 +932,7 @@ $commitsBehind = 0
 $workingTreeDirty = $false
 
 try {
+    Assert-ReleaseContractTopLevelSafe -Path (Join-Path $root 'scripts\release-contract.ps1') -CheckerPath $selfPath
     . (Join-Path $root 'scripts\release-contract.ps1')
     [void](Remove-StalePrePushArtifacts -LogRoot $tempRoot -RetentionDays $ArtifactRetentionDays)
 
@@ -763,7 +1026,7 @@ try {
             $releasePhase.status = 'failed'
         }
         if ($releasePhase.status -eq 'failed' -and
-            (@($releasePhase.outputTail) -join "`n") -match '(?i)(not recognized as an internal or external command|não é reconhecido como um comando|command not found|enoent)') {
+            (@(Get-RawPhaseTail -Name $releasePhase.name) -join "`n") -match '(?i)(not recognized as an internal or external command|não é reconhecido como um comando|command not found|enoent)') {
             $releasePhase.status = 'unavailable'
             $releasePhase.reason = 'Release preflight could not run because a local tool or dependency was unavailable.'
         }
@@ -772,6 +1035,14 @@ try {
             $releasePhase.status = 'failed'
         }
         $releasePhase.details = $releaseOutcome.details
+        $aggregateFailure = New-AggregateFailureDetail `
+            -PhaseStatus $releasePhase.status `
+            -SummaryStatus $releaseOutcome.details.status `
+            -OutputTail (Get-RawPhaseTail -Name $releasePhase.name) `
+            -AttributedFailureCount @($releaseOutcome.details.failedPhaseDetails).Count
+        if ($null -ne $aggregateFailure) {
+            $releasePhase.details.aggregateFailure = $aggregateFailure
+        }
         $keepReleaseSummary = $releaseOutcome.keepSummary
         [void]$summary.phases.Add($releasePhase)
         if ($releasePhase.status -eq 'failed') { $mechanicalFailed = $true }
@@ -780,6 +1051,14 @@ try {
         if (-not $keepReleaseSummary -and (Test-Path -LiteralPath $releaseSummaryPath -PathType Leaf)) {
             Remove-Item -LiteralPath $releaseSummaryPath -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    $cargoPath = if ($IncludeRustLane) { Resolve-CargoExecutable -Explicit $CargoExecutable } else { $null }
+    $rustLane = New-RustLaneSummary -Requested ([bool]$IncludeRustLane) -CargoPath $cargoPath -EnginePath (Join-Path $root 'src\gx-engine') -LogRoot $logRoot
+    $summary.rustLane = $rustLane
+    if (-not $rustLane.ran) {
+        $laneNote = if ($rustLane.requested) { 'gx-engine Rust lane (cargo not found)' } else { 'gx-engine Rust lane (opt-in)' }
+        $summary.notCovered = @($summary.notCovered) + $laneNote
     }
 
     $afterStatusResult = Get-GitLines -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
@@ -818,6 +1097,13 @@ try {
 
 $summary.endedAtUtc = [DateTime]::UtcNow.ToString('o')
 $json = $summary | ConvertTo-Json -Depth 12
+# Belt and braces for the machine contract: the phase tails are redacted at
+# capture, but reason/command/snippets are assembled elsewhere. When the
+# contract did not load (a refused import), the redactor is unavailable and the
+# summary must still be emitted.
+if ($null -ne (Get-Command Protect-GxMcpReleaseText -ErrorAction SilentlyContinue)) {
+    $json = Protect-GxMcpReleaseText $json
+}
 if ($AsJson) {
     [Console]::Out.WriteLine($json)
 } else {

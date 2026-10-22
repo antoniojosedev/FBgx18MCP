@@ -307,6 +307,14 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   remain separate. Follow with the semantic coherence search required by the
   global pre-push rules; do not treat mechanical `exit 0` as authorization to
   push.
+  The checker validates `scripts/release-contract.ps1` before dot-sourcing it
+  (top-level statements, blocks, `using`, and function-name collisions), so a
+  refused contract never runs; the guard is structural, not a sandbox. A
+  preflight that exits non-zero without any failed phase is reported as
+  `details.aggregateFailure`, not as an empty phase list. `-IncludeRustLane` adds
+  an advisory, opt-in `gx-engine` fmt/clippy/test block that never changes
+  `pushReadiness`; without it the lane appears in `notCovered`. Detailed limits
+  live in `FORK_CHANGELOG.md`.
 - **Fork policy — report, do not patch (this fork):** A pre-push finding,
   mechanical or semantic, that points at upstream-authored code is reported and
   filed as an issue in `lennix1337/Genexus18MCP` (prefer `pt-BR`, per the issue
