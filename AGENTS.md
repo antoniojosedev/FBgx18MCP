@@ -314,7 +314,8 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   `details.aggregateFailure`, not as an empty phase list. `-IncludeRustLane` adds
   an advisory, opt-in `gx-engine` fmt/clippy/test block that never changes
   `pushReadiness`; without it the lane appears in `notCovered`. Detailed limits
-  live in `FORK_CHANGELOG.md`.
+  live in `FORK_CHANGELOG.md`; non-blocking gaps in this fork-owned routine are
+  tracked in `FORK_BACKLOG.md`.
 - **Fork policy — report, do not patch (this fork):** A pre-push finding,
   mechanical or semantic, that points at upstream-authored code is reported and
   filed as an issue in `lennix1337/Genexus18MCP` (prefer `pt-BR`, per the issue
