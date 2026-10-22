@@ -311,9 +311,10 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   (top-level statements, blocks, `using`, and function-name collisions), so a
   refused contract never runs; the guard is structural, not a sandbox. A
   preflight that exits non-zero without any failed phase is reported as
-  `details.aggregateFailure`, not as an empty phase list. `-IncludeRustLane` adds
+  `details.aggregateFailure`, not as an empty phase list.   `-IncludeRustLane` adds
   an advisory, opt-in `gx-engine` fmt/clippy/test block that never changes
-  `pushReadiness`; without it the lane appears in `notCovered`. Detailed limits
+  `pushReadiness`; without it the lane appears in `notCovered`, so `readyLocal`
+  is not a claim about the Rust crates. Detailed limits
   live in `FORK_CHANGELOG.md`; non-blocking gaps in this fork-owned routine are
   tracked in `FORK_BACKLOG.md`.
 - **Fork policy — report, do not patch (this fork):** A pre-push finding,
