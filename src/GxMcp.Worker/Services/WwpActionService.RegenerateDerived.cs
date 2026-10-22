@@ -64,12 +64,12 @@ namespace GxMcp.Worker.Services
                 case "DataProvider":
                 case "API":
                 case "Report":
-                    return new[] { "Source", "Rules", "Variables", "Conditions" };
+                    return new[] { "Source", "Rules", "Variables" };
                 case "WebPanel":
                 case "WebComponent":
                 case "Transaction":
                 case "SDPanel":
-                    return new[] { "WebForm", "Events", "Rules", "Variables", "Conditions" };
+                    return new[] { "WebForm", "Events", "Rules", "Variables" };
                 case "SDT":
                     return new[] { "Structure" };
                 case "DataSelector":
@@ -89,11 +89,9 @@ namespace GxMcp.Worker.Services
                 Guid = obj.Guid,
                 QualifiedName = obj.QualifiedName?.ToString() ?? obj.Name
             };
-            foreach (string part in DerivedPartsFor(type))
-            {
-                string text = ReadPart(obj, part);
-                if (text != null) state.Parts[part] = text;
-            }
+            // One fresh handle per object, then every part: resolving a handle per part dominated the cost of a capture.
+            foreach (KeyValuePair<string, string> part in _objects.ReadObjectPartsForVerification(obj.Name, DerivedPartsFor(type), type))
+                state.Parts[part.Key] = part.Value;
             return state;
         }
 
