@@ -7,7 +7,8 @@ that points at upstream-authored code. Those are filed as issues in
 
 Scope: the fork-owned pre-push routine — `scripts/Invoke-PrePushMechanicalChecks.ps1`,
 `scripts/tests/test-pre-push-mechanical-checks.ps1`, `FORK_CHANGELOG.md`, and the
-fork-owned blocks in `AGENTS.md`.
+fork-owned blocks in `AGENTS.md` — plus the fork-local backend helpers
+`scripts/Invoke-GxMcpLocalBuild.ps1` and `scripts/Set-GxMcpLocalEngineBackend.ps1`.
 
 Each item records why it did not block, the fix sketch, and how to validate it.
 Re-evaluate an item in a later session before implementing it; line numbers and
@@ -153,6 +154,36 @@ lane.
 
 **Validation:** synthetic `changedPaths` test; mutation: remove the auto-enable
 and confirm the lane stays `not-requested` for an engine-only change.
+
+### FB-008 — The fork-local backend helpers have no behavioral test
+
+**Where:** `scripts/Invoke-GxMcpLocalBuild.ps1` and
+`scripts/Set-GxMcpLocalEngineBackend.ps1`; nothing under `scripts/tests/` names
+either script.
+
+**Trigger:** any edit to either helper, including the exit-code fix recorded in
+`FORK_CHANGELOG.md`.
+
+**Observed:** the only automated check is the checker's PowerShell AST parse over
+tracked `.ps1` files - syntax, not behavior. The wrapper's exit-code contract
+already broke once (every failed entry point reported `1`) and was caught by
+manual reproduction, not by a test; the setter's merge, no-BOM, uniform-EOL and
+read-back guarantees are unverified the same way.
+
+**Why it did not block:** the helpers run interactively and their failures are
+visible immediately, and the upstream-owned `scripts/tests/run-release-script-tests.ps1`
+enumerates its own test list, so adding a fork test there would patch an upstream
+script - which the fork policy forbids.
+
+**Fix sketch:** add a fork-local test that drives both scripts against a
+temporary root with fake entry points: a non-zero `build.ps1`/`install.ps1` must
+yield that same code and leave `config.json` untouched; a zero exit must apply
+the backend; the setter must preserve every other key, write no BOM, end CRLF and
+be idempotent. Pick a fork-owned entry point to run it from (the checker is the
+only one today) instead of editing the upstream test list.
+
+**Validation:** mutation - drop `-ErrorAction Continue` (the exit code collapses
+to `1`) and force a lone-LF write; each mutation must turn the test red.
 
 ## Accepted limits (not backlog)
 

@@ -57,8 +57,9 @@ $arguments = @('-NoProfile', '-File', $entryPoint) + @($InstallerArgs)
 Write-Host ">>> $([System.IO.Path]::GetFileName($entryPoint))" -ForegroundColor Cyan
 & $pwsh @arguments
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "$([System.IO.Path]::GetFileName($entryPoint)) failed with exit code $LASTEXITCODE; config not patched."
-    exit $LASTEXITCODE
+    $childExitCode = $LASTEXITCODE
+    Write-Error "$([System.IO.Path]::GetFileName($entryPoint)) failed with exit code $childExitCode; config not patched." -ErrorAction Continue
+    exit $childExitCode
 }
 
 $result = & (Join-Path $PSScriptRoot 'Set-GxMcpLocalEngineBackend.ps1') -Backend $EngineBackend

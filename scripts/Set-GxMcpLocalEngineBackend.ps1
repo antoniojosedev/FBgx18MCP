@@ -45,7 +45,7 @@ if ([string]::IsNullOrWhiteSpace($Path)) {
 
 $fullPath = [System.IO.Path]::GetFullPath($Path)
 if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
-    throw "Config not found: $fullPath. Run .\build.ps1 first (it generates publish\config.json)."
+    throw "Config not found: $fullPath. Run pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1 first (it generates publish\config.json)."
 }
 
 $raw = [System.IO.File]::ReadAllText($fullPath)
@@ -71,7 +71,7 @@ $json = $config | ConvertTo-Json -Depth 10
 
 if ($PSCmdlet.ShouldProcess($fullPath, "Set Engine.Backend=$Backend")) {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($fullPath, $json.TrimEnd() + "`n", $utf8NoBom)
+    [System.IO.File]::WriteAllText($fullPath, $json.TrimEnd() + [Environment]::NewLine, $utf8NoBom)
 
     $readBack = [System.IO.File]::ReadAllText($fullPath) | ConvertFrom-Json
     if ($readBack.Engine.Backend -ne $Backend) {
