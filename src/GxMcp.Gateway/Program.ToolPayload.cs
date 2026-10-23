@@ -1787,7 +1787,7 @@ namespace GxMcp.Gateway
         private static HashSet<string>? ParseRequestedFields(JObject? toolArgs)
         {
             if (toolArgs == null) return null;
-            var token = toolArgs["fields"];
+            var token = EngineFieldSelection.NormalizeFields(toolArgs["fields"]);
             if (token == null) return null;
 
             var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
