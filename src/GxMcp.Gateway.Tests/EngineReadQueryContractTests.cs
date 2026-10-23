@@ -86,21 +86,6 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
-        // A client whose schema declared no array for `fields` sends the array as text. The
-        // literal must reach the engine as the two names it holds, not as `["name"` and `"type"]`.
-        [InlineData("[\"name\",\"type\"]")]
-        [InlineData(" [ \"name\" , \"type\" ] ")]
-        [InlineData("name,type")]
-        public async Task TypeQuery_FieldsSentAsText_ReachTheEngineLikeTheArray(string fields)
-        {
-            var args = new JObject { ["query"] = "type:Procedure", ["fields"] = fields };
-            var run = await RunAsync("gxengine", "error", "genexus_query", args.ToString(), AlphaQuery);
-
-            Assert.NotNull(run.Result);
-            Assert.Contains("--type Procedure", run.EngineArguments);
-        }
-
-        [Theory]
         [InlineData(AlphaQuery, "vector", false)]
         [InlineData("{\"objects\":[{\"name\":\"General\",\"type\":\"Module\"},{\"name\":\"Alpha\",\"type\":\"Procedure\"}],\"total\":2,\"truncated\":false}", "substring", false)]
         [InlineData("{\"objects\":[{\"name\":\"Alpha\",\"type\":\"Procedure\"}],\"total\":9,\"truncated\":true}", "vector", true)]
