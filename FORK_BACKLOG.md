@@ -13,50 +13,12 @@ fork-owned blocks in `AGENTS.md` — plus the fork-local backend helpers
 
 Each item records why it did not block, the fix sketch, and how to validate it.
 Re-evaluate an item in a later session before implementing it; line numbers and
-function names drift.
+function names drift. Resolved items are removed from the open list; their
+validation is recorded in `FORK_CHANGELOG.md` and the commit history.
 
 ## Open
 
-### FB-006 — Global harness config does not know the `-IncludeRustLane` invocation
-
-**Where:** the operator's global `CLAUDE.md` / command allowlist, outside this
-repository.
-
-**Trigger:** running the checker with `-IncludeRustLane`.
-
-**Observed:** the canonical invocation forms documented there are literal and
-cover only `-AsJson`; the new flag can trigger a permission prompt.
-
-**Why it did not block:** the default routine does not use the flag.
-
-**Fix sketch:** add a third literal form (or widen the existing entry) in the
-global config. This is user configuration, not a repository change.
-
-**Validation:** invoke the flag from a fresh session and confirm no prompt.
-
-### FB-007 — Auto-enable the Rust lane when the change touches the Rust crates
-
-**Where:** the lane wiring in `scripts/Invoke-PrePushMechanicalChecks.ps1`.
-
-**Trigger:** a change under `src/gx-engine/` or `src/gxwire/` without
-`-IncludeRustLane`.
-
-**Observed:** the default routine skips both lanes, so an edit to the Rust crates
-gets `readyLocal` with `rustLane.status='not-requested'`. The only signal is the
-`notCovered` entry (`readyLocal` is not a claim about the Rust crates).
-
-**Why it did not block:** the exclusion is declared and the lane is advisory by
-policy; nothing Rust-related gates `pushReadiness`.
-
-**Fix sketch:** when `-IncludeRustLane` is absent and `summary.changedPaths`
-intersects `src/gx-engine/` or `src/gxwire/`, run the lane (still advisory) and
-record `note='auto-enabled-by-changed-paths'`. Keep the explicit switch as an
-override. Decide whether `gxwire` needs its own command set (separate crate) or
-whether the engine lane covers only `gx-engine`; if separate, keep it a distinct
-lane.
-
-**Validation:** synthetic `changedPaths` test; mutation: remove the auto-enable
-and confirm the lane stays `not-requested` for an engine-only change.
+None.
 
 ## Accepted limits (not backlog)
 

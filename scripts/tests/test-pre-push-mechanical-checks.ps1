@@ -55,7 +55,7 @@ if ($unavailable.status -ne 'incomplete' -or
     throw 'An unavailable local dependency must be incomplete and block push readiness.'
 }
 
-foreach ($name in @('Get-PrePushTempRoot', 'Set-RawPhaseTail', 'Get-RawPhaseTail', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-AggregateFailureDetail', 'Get-ReleaseContractAllowlist', 'Test-ReleaseContractConstantBinding', 'Test-ReleaseContractTopLevelStatement', 'Assert-ReleaseContractTopLevelSafe', 'Resolve-CargoExecutable', 'New-RustLaneSummary', 'Get-RustLaneNotCoveredEntry', 'Set-RustLaneCoverage', 'Invoke-PowerShellParsePhase', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
+foreach ($name in @('Get-PrePushTempRoot', 'Set-RawPhaseTail', 'Get-RawPhaseTail', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-AggregateFailureDetail', 'Get-ReleaseContractAllowlist', 'Test-ReleaseContractConstantBinding', 'Test-ReleaseContractTopLevelStatement', 'Assert-ReleaseContractTopLevelSafe', 'Resolve-CargoExecutable', 'Test-RustCratePathChanged', 'Get-RustLaneRequestState', 'New-RustLaneSummary', 'Get-RustLaneNotCoveredEntry', 'Set-RustLaneCoverage', 'Invoke-PowerShellParsePhase', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
     $functionDefinition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -561,9 +561,15 @@ $rustMarker = Join-Path $rustRoot 'calls.txt'
 $fakeBody = "@echo off`r`necho %1>>`"$rustMarker`"`r`necho token=RUSTSECRET-1`r`nif /I `"%1`"==`"clippy`" exit /b 1`r`nexit /b 0`r`n"
 [IO.File]::WriteAllText($fakeCargo, $fakeBody, [Text.UTF8Encoding]::new($false))
 try {
-    $lane = New-RustLaneSummary -Requested $true -CargoPath $fakeCargo -EnginePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
+    $lane = New-RustLaneSummary -Requested $true -LaneName 'gx-engine' -CargoPath $fakeCargo -CratePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
+    if ($lane.name -ne 'gx-engine') {
+        throw 'The engine Rust lane must carry its lane name.'
+    }
     if ($lane.status -ne 'failed' -or -not $lane.ran -or @($lane.checks).Count -ne 3) {
         throw 'The Rust lane must run all three checks and report the overall failure.'
+    }
+    if ($lane.checks[0]['outputPath'] -notmatch 'gx-engine-fmt\.log$') {
+        throw 'The engine lane must write lane-specific phase logs.'
     }
     $laneNames = @($lane.checks | ForEach-Object { $_['name'] }) -join ','
     if ($laneNames -ne 'fmt,clippy,test') { throw "The Rust lane must run fmt, clippy and test in order; got $laneNames." }
@@ -595,11 +601,11 @@ try {
         throw 'The serialized Rust lane summary must not leak the cargo secret.'
     }
 
-    $notRequested = New-RustLaneSummary -Requested $false -CargoPath $fakeCargo -EnginePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
+    $notRequested = New-RustLaneSummary -Requested $false -CargoPath $fakeCargo -CratePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
     if ($notRequested.status -ne 'not-requested' -or $notRequested.ran) {
         throw 'A lane that was not requested must report not-requested.'
     }
-    $noCargo = New-RustLaneSummary -Requested $true -CargoPath '' -EnginePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
+    $noCargo = New-RustLaneSummary -Requested $true -CargoPath '' -CratePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
     if ($noCargo.status -ne 'not-run' -or $noCargo.note -ne 'cargo-not-found') {
         throw 'A requested lane without cargo must report not-run.'
     }
@@ -607,33 +613,109 @@ try {
     if ($null -ne (Resolve-CargoExecutable -Explicit $missingCargoPath)) {
         throw 'Resolve-CargoExecutable must not return a nonexistent explicit path.'
     }
-    $missingCargo = New-RustLaneSummary -Requested $true -CargoPath (Resolve-CargoExecutable -Explicit $missingCargoPath) -EnginePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
+    $missingCargo = New-RustLaneSummary -Requested $true -CargoPath (Resolve-CargoExecutable -Explicit $missingCargoPath) -CratePath $rustRoot -LogRoot (Join-Path $rustRoot 'logs')
     if ($missingCargo.status -ne 'not-run' -or $missingCargo.note -ne 'cargo-not-found' -or $missingCargo.ran) {
         throw 'An explicit cargo path that does not exist must report not-run/cargo-not-found.'
     }
-    $missingEngine = New-RustLaneSummary -Requested $true -CargoPath $fakeCargo -EnginePath (Join-Path $rustRoot 'missing-engine') -LogRoot (Join-Path $rustRoot 'logs')
+    $missingEngine = New-RustLaneSummary -Requested $true -LaneName 'gx-engine' -CargoPath $fakeCargo -CratePath (Join-Path $rustRoot 'missing-engine') -LogRoot (Join-Path $rustRoot 'logs')
     if ($missingEngine.status -ne 'not-run' -or $missingEngine.note -ne 'engine-missing' -or $missingEngine.ran) {
-        throw 'A requested lane without src/gx-engine must report not-run/engine-missing.'
+        throw 'A requested engine lane without src/gx-engine must report not-run/engine-missing.'
+    }
+    $missingWire = New-RustLaneSummary -Requested $true -LaneName 'gxwire' -CargoPath $fakeCargo -CratePath (Join-Path $rustRoot 'missing-gxwire') -LogRoot (Join-Path $rustRoot 'logs')
+    if ($missingWire.status -ne 'not-run' -or $missingWire.note -ne 'gxwire-missing' -or $missingWire.ran) {
+        throw 'A requested gxwire lane without src/gxwire must report not-run/gxwire-missing.'
+    }
+    $wireLane = New-RustLaneSummary -Requested $true -LaneName 'gxwire' -RequestNote 'auto-enabled-by-changed-paths' -CargoPath $fakeCargo -CratePath $rustRoot -LogRoot (Join-Path $rustRoot 'wire-logs')
+    if ($wireLane.name -ne 'gxwire' -or $wireLane.note -ne 'auto-enabled-by-changed-paths' -or @($wireLane.checks).Count -ne 3) {
+        throw 'The gxwire Rust lane must be distinct and carry the auto-enable note.'
+    }
+    if ($wireLane.checks[0]['outputPath'] -notmatch 'gxwire-fmt\.log$') {
+        throw 'The gxwire lane must write lane-specific phase logs.'
     }
 
-    $coverage = [ordered]@{ notCovered = @('Semantic review', 'gxwire Rust lane') }
-    Set-RustLaneCoverage -Summary $coverage -Requested $false -Ran $false -Note $null
-    if (@($coverage.notCovered) -notcontains 'gx-engine Rust lane (opt-in)') {
-        throw 'An unrequested Rust lane must stay declared as opt-in in notCovered.'
+    $engineOnly = Get-RustLaneRequestState -Explicit $false -ChangedPaths @('src/gx-engine/src/lib.rs')
+    if (-not $engineOnly.engine.requested -or $engineOnly.engine.note -ne 'auto-enabled-by-changed-paths') {
+        throw 'An engine-only change must auto-enable the gx-engine lane with its note.'
     }
-    Set-RustLaneCoverage -Summary $coverage -Requested $true -Ran $false -Note 'cargo-not-found'
+    if ($engineOnly.gxwire.requested -or $null -ne $engineOnly.gxwire.note) {
+        throw 'An engine-only change must not request the gxwire lane.'
+    }
+    $wireOnly = Get-RustLaneRequestState -Explicit $false -ChangedPaths @('src/gxwire/src/main.rs')
+    if (-not $wireOnly.gxwire.requested -or $wireOnly.gxwire.note -ne 'auto-enabled-by-changed-paths') {
+        throw 'A gxwire-only change must auto-enable the gxwire lane with its note.'
+    }
+    if ($wireOnly.engine.requested -or $null -ne $wireOnly.engine.note) {
+        throw 'A gxwire-only change must not request the gx-engine lane.'
+    }
+    $bothCrates = Get-RustLaneRequestState -Explicit $false -ChangedPaths @('src/gx-engine/src/lib.rs', 'src/gxwire/src/main.rs')
+    if (-not $bothCrates.engine.requested -or -not $bothCrates.gxwire.requested) {
+        throw 'A change touching both crates must auto-enable both lanes.'
+    }
+    $unrelated = Get-RustLaneRequestState -Explicit $false -ChangedPaths @('src/GxMcp.Gateway/Program.cs')
+    if ($unrelated.engine.requested -or $unrelated.gxwire.requested) {
+        throw 'An unrelated change must not request a Rust lane.'
+    }
+    $explicitState = Get-RustLaneRequestState -Explicit $true -ChangedPaths @()
+    if (-not $explicitState.engine.requested -or -not $explicitState.gxwire.requested -or
+        $null -ne $explicitState.engine.note -or $null -ne $explicitState.gxwire.note) {
+        throw 'The explicit switch must force both lanes without an auto-enable note.'
+    }
+    $backslashState = Get-RustLaneRequestState -Explicit $false -ChangedPaths @('src\gxwire\Cargo.toml')
+    if (-not $backslashState.gxwire.requested) {
+        throw 'Path matching must normalize Windows separators.'
+    }
+    $boundaryState = Get-RustLaneRequestState -Explicit $false -ChangedPaths @('src/gx-engine-other/src/lib.rs')
+    if ($boundaryState.engine.requested) {
+        throw 'Path matching must not treat a sibling directory as the crate.'
+    }
+    $caseState = Get-RustLaneRequestState -Explicit $false -ChangedPaths @('SRC/GX-ENGINE/src/lib.rs')
+    if (-not $caseState.engine.requested) {
+        throw 'Path matching must be case-insensitive, matching the Windows checkout.'
+    }
+    $emptyState = Get-RustLaneRequestState -Explicit $false -ChangedPaths @()
+    if ($emptyState.engine.requested -or $emptyState.gxwire.requested) {
+        throw 'An empty changed-path set must not request a Rust lane.'
+    }
+    $nullState = Get-RustLaneRequestState -Explicit $false -ChangedPaths $null
+    if ($nullState.engine.requested -or $nullState.gxwire.requested) {
+        throw 'A null changed-path set must not request a Rust lane.'
+    }
+
+    $coverage = [ordered]@{ notCovered = @('Semantic review') }
+    Set-RustLaneCoverage -Summary $coverage -LaneName 'gx-engine' -Requested $false -Ran $false -Note $null
+    Set-RustLaneCoverage -Summary $coverage -LaneName 'gxwire' -Requested $false -Ran $false -Note $null
+    if (@($coverage.notCovered) -notcontains 'gx-engine Rust lane (opt-in)') {
+        throw 'An unrequested gx-engine lane must stay declared as opt-in in notCovered.'
+    }
+    if (@($coverage.notCovered) -notcontains 'gxwire Rust lane (opt-in)') {
+        throw 'An unrequested gxwire lane must stay declared as opt-in in notCovered.'
+    }
+    Set-RustLaneCoverage -Summary $coverage -LaneName 'gx-engine' -Requested $true -Ran $false -Note 'cargo-not-found'
     if (@($coverage.notCovered) -notcontains 'gx-engine Rust lane (cargo-not-found)') {
-        throw 'A requested lane that did not run must carry its reason in notCovered.'
+        throw 'A requested gx-engine lane that did not run must carry its reason in notCovered.'
     }
     if (@($coverage.notCovered) -contains 'gx-engine Rust lane (opt-in)') {
-        throw 'The opt-in label must be replaced, not duplicated, when the lane is requested.'
+        throw 'The gx-engine opt-in label must be replaced, not duplicated, when the lane is requested.'
     }
-    Set-RustLaneCoverage -Summary $coverage -Requested $true -Ran $true -Note $null
-    if (@($coverage.notCovered | Where-Object { ([string]$_).StartsWith('gx-engine Rust lane', [System.StringComparison]::Ordinal) }).Count -ne 0) {
+    if (@($coverage.notCovered) -notcontains 'gxwire Rust lane (opt-in)') {
+        throw 'Finalizing the gx-engine lane must preserve the gxwire entry.'
+    }
+    Set-RustLaneCoverage -Summary $coverage -LaneName 'gxwire' -Requested $true -Ran $true -Note $null
+    if (@($coverage.notCovered | Where-Object { ([string]$_).StartsWith('gxwire Rust lane', [System.StringComparison]::Ordinal) }).Count -ne 0) {
+        throw 'A gxwire lane that ran must be removed from notCovered.'
+    }
+    if (@($coverage.notCovered) -notcontains 'gx-engine Rust lane (cargo-not-found)') {
+        throw 'Finalizing the gxwire lane must preserve the gx-engine entry.'
+    }
+    Set-RustLaneCoverage -Summary $coverage -LaneName 'gx-engine' -Requested $true -Ran $true -Note $null
+    if (@($coverage.notCovered | Where-Object {
+                ([string]$_).StartsWith('gx-engine Rust lane', [System.StringComparison]::Ordinal) -or
+                ([string]$_).StartsWith('gxwire Rust lane', [System.StringComparison]::Ordinal)
+            }).Count -ne 0) {
         throw 'A Rust lane that ran must be removed from notCovered.'
     }
-    if (@($coverage.notCovered) -notcontains 'gxwire Rust lane') {
-        throw 'Rust lane coverage bookkeeping must preserve the gxwire entry.'
+    if (@($coverage.notCovered) -notcontains 'Semantic review') {
+        throw 'Rust lane coverage must preserve unrelated notCovered entries.'
     }
 
     $advisoryDecision = Get-PrePushDecision -MechanicalFailed $false -MechanicalUnavailable $false -BaseRefAvailable $true -CommitsBehind 0 -WorkingTreeDirty $false
@@ -662,6 +744,8 @@ $textSummary = [ordered]@{
 }
 [void]$textSummary.phases.Add($quietPhase)
 [void]$textSummary.phases.Add($noisyPhase)
+$textSummary['rustLane'] = [ordered]@{ status = 'passed'; note = $null; checks = @() }
+$textSummary['gxwireRustLane'] = [ordered]@{ status = 'passed'; note = 'auto-enabled-by-changed-paths'; checks = @() }
 
 try {
     $renderedText = (Write-TextSummary -Summary $textSummary 6>&1 | Out-String)
@@ -673,6 +757,12 @@ if ($renderedText -notmatch 'release preflight \(without live KB\)') {
 }
 if ($renderedText -notmatch 'release-preflight\.log') {
     throw 'The text summary must surface the phase log path when the phase has one.'
+}
+if ($renderedText -notmatch 'gx-engine Rust lane: passed') {
+    throw 'The text summary must render the gx-engine Rust lane.'
+}
+if ($renderedText -notmatch 'gxwire Rust lane: passed \(auto-enabled-by-changed-paths\)') {
+    throw 'The text summary must render the gxwire Rust lane with its auto-enable note.'
 }
 
 $releaseSummaryFixture = Join-Path $env:TEMP ('gxmcp-prepush-release-' + [guid]::NewGuid().ToString('N') + '.json')
@@ -979,11 +1069,15 @@ try {
     Remove-Item -LiteralPath $sentinelRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$seedIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -Requested ([bool]$IncludeRustLane) -Ran $false')
+$seedIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -LaneName ''gx-engine'' -Requested ([bool]$IncludeRustLane) -Ran $false')
+$requestIndex = $source.IndexOf('Get-RustLaneRequestState -Explicit ([bool]$IncludeRustLane) -ChangedPaths $summary.changedPaths')
 $laneIndex = $source.IndexOf('$rustLane = New-RustLaneSummary')
-$finalIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -Requested $rustLane.requested -Ran $rustLane.ran -Note $rustLane.note')
-if ($seedIndex -lt 0 -or $laneIndex -lt 0 -or $finalIndex -lt 0 -or -not ($seedIndex -lt $laneIndex -and $laneIndex -lt $finalIndex)) {
-    throw 'The Rust lane coverage must be seeded before the lane and finalized after it, so an abort cannot omit it.'
+$wireLaneIndex = $source.IndexOf('$gxwireRustLane = New-RustLaneSummary')
+$finalIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -LaneName ''gx-engine'' -Requested $rustLane.requested')
+$wireFinalIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -LaneName ''gxwire'' -Requested $gxwireRustLane.requested')
+if ($seedIndex -lt 0 -or $requestIndex -lt 0 -or $laneIndex -lt 0 -or $wireLaneIndex -lt 0 -or $finalIndex -lt 0 -or $wireFinalIndex -lt 0 -or
+    -not ($seedIndex -lt $requestIndex -and $requestIndex -lt $laneIndex -and $laneIndex -lt $wireLaneIndex -and $wireLaneIndex -lt $finalIndex -and $finalIndex -lt $wireFinalIndex)) {
+    throw 'The Rust lane coverage must be seeded before the request, and both lanes finalized after they run.'
 }
 
 if ($source -match '(?im)^\s*(?:&\s*)?git\s+push\b') {
@@ -1017,7 +1111,11 @@ foreach ($marker in @(
         '--no-color',
         'aggregateFailure',
         'rustLane',
+        'gxwireRustLane',
         'IncludeRustLane',
+        'auto-enabled-by-changed-paths',
+        'Test-RustCratePathChanged',
+        'Get-RustLaneRequestState',
         'Assert-ReleaseContractTopLevelSafe',
         'New-AggregateFailureDetail',
         'New-RustLaneSummary',

@@ -293,6 +293,8 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   ref. Canonical form from the repo root:
   `git fetch origin` then
   `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson`.
+  To force the Rust lanes, append `-IncludeRustLane`; without it a changed range
+  touching `src/gx-engine/` or `src/gxwire/` auto-enables only the matching lane.
   This script is **fork-local** (not upstream); it never runs `git push`.
   Every phase that produced output writes its output, with recognized secrets
   redacted (the set is defined once in `scripts/release-contract.ps1`,
@@ -313,12 +315,14 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   (top-level statements, blocks, `using`, and function-name collisions), so a
   refused contract never runs; the guard is structural, not a sandbox. A
   preflight that exits non-zero without any failed phase is reported as
-  `details.aggregateFailure`, not as an empty phase list.   `-IncludeRustLane` adds
-  an advisory, opt-in `gx-engine` fmt/clippy/test block that never changes
-  `pushReadiness`; without it the lane appears in `notCovered`, so `readyLocal`
-  is not a claim about the Rust crates. Detailed limits
-  live in `FORK_CHANGELOG.md`; non-blocking gaps in this fork-owned routine are
-  tracked in `FORK_BACKLOG.md`.
+  `details.aggregateFailure`, not as an empty phase list. `-IncludeRustLane`
+  forces the advisory `gx-engine` and `gxwire` fmt/clippy/test lanes. Without
+  it, a changed range touching `src/gx-engine/` or `src/gxwire/` auto-enables
+  only the matching lane and records `auto-enabled-by-changed-paths`; neither
+  lane changes `pushReadiness`, and a lane that did not run appears in
+  `notCovered`, so `readyLocal` is not a claim about the Rust crates. Detailed
+  limits live in `FORK_CHANGELOG.md`; non-blocking gaps in this fork-owned
+  routine are tracked in `FORK_BACKLOG.md`.
 - **Fork policy — report, do not patch (this fork):** A pre-push finding,
   mechanical or semantic, that points at upstream-authored code is reported and
   filed as an issue in `lennix1337/Genexus18MCP` (prefer `pt-BR`, per the issue
