@@ -481,13 +481,17 @@ function Get-TrackedPowerShellPaths {
 }
 
 function Invoke-PowerShellParsePhase {
-    param([string]$LogRoot)
+    param(
+        [string]$LogRoot,
+        [AllowNull()][string[]]$Paths
+    )
 
     $phase = New-Phase -Name 'PowerShell AST parse' -Command 'Parser::ParseFile for quality scripts plus this checker'
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $errorsFound = New-Object System.Collections.Generic.List[string]
     try {
-        foreach ($path in @(Get-TrackedPowerShellPaths)) {
+        $targetPaths = if ($null -ne $Paths) { @($Paths) } else { @(Get-TrackedPowerShellPaths) }
+        foreach ($path in $targetPaths) {
             $tokens = $null
             $parseErrors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$parseErrors) | Out-Null
@@ -822,7 +826,12 @@ function Assert-ReleaseContractTopLevelSafe {
 function Resolve-CargoExecutable {
     param([AllowNull()][string]$Explicit)
 
-    if (-not [string]::IsNullOrWhiteSpace($Explicit)) { return $Explicit }
+    if (-not [string]::IsNullOrWhiteSpace($Explicit)) {
+        if (Test-Path -LiteralPath $Explicit -PathType Leaf) { return $Explicit }
+        $explicitCommand = Get-Command $Explicit -CommandType Application -ErrorAction SilentlyContinue
+        if ($null -ne $explicitCommand) { return $explicitCommand.Source }
+        return $null
+    }
     $command = Get-Command cargo -ErrorAction SilentlyContinue
     if ($null -eq $command) { return $null }
     return $command.Source
@@ -844,6 +853,9 @@ function New-RustLaneSummary {
     }
     if ([string]::IsNullOrWhiteSpace($CargoPath)) {
         return [ordered]@{ requested = $true; ran = $false; status = 'not-run'; note = 'cargo-not-found'; checks = @() }
+    }
+    if (-not (Test-Path -LiteralPath $EnginePath -PathType Container)) {
+        return [ordered]@{ requested = $true; ran = $false; status = 'not-run'; note = 'engine-missing'; checks = @() }
     }
 
     $checks = New-Object System.Collections.Generic.List[object]
@@ -876,6 +888,7 @@ function New-RustLaneSummary {
                 exitCode = $phase.exitCode
                 durationSeconds = $phase.durationSeconds
                 outputPath = $phase.outputPath
+                outputTail = @($phase.outputTail)
             })
     }
 
@@ -889,6 +902,36 @@ function New-RustLaneSummary {
         note = $null
         checks = $checkArray
     }
+}
+
+function Get-RustLaneNotCoveredEntry {
+    param(
+        [bool]$Requested,
+        [bool]$Ran,
+        [AllowNull()][string]$Note
+    )
+
+    if ($Ran) { return $null }
+    if (-not $Requested) { return 'gx-engine Rust lane (opt-in)' }
+    if ([string]::IsNullOrWhiteSpace($Note)) { return 'gx-engine Rust lane' }
+    return "gx-engine Rust lane ($Note)"
+}
+
+function Set-RustLaneCoverage {
+    param(
+        [Parameter(Mandatory = $true)][object]$Summary,
+        [bool]$Requested,
+        [bool]$Ran,
+        [AllowNull()][string]$Note
+    )
+
+    $prefix = 'gx-engine Rust lane'
+    $entries = @(@($Summary.notCovered) | Where-Object {
+            $null -ne $_ -and -not ([string]$_).StartsWith($prefix, [System.StringComparison]::Ordinal)
+        })
+    $entry = Get-RustLaneNotCoveredEntry -Requested $Requested -Ran $Ran -Note $Note
+    if ($null -ne $entry) { $entries += $entry }
+    $Summary.notCovered = @($entries)
 }
 
 $summary = [ordered]@{
@@ -924,6 +967,7 @@ $summary = [ordered]@{
     status = 'running'
     exitCode = 1
 }
+Set-RustLaneCoverage -Summary $summary -Requested ([bool]$IncludeRustLane) -Ran $false -Note $null
 
 $mechanicalFailed = $false
 $mechanicalUnavailable = $false
@@ -1056,10 +1100,7 @@ try {
     $cargoPath = if ($IncludeRustLane) { Resolve-CargoExecutable -Explicit $CargoExecutable } else { $null }
     $rustLane = New-RustLaneSummary -Requested ([bool]$IncludeRustLane) -CargoPath $cargoPath -EnginePath (Join-Path $root 'src\gx-engine') -LogRoot $logRoot
     $summary.rustLane = $rustLane
-    if (-not $rustLane.ran) {
-        $laneNote = if ($rustLane.requested) { 'gx-engine Rust lane (cargo not found)' } else { 'gx-engine Rust lane (opt-in)' }
-        $summary.notCovered = @($summary.notCovered) + $laneNote
-    }
+    Set-RustLaneCoverage -Summary $summary -Requested $rustLane.requested -Ran $rustLane.ran -Note $rustLane.note
 
     $afterStatusResult = Get-GitLines -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
     if ($afterStatusResult.exitCode -ne 0) {
