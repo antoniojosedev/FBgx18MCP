@@ -244,7 +244,7 @@ namespace GxMcp.Worker.Services
                 SetNativeAttribute(table, "name", request.TableName);
                 SetNativePair(table, "type", request.TableType);
                 SetNativeNumberPair(table, "numberOfColumns", request.NumberOfColumns);
-                if (request.IncludeInPanel.HasValue) SetNativePair(table, "includeInPanel", request.IncludeInPanel.Value ? "True" : "False");
+                if (request.IncludeInPanel.HasValue) SetNativeBoolPair(table, "includeInPanel", request.IncludeInPanel.Value);
                 if (request.PanelTitle != null) SetNativeAttribute(table, "panelTitle", request.PanelTitle);
                 foreach (JObject child in request.Children?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
                     AttachNativeControl(table, child, scope, requestedAttributes);
@@ -286,9 +286,17 @@ namespace GxMcp.Worker.Services
 
         // numberOfColumns is declared as a number by the pattern; a string is the fallback for
         // a package that declares it as text. Either way the default twin follows.
-        private static void SetNativeNumberPair(object element, string name, int value)
+        private static void SetNativeNumberPair(object element, string name, int value) =>
+            SetNativeTypedPair(element, name, value, value.ToString(CultureInfo.InvariantCulture));
+
+        // includeInPanel is a bool attribute of the pattern: the string "True" is stored as a string
+        // and the table element fails its cast when it reads the property back (InvalidCastException
+        // in GeneralTableElement on a real WorkWithPlus package), so the bool itself is stored.
+        private static void SetNativeBoolPair(object element, string name, bool value) =>
+            SetNativeTypedPair(element, name, value, value ? "True" : "False");
+
+        private static void SetNativeTypedPair(object element, string name, object value, string text)
         {
-            string text = value.ToString(CultureInfo.InvariantCulture);
             foreach (string attribute in new[] { name, "default" + char.ToUpperInvariant(name[0]) + name.Substring(1) })
             {
                 bool applied;
