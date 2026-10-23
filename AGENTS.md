@@ -433,14 +433,38 @@ user clearly asks to re-point without compiling (e.g. “só reapontar”, “se
 rebuild”, “sem build”, “não recompile”). Ambiguous or incomplete requests
 default to `.\install.ps1`.
 
+**Engine backend override (fork-owned, until upstream fixes it):** this checkout
+deliberately runs with `Engine.Backend=sdk` in `publish\config.json`, keeping the
+experimental `gx-engine` out of the way. `build.ps1` empties `publish/` and
+regenerates that file without an `Engine` section (`build.ps1:112-116`,
+`:207-230`); `install.ps1` and `release.ps1` both go through it, so any direct
+run silently restores the upstream default (`gxengine`). Environment variables
+are not an escape hatch: strict documents reject `GXMCP_ENGINE_*` at load.
+
+Therefore, while the upstream entry points remain unfixed:
+
+- Wherever this block says to run `.\build.ps1` or `.\install.ps1`, run
+  `pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1` instead (add
+  `-Install` for the install path, `-EngineBackend` to change the choice and
+  `-InstallerArgs` for install switches). The wrapper propagates the entry
+  point's exit code and only then reapplies the backend.
+- After any direct `build.ps1`, `install.ps1` or `release.ps1` run by the user
+  or another tool, run
+  `pwsh -NoProfile -File scripts\Set-GxMcpLocalEngineBackend.ps1` and confirm
+  `Engine.Backend` in `publish\config.json`. Do not leave the tree on
+  `gxengine` by omission.
+- Do not “fix” this with `GXMCP_ENGINE_BACKEND`; adjust the file only. The
+  upstream gap is reported, and per fork policy neither `build.ps1` nor
+  `install.ps1` is patched here.
+
 For local-checkout work in this fork, **prefer** the rows below over matrix
 rows that recommend `npx … clients add` / `npx … clients` / `npx … doctor`:
 
 | Scenario (checkout) | Use this instead of the npx matrix rows |
 |---|---|
-| **Default:** install / update / refresh MCP harnesses (after sync or otherwise) | `.\install.ps1` at repo root |
+| **Default:** install / update / refresh MCP harnesses (after sync or otherwise) | `pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1 -Install` at repo root (wraps `.\install.ps1`) |
 | Explicit no-rebuild re-point of **all** writable harnesses | From repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --all-clients` |
-| Stale / wrong launcher (one client) | Prefer `.\install.ps1`; or same env + `node cli\run.js clients add --clients <id>` only if the user forbade rebuild |
+| Stale / wrong launcher (one client) | Prefer the wrapper's `-Install` form; or same env + `node cli\run.js clients add --clients <id>` only if the user forbade rebuild |
 | Post-sync validation | From repo root: `node cli\run.js clients --format json` and `node cli\run.js doctor --mcp-smoke --format json` (**same** CLI/env as install) |
 
 Acceptance for a harness refresh: every registered writable client lists that
