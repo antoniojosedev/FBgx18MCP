@@ -5,7 +5,7 @@ namespace GxMcp.Gateway.Tests
 {
     // `fields` is declared as an array of strings, but a client whose schema lacked it sent the
     // array as text and the comma split produced `["name"` / `"type"]` (every result projected
-    // to an empty object, issue #637). Both readers of `fields` accept the text form.
+    // to an empty object, issue #637). The compact projection reads the text form as that array.
     public class QueryFieldsArgumentTests
     {
         private static JObject Project(JToken fields)
@@ -50,17 +50,17 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void NormalizeFields_ReadsATextArrayLiteralAndLeavesEverythingElseAlone()
+        public void Normalize_ReadsATextArrayLiteralAndLeavesEverythingElseAlone()
         {
-            var parsed = Assert.IsType<JArray>(EngineFieldSelection.NormalizeFields(new JValue("[\"name\",\"type\"]")));
+            var parsed = Assert.IsType<JArray>(FieldsArgument.Normalize(new JValue("[\"name\",\"type\"]")));
             Assert.Equal(new[] { "name", "type" }, parsed.ToObject<string[]>());
 
-            Assert.Equal("name,type", EngineFieldSelection.NormalizeFields(new JValue("name,type"))!.ToString());
-            Assert.Equal("[name", EngineFieldSelection.NormalizeFields(new JValue("[name"))!.ToString());
-            Assert.Equal("[not json]", EngineFieldSelection.NormalizeFields(new JValue("[not json]"))!.ToString());
-            Assert.Null(EngineFieldSelection.NormalizeFields(null));
+            Assert.Equal("name,type", FieldsArgument.Normalize(new JValue("name,type"))!.ToString());
+            Assert.Equal("[name", FieldsArgument.Normalize(new JValue("[name"))!.ToString());
+            Assert.Equal("[not json]", FieldsArgument.Normalize(new JValue("[not json]"))!.ToString());
+            Assert.Null(FieldsArgument.Normalize(null));
             var array = new JArray("name");
-            Assert.Same(array, EngineFieldSelection.NormalizeFields(array));
+            Assert.Same(array, FieldsArgument.Normalize(array));
         }
     }
 }
