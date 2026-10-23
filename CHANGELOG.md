@@ -20,7 +20,7 @@
 ### Internal
 
 - CI: each `cargo` command of the gxwire and gx-engine lanes (clippy, fmt, test, build, staging) is its own step, so a failing command can no longer be masked by the one after it; `test-ci-workflow-policy.ps1` rejects a step with several native commands that does not check `$LASTEXITCODE` between them, with mutation checks.
-- gx-engine: the eight `cargo clippy --all-targets -- -D warnings` diagnostics are fixed (`as_chunks`, one collapsed `match` arm, needless borrows). `a_kept_command_builds_a_project_named_by_a_relative_path` builds under Cargo's target folder and skips locally when no relative path exists (another drive); the symlink test skips only on `ERROR_PRIVILEGE_NOT_HELD`. Both fail instead of skipping when `CI` is set.
+- gx-engine: the eight `cargo clippy --all-targets -- -D warnings` diagnostics are fixed (`as_chunks`, one collapsed `match` arm, needless borrows). `a_kept_command_builds_a_project_named_by_a_relative_path` builds under the temp folder, or under the nearest parent of the checkout free of ambient MSBuild files when the temp folder is on another drive, and skips locally when no relative path exists; the symlink test skips only on `ERROR_PRIVILEGE_NOT_HELD`. Both fail instead of skipping when `CI` is set.
 - `WorkerPoolTests`: the drain wait and the cancellation during a drain are separate tests, use a counting spawn factory (no real Worker is started) and the cancellation test no longer races `DrainComplete`.
 - Tool schema budget: `genexus_query.fields` brings `tool_definitions.json` to about 39666 of 39700 tokens (no bump) and the `ui` tool profile to 50098 bytes, so its byte budget moves from 50000 to 50200.
 

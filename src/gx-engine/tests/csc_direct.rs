@@ -431,6 +431,18 @@ fn relative_to_current_dir(path: &Path) -> Option<PathBuf> {
     Some(relative)
 }
 
+/// A folder under which a project can be named by a relative path from the current directory and still
+/// be served by the direct path: it shares a root with the current directory (`temp_dir()` can be on
+/// another drive) and has no ambient MSBuild or analyzer file above it (the crate sits under the
+/// repository's `Directory.Build.props` and `.editorconfig`, which the direct path refuses). The temp
+/// folder first, then the ancestors of the current directory, nearest first.
+fn relative_scratch_base() -> Option<PathBuf> {
+    let here = std::env::current_dir().unwrap();
+    std::iter::once(std::env::temp_dir())
+        .chain(here.ancestors().skip(1).map(Path::to_path_buf))
+        .find(|base| relative_to_current_dir(base).is_some() && ambient_import(base).is_none())
+}
+
 #[test]
 fn a_kept_command_builds_a_project_named_by_a_relative_path() {
     // The compiler runs in the project folder; `rebuild-all --output out` names the project relatively.
@@ -438,19 +450,15 @@ fn a_kept_command_builds_a_project_named_by_a_relative_path() {
         eprintln!("skipped: the dotnet CLI is not available");
         return;
     }
-    // Under the target folder, which sits beside the crate: `temp_dir()` can be on another drive,
-    // where no relative path to the crate folder exists.
-    let dir = scratch_in(Path::new(env!("CARGO_TARGET_TMPDIR")), "relative");
-    let project = dir.join("RebuildApp.csproj");
-    let Some(relative) = relative_to_current_dir(&project) else {
-        skip_or_fail(&format!(
-            "no relative path exists from {} to {}: they share no root",
-            std::env::current_dir().unwrap().display(),
-            project.display()
-        ));
-        let _ = fs::remove_dir_all(&dir);
+    let Some(base) = relative_scratch_base() else {
+        skip_or_fail(
+            "no folder shares a root with the current directory and is free of ambient MSBuild or analyzer files",
+        );
         return;
     };
+    let dir = scratch_in(&base, "relative");
+    let relative = relative_to_current_dir(&dir.join("RebuildApp.csproj"))
+        .expect("the scratch base shares a root with the current directory");
     write_project(&dir, &["A.cs"], "");
     fs::write(
         dir.join("A.cs"),
