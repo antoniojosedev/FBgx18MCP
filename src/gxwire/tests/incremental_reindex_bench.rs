@@ -113,7 +113,10 @@ fn benchmark_cold_warm_and_single_edit_reindex() {
     let written = generate_kb(&dir, OBJECTS, PEERS);
     let baseline_paths = file_backed_paths(&build_index(&dir).unwrap().0);
 
-    println!("\n=== GXWIRE REINDEX BENCHMARK ({} objects, median of {}) ===", OBJECTS, REPEATS);
+    println!(
+        "\n=== GXWIRE REINDEX BENCHMARK ({} objects, median of {}) ===",
+        OBJECTS, REPEATS
+    );
 
     // 1. Cold: parse everything. `build_index` never consults the index, so
     // every repeat is a genuine cold build.
@@ -215,7 +218,9 @@ fn benchmark_cold_warm_and_single_edit_reindex() {
             after_delete_nodes = g.nodes.len();
             assert_eq!(file_backed_paths(&g), baseline_paths);
             if let Some(id) = g.symbol_to_id.get(&added_key).copied() {
-                let node = g.get_node(id).expect("symbol_to_id must point at a real node");
+                let node = g
+                    .get_node(id)
+                    .expect("symbol_to_id must point at a real node");
                 assert!(
                     node.path.is_none(),
                     "a deleted object must not stay file-backed"

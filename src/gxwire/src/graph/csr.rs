@@ -144,7 +144,12 @@ impl CsrGraph {
     }
 
     /// Fast BFS transitive callers (Backward traversal)
-    pub fn transitive_callers(&self, root_id: u32, max_depth: usize, max_nodes: usize) -> Vec<(u32, usize)> {
+    pub fn transitive_callers(
+        &self,
+        root_id: u32,
+        max_depth: usize,
+        max_nodes: usize,
+    ) -> Vec<(u32, usize)> {
         let mut visited = vec![false; self.nodes.len()];
         let mut queue = std::collections::VecDeque::new();
         let mut result = Vec::new();
@@ -177,7 +182,11 @@ impl CsrGraph {
 
     /// Shortest path BFS between two nodes in forward direction (callees traversal).
     /// Returns a list of (from_id, to_id, EdgeKind, line_number).
-    pub fn shortest_path(&self, from_id: u32, to_id: u32) -> Option<Vec<(u32, u32, EdgeKind, u32)>> {
+    pub fn shortest_path(
+        &self,
+        from_id: u32,
+        to_id: u32,
+    ) -> Option<Vec<(u32, u32, EdgeKind, u32)>> {
         if from_id == to_id {
             return Some(Vec::new());
         }

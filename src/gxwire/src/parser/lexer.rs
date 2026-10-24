@@ -3,21 +3,18 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
-static RE_PARM: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bparm\s*\(([^)]*)\)").unwrap()
-});
+static RE_PARM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bparm\s*\(([^)]*)\)").unwrap());
 
 /// An attribute's formula body: everything between `[Formula:` and its closing
 /// bracket. GeneXus writes it inline in the attribute declaration and allows it
 /// to span several physical lines, so the match is taken over the whole source
 /// rather than line by line (#501).
-static RE_FORMULA: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)\[\s*Formula\s*:(.*?)\]").unwrap()
-});
+static RE_FORMULA: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)\[\s*Formula\s*:(.*?)\]").unwrap());
 
-static RE_CALL_FUNC: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bcall\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
-});
+static RE_CALL_FUNC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bcall\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap());
 
 static RE_CALL_METHOD: LazyLock<Regex> = LazyLock::new(|| {
     // `.Popup(` opens a Transaction in a popup, `.Link(` creates a link URL,
@@ -36,17 +33,14 @@ static RE_CALL_METHOD: LazyLock<Regex> = LazyLock::new(|| {
 /// built-in's argument list (`Str(procTotal(&a))`) has no leading boundary
 /// character before it, so a single-match scan stopped at the built-in and
 /// lost the real callee.
-static RE_FUNCTION_CALL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b([a-z_][a-zA-Z0-9_#]*)\s*\(").unwrap()
-});
+static RE_FUNCTION_CALL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b([a-z_][a-zA-Z0-9_#]*)\s*\(").unwrap());
 
-static RE_UDP: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\budp\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
-});
+static RE_UDP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\budp\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap());
 
-static RE_SUBMIT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bsubmit\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
-});
+static RE_SUBMIT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bsubmit\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap());
 
 static RE_LINK: LazyLock<Regex> = LazyLock::new(|| {
     // Standalone `Link(Target, ...)`. Uses a delimiter prefix so `Obj.Link(` is not matched here.
@@ -54,67 +48,72 @@ static RE_LINK: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_XML_PROPERTY_FORMULA: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)<Property[^>]*>\s*<Name>\s*Formula\s*</Name>\s*<Value>(.*?)</Value>\s*</Property>").unwrap()
+    Regex::new(
+        r"(?is)<Property[^>]*>\s*<Name>\s*Formula\s*</Name>\s*<Value>(.*?)</Value>\s*</Property>",
+    )
+    .unwrap()
 });
 
 static RE_BC_METHOD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:^|[\s,;(=])([&][a-zA-Z0-9_#]+)\s*\.\s*(save|insert|update|delete|load)\s*\(").unwrap()
+    Regex::new(
+        r"(?i)(?:^|[\s,;(=])([&][a-zA-Z0-9_#]+)\s*\.\s*(save|insert|update|delete|load)\s*\(",
+    )
+    .unwrap()
 });
 
-static RE_SUB: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\bsub\s+['"]?([a-zA-Z0-9_# ]+)['"]?"#).unwrap()
-});
+static RE_SUB: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\bsub\s+['"]?([a-zA-Z0-9_# ]+)['"]?"#).unwrap());
 
-static RE_DO_SUB: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\bdo\s+['"]?([a-zA-Z0-9_# ]+)['"]?"#).unwrap()
-});
+static RE_DO_SUB: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\bdo\s+['"]?([a-zA-Z0-9_# ]+)['"]?"#).unwrap());
 
-static RE_ASSIGN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*([&]?[a-zA-Z0-9_#]+)\s*=").unwrap()
-});
+static RE_ASSIGN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*([&]?[a-zA-Z0-9_#]+)\s*=").unwrap());
 
-static RE_ASSIGN_READ: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*&[a-zA-Z0-9_#]+\s*=\s*([a-zA-Z0-9_#]+)").unwrap()
-});
+static RE_ASSIGN_READ: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*&[a-zA-Z0-9_#]+\s*=\s*([a-zA-Z0-9_#]+)").unwrap());
 
 /// Same left-hand side, but the right-hand token is immediately called: the
 /// assignment's value comes from a Procedure invocation, so the token is a
 /// callee, not an attribute being read (#500).
-static RE_ASSIGN_CALL_RHS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*&[a-zA-Z0-9_#]+\s*=\s*([a-zA-Z0-9_#]+)\s*\(").unwrap()
-});
+static RE_ASSIGN_CALL_RHS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*&[a-zA-Z0-9_#]+\s*=\s*([a-zA-Z0-9_#]+)\s*\(").unwrap());
 
-static RE_WHERE_ATTR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bwhere\s+([a-zA-Z0-9_#]+)").unwrap()
-});
+static RE_WHERE_ATTR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bwhere\s+([a-zA-Z0-9_#]+)").unwrap());
 
-static RE_FOR_EACH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bfor\s+each\b").unwrap()
-});
+static RE_FOR_EACH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bfor\s+each\b").unwrap());
 
-static RE_END_FOR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bendfor\b").unwrap()
-});
+static RE_END_FOR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bendfor\b").unwrap());
 
-static RE_NEW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bnew\b").unwrap()
-});
+static RE_NEW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bnew\b").unwrap());
 
-static RE_END_NEW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bendnew\b").unwrap()
-});
+static RE_END_NEW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bendnew\b").unwrap());
 
-static RE_DELETE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bdelete\b").unwrap()
-});
+static RE_DELETE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bdelete\b").unwrap());
 
 fn is_gx_keyword(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     matches!(
         lower.as_str(),
-        "true" | "false" | "null" | "serverdate" | "systime" | "nullvalue"
-            | "val" | "trim" | "str" | "round" | "udp" | "call" | "new"
-            | "not" | "empty" | "none" | "y" | "n"
+        "true"
+            | "false"
+            | "null"
+            | "serverdate"
+            | "systime"
+            | "nullvalue"
+            | "val"
+            | "trim"
+            | "str"
+            | "round"
+            | "udp"
+            | "call"
+            | "new"
+            | "not"
+            | "empty"
+            | "none"
+            | "y"
+            | "n"
     )
 }
 
@@ -204,12 +203,16 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
         // Subroutine definitions & calls
         if let Some(caps) = RE_SUB.captures(line) {
             if let Some(sub_name) = caps.get(1) {
-                result.subroutines_defined.push(sub_name.as_str().trim().to_string());
+                result
+                    .subroutines_defined
+                    .push(sub_name.as_str().trim().to_string());
             }
         }
         if let Some(caps) = RE_DO_SUB.captures(line) {
             if let Some(sub_name) = caps.get(1) {
-                result.subroutines_called.push(sub_name.as_str().trim().to_string());
+                result
+                    .subroutines_called
+                    .push(sub_name.as_str().trim().to_string());
             }
         }
 
@@ -253,7 +256,10 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
         if let Some(caps) = RE_CALL_METHOD.captures(line) {
             if let Some(target) = caps.get(1) {
                 let name = target.as_str();
-                let method = caps.get(2).map(|m| m.as_str().to_ascii_lowercase()).unwrap_or_default();
+                let method = caps
+                    .get(2)
+                    .map(|m| m.as_str().to_ascii_lowercase())
+                    .unwrap_or_default();
                 let mode = if method == "link" {
                     CallMode::Link
                 } else if name.starts_with('&') {
@@ -495,12 +501,37 @@ mod tests {
         "#;
 
         let res = parse_genexus_source(code);
-        assert_eq!(res.parm_rule.as_deref(), Some("in:&CliCod, out:&CliSaldo, inout:&Status"));
-        assert!(res.references.iter().any(|r| r.target_name == "PValidaCliente" && r.kind == EdgeKind::Calls(CallMode::Static)));
-        assert!(res.references.iter().any(|r| r.target_name == "DynamicProc" && r.kind == EdgeKind::Calls(CallMode::Dynamic)));
-        assert!(res.references.iter().any(|r| r.target_name == "PCalculaSaldo" && r.kind == EdgeKind::Calls(CallMode::Udp)));
-        assert!(res.references.iter().any(|r| r.target_name == "CliSaldo" && r.kind == EdgeKind::WritesAttr(WriteMode::ForEachUpdate)));
-        assert!(res.references.iter().any(|r| r.target_name == "CliUltUpdate" && r.kind == EdgeKind::WritesAttr(WriteMode::ForEachUpdate)));
-        assert!(res.references.iter().any(|r| r.target_name == "CliCod" && r.kind == EdgeKind::ReadsAttr));
+        assert_eq!(
+            res.parm_rule.as_deref(),
+            Some("in:&CliCod, out:&CliSaldo, inout:&Status")
+        );
+        assert!(
+            res.references
+                .iter()
+                .any(|r| r.target_name == "PValidaCliente"
+                    && r.kind == EdgeKind::Calls(CallMode::Static))
+        );
+        assert!(res.references.iter().any(
+            |r| r.target_name == "DynamicProc" && r.kind == EdgeKind::Calls(CallMode::Dynamic)
+        ));
+        assert!(
+            res.references
+                .iter()
+                .any(|r| r.target_name == "PCalculaSaldo"
+                    && r.kind == EdgeKind::Calls(CallMode::Udp))
+        );
+        assert!(res.references.iter().any(|r| r.target_name == "CliSaldo"
+            && r.kind == EdgeKind::WritesAttr(WriteMode::ForEachUpdate)));
+        assert!(
+            res.references
+                .iter()
+                .any(|r| r.target_name == "CliUltUpdate"
+                    && r.kind == EdgeKind::WritesAttr(WriteMode::ForEachUpdate))
+        );
+        assert!(
+            res.references
+                .iter()
+                .any(|r| r.target_name == "CliCod" && r.kind == EdgeKind::ReadsAttr)
+        );
     }
 }

@@ -59,8 +59,18 @@ fn create_sample_kb_graph() -> CsrGraph {
     ];
 
     let edges = vec![
-        RawEdge { from: 0, to: 1, kind: EdgeKind::Calls(CallMode::Static), line: 25 },
-        RawEdge { from: 1, to: 2, kind: EdgeKind::WritesAttr(WriteMode::ForEachUpdate), line: 55 },
+        RawEdge {
+            from: 0,
+            to: 1,
+            kind: EdgeKind::Calls(CallMode::Static),
+            line: 25,
+        },
+        RawEdge {
+            from: 1,
+            to: 2,
+            kind: EdgeKind::WritesAttr(WriteMode::ForEachUpdate),
+            line: 55,
+        },
     ];
 
     CsrGraph::build(nodes, &edges)
@@ -176,7 +186,13 @@ fn test_principle_9_contextual_disclosure_next_steps() {
 #[test]
 fn test_toon_scalar_escaping() {
     assert_eq!(escape_toon_scalar("ProcA"), "ProcA");
-    assert_eq!(escape_toon_scalar("in:&CliCod, out:&Total"), "\"in:&CliCod, out:&Total\"");
-    assert_eq!(escape_toon_scalar("Update invoice total"), "\"Update invoice total\"");
+    assert_eq!(
+        escape_toon_scalar("in:&CliCod, out:&Total"),
+        "\"in:&CliCod, out:&Total\""
+    );
+    assert_eq!(
+        escape_toon_scalar("Update invoice total"),
+        "\"Update invoice total\""
+    );
     assert_eq!(escape_toon_scalar(""), "\"\"");
 }
