@@ -55,7 +55,7 @@ if ($unavailable.status -ne 'incomplete' -or
     throw 'An unavailable local dependency must be incomplete and block push readiness.'
 }
 
-foreach ($name in @('Get-PrePushTempRoot', 'Set-RawPhaseTail', 'Get-RawPhaseTail', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-AggregateFailureDetail', 'Get-ReleaseContractAllowlist', 'Test-ReleaseContractConstantBinding', 'Test-ReleaseContractTopLevelStatement', 'Assert-ReleaseContractTopLevelSafe', 'Resolve-CargoExecutable', 'Test-RustCratePathChanged', 'Get-RustLaneRequestState', 'New-RustLaneSummary', 'Get-RustLaneNotCoveredEntry', 'Set-RustLaneCoverage', 'Invoke-PowerShellParsePhase', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
+foreach ($name in @('Get-PrePushTempRoot', 'Set-RawPhaseTail', 'Get-RawPhaseTail', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-AggregateFailureDetail', 'Get-ReleaseContractAllowlist', 'Test-ReleaseContractConstantBinding', 'Test-ReleaseContractTopLevelStatement', 'Assert-ReleaseContractTopLevelSafe', 'Resolve-CargoExecutable', 'Test-RustCratePathChanged', 'Get-RustLaneRequestState', 'New-RustLaneSummary', 'Get-RustLaneNotCoveredEntry', 'Set-RustLaneCoverage', 'Set-RustLaneSeedState', 'Invoke-PowerShellParsePhase', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
     $functionDefinition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -718,6 +718,50 @@ try {
         throw 'Rust lane coverage must preserve unrelated notCovered entries.'
     }
 
+    $seedSummary = [ordered]@{
+        notCovered = @('Semantic review')
+        rustLane = [ordered]@{ name = 'gx-engine'; requested = $false; ran = $false; status = 'not-requested'; note = $null; checks = @() }
+        gxwireRustLane = [ordered]@{ name = 'gxwire'; requested = $false; ran = $false; status = 'not-requested'; note = $null; checks = @() }
+    }
+    Set-RustLaneSeedState -Summary $seedSummary -LaneName 'gx-engine' -LaneKey 'rustLane' -Requested $false
+    Set-RustLaneSeedState -Summary $seedSummary -LaneName 'gxwire' -LaneKey 'gxwireRustLane' -Requested $false
+    Set-RustLaneSeedState -Summary $seedSummary -LaneName 'gx-engine' -LaneKey 'rustLane' -Requested $true
+    if (-not $seedSummary.rustLane.requested -or $seedSummary.rustLane.ran -or
+        $seedSummary.rustLane.status -ne 'not-run' -or $seedSummary.rustLane.note -ne 'aborted-before-lane') {
+        throw 'A requested lane seeded before it runs must report requested/not-run/aborted-before-lane.'
+    }
+    if (@($seedSummary.notCovered) -notcontains 'gx-engine Rust lane (aborted-before-lane)' -or
+        @($seedSummary.notCovered) -contains 'gx-engine Rust lane (opt-in)') {
+        throw 'A requested lane seeded before it runs must replace the opt-in entry with aborted-before-lane.'
+    }
+    if ($seedSummary.gxwireRustLane.requested -or @($seedSummary.notCovered) -notcontains 'gxwire Rust lane (opt-in)') {
+        throw 'Seeding one lane must leave the other lane untouched.'
+    }
+
+    $autoState = Get-RustLaneRequestState -Explicit $false -ChangedPaths @('src/gxwire/src/main.rs')
+    Set-RustLaneSeedState -Summary $seedSummary -LaneName 'gx-engine' -LaneKey 'rustLane' -Requested $autoState.engine.requested
+    Set-RustLaneSeedState -Summary $seedSummary -LaneName 'gxwire' -LaneKey 'gxwireRustLane' -Requested $autoState.gxwire.requested
+    if ($seedSummary.rustLane.requested -or $seedSummary.rustLane.status -ne 'not-requested') {
+        throw 'An auto-enabled seed must not request the engine lane for a gxwire-only change.'
+    }
+    if (-not $seedSummary.gxwireRustLane.requested -or $seedSummary.gxwireRustLane.ran -or
+        $seedSummary.gxwireRustLane.status -ne 'not-run' -or $seedSummary.gxwireRustLane.note -ne 'aborted-before-lane') {
+        throw 'An auto-enabled lane must report requested/not-run/aborted-before-lane when the run aborts after changedPaths.'
+    }
+    if (@($seedSummary.notCovered) -notcontains 'gxwire Rust lane (aborted-before-lane)' -or
+        @($seedSummary.notCovered) -notcontains 'gx-engine Rust lane (opt-in)') {
+        throw 'The auto-enabled seed must agree with notCovered for both lanes.'
+    }
+
+    Set-RustLaneSeedState -Summary $seedSummary -LaneName 'gxwire' -LaneKey 'gxwireRustLane' -Requested $false
+    if ($seedSummary.gxwireRustLane.requested -or $seedSummary.gxwireRustLane.status -ne 'not-requested' -or $null -ne $seedSummary.gxwireRustLane.note) {
+        throw 'Re-seeding an unrequested lane must restore not-requested.'
+    }
+    if (@($seedSummary.notCovered) -notcontains 'gxwire Rust lane (opt-in)' -or
+        @($seedSummary.notCovered) -contains 'gxwire Rust lane (aborted-before-lane)') {
+        throw 'Re-seeding an unrequested lane must restore its opt-in coverage entry.'
+    }
+
     $advisoryDecision = Get-PrePushDecision -MechanicalFailed $false -MechanicalUnavailable $false -BaseRefAvailable $true -CommitsBehind 0 -WorkingTreeDirty $false
     if ($advisoryDecision.pushReadiness -ne 'readyLocal' -or $lane.status -ne 'failed') {
         throw 'A failed Rust lane must not change push readiness.'
@@ -1100,15 +1144,17 @@ try {
     Remove-Item -LiteralPath $sentinelRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$seedIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -LaneName ''gx-engine'' -Requested $rustLaneSeedRequested -Ran $false')
+$seedIndex = $source.IndexOf('Set-RustLaneSeedState -Summary $summary -LaneName ''gx-engine'' -LaneKey ''rustLane'' -Requested $rustLaneSeedRequested')
+$changedPathsIndex = $source.IndexOf('$summary.changedPaths = @($changedResult.lines')
 $requestIndex = $source.IndexOf('Get-RustLaneRequestState -Explicit ([bool]$IncludeRustLane) -ChangedPaths $summary.changedPaths')
+$reseedIndex = $source.IndexOf('Set-RustLaneSeedState -Summary $summary -LaneName ''gx-engine'' -LaneKey ''rustLane'' -Requested $laneRequests.engine.requested')
 $laneIndex = $source.IndexOf('$rustLane = New-RustLaneSummary')
 $wireLaneIndex = $source.IndexOf('$gxwireRustLane = New-RustLaneSummary')
 $finalIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -LaneName ''gx-engine'' -Requested $rustLane.requested')
 $wireFinalIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -LaneName ''gxwire'' -Requested $gxwireRustLane.requested')
-if ($seedIndex -lt 0 -or $requestIndex -lt 0 -or $laneIndex -lt 0 -or $wireLaneIndex -lt 0 -or $finalIndex -lt 0 -or $wireFinalIndex -lt 0 -or
-    -not ($seedIndex -lt $requestIndex -and $requestIndex -lt $laneIndex -and $laneIndex -lt $wireLaneIndex -and $wireLaneIndex -lt $finalIndex -and $finalIndex -lt $wireFinalIndex)) {
-    throw 'The Rust lane coverage must be seeded before the request, and both lanes finalized after they run.'
+if ($seedIndex -lt 0 -or $changedPathsIndex -lt 0 -or $requestIndex -lt 0 -or $reseedIndex -lt 0 -or $laneIndex -lt 0 -or $wireLaneIndex -lt 0 -or $finalIndex -lt 0 -or $wireFinalIndex -lt 0 -or
+    -not ($seedIndex -lt $changedPathsIndex -and $changedPathsIndex -lt $requestIndex -and $requestIndex -lt $reseedIndex -and $reseedIndex -lt $laneIndex -and $laneIndex -lt $wireLaneIndex -and $wireLaneIndex -lt $finalIndex -and $finalIndex -lt $wireFinalIndex)) {
+    throw 'The Rust lane seed must run before the request, refresh after changedPaths and before the lanes, and both lanes must be finalized after they run.'
 }
 
 if ($source -match '(?im)^\s*(?:&\s*)?git\s+push\b') {
@@ -1147,6 +1193,8 @@ foreach ($marker in @(
         'auto-enabled-by-changed-paths',
         'Test-RustCratePathChanged',
         'Get-RustLaneRequestState',
+        'Set-RustLaneSeedState',
+        'aborted-before-lane',
         'Assert-ReleaseContractTopLevelSafe',
         'New-AggregateFailureDetail',
         'New-RustLaneSummary',

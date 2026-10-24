@@ -992,13 +992,32 @@ function Set-RustLaneCoverage {
     $Summary.notCovered = @($entries)
 }
 
-$rustLaneSeedRequested = [bool]$IncludeRustLane
-$rustLaneSeedStatus = 'not-requested'
-$rustLaneSeedNote = $null
-if ($rustLaneSeedRequested) {
-    $rustLaneSeedStatus = 'not-run'
-    $rustLaneSeedNote = 'aborted-before-lane'
+function Set-RustLaneSeedState {
+    param(
+        [Parameter(Mandatory = $true)][object]$Summary,
+        [string]$LaneName = 'gx-engine',
+        [string]$LaneKey = 'rustLane',
+        [bool]$Requested
+    )
+
+    $status = 'not-requested'
+    $note = $null
+    if ($Requested) {
+        $status = 'not-run'
+        $note = 'aborted-before-lane'
+    }
+    $Summary[$LaneKey] = [ordered]@{
+        name = $LaneName
+        requested = $Requested
+        ran = $false
+        status = $status
+        note = $note
+        checks = @()
+    }
+    Set-RustLaneCoverage -Summary $Summary -LaneName $LaneName -Requested $Requested -Ran $false -Note $note
 }
+
+$rustLaneSeedRequested = [bool]$IncludeRustLane
 
 $summary = [ordered]@{
     schemaVersion = 'gxmcp-pre-push/2'
@@ -1025,17 +1044,18 @@ $summary = [ordered]@{
         'GeneXus IDE and real-KB behavior'
         'Remote CI status and publication'
     )
-    rustLane = [ordered]@{ name = 'gx-engine'; requested = $rustLaneSeedRequested; ran = $false; status = $rustLaneSeedStatus; note = $rustLaneSeedNote; checks = @() }
-    gxwireRustLane = [ordered]@{ name = 'gxwire'; requested = $rustLaneSeedRequested; ran = $false; status = $rustLaneSeedStatus; note = $rustLaneSeedNote; checks = @() }
+    rustLane = [ordered]@{ name = 'gx-engine'; requested = $false; ran = $false; status = 'not-requested'; note = $null; checks = @() }
+    gxwireRustLane = [ordered]@{ name = 'gxwire'; requested = $false; ran = $false; status = 'not-requested'; note = $null; checks = @() }
     localReadiness = 'not-run'
     remoteReadiness = 'unverified'
     pushReadiness = 'blocked'
     status = 'running'
     exitCode = 1
 }
-Set-RustLaneCoverage -Summary $summary -LaneName 'gx-engine' -Requested $rustLaneSeedRequested -Ran $false -Note $rustLaneSeedNote
-Set-RustLaneCoverage -Summary $summary -LaneName 'gxwire' -Requested $rustLaneSeedRequested -Ran $false -Note $rustLaneSeedNote
+Set-RustLaneSeedState -Summary $summary -LaneName 'gx-engine' -LaneKey 'rustLane' -Requested $rustLaneSeedRequested
+Set-RustLaneSeedState -Summary $summary -LaneName 'gxwire' -LaneKey 'gxwireRustLane' -Requested $rustLaneSeedRequested
 
+$laneRequests = $null
 $mechanicalFailed = $false
 $mechanicalUnavailable = $false
 $baseAvailable = $false
@@ -1103,6 +1123,12 @@ try {
             [void]$summary.reasons.Add('Unable to enumerate changed paths.')
             $mechanicalFailed = $true
         }
+
+        # Refresh the seed as soon as the range is known: an abort from here on
+        # must show the lane that auto-enable would have requested, not opt-in.
+        $laneRequests = Get-RustLaneRequestState -Explicit ([bool]$IncludeRustLane) -ChangedPaths $summary.changedPaths
+        Set-RustLaneSeedState -Summary $summary -LaneName 'gx-engine' -LaneKey 'rustLane' -Requested $laneRequests.engine.requested
+        Set-RustLaneSeedState -Summary $summary -LaneName 'gxwire' -LaneKey 'gxwireRustLane' -Requested $laneRequests.gxwire.requested
     }
 
     if ($beforeStatusResult.exitCode -eq 0) {
@@ -1164,7 +1190,9 @@ try {
         }
     }
 
-    $laneRequests = Get-RustLaneRequestState -Explicit ([bool]$IncludeRustLane) -ChangedPaths $summary.changedPaths
+    if ($null -eq $laneRequests) {
+        $laneRequests = Get-RustLaneRequestState -Explicit ([bool]$IncludeRustLane) -ChangedPaths $summary.changedPaths
+    }
     $cargoPath = $null
     if ($laneRequests.engine.requested -or $laneRequests.gxwire.requested) {
         $cargoPath = Resolve-CargoExecutable -Explicit $CargoExecutable
