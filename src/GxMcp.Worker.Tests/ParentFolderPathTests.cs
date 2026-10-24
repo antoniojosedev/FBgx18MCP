@@ -45,6 +45,18 @@ namespace GxMcp.Worker.Tests
             Entry("RunTask", "Procedure", "Root Module", "Root Module/Root Module"),
         };
 
+        /// <summary>
+        /// <c>ListService</c> keeps one static response cache, invalidated only when the index's
+        /// <c>LastUpdated</c> moves forward or its graph revision changes. Two fixtures loaded
+        /// within one clock tick look like the same index to it, and the same criteria then
+        /// replay the other test's answer, so every list here starts from an empty cache.
+        /// </summary>
+        private static ListService ServiceOver(IndexCacheService cache)
+        {
+            ListService.InvalidateCache();
+            return new ListService(cache);
+        }
+
         private static string[] Names(string json) =>
             ((JArray)JObject.Parse(json)["results"]).Select(r => (string)r["name"]).OrderBy(n => n).ToArray();
 
@@ -73,11 +85,12 @@ namespace GxMcp.Worker.Tests
 
             var cache = new IndexCacheService();
             cache.LoadFromEntries(index.Objects.Values);
-            var service = new ListService(cache);
+            var service = ServiceOver(cache);
 
             Assert.Equal(
                 new[] { "ReserveSchedule", "RunControl", "RunDependency", "RunLog", "RunRecord", "SchedulePlan" },
                 Names(service.List(new ListCriteria { PathPrefix = "Root Module/SampleFolder/", Limit = 200 })));
+            ListService.InvalidateCache();
             Assert.Equal(
                 new[] { "ReserveSchedule", "RunControl", "RunDependency", "RunLog", "RunRecord", "SchedulePlan" },
                 Names(service.List(new ListCriteria { PathPrefix = "Root Module/SampleFolder", Limit = 200 })));
@@ -89,7 +102,7 @@ namespace GxMcp.Worker.Tests
             // The state the reporter saw: one object of six, the one whose entry was rebuilt later.
             var cache = new IndexCacheService();
             cache.LoadFromEntries(SampleFolderObjects());
-            var service = new ListService(cache);
+            var service = ServiceOver(cache);
 
             Assert.Equal(
                 new[] { "SchedulePlan" },
