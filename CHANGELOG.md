@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- **`build.ps1` no longer drops an `Engine` section from `publish\config.json` in silence.** `publish\` is rebuilt on every run and the neutral fallback config it writes has no `Engine` section, so an `Engine.Backend=sdk` typed into that file (the config a Gateway started from `publish\GxMcp.Gateway.exe` or `start_mcp.bat` reads when `GX_CONFIG_PATH` is unset) was lost and the backend went back to the default ([#649](https://github.com/lennix1337/Genexus18MCP/issues/649)). The build now reads the previous section before cleaning and warns with the keys it did not carry over, and `.\build.ps1 -EngineBackend sdk|auto|gxengine` (also `.\install.ps1 -EngineBackend ...`) writes `Engine.Backend` explicitly; without the switch the artifact is unchanged and still carries no `Engine` section. `docs/engine_backend.md` states which `config.json` each launcher reads.
+
 ### Internal
 
 - **gxwire is linted and formatted in CI.** The `gxwire` lane now runs `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` before the tests ([#659](https://github.com/lennix1337/Genexus18MCP/issues/659)). The 20 clippy diagnostics the crate carried (16 collapsible `if`, 3 index-only loops in the PageRank power iteration, one `if` with identical branches) and two test-only lints are fixed without changing behavior, `cargo fmt` is applied in its own commit, and `Cargo.toml` now declares `rust-version = "1.88"` (the collapsed conditions use let chains), as `gx-engine` does.
