@@ -992,6 +992,14 @@ function Set-RustLaneCoverage {
     $Summary.notCovered = @($entries)
 }
 
+$rustLaneSeedRequested = [bool]$IncludeRustLane
+$rustLaneSeedStatus = 'not-requested'
+$rustLaneSeedNote = $null
+if ($rustLaneSeedRequested) {
+    $rustLaneSeedStatus = 'not-run'
+    $rustLaneSeedNote = 'aborted-before-lane'
+}
+
 $summary = [ordered]@{
     schemaVersion = 'gxmcp-pre-push/2'
     startedAtUtc = $startedAtUtc.ToString('o')
@@ -1017,16 +1025,16 @@ $summary = [ordered]@{
         'GeneXus IDE and real-KB behavior'
         'Remote CI status and publication'
     )
-    rustLane = [ordered]@{ name = 'gx-engine'; requested = $false; ran = $false; status = 'not-requested'; note = $null; checks = @() }
-    gxwireRustLane = [ordered]@{ name = 'gxwire'; requested = $false; ran = $false; status = 'not-requested'; note = $null; checks = @() }
+    rustLane = [ordered]@{ name = 'gx-engine'; requested = $rustLaneSeedRequested; ran = $false; status = $rustLaneSeedStatus; note = $rustLaneSeedNote; checks = @() }
+    gxwireRustLane = [ordered]@{ name = 'gxwire'; requested = $rustLaneSeedRequested; ran = $false; status = $rustLaneSeedStatus; note = $rustLaneSeedNote; checks = @() }
     localReadiness = 'not-run'
     remoteReadiness = 'unverified'
     pushReadiness = 'blocked'
     status = 'running'
     exitCode = 1
 }
-Set-RustLaneCoverage -Summary $summary -LaneName 'gx-engine' -Requested ([bool]$IncludeRustLane) -Ran $false -Note $null
-Set-RustLaneCoverage -Summary $summary -LaneName 'gxwire' -Requested ([bool]$IncludeRustLane) -Ran $false -Note $null
+Set-RustLaneCoverage -Summary $summary -LaneName 'gx-engine' -Requested $rustLaneSeedRequested -Ran $false -Note $rustLaneSeedNote
+Set-RustLaneCoverage -Summary $summary -LaneName 'gxwire' -Requested $rustLaneSeedRequested -Ran $false -Note $rustLaneSeedNote
 
 $mechanicalFailed = $false
 $mechanicalUnavailable = $false

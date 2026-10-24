@@ -1065,11 +1065,42 @@ try {
     if (Test-Path -LiteralPath $sentinelMarker) { throw 'The sentinel contract executed; the guard did not run before the dot-source.' }
     if ($sentinelSummary.exitCode -ne 1) { throw 'A refused contract must exit 1.' }
     if (@($sentinelSummary.phases).Count -ne 0) { throw 'A refused contract must abort before any phase runs.' }
+    foreach ($laneKey in @('rustLane', 'gxwireRustLane')) {
+        $seededLane = $sentinelSummary.$laneKey
+        if ($seededLane.requested -or $seededLane.ran -or $seededLane.status -ne 'not-requested' -or $null -ne $seededLane.note) {
+            throw "Without -IncludeRustLane an aborted run must keep $laneKey at not-requested."
+        }
+    }
+    if (@($sentinelSummary.notCovered) -notcontains 'gx-engine Rust lane (opt-in)' -or
+        @($sentinelSummary.notCovered) -notcontains 'gxwire Rust lane (opt-in)') {
+        throw 'Without -IncludeRustLane an aborted run must keep both lanes declared as opt-in in notCovered.'
+    }
+
+    $flaggedOut = & pwsh -NoProfile -File (Join-Path $sentinelScripts 'Invoke-PrePushMechanicalChecks.ps1') -AsJson -IncludeRustLane 2>$null
+    $flaggedSummary = $flaggedOut | ConvertFrom-Json
+    if ($flaggedSummary.exitCode -ne 1) { throw 'A refused contract must exit 1 with -IncludeRustLane.' }
+    if (Test-Path -LiteralPath $sentinelMarker) { throw 'The sentinel contract executed during the -IncludeRustLane run.' }
+    foreach ($expectation in @(
+            @{ key = 'rustLane'; label = 'gx-engine' }
+            @{ key = 'gxwireRustLane'; label = 'gxwire' }
+        )) {
+        $lane = $flaggedSummary.($expectation.key)
+        if (-not $lane.requested -or $lane.ran -or $lane.status -ne 'not-run' -or $lane.note -ne 'aborted-before-lane') {
+            throw "An aborted run with -IncludeRustLane must report $($expectation.key) as requested, not run and aborted-before-lane."
+        }
+        $coverageEntry = "$($expectation.label) Rust lane (aborted-before-lane)"
+        if (@($flaggedSummary.notCovered) -notcontains $coverageEntry) {
+            throw "An aborted run with -IncludeRustLane must carry '$coverageEntry' in notCovered."
+        }
+        if (@($flaggedSummary.notCovered) -contains "$($expectation.label) Rust lane (opt-in)") {
+            throw "An aborted run with -IncludeRustLane must not report $($expectation.key) as opt-in."
+        }
+    }
 } finally {
     Remove-Item -LiteralPath $sentinelRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$seedIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -LaneName ''gx-engine'' -Requested ([bool]$IncludeRustLane) -Ran $false')
+$seedIndex = $source.IndexOf('Set-RustLaneCoverage -Summary $summary -LaneName ''gx-engine'' -Requested $rustLaneSeedRequested -Ran $false')
 $requestIndex = $source.IndexOf('Get-RustLaneRequestState -Explicit ([bool]$IncludeRustLane) -ChangedPaths $summary.changedPaths')
 $laneIndex = $source.IndexOf('$rustLane = New-RustLaneSummary')
 $wireLaneIndex = $source.IndexOf('$gxwireRustLane = New-RustLaneSummary')
