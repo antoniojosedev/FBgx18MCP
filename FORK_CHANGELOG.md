@@ -9,7 +9,7 @@ changes the fork owns, so they never produce a merge conflict.
 - Record each fork-local entry under `## Unreleased`, in the matching
   `### Added` / `### Changed` / `### Fixed` / `### Internal` subsection.
 
-Caveat (fork policy, option A): the upstream-owned
+Caveat (fork policy): the upstream-owned
 `scripts/integration-preflight.ps1` gate still requires `CHANGELOG.md` to be
 touched when a change lands under a "production" path (`src/`, `cli/`,
 `scripts/`, `install.ps1`). That gate runs for pull requests; this fork pushes
