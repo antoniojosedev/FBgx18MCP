@@ -615,7 +615,7 @@ namespace GxMcp.Gateway
             ["genexus_object_context"] =
                 "# genexus_object_context\n\n" +
                 "Read-only context of one object in one call.\n\n" +
-                "Selectors as `genexus_impact`. Returns `object` (identity from the index, no SDK open), `references.callers`/`callees` (depth 1, 100 nodes by default; `fieldTrust` partial with an empty list means not read, `read:false`), and `dataModel` (the ER diagram for a Transaction/Table, the index tables otherwise) or the reason it was omitted in `suppressed[]` with the call that unlocks it.\n",
+                "Selectors as `genexus_impact`. Returns `object` (identity from the index, no SDK open: `path` is the full location, `parentFolderPath` the folder that `genexus_list_objects` `pathPrefix` matches, and `module` the nearest owning Module - a Folder between the object and that Module does not change it), `references.callers`/`callees` (depth 1, 100 nodes by default; `fieldTrust` partial with an empty list means not read, `read:false`), and `dataModel` (the ER diagram for a Transaction/Table, the index tables otherwise) or the reason it was omitted in `suppressed[]` with the call that unlocks it.\n",
 
             ["genexus_data_view"] =
                 "# genexus_data_view\n\n" +
