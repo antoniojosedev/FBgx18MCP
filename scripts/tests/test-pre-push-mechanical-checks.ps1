@@ -55,7 +55,7 @@ if ($unavailable.status -ne 'incomplete' -or
     throw 'An unavailable local dependency must be incomplete and block push readiness.'
 }
 
-foreach ($name in @('Get-PrePushTempRoot', 'Set-RawPhaseTail', 'Get-RawPhaseTail', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-AggregateFailureDetail', 'Get-ReleaseContractAllowlist', 'Test-ReleaseContractConstantBinding', 'Test-ReleaseContractTopLevelStatement', 'Assert-ReleaseContractTopLevelSafe', 'Resolve-CargoExecutable', 'Test-RustCratePathChanged', 'Get-RustLaneRequestState', 'New-RustLaneSummary', 'Get-RustLaneNotCoveredEntry', 'Set-RustLaneCoverage', 'Set-RustLaneSeedState', 'Invoke-PowerShellParsePhase', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
+foreach ($name in @('Get-PrePushTempRoot', 'Set-RawPhaseTail', 'Get-RawPhaseTail', 'New-Phase', 'Invoke-NativeCapture', 'Format-Command', 'Redact-PrePushLogLine', 'Write-PhaseLog', 'Remove-StalePrePushArtifacts', 'Test-ReleasePhaseStatusUnexpected', 'New-CapturedPhase', 'Invoke-NativePhase', 'Write-TextSummary', 'Read-ReleasePhaseDetails', 'New-AggregateFailureDetail', 'Get-ReleaseContractAllowlist', 'Test-ReleaseContractConstantBinding', 'Test-ReleaseContractTopLevelStatement', 'Assert-ReleaseContractTopLevelSafe', 'Resolve-CargoExecutable', 'Test-RustCratePathChanged', 'Get-RustLaneRequestState', 'New-RustLaneSummary', 'Get-RustLaneNotCoveredEntry', 'Set-RustLaneCoverage', 'Set-RustLaneSeedState', 'Invoke-PowerShellParsePhase', 'New-WhitespaceAdvisory', 'Get-WhitespaceClassification', 'Get-WhitespaceDiffArguments', 'Test-PhaseMechanicalFailure', 'Invoke-GitWhitespaceCapture', 'Get-CapturedFieldValue', 'Invoke-GitWhitespacePhase')) {
     $functionDefinition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -63,6 +63,18 @@ foreach ($name in @('Get-PrePushTempRoot', 'Set-RawPhaseTail', 'Get-RawPhaseTail
         }, $true)
     if (-not $functionDefinition) { throw "Missing production function: $name" }
     . ([scriptblock]::Create($functionDefinition.Extent.Text))
+}
+
+foreach ($phaseFunctionName in @('Invoke-NativePhase', 'Invoke-GitWhitespacePhase')) {
+    $phaseFunction = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq $phaseFunctionName
+        }, $true)
+    if (-not $phaseFunction) { throw "Missing production function: $phaseFunctionName" }
+    if ($phaseFunction.Extent.Text -notmatch 'New-CapturedPhase\s+-Name') {
+        throw "$phaseFunctionName must use the shared New-CapturedPhase helper."
+    }
 }
 
 # --- release-contract.ps1 dot-source invariant ------------------------------
@@ -515,6 +527,50 @@ if ((@($wsRedacted.outputTail) -join "`n") -match 'WSSECRET-1') {
     throw 'The whitespace phase tail must be redacted.'
 }
 
+$parityOutput = @(1..70 | ForEach-Object { "line $_ token=PARITYSECRET-1" })
+$parityResult = New-CapturedGitResult -Output $parityOutput -ExitCode 7 -ErrorMessage 'parity capture failed'
+$parityLogRoot = Join-Path $env:TEMP ('gxmcp-prepush-parity-' + [guid]::NewGuid().ToString('N'))
+try {
+    $nativeParity = Invoke-NativePhase -Name 'native parity' -Executable 'parity-tool' -Arguments @() -CapturedResult $parityResult -LogRoot $parityLogRoot
+    $whitespaceParity = Invoke-GitWhitespacePhase -Name 'whitespace parity' -Arguments (Get-WhitespaceDiffArguments) -CapturedResult $parityResult -LogRoot $parityLogRoot
+    $nativeTail = @($nativeParity.outputTail)
+    $whitespaceTail = @($whitespaceParity.outputTail)
+    if ($nativeTail.Count -ne 60 -or $whitespaceTail.Count -ne 60) {
+        throw 'Both phases must keep the 60-line outputTail cap.'
+    }
+    if ((Compare-Object -ReferenceObject $nativeTail -DifferenceObject $whitespaceTail)) {
+        throw 'Native and whitespace phases must redact and tail the same captured output identically.'
+    }
+    $parityTailText = $nativeTail -join "`n"
+    if ($parityTailText -match 'PARITYSECRET-1' -or $parityTailText -notmatch 'token=\[REDACTED\]') {
+        throw 'Both phases must redact the captured secret in outputTail.'
+    }
+    if ($nativeParity.exitCode -ne 7 -or $whitespaceParity.exitCode -ne 7 -or
+        $nativeParity.durationSeconds -ne 0.01 -or $whitespaceParity.durationSeconds -ne 0.01) {
+        throw 'Both phases must preserve exit code and duration from the captured result.'
+    }
+    $nativeRawTail = @(Get-RawPhaseTail -Name $nativeParity.name)
+    $whitespaceRawTail = @(Get-RawPhaseTail -Name $whitespaceParity.name)
+    if ($nativeRawTail.Count -ne 60 -or $whitespaceRawTail.Count -ne 60 -or
+        (Compare-Object -ReferenceObject $nativeRawTail -DifferenceObject $whitespaceRawTail)) {
+        throw 'Both phases must keep the same 60-line raw tail before redaction.'
+    }
+    if (-not (Test-Path -LiteralPath $nativeParity.outputPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $whitespaceParity.outputPath -PathType Leaf)) {
+        throw 'Both phases must write an output log.'
+    }
+    $nativeLog = Get-Content -LiteralPath $nativeParity.outputPath -Raw
+    $whitespaceLog = Get-Content -LiteralPath $whitespaceParity.outputPath -Raw
+    if ($nativeLog -cne $whitespaceLog) {
+        throw 'Both phases must write the same redacted log content for the same captured result.'
+    }
+    if ($nativeLog -match 'PARITYSECRET-1' -or $nativeLog -notmatch 'token=\[REDACTED\]') {
+        throw 'Both phase logs must redact the captured secret.'
+    }
+} finally {
+    Remove-Item -LiteralPath $parityLogRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $parseFixtureRoot = Join-Path $env:TEMP ('gxmcp-prepush-parse-' + [guid]::NewGuid().ToString('N'))
 $parseFixtureDir = Join-Path $parseFixtureRoot 'token=PARSESECRET-1'
 $parseFixturePath = Join-Path $parseFixtureDir 'broken.ps1'
@@ -549,8 +605,8 @@ try {
 }
 
 $redactedTailPoints = @([regex]::Matches($source, 'outputTail = @\(\$rawTail \| ForEach-Object \{ Redact-PrePushLogLine')).Count
-if ($redactedTailPoints -ne 4) {
-    throw "Expected four redacted capture points in the checker; found $redactedTailPoints."
+if ($redactedTailPoints -ne 3) {
+    throw "Expected three redacted capture points in the checker (native and whitespace share New-CapturedPhase); found $redactedTailPoints."
 }
 
 # C3: the Rust lane is advisory, opt-in and runs all three checks.

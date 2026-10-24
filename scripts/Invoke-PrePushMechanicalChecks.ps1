@@ -176,30 +176,56 @@ function Test-ReleasePhaseStatusUnexpected {
     return ($Status -notin @('passed', 'failed', 'unavailable'))
 }
 
+function New-CapturedPhase {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][object]$Result,
+        [string]$LogRoot
+    )
+
+    $phase = New-Phase -Name $Name -Command $Command
+    $output = @(Get-CapturedFieldValue -Result $Result -Name 'output' -Default @())
+    $exitCode = Get-CapturedFieldValue -Result $Result -Name 'exitCode' -Default 1
+    $captureError = Get-CapturedFieldValue -Result $Result -Name 'error' -Default $null
+    $durationSeconds = Get-CapturedFieldValue -Result $Result -Name 'durationSeconds' -Default 0
+
+    $phase.exitCode = $exitCode
+    $phase.durationSeconds = $durationSeconds
+    $rawTail = @($output | Select-Object -Last 60)
+    Set-RawPhaseTail -Name $Name -Tail $rawTail
+    $phase.outputTail = @($rawTail | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) })
+    [void](Write-PhaseLog -Phase $phase -Lines $output -LogRoot $LogRoot)
+
+    return [ordered]@{
+        phase = $phase
+        output = $output
+        exitCode = $exitCode
+        error = $captureError
+        durationSeconds = $durationSeconds
+    }
+}
+
 function Invoke-NativePhase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Executable,
         [string[]]$Arguments = @(),
         [string]$WorkingDirectory = $root,
-        [string]$LogRoot
+        [string]$LogRoot,
+        [AllowNull()][object]$CapturedResult
     )
 
-    $phase = New-Phase -Name $Name -Command (Format-Command -Executable $Executable -Arguments $Arguments)
-    $result = Invoke-NativeCapture -Executable $Executable -Arguments $Arguments -WorkingDirectory $WorkingDirectory
-    $phase.exitCode = $result.exitCode
-    $phase.durationSeconds = $result.durationSeconds
-    $rawTail = @($result.output | Select-Object -Last 60)
-    Set-RawPhaseTail -Name $Name -Tail $rawTail
-    $phase.outputTail = @($rawTail | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) })
-    [void](Write-PhaseLog -Phase $phase -Lines $result.output -LogRoot $LogRoot)
-    if ($null -ne $result.error) {
-        $phase.reason = $result.error
+    $result = if ($null -ne $CapturedResult) { $CapturedResult } else { Invoke-NativeCapture -Executable $Executable -Arguments $Arguments -WorkingDirectory $WorkingDirectory }
+    $captured = New-CapturedPhase -Name $Name -Command (Format-Command -Executable $Executable -Arguments $Arguments) -Result $result -LogRoot $LogRoot
+    $phase = $captured.phase
+    if ($null -ne $captured.error) {
+        $phase.reason = $captured.error
         $phase.status = 'failed'
-    } elseif ($result.exitCode -eq 0) {
+    } elseif ($captured.exitCode -eq 0) {
         $phase.status = 'passed'
     } else {
-        $phase.reason = "Command exited with code $($result.exitCode)."
+        $phase.reason = "Command exited with code $($captured.exitCode)."
         $phase.status = 'failed'
     }
     return $phase
@@ -385,20 +411,12 @@ function Invoke-GitWhitespacePhase {
         [string]$LogRoot
     )
 
-    $phase = New-Phase -Name $Name -Command (Format-Command -Executable 'git' -Arguments $Arguments)
-
     $result = if ($null -ne $CapturedResult) { $CapturedResult } else { Invoke-GitWhitespaceCapture -Arguments $Arguments }
-    $output = @(Get-CapturedFieldValue -Result $result -Name 'output' -Default @())
-    $exitCode = Get-CapturedFieldValue -Result $result -Name 'exitCode' -Default 1
-    $captureError = Get-CapturedFieldValue -Result $result -Name 'error' -Default $null
-    $durationSeconds = Get-CapturedFieldValue -Result $result -Name 'durationSeconds' -Default 0
-
-    $phase.exitCode = $exitCode
-    $phase.durationSeconds = $durationSeconds
-    $rawTail = @($output | Select-Object -Last 60)
-    Set-RawPhaseTail -Name $Name -Tail $rawTail
-    $phase.outputTail = @($rawTail | ForEach-Object { Redact-PrePushLogLine -Line ([string]$_) })
-    [void](Write-PhaseLog -Phase $phase -Lines $output -LogRoot $LogRoot)
+    $captured = New-CapturedPhase -Name $Name -Command (Format-Command -Executable 'git' -Arguments $Arguments) -Result $result -LogRoot $LogRoot
+    $phase = $captured.phase
+    $output = @($captured.output)
+    $exitCode = $captured.exitCode
+    $captureError = $captured.error
 
     $classification = Get-WhitespaceClassification -Text ($output -join "`n")
     $phase.advisories = @($classification.Advisories)
