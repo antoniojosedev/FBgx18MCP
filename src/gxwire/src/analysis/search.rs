@@ -136,15 +136,15 @@ pub fn search_for_task_ext(
             if contains_case_insensitive(&node.name, term) {
                 score += 15.0;
             }
-            if let Some(ref desc) = node.description {
-                if contains_case_insensitive(desc, term) {
-                    score += 5.0;
-                }
+            if let Some(ref desc) = node.description
+                && contains_case_insensitive(desc, term)
+            {
+                score += 5.0;
             }
-            if let Some(ref module) = node.module {
-                if contains_case_insensitive(module, term) {
-                    score += 3.0;
-                }
+            if let Some(ref module) = node.module
+                && contains_case_insensitive(module, term)
+            {
+                score += 3.0;
             }
         }
 

@@ -13,6 +13,8 @@
 
 ### Internal
 
+- **gxwire is linted and formatted in CI.** The `gxwire` lane now runs `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` before the tests ([#659](https://github.com/lennix1337/Genexus18MCP/issues/659)). The 20 clippy diagnostics the crate carried (16 collapsible `if`, 3 index-only loops in the PageRank power iteration, one `if` with identical branches) and two test-only lints are fixed without changing behavior, `cargo fmt` is applied in its own commit, and `Cargo.toml` now declares `rust-version = "1.88"` (the collapsed conditions use let chains), as `gx-engine` does.
+
 ## v4.0.1 - 2026-10-21
 
 

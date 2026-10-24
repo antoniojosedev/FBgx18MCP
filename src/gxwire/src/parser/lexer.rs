@@ -194,26 +194,26 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
         }
 
         // Parm rule detection
-        if let Some(caps) = RE_PARM.captures(line) {
-            if let Some(parm_content) = caps.get(1) {
-                result.parm_rule = Some(parm_content.as_str().trim().to_string());
-            }
+        if let Some(caps) = RE_PARM.captures(line)
+            && let Some(parm_content) = caps.get(1)
+        {
+            result.parm_rule = Some(parm_content.as_str().trim().to_string());
         }
 
         // Subroutine definitions & calls
-        if let Some(caps) = RE_SUB.captures(line) {
-            if let Some(sub_name) = caps.get(1) {
-                result
-                    .subroutines_defined
-                    .push(sub_name.as_str().trim().to_string());
-            }
+        if let Some(caps) = RE_SUB.captures(line)
+            && let Some(sub_name) = caps.get(1)
+        {
+            result
+                .subroutines_defined
+                .push(sub_name.as_str().trim().to_string());
         }
-        if let Some(caps) = RE_DO_SUB.captures(line) {
-            if let Some(sub_name) = caps.get(1) {
-                result
-                    .subroutines_called
-                    .push(sub_name.as_str().trim().to_string());
-            }
+        if let Some(caps) = RE_DO_SUB.captures(line)
+            && let Some(sub_name) = caps.get(1)
+        {
+            result
+                .subroutines_called
+                .push(sub_name.as_str().trim().to_string());
         }
 
         // For Each block tracking
@@ -236,87 +236,87 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
 
         // Call invocations
         // 1. Call(Target, ...)
-        if let Some(caps) = RE_CALL_FUNC.captures(line) {
-            if let Some(target) = caps.get(1) {
-                let name = target.as_str();
-                let mode = if name.starts_with('&') {
-                    CallMode::Dynamic
-                } else {
-                    CallMode::Static
-                };
-                result.references.push(ParsedSymbolRef {
-                    target_name: name.trim_start_matches('&').to_string(),
-                    kind: EdgeKind::Calls(mode),
-                    line: line_num,
-                });
-            }
+        if let Some(caps) = RE_CALL_FUNC.captures(line)
+            && let Some(target) = caps.get(1)
+        {
+            let name = target.as_str();
+            let mode = if name.starts_with('&') {
+                CallMode::Dynamic
+            } else {
+                CallMode::Static
+            };
+            result.references.push(ParsedSymbolRef {
+                target_name: name.trim_start_matches('&').to_string(),
+                kind: EdgeKind::Calls(mode),
+                line: line_num,
+            });
         }
 
         // 2. Target.Call(...), Target.Popup(...), Target.Link(...)
-        if let Some(caps) = RE_CALL_METHOD.captures(line) {
-            if let Some(target) = caps.get(1) {
-                let name = target.as_str();
-                let method = caps
-                    .get(2)
-                    .map(|m| m.as_str().to_ascii_lowercase())
-                    .unwrap_or_default();
-                let mode = if method == "link" {
-                    CallMode::Link
-                } else if name.starts_with('&') {
-                    CallMode::Dynamic
-                } else {
-                    CallMode::Static
-                };
-                result.references.push(ParsedSymbolRef {
-                    target_name: name.trim_start_matches('&').to_string(),
-                    kind: EdgeKind::Calls(mode),
-                    line: line_num,
-                });
-            }
+        if let Some(caps) = RE_CALL_METHOD.captures(line)
+            && let Some(target) = caps.get(1)
+        {
+            let name = target.as_str();
+            let method = caps
+                .get(2)
+                .map(|m| m.as_str().to_ascii_lowercase())
+                .unwrap_or_default();
+            let mode = if method == "link" {
+                CallMode::Link
+            } else if name.starts_with('&') {
+                CallMode::Dynamic
+            } else {
+                CallMode::Static
+            };
+            result.references.push(ParsedSymbolRef {
+                target_name: name.trim_start_matches('&').to_string(),
+                kind: EdgeKind::Calls(mode),
+                line: line_num,
+            });
         }
 
         // 3. UDP(Target, ...)
-        if let Some(caps) = RE_UDP.captures(line) {
-            if let Some(target) = caps.get(1) {
-                result.references.push(ParsedSymbolRef {
-                    target_name: target.as_str().trim_start_matches('&').to_string(),
-                    kind: EdgeKind::Calls(CallMode::Udp),
-                    line: line_num,
-                });
-            }
+        if let Some(caps) = RE_UDP.captures(line)
+            && let Some(target) = caps.get(1)
+        {
+            result.references.push(ParsedSymbolRef {
+                target_name: target.as_str().trim_start_matches('&').to_string(),
+                kind: EdgeKind::Calls(CallMode::Udp),
+                line: line_num,
+            });
         }
 
         // 4. Submit(Target, ...)
-        if let Some(caps) = RE_SUBMIT.captures(line) {
-            if let Some(target) = caps.get(1) {
-                result.references.push(ParsedSymbolRef {
-                    target_name: target.as_str().trim_start_matches('&').to_string(),
-                    kind: EdgeKind::Calls(CallMode::Submit),
-                    line: line_num,
-                });
-            }
+        if let Some(caps) = RE_SUBMIT.captures(line)
+            && let Some(target) = caps.get(1)
+        {
+            result.references.push(ParsedSymbolRef {
+                target_name: target.as_str().trim_start_matches('&').to_string(),
+                kind: EdgeKind::Calls(CallMode::Submit),
+                line: line_num,
+            });
         }
 
         // 5. Link(Target, ...)
-        if let Some(caps) = RE_LINK.captures(line) {
-            if let Some(target) = caps.get(1) {
-                result.references.push(ParsedSymbolRef {
-                    target_name: target.as_str().trim_start_matches('&').to_string(),
-                    kind: EdgeKind::Calls(CallMode::Link),
-                    line: line_num,
-                });
-            }
+        if let Some(caps) = RE_LINK.captures(line)
+            && let Some(target) = caps.get(1)
+        {
+            result.references.push(ParsedSymbolRef {
+                target_name: target.as_str().trim_start_matches('&').to_string(),
+                kind: EdgeKind::Calls(CallMode::Link),
+                line: line_num,
+            });
         }
 
         // 6. Business Component methods (&bc.Save(), &bc.Insert())
-        if let Some(caps) = RE_BC_METHOD.captures(line) {
-            if let Some(var_target) = caps.get(1) {
-                result.references.push(ParsedSymbolRef {
-                    target_name: var_target.as_str().to_string(),
-                    kind: EdgeKind::Calls(CallMode::BusinessComponent),
-                    line: line_num,
-                });
-            }
+        if let Some(caps) = RE_BC_METHOD.captures(line)
+            && let Some(var_target) = caps.get(1)
+        {
+            result.references.push(ParsedSymbolRef {
+                target_name: var_target.as_str().to_string(),
+                kind: EdgeKind::Calls(CallMode::BusinessComponent),
+                line: line_num,
+            });
         }
 
         // 7. Procedure invoked as a function: `procName(args)`.
@@ -339,24 +339,24 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
         }
 
         // Attribute mutations
-        if let Some(caps) = RE_ASSIGN.captures(line) {
-            if let Some(lhs) = caps.get(1) {
-                let lhs_str = lhs.as_str();
-                if !lhs_str.starts_with('&') {
-                    // It's an Attribute assignment
-                    let write_mode = if in_new {
-                        WriteMode::New
-                    } else if in_for_each {
-                        WriteMode::ForEachUpdate
-                    } else {
-                        WriteMode::ForEachUpdate
-                    };
-                    result.references.push(ParsedSymbolRef {
-                        target_name: lhs_str.to_string(),
-                        kind: EdgeKind::WritesAttr(write_mode),
-                        line: line_num,
-                    });
-                }
+        if let Some(caps) = RE_ASSIGN.captures(line)
+            && let Some(lhs) = caps.get(1)
+        {
+            let lhs_str = lhs.as_str();
+            if !lhs_str.starts_with('&') {
+                // It's an Attribute assignment
+                // Outside a `New` block the assignment updates the current
+                // row, whether or not a `For Each` is open.
+                let write_mode = if in_new {
+                    WriteMode::New
+                } else {
+                    WriteMode::ForEachUpdate
+                };
+                result.references.push(ParsedSymbolRef {
+                    target_name: lhs_str.to_string(),
+                    kind: EdgeKind::WritesAttr(write_mode),
+                    line: line_num,
+                });
             }
         }
 
@@ -366,31 +366,31 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
         // the right-hand token is a callee and not an attribute being read. It
         // was recorded as `reads_att`, which reported a Transaction as an
         // attribute consumer and hid the real call edge (#500).
-        if let Some(caps) = RE_ASSIGN_READ.captures(line) {
-            if let Some(rhs) = caps.get(1) {
-                let rhs_str = rhs.as_str();
-                let rhs_is_call = RE_ASSIGN_CALL_RHS.is_match(line);
-                if !rhs_is_call && !rhs_str.starts_with('&') && !is_gx_keyword(rhs_str) {
-                    result.references.push(ParsedSymbolRef {
-                        target_name: rhs_str.to_string(),
-                        kind: EdgeKind::ReadsAttr,
-                        line: line_num,
-                    });
-                }
+        if let Some(caps) = RE_ASSIGN_READ.captures(line)
+            && let Some(rhs) = caps.get(1)
+        {
+            let rhs_str = rhs.as_str();
+            let rhs_is_call = RE_ASSIGN_CALL_RHS.is_match(line);
+            if !rhs_is_call && !rhs_str.starts_with('&') && !is_gx_keyword(rhs_str) {
+                result.references.push(ParsedSymbolRef {
+                    target_name: rhs_str.to_string(),
+                    kind: EdgeKind::ReadsAttr,
+                    line: line_num,
+                });
             }
         }
 
         // Where clause attribute reads (Where Attr = ...)
-        if let Some(caps) = RE_WHERE_ATTR.captures(line) {
-            if let Some(target) = caps.get(1) {
-                let attr = target.as_str();
-                if !attr.starts_with('&') && !is_gx_keyword(attr) {
-                    result.references.push(ParsedSymbolRef {
-                        target_name: attr.to_string(),
-                        kind: EdgeKind::ReadsAttr,
-                        line: line_num,
-                    });
-                }
+        if let Some(caps) = RE_WHERE_ATTR.captures(line)
+            && let Some(target) = caps.get(1)
+        {
+            let attr = target.as_str();
+            if !attr.starts_with('&') && !is_gx_keyword(attr) {
+                result.references.push(ParsedSymbolRef {
+                    target_name: attr.to_string(),
+                    kind: EdgeKind::ReadsAttr,
+                    line: line_num,
+                });
             }
         }
 

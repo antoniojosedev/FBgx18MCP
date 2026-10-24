@@ -61,7 +61,7 @@ fn generate_kb(dir: &Path, objects: usize, peers: usize) -> Vec<PathBuf> {
     (0..objects).map(|i| write_object(dir, i, peers)).collect()
 }
 
-fn median(samples: &mut Vec<Duration>) -> Duration {
+fn median(samples: &mut [Duration]) -> Duration {
     samples.sort();
     samples[samples.len() / 2]
 }
