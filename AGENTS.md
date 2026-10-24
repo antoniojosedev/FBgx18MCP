@@ -290,11 +290,18 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   - Before reporting the round as complete, run `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegatePeerReviewCloseout.ps1` with the initial preference snapshot, selected reviewers, actual reviewer states, diversity state, and vNext state. If drafting a revised vNext from the feedback, it is pending resubmission until the panel reviews it again or the human explicitly declines that resubmission.
 - **Mechanical pre-push (this fork):** When the user asks for a pre-push routine
   without peer review, run the local checker after refreshing the comparison
-  ref. Canonical form from the repo root:
+  ref. Canonical forms from the repo root:
   `git fetch origin` then
-  `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson`.
-  To force the Rust lanes, append `-IncludeRustLane`; without it a changed range
-  touching `src/gx-engine/` or `src/gxwire/` auto-enables only the matching lane.
+  `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson`
+  (default), or, to force both Rust lanes,
+  `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson -IncludeRustLane`.
+  Outside the repo root, use the absolute path quoted with backslashes:
+  `pwsh -NoProfile -File "C:\Dev\Fork\FBgx18MCP\scripts\Invoke-PrePushMechanicalChecks.ps1" -AsJson`
+  or the same form followed by ` -IncludeRustLane`. These are the literal forms
+  the operator's global strict-invocation rule defers to; any other variant can
+  trigger a permission prompt. Without `-IncludeRustLane`, a changed range
+  touching `src/gx-engine/` or `src/gxwire/` auto-enables only the matching
+  lane. `-CargoExecutable` is a test seam, not an operator form.
   This script is **fork-local** (not upstream); it never runs `git push`.
   Every phase that produced output writes its output, with recognized secrets
   redacted (the set is defined once in `scripts/release-contract.ps1`,
