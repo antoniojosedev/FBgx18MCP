@@ -391,7 +391,7 @@ if (-not $GatewayOnly) {
     Write-LiveProgress "Worker SDK live check starting"
     $workerProject = Join-Path $root 'src\GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj'
     Write-Host "`n>>> Worker SDK live check" -ForegroundColor Cyan
-    & dotnet test $workerProject -c Release --no-build --no-restore --nologo -v:minimal --filter 'FullyQualifiedName~InProcessBuildRunnerTests.TryResolveTypes_finds_GeneXus_tasks_when_SDK_installed'
+    & dotnet test $workerProject -c Release -p:Platform=x86 --no-build --no-restore --nologo -v:minimal --filter 'FullyQualifiedName~InProcessBuildRunnerTests.TryResolveTypes_finds_GeneXus_tasks_when_SDK_installed'
     if ($LASTEXITCODE -ne 0) {
         Fail-Live "Worker SDK live check failed with exit code $LASTEXITCODE." 1 'failed'
     }
