@@ -109,7 +109,7 @@ namespace GxMcp.Worker.Tests
                 MaxResults = 1000,
                 TimeoutMs = 30000
             }, cts.Token));
-            Assert.Equal("ok", cancelled["status"]?.ToString());
+            Assert.Equal("partial", cancelled["status"]?.ToString());
             Assert.Equal("Cancelled", cancelled["code"]?.ToString());
         }
     }

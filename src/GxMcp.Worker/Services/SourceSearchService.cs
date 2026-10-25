@@ -580,6 +580,31 @@ namespace GxMcp.Worker.Services
             return SearchCore(c, ct, partial, status);
         }
 
+        /// <summary>
+        /// Envelope for a scan that stopped before covering every candidate object
+        /// (timeout or cancellation). It is <c>status:"partial"</c>, never the
+        /// <c>"ok"</c> of a finished search, and says in-band that the scan is
+        /// incomplete, so an empty <c>hits</c> list cannot be read as "not found"
+        /// (issue #652).
+        /// </summary>
+        private static string BuildInterruptedResponse(string code, int scanned, string indexStatus, JObject result)
+        {
+            bool cancelled = string.Equals(code, "Cancelled", StringComparison.OrdinalIgnoreCase);
+            result["complete"] = false;
+            result["partial"] = true;
+            result["truncated"] = true;
+            result["incompleteReason"] = cancelled ? "cancelled" : "timeout";
+            result["scannedObjects"] = scanned;
+            result["indexStatus"] = indexStatus;
+            if (result["hits"] == null && result["partialHits"] != null)
+                result["hits"] = result["partialHits"].DeepClone();
+            result["incompleteHint"] = "The scan " + (cancelled ? "was cancelled" : "hit its time budget")
+                + " after " + scanned + " of " + (result["totalObjects"]?.ToString() ?? "?")
+                + " objects. An empty or short hits list does NOT mean the text is absent from the KB. "
+                + "Resume with cursor=nextCursor, narrow the scan with objectName/typeFilter/pathPrefix, or raise timeoutMs.";
+            return Models.McpResponse.Partial(target: null, code: code, result: result);
+        }
+
         private bool ScheduleContinuation(SourceSearchCriteria criteria, string nextCursor)
         {
             if (criteria == null || string.IsNullOrWhiteSpace(nextCursor)) return false;
@@ -1053,7 +1078,7 @@ namespace GxMcp.Worker.Services
                     if (ct.IsCancellationRequested)
                     {
                         JObject executionSnapshot = BuildExecutionSnapshot();
-                        return Models.McpResponse.Ok(code: "Cancelled", result: new JObject
+                        return BuildInterruptedResponse("Cancelled", scanned, indexStatus, new JObject
                         {
                             ["partialHits"] = hits,
                             ["totalScanned"] = scanned,
@@ -1076,7 +1101,7 @@ namespace GxMcp.Worker.Services
                             && !c.SuppressContinuation
                             && cursor < entries.Count
                             && ScheduleContinuation(c, continuationCursor);
-                        return Models.McpResponse.Ok(code: "Timeout", result: new JObject
+                        return BuildInterruptedResponse("Timeout", scanned, indexStatus, new JObject
                         {
                             ["partialHits"] = hits,
                             ["totalScanned"] = scanned,
@@ -1473,7 +1498,7 @@ namespace GxMcp.Worker.Services
                         ["nextOffset"] = metadataNextEntry,
                         ["resumeHint"] = "Pass cursor=nextCursor to resume the metadata scan; the cursor is bound to this query, scope, index generation and KB."
                     };
-                    return Models.McpResponse.Ok(code: interruptionCode, result: interruptedResult);
+                    return BuildInterruptedResponse(interruptionCode, scanned, indexStatus, interruptedResult);
                 }
 
                 bool truncated = produced >= c.MaxResults;

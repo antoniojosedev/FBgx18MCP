@@ -26,6 +26,16 @@ namespace GxMcp.Gateway
             public string Expected { get; init; } = "";
             public string Actual { get; init; } = "";
             /// <summary>
+            /// Compact JSON of the offending value for a type mismatch (<see cref="Actual"/>
+            /// carries only the JSON type name). Null otherwise.
+            /// </summary>
+            public string? Received { get; init; }
+            /// <summary>
+            /// Declared argument names, set on an unknown-argument violation so the
+            /// caller can see what the tool does accept. Null otherwise.
+            /// </summary>
+            public IReadOnlyList<string>? Accepted { get; init; }
+            /// <summary>
             /// Best DidYouMean match for a typo'd enum value or arg key, when one
             /// is within edit distance. Null when there's no close candidate.
             /// </summary>
@@ -100,7 +110,8 @@ namespace GxMcp.Gateway
                             Path = prop.Name,
                             Expected = "none (additionalProperties: false)",
                             Actual = "unknown argument",
-                            Suggestion = keySuggestion
+                            Suggestion = keySuggestion,
+                            Accepted = DeclaredArgumentNames(properties)
                         });
                         continue;
                     }
@@ -124,7 +135,8 @@ namespace GxMcp.Gateway
                                     Path = prop.Name,
                                     Expected = "a known argument",
                                     Actual = "unknown argument",
-                                    Suggestion = keySuggestion
+                                    Suggestion = keySuggestion,
+                                    Accepted = DeclaredArgumentNames(properties)
                                 });
                             }
                         }
@@ -143,7 +155,8 @@ namespace GxMcp.Gateway
                             {
                                 Path = prop.Name,
                                 Expected = declaredType,
-                                Actual = prop.Value.Type.ToString().ToLowerInvariant()
+                                Actual = prop.Value.Type.ToString().ToLowerInvariant(),
+                                Received = prop.Value.ToString(Newtonsoft.Json.Formatting.None)
                             });
                             continue; // don't also check enum if type is wrong
                         }
@@ -351,6 +364,85 @@ namespace GxMcp.Gateway
                     Expected = "false when dimensions are set",
                     Actual = "true"
                 });
+            }
+        }
+
+        // ── Messages ──────────────────────────────────────────────────────────
+
+        private const int MaxQuotedValueLength = 80;
+        private const int MaxListedAcceptedArguments = 40;
+
+        private static List<string> DeclaredArgumentNames(JObject properties)
+            => properties.Properties().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+        /// <summary>
+        /// One sentence per violation that names the field, the value that was
+        /// received and what is accepted. This text is also placed in
+        /// <c>error.message</c>: several MCP clients surface only that field, so it
+        /// cannot be left as boilerplate (issue #655).
+        /// </summary>
+        public static string Describe(Violation violation)
+        {
+            string path = violation.Path;
+            if (violation.Actual == "missing")
+                return $"required argument '{path}' is missing (expected {violation.Expected}).";
+
+            if (violation.Actual == "unknown argument")
+            {
+                string text = $"'{path}' is not an accepted argument";
+                if (!string.IsNullOrEmpty(violation.Suggestion))
+                    text += $" (did you mean '{violation.Suggestion}'?)";
+                if (violation.Accepted is { Count: > 0 })
+                {
+                    var listed = violation.Accepted.Take(MaxListedAcceptedArguments).ToList();
+                    text += "; accepted arguments: " + string.Join(", ", listed)
+                        + (violation.Accepted.Count > listed.Count ? ", ..." : "");
+                }
+                return text + ".";
+            }
+
+            // A type mismatch carries compact JSON (quotes/brackets included); an enum or
+            // range violation carries bare text, which is quoted so "none" reads as a value.
+            string received = violation.Received ?? "'" + violation.Actual + "'";
+            if (received.Length > MaxQuotedValueLength)
+                received = received.Substring(0, MaxQuotedValueLength) + "...";
+            string described = violation.Received != null
+                ? $"'{path}' = {received} is {violation.Actual}, not valid; expected {violation.Expected}."
+                : $"'{path}' = {received} is not valid; expected {violation.Expected}.";
+            if (!string.IsNullOrEmpty(violation.Suggestion))
+                described += $" Did you mean '{violation.Suggestion}'?";
+            return described;
+        }
+
+        /// <summary>All violations of one call, in order, as a single readable string.</summary>
+        public static string Describe(IEnumerable<Violation> violations)
+            => string.Join(" ", violations.Select(v => Describe(v)));
+
+        // ── Argument normalisation ────────────────────────────────────────────
+
+        // Declared as a comma-separated string in the schema; the array spelling of
+        // the same list is an everyday client guess (issue #652), so it is accepted.
+        private static readonly HashSet<(string Tool, string Argument)> StringListAsCommaSeparated =
+            new()
+            {
+                ("genexus_search_source", "objectName"),
+            };
+
+        /// <summary>
+        /// Joins a non-empty array of strings into the comma-separated string the
+        /// schema declares, for the (tool, argument) pairs that document that form.
+        /// Anything else is left untouched so <see cref="Validate"/> reports it.
+        /// </summary>
+        public static void NormalizeStringListArguments(string toolName, JObject? args)
+        {
+            if (args == null) return;
+            foreach (var (tool, argument) in StringListAsCommaSeparated)
+            {
+                if (!string.Equals(tool, toolName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (args[argument] is not JArray list || list.Count == 0) continue;
+                if (!list.All(item => item.Type == JTokenType.String
+                        && !string.IsNullOrWhiteSpace(item.ToString()))) continue;
+                args[argument] = string.Join(",", list.Select(item => item.ToString().Trim()));
             }
         }
 
