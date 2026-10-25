@@ -138,10 +138,12 @@ current capability table and the rules for adding a capability.
 --kb-version <id>`: the Design model and KB version the GeneXus session has
 active. Without them only a Knowledge Base with a single Design model is served.
 A read serves the named version's Design model once its stored `KBVersion`
-matches; a build requires a single Design model (trunk model 1) with every
-environment under it. Supporting build facts are not yet version-pinned, so a KB
-with multiple Design models is refused even with the trunk active. Anything else
-is refused before any object read or output write with exit code 4 and diagnostic
+matches; a build serves only the trunk Design model (model 1, KB version 0), also
+in a KB with other versions: its facts are read under that model and its
+environments, never at the latest `EntityVersion` (see `src/udm/client/model_pin.rs`).
+A build of a frozen version or branch, or of a versioned KB where an entity no model
+holds a version of (`TranslationMessage`, `DesignSystemClass`) stores several, is
+refused. Anything else is refused before any object read or output write with exit code 4 and diagnostic
 category `version_scope` (see `src/udm/version_scope.rs`). Model `KBVersion` metadata
 is parsed as XML; malformed, repeated and non-scalar values are not trunk defaults.
 

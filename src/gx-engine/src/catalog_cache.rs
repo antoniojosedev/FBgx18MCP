@@ -68,8 +68,16 @@ pub const CACHE_DISABLED_REASON: &str =
     "catalog cache disabled: the change key does not identify catalog content yet";
 
 /// Loads a native KB catalog. With the cache switched off, the KB is read directly and the status says why.
-pub fn load_native_kb(kb_dir: &Path, cache_dir: &Path) -> Result<(Catalog, CacheStatus), String> {
-    let client = Arc::new(UdmClient::connect_kb(kb_dir)?.with_persistent_reads());
+pub fn load_native_kb(
+    kb_dir: &Path,
+    cache_dir: &Path,
+    design_model_id: i32,
+) -> Result<(Catalog, CacheStatus), String> {
+    let client = Arc::new(
+        UdmClient::connect_kb(kb_dir)?
+            .with_persistent_reads()
+            .with_design_model_id(design_model_id),
+    );
     if !CACHE_ENABLED {
         let _ = cache_dir;
         let catalog = UdmReader::new(client).read_catalog()?;
