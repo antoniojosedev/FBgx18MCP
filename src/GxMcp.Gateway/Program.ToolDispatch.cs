@@ -522,7 +522,7 @@ namespace GxMcp.Gateway
             if (workerCmd == null)
             {
                 return BuildToolResultContent(
-                    new JObject { ["error"] = "Tool conversion produced no worker command." },
+                    BuildNoWorkerCommandError(tName, tArgs),
                     isError: true,
                     toolName: tName,
                     toolArgs: tArgs);
@@ -997,6 +997,31 @@ namespace GxMcp.Gateway
                 isError: true,
                 toolName: tName,
                 toolArgs: tArgs);
+        }
+
+        /// <summary>
+        /// Error for a tool call that neither the Gateway nor any router turned into a Worker
+        /// command (issue #662). Names the tool and action so the caller can tell a mistyped
+        /// action from a Gateway routing gap, instead of a generic conversion failure.
+        /// </summary>
+        internal static JObject BuildNoWorkerCommandError(string toolName, JObject? toolArgs)
+        {
+            string? action = toolArgs?["action"]?.ToString();
+            string target = string.IsNullOrWhiteSpace(action)
+                ? $"Tool '{toolName}'"
+                : $"Tool '{toolName}' action '{action}'";
+            string hint = string.Equals(toolName, OperationClassifier.KbTool, StringComparison.OrdinalIgnoreCase)
+                ? "genexus_kb actions are list, open, close, select, set_session_default, set_persistent_default, set_default, create, set_startup, get_startup, list_environments, get_environment and set_environment. " +
+                  "action=open needs no configured KB: pass path=<KB root> (alias optional)."
+                : "Check the action name against the tool schema (tools/list).";
+            return new JObject
+            {
+                ["error"] = $"{target} produced no Worker command: the Gateway has no route for it.",
+                ["code"] = "TOOL_ROUTE_NOT_FOUND",
+                ["tool"] = toolName,
+                ["action"] = action,
+                ["hint"] = hint
+            };
         }
 
         /// <summary>
