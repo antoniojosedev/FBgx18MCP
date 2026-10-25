@@ -7,6 +7,43 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Internal
+
+## v4.0.2 - 2026-10-25
+
+
+### Tracked issues
+
+- [#637](https://github.com/lennix1337/Genexus18MCP/issues/637) — [gx-engine 4.0.1] Follow-up #635: on real versioned GX18 KBs nothing is built by the engine, and type queries are slower than the SDK index
+- [#640](https://github.com/lennix1337/Genexus18MCP/issues/640) — Suspeita de flake: WorkerPoolTests.AcquireAsync_during_drain_waits_for_DrainComplete falha e pode spawnar Worker real
+- [#641](https://github.com/lennix1337/Genexus18MCP/issues/641) — cargo clippy --all-targets -- -D warnings falha com 8 diagnósticos em src/gx-engine
+- [#642](https://github.com/lennix1337/Genexus18MCP/issues/642) — cargo test do gx-engine falha quando o diretório de temp_dir() e o checkout não compartilham raiz (Windows)
+- [#643](https://github.com/lennix1337/Genexus18MCP/issues/643) — Teste de symlink em csc_direct falha em Windows sem Developer Mode/privilégio de symlink
+- [#644](https://github.com/lennix1337/Genexus18MCP/issues/644) — CI: steps de lint, build e test dos jobs Rust não verificam $LASTEXITCODE entre comandos nativos
+- [#645](https://github.com/lennix1337/Genexus18MCP/issues/645) — [Reliability][Follow-up #590] workwith_persistence_smoke.ps1: limpar o atributo de filtro criado e corrigir textos obsoletos
+- [#646](https://github.com/lennix1337/Genexus18MCP/issues/646) — [Docs] Default de GXMCP_ENGINE_BACKEND está desatualizado na página de variáveis (doc diz sdk; código diz gxengine)
+- [#649](https://github.com/lennix1337/Genexus18MCP/issues/649) — [Bug] build.ps1 descarta a seção Engine de publish\config.json usada pelo launcher direto
+- [#650](https://github.com/lennix1337/Genexus18MCP/issues/650) — [Bug] genexus_list_objects with pathPrefix returns a subset (1 of 6 objects) - module looks empty
+- [#651](https://github.com/lennix1337/Genexus18MCP/issues/651) — [Bug] genexus_object_context: module says "Root Module" for objects whose path is "Root Module/<Module>/<Object>"
+- [#652](https://github.com/lennix1337/Genexus18MCP/issues/652) — [Bug] genexus_search_source: index timeout is returned as zero hits (false negative); objectName array rejected
+- [#653](https://github.com/lennix1337/Genexus18MCP/issues/653) — [Bug] genexus_read returns pre-edit source after a successful genexus_edit (sdkCacheRefreshConfirmed: false, no force refresh)
+- [#654](https://github.com/lennix1337/Genexus18MCP/issues/654) — [Bug] genexus_lifecycle action=specify validates the last build's source, not the current source
+- [#655](https://github.com/lennix1337/Genexus18MCP/issues/655) — [Bug] Argument validation fails without naming the offending field or the accepted values
+- [#656](https://github.com/lennix1337/Genexus18MCP/issues/656) — [Bug] ~55s silent stalls on genexus_edit with no persisted/verified flag; lifecycle result returns another job's output and truncates silently
+- [#659](https://github.com/lennix1337/Genexus18MCP/issues/659) — [Bug] gxwire: fmt e clippy --all-targets -D warnings falham; CI não roda esses gates no crate
+- [#662](https://github.com/lennix1337/Genexus18MCP/issues/662) — [Bug] genexus_kb action=open fails with "Tool conversion produced no worker command" when the CLI config declares no KB path/aliases (reads still work)
+- [#675](https://github.com/lennix1337/Genexus18MCP/issues/675) — [Bug] gx-engine rebuild-all --object on an unreachable object emits a project with a missing Main (CS1555)
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
 - `genexus_object_context` `object` now reports `parent` (the immediate Module or Folder) and `parentPath` (its full path, e.g. `Root Module/<container>`) next to `path` and `module`. `module` is unchanged: it stays the owning GeneXus Module, so an object inside a Folder reports the Module that holds the Folder. The tool help says to check write scope with `parentPath`/`path`, not `module` ([#651](https://github.com/lennix1337/Genexus18MCP/issues/651)).
 - **`genexus_wwp action=regenerate_derived`** rebuilds, as one unit, the objects a WorkWithPlus instance derives (the `LoadDVCombo<Trn>` helper and the WW/DS/export family) together with the parent Transaction/WebPanel. After an edit changes how the instance calls a helper (combo `Parameters`, `ConditionsDynamicAttsOrVars`), the instance and the parent are saved but the helper is a separate KB object that keeps its old `parm` rule and Variables, so the parent calls a shape the helper does not have. `dryRun` lists the host, the parent and every derived object with a `versionToken` each, marks the `helpers`, evaluates the call contract of each helper against every caller (argument count, order, variable names and declared types, position by position; a call written as a function, `&x = Helper(...)`, passes one argument fewer because the last `out` parameter is its result; basic types agree by family, so a `VARCHAR(40)` receives a `LONGVARCHAR`, and `Attribute:`/`Domain:` references must name the same target) and returns a paste-ready `expectedVersions` map. A write needs that map and refuses with `StaleObject` (listing `staleObjects`) when any object moved; it writes every part to the snapshot store, rebuilds through `PatternEngine.ApplyPattern` in refresh mode (the instance's own objects, never the KB-wide global ones), re-reads everything freshly, and requires the PatternInstance unchanged, only helpers changed when `scope` is `helpers` (the default; `all` accepts any derived object) and no helper left disagreeing with a caller (`contractConsistency`). Any failure restores the unit from the captured text and reports `rollbackVerified` only when a fresh re-read matches. The engine needs the KB to have the WorkWithPlus Design System imported, like the IDE's Apply Pattern; otherwise its message is returned and nothing changes. It never runs Specify, Generate, Build or Reorg.
 
@@ -40,9 +77,12 @@
 - **WorkWithPlus `move_control` between two tables.** The control was detached with `RemoveElementCommand` and added with `AddElementCommand`, which leaves its parent on the old table, and the SDK refused the add ("'textBlock' cannot be added as child of 'table'"). The control now changes table through `PatternInstanceElement.MoveElement`, and a requested position or `before`/`after` is applied afterwards. Moving a control inside one table is unchanged. Verified on a real package for text blocks, with and without a position; moving a `variable` or an `attribute` still ends in `ControlNotFound` there, because the native lookup reads the attribute reference through the property bag, which returns the CLR type name, and expects the element type `attribute`, which the package names `TrnTableAttribute`.
 - **Docs: what is verified for `add_table` and `move_control` on a real WorkWithPlus package.** The tool help and the capability inventory said neither was verified; they now state what was verified (new tables, panels, text-block children and moves), what is not (attribute and variable moves, attribute children, and `add_tab`, which ends in `WwpTabNotPersisted` on the package tested) and that a WebPanel host without a Design System persists the instance but is rolled back as `WwpProjectionNotConfirmed`.
 - **`genexus_apply_pattern reapply=true` on an existing WorkWithPlus instance** returned `PatternApplied` while only the parent was re-projected: the derived objects, such as the `LoadDVCombo<Trn>` helper, kept the contract they had before the instance changed. The response now carries `derivedObjectsRegenerated` (false for a reapply) with a note naming `regenerate_derived`, and `mode=diagnose` no longer says that reapply regenerates them.
+- `gx-engine rebuild-all --object <Name> --closure` on an object the closure does not target (for example a non-main Procedure nothing reaches) no longer emits a project without a `Main` that fails to compile with `CS1555`: nothing is emitted or compiled, the report is `partial` (exit 3), and its warning says the entry is listed in `not_targeted_objects`. https://github.com/lennix1337/Genexus18MCP/issues/675
 
 ### Internal
 
+- `scripts/ci/start-sdk-runner.ps1` registers the one-job self-hosted runner for the protected SDK lane; `-PreflightOnly` checks the fixture manifest against the KB and the local GeneXus SDK before any download or registration, and `scripts/tests/test-start-sdk-runner.ps1` pins that a stale fixture fails first. `docs/ci-sdk-validation.md` documents it.
+- `scripts/test-live.ps1` runs the Worker SDK live check against the `Release|x86` tests the solution builds (`-p:Platform=x86`); without it `dotnet test --no-build` looked in `bin\Release`, which only an older checkout has, and a clean checkout failed the live gate with the test DLL missing. `scripts/tests/test-live.test.ps1` reads the platform from the solution and pins it.
 - `scripts/publish-config.ps1` holds the publish config generation; `scripts/tests/test-build-publish-config.ps1` executes the `build.ps1` clean/config steps and fails on the previous `build.ps1`.
 - **`workwith_persistence_smoke.ps1` removes what it creates.** The durability smoke now removes its filter attribute and condition with `remove_filter_attribute` (and the optional action with `remove_action`), restarts the Worker a second time and checks that the Level's filter reads back equal to its baseline. It refuses to start when the attribute name already exists, cleans up after a failed run without an extra restart, reports `durability` and `cleanup` states in the summary, and exits 1 for a failed or unverified cleanup; `scripts/tests/test-workwith-persistence-smoke.ps1` and `test-workwith-persistence-smoke-behavior.ps1` (a fake MCP server, not live GeneXus evidence) pin it. https://github.com/lennix1337/Genexus18MCP/issues/645
 - `WwpStaleObjectEnvelopeTests` pins that every typed WorkWithPlus write (user action, add_grid, add_table/move_control, grid attribute, table type, tab, Web Component replacement) looks its part up from the instance it read and keeps that instance for the save, and that the owner of the envelope is no longer discarded (`out _`), which is what the earlier guard required. The fake element tree of the native command tests now models the package contract these writers depend on: `CreateChildElement` sets the parent, `AddElement` refuses a child whose parent is another element and `MoveElement` is the call that changes it; `MoveElementCommand` is faked as well.

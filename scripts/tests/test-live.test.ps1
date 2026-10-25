@@ -29,11 +29,20 @@ if ($productionSource -notmatch [regex]::Escape("ResolutionPolicy = 'strict'")) 
 if ($productionSource -match 'DefaultKb\s*=|KBs\s*=') {
     throw 'The live config must not auto-open a second KB alias.'
 }
-foreach ($project in @('gatewayProject', 'workerProject')) {
+foreach ($project in @('gatewayProject')) {
     $invocation = '& dotnet test $' + $project + ' -c Release --no-build --no-restore'
     if (-not $productionSource.Contains($invocation)) {
         throw "Live tests must consume previously compiled Release tests without rebuilding: $project"
     }
+}
+# The solution builds Worker.Tests as Release|x86 (bin\x86\Release). Without the same
+# platform, `dotnet test --no-build` reads bin\Release, which only a stale checkout has.
+$solutionSource = Get-Content (Join-Path $root 'Genexus18MCP.sln') -Raw
+$workerGuid = [regex]::Match($solutionSource, '"GxMcp\.Worker\.Tests", "[^"]+", "\{([0-9A-F-]+)\}"').Groups[1].Value
+$workerPlatform = [regex]::Match($solutionSource, '\{' + $workerGuid + '\}\.Release\|Any CPU\.Build\.0 = Release\|(\S+)').Groups[1].Value
+if (-not $workerPlatform) { throw 'Cannot resolve the Release platform the solution builds Worker.Tests for.' }
+if (-not $productionSource.Contains('& dotnet test $workerProject -c Release -p:Platform=' + $workerPlatform + ' --no-build --no-restore')) {
+    throw "The Worker live check must run the tests the solution built for platform $workerPlatform."
 }
 foreach ($requiredText in @('GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'GXMCP_LIVE_SUMMARY_PATH', 'live-summary.json', 'Show-LiveSummary', 'Assert-LiveGatewayMaster', '-filter $TestFilter', 'gxw32.exe', 'Legacy GXPublic live runs require -SkipBuild', 'live=$Status', "1 'failed'")) {
     if ($productionSource -notmatch [regex]::Escape($requiredText)) { throw "Live entrypoint lost required harness guard: $requiredText" }
