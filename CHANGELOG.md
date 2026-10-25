@@ -9,9 +9,16 @@
 
 ### Changed
 
+- `build.ps1` accepts `-PreserveEngineConfig` to carry `Engine.Backend`, `Engine.Fallback` and `Engine.TimeoutSeconds` of the previous `publish\config.json` into the regenerated one (`install.ps1` passes it); without it the build now warns that the `Engine` section was discarded. `Engine.Executable` is machine-specific and is never carried over. https://github.com/lennix1337/Genexus18MCP/issues/649
+
 ### Fixed
 
+- `docs/environment_variables.md` documented `GXMCP_ENGINE_BACKEND` as defaulting to `sdk`; the default is `gxengine` (admitted builds and type-only queries; `auto` = builds only, `sdk` = engine off). `docs/engine_backend.md` now states which `config.json` the direct-exe launcher reads. https://github.com/lennix1337/Genexus18MCP/issues/646
+- `build.ps1` no longer silently drops an `Engine` section from `publish\config.json` that the direct-exe launcher and `start_mcp.bat` read. https://github.com/lennix1337/Genexus18MCP/issues/649
+
 ### Internal
+
+- `scripts/publish-config.ps1` holds the publish config generation; `scripts/tests/test-build-publish-config.ps1` executes the `build.ps1` clean/config steps and fails on the previous `build.ps1`.
 
 ## v4.0.1 - 2026-10-21
 
