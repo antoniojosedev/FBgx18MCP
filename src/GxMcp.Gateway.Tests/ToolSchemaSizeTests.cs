@@ -295,6 +295,8 @@ namespace GxMcp.Gateway.Tests
         // inputs): all 102750 -> 103000, authoring 71200 -> 71500, ui 50000 -> 50300. Measured all 102844,
         // authoring 71300, ui 50208 bytes; the inputs are the property names, types and the scope enum, which
         // the 40-character published descriptions do not shrink.
+        // genexus_query.fields (#637: clients that did not see the array sent it as text): ui 50000 -> 50200
+        // (measured 50098), the only profile that crossed its budget; the token budget above does not move.
         [InlineData("all", 103000)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Durability smoke for genexus_workwith writes (issue #590).
+Durability smoke for genexus_workwith writes (issue #590), with cleanup of what it creates (issue #645).
 
 .DESCRIPTION
 The genexus_workwith write receipts verify by rereading the WorkWith instance from
@@ -10,86 +10,74 @@ This smoke is the durability proof that the receipt deliberately does not claim:
 on a DISPOSABLE Knowledge Base with a standard WorkWith instance it authors a filter
 attribute (and optionally an action), restarts the Worker process with
 genexus_worker_reload, and rereads the definition on a Worker that never held the
-written instance in memory. It then removes what it created (issue #645) and verifies the
-removal the same way.
-
-CLEANUP (issue #645)
-- The filter attribute name is normalized once (trim, leading `&` removed). If the
-  normalized name already exists in the baseline the smoke stops with a validation failure
-  (exit 1) BEFORE writing anything and never removes an attribute it did not create.
-- `$filterWritten` is set before add_filter_attribute is called (the attempt can persist
-  even when the answer is a failure or unreadable). The cleanup removes only what this run
-  created: the attribute, and through removeConditions exactly the condition text this run
-  sent (-Condition), read back from its own list_filters. A pre-existing condition that
-  mentions the variable is never removed; an unlisted referencing condition makes the tool
-  refuse with FilterAttributeReferencedByConditions, which is a cleanup failure.
-- Success path: durability reread -> one cleanup (remove_filter_attribute, then
-  remove_action when the action lane ran, then ONE Worker restart) -> reread that asserts the
-  attribute, the condition and the action are absent -> comparison of the projection
-  (level, attributes name/description/domain/default/variableName, conditions in order) with
-  the baseline. The neighbour comparison of default/variableName is intentionally stronger
-  than the tool's own verifier, which compares neighbours by name/description/domain and the
-  conditions. If the reader changed between the two readings (native <-> XML,
-  observedSource) values are not compared across readers and cleanup=unverified.
-- Failure path: the single finalizer runs the cleanup once ($cleanupDone) after the primary
-  error was captured, without an extra restart; its result is best-effort and reported as
-  cleanup=unverified or cleanup=fail. The primary error is preserved, never replaced.
-- Cleanup helpers never call `exit`; Exit-Fail/Exit-Unavailable throw. The summary is
-  written once, after the cleanup, and the exit code is chosen last.
+written instance in memory. It then removes what it created (remove_filter_attribute,
+and remove_action for the optional lane), restarts the Worker again, and checks on
+that Worker that the filter reads back equal to its baseline.
 
 WHAT THIS SMOKE DEMONSTRATES
 - In the tested scenario the written definition survives a Worker restart: the
   reread runs on a new Worker process (the whoami pid changes, which the smoke
   asserts), so the result cannot come from the in-memory instance the receipt
   verified against.
-- The filter attribute and condition this run created are removed again with
-  remove_filter_attribute and, after a second Worker restart, the reread shows both absent
-  and the filter projection equal to the baseline (when the same reader answered both).
 - The receipt contract of this build: every write receipt carries
   persistenceEvidence with provesDurability=false.
+- The cleanup survives a second Worker restart: the filter attribute and the condition
+  this run created are absent, and the Level's filter (attributes with name, description,
+  domain, default and variableName, plus the conditions, in order) equals its baseline.
+  Comparing the neighbors' default and variableName is intentionally stronger than the
+  tool's own removal verifier, which compares neighbors by name, description and domain.
 
 WHAT THIS SMOKE DOES NOT COVER
 - The GeneXus IDE: it does not prove the IDE displays the attribute, nor that the
   derived objects regenerate (receipts declare derivedObjectRegeneration).
 - Concurrent writers, or a KB that the IDE has open at the same time.
 - Other Knowledge Bases or GeneXus majors than the one it ran against.
-- Pristine restoration: the cleanup removes the attribute and the condition this run
-  created; it is not a restoration of the KB and does not guarantee regeneration of derived
-  objects (derivedObjectRegeneration: not_guaranteed). The `filter` node itself is kept.
-- Without the restart, the verification of a removal is a reread of the same Worker after
-  the save (see observedSource) and does not prove persistence; this is what the failure
-  path can offer.
-- The optional action lane: it can leave its action behind when the run fails, and
-  cleanup=pass for the filter does not cover the action.
-- A transport failure or a dead Worker can prevent the cleanup. Run it only against a
-  disposable KB.
+- A pristine KB: the filter node stays (removing the attribute preserves it) and
+  derived objects are not regenerated. Run it only against a scratch KB.
+- The optional action lane on failure: the action is removed only on the success path,
+  so a run that fails after add_action can leave the action behind. The filter cleanup
+  result (cleanup=pass) does not cover it.
+- Cleanup after a transport failure or a dead Worker, which can prevent the removal;
+  the summary then reports cleanup=fail. Only a kill of this script, or a hang in a call
+  without a timeout, prevents the summary itself.
+
+CLEANUP RULES
+- The attribute name is normalized once (trim, one leading '&' removed). A name that
+  already exists in the baseline stops the run as a validation failure (exit 1) before
+  anything is written: the smoke never removes an attribute it did not create.
+- After a failed run the finalizer removes the filter attribute this run may have written
+  (a failed or unreadable add can still have persisted), with its own list_filters read
+  and no extra Worker restart; the result is cleanup=unverified or cleanup=fail, never pass.
+- Only the exact condition text this run sent is passed in removeConditions, and only
+  while it is still on the filter. A condition the run did not create is never removed;
+  if one still references the variable the tool refuses with
+  FilterAttributeReferencedByConditions, which counts as a cleanup failure.
+
+OUTCOME FIELDS
+durability = pass | fail | not_attempted
+cleanup    = pass | unverified | fail | not_attempted
+outcome    = pass | fail | unavailable
+outcome=pass needs durability=pass and cleanup=pass. durability=pass with cleanup=fail
+is a possible result and is reported in the summary.
 
 PREREQUISITES
 - PowerShell 7+.
 - A Gateway serving Streamable HTTP (default http://127.0.0.1:5000/mcp), for
   example publish\start_mcp.bat or the Gateway your MCP client started.
 - A disposable KB (directory name or alias containing "teste", or pass
-  -AllowKbMutation; the smoke writes and removes a filter attribute and restarts the Worker) with the standard WorkWith pattern applied to -Transaction and
+  -AllowKbMutation) with the standard WorkWith pattern applied to -Transaction and
   a `filter` node on the Selection of the target Level. The filter node is created
   in the GeneXus IDE; without it the smoke exits 2 (WorkWithFilterNotPresent).
 - For -ReloadMode hard, -WorkerSourceDir must point at a built Worker output
   directory (for example src\GxMcp.Worker\bin\Debug); mode=soft restarts the
   Worker with the binaries it already runs. Both modes replace the process.
 
-SUMMARY STATES
-durability = pass | fail | not_attempted
-cleanup    = pass | unverified | fail | not_attempted
-outcome    = pass | fail | unavailable
-outcome=pass only when durability=pass AND cleanup=pass. durability=pass with cleanup=fail
-or cleanup=unverified is possible and is reported as outcome=fail.
-
 EXIT CODES
 0 = pass.
-1 = fail: any validation rejection (including an attribute that already exists), a broken
-receipt contract, a durability failure, or a cleanup that ended fail or unverified.
-2 = unavailable: a precondition was missing BEFORE any write was attempted (no KB,
-Transaction or filter node, PowerShell version, KB could not be opened); nothing about
-durability was decided.
+1 = fail: any rejected validation (including an attribute that already exists), a broken
+    receipt contract, a durability failure, or a cleanup that failed or is unverified.
+2 = unavailable: a precondition is missing before any write was attempted (KB,
+    Transaction or filter absent, no Gateway, PowerShell older than 7).
 
 .EXAMPLE
 pwsh -NoProfile -File scripts\workwith_persistence_smoke.ps1 -KbPath C:\KBs\KBTesteWorkWith -Transaction Customer
@@ -117,43 +105,43 @@ param(
     [ValidateSet('soft', 'hard')][string]$ReloadMode = 'soft',
     [string]$WorkerSourceDir = '',
     [switch]$AllowKbMutation,
-    [int]$CleanupTimeoutSec = 180,
     [string]$SummaryPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -lt 7) {
-    # Before any summary exists: the one place that exits on its own.
     Write-Host '[WW-SMOKE] unavailable: PowerShell 7+ required. Run with pwsh.'
     exit 2
 }
 
+# Upper bound for each call of the cleanup, so a dead Worker cannot hang the summary.
+$script:CleanupTimeoutSec = 90
+
 $script:Summary = [ordered]@{
     smoke        = 'workwith_persistence_smoke'
     issue        = 590
-    cleanupIssue = 645
-    demonstrates = 'The authored WorkWith definition is reread, unchanged, by a new Worker process after genexus_worker_reload; the filter attribute and condition this run created are then removed (remove_filter_attribute, exact condition text) and, after one more Worker restart, reread as absent with the filter projection equal to the baseline.'
-    doesNotCover = @('GeneXus IDE visibility', 'derived-object regeneration', 'concurrent writers', 'other KBs or GeneXus majors', 'pristine restoration of the KB (the cleanup removes only what this run created; the filter node stays)', 'persistence of the removal when the run fails (the failure path rereads the same Worker without a restart)', 'cleanup of the optional action lane on failure paths (cleanup=pass for the filter does not cover the action)')
+    demonstrates = 'The authored WorkWith definition is reread, unchanged, by a new Worker process after genexus_worker_reload; the filter attribute and condition this run created are then removed and a second new Worker reads the filter back equal to its baseline.'
+    doesNotCover = @('GeneXus IDE visibility', 'derived-object regeneration', 'concurrent writers', 'other KBs or GeneXus majors', 'a pristine KB (the filter node stays)', 'the optional action lane on failure (removed only on the success path)')
     startedAtUtc = [DateTime]::UtcNow.ToString('o')
+    outcome      = 'unavailable'
     durability   = 'not_attempted'
     cleanup      = 'not_attempted'
-    outcome      = 'unavailable'
     evidence     = [ordered]@{}
     errors       = @()
 }
 
-# Ownership and cleanup state. Written at script scope (inside the main try, which does not
-# open a scope) or through $script: from the helpers.
-$filterWritten = $false
-$actionWritten = $false
-$cleanupDone = $false
-$script:CleanupFailures = [System.Collections.Generic.List[string]]::new()
-$script:CleanupUnverified = [System.Collections.Generic.List[string]]::new()
-$script:CleanupVerified = $false
-$script:DurabilityRunning = $false
-$script:RequestTimeoutSec = 0
+# What this run wrote, so the finalizer removes only its own artifacts and only once.
+$script:State = [ordered]@{
+    FilterWritten = $false
+    CleanupDone   = $false
+    ActionAdded   = $false
+    ActionRemoved = $false
+}
+$script:SummaryWritten = $false
 
 function Write-Summary {
+    if ($script:SummaryWritten) { return }
+    $script:SummaryWritten = $true
     $script:Summary.finishedAtUtc = [DateTime]::UtcNow.ToString('o')
     $json = $script:Summary | ConvertTo-Json -Depth 10
     if (-not [string]::IsNullOrWhiteSpace($SummaryPath)) {
@@ -163,36 +151,35 @@ function Write-Summary {
     Write-Host $json
 }
 
-# Exit-Fail / Exit-Unavailable never exit: the top of the script captures the primary error
-# before the cleanup runs, then the single finalizer writes the summary and picks the exit code.
+# Exit-Fail and Exit-Unavailable never end the script: they throw, so the single finalizer at the
+# bottom can clean up, write the summary once and choose the exit code last.
 function New-SmokeStop([string]$Outcome, [string]$Reason) {
-    $stop = [System.InvalidOperationException]::new($Reason)
-    $stop.Data['WwSmokeOutcome'] = $Outcome
+    $stop = [System.Exception]::new($Reason)
+    $stop.Data['smokeOutcome'] = $Outcome
     return $stop
 }
 
 function Exit-Unavailable([string]$Reason) {
-    throw (New-SmokeStop -Outcome 'unavailable' -Reason $Reason)
+    # "Unavailable" means nothing was written; once a write was attempted it is a failure.
+    $outcome = if ($script:State.FilterWritten) { 'fail' } else { 'unavailable' }
+    throw (New-SmokeStop $outcome $Reason)
 }
 
 function Exit-Fail([string]$Reason) {
-    throw (New-SmokeStop -Outcome 'fail' -Reason $Reason)
+    throw (New-SmokeStop 'fail' $Reason)
 }
 
-function Add-CleanupFailure([string]$Message) {
-    $script:CleanupFailures.Add($Message)
-    Write-Host "[WW-SMOKE] cleanup FAIL: $Message"
+# The tool normalizes the same way: trim, and drop one leading '&'.
+function ConvertTo-FilterName([string]$Value) {
+    $name = ([string]$Value).Trim()
+    if ($name.StartsWith('&')) { $name = $name.Substring(1).Trim() }
+    return $name
 }
 
-function Add-CleanupUnverified([string]$Message) {
-    $script:CleanupUnverified.Add($Message)
-    Write-Host "[WW-SMOKE] cleanup unverified: $Message"
-}
-
-# --- MCP transport (same contract as scripts/mcp_smoke.ps1) -----------------------
+# --- MCP transport (same contract as scripts/mcp_smoke.ps1) -------------------------
 $script:SessionId = ''
 
-function Invoke-Mcp([string]$Method, [hashtable]$Params) {
+function Invoke-Mcp([string]$Method, [hashtable]$Params, [int]$TimeoutSec = 0) {
     $headers = @{
         'MCP-Protocol-Version' = '2025-11-25'
         'Content-Type'         = 'application/json'
@@ -202,28 +189,34 @@ function Invoke-Mcp([string]$Method, [hashtable]$Params) {
     $bodyObj = @{ jsonrpc = '2.0'; id = [guid]::NewGuid().ToString('N'); method = $Method }
     if ($null -ne $Params) { $bodyObj['params'] = $Params }
     $body = $bodyObj | ConvertTo-Json -Depth 20 -Compress
-    $resp = Invoke-WebRequest -Uri $BaseUrl -Method Post -Headers $headers -Body $body -UseBasicParsing -TimeoutSec $script:RequestTimeoutSec
+    $resp = Invoke-WebRequest -Uri $BaseUrl -Method Post -Headers $headers -Body $body -UseBasicParsing -TimeoutSec $TimeoutSec
     $sid = $resp.Headers['MCP-Session-Id']
     if ($sid) { $script:SessionId = [string]($sid | Select-Object -First 1) }
     return ($resp.Content | ConvertFrom-Json)
 }
 
 # Calls one tool and returns the Worker/Gateway envelope ({status, code, result, error}).
-function Invoke-Tool([string]$Name, [hashtable]$Arguments, [string]$Label) {
-    $envelope = Invoke-Mcp -Method 'tools/call' -Params @{ name = $Name; arguments = $Arguments }
+function Invoke-Tool([string]$Name, [hashtable]$Arguments, [string]$Label, [int]$TimeoutSec = 0) {
+    $envelope = Invoke-Mcp -Method 'tools/call' -Params @{ name = $Name; arguments = $Arguments } -TimeoutSec $TimeoutSec
     if ($null -ne $envelope.error) { Exit-Fail "${Label}: JSON-RPC error $($envelope.error.message)" }
     $text = $envelope.result.content[0].text
     if ([string]::IsNullOrWhiteSpace($text)) { Exit-Fail "${Label}: empty tool payload." }
     try { return ($text | ConvertFrom-Json) } catch { Exit-Fail "${Label}: payload is not JSON: $text" }
 }
 
-function Get-PayloadErrorCode($Payload) {
+function Test-PayloadOk($Payload) {
+    if ($null -eq $Payload) { return $false }
+    $status = [string]$Payload.status
+    return ($status -eq 'ok' -or $status -eq 'partial' -or $status -eq 'Reloaded')
+}
+
+function Get-PayloadCode($Payload) {
     if ($null -eq $Payload) { return '' }
     if ($Payload.error) { return [string]$Payload.error.code }
     return [string]$Payload.code
 }
 
-function Get-PayloadErrorMessage($Payload) {
+function Get-PayloadMessage($Payload) {
     if ($null -eq $Payload) { return '' }
     if ($Payload.error) { return [string]$Payload.error.message }
     return [string]$Payload.detail
@@ -231,9 +224,8 @@ function Get-PayloadErrorMessage($Payload) {
 
 function Assert-Ok($Payload, [string]$Label) {
     if ($null -eq $Payload) { Exit-Fail "${Label}: no payload." }
-    $status = [string]$Payload.status
-    if ($status -eq 'ok' -or $status -eq 'partial' -or $status -eq 'Reloaded') { return }
-    Exit-Fail "${Label}: status=$status code=$(Get-PayloadErrorCode $Payload) $(Get-PayloadErrorMessage $Payload)"
+    if (Test-PayloadOk $Payload) { return }
+    Exit-Fail "${Label}: status=$([string]$Payload.status) code=$(Get-PayloadCode $Payload) $(Get-PayloadMessage $Payload)"
 }
 
 function Get-WorkerPid([string]$Label) {
@@ -247,7 +239,7 @@ function Get-WorkerPid([string]$Label) {
 
 function Find-FilterAttribute($Filters, [string]$Name) {
     if ($null -eq $Filters -or $null -eq $Filters.attributes) { return $null }
-    return @($Filters.attributes | Where-Object { [string]$_.name -ieq $Name } | Select-Object -First 1)[0]
+    return @($Filters.attributes | Where-Object { (ConvertTo-FilterName ([string]$_.name)) -ieq $Name } | Select-Object -First 1)[0]
 }
 
 function Find-TabAction($Tabs, [string]$TabCode, [string]$Name) {
@@ -257,13 +249,13 @@ function Find-TabAction($Tabs, [string]$TabCode, [string]$Name) {
     return @($tabObj.actions | Where-Object { [string]$_.name -ieq $Name } | Select-Object -First 1)[0]
 }
 
-# The projection list_filters exposes and that the smoke compares: level, the attributes
-# (name, description, domain, default, variableName) and the conditions, both in order.
-function ConvertTo-FilterProjection($Filters) {
+# The projection of list_filters that the baseline, the write and the cleanup are compared on:
+# level, the attributes (name, description, domain, default, variableName) and the conditions,
+# in order.
+function Get-FilterProjection($Filters) {
     $attributes = @()
     if ($null -ne $Filters -and $null -ne $Filters.attributes) {
         foreach ($item in @($Filters.attributes)) {
-            if ($null -eq $item) { continue }
             $attributes += [ordered]@{
                 name         = [string]$item.name
                 description  = [string]$item.description
@@ -275,47 +267,45 @@ function ConvertTo-FilterProjection($Filters) {
     }
     $conditions = @()
     if ($null -ne $Filters -and $null -ne $Filters.conditions) {
-        foreach ($item in @($Filters.conditions)) { $conditions += [string]$item }
+        $conditions = @($Filters.conditions | ForEach-Object { [string]$_ })
     }
     return [ordered]@{ level = [string]$Filters.level; attributes = $attributes; conditions = $conditions }
 }
 
-# Differences between two projections. A $null expected field is not compared (the smoke does
-# not know what the SDK materializes for the attribute it just added). Comparing the default
-# and variableName of the neighbours is intentionally stronger than the tool's own verifier,
-# which compares neighbours by name/description/domain and the conditions.
-function Get-ProjectionDifferences($Expected, $Actual) {
-    $differences = [System.Collections.Generic.List[string]]::new()
-    if ([string]$Expected.level -cne [string]$Actual.level) {
-        $differences.Add("level expected '$($Expected.level)' observed '$($Actual.level)'")
+function Get-ProjectionJson($Projection) {
+    return ($Projection | ConvertTo-Json -Depth 6 -Compress)
+}
+
+# Baseline plus the attribute and the condition this run appended at the end (the SDK appends).
+# Returns the first difference, or $null.
+function Get-AppendedProjectionDiff($Baseline, $Observed) {
+    if ($Observed.level -cne $Baseline.level) { return "the Level changed: expected '$($Baseline.level)', observed '$($Observed.level)'." }
+    $expectedAttributes = @($Baseline.attributes)
+    $observedAttributes = @($Observed.attributes)
+    if ($observedAttributes.Count -ne ($expectedAttributes.Count + 1)) {
+        return "filter attributes: expected $($expectedAttributes.Count + 1) (baseline plus '$Attribute'), observed $($observedAttributes.Count)."
     }
-    $expectedAttributes = @($Expected.attributes)
-    $actualAttributes = @($Actual.attributes)
-    if ($expectedAttributes.Count -ne $actualAttributes.Count) {
-        $differences.Add("attribute count expected $($expectedAttributes.Count) observed $($actualAttributes.Count) (observed: $((@($actualAttributes | ForEach-Object { $_.name })) -join ', '))")
-    } else {
-        for ($i = 0; $i -lt $expectedAttributes.Count; $i++) {
-            foreach ($field in 'name', 'description', 'domain', 'default', 'variableName') {
-                $expectedValue = $expectedAttributes[$i][$field]
-                if ($null -eq $expectedValue) { continue }
-                $actualValue = [string]$actualAttributes[$i][$field]
-                $different = if ($field -eq 'name') { $expectedValue -ine $actualValue } else { $expectedValue -cne $actualValue }
-                if ($different) { $differences.Add("attribute[$i].$field expected '$expectedValue' observed '$actualValue'") }
-            }
+    for ($i = 0; $i -lt $expectedAttributes.Count; $i++) {
+        if ((Get-ProjectionJson $expectedAttributes[$i]) -cne (Get-ProjectionJson $observedAttributes[$i])) {
+            return "neighbor filter attribute #$i changed: expected $(Get-ProjectionJson $expectedAttributes[$i]), observed $(Get-ProjectionJson $observedAttributes[$i])."
         }
     }
-    $expectedConditions = @($Expected.conditions)
-    $actualConditions = @($Actual.conditions)
-    if ($expectedConditions.Count -ne $actualConditions.Count) {
-        $differences.Add("condition count expected $($expectedConditions.Count) observed $($actualConditions.Count)")
-    } else {
-        for ($i = 0; $i -lt $expectedConditions.Count; $i++) {
-            if ([string]$expectedConditions[$i] -cne [string]$actualConditions[$i]) {
-                $differences.Add("condition[$i] expected '$($expectedConditions[$i])' observed '$($actualConditions[$i])'")
-            }
-        }
+    $appended = $observedAttributes[$observedAttributes.Count - 1]
+    if ((ConvertTo-FilterName ([string]$appended.name)) -ine $Attribute) {
+        return "the appended filter attribute is '$($appended.name)', expected '$Attribute'."
     }
-    return $differences.ToArray()
+    $expectedConditions = @($Baseline.conditions)
+    $observedConditions = @($Observed.conditions)
+    if ($observedConditions.Count -ne ($expectedConditions.Count + 1)) {
+        return "filter conditions: expected $($expectedConditions.Count + 1) (baseline plus the smoke condition), observed $($observedConditions.Count)."
+    }
+    for ($i = 0; $i -lt $expectedConditions.Count; $i++) {
+        if ($observedConditions[$i] -cne $expectedConditions[$i]) { return "preserved condition #$i changed: expected '$($expectedConditions[$i])', observed '$($observedConditions[$i])'." }
+    }
+    if ($observedConditions[$observedConditions.Count - 1] -cne $Condition) {
+        return "the appended condition is '$($observedConditions[$observedConditions.Count - 1])', expected '$Condition'."
+    }
+    return $null
 }
 
 function Invoke-WorkerRestart([string]$Label) {
@@ -336,126 +326,104 @@ function Invoke-WorkerRestart([string]$Label) {
     return [ordered]@{ pidBefore = $before; pidAfter = $after }
 }
 
-# The one cleanup. It removes only what THIS run created: the filter attribute (only if it is
-# on the filter now) with exactly the condition text this run sent (only if that text is on the
-# filter now), and, with -IncludeAction, the action this run added. It reads list_filters
-# itself, never exits and never throws: every step records its own result so the finalizer
-# decides the exit. -Restart (success path) restarts the Worker once after the removals and
-# leaves the verification to the caller; without it (failure path) the removal is only
-# reread on the same Worker, which cannot prove persistence.
-function Invoke-Cleanup([switch]$Restart, [switch]$IncludeAction) {
-    $script:cleanupDone = $true
-    $script:RequestTimeoutSec = $CleanupTimeoutSec
-    $detail = [ordered]@{ filterRemoval = 'not_attempted'; removedConditionText = $null; actionRemoval = 'not_attempted'; restart = 'not_requested' }
-    $script:Summary.evidence.cleanup = $detail
-    Write-Host "[WW-SMOKE] cleanup: removing filter attribute '$AttributeName'$(if ($IncludeAction -and $actionWritten) { " and action '$actionName'" })"
+# Removes what this run created. It never exits and never throws: every step is isolated and
+# bounded, so a failing step cannot stop the later ones or replace the error that ended the run.
+# The condition passed in removeConditions is exactly the text this run sent, and only while it
+# is still on the filter; the attribute is removed only when it is on the filter now.
+function Invoke-SmokeCleanup([bool]$IncludeAction) {
+    $script:State.CleanupDone = $true
+    $result = [ordered]@{
+        attemptedAtUtc         = [DateTime]::UtcNow.ToString('o')
+        includesAction         = $IncludeAction
+        attributePresentBefore = $null
+        conditionPresentBefore = $null
+        attributeRemoved       = $false
+        removalCode            = ''
+        receiptVerified        = $null
+        actionRemoved          = $null
+        errors                 = @()
+    }
 
     try {
-        $current = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'list_filters'; name = $Transaction; level = $Level; kb = $Kb } -Label 'cleanup list_filters'
-        Assert-Ok -Payload $current -Label 'cleanup list_filters'
-        $presentNow = Find-FilterAttribute -Filters $current.result.filters -Name $AttributeName
-        $conditionsNow = @()
-        foreach ($item in @($current.result.filters.conditions)) { if ($null -ne $item) { $conditionsNow += [string]$item } }
-        if ($null -eq $presentNow) {
-            $detail.filterRemoval = 'nothing_to_remove'
-        } else {
-            $removeArgs = @{ action = 'remove_filter_attribute'; name = $Transaction; level = $Level; attribute = $AttributeName; kb = $Kb }
-            if ($conditionsNow -ccontains $Condition) {
-                $removeArgs['removeConditions'] = @($Condition)
-                $detail.removedConditionText = $Condition
-            }
-            $removal = Invoke-Tool -Name 'genexus_workwith' -Arguments $removeArgs -Label 'remove_filter_attribute'
-            if ([string]$removal.status -eq 'error') {
-                $code = Get-PayloadErrorCode $removal
-                if ($code -eq 'FilterAttributeNotFound') {
-                    $detail.filterRemoval = 'nothing_to_remove'
-                } else {
-                    $detail.filterRemoval = "refused:$code"
-                    Add-CleanupFailure "remove_filter_attribute refused: $code $(Get-PayloadErrorMessage $removal)"
-                }
-            } else {
-                Assert-Ok -Payload $removal -Label 'remove_filter_attribute'
-                if ([string]$removal.code -eq 'WorkWithFilterAttributeRemovedUnverified' -or $null -eq $removal.result -or -not [bool]$removal.result.verified) {
-                    $detail.filterRemoval = 'removed_unverified'
-                    Add-CleanupUnverified 'the remove_filter_attribute receipt is not verified (WorkWithFilterAttributeRemovedUnverified).'
-                } else {
-                    $detail.filterRemoval = 'removed'
-                }
-            }
-        }
+        $read = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'list_filters'; name = $Transaction; level = $Level; kb = $Kb } -Label 'cleanup list_filters' -TimeoutSec $script:CleanupTimeoutSec
+        if (-not (Test-PayloadOk $read)) { throw "status=$([string]$read.status) code=$(Get-PayloadCode $read) $(Get-PayloadMessage $read)" }
+        $result.attributePresentBefore = ($null -ne (Find-FilterAttribute -Filters $read.result.filters -Name $Attribute))
+        $result.conditionPresentBefore = (@($read.result.filters.conditions | ForEach-Object { [string]$_ }) -ccontains $Condition)
     } catch {
-        $detail.filterRemoval = 'failed'
-        Add-CleanupFailure "filter attribute cleanup: $($_.Exception.Message)"
+        $result.errors += "list_filters before the removal: $($_.Exception.Message)"
     }
 
-    if ($IncludeAction -and $actionWritten) {
+    if ($result.attributePresentBefore -eq $true) {
         try {
-            $removeAction = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'remove_action'; name = $Transaction; tab = $Tab; actionName = $actionName; kb = $Kb } -Label 'remove_action'
-            if ([string]$removeAction.status -eq 'error') {
-                $code = Get-PayloadErrorCode $removeAction
-                if ($code -eq 'ActionNotFound') {
-                    $detail.actionRemoval = 'nothing_to_remove'
-                } else {
-                    $detail.actionRemoval = "refused:$code"
-                    Add-CleanupFailure "remove_action refused: $code $(Get-PayloadErrorMessage $removeAction)"
-                }
-            } else {
-                Assert-Ok -Payload $removeAction -Label 'remove_action'
-                if ($null -eq $removeAction.result.persistenceEvidence) {
-                    $detail.actionRemoval = 'removed_without_persistence_evidence'
-                    Add-CleanupFailure 'remove_action receipt carries no persistenceEvidence (issue #590 contract).'
-                } else {
-                    $detail.actionRemoval = 'removed'
-                }
+            $removeArgs = @{ action = 'remove_filter_attribute'; name = $Transaction; level = $Level; attribute = $Attribute; kb = $Kb }
+            if ($result.conditionPresentBefore -eq $true) { $removeArgs['removeConditions'] = @($Condition) }
+            $remove = Invoke-Tool -Name 'genexus_workwith' -Arguments $removeArgs -Label 'cleanup remove_filter_attribute' -TimeoutSec $script:CleanupTimeoutSec
+            $result.removalCode = Get-PayloadCode $remove
+            if (Test-PayloadOk $remove) {
+                $result.attributeRemoved = $true
+                # An unverified receipt is never a pass by itself.
+                $result.receiptVerified = ($result.removalCode -ne 'WorkWithFilterAttributeRemovedUnverified') -and ($remove.result.verified -eq $true)
+            } elseif ($result.removalCode -ne 'FilterAttributeNotFound') {
+                $result.errors += "remove_filter_attribute: $($result.removalCode) $(Get-PayloadMessage $remove)"
             }
         } catch {
-            $detail.actionRemoval = 'failed'
-            Add-CleanupFailure "action cleanup: $($_.Exception.Message)"
+            $result.errors += "remove_filter_attribute: $($_.Exception.Message)"
         }
     }
 
-    if ($Restart) {
-        if ($script:CleanupFailures.Count -gt 0) {
-            $detail.restart = 'skipped_cleanup_failed'
-        } else {
-            try {
-                $script:Summary.evidence.restartAfterCleanup = Invoke-WorkerRestart -Label 'after cleanup'
-                $detail.restart = 'done'
-            } catch {
-                $detail.restart = 'failed'
-                Add-CleanupUnverified "the Worker restart after the cleanup failed: $($_.Exception.Message)"
+    if ($IncludeAction -and $script:State.ActionAdded -and -not $script:State.ActionRemoved) {
+        try {
+            $removeAction = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'remove_action'; name = $Transaction; tab = $Tab; actionName = $actionName; kb = $Kb } -Label 'cleanup remove_action' -TimeoutSec $script:CleanupTimeoutSec
+            if (Test-PayloadOk $removeAction) {
+                $script:State.ActionRemoved = $true
+                $result.actionRemoved = $true
+                if ($null -eq $removeAction.result.persistenceEvidence) { $result.errors += 'remove_action receipt carries no persistenceEvidence (issue #590 contract).' }
+            } else {
+                $result.actionRemoved = $false
+                $result.errors += "remove_action: $(Get-PayloadCode $removeAction) $(Get-PayloadMessage $removeAction)"
             }
+        } catch {
+            $result.actionRemoved = $false
+            $result.errors += "remove_action: $($_.Exception.Message)"
         }
+    }
+
+    $script:Summary.evidence.cleanup = $result
+    return $result
+}
+
+# Failure path: best effort, no Worker restart. Without a restart the reread runs on the same
+# Worker, so the best this can report is cleanup=unverified; cleanup=fail when the artifact is
+# still there or the removal could not run.
+function Invoke-FailureCleanup {
+    $result = Invoke-SmokeCleanup -IncludeAction $false
+    $status = 'unverified'
+    if ($result.errors.Count -gt 0) {
+        $status = 'fail'
     } else {
-        # Failure path: no extra restart. Read the removal back on the same Worker; this can
-        # never be cleanup=pass because it does not prove persistence.
         try {
-            $reread = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'list_filters'; name = $Transaction; level = $Level; kb = $Kb } -Label 'cleanup reread'
-            Assert-Ok -Payload $reread -Label 'cleanup reread'
-            $rereadAbsent = ($null -eq (Find-FilterAttribute -Filters $reread.result.filters -Name $AttributeName))
-            $detail.rereadOnSameWorker = [ordered]@{ attributeAbsent = $rereadAbsent; observedSource = [string]$reread.result.observedSource }
-            if (-not $rereadAbsent) {
-                Add-CleanupFailure "Filter attribute '$AttributeName' is still on the filter after the failure-path cleanup."
-            } else {
-                Add-CleanupUnverified 'the failure-path cleanup was reread on the same Worker without a restart; persistence of the removal is not proven.'
+            $check = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'list_filters'; name = $Transaction; level = $Level; kb = $Kb } -Label 'cleanup list_filters (verify)' -TimeoutSec $script:CleanupTimeoutSec
+            if (Test-PayloadOk $check) {
+                $stillThere = ($null -ne (Find-FilterAttribute -Filters $check.result.filters -Name $Attribute)) -or
+                    (@($check.result.filters.conditions | ForEach-Object { [string]$_ }) -ccontains $Condition)
+                if ($stillThere) {
+                    $status = 'fail'
+                    $result.errors += "the smoke filter attribute or its condition is still on the filter after the removal."
+                }
             }
         } catch {
-            Add-CleanupUnverified "the failure-path cleanup could not be read back: $($_.Exception.Message)"
+            $result.errors += "list_filters after the removal: $($_.Exception.Message)"
         }
+    }
+    $script:Summary.cleanup = $status
+    if ($script:State.ActionAdded -and -not $script:State.ActionRemoved) {
+        $script:Summary.evidence.actionLaneResidue = "Action '$actionName' may remain on tab '$Tab' (removed only on the success path)."
     }
 }
 
-function Resolve-CleanupStatus {
-    if (-not $filterWritten -or -not $cleanupDone) { return 'not_attempted' }
-    if ($script:CleanupFailures.Count -gt 0) { return 'fail' }
-    if ($script:CleanupUnverified.Count -gt 0) { return 'unverified' }
-    if ($script:CleanupVerified) { return 'pass' }
-    return 'unverified'
-}
-
-$primaryError = $null
+$primary = $null
+# --- preconditions ----------------------------------------------------------------
 try {
-    # --- preconditions ----------------------------------------------------------------
     if ([string]::IsNullOrWhiteSpace($KbPath) -and [string]::IsNullOrWhiteSpace($Kb)) {
         Exit-Unavailable 'Pass -KbPath (opened by this smoke) or -Kb (alias of a KB already open on the Gateway).'
     }
@@ -467,25 +435,22 @@ try {
     }
     $kbLabel = if (-not [string]::IsNullOrWhiteSpace($KbPath)) { Split-Path -Leaf $KbPath } else { $Kb }
     if (-not $AllowKbMutation -and $kbLabel -notmatch 'teste') {
-        # Fail closed: the smoke writes (and removes) a filter attribute and restarts the Worker.
+        # Fail closed: the smoke writes a filter attribute and restarts the Worker.
         Exit-Unavailable "Refusing to mutate '$kbLabel': the KB name does not contain 'teste'. Pass -AllowKbMutation only for a disposable KB."
     }
 
     $stamp = Get-Date -Format 'yyyyMMddHHmmss'
+    $Attribute = ConvertTo-FilterName $Attribute
     if ([string]::IsNullOrWhiteSpace($Attribute)) { $Attribute = "SmokeFilter$stamp" }
-    # Normalize once, like the tool does: trim and drop a leading `&`. Every later use (the
-    # baseline guard, the write, the cleanup) takes this value.
-    $AttributeName = $Attribute.Trim().TrimStart('&')
-    if ([string]::IsNullOrWhiteSpace($AttributeName)) { Exit-Fail "-Attribute '$Attribute' is empty after normalization." }
-    if ([string]::IsNullOrWhiteSpace($Condition)) { $Condition = "&$AttributeName.IsEmpty();" }
+    if ([string]::IsNullOrWhiteSpace($Condition)) { $Condition = "&$Attribute.IsEmpty();" }
     $actionName = "SmokeAction$stamp"
     $script:Summary.evidence.kb = $kbLabel
     $script:Summary.evidence.transaction = $Transaction
-    $script:Summary.evidence.attribute = $AttributeName
+    $script:Summary.evidence.attribute = $Attribute
     $script:Summary.evidence.condition = $Condition
     $script:Summary.evidence.reloadMode = $ReloadMode
 
-    # --- 1. session -------------------------------------------------------------------------
+    # --- 1. session -----------------------------------------------------------------------
     Write-Host '[WW-SMOKE] initialize'
     try {
         $init = Invoke-Mcp -Method 'initialize' -Params @{
@@ -508,7 +473,7 @@ try {
     }
     $script:Summary.evidence.kbAlias = $Kb
 
-    # --- 3. baseline ------------------------------------------------------------------------
+    # --- 3. baseline --------------------------------------------------------------------------
     Write-Host "[WW-SMOKE] list_filters baseline ($Transaction)"
     $filterArgs = @{ action = 'list_filters'; name = $Transaction; kb = $Kb }
     if (-not [string]::IsNullOrWhiteSpace($Level)) { $filterArgs['level'] = $Level }
@@ -523,29 +488,29 @@ try {
     $resolvedLevel = [string]$baseline.result.filters.level
     if ([string]::IsNullOrWhiteSpace($Level)) { $Level = $resolvedLevel }
     $script:Summary.evidence.level = $resolvedLevel
-    $baselineProjection = ConvertTo-FilterProjection -Filters $baseline.result.filters
     $baselineSource = [string]$baseline.result.observedSource
+    $baselineProjection = Get-FilterProjection $baseline.result.filters
     $baselineCount = @($baselineProjection.attributes).Count
-    $script:Summary.evidence.baseline = [ordered]@{ attributeCount = $baselineCount; conditionCount = @($baselineProjection.conditions).Count; observedSource = $baselineSource }
-    # Ownership guard: never write over, and later never remove, something this run did not create.
-    if ($null -ne (Find-FilterAttribute -Filters $baseline.result.filters -Name $AttributeName)) {
-        Exit-Fail "Filter attribute '$AttributeName' already exists before the write; pick another -Attribute. Nothing was written and nothing will be removed."
+    $script:Summary.evidence.baseline = [ordered]@{
+        observedSource = $baselineSource
+        attributeCount = $baselineCount
+        conditionCount = @($baselineProjection.conditions).Count
     }
-    if (@($baselineProjection.conditions) -ccontains $Condition) {
-        Exit-Fail "Condition '$Condition' already exists on the filter before the write; pick another -Condition. Nothing was written and nothing will be removed."
+    # Ownership guard: an attribute that already exists is not ours to write or to remove.
+    if ($null -ne (Find-FilterAttribute -Filters $baseline.result.filters -Name $Attribute)) {
+        Exit-Fail "Filter attribute '$Attribute' already exists before the write; pick another -Attribute. The smoke never removes an attribute it did not create."
     }
-    Write-Host "[WW-SMOKE] baseline: level=$resolvedLevel attributes=$baselineCount (source: $baselineSource)"
+    Write-Host "[WW-SMOKE] baseline: level=$resolvedLevel attributes=$baselineCount"
 
-    # --- 4. write ---------------------------------------------------------------------------
-    # Set BEFORE the call: the attempt can persist even if the answer is a failure or unreadable.
-    $filterWritten = $true
-    $script:DurabilityRunning = $true
-    Write-Host "[WW-SMOKE] add_filter_attribute $AttributeName"
+    # --- 4. write -----------------------------------------------------------------------------
+    Write-Host "[WW-SMOKE] add_filter_attribute $Attribute"
+    # Marked before the call: an attempt can persist even when the answer is a failure or unreadable.
+    $script:State.FilterWritten = $true
     $add = Invoke-Tool -Name 'genexus_workwith' -Arguments @{
         action     = 'add_filter_attribute'
         name       = $Transaction
         level      = $Level
-        attribute  = $AttributeName
+        attribute  = $Attribute
         conditions = @($Condition)
         kb         = $Kb
     } -Label 'add_filter_attribute'
@@ -562,7 +527,6 @@ try {
 
     $actionLane = -not [string]::IsNullOrWhiteSpace($Procedure)
     if ($actionLane) {
-        $actionWritten = $true
         Write-Host "[WW-SMOKE] add_action $actionName -> $Procedure on tab $Tab"
         $addActionArgs = @{
             action     = 'add_action'
@@ -576,6 +540,7 @@ try {
         # The tool refuses a call whose parameter count differs from the Procedure's parm()
         # rule (ArityMismatch), so a Procedure with parameters needs matching -ActionParameters.
         if ($ActionParameters.Count -gt 0) { $addActionArgs['parameters'] = @($ActionParameters) }
+        $script:State.ActionAdded = $true
         $addAction = Invoke-Tool -Name 'genexus_workwith' -Arguments $addActionArgs -Label 'add_action'
         Assert-Ok -Payload $addAction -Label 'add_action'
         if (-not [bool]$addAction.result.verified) { Exit-Fail 'add_action receipt is not verified.' }
@@ -583,149 +548,152 @@ try {
         $script:Summary.evidence.actionName = $actionName
     }
 
-    # --- 5. restart + independent reread ----------------------------------------------------
+    # --- 5. restart + independent reread ------------------------------------------------------
     $restart = Invoke-WorkerRestart -Label 'after write'
     $script:Summary.evidence.restartAfterWrite = $restart
 
     Write-Host '[WW-SMOKE] list_filters on the new Worker'
     $after = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'list_filters'; name = $Transaction; level = $Level; kb = $Kb } -Label 'list_filters after restart'
     Assert-Ok -Payload $after -Label 'list_filters after restart'
-    $found = Find-FilterAttribute -Filters $after.result.filters -Name $AttributeName
-    if ($null -eq $found) { Exit-Fail "Filter attribute '$AttributeName' is absent after the Worker restart: the write did not persist." }
-    $conditions = @($after.result.filters.conditions | ForEach-Object { [string]$_ })
-    if ($conditions -notcontains $Condition) { Exit-Fail "Condition '$Condition' is absent after the Worker restart (observed: $($conditions -join ' | '))." }
-    $afterProjection = ConvertTo-FilterProjection -Filters $after.result.filters
-    $afterCount = @($afterProjection.attributes).Count
-    if ($afterCount -lt ($baselineCount + 1)) { Exit-Fail "Filter attributes were truncated: baseline $baselineCount, after restart $afterCount." }
-    $afterSource = [string]$after.result.observedSource
-    # Expected: the baseline plus the new attribute and condition at the end (the SDK appends).
-    # The new attribute is compared by name only: the SDK decides what else it materializes.
-    $expectedAfterWrite = [ordered]@{
-        level      = $baselineProjection.level
-        attributes = @($baselineProjection.attributes) + @([ordered]@{ name = $AttributeName; description = $null; domain = $null; default = $null; variableName = $null })
-        conditions = @($baselineProjection.conditions) + @($Condition)
+    $found = Find-FilterAttribute -Filters $after.result.filters -Name $Attribute
+    if ($null -eq $found) {
+        $script:Summary.durability = 'fail'
+        Exit-Fail "Filter attribute '$Attribute' is absent after the Worker restart: the write did not persist."
     }
-    $writeComparison = 'equal'
-    if ($afterSource -ne $baselineSource) {
-        $writeComparison = 'skipped_reader_changed'
-        Write-Host "[WW-SMOKE] reader changed between baseline ($baselineSource) and the reread after the restart ($afterSource); values are not compared across readers."
-    } else {
-        $writeDifferences = @(Get-ProjectionDifferences -Expected $expectedAfterWrite -Actual $afterProjection)
-        if ($writeDifferences.Count -gt 0) { Exit-Fail "The filter after the Worker restart differs from the baseline plus the new attribute and condition: $($writeDifferences -join '; ')" }
+    $conditions = @($after.result.filters.conditions | ForEach-Object { [string]$_ })
+    if ($conditions -notcontains $Condition) {
+        $script:Summary.durability = 'fail'
+        Exit-Fail "Condition '$Condition' is absent after the Worker restart (observed: $($conditions -join ' | '))."
+    }
+    $afterProjection = Get-FilterProjection $after.result.filters
+    $afterCount = @($afterProjection.attributes).Count
+    if ($afterCount -lt ($baselineCount + 1)) {
+        $script:Summary.durability = 'fail'
+        Exit-Fail "Filter attributes were truncated: baseline $baselineCount, after restart $afterCount."
+    }
+    $afterSource = [string]$after.result.observedSource
+    $projectionAfterWrite = 'skipped: the reader changed between the baseline and the reread'
+    if ($afterSource -eq $baselineSource) {
+        $appendedDiff = Get-AppendedProjectionDiff -Baseline $baselineProjection -Observed $afterProjection
+        if ($null -ne $appendedDiff) {
+            $script:Summary.durability = 'fail'
+            Exit-Fail "The filter after the Worker restart is not the baseline plus the smoke attribute and condition: $appendedDiff"
+        }
+        $projectionAfterWrite = 'baseline plus the appended attribute and condition (neighbors compared on name, description, domain, default, variableName)'
     }
     $script:Summary.evidence.filterAfterRestart = [ordered]@{
-        attributeFound              = $true
-        conditionFound              = $true
-        attributeCount              = $afterCount
-        observedSource              = $afterSource
-        projectionVsBaselinePlusNew = $writeComparison
+        attributeFound   = $true
+        conditionFound   = $true
+        attributeCount   = $afterCount
+        observedSource   = $afterSource
+        projectionChecked = $projectionAfterWrite
     }
-    Write-Host "[WW-SMOKE] filter attribute '$AttributeName' and its condition survived the restart (attributes: $baselineCount -> $afterCount)"
+    Write-Host "[WW-SMOKE] filter attribute '$Attribute' and its condition survived the restart (attributes: $baselineCount -> $afterCount)"
 
     if ($actionLane) {
         Write-Host '[WW-SMOKE] list_actions on the new Worker'
         $actionsAfter = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'list_actions'; name = $Transaction; kb = $Kb } -Label 'list_actions after restart'
         Assert-Ok -Payload $actionsAfter -Label 'list_actions after restart'
         if ($null -eq (Find-TabAction -Tabs $actionsAfter.result.tabs -TabCode $Tab -Name $actionName)) {
+            $script:Summary.durability = 'fail'
             Exit-Fail "Action '$actionName' is absent after the Worker restart: the write did not persist."
         }
         Write-Host "[WW-SMOKE] action '$actionName' survived the restart"
     }
-    $script:DurabilityRunning = $false
     $script:Summary.durability = 'pass'
 
-    # --- 6. cleanup, success path -------------------------------------------------------------
-    # remove_filter_attribute -> remove_action (lane) -> ONE restart, then the reread below.
-    Invoke-Cleanup -Restart -IncludeAction
-    if ($script:CleanupFailures.Count -gt 0) { Exit-Fail "Cleanup failed: $($script:CleanupFailures -join ' | ')" }
+    # --- 6. cleanup: one function, then one restart, then the proof ---------------------------
+    $removing = "remove_filter_attribute $Attribute" + $(if ($actionLane) { " and remove_action $actionName" } else { '' })
+    Write-Host "[WW-SMOKE] cleanup: $removing"
+    $cleanup = Invoke-SmokeCleanup -IncludeAction ([bool]$actionLane)
+    if ($cleanup.errors.Count -gt 0) {
+        $script:Summary.cleanup = 'fail'
+        Exit-Fail "Cleanup failed: $($cleanup.errors -join '; ')"
+    }
+    $restartAfterCleanup = Invoke-WorkerRestart -Label 'after cleanup'
+    $script:Summary.evidence.restartAfterCleanup = $restartAfterCleanup
 
-    Write-Host '[WW-SMOKE] list_filters after the cleanup'
+    Write-Host '[WW-SMOKE] list_filters on the second new Worker'
     $final = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'list_filters'; name = $Transaction; level = $Level; kb = $Kb } -Label 'list_filters after cleanup'
     Assert-Ok -Payload $final -Label 'list_filters after cleanup'
-    $finalProjection = ConvertTo-FilterProjection -Filters $final.result.filters
-    $finalSource = [string]$final.result.observedSource
-    $attributeAbsent = ($null -eq (Find-FilterAttribute -Filters $final.result.filters -Name $AttributeName))
-    $conditionAbsent = (@($finalProjection.conditions) -cnotcontains $Condition)
-    $actionAbsent = $true
+    # Absence first, on the main path, so a cleanup that never ran fails here and not in a comparison.
+    if ($null -ne (Find-FilterAttribute -Filters $final.result.filters -Name $Attribute)) {
+        $script:Summary.cleanup = 'fail'
+        Exit-Fail "Filter attribute '$Attribute' is still present after remove_filter_attribute and a Worker restart: the cleanup did not persist."
+    }
+    $finalProjection = Get-FilterProjection $final.result.filters
+    if (@($finalProjection.conditions) -ccontains $Condition) {
+        $script:Summary.cleanup = 'fail'
+        Exit-Fail "Condition '$Condition' is still present after remove_filter_attribute and a Worker restart: the cleanup did not persist."
+    }
     if ($actionLane) {
         $actionsFinal = Invoke-Tool -Name 'genexus_workwith' -Arguments @{ action = 'list_actions'; name = $Transaction; kb = $Kb } -Label 'list_actions after cleanup'
         Assert-Ok -Payload $actionsFinal -Label 'list_actions after cleanup'
-        $actionAbsent = ($null -eq (Find-TabAction -Tabs $actionsFinal.result.tabs -TabCode $Tab -Name $actionName))
-    }
-    $script:Summary.evidence.afterCleanup = [ordered]@{
-        attributeAbsent = $attributeAbsent
-        conditionAbsent = $conditionAbsent
-        actionAbsent    = $actionAbsent
-        observedSource  = $finalSource
-    }
-    # Absence is asserted before the full comparison, so a missing cleanup fails here.
-    if (-not $attributeAbsent) {
-        Add-CleanupFailure "Filter attribute '$AttributeName' is still present after the cleanup."
-        Exit-Fail "Filter attribute '$AttributeName' is still present after the cleanup and a Worker restart: the removal did not persist."
-    }
-    if (-not $conditionAbsent) {
-        Add-CleanupFailure "Condition '$Condition' is still present after the cleanup."
-        Exit-Fail "Condition '$Condition' is still present after the cleanup and a Worker restart."
-    }
-    if (-not $actionAbsent) {
-        Add-CleanupFailure "Action '$actionName' is still present after the cleanup."
-        Exit-Fail "Action '$actionName' is still present after the cleanup and a Worker restart: the removal did not persist."
-    }
-
-    if ($finalSource -ne $baselineSource) {
-        $script:Summary.evidence.afterCleanup.projectionVsBaseline = 'skipped_reader_changed'
-        Add-CleanupUnverified "the reader changed between baseline ($baselineSource) and the reread after the cleanup ($finalSource); values are not compared across readers."
-    } else {
-        $restoreDifferences = @(Get-ProjectionDifferences -Expected $baselineProjection -Actual $finalProjection)
-        if ($restoreDifferences.Count -gt 0) {
-            $script:Summary.evidence.afterCleanup.projectionVsBaseline = 'different'
-            Add-CleanupFailure "The filter after the cleanup differs from the baseline: $($restoreDifferences -join '; ')"
-            Exit-Fail "The filter after the cleanup differs from the baseline: $($restoreDifferences -join '; ')"
+        if ($null -ne (Find-TabAction -Tabs $actionsFinal.result.tabs -TabCode $Tab -Name $actionName)) {
+            $script:Summary.cleanup = 'fail'
+            Exit-Fail "Action '$actionName' is still present after remove_action and a Worker restart: the removal did not persist."
         }
-        $script:Summary.evidence.afterCleanup.projectionVsBaseline = 'equal'
-        $script:CleanupVerified = $true
     }
-    Write-Host "[WW-SMOKE] cleanup read back: attribute '$AttributeName' and its condition are absent after a Worker restart"
+
+    $cleanupStatus = 'pass'
+    $finalSource = [string]$final.result.observedSource
+    $comparison = 'filter equals its baseline (level, attributes with name/description/domain/default/variableName, conditions in order)'
+    if ($finalSource -ne $baselineSource) {
+        # Native and XML readers project differently; values are not compared across readers.
+        $comparison = "not compared: the reader changed ($baselineSource -> $finalSource)"
+        $cleanupStatus = 'unverified'
+    } else {
+        if ((Get-ProjectionJson $baselineProjection) -cne (Get-ProjectionJson $finalProjection)) {
+            $script:Summary.cleanup = 'fail'
+            Exit-Fail "The filter after the cleanup differs from its baseline: expected $(Get-ProjectionJson $baselineProjection), observed $(Get-ProjectionJson $finalProjection)."
+        }
+    }
+    if ($cleanup.receiptVerified -eq $false) {
+        # The removal receipt could not verify its own reread; it never counts as a pass by itself.
+        $cleanupStatus = 'unverified'
+    }
+    $script:Summary.evidence.filterAfterCleanup = [ordered]@{
+        attributeAbsent   = $true
+        conditionAbsent   = $true
+        attributeCount    = @($finalProjection.attributes).Count
+        observedSource    = $finalSource
+        comparison        = $comparison
+        removalReceiptVerified = $cleanup.receiptVerified
+    }
+    $script:Summary.cleanup = $cleanupStatus
+    Write-Host "[WW-SMOKE] cleanup of '$Attribute' survived the restart (cleanup=$cleanupStatus)"
 } catch {
-    # Capture the primary error BEFORE the cleanup so a cleanup problem can never replace it.
-    $primaryError = $_
+    # Captured before any cleanup, so the cleanup can neither replace nor hide the primary error.
+    $primary = $_
 }
 
-# --- finalizer: one place, no exit inside a try ---------------------------------------------
-$primaryOutcome = $null
-if ($null -ne $primaryError) {
-    $primaryOutcome = [string]$primaryError.Exception.Data['WwSmokeOutcome']
-    if ([string]::IsNullOrWhiteSpace($primaryOutcome)) { $primaryOutcome = 'fail' }
-    $primaryMessage = [string]$primaryError.Exception.Message
-    # Unavailable means "nothing was written"; after a write attempt it is a failure.
-    if ($primaryOutcome -eq 'unavailable' -and $filterWritten) { $primaryOutcome = 'fail' }
-    $script:Summary.errors += $primaryMessage
-    if ($script:DurabilityRunning) { $script:Summary.durability = 'fail' }
-    Write-Host "[WW-SMOKE] $(if ($primaryOutcome -eq 'unavailable') { 'unavailable' } else { 'FAIL' }): $primaryMessage"
+# --- finalizer: clean up, write the summary once, choose the exit code last ---------------------
+if ($script:State.FilterWritten -and -not $script:State.CleanupDone) {
+    Write-Host '[WW-SMOKE] the run ended early: removing the filter attribute it may have written'
+    try { Invoke-FailureCleanup } catch { $script:Summary.cleanup = 'fail'; $script:Summary.errors += "cleanup: $($_.Exception.Message)" }
 }
 
-if ($filterWritten -and -not $cleanupDone) {
-    try { Invoke-Cleanup } catch { Add-CleanupFailure "cleanup: $($_.Exception.Message)" }
-}
-
-$script:Summary.cleanup = Resolve-CleanupStatus
-$script:Summary.evidence.cleanupFailures = @($script:CleanupFailures)
-$script:Summary.evidence.cleanupUnverified = @($script:CleanupUnverified)
-
-if ($null -ne $primaryOutcome) {
-    $script:Summary.outcome = $primaryOutcome
+if ($null -ne $primary) {
+    $stopOutcome = $null
+    try { $stopOutcome = $primary.Exception.Data['smokeOutcome'] } catch { }
+    $script:Summary.outcome = if ($stopOutcome -eq 'unavailable') { 'unavailable' } else { 'fail' }
+    $script:Summary.errors += $primary.Exception.Message
+    if ($script:Summary.outcome -eq 'unavailable') {
+        Write-Host "[WW-SMOKE] unavailable: $($primary.Exception.Message)"
+    } else {
+        Write-Host "[WW-SMOKE] FAIL: $($primary.Exception.Message)"
+    }
 } elseif ($script:Summary.durability -eq 'pass' -and $script:Summary.cleanup -eq 'pass') {
     $script:Summary.outcome = 'pass'
+    Write-Host "[WW-SMOKE] PASS: the definition survived a Worker restart on '$kbLabel' and the smoke filter attribute '$Attribute' and its condition were removed (verified after a second restart). Not covered: IDE visibility, derived-object regeneration, a pristine KB."
 } else {
     $script:Summary.outcome = 'fail'
-    $script:Summary.errors += "durability=$($script:Summary.durability) cleanup=$($script:Summary.cleanup): the smoke only passes when both pass."
+    $script:Summary.errors += "durability=$($script:Summary.durability) cleanup=$($script:Summary.cleanup): the run needs both to be pass."
+    Write-Host "[WW-SMOKE] FAIL: durability=$($script:Summary.durability) cleanup=$($script:Summary.cleanup)"
 }
-if ($script:Summary.outcome -eq 'pass') {
-    Write-Host "[WW-SMOKE] PASS: the definition survived a Worker restart on '$kbLabel' and the smoke filter attribute '$AttributeName' and its condition were removed again (read back after a Worker restart). Not covered: IDE visibility, derived-object regeneration, pristine KB restoration, cleanup of the optional action lane on failure paths."
-} else {
-    Write-Host "[WW-SMOKE] outcome=$($script:Summary.outcome) durability=$($script:Summary.durability) cleanup=$($script:Summary.cleanup)"
-}
-
 Write-Summary
-$exitCode = switch ($script:Summary.outcome) { 'pass' { 0 } 'unavailable' { 2 } default { 1 } }
-exit $exitCode
+switch ($script:Summary.outcome) {
+    'pass' { exit 0 }
+    'fail' { exit 1 }
+    default { exit 2 }
+}

@@ -887,9 +887,9 @@ namespace GxMcp.Gateway
         }
 
         /// <summary>
-        /// Test helper: ends the drain set by <see cref="SetDrainingForTest"/> in the order
-        /// DrainAndReplaceAsync uses: Draining is cleared before DrainComplete is signalled, so a
-        /// released waiter sees an entry that is no longer draining.
+        /// Test helper: finishes the drain started by <see cref="SetDrainingForTest"/> the way
+        /// DrainAndReplaceAsync does, clearing Draining before DrainComplete fires so a released
+        /// waiter finds a settled entry.
         /// </summary>
         internal void CompleteDrainForTest(string alias)
         {

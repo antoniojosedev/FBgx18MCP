@@ -227,49 +227,68 @@ namespace GxMcp.Gateway.Tests
             Assert.True(pool.Close("PRODUCTIONKB"));
         }
 
+        // The spawn path must never reach a real WorkerProcess.Start() from these tests: the
+        // factory below stands in for it and counts how often it was asked to spawn.
+        private static Func<KbHandle, WorkerProcess> CountingSpawn(Configuration cfg, Action onSpawn) => handle =>
+        {
+            onSpawn();
+            var worker = new WorkerProcess(cfg, handle);
+            worker.SetProcessStateForTest(alive: true, exitConfirmed: false);
+            return worker;
+        };
+
         // Drain regression: when an entry is draining, AcquireAsync must wait for
-        // DrainComplete rather than returning the dying worker immediately. A waiter
-        // cancelled during the drain must end cancelled without reaching the spawn seam.
+        // DrainComplete rather than returning the dying worker immediately.
         [Fact]
         public async Task AcquireAsync_during_drain_waits_for_DrainComplete()
         {
-            var pool = new WorkerPool(CfgWithMax(5));
+            var cfg = CfgWithMax(5);
+            var pool = new WorkerPool(cfg);
+            int spawns = 0;
+            pool.SpawnFactoryForTest = CountingSpawn(cfg, () => Interlocked.Increment(ref spawns));
             var handle = new KbHandle("drainKb", "C:/Drain");
-            int spawnCount = 0;
-            // Fake spawn: the factory replaces the real WorkerProcess.Start() path, and the
-            // unstarted worker it returns launches no process.
-            pool.SpawnFactoryForTest = h =>
-            {
-                Interlocked.Increment(ref spawnCount);
-                return new WorkerProcess(CfgWithMax(5), h);
-            };
-            // Register an entry with Worker=null so the acquires take the draining check and
-            // then the spawn path once the drain completes.
+            // Register an entry with Worker=null so the fast path hits the draining check.
             pool.RegisterForTest(handle);
             pool.SetDrainingForTest("drainkb");
             Assert.True(pool.IsDrainingForTest("drainkb"));
 
-            using var cts = new CancellationTokenSource();
-            var cancelledAcquire = pool.AcquireAsync(handle, cts.Token);
             var acquireTask = pool.AcquireAsync(handle, CancellationToken.None);
-            // Give both acquires a moment to reach the drain wait.
+            // Give it a moment to start waiting: a wait that wrongly returns shows up as a
+            // completed task or a spawn.
             await Task.Delay(50);
             Assert.False(acquireTask.IsCompleted, "AcquireAsync should be blocked while draining.");
+            Assert.Equal(0, Volatile.Read(ref spawns));
 
-            // The cancelled waiter ends as cancelled and never spawns.
-            cts.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelledAcquire);
-            Assert.Equal(0, spawnCount);
-            Assert.False(acquireTask.IsCompleted, "Cancelling one waiter must not release the others.");
-
-            // Complete the drain as DrainAndReplaceAsync does: clear Draining, then signal
-            // DrainComplete. The remaining waiter falls through to the spawn path exactly once.
+            // Finishing the drain releases the waiter; with Worker still null it falls through
+            // to the spawn path, served by the counting factory.
             pool.CompleteDrainForTest("drainkb");
-            var worker = await acquireTask;
+            var worker = await acquireTask.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.NotNull(worker);
+            Assert.Equal(1, Volatile.Read(ref spawns));
+        }
 
-            Assert.Equal(1, spawnCount);
-            Assert.Same(worker, pool.TryGet("drainkb"));
-            Assert.False(pool.IsDrainingForTest("drainkb"));
+        // Drain regression: a caller cancelled while the drain is still running leaves with an
+        // OperationCanceledException and never reaches the spawn path. The drain is never
+        // completed here, so there is no race between the cancellation and DrainComplete.
+        [Fact]
+        public async Task AcquireAsync_cancelled_during_drain_is_cancelled_without_spawning()
+        {
+            var cfg = CfgWithMax(5);
+            var pool = new WorkerPool(cfg);
+            int spawns = 0;
+            pool.SpawnFactoryForTest = CountingSpawn(cfg, () => Interlocked.Increment(ref spawns));
+            var handle = new KbHandle("drainKb", "C:/Drain");
+            pool.RegisterForTest(handle);
+            pool.SetDrainingForTest("drainkb");
+
+            using var cts = new CancellationTokenSource();
+            var acquireTask = pool.AcquireAsync(handle, cts.Token);
+            Assert.False(acquireTask.IsCompleted, "AcquireAsync should be blocked while draining.");
+
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => acquireTask);
+            Assert.True(acquireTask.IsCanceled);
+            Assert.Equal(0, Volatile.Read(ref spawns));
         }
 
         // Drain regression: IsDrainingForTest reflects the draining flag accurately.

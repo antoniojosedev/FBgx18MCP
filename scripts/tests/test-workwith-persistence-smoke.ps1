@@ -41,87 +41,123 @@ if ($addActionCall.Count -ne 1) { throw 'The add_action Invoke-Tool call must pa
 $help = $ast.GetHelpContent()
 if ($null -eq $help -or $help.Notes -notmatch 'ArityMismatch') { throw 'The smoke help must explain ArityMismatch and -ActionParameters.' }
 
-Write-Host 'workwith-persistence-smoke: -ActionParameters is declared, forwarded as add_action parameters and documented'
+# Issue #645: the smoke removes the filter attribute it creates. These guards are cheap structure
+# checks on the script text (no Knowledge Base, no Gateway); each one is mutated below to prove it
+# can fail. The live proof (write, restart, cleanup, restart, equality with the baseline) needs a
+# disposable KB and is run separately.
+function Get-SmokeScriptProblems([string]$Text) {
+    $problems = @()
+    $parseTokens = $null; $parseErrors = $null
+    $tree = [System.Management.Automation.Language.Parser]::ParseInput($Text, [ref]$parseTokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) { return @("does not parse: $($parseErrors[0].Message)") }
 
-# Issue #645 (follow-up of #586/#590): the smoke must remove the filter attribute and the
-# condition it created, on the success and on the failure path, behind an ownership guard,
-# through one finalizer that never exits inside a try. These guards parse the script only;
-# the live mutation check (removing the cleanup call) is recorded in the pull request.
-$scriptText = Get-Content -LiteralPath $scriptPath -Raw
-function Find-Ast([scriptblock]$Predicate) { return @($ast.FindAll($Predicate, $true)) }
-function Get-Function([string]$Name) {
-    $fn = @(Find-Ast { param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name })
-    if ($fn.Count -ne 1) { throw "The smoke must define exactly one function $Name (found $($fn.Count))." }
-    return $fn[0]
+    $functions = @($tree.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true))
+    $cleanupFunction = @($functions | Where-Object { $_.Name -eq 'Invoke-SmokeCleanup' })
+    $isInsideFunction = {
+        param($node)
+        for ($parent = $node.Parent; $null -ne $parent; $parent = $parent.Parent) {
+            if ($parent -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $true }
+        }
+        return $false
+    }
+
+    # The removal is in the single cleanup function, and the main path calls it.
+    if ($cleanupFunction.Count -ne 1) { return $problems + 'Invoke-SmokeCleanup must exist exactly once.' }
+    $removeLiteral = @($cleanupFunction[0].FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -eq 'remove_filter_attribute'
+    }, $true))
+    if ($removeLiteral.Count -eq 0) { $problems += 'Invoke-SmokeCleanup must call remove_filter_attribute.' }
+    $mainCleanupCalls = @($tree.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-SmokeCleanup' -and -not (& $isInsideFunction $n)
+    }, $true))
+    if ($mainCleanupCalls.Count -ne 1) { $problems += "the success path must call Invoke-SmokeCleanup once (found $($mainCleanupCalls.Count))." }
+
+    # Only what this run created is removed, and only the condition text it sent.
+    if ($Text -notmatch "removeConditions'\]\s*=\s*@\(\`$Condition\)") { $problems += 'removeConditions must carry exactly $Condition.' }
+    if ($Text -notmatch 'conditionPresentBefore') { $problems += 'the condition must be passed only while it is still on the filter.' }
+
+    # The ownership flag is set before the add call (an attempt can persist even when it reports failure).
+    $flag = @($tree.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $n.Left.Extent.Text -eq '$script:State.FilterWritten' -and $n.Right.Extent.Text -eq '$true'
+    }, $true))
+    $addCall = @($tree.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-Tool' -and
+        $n.Extent.Text -match "action\s*=\s*'add_filter_attribute'"
+    }, $true))
+    if ($flag.Count -ne 1) { $problems += 'FilterWritten must be set to $true exactly once.' }
+    if ($addCall.Count -ne 1) { $problems += 'add_filter_attribute must be called exactly once.' }
+    if ($flag.Count -eq 1 -and $addCall.Count -eq 1 -and $flag[0].Extent.StartOffset -gt $addCall[0].Extent.StartOffset) {
+        $problems += 'FilterWritten must be set before add_filter_attribute is called.'
+    }
+    # A name that already exists in the baseline stops the run before the write.
+    $exists = @($tree.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Exit-Fail' -and $n.Extent.Text -match 'already exists'
+    }, $true))
+    if ($exists.Count -ne 1) { $problems += 'a baseline attribute with the same name must stop the run (Exit-Fail).' }
+    elseif ($addCall.Count -eq 1 -and $exists[0].Extent.StartOffset -gt $addCall[0].Extent.StartOffset) { $problems += 'the ownership check must precede the write.' }
+
+    # One summary, written after the cleanup; one restart after the write and one after the cleanup.
+    $summaryCalls = @($tree.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-Summary'
+    }, $true))
+    if ($summaryCalls.Count -ne 1) { $problems += "Write-Summary must be called exactly once (found $($summaryCalls.Count))." }
+    $restarts = @($tree.FindAll({
+        param($n)
+        $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-WorkerRestart' -and -not (& $isInsideFunction $n)
+    }, $true))
+    if ($restarts.Count -ne 2) { $problems += "the success path must restart the Worker exactly twice (found $($restarts.Count))." }
+
+    # The finalizer, not an exit inside try, ends the run: Exit-Fail/Exit-Unavailable throw, and
+    # `exit` appears neither in a function nor in a try block.
+    foreach ($name in @('Exit-Fail', 'Exit-Unavailable')) {
+        $function = @($functions | Where-Object { $_.Name -eq $name })
+        if ($function.Count -ne 1) { $problems += "$name must exist exactly once."; continue }
+        $throws = @($function[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst] }, $true))
+        if ($throws.Count -eq 0) { $problems += "$name must throw." }
+    }
+    $exits = @($tree.FindAll({ param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true))
+    foreach ($exitStatement in $exits) {
+        if (& $isInsideFunction $exitStatement) { $problems += "exit at line $($exitStatement.Extent.StartLineNumber) is inside a function." }
+        for ($parent = $exitStatement.Parent; $null -ne $parent; $parent = $parent.Parent) {
+            if ($parent -is [System.Management.Automation.Language.TryStatementAst]) { $problems += "exit at line $($exitStatement.Extent.StartLineNumber) is inside a try block."; break }
+        }
+    }
+
+    # The documented states exist.
+    foreach ($state in @("durability   = 'not_attempted'", "cleanup      = 'not_attempted'", "'unverified'")) {
+        if (-not $Text.Contains($state)) { $problems += "the summary must carry $state." }
+    }
+    return $problems
 }
 
-# 1. The removal exists and takes only the condition text this run sent.
-$removeLiterals = @(Find-Ast { param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -eq 'remove_filter_attribute' })
-if ($removeLiterals.Count -lt 1) { throw 'The smoke never calls genexus_workwith remove_filter_attribute (#645: it leaves the filter attribute behind).' }
-if ($scriptText -notmatch 'removeConditions\W*=\s*@\(\$Condition\)') { throw 'removeConditions must be exactly the condition text this run sent (@($Condition)), never every observed condition that mentions the variable.' }
+$smokeText = Get-Content -LiteralPath $scriptPath -Raw
+$smokeProblems = @(Get-SmokeScriptProblems $smokeText)
+if ($smokeProblems.Count -gt 0) { throw "workwith_persistence_smoke.ps1 violates the #645 cleanup contract: $($smokeProblems -join '; ')" }
 
-# 2. Ownership guard: the name is normalized once, an existing name stops the run before any write,
-# and $filterWritten is set before the add call (the attempt may persist with an unreadable answer).
-if ($scriptText -notmatch '\$Attribute\.Trim\(\)\.TrimStart\(''&''\)') { throw 'The attribute name must be normalized once (Trim + leading &) before the baseline check.' }
-$addCall = @(Find-Ast {
-    param($n)
-    $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-Tool' -and $n.Extent.Text -match 'add_filter_attribute'
-})
-if ($addCall.Count -ne 1) { throw "Expected exactly one add_filter_attribute Invoke-Tool call (found $($addCall.Count))." }
-$writtenFlag = @(Find-Ast {
-    param($n)
-    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-    $n.Left.Extent.Text -eq '$filterWritten' -and $n.Right.Extent.Text -eq '$true'
-})
-if ($writtenFlag.Count -ne 1) { throw 'Expected exactly one `$filterWritten = $true` assignment.' }
-if ($writtenFlag[0].Extent.StartOffset -ge $addCall[0].Extent.StartOffset) { throw '$filterWritten must be set to $true BEFORE add_filter_attribute is called.' }
-$existsGuard = [regex]::Match($scriptText, 'already exists before the write')
-if (-not $existsGuard.Success -or $existsGuard.Index -ge $writtenFlag[0].Extent.StartOffset) { throw 'The baseline "already exists" refusal must come before $filterWritten is set.' }
-if ($scriptText -notmatch '\$cleanupDone') { throw 'The finalizer must guard with $cleanupDone so the cleanup runs once.' }
-
-# 3. One finalizer: exit is never inside a try or a function, Write-Summary runs once,
-# and Exit-Fail / Exit-Unavailable throw instead of exiting.
-$exits = @(Find-Ast { param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] })
-foreach ($exit in $exits) {
-    $parent = $exit.Parent
-    while ($null -ne $parent) {
-        if ($parent -is [System.Management.Automation.Language.TryStatementAst]) { throw "exit at line $($exit.Extent.StartLineNumber) is inside a try; the finalizer must choose the exit code last." }
-        if ($parent -is [System.Management.Automation.Language.FunctionDefinitionAst]) { throw "exit at line $($exit.Extent.StartLineNumber) is inside function $($parent.Name); helpers must throw." }
-        $parent = $parent.Parent
+# Mutations: every guard above must be able to fail.
+function Assert-Detected([string]$Name, [string]$Mutated, [string]$Expected) {
+    if ($Mutated -ceq $smokeText) { throw "mutation setup failed: $Name did not change the script." }
+    $found = @(Get-SmokeScriptProblems $Mutated)
+    if (-not ($found | Where-Object { $_ -like "*$Expected*" })) {
+        throw "mutation '$Name' was not detected (wanted '$Expected', got: $($found -join '; '))."
     }
 }
-$summaryCalls = @(Find-Ast { param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-Summary' })
-if ($summaryCalls.Count -ne 1) { throw "Write-Summary must be called exactly once, after the cleanup (found $($summaryCalls.Count))." }
-foreach ($name in 'Exit-Fail', 'Exit-Unavailable') {
-    $fn = Get-Function $name
-    if ($fn.Extent.Text -notmatch '\bthrow\b') { throw "$name must throw." }
-    if ($fn.Extent.Text -match 'Write-Summary') { throw "$name must not write the summary; the finalizer does." }
-}
-$cleanup = Get-Function 'Invoke-Cleanup'
-if ($cleanup.Extent.Text -match 'Exit-Fail|Exit-Unavailable') { throw 'Invoke-Cleanup must not call Exit-Fail/Exit-Unavailable; each step records its own result.' }
-if ($summaryCalls[0].Extent.StartOffset -lt $cleanup.Extent.EndOffset) { throw 'Write-Summary must come after the cleanup function.' }
-$cleanupCalls = @(Find-Ast { param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-Cleanup' })
-if ($cleanupCalls.Count -ne 2) { throw "Invoke-Cleanup must be called twice: once on the success path and once in the finalizer (found $($cleanupCalls.Count))." }
+Assert-Detected 'no remove_filter_attribute' ($smokeText.Replace("action = 'remove_filter_attribute'", "action = 'list_filters'")) 'must call remove_filter_attribute'
+Assert-Detected 'cleanup never called' ($smokeText.Replace('$cleanup = Invoke-SmokeCleanup -IncludeAction ([bool]$actionLane)', '$cleanup = [pscustomobject]@{ errors = @(); receiptVerified = $true }')) 'must call Invoke-SmokeCleanup once'
+Assert-Detected 'flag never set' ($smokeText.Replace('$script:State.FilterWritten = $true', '$script:State.FilterWritten = $false')) 'FilterWritten must be set'
+$flagAfterAdd = $smokeText.Replace('    $script:State.FilterWritten = $true' + "`n", '').Replace('    Assert-Ok -Payload $add -Label ''add_filter_attribute''', '    $script:State.FilterWritten = $true' + "`n" + '    Assert-Ok -Payload $add -Label ''add_filter_attribute''')
+Assert-Detected 'flag after the add' $flagAfterAdd 'before add_filter_attribute'
+Assert-Detected 'second summary' ($smokeText + "`nWrite-Summary`n") 'Write-Summary must be called exactly once'
+Assert-Detected 'exit inside Exit-Fail' ($smokeText.Replace("throw (New-SmokeStop 'fail' `$Reason)", 'exit 1')) 'Exit-Fail must throw'
+Assert-Detected 'extra restart' ($smokeText.Replace("`$script:Summary.durability = 'pass'", "`$script:Summary.durability = 'pass'`n    `$null = Invoke-WorkerRestart -Label 'extra'")) 'exactly twice'
+Assert-Detected 'removes every observed condition' ($smokeText.Replace("`$removeArgs['removeConditions'] = @(`$Condition)", "`$removeArgs['removeConditions'] = @(`$read.result.filters.conditions)")) 'removeConditions must carry exactly'
 
-# 4. In the main flow the absence assertion comes before the full baseline comparison, so removing
-# the cleanup call makes the smoke fail on the absence of the attribute and condition.
-$absence = [regex]::Match($scriptText, 'still present after the cleanup')
-$comparison = [regex]::Match($scriptText, 'Get-ProjectionDifferences -Expected \$baselineProjection')
-if (-not $absence.Success -or -not $comparison.Success -or $absence.Index -ge $comparison.Index) { throw 'The absence assertion must precede the comparison with the baseline.' }
-
-# 5. Obsolete statements about the pre-#586 state are gone and the new statements are present.
-foreach ($stale in 'stay in the KB', 'remains in the KB', 'has no remove_filter_attribute', 'leaves a filter attribute behind') {
-    if ($scriptText -match [regex]::Escape($stale)) { throw "Obsolete text still present: '$stale'." }
-}
-foreach ($required in 'cleanup', 'durability', 'unverified', 'FilterAttributeReferencedByConditions') {
-    if ($help.Description -notmatch $required -and $scriptText -notmatch $required) { throw "The smoke must mention '$required'." }
-}
-if ($help.Description -notmatch 'EXIT CODES|exit') { throw 'The help must document the exit codes.' }
-$summaryInit = @(Find-Ast { param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:Summary' })
-if ($summaryInit.Count -ne 1) { throw 'Expected one $script:Summary initialization.' }
-$summaryText = $summaryInit[0].Extent.Text
-foreach ($field in 'durability', 'cleanup', 'outcome') { if ($summaryText -notmatch "(?m)^\s*$field\s*=") { throw "The summary must carry '$field'." } }
-if ($summaryText -notmatch "demonstrates\s*=[^\r\n]*(removed|cleanup)") { throw '`demonstrates` must describe the cleanup.' }
-if ($summaryText -notmatch "doesNotCover\s*=[\s\S]*action[\s\S]*pristine|doesNotCover\s*=[\s\S]*pristine[\s\S]*action") { throw '`doesNotCover` must state that the cleanup is not pristine restoration and does not cover the action lane.' }
-
-Write-Host 'workwith-persistence-smoke: #645 cleanup guards (removal call, ownership guard, single finalizer, absence assertion, current texts)'
+Write-Host 'workwith-persistence-smoke: -ActionParameters is declared, forwarded as add_action parameters and documented'
+Write-Host 'workwith-persistence-smoke: the cleanup contract (#645) holds and every guard fails under mutation'
