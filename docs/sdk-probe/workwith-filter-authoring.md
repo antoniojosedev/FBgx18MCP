@@ -149,7 +149,7 @@ any regenerated derived objects.
   in `persistenceEvidence` (`independentPersistedReread: false`,
   `provesDurability: false`), and the restart proof is
   `scripts/workwith_persistence_smoke.ps1` (write, `genexus_worker_reload`, reread on
-  the new Worker). The existing fresh path (`ObjectService.FindObjectFreshByIdentity`,
+  the new Worker, then `remove_filter_attribute` of what it created and a second reread, #645). The existing fresh path (`ObjectService.FindObjectFreshByIdentity`,
   which invalidates the SDK object cache and refuses to return the same managed
   instance) is the candidate for an in-process independent reread -
   `WorkWithInstance.Load(freshInstance)` rather than the XML projection - but it has
