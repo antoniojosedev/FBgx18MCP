@@ -18,7 +18,16 @@ validation is recorded in `FORK_CHANGELOG.md` and the commit history.
 
 ## Open
 
-None.
+- **Reavaliar os helpers fork-local de Engine backend após o #649 upstream (sem pressa).**
+  O upstream passou a preservar a seção: `install.ps1:249` chama `build.ps1 -PreserveEngineConfig`,
+  `build.ps1` lê o config anterior antes da limpeza e avisa quando descarta, e
+  `scripts/tests/test-build-publish-config.ps1` cobre os quatro casos mais o repasse do install.
+  Com isso, `scripts/Invoke-GxMcpLocalBuild.ps1` ficou redundante no caminho de install (reaplica o
+  que o build já preservou) e `scripts/Set-GxMcpLocalEngineBackend.ps1` só é necessário depois de um
+  `build.ps1` **direto sem o switch**. Decidir se mantém como rede de segurança, se simplifica (wrapper
+  chamando `build.ps1 -PreserveEngineConfig` e dispensando o merge) ou se remove. Não bloqueia nada.
+  Validar com: install (log "Preserving Engine section…" e `Engine.Backend` mantido), `build.ps1` direto
+  sem switch (aviso de descarte) e `pwsh -NoProfile -File scripts/tests/test-fork-local-backend-helpers.ps1`.
 
 ## Accepted limits (not backlog)
 
