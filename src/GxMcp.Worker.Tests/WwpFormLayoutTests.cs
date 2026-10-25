@@ -29,6 +29,16 @@ namespace GxMcp.Worker.Tests
             "</table></table><table name='TableActions' childrenOrderedList='2;18;Trn_Enter'><standardAction name='Trn_Enter'/></table>" +
             "</table></transaction></instance>";
 
+        // The shape PatternApplyService seeds for a WebPanel (level 7, the table listed under
+        // WPRoot with type code 66): the code a table carries in a WebPanel is not the
+        // transaction's 01, and TableContent holds nothing but the error viewer, so no sibling
+        // table is there to copy the code from (issue #638).
+        private const string RealWebPanelEmptyTemplate =
+            "<instance type='WebPanel'><WPRoot Template='Empty' defaultTemplate='Empty' childrenOrderedList='7;66;TableMain'>" +
+            "<table name='TableMain' type='Responsive' defaultType='Responsive' childrenOrderedList='7;28;ErrorViewer'>" +
+            "<errorViewer/><table name='TableContent' type='Responsive' defaultType='Responsive' childrenOrderedList='7;28;ErrorViewer'>" +
+            "<errorViewer/></table></table><steps/></WPRoot></instance>";
+
         private static JObject AddTable(XDocument doc, string extra = null) =>
             WwpActionService.PlanAddTableXml(doc, Args("{tableName:'tableOp',numberOfColumns:3" + (extra == null ? "" : "," + extra) + "}"));
 
@@ -60,6 +70,44 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("name=\"tableOp\"", (string)plan["typedDiff"]["table"]);
             Assert.DoesNotContain("tableOp", (string)plan["typedDiff"]["before"]);
             Assert.Contains("tableOp", (string)plan["typedDiff"]["after"]);
+        }
+
+        [Fact]
+        public void AddTable_OnARealWebPanel_ListsTheTableWithTheTypeCodeTheInstanceUsesForTables()
+        {
+            var doc = XDocument.Parse(RealWebPanelEmptyTemplate);
+            JObject plan = AddTable(doc);
+
+            Assert.Null(plan["error"]);
+            Assert.Equal("7;66;tableOp", (string)plan["childrenOrderedList"]["entry"]);
+            Assert.Equal("7;28;ErrorViewer-7;66;tableOp", (string)Table(doc, "TableContent").Attribute("childrenOrderedList"));
+        }
+
+        [Fact]
+        public void VerifyAddedTable_WhenTheTableIsGone_ReportsWhatTheReReadContainerHolds()
+        {
+            var planned = XDocument.Parse(RealWebPanelEmptyTemplate);
+            JObject plan = AddTable(planned);
+            XDocument dropped = XDocument.Parse(RealWebPanelEmptyTemplate);
+
+            string message = (string)WwpActionService.VerifyAddedTable(planned, dropped, plan)["message"];
+
+            Assert.Contains("0 time(s)", message);
+            Assert.Contains("holds [errorViewer 'ErrorViewer']", message);
+            Assert.Contains("childrenOrderedList '7;28;ErrorViewer'", message);
+        }
+
+        [Fact]
+        public void AddTable_OnARealWebPanel_PrefersTheCodeTheContainerIsListedWith()
+        {
+            string xml = RealWebPanelEmptyTemplate
+                .Replace("childrenOrderedList='7;28;ErrorViewer'>" + "<errorViewer/><table name='TableContent'",
+                    "childrenOrderedList='7;28;ErrorViewer-7;77;TableContent'><errorViewer/><table name='TableContent'");
+            var doc = XDocument.Parse(xml);
+            JObject plan = AddTable(doc);
+
+            Assert.Null(plan["error"]);
+            Assert.Equal("7;77;tableOp", (string)plan["childrenOrderedList"]["entry"]);
         }
 
         [Fact]
