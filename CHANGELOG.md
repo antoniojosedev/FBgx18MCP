@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- gx-engine builds the trunk of a versioned Knowledge Base (#637, https://github.com/lennix1337/Genexus18MCP/issues/637). `rebuild-all --design-model 1 --kb-version 0` was refused on every KB with more than one Design model ("native build facts are not yet pinned to a KB version"), so the engine built nothing on a KB that ever had a version. Attributes, table keys, subtype groups, languages, model properties and the theme are now read through the trunk model's own `ModelEntityVersion` rows instead of the latest `EntityVersion`, and from the trunk's environments only. A build of a frozen version or branch, or of a versioned KB whose `TranslationMessage`/`DesignSystemClass` entities store several versions (held by no model, so not pinnable), is still refused with the `version_scope` exit 4 and runs on the SDK. Verified on a disposable three-Design-model copy: 346/346 trunk objects generated and compiled, output identical to the unversioned KB's.
+
 ### Internal
 
 ## v4.0.1 - 2026-10-21

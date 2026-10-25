@@ -281,10 +281,19 @@ and passes `--design-model <id> --kb-version <id>`. The engine then:
 
 - serves a query from the named Design model after checking that the model's
   stored `KBVersion` property names that version;
-- serves a build only when the KB has a single Design model (trunk model 1),
-  with every environment model under it. Supporting attribute/table/message facts
-  are not yet version-pinned, so versioned KB builds stay on the SDK even with
-  the trunk active;
+- serves a build only for the trunk Design model (KB version 0, model 1), also
+  when the KB has other versions (issue #637). Every fact a build reads is read
+  under that model and the environments below it: attributes, tables and keys,
+  subtype groups, languages, model properties and the theme come through the
+  model's own `ModelEntityVersion` rows (never the latest `EntityVersion`), so a
+  newer fact of another version cannot reach the trunk build. `TranslationMessage`
+  and `DesignSystemClass` entities are held by no model and are read at their latest
+  version; a versioned KB where one of them stores several versions is refused
+  (`version_scope`) instead of guessed. Building a frozen version or a branch is
+  refused: no SDK build of one has been compared, and the `NetModel` files a build
+  reads (`GXCFG.WEB`, `Directory.build.props`, `GxWebStd.cs`) belong to the KB
+  folder, not to a version. Those builds, and any build with another version
+  active, run on the SDK;
 - without a named version, serves only a Knowledge Base with a single Design
   model.
 
