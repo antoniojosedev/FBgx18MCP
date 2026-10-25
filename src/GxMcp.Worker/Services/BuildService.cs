@@ -859,6 +859,13 @@ namespace GxMcp.Worker.Services
             public string BuildPath { get; set; }
             public List<string> CallersToAlsoBuild { get; set; }
             public string Hint { get; set; }
+            // #654: action=specify validates the environment's copy of each object, which
+            // only a build refreshes. Say what was validated, and flag the case where the
+            // specifier itself warned that the object changed since that build.
+            [JsonProperty("validatedSource", NullValueHandling = NullValueHandling.Ignore)]
+            public string ValidatedSource { get; set; }
+            [JsonProperty("staleEnvironmentCopy", NullValueHandling = NullValueHandling.Ignore)]
+            public bool? StaleEnvironmentCopy { get; set; }
             // v2.3.8 (Task 5.1/5.2): expansion plan applied to the BuildOne
             // sequence. Surfaced under _meta.buildPlan in status/result.
             public BuildPlan BuildPlan { get; set; }
@@ -2411,6 +2418,7 @@ namespace GxMcp.Worker.Services
             status.Targets = targets.Count > 0 ? targets : null;
             status.BuildPlan = plan;
             status.SpecifyOnly = specifyOnly && targetedBuild;
+            if (status.SpecifyOnly) status.ValidatedSource = "environment-copy";
             status.RefuseStaleEnvironmentCopy = status.SpecifyOnly && refuseStaleEnvironmentCopy;
             status.SkipFullDeploy = effectiveSkipFullDeploy;
             status.FullDeploy = fullDeploy
@@ -4914,6 +4922,12 @@ namespace GxMcp.Worker.Services
                         {
                             return;
                         }
+                    }
+                    if (status.SpecifyOnly && SpecificationDiagnostics.IsStaleEnvironmentCopyWarning(line))
+                    {
+                        status.StaleEnvironmentCopy = true;
+                        if (string.IsNullOrEmpty(status.Hint))
+                            status.Hint = "The specifier read the environment's copy of an object that changed since the last build, so these diagnostics may describe the source as of that build. Run genexus_lifecycle action=build for the current source.";
                     }
                     status.WarningCount++;
                     if (status.Warnings.Count < 50) status.Warnings.Add(line.Trim());

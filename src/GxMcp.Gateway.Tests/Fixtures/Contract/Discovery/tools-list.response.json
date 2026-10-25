@@ -3795,7 +3795,7 @@
             "type": "boolean"
           },
           "fields": {
-            "description": "Output projection: array of field…",
+            "description": "Field names to return; only name and…",
             "items": {
               "type": "string"
             },
@@ -4229,7 +4229,7 @@
             "type": "integer"
           },
           "objectName": {
-            "description": "Restrict the scan to these exact object…",
+            "description": "Exact object name(s): a comma-separated…",
             "type": "string"
           },
           "path": {
@@ -4259,7 +4259,7 @@
             "type": "integer"
           },
           "timeoutMs": {
-            "description": "Wall-clock budget (default 30000). A…",
+            "description": "Wall-clock budget (default 30000).…",
             "type": "integer"
           },
           "typeFilter": {
@@ -5218,7 +5218,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed WorkWithPlus edits (actions, tabs, grids, tables, settings) with dryRun, optimistic concurrency, post-save reread and rollback. Full guidance: genexus://kb/tool-help/genexus_wwp",
+      "description": "Typed WorkWithPlus edits (actions, tabs, grids, tables, settings) with dryRun, concurrency checks, post-save reread and rollback. Full guidance: genexus://kb/tool-help/genexus_wwp",
       "inputSchema": {
         "properties": {
           "action": {
@@ -5610,7 +5610,7 @@
             "type": "string"
           },
           "variableReference": {
-            "description": "Verified SDK variable identity in…",
+            "description": "add_grid_variable: the variable's own…",
             "type": "string"
           },
           "versionToken": {

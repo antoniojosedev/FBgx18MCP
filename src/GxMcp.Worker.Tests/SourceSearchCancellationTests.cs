@@ -53,7 +53,7 @@ namespace GxMcp.Worker.Tests
             // Pre-cancelled token trips on the very first iteration, so scanned should be 0.
             Assert.Equal(0, obj["result"]!["totalScanned"]!.Value<int>());
             SourceSearchEnvelopeTests.AssertMarkedIncomplete(obj, "Cancelled");
-            Assert.Contains("was cancelled", obj["result"]!["partialHint"]!.ToString());
+            Assert.Contains("was cancelled", obj["result"]!["incompleteHint"]!.ToString());
         }
 
         [Fact]

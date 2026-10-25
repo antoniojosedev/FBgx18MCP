@@ -297,12 +297,14 @@ namespace GxMcp.Gateway.Tests
         // the 40-character published descriptions do not shrink.
         // genexus_query.fields (#637: clients that did not see the array sent it as text): ui 50000 -> 50200
         // (measured 50098), the only profile that crossed its budget; the token budget above does not move.
+        // Both landed together with the #637-#662 fixes (whose new descriptions were trimmed to keep the
+        // token budget): ui measured 50316 bytes, so ui 50300 -> 50400.
         [InlineData("all", 103000)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
         [InlineData("authoring", 71500)]
         [InlineData("devops", 52500)]
-        [InlineData("ui", 50300)]
+        [InlineData("ui", 50400)]
         [InlineData("db", 40000)]
         public void PublishedToolProfileStaysWithinItsByteBudget(string profile, int maxBytes)
         {

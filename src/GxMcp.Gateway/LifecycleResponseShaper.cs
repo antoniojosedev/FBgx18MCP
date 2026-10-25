@@ -151,12 +151,10 @@ namespace GxMcp.Gateway
             };
 
             // The list above is cut at ErrorCap (and the task keeps only its first lines):
-            // when it is shorter than the count, say how many are missing and where the
-            // rest is, instead of leaving `truncated` as the only hint (#656).
+            // when it is shorter than the count, say where the rest is (#656).
             int shownErrors = Math.Min(errors.Count, ErrorCap);
             if (errCount > shownErrors)
             {
-                compactObj["omittedErrors"] = errCount - shownErrors;
                 compactObj["errorsHint"] = "The first " + shownErrors + " of " + errCount
                     + " errors are listed; the complete list is in the build log (fullLogPath), and action=result pages the lines the task kept.";
             }

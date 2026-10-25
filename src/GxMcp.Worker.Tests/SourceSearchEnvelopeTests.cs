@@ -209,8 +209,8 @@ namespace GxMcp.Worker.Tests
             Assert.True(result["truncated"]?.ToObject<bool>());
             Assert.NotNull(result["scannedObjects"]);
             Assert.Equal("Ready", result["indexStatus"]?.ToString());
-            Assert.Contains("does NOT mean the text is absent", result["partialHint"]?.ToString());
-            Assert.Contains("cursor=nextCursor", result["partialHint"]?.ToString());
+            Assert.Contains("does NOT mean the text is absent", result["incompleteHint"]?.ToString());
+            Assert.Contains("cursor=nextCursor", result["incompleteHint"]?.ToString());
             // `hits` is what a client reads; it must carry the same hits as `partialHits`.
             Assert.NotNull(result["hits"]);
             Assert.True(JToken.DeepEquals(result["partialHits"], result["hits"]));

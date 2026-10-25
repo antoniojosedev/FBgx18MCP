@@ -219,9 +219,9 @@ function Test-NativeCommandExitCodes([string]$Workflow) {
 Assert-Policy (@(Get-WorkflowSteps $ci).Count -gt 20) 'the step parser must find the workflow steps.'
 Assert-Policy (@(Test-NativeCommandExitCodes $ci).Count -eq 0) ("native command exit codes: " + (@(Test-NativeCommandExitCodes $ci) -join '; '))
 foreach ($lane in @('gxwire', 'gx-engine')) {
-    Assert-Policy ($ci -match "(?m)^        run: cargo test --manifest-path src/$lane/Cargo.toml\s*$") "the $lane lane must run cargo test as a step of its own."
+    Assert-Policy ($ci -match "(?m)^        run: cargo test --manifest-path src/$lane/Cargo.toml( --locked)?\s*$") "the $lane lane must run cargo test as a step of its own."
 }
-Assert-Policy ($ci -match '(?m)^        run: cargo clippy --manifest-path src/gx-engine/Cargo.toml --all-targets -- -D warnings\s*$') 'the gx-engine lint must be a step of its own (-D warnings).'
+Assert-Policy ($ci -match '(?m)^        run: cargo clippy --manifest-path src/gx-engine/Cargo.toml --all-targets( --locked)? -- -D warnings\s*$') 'the gx-engine lint must be a step of its own (-D warnings).'
 $mergedCargo = [regex]::Replace($ci, '(?m)^        run: (cargo clippy [^\r\n]+)\r?\n', [System.Text.RegularExpressions.MatchEvaluator] {
     param($match)
     "        run: |`n          $($match.Groups[1].Value)`n          cargo fmt --manifest-path src/gx-engine/Cargo.toml --check`n"

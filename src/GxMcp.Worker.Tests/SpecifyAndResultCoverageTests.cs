@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Reflection;
 using GxMcp.TestSupport;
 using GxMcp.Worker.Services;
@@ -10,8 +9,8 @@ namespace GxMcp.Worker.Tests
 {
     /// <summary>
     /// #654: <c>specify</c> validates the environment's copy of an object, which only a build
-    /// refreshes, and its response never said so. #656: a task keeps 50 error lines but counts
-    /// every error, and <c>result</c> gave no sign that its list was a cut.
+    /// refreshes, and its response never said so. The #656 error-count fields of action=result
+    /// are the Gateway's (totalErrors/shownErrors/omittedErrors, LifecycleResultTests).
     /// </summary>
     public class SpecifyAndResultCoverageTests
     {
@@ -73,45 +72,6 @@ namespace GxMcp.Worker.Tests
             string build = RepoSource.WithoutComments(RepoSource.Read("src", "GxMcp.Worker", "Services", "BuildService.cs"));
 
             Assert.Equal(1, SourceAssert.Count(build, "if (status.SpecifyOnly) status.ValidatedSource = \"environment-copy\";"));
-        }
-
-        [Fact]
-        public void Result_TellsHowManyErrorLinesWereKept()
-        {
-            var status = new BuildService.BuildTaskStatus { TaskId = "many", ErrorCount = 120, FullLogPath = "synthetic.log" };
-            for (int i = 0; i < 50; i++) status.Errors.Add("error " + i);
-
-            var payload = new JObject();
-            BuildService.AttachErrorCoverage(payload, status);
-
-            Assert.Equal(120, (int)payload["errorsTotal"]);
-            Assert.Equal(50, (int)payload["errorsRetained"]);
-            Assert.Equal(70, (int)payload["omittedErrors"]);
-            Assert.Contains("first 50 of 120", (string)payload["errorsHint"]);
-            Assert.Contains("fullLogPath", (string)payload["errorsHint"]);
-        }
-
-        [Fact]
-        public void Result_WithEveryErrorKept_ReportsNoOmission()
-        {
-            var status = new BuildService.BuildTaskStatus { TaskId = "few", ErrorCount = 3 };
-            foreach (int i in Enumerable.Range(0, 3)) status.Errors.Add("error " + i);
-
-            var payload = new JObject();
-            BuildService.AttachErrorCoverage(payload, status);
-
-            Assert.Equal(3, (int)payload["errorsTotal"]);
-            Assert.Equal(0, (int)payload["omittedErrors"]);
-            Assert.Null(payload["errorsHint"]);
-        }
-
-        [Fact]
-        public void GetResult_CarriesTheCoverageFields()
-        {
-            string build = RepoSource.WithoutComments(RepoSource.Read("src", "GxMcp.Worker", "Services", "BuildService.cs"));
-            string body = SourceAssert.MethodBody(build, "public string GetResult(string taskId, int page = 1, int pageSize = 50)");
-
-            Assert.Equal(1, SourceAssert.Count(body, "AttachErrorCoverage(jo, status);"));
         }
     }
 }

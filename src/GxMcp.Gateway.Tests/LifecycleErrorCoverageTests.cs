@@ -46,7 +46,8 @@ namespace GxMcp.Gateway.Tests
         {
             var compact = LifecycleResponseShaper.CompactObject(Status(errorCount: 4, listed: 4));
 
-            Assert.Null(compact["omittedErrors"]);
+            Assert.Equal(0, (int)compact["omittedErrors"]!);
+            Assert.False((bool)compact["truncated"]!);
             Assert.Null(compact["errorsHint"]);
         }
 
