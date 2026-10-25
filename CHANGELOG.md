@@ -7,9 +7,13 @@
 
 ### Added
 
+- `genexus_object_context` `object` now reports `parent` (the immediate Module or Folder) and `parentPath` (its full path, e.g. `Root Module/<container>`) next to `path` and `module`. `module` is unchanged: it stays the owning GeneXus Module, so an object inside a Folder reports the Module that holds the Folder. The tool help says to check write scope with `parentPath`/`path`, not `module` ([#651](https://github.com/lennix1337/Genexus18MCP/issues/651)).
+
 ### Changed
 
 ### Fixed
+
+- `genexus_list_objects` `pathPrefix` returned only part of a module (1 of 6 objects) as a complete result. The lite index walk and the runtime-SDK list built `parentFolderPath` as `Root Module/` + a hierarchy path that already starts at the Root Module, storing `Root Module/Root Module/<module>`, so only entries rebuilt after an edit matched. Both now use one compose helper, persisted snapshots and lite-walk checkpoints are repaired on load, and the filter and the listed `parentFolderPath` use the canonical value. Both reads are served by the SDK Worker; gx-engine answers only the type-only `genexus_query` (name/type) and has no path or module data ([#650](https://github.com/lennix1337/Genexus18MCP/issues/650)).
 
 ### Internal
 
