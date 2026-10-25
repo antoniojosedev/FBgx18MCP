@@ -70,6 +70,91 @@ Assert-Policy (@(Test-GateDependencies $noAlways).Count -gt 0) 'missing !cancell
 $withoutGate = $ci -replace 'assert-ci-gate\.ps1', 'removed.ps1'
 Assert-Policy (@(Test-GateDependencies $withoutGate).Count -gt 0) 'removed SDK evidence assertion was not detected.'
 
+# A pwsh step exits with the LAST native command's code, so a failing cargo command followed by a passing one
+# leaves the step (and the lane) green. Every cargo command of a Rust lane therefore gets its own step, unless
+# each one is followed by a $LASTEXITCODE check. The gxwire lane gates fmt and clippy like the gx-engine lane.
+function Get-WorkflowSteps([string]$JobBlock) {
+    $chunks = @([regex]::Split($JobBlock, '(?m)^      - (?=\w)') | Select-Object -Skip 1)
+    foreach ($chunk in $chunks) {
+        $lines = @($chunk -split '\r?\n')
+        $name = [regex]::Match($chunk, '(?m)^name:\s*(.+?)\s*$').Groups[1].Value
+        $run = @()
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $start = [regex]::Match($lines[$i], '^ {8}run:\s*(?<value>.*?)\s*$')
+            if (-not $start.Success) { continue }
+            if ($start.Groups['value'].Value -eq '|') {
+                for ($j = $i + 1; $j -lt $lines.Count -and ($lines[$j] -match '^ {10}' -or $lines[$j] -match '^\s*$'); $j++) { $run += $lines[$j].Trim() }
+            } else {
+                $run += $start.Groups['value'].Value
+            }
+            break
+        }
+        [pscustomobject]@{ Name = $name; Run = @($run | Where-Object { $_ }) }
+    }
+}
+
+function Test-RustLanesFailClosed([string]$Workflow) {
+    $errors = @()
+    foreach ($job in @('rust', 'rust-engine')) {
+        $block = Get-JobBlock $Workflow $job
+        if ($null -eq $block) { $errors += "job $job is missing"; continue }
+        $commands = @()
+        foreach ($step in @(Get-WorkflowSteps $block)) {
+            $cargo = @($step.Run | Where-Object { $_ -match '^cargo\s' })
+            $checks = @($step.Run | Where-Object { $_ -match '\$LASTEXITCODE' })
+            if ($cargo.Count -gt 1 -and $checks.Count -lt $cargo.Count) {
+                $errors += "$job step '$($step.Name)' runs $($cargo.Count) cargo commands without a `$LASTEXITCODE check after each; a failing one is masked by the last"
+            }
+            $commands += $cargo
+        }
+        foreach ($pattern in @('^cargo fmt .*--check\b', '^cargo clippy .*--all-targets .*-- -D warnings\s*$', '^cargo test ')) {
+            if (-not @($commands | Where-Object { $_ -match $pattern }).Count) { $errors += "$job does not run a cargo command matching $pattern" }
+        }
+        foreach ($command in @($commands | Where-Object { $_ -match '^cargo (clippy|test|build) ' -and $_ -notmatch '\s--locked\b' })) {
+            $errors += "$job runs '$command' without --locked (Cargo.lock must not drift in CI)"
+        }
+    }
+    return $errors
+}
+
+Assert-Policy (@(Test-RustLanesFailClosed $ci).Count -eq 0) ('Rust lanes: ' + (@(Test-RustLanesFailClosed $ci) -join '; '))
+
+# Mutations: the Rust-lane checks above must be able to fail. The first is the workflow as it was before the fix.
+$legacyRustEngineJob = @'
+  rust-engine:
+    name: rust (gx-engine)
+    runs-on: windows-latest
+    steps:
+      - name: Lint and format gx-engine
+        shell: pwsh
+        run: |
+          cargo clippy --manifest-path src/gx-engine/Cargo.toml --all-targets -- -D warnings
+          cargo fmt --manifest-path src/gx-engine/Cargo.toml --check
+
+      - name: Build and test gx-engine
+        shell: pwsh
+        run: |
+          cargo test --manifest-path src/gx-engine/Cargo.toml
+          cargo build --release --manifest-path src/gx-engine/Cargo.toml
+          New-Item -ItemType Directory -Path publish -Force | Out-Null
+'@
+$legacyWorkflow = "jobs:`n  rust:`n    steps:`n      - name: x`n        run: cargo fmt --check`n`n$legacyRustEngineJob`n  contracts:`n    steps: []`n"
+$legacyErrors = @(Test-RustLanesFailClosed $legacyWorkflow)
+Assert-Policy (@($legacyErrors -like "*rust-engine step 'Lint and format gx-engine' runs 2 cargo commands*").Count -eq 1) 'the pre-fix chained clippy/fmt step was not detected.'
+Assert-Policy (@($legacyErrors -like "*rust-engine step 'Build and test gx-engine' runs 2 cargo commands*").Count -eq 1) 'the pre-fix chained test/build step was not detected.'
+$chainedWithChecks = $legacyWorkflow -replace '(?m)^(          cargo .*)$', "`$1`n          if (`$LASTEXITCODE -ne 0) { throw 'cargo failed' }"
+Assert-Policy (-not @(Test-RustLanesFailClosed $chainedWithChecks | Where-Object { $_ -like '*cargo commands without*' })) 'a chained step that checks $LASTEXITCODE after each command must be accepted.'
+$chainedTestAndBuild = $ci -replace '(?m)^        run: (cargo test --manifest-path src/gx-engine/Cargo.toml --locked)\r?\n\r?\n      - name: Build gx-engine\r?\n        shell: pwsh\r?\n        run: (cargo build [^\r\n]*)', "        run: |`n          `$1`n          `$2"
+Assert-Policy ($chainedTestAndBuild -ne $ci) 'mutation setup: test and build were not chained.'
+Assert-Policy (@(Test-RustLanesFailClosed $chainedTestAndBuild | Where-Object { $_ -like '*cargo commands without*' }).Count -gt 0) 'chaining the current test and build commands was not detected.'
+$gxwireWithoutClippy = $ci -replace '(?m)^        run: cargo clippy --manifest-path src/gxwire/Cargo.toml[^\r\n]*', '        run: Write-Host skipped'
+Assert-Policy ($gxwireWithoutClippy -ne $ci) 'mutation setup: gxwire clippy was not removed.'
+Assert-Policy (@(@(Test-RustLanesFailClosed $gxwireWithoutClippy) -like 'rust does not run a cargo command matching*clippy*').Count -eq 1) 'a missing gxwire clippy gate was not detected.'
+$gxwireWithoutFmt = $ci -replace '(?m)^        run: cargo fmt --manifest-path src/gxwire/Cargo.toml --check', '        run: Write-Host skipped'
+Assert-Policy (@(@(Test-RustLanesFailClosed $gxwireWithoutFmt) -like 'rust does not run a cargo command matching*fmt*').Count -eq 1) 'a missing gxwire fmt gate was not detected.'
+$unlocked = $ci -replace ' --locked', ''
+Assert-Policy (@(@(Test-RustLanesFailClosed $unlocked) -like '*without --locked*').Count -gt 0) 'cargo commands without --locked were not detected.'
+
 $sdkJob = Get-JobBlock $ci 'sdk-validation'
 Assert-Policy ($sdkJob -match 'runs-on:\s*\[self-hosted, windows, gx-sdk-18\]') 'the SDK lane must stay on the protected gx-sdk-18 runner.'
 Assert-Policy ($sdkJob -match "GXMCP_SDK_CI_ENABLED == 'true'") 'the SDK lane must exist only while a runner is declared (no indefinite queue).'
