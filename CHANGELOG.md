@@ -11,6 +11,12 @@
 
 ### Fixed
 
+- CI Rust lanes now fail when any cargo command fails: each command runs in its own step instead of a chained `pwsh` step that returned only the last exit code, and `scripts/tests/test-ci-workflow-policy.ps1` rejects the old shape. https://github.com/lennix1337/Genexus18MCP/issues/644
+- `gx-engine` builds clean under `cargo clippy --all-targets --locked -- -D warnings` on current stable (`as_chunks`, a collapsed match guard, redundant borrows). https://github.com/lennix1337/Genexus18MCP/issues/641
+- The `csc_direct` relative-path test no longer fails when `%TEMP%` and the checkout are on different roots (as on the CI runner): its scratch folder falls back to the checkout's nearest ancestor without an ambient MSBuild import, and a missing common root reports both paths. https://github.com/lennix1337/Genexus18MCP/issues/642
+- The `csc_direct` symlink test skips locally only for Windows error 1314 (no symlink privilege), prints the skip, and still fails on any other error and whenever `CI` is set. https://github.com/lennix1337/Genexus18MCP/issues/643
+- `gxwire` is formatted and clippy-clean (`-D warnings`), and CI now gates `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` for it; `src/gxwire/Cargo.lock` is tracked so `--locked` is meaningful. https://github.com/lennix1337/Genexus18MCP/issues/659
+
 ### Internal
 
 ## v4.0.1 - 2026-10-21

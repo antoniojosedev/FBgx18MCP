@@ -204,11 +204,27 @@ jobs:
           restore-keys: |
             gxwire-${{ runner.os }}-${{ steps.rust.outputs.version }}-
 
-      - name: Build and test gxwire engine
+      # One native command per step: a pwsh step's exit code is the last native command's, so
+      # a failure followed by a success would pass. scripts/tests/test-ci-workflow-policy.ps1 enforces this.
+      - name: Check gxwire formatting
+        shell: pwsh
+        run: cargo fmt --manifest-path src/gxwire/Cargo.toml --check
+
+      - name: Lint gxwire
+        shell: pwsh
+        run: cargo clippy --manifest-path src/gxwire/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Test gxwire engine
+        shell: pwsh
+        run: cargo test --manifest-path src/gxwire/Cargo.toml --locked
+
+      - name: Build gxwire engine
+        shell: pwsh
+        run: cargo build --release --manifest-path src/gxwire/Cargo.toml --locked
+
+      - name: Stage gxwire engine
         shell: pwsh
         run: |
-          cargo test --manifest-path src/gxwire/Cargo.toml
-          cargo build --release --manifest-path src/gxwire/Cargo.toml
           New-Item -ItemType Directory -Path publish -Force | Out-Null
           Copy-Item src/gxwire/target/release/gxwire.exe -Destination publish/gxwire.exe -Force
 
@@ -238,17 +254,26 @@ jobs:
           restore-keys: |
             gx-engine-${{ runner.os }}-${{ steps.rust.outputs.version }}-
 
-      - name: Lint and format gx-engine
+      # One native command per step: see the gxwire job.
+      - name: Lint gx-engine
         shell: pwsh
-        run: |
-          cargo clippy --manifest-path src/gx-engine/Cargo.toml --all-targets -- -D warnings
-          cargo fmt --manifest-path src/gx-engine/Cargo.toml --check
+        run: cargo clippy --manifest-path src/gx-engine/Cargo.toml --all-targets --locked -- -D warnings
 
-      - name: Build and test gx-engine
+      - name: Check gx-engine formatting
+        shell: pwsh
+        run: cargo fmt --manifest-path src/gx-engine/Cargo.toml --check
+
+      - name: Test gx-engine
+        shell: pwsh
+        run: cargo test --manifest-path src/gx-engine/Cargo.toml --locked
+
+      - name: Build gx-engine
+        shell: pwsh
+        run: cargo build --release --manifest-path src/gx-engine/Cargo.toml --locked
+
+      - name: Stage gx-engine
         shell: pwsh
         run: |
-          cargo test --manifest-path src/gx-engine/Cargo.toml
-          cargo build --release --manifest-path src/gx-engine/Cargo.toml
           New-Item -ItemType Directory -Path publish -Force | Out-Null
           Copy-Item src/gx-engine/target/release/gx-engine.exe -Destination publish/gx-engine.exe -Force
 
