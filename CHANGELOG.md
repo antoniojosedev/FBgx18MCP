@@ -11,6 +11,9 @@
 
 ### Fixed
 
+- `genexus_wwp add_table` no longer lists the new table in the container's `childrenOrderedList` with the transaction's table code (`01`) on a WebPanel, whose WorkWithPlus instance lists tables as `7;66;...`: with no sibling table to copy the code from, the entry now takes the code the container (then its ancestors) is itself listed with. `WwpTableNotPersisted` also reports what the re-read container holds. The WebPanel table-code rule is the suspected cause of the table being dropped on save and could not be confirmed live (no WorkWithPlus installation was available), so [#638](https://github.com/lennix1337/Genexus18MCP/issues/638) stays open for a live check.
+- `genexus_wwp add_grid_variable` accepts the identity a client can obtain: the variable's own GUID plus `-Name` from the owning object's Variables part. The old lookup asked the KB for an object with that GUID, which a variable never is, so no reference was ever accepted. `genexus_wwp action=list` returns `variables[].variableReference`, and the identity refusals return `expectedVariableReference` / `declaredVariables` ([#638](https://github.com/lennix1337/Genexus18MCP/issues/638)).
+
 ### Internal
 
 ## v4.0.1 - 2026-10-21
