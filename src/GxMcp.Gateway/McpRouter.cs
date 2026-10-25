@@ -2442,12 +2442,28 @@ namespace GxMcp.Gateway
             {
                 ["status"] = job.Status,
                 ["operationId"] = job.Id,
+                ["jobId"] = job.Id,
                 ["kind"] = job.Kind,
                 ["summary"] = job.Summary,
                 ["startedAt"] = job.StartedAt.ToString("o"),
                 ["completedAt"] = job.CompletedAt?.ToString("o")
             };
+            if (!string.IsNullOrWhiteSpace(job.WorkerTaskId)) terminal["workerTaskId"] = job.WorkerTaskId;
+            // Issue #656: a stored payload that names another Worker task is not this
+            // job's output. Refuse it rather than hand a caller the wrong job's errors.
+            if (job.Result is JObject stored
+                && job.Kind?.StartsWith("lifecycle/", StringComparison.OrdinalIgnoreCase) == true
+                && !string.IsNullOrWhiteSpace(job.WorkerTaskId)
+                && !ResultBelongsToWorkerTask(stored, job.Id, job.WorkerTaskId))
+            {
+                terminal["status"] = "Error";
+                terminal["code"] = "ResultJobMismatch";
+                terminal["message"] = "The stored result names a different Worker task than the one this job ran, so it was not returned.";
+                terminal["hint"] = "Poll genexus_lifecycle action=status for this job, or re-run the operation.";
+                return (terminal, isError: true);
+            }
             if (job.Result != null) terminal["result"] = job.Result;
+            if (job.Result is JObject storedResult) AttachErrorTruncation(terminal, storedResult);
             bool isErr = string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)
                       || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
                       // issue #79: a watchdog-stalled job is terminal AND an error — the
@@ -2477,6 +2493,47 @@ namespace GxMcp.Gateway
                 }
             }
             return (terminal, isErr);
+        }
+
+        /// <summary>
+        /// True unless <paramref name="payload"/> stamps a task identity that is neither this
+        /// Gateway job nor the Worker task it ran. The Worker stamps <c>TaskId</c> and
+        /// <c>operationId</c> on every build result; a payload without either is not judged.
+        /// </summary>
+        internal static bool ResultBelongsToWorkerTask(JObject? payload, string? jobId, string? workerTaskId)
+        {
+            if (payload == null) return true;
+            foreach (string field in new[] { "TaskId", "taskId", "operationId", "workerTaskId" })
+            {
+                string? stamped = payload[field]?.Type == JTokenType.String ? payload[field]!.ToString() : null;
+                if (string.IsNullOrWhiteSpace(stamped)) continue;
+                if (string.Equals(stamped, workerTaskId, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(stamped, jobId, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// States how much of the error list a result carries. The Worker keeps only the first
+        /// entries of a long error list while its error count covers all of them, so without
+        /// this a caller sees "80 errors" beside 50 entries and cannot tell why (#656).
+        /// The omitted entries are only in <c>fullLogPath</c>; there is no further page.
+        /// </summary>
+        internal static void AttachErrorTruncation(JObject envelope, JObject result)
+        {
+            int? total = result["ErrorCount"]?.Value<int?>() ?? result["errorCount"]?.Value<int?>();
+            JArray? shown = result["Errors"] as JArray ?? result["errors"] as JArray;
+            if (total == null || shown == null) return;
+
+            int omitted = Math.Max(0, total.Value - shown.Count);
+            envelope["totalErrors"] = total.Value;
+            envelope["shownErrors"] = shown.Count;
+            envelope["omittedErrors"] = omitted;
+            envelope["truncated"] = omitted > 0;
+            string? fullLog = (result["FullLogPath"] ?? result["fullLogPath"])?.ToString();
+            if (omitted > 0 && !string.IsNullOrWhiteSpace(fullLog)) envelope["fullLogPath"] = fullLog;
         }
 
         /// <summary>

@@ -143,6 +143,9 @@ namespace GxMcp.Gateway
                 ["warnings"] = hasWarningDelta ? new JArray() : dedupedWarnings,
                 ["newWarnings"] = hasWarningDelta ? (warnings.DeepClone()) : new JArray(),
                 ["summary"] = $"{errCount} errors / {warnCount} warnings",
+                ["totalErrors"] = errCount,
+                ["shownErrors"] = Math.Min(ErrorCap, errors.Count),
+                ["omittedErrors"] = Math.Max(0, errCount - Math.Min(ErrorCap, errors.Count)),
                 ["truncated"] = errCount > ErrorCap,
                 ["compact"] = true
             };

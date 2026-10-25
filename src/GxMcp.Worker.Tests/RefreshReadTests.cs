@@ -35,6 +35,36 @@ namespace GxMcp.Worker.Tests
             finally { ObjectReader.InvalidateAll(); }
         }
 
+        // Issue #653: a write marks the managed read caches dirty through
+        // RemoveReadCacheEntries, but the ObjectReader response cache is keyed by the
+        // request (name/type/part shape), has no object-identity index and is only
+        // cleared by a refresh read - so a plain read after a successful edit was
+        // served from it until its TTL expired.
+        [Fact]
+        public void WriteInvalidationAlsoDropsTheObjectReaderResponseCache()
+        {
+            ObjectReader.InvalidateAll();
+            var request = new ObjectReadRequest { Target = "SyntheticEdit653", FullObject = true, TypeFilter = "Procedure" };
+            var cache = typeof(ObjectReader).GetField("_cache", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+            var entryType = typeof(ObjectReader).GetNestedType("CacheEntry", BindingFlags.NonPublic);
+            var entry = Activator.CreateInstance(entryType);
+            entryType.GetProperty("Payload").SetValue(entry, "{\"source\":\"pre-edit\"}");
+            entryType.GetProperty("UpdatedUtc").SetValue(entry, DateTime.UtcNow);
+            cache.GetType().GetProperty("Item").SetValue(cache, entry, new object[] { ObjectReader.BuildCacheKey(request) });
+            try
+            {
+                var reader = new ObjectReader(null);
+                Assert.Equal("pre-edit", JObject.Parse(reader.Read(request))["source"]?.ToString());
+
+                ObjectService.RemoveReadCacheEntries(Guid.NewGuid(), "Source");
+
+                var afterWrite = JObject.Parse(reader.Read(request));
+                Assert.NotEqual("pre-edit", afterWrite["source"]?.ToString());
+                Assert.NotNull(afterWrite["error"]);
+            }
+            finally { ObjectReader.InvalidateAll(); }
+        }
+
         [Fact]
         public void ReadProvenanceDoesNotTurnErrorsIntoFreshSuccess()
         {

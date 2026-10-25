@@ -128,6 +128,7 @@ namespace GxMcp.Gateway
             }
 
             timeoutPayload["reReadRequired"] = true;
+            MarkMutationOutcomeUnknown(timeoutPayload);
             if (timeoutPayload["error"] is JObject timeoutError)
             {
                 timeoutError["retryable"] = false;

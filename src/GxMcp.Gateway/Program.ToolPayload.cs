@@ -476,6 +476,14 @@ namespace GxMcp.Gateway
         // covers names like edit/create/refactor; umbrella tools and
         // action-dependent tools need the explicit cases below.
         internal static void MarkRecordWriteOutcomeUnknown(JObject payload)
+            => MarkMutationOutcomeUnknown(payload);
+
+        /// <summary>
+        /// A mutation whose call ended without an answer (timeout) may or may not have
+        /// committed. The receipt says so explicitly instead of omitting the persistence
+        /// fields, which a caller can read as "nothing was written" and retry.
+        /// </summary>
+        internal static void MarkMutationOutcomeUnknown(JObject payload)
         {
             payload["retriable"] = false;
             payload["retryable"] = false;
