@@ -268,5 +268,64 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("ok", json["status"]?.ToString());
             Assert.Equal("Customer", json["target"]?.ToString());
         }
+
+        // Issue #651: `module` is the owning GeneXus Module (it feeds module-qualified names), so an
+        // object in a Folder reports the Module that holds the Folder. `parent`/`parentPath` carry the
+        // actual container, matching `path`, for write-scope checks.
+        private static JObject ContextObjectOf(SearchIndex.IndexEntry entry)
+        {
+            var indexCache = BuildIndex(new[] { entry });
+            var graphTools = new GraphToolsService(null, null, indexCache, new CallerGraphService(indexCache));
+            return (JObject)JObject.Parse(graphTools.ObjectContext(new JObject { ["name"] = entry.Name }))["result"]["object"];
+        }
+
+        [Fact]
+        public void ObjectContext_ObjectInARealModule_ReportsTheModuleAndItsParentPath()
+        {
+            var obj = ContextObjectOf(new SearchIndex.IndexEntry
+            {
+                Name = "Page", Type = "Domain", Guid = "00000000-0000-0000-0000-000000000051",
+                Parent = "General", ParentPath = "Root Module/General", ParentFolderPath = "Root Module/General",
+                Path = "Root Module/General/Page", Module = "General"
+            });
+
+            Assert.Equal("Root Module/General/Page", (string)obj["path"]);
+            Assert.Equal("General", (string)obj["module"]);
+            Assert.Equal("General", (string)obj["parent"]);
+            Assert.Equal("Root Module/General", (string)obj["parentPath"]);
+        }
+
+        [Fact]
+        public void ObjectContext_ObjectInAFolderUnderTheRootModule_KeepsTheModuleAndNamesTheFolderInParentPath()
+        {
+            var obj = ContextObjectOf(new SearchIndex.IndexEntry
+            {
+                Name = "Plan072Proc", Type = "Procedure", Guid = "00000000-0000-0000-0000-000000000052",
+                Parent = "Plan072Folder", ParentPath = "Root Module/Plan072Folder",
+                // The lite walk stored the doubled prefix (#650); the reported value must still be canonical.
+                ParentFolderPath = "Root Module/Root Module/Plan072Folder",
+                Path = "Root Module/Plan072Folder/Plan072Proc", Module = "Root Module"
+            });
+
+            Assert.Equal("Root Module/Plan072Folder/Plan072Proc", (string)obj["path"]);
+            Assert.Equal("Root Module", (string)obj["module"]);
+            Assert.Equal("Plan072Folder", (string)obj["parent"]);
+            Assert.Equal("Root Module/Plan072Folder", (string)obj["parentPath"]);
+        }
+
+        [Fact]
+        public void ObjectContext_ObjectDirectlyAtTheRoot_ParentPathIsTheRootModule()
+        {
+            var obj = ContextObjectOf(new SearchIndex.IndexEntry
+            {
+                Name = "TareaEjecutar", Type = "Procedure", Guid = "00000000-0000-0000-0000-000000000053",
+                Parent = "Root Module", ParentPath = "Root Module", ParentFolderPath = "Root Module/Root Module",
+                Path = "Root Module/TareaEjecutar", Module = "Root Module"
+            });
+
+            Assert.Equal("Root Module", (string)obj["module"]);
+            Assert.Equal("Root Module", (string)obj["parent"]);
+            Assert.Equal("Root Module", (string)obj["parentPath"]);
+        }
     }
 }

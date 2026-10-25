@@ -43,7 +43,14 @@ storage facts behind the read path are recorded in
 
 ## Enabling it
 
-`config.json` (all documents):
+`config.json` (all documents). A direct-exe launcher (`GENEXUS_MCP_GATEWAY_EXE`) or
+`start_mcp.bat` reads `publish\config.json` of the checkout, **not** the root
+`config.json`, unless the client sets `GX_CONFIG_PATH`. `build.ps1` regenerates
+`publish\config.json` without an `Engine` section: pass `-PreserveEngineConfig`
+(`install.ps1` always does) to carry `Engine.Backend`, `Engine.Fallback` and
+`Engine.TimeoutSeconds` over; `Engine.Executable` is machine-specific and is always
+dropped with a warning. Without the switch the build warns that the section was
+discarded.
 
 | Key | Values | Default | Meaning |
 | :--- | :--- | :--- | :--- |
@@ -51,6 +58,19 @@ storage facts behind the read path are recorded in
 | `Engine.Fallback` | `sdk`, `error` | `sdk` | What happens when a routed capability is not at parity: keep the GeneXus SDK, or refuse the call. `error` is the verification mode. |
 | `Engine.Executable` | path | unset | Explicit `gx-engine.exe`. Authoritative: when the path is missing the probe reports `EngineNotFound` instead of running a different binary. |
 | `Engine.TimeoutSeconds` | positive integer | `120` | Wall-clock budget for one engine invocation (matches the engine's native-compilation deadline). |
+
+**Which `config.json`?** A Gateway reads `GX_CONFIG_PATH` first; without it, it
+takes the first `config.json` found walking up from its own executable. A Gateway
+started from `publish\GxMcp.Gateway.exe` or `publish\start_mcp.bat` without
+`GX_CONFIG_PATH` therefore reads `publish\config.json`, not the `config.json` at
+the checkout root, and `build.ps1` rebuilds `publish\` (and that file, as a
+neutral fallback with no `Engine` section) on every run. To keep an engine choice
+for that launcher, pass it to the build: `.\build.ps1 -EngineBackend sdk` (or
+`.\install.ps1 -EngineBackend sdk`) writes `Engine.Backend` into
+`publish\config.json`. A build that finds an `Engine` section in the previous
+`publish\config.json` that it does not carry over prints a warning naming the
+keys it dropped; `Fallback`, `Executable` and `TimeoutSeconds` are not written by
+the switch and are restored by editing `publish\config.json` afterwards.
 
 Environment overrides (non-strict documents; a **strict** document rejects all
 four at load time, because the engine backend is a behavioral/execution switch
@@ -109,8 +129,9 @@ trigger automatic SDK build replay and may require reconciliation.
 Blocking means `wait_until_done=true`, or `estimated_seconds` below the Gateway's
 sync threshold (default 20 seconds). Full deployment (`skipFullDeploy=false`),
 extra arguments and other admitted-space restrictions below still apply. A
-candidate is not a successful build: versioned/multi-Design-model KBs are refused
-before build output and use the configured SDK fallback. `Backend=sdk` disables
+candidate is not a successful build: a build of a frozen version or a branch (or
+of a versioned KB whose facts cannot be pinned to the trunk) is refused before
+build output and uses the configured SDK fallback. `Backend=sdk` disables
 engine invocation entirely. Unsupported/failed SDK builds remain SDK errors.
 
 ## What changes today
@@ -281,10 +302,19 @@ and passes `--design-model <id> --kb-version <id>`. The engine then:
 
 - serves a query from the named Design model after checking that the model's
   stored `KBVersion` property names that version;
-- serves a build only when the KB has a single Design model (trunk model 1),
-  with every environment model under it. Supporting attribute/table/message facts
-  are not yet version-pinned, so versioned KB builds stay on the SDK even with
-  the trunk active;
+- serves a build only for the trunk Design model (KB version 0, model 1), also
+  when the KB has other versions (issue #637). Every fact a build reads is read
+  under that model and the environments below it: attributes, tables and keys,
+  subtype groups, languages, model properties and the theme come through the
+  model's own `ModelEntityVersion` rows (never the latest `EntityVersion`), so a
+  newer fact of another version cannot reach the trunk build. `TranslationMessage`
+  and `DesignSystemClass` entities are held by no model and are read at their latest
+  version; a versioned KB where one of them stores several versions is refused
+  (`version_scope`) instead of guessed. Building a frozen version or a branch is
+  refused: no SDK build of one has been compared, and the `NetModel` files a build
+  reads (`GXCFG.WEB`, `Directory.build.props`, `GxWebStd.cs`) belong to the KB
+  folder, not to a version. Those builds, and any build with another version
+  active, run on the SDK;
 - without a named version, serves only a Knowledge Base with a single Design
   model.
 
@@ -314,6 +344,23 @@ still clear it before changing scope, so concurrent readers can see unknown.
 Snapshot RPCs reserve the already-ready Worker by identity, never acquire or
 respawn one, and bound both send and response to one two-second budget.
 
+#### Open check for trunk builds of a KB with versions (issue #637)
+
+The trunk build reads its facts through the model's `ModelEntityVersion` rows
+(`src/gx-engine/src/udm/client/model_pin.rs`). It was compared with the SDK on a
+disposable copy of `KBTeste` with three Design models (346/346 trunk objects
+generated and compiled, output identical to the unversioned KB). A second
+disposable KB with two Design models (read-only `SELECT`s, 2026-10-23) showed
+that `ModelEntityVersion` of the trunk model listed 72 of its 237 Attributes and
+none of the Groups, `DesignSystemClass`, `TranslationMessage` or
+`Udm.Types.Property` entities, while `ModelEntityHistory` kept one history per
+model for Attribute, Group, Table, Domain, SDT, Image, DesignSystem and Language.
+How the pinned reads behave on a KB like that one, and on a branch that edits an
+attribute, a table key or a stored property, has not been compared with the SDK,
+and whether an incomplete fact set is refused (`version_scope`) rather than
+emitted is not established. Until such a KB is compared, treat trunk builds of a
+versioned KB as verified only on the `KBTeste` copy.
+
 Stored model properties are decoded as full XML, including formatted integer
 values. Missing `KBVersion` (trunk default) is distinct from duplicated, malformed
 or non-scalar metadata, which refuses the operation. Legacy catalog commands
@@ -341,7 +388,9 @@ its existence is not native MCP read-parity evidence. See
 
 Admitted: one bare `type:X` filter, or `typeFilter` without a `type:` term.
 Calls must explicitly select `fields` limited to `name` and `type`, the only row
-fields supplied by the engine. A supplied `limit` must be 1..200 (default 50).
+fields supplied by the engine. `fields` is an array of strings in the tool schema. A
+JSON array sent as text (`["name","type"]`) is not admitted to the engine: the call
+stays on the SDK, whose compact projection does read it as that array. A supplied `limit` must be 1..200 (default 50).
 `exactMatch` has no effect for a query without a name term. A nonempty external
 `typeFilter` must have no leading/trailing whitespace: the SDK preserves it
 verbatim, so normalization would change its match set. Type tokens use the

@@ -7,7 +7,7 @@ $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $PSScriptRoot '../test-live.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw $errors[0] }
-foreach ($name in @('Get-OwnedDescendants', 'New-LiveGatewayConfig', 'Get-LiveBackendEvidence', 'Get-LiveKbOpenFailure')) {
+foreach ($name in @('Get-OwnedDescendants', 'New-LiveGatewayConfig', 'Get-LiveBackendEvidence', 'Get-LiveKbOpenFailure', 'Test-HttpPortBindable', 'Get-FreeHttpPort')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing production function: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
@@ -197,4 +197,16 @@ finally {
 if ($childExit -eq 0 -or ($output -join "`n") -notmatch 'live=unavailable') {
     throw 'The real entry point must fail closed when an explicitly supplied manifest is missing.'
 }
-Write-Host 'PASS: fixture rejection, provenance hashes, master/proxy log guard, benchmark alias contract and owned process selection.'
+# A port can be unusable without anything listening on it: Windows reserves dynamic ranges (netsh int ipv4 show
+# excludedportrange) and a socket can hold it bound. The harness binds the port, so the chooser must bind too.
+$firstFree = Get-FreeHttpPort
+$holder = [System.Net.Sockets.Socket]::new([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+try {
+    $holder.ExclusiveAddressUse = $true
+    $holder.Bind([System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, $firstFree))
+    $next = Get-FreeHttpPort
+    if ($next -eq $firstFree) { throw "Get-FreeHttpPort returned port $firstFree, which is bound but not listening; the live harness cannot bind it." }
+    if (Test-HttpPortBindable $firstFree) { throw 'Test-HttpPortBindable must report a bound port as unusable.' }
+} finally { $holder.Dispose() }
+
+Write-Host 'PASS: fixture rejection, provenance hashes, master/proxy log guard, benchmark alias contract, owned process selection and bindable port choice.'

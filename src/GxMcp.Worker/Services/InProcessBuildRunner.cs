@@ -83,7 +83,8 @@ namespace GxMcp.Worker.Services
             bool specifyOnly = false,
             bool fullDeploy = false,
             bool forceFullBuild = false,
-            IReadOnlyList<string> skipSpecifyTargets = null)
+            IReadOnlyList<string> skipSpecifyTargets = null,
+            bool refuseStaleEnvironmentCopy = false)
         {
             if (status == null) return InProcessBuildOutcome.CouldNotRun;
             if (kbHandle == null)
@@ -168,7 +169,7 @@ namespace GxMcp.Worker.Services
                     {
                         lineSink("[BUILD-INPROCESS] specifyOnly=true — running SpecifyOneOnly (Spec+Gen) only; Compile and deploy are SKIPPED. Use this for a fast spec check, not to produce runnable output.", false);
                         engine.ResetSectionFlags();
-                        bool specOk = ExecuteSpecifyResolved(kbHandle, targets, engine, lineSink)
+                        bool specOk = ExecuteSpecifyResolved(kbHandle, targets, engine, lineSink, refuseStaleEnvironmentCopy)
                             ?? ExecuteSpecifyOneOnly(kbHandle, targets, engine);
                         // Success here means "spec pass ran"; spec errors (if any) were emitted to
                         // the sink and counted. Report Succeeded so the caller surfaces the spec
@@ -1417,7 +1418,8 @@ namespace GxMcp.Worker.Services
         // Resolve the keys with the homonym-safe resolver the build path uses and make
         // the same Specifier call SpecifyOneOnly.Specify makes. Returns null when the SDK
         // members are unavailable, so the caller can run the task as before.
-        private static bool? ExecuteSpecifyResolved(object kbHandle, List<string> targets, IBuildEngine engine, Action<string, bool> lineSink)
+        private static bool? ExecuteSpecifyResolved(object kbHandle, List<string> targets, IBuildEngine engine, Action<string, bool> lineSink,
+            bool refuseStaleEnvironmentCopy = false)
         {
             try
             {
@@ -1486,9 +1488,8 @@ namespace GxMcp.Worker.Services
                 // The specifier reads the environment's copy of each object, and only a
                 // build refreshes that copy (CopyModel, after its reorganization check).
                 // Copying it here could hide a pending reorganization, so say it instead.
-                if (staleCopies.Count > 0)
-                    lineSink("warning : changed since the last build: " + string.Join(", ", staleCopies)
-                        + ". GeneXus specifies the environment's copy of an object, which only a build refreshes, so this result reflects the source as of the last build.", false);
+                if (ApplyStaleEnvironmentCopyPolicy(refuseStaleEnvironmentCopy, staleCopies, lineSink))
+                    return false;
 
                 object options = Enum.ToObject(_typeBuildOptions, 0);
                 return WithTaskOutput(kbHandle, engine,
@@ -1504,6 +1505,43 @@ namespace GxMcp.Worker.Services
                 return null;
             }
         }
+
+        internal const string StaleSpecifyRefusalCode = "SpecifyStaleEnvironmentCopy";
+
+        internal const string StaleSpecifyRefusalHint =
+            "Nothing was specified: GeneXus specifies the environment's copy of an object, which only a build refreshes, "
+            + "so a spec-check right after an edit would describe the last build's source. "
+            + "Run genexus_lifecycle action=build target=<object> (skipFullDeploy=true) to get diagnostics for the current source.";
+
+        /// <summary>
+        /// Decides what a spec-check does with targets whose design object changed after the
+        /// environment copy GeneXus specifies (#654). A refusing caller (lifecycle
+        /// action=specify) gets an error line and no specification at all; the inline
+        /// save-and-validate paths keep specifying the copy and only warn, because they
+        /// surface the same marker as <c>staleEnvironmentCopy</c>.
+        /// Returns true when the specification was refused.
+        /// </summary>
+        internal static bool ApplyStaleEnvironmentCopyPolicy(
+            bool refuseStaleEnvironmentCopy, IReadOnlyList<string> staleCopies, Action<string, bool> lineSink)
+        {
+            if (staleCopies == null || staleCopies.Count == 0) return false;
+            string names = string.Join(", ", staleCopies);
+            if (refuseStaleEnvironmentCopy)
+            {
+                lineSink("error : [" + StaleSpecifyRefusalCode + "] specification refused, changed since the last build: " + names
+                    + ". GeneXus specifies the environment's copy of an object, which only a build refreshes, so the result would describe the source as of the last build, not the current source. "
+                    + "Run genexus_lifecycle action=build target=<object> first.", true);
+                return true;
+            }
+
+            lineSink("warning : changed since the last build: " + names
+                + ". GeneXus specifies the environment's copy of an object, which only a build refreshes, so this result reflects the source as of the last build.", false);
+            return false;
+        }
+
+        internal static bool IsStaleSpecifyRefusal(string output)
+            => !string.IsNullOrEmpty(output)
+               && output.IndexOf("[" + StaleSpecifyRefusalCode + "]", StringComparison.Ordinal) >= 0;
 
         internal static bool IsNeverBuilt(object designObject, object environmentCopy, bool separateEnvironment)
             => separateEnvironment && designObject != null && environmentCopy == null;

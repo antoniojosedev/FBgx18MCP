@@ -177,9 +177,18 @@ function Write-LiveProgress {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $Message) -ForegroundColor DarkCyan
 }
 
+# Binds the port the way LiveGatewayHarness.CanBindPort does: a port with no listener can still be unusable
+# (a Windows excluded port range, or a socket holding it bound).
+function Test-HttpPortBindable([int]$Port) {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+    try { $listener.Start(); return $true }
+    catch { return $false }
+    finally { $listener.Stop() }
+}
+
 function Get-FreeHttpPort {
     foreach ($candidate in 55100..55199) {
-        if (-not (Get-NetTCPConnection -LocalPort $candidate -State Listen -ErrorAction SilentlyContinue)) {
+        if (Test-HttpPortBindable $candidate) {
             return $candidate
         }
     }
@@ -276,8 +285,8 @@ $env:GXMCP_TEST_KB = $KbPath
 $env:GX_PATH = $GxPath
 $env:GX_PROGRAM_DIR = $GxPath
 $HttpPort = if ($HttpPort -gt 0) { $HttpPort } else { Get-FreeHttpPort }
-if (Get-NetTCPConnection -LocalPort $HttpPort -State Listen -ErrorAction SilentlyContinue) {
-    Fail-Live "Selected port $HttpPort is already in use."
+if (-not (Test-HttpPortBindable $HttpPort)) {
+    Fail-Live "Selected port $HttpPort is already in use or reserved (netsh int ipv4 show excludedportrange protocol=tcp)."
 }
 $env:GX_MCP_PORT = $HttpPort.ToString()
 $env:GX_MCP_STDIO = 'true'

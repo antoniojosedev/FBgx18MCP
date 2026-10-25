@@ -400,16 +400,19 @@ fn an_unchanged_project_is_not_compiled_again_and_any_input_or_output_change_com
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// `path` relative to the current directory: `..` up to the shared root, then the rest of `path`.
-fn relative_to_current_dir(path: &Path) -> PathBuf {
-    let here = std::env::current_dir().unwrap();
+/// `path` relative to `base`: `..` up to the shared root, then the rest of `path`. A relative path does not
+/// exist between two roots (drives, UNC or verbatim prefixes), so that is an error naming both paths.
+fn relative_to(base: &Path, path: &Path) -> Result<PathBuf, String> {
     let (here, there): (Vec<_>, Vec<_>) =
-        (here.components().collect(), path.components().collect());
+        (base.components().collect(), path.components().collect());
     let shared = here.iter().zip(&there).take_while(|(a, b)| a == b).count();
-    assert!(
-        shared > 0,
-        "the scratch folder must share a root with the current directory"
-    );
+    if shared == 0 {
+        return Err(format!(
+            "{} and {} share no root, so no relative path leads from one to the other",
+            base.display(),
+            path.display()
+        ));
+    }
     let mut relative = PathBuf::new();
     for _ in shared..here.len() {
         relative.push("..");
@@ -417,7 +420,65 @@ fn relative_to_current_dir(path: &Path) -> PathBuf {
     for part in &there[shared..] {
         relative.push(part.as_os_str());
     }
-    relative
+    Ok(relative)
+}
+
+/// `path` relative to the current directory.
+fn relative_to_current_dir(path: &Path) -> PathBuf {
+    let here = std::env::current_dir().unwrap();
+    relative_to(&here, path).unwrap_or_else(|reason| panic!("{reason}"))
+}
+
+/// A scratch folder the current directory can name by a relative path. The system temp folder is used when it
+/// shares a root with the current directory; otherwise (a checkout on another drive than `%TEMP%`, as on the
+/// CI runner) the first ancestor of the current directory that has no ambient MSBuild import, because the
+/// direct path refuses a project under one.
+fn scratch_reachable_from_current_dir(label: &str) -> PathBuf {
+    let here = std::env::current_dir().unwrap();
+    let temp = std::env::temp_dir();
+    let mut tried = Vec::new();
+    let bases = std::iter::once(temp).chain(
+        here.ancestors()
+            .filter(|ancestor| ambient_import(ancestor).is_none())
+            .map(Path::to_path_buf),
+    );
+    for base in bases {
+        if let Err(reason) = relative_to(&here, &base) {
+            tried.push(reason);
+            continue;
+        }
+        let dir = base.join(format!(
+            "gx_csc_direct_{label}_{}_{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        match fs::create_dir_all(&dir) {
+            Ok(()) => return dir,
+            Err(error) => tried.push(format!("cannot create {}: {error}", dir.display())),
+        }
+    }
+    panic!(
+        "no scratch folder can be named by a relative path from {}: {}",
+        here.display(),
+        tried.join("; ")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_path_on_another_root_has_no_relative_form_and_the_error_names_both_paths() {
+    let base = Path::new(r"C:\work\checkout");
+    let other = Path::new(r"D:\scratch\project");
+    let error = relative_to(base, other).expect_err("two roots have no relative path");
+    assert!(
+        error.contains(r"C:\work\checkout") && error.contains(r"D:\scratch\project"),
+        "{error}"
+    );
+    assert_eq!(
+        relative_to(base, Path::new(r"C:\work\scratch\project")).unwrap(),
+        PathBuf::from(r"..\scratch\project")
+    );
 }
 
 #[test]
@@ -427,7 +488,7 @@ fn a_kept_command_builds_a_project_named_by_a_relative_path() {
         eprintln!("skipped: the dotnet CLI is not available");
         return;
     }
-    let dir = scratch("relative");
+    let dir = scratch_reachable_from_current_dir("relative");
     write_project(&dir, &["A.cs"], "");
     fs::write(
         dir.join("A.cs"),
@@ -946,14 +1007,46 @@ fn an_input_added_as_a_targets_file_or_in_a_subfolder_changes_the_identity() {
     );
 }
 
+/// `ERROR_PRIVILEGE_NOT_HELD`: the one symlink failure that is the machine's, not the product's.
+#[cfg(windows)]
+fn symlink_privilege_is_missing(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(1314)
+}
+
+#[cfg(windows)]
+#[test]
+fn only_the_missing_symlink_privilege_is_a_local_skip() {
+    assert!(symlink_privilege_is_missing(
+        &std::io::Error::from_raw_os_error(1314)
+    ));
+    for other in [5, 183, 1] {
+        assert!(
+            !symlink_privilege_is_missing(&std::io::Error::from_raw_os_error(other)),
+            "os error {other} must stay a failure"
+        );
+    }
+    assert!(!symlink_privilege_is_missing(&std::io::Error::other(
+        "no os code"
+    )));
+}
+
 #[cfg(windows)]
 #[test]
 fn a_link_in_the_sdk_folder_refuses_the_direct_path() {
     let (sdk, compiler) = fake_sdk("sdk_link");
     let target = sdk.join("Roslyn").join("Microsoft.Managed.Core.targets");
     let link = sdk.join("Linked.targets");
-    std::os::windows::fs::symlink_file(&target, &link)
-        .expect("symlink creation needs developer mode or the symlink privilege");
+    if let Err(error) = std::os::windows::fs::symlink_file(&target, &link) {
+        if symlink_privilege_is_missing(&error) && std::env::var_os("CI").is_none() {
+            // ERROR_PRIVILEGE_NOT_HELD: this machine has no Developer Mode or symlink privilege. Only a local run
+            // may skip, and only for this error; CI has the privilege, so a missing one there must fail.
+            eprintln!(
+                "SKIPPED a_link_in_the_sdk_folder_refuses_the_direct_path: symlink creation needs Developer Mode or the symlink privilege ({error})"
+            );
+            return;
+        }
+        panic!("cannot create the symlink {}: {error}", link.display());
+    }
     let reason = compiler_and_sdk_identity(&compiler).expect_err("a link is not read through");
     assert!(reason.contains("cannot read the SDK inputs"), "{reason}");
     assert!(reason.contains("Linked.targets"), "{reason}");

@@ -240,7 +240,8 @@ namespace GxMcp.Worker.Services
                             ["instanceGuid"] = parentInstance.Guid.ToString("D"),
                             ["instanceEntityKey"] = parentInstance.Key?.ToString(),
                             ["parentGuid"] = parent.Guid.ToString("D"),
-                            ["catalog"] = parentCatalog
+                            ["catalog"] = parentCatalog,
+                            ["variables"] = DeclaredVariableReferences(DeclaredVariables(new[] { parent, parentInstance }))
                         });
                     }
                 }
@@ -314,16 +315,14 @@ namespace GxMcp.Worker.Services
                          target: target, extra: new JObject { ["currentVersion"] = versionToken });
                  if (operation == "add_grid_variable")
                  {
-                     JObject identityError = ResolveGridVariableReference(args, out string verifiedReference);
+                     KBObject variableHost = WwpProjectionHelper.ResolveHostParent(instance, _objects, xml);
+                     JObject identityError = ResolveGridVariableReference(args,
+                         new[] { variableHost, requestedObject, instance }, out string verifiedReference);
                      if (identityError != null)
                          return McpResponse.Err(code: identityError["code"]?.ToString() ?? "GridVariableIdentityRequired",
                              message: identityError["error"]?.ToString() ?? identityError["message"]?.ToString()
                                  ?? "The presentation variable identity could not be verified.",
-                             target: target, extra: new JObject
-                             {
-                                 ["variable"] = args?["variable"]?.ToString() ?? args?["variableName"]?.ToString(),
-                                 ["variableReference"] = args?["variableReference"]?.ToString()
-                             });
+                             target: target, extra: IdentityErrorExtra(args, identityError));
                      args["_variableReference"] = verifiedReference;
                  }
                  if (!IsExpectedVersion(expectedVersion, versionToken))
@@ -350,6 +349,8 @@ namespace GxMcp.Worker.Services
                     return RunTabOperation(target, requestedObject, instance, instancePart, xml, operation, args);
                 if (IsComboPropertyOperation(operation))
                     return RunComboPropertyOperation(target, requestedObject, instance, instancePart, xml, args);
+                if (IsRegenerateDerivedOperation(operation))
+                    return RunRegenerateDerivedOperation(target, requestedObject, instance, instancePart, xml, args);
 
                 XDocument beforeDocument = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
                 JObject before = Project(beforeDocument);
@@ -357,7 +358,9 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Ok(target: target, code: "WwpActionsRead", result: new JObject
                     {
                         ["instance"] = instance.Name,
-                        ["catalog"] = before
+                        ["catalog"] = before,
+                        ["variables"] = DeclaredVariableReferences(DeclaredVariables(
+                            new[] { WwpProjectionHelper.ResolveHostParent(instance, _objects, xml), requestedObject, instance }))
                     });
 
                 XDocument afterDocument = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);

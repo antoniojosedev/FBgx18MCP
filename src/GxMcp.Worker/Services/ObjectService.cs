@@ -3857,8 +3857,7 @@ namespace GxMcp.Worker.Services
             try { (seed.Model.Objects as IKBModelObjectsCacheConfiguration)?.RemoveFromCaches(seed); }
             catch (Exception ex) { Logger.Debug("Fresh-read cache eviction failed: " + ex.GetType().Name); }
 
-            RemoveReadCacheEntries(seed.Guid, null);
-            ObjectReader.InvalidateAll();
+            RemoveReadCacheEntries(seed.Guid, null); // also drops the ObjectReader response cache
             // Resolve through the same module-aware route as genexus_read after
             // invalidation. Loading by EntityKey here bypassed that route and could
             // expose a different Source representation from the public read.
@@ -4388,6 +4387,32 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
+        /// The complete text of several parts of one object, each read as <see cref="ReadObjectSourceForVerification"/>
+        /// reads it, but with the object resolved once. A part the object does not have, or that has no text, is
+        /// left out of the result. Used where a whole object is captured before and after a change: resolving a
+        /// fresh handle per part costs several times the read itself.
+        /// </summary>
+        internal Dictionary<string, string> ReadObjectPartsForVerification(string target, IEnumerable<string> partNames, string typeFilter = null)
+        {
+            var texts = new Dictionary<string, string>(StringComparer.Ordinal);
+            var obj = FindObjectFresh(target, typeFilter);
+            if (obj == null) return texts;
+            foreach (string partName in partNames)
+            {
+                try
+                {
+                    string response = ReadObjectSourceInternal(obj, ResolvePartName(obj, partName), offset: 0, limit: 0, client: "mcp", minimize: false);
+                    JObject payload = JObject.Parse(response);
+                    string text = payload["source"]?.Type == JTokenType.String ? payload["source"].ToString()
+                        : payload["content"]?.Type == JTokenType.String ? payload["content"].ToString() : null;
+                    if (text != null) texts[partName] = text;
+                }
+                catch { /* a part the object does not have is not captured */ }
+            }
+            return texts;
+        }
+
+        /// <summary>
         /// Read multiple named parts of an object in one call.
         /// Returns a JSON object: { name, type, parts: { Source: "...", Variables: "..." } }
         /// Parts that are not found or produce no source are silently omitted.
@@ -4867,6 +4892,12 @@ namespace GxMcp.Worker.Services
         /// </summary>
         internal static void RemoveReadCacheEntries(Guid objectGuid, string resolvedPart)
         {
+            // Issue #653: ObjectReader caches whole response envelopes keyed by the
+            // request (name/type/part shape), with no object-identity index, so a write
+            // cannot select the entries it made stale. A plain read after a successful
+            // edit was served from it until the TTL expired.
+            ObjectReader.InvalidateAll();
+
             string normalizedPart = string.IsNullOrWhiteSpace(resolvedPart) ? null : resolvedPart.Trim().ToLowerInvariant();
             string objectPrefix = objectGuid.ToString("N") + "|";
             foreach (var kvp in _readCache)

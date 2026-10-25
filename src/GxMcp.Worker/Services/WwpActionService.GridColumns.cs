@@ -205,14 +205,7 @@ namespace GxMcp.Worker.Services
                 foreach (object variable in PartAccessor.GetVariableObjects(host))
                 {
                     string variableName = PartAccessor.GetVariableName(variable);
-                    string variableGuid = null;
-                    try
-                    {
-                        var guidProperty = variable.GetType().GetProperty("Guid",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                        variableGuid = guidProperty?.GetValue(variable, null)?.ToString();
-                    }
-                    catch { }
+                    string variableGuid = ReadVariableGuid(variable);
                     if (GridVariableIdentityMatches(variableName, variableGuid, name, reference))
                         return null;
                 }
@@ -222,56 +215,109 @@ namespace GxMcp.Worker.Services
                 : "The owning object exposes no readable Variables part for presentation-variable verification.";
         }
 
-        private JObject ResolveGridVariableReference(JObject args, out string reference)
+        private static string ReadVariableGuid(object variable)
         {
-            reference = args?["variableReference"]?.ToString()
-                ?? args?["_variableReference"]?.ToString();
-            string variableName = args?["variable"]?.ToString()
-                ?? args?["variableName"]?.ToString();
-
-            if (!string.IsNullOrWhiteSpace(reference))
+            try
             {
-                if (reference.Length <= 37
-                    || !Guid.TryParse(reference.Substring(0, 36), out Guid guid))
-                {
-                    return Error("GridVariableIdentityRequired",
-                        "variableReference must be a live SDK GUID-Name identity.");
-                }
-                string suffix = reference.Substring(36);
-                if (suffix.StartsWith("-", StringComparison.Ordinal)) suffix = suffix.Substring(1);
-                if (string.IsNullOrWhiteSpace(suffix))
-                    return Error("GridVariableIdentityRequired", "variableReference must include the SDK variable name after the GUID.");
-                if (!string.Equals(suffix, variableName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return Error("GridVariableIdentityMismatch",
-                        "variableReference name does not match the requested variable.");
-                }
-
-                KBObject referenced = _objects.FindObject(null, guid: guid.ToString("D"));
-                if (referenced == null)
-                {
-                    return Error("GridVariableIdentityNotFound",
-                        "variableReference does not resolve to a live SDK object.");
-                }
-                if (!string.IsNullOrWhiteSpace(variableName)
-                    && !string.Equals(referenced.Name, variableName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return Error("GridVariableIdentityMismatch",
-                        "variableReference resolves to a different SDK object name.");
-                }
-                string referencedType = referenced.TypeDescriptor?.Name ?? string.Empty;
-                if (!string.Equals(referencedType, "Variable", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(referencedType, "Attribute", StringComparison.OrdinalIgnoreCase))
-                {
-                    return Error("GridVariableIdentityMismatch",
-                        "variableReference must identify a Variable or Attribute SDK object.");
-                }
-                reference = guid.ToString("D") + "-" + referenced.Name;
+                var guidProperty = variable?.GetType().GetProperty("Guid",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                return guidProperty?.GetValue(variable, null)?.ToString();
+            }
+            catch (System.Reflection.TargetInvocationException ex)
+            {
+                Logger.Debug("[WWP-VARIABLE] Variable Guid could not be read: " + ExceptionRoot.Message(ex));
                 return null;
             }
+        }
 
-            return Error("GridVariableIdentityRequired",
-                "A verified GUID-Name variableReference is required; a name-only lookup cannot disambiguate homonymous SDK variables.");
+        // The variables the owning object declares, as (name, own GUID) pairs. A variable is a
+        // part item, not a KB object: its GUID is found here and nowhere in the KB object index.
+        internal static List<KeyValuePair<string, string>> DeclaredVariables(IEnumerable<KBObject> hosts)
+        {
+            var declared = new List<KeyValuePair<string, string>>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (KBObject host in hosts ?? Enumerable.Empty<KBObject>())
+            {
+                if (host == null || PartAccessor.GetVariablesLikePart(host) == null) continue;
+                foreach (object variable in PartAccessor.GetVariableObjects(host))
+                {
+                    string name = PartAccessor.GetVariableName(variable).TrimStart('&');
+                    if (name.Length > 0 && seen.Add(name))
+                        declared.Add(new KeyValuePair<string, string>(name, ReadVariableGuid(variable)));
+                }
+            }
+            return declared;
+        }
+
+        internal static JArray DeclaredVariableReferences(IEnumerable<KeyValuePair<string, string>> declared)
+            => new JArray((declared ?? Enumerable.Empty<KeyValuePair<string, string>>())
+                .Where(d => Guid.TryParse(d.Value, out Guid guid) && guid != Guid.Empty)
+                .Select(d => new JObject
+                {
+                    ["name"] = d.Key,
+                    ["variableReference"] = Guid.Parse(d.Value).ToString("D") + "-" + d.Key
+                }));
+
+        /// <summary>
+        /// The variableReference of add_grid_variable is the declared variable's own GUID and name
+        /// (<c>GUID-Name</c>) in the owning object's Variables part. The refusals carry the identity
+        /// to use, so a client can obtain it without reading the SDK.
+        /// </summary>
+        internal static JObject ResolveDeclaredVariableReference(string requestedName, string suppliedReference,
+            IList<KeyValuePair<string, string>> declared, out string reference)
+        {
+            reference = null;
+            string name = requestedName?.Trim().TrimStart('&');
+            if (string.IsNullOrWhiteSpace(name))
+                return Error("MissingGridVariable", "variable is required for add_grid_variable.");
+            JArray catalog = DeclaredVariableReferences(declared);
+            JToken match = catalog.FirstOrDefault(v => string.Equals((string)v["name"], name, StringComparison.OrdinalIgnoreCase));
+            if (match == null)
+            {
+                JObject notFound = Error("GridVariableIdentityNotFound",
+                    "Variable '&" + name + "' is not declared in the Variables part of the owning object; declare it with genexus_variable action=add first.");
+                notFound["declaredVariables"] = catalog;
+                return notFound;
+            }
+
+            string expected = (string)match["variableReference"];
+            if (string.IsNullOrWhiteSpace(suppliedReference))
+            {
+                JObject required = Error("GridVariableIdentityRequired",
+                    "variableReference is required; the identity of '&" + name + "' is the expectedVariableReference returned here (the variable's own GUID, then its name).");
+                required["expectedVariableReference"] = expected;
+                return required;
+            }
+            if (!string.Equals(suppliedReference.Trim(), expected, StringComparison.OrdinalIgnoreCase))
+            {
+                JObject mismatch = Error("GridVariableIdentityMismatch",
+                    "variableReference does not identify '&" + name + "': use the variable's own GUID from the owning object's Variables part, not the GUID of the object or its PatternInstance.");
+                mismatch["expectedVariableReference"] = expected;
+                return mismatch;
+            }
+            reference = expected;
+            return null;
+        }
+
+        private static JObject IdentityErrorExtra(JObject args, JObject identityError)
+        {
+            var extra = new JObject
+            {
+                ["variable"] = args?["variable"]?.ToString() ?? args?["variableName"]?.ToString(),
+                ["variableReference"] = args?["variableReference"]?.ToString()
+            };
+            foreach (string name in new[] { "expectedVariableReference", "declaredVariables" })
+                if (identityError[name] != null) extra[name] = identityError[name].DeepClone();
+            return extra;
+        }
+
+        private JObject ResolveGridVariableReference(JObject args, IEnumerable<KBObject> hosts, out string reference)
+        {
+            JObject error = ResolveDeclaredVariableReference(
+                args?["variable"]?.ToString() ?? args?["variableName"]?.ToString(),
+                args?["variableReference"]?.ToString() ?? args?["_variableReference"]?.ToString(),
+                DeclaredVariables(hosts), out reference);
+            return error;
         }
 
         private static JObject FindRequestedGrid(XDocument document, string gridPath, out XElement grid)

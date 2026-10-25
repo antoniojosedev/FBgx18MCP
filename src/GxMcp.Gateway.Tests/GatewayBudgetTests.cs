@@ -22,6 +22,22 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(expected, timeoutMs);
         }
 
+        // Issue #656: the router sends an edit without `part` to Source, but the timeout
+        // policy only looked at the literal argument, so `mode=patch` without `part` got the
+        // 60s default ceiling while the same edit with part=Source got 180s. The Worker was
+        // cut off mid-write and the caller was left not knowing whether the patch landed.
+        [Theory]
+        [InlineData("patch")]
+        [InlineData("full")]
+        [InlineData(null)]
+        public void GetToolTimeoutMs_EditWithoutPartUsesTheSourceBudgetTheRouterDefaultsTo(string? mode)
+        {
+            var args = new JObject { ["name"] = "SyntheticProc" };
+            if (mode != null) args["mode"] = mode;
+
+            Assert.Equal(180000, Program.GetToolTimeoutMs("genexus_edit", args));
+        }
+
         [Theory]
         [InlineData("genexus_lifecycle")]
         [InlineData("genexus_analyze")]

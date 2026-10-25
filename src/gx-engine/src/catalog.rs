@@ -566,6 +566,13 @@ impl Catalog {
         Self::from_json(&read_catalog_text(path)?)
     }
 
+    /// Loads the catalog of Design model `model_id` of the native Knowledge Base folder `path`. The caller
+    /// has selected the model (see `udm::version_scope::select_design_model`); `load` instead serves only a
+    /// KB with a single Design model.
+    pub fn load_native_model(path: impl AsRef<Path>, model_id: i32) -> Result<Self, String> {
+        native::load_model(path.as_ref(), model_id)
+    }
+
     /// The snapshot JSON for this catalog: the text `save_snapshot_atomic` writes and `from_snapshot_text`
     /// reads. Nothing is re-sorted, so the order the KB reader produced is kept.
     pub fn snapshot_text(&self) -> Result<String, String> {

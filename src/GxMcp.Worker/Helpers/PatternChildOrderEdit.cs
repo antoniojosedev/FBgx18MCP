@@ -76,6 +76,7 @@ namespace GxMcp.Worker.Helpers
                 .Where(e => e != null)
                 .Select(e => e[1])
                 .FirstOrDefault()
+                ?? NestedTableTypeCode(parent, child)
                 ?? PatternChildOrderReconciler.GetTypeCode(child, context);
             if (string.IsNullOrEmpty(typeCode))
             {
@@ -90,6 +91,29 @@ namespace GxMcp.Worker.Helpers
             change.After = InsertEntry(change.Before, change.Entry, change.InsertedBefore);
             parent.SetAttributeValue("childrenOrderedList", change.After);
             return true;
+        }
+
+        /// <summary>
+        /// The code a new table is listed with when no sibling table is listed yet (issue #638).
+        /// The code is the pattern's element code for a table, and a WebPanel does not use the
+        /// transaction's 01/02: its WPRoot lists the main table as <c>7;66;TableMain</c>. The
+        /// nearest enclosing table that is itself listed in its parent's list is the evidence
+        /// (the container first, then its ancestors); null when no ancestor is listed, which
+        /// leaves the context default in force.
+        /// </summary>
+        private static string NestedTableTypeCode(XElement parent, XElement child)
+        {
+            if (!child.Name.LocalName.Equals("table", StringComparison.OrdinalIgnoreCase)) return null;
+            for (XElement table = parent; table?.Parent != null; table = table.Parent)
+            {
+                if (!table.Name.LocalName.Equals("table", StringComparison.OrdinalIgnoreCase)) continue;
+                string identifier = PatternChildOrderReconciler.GetIdentifier(table, table.Parent);
+                string[] entry = PatternChildOrderReconciler.SplitEntries((string)table.Parent.Attribute("childrenOrderedList"))
+                    .FirstOrDefault(e => e.Length >= 3 && !string.IsNullOrWhiteSpace(e[1])
+                        && IdentifierOf(e).Equals(identifier, StringComparison.OrdinalIgnoreCase));
+                if (entry != null) return entry[1];
+            }
+            return null;
         }
 
         /// <summary>

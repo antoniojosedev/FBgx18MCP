@@ -143,9 +143,21 @@ namespace GxMcp.Gateway
                 ["warnings"] = hasWarningDelta ? new JArray() : dedupedWarnings,
                 ["newWarnings"] = hasWarningDelta ? (warnings.DeepClone()) : new JArray(),
                 ["summary"] = $"{errCount} errors / {warnCount} warnings",
+                ["totalErrors"] = errCount,
+                ["shownErrors"] = Math.Min(ErrorCap, errors.Count),
+                ["omittedErrors"] = Math.Max(0, errCount - Math.Min(ErrorCap, errors.Count)),
                 ["truncated"] = errCount > ErrorCap,
                 ["compact"] = true
             };
+
+            // The list above is cut at ErrorCap (and the task keeps only its first lines):
+            // when it is shorter than the count, say where the rest is (#656).
+            int shownErrors = Math.Min(errors.Count, ErrorCap);
+            if (errCount > shownErrors)
+            {
+                compactObj["errorsHint"] = "The first " + shownErrors + " of " + errCount
+                    + " errors are listed; the complete list is in the build log (fullLogPath), and action=result pages the lines the task kept.";
+            }
 
             // The published lifecycle schema allows an optional string, not null.
             var error = obj["error"] ?? obj["Error"];
@@ -157,6 +169,11 @@ namespace GxMcp.Gateway
 
             if (obj["failureOrigin"] != null || obj["FailureOrigin"] != null)
                 compactObj["failureOrigin"] = obj["failureOrigin"] ?? obj["FailureOrigin"];
+            // #654: what a specify validated, and whether that copy predates the last edit.
+            if (obj["validatedSource"] != null)
+                compactObj["validatedSource"] = obj["validatedSource"];
+            if (obj["staleEnvironmentCopy"] != null)
+                compactObj["staleEnvironmentCopy"] = obj["staleEnvironmentCopy"];
             if (obj["watchdogTriggered"] != null || obj["WatchdogTriggered"] != null)
                 compactObj["watchdogTriggered"] = obj["watchdogTriggered"] ?? obj["WatchdogTriggered"];
             if (obj["watchdogType"] != null || obj["WatchdogType"] != null)

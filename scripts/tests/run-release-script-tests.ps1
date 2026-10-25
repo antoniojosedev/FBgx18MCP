@@ -4,6 +4,7 @@ $tests = @(
     'test-version-catalog.ps1',
     'install-contract.tests.ps1',
     'release-manifest.tests.ps1',
+    'test-build-publish-config.ps1',
     'test-live-build-all.ps1',
     'test-live-fixture-manifest.ps1',
     'test-live.test.ps1',
@@ -30,6 +31,7 @@ $tests = @(
     'test-line-endings.ps1',
     'test-live-matrix.test.ps1',
     'test-workwith-persistence-smoke.ps1',
+    'test-workwith-persistence-smoke-behavior.ps1',
     'test-run-gate.ps1'
 )
 foreach ($name in $tests) {
