@@ -678,12 +678,11 @@ fn detect_entity_kind(path: &Path, file_stem: &str, ext: &str) -> EntityKind {
                         return EntityKind::Sdt;
                     } else if head.contains("<dataselector") {
                         return EntityKind::DataSelector;
-                    } else if head.contains("<object") {
-                        if let Some(guid) = extract_type_guid_from_xml(&head) {
-                            if let Some(kind) = kind_from_type_guid(guid) {
-                                return kind;
-                            }
-                        }
+                    } else if head.contains("<object")
+                        && let Some(guid) = extract_type_guid_from_xml(&head)
+                        && let Some(kind) = kind_from_type_guid(guid)
+                    {
+                        return kind;
                     }
                 }
             }

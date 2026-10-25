@@ -98,12 +98,12 @@ fn test_principle_3_content_truncation_and_full_escape_hatch() {
     let _packed_budget = pack_task_ext(&graph, "pedido faturamento", 80, false);
     let packed_full = pack_task_ext(&graph, "pedido faturamento", 80, true);
 
-    assert_eq!(packed_full.truncated, false);
+    assert!(!packed_full.truncated);
     assert_eq!(packed_full.omitted, 0);
 
     // Callers with full
     let callers_full = analyze_callers_ext(&graph, "ProcB", 3, true).unwrap();
-    assert_eq!(callers_full.truncated, false);
+    assert!(!callers_full.truncated);
     assert_eq!(callers_full.omitted, 0);
 }
 
@@ -113,15 +113,15 @@ fn test_principle_4_precomputed_aggregates() {
 
     // Impact precomputed aggregates
     let impact_used = analyze_impact_ext(&graph, "ProcB", false).unwrap();
-    assert_eq!(impact_used.can_delete, false);
-    assert_eq!(impact_used.empty, false);
+    assert!(!impact_used.can_delete);
+    assert!(!impact_used.empty);
     assert!(impact_used.blast_radius >= 1);
 
     // Impact on unused procedure
     let impact_unused = analyze_impact_ext(&graph, "UnusedProc", false).unwrap();
-    assert_eq!(impact_unused.can_delete, true);
+    assert!(impact_unused.can_delete);
     assert_eq!(impact_unused.blast_radius, 0);
-    assert_eq!(impact_unused.empty, true);
+    assert!(impact_unused.empty);
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn test_principle_5_definitive_empty_states() {
 
     // Non-existent search hits
     let search_empty = search_for_task_ext(&graph, "nonexistent_term_xyz", 10, false);
-    assert_eq!(search_empty.empty, true);
+    assert!(search_empty.empty);
     assert_eq!(search_empty.count, 0);
     assert_eq!(search_empty.total, 0);
 
@@ -152,7 +152,7 @@ fn test_principle_8_content_first_status() {
     let status = compute_status(&graph, root, cache_path);
     assert_eq!(status.nodes_count, 4);
     assert_eq!(status.edges_count, 2);
-    assert_eq!(status.empty, false);
+    assert!(!status.empty);
     assert!(!status.hubs.is_empty());
 
     let xml = format_status_xml(&status);

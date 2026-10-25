@@ -249,24 +249,21 @@ impl CsrGraph {
         let base_score = (1.0 - damping) / n as f32;
 
         for _ in 0..iterations {
-            for v in 0..n {
-                next_pr[v] = base_score;
-            }
+            next_pr.fill(base_score);
 
-            for u in 0..n {
+            for (u, &rank) in pr.iter().enumerate() {
                 let start = self.forward_offsets[u] as usize;
                 let end = self.forward_offsets[u + 1] as usize;
                 let out_degree = end - start;
                 if out_degree > 0 {
-                    let share = damping * pr[u] / out_degree as f32;
-                    for i in start..end {
-                        let target = self.forward_targets[i] as usize;
-                        next_pr[target] += share;
+                    let share = damping * rank / out_degree as f32;
+                    for &target in &self.forward_targets[start..end] {
+                        next_pr[target as usize] += share;
                     }
                 } else {
-                    let share = damping * pr[u] / n as f32;
-                    for v in 0..n {
-                        next_pr[v] += share;
+                    let share = damping * rank / n as f32;
+                    for value in next_pr.iter_mut() {
+                        *value += share;
                     }
                 }
             }

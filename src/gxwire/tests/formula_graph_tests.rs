@@ -9,7 +9,7 @@
 
 use gxwire::cache::build_graph_from_directory;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn kb_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -23,7 +23,7 @@ fn kb_dir(label: &str) -> PathBuf {
 }
 
 /// The reported pair: a Procedure, and an attribute whose formula calls it.
-fn write_reported_pair(dir: &PathBuf) {
+fn write_reported_pair(dir: &Path) {
     fs::write(
         dir.join("procPessoaIdComRegistroNoCAR.txt"),
         "// target procedure\n",
