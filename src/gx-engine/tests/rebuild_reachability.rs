@@ -133,6 +133,49 @@ fn a_catalog_without_the_library_flag_targets_an_sdt_only_when_reached() {
 }
 
 #[test]
+fn a_closure_build_with_nothing_to_generate_emits_no_project_and_is_partial() {
+    // #675: `rebuild-all --object X --closure` on a Procedure stored as not main that nothing reaches. The
+    // SDK does not generate it, so there is no class for `Main`: emitting a project that starts there made
+    // `dotnet build` fail with CS1555. Nothing to generate means nothing to emit or compile.
+    let mut procedure = object("adddevicegroups", ObjectKind::Procedure);
+    procedure.main = Some(false);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::SeqCst);
+    let output: PathBuf = std::env::temp_dir().join(format!(
+        "gx-engine-reachability-{}-{sequence}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&output);
+    let options = RebuildOptions::new("net8.0")
+        .with_skip_compile(true)
+        .with_startup_object("GeneXus.Programs.aadddevicegroups");
+    let report = rebuild_all(&catalog(vec![procedure]), &output, &options).expect("rebuild runs");
+    let emitted_project = output.join("RebuildApp.csproj").exists();
+    let _ = std::fs::remove_dir_all(&output);
+
+    assert_eq!(report.not_targeted_count, 1);
+    assert_eq!(report.generated_count, 0);
+    assert!(
+        report.emitted_files.is_empty(),
+        "{:?}",
+        report.emitted_files
+    );
+    assert!(
+        !emitted_project,
+        "no project is written for nothing to build"
+    );
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.status, gx_engine::rebuild::RebuildStatus::Partial);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("nothing to generate")),
+        "the report says why nothing was built: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
 fn the_library_flag_round_trips_and_is_omitted_when_false() {
     let library = serde_json::to_string(&library_sdt("event", None)).unwrap();
     assert!(library.contains("\"library\":true"), "{library}");
