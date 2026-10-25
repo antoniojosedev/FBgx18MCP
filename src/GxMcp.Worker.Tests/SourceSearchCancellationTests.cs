@@ -43,8 +43,12 @@ namespace GxMcp.Worker.Tests
             }, cts.Token);
 
             var obj = JObject.Parse(json);
-            Assert.Equal("ok", obj["status"]?.ToString());
+            // A cancelled scan is incomplete, so it must not share the "ok" status of a
+            // finished search (issue #652).
+            Assert.Equal("partial", obj["status"]?.ToString());
             Assert.Equal("Cancelled", obj["code"]?.ToString());
+            Assert.False(obj["result"]?["complete"]?.ToObject<bool>());
+            Assert.Equal("cancelled", obj["result"]?["incompleteReason"]?.ToString());
             Assert.NotNull(obj["result"]?["partialHits"]);
             // Pre-cancelled token trips on the very first iteration, so scanned should be 0.
             Assert.Equal(0, obj["result"]!["totalScanned"]!.Value<int>());

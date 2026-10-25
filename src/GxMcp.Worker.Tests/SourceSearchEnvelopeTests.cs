@@ -174,8 +174,18 @@ namespace GxMcp.Worker.Tests
             });
             var obj = JObject.Parse(json);
 
-            Assert.Equal("ok", obj["status"]?.ToString());
+            // Issues #652: an interrupted scan is not a valid negative answer. It must
+            // never carry the "ok" status of a completed search, and must say so in-band.
+            Assert.Equal("partial", obj["status"]?.ToString());
             Assert.Equal("Timeout", obj["code"]?.ToString());
+            Assert.False(obj["result"]?["complete"]?.ToObject<bool>());
+            Assert.True(obj["result"]?["partial"]?.ToObject<bool>());
+            Assert.True(obj["result"]?["truncated"]?.ToObject<bool>());
+            Assert.Equal("timeout", obj["result"]?["incompleteReason"]?.ToString());
+            Assert.NotNull(obj["result"]?["hits"]);
+            Assert.NotNull(obj["result"]?["scannedObjects"]);
+            Assert.Equal("Ready", obj["result"]?["indexStatus"]?.ToString());
+            Assert.Contains("NOT", obj["result"]?["incompleteHint"]?.ToString());
             Assert.NotNull(obj["result"]?["partialHits"]);
             Assert.NotNull(obj["result"]?["totalScanned"]);
             Assert.NotNull(obj["result"]?["totalObjects"]);
