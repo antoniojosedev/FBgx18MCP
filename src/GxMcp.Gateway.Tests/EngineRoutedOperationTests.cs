@@ -43,6 +43,9 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_lifecycle", null, null)]
         [InlineData("genexus_create_object", null, null)]
         [InlineData("genexus_whoami", null, null)]
+        // #650/#651: the location-bearing reads are SDK-Worker-only; the engine query answers name/type alone.
+        [InlineData("genexus_list_objects", null, null)]
+        [InlineData("genexus_object_context", null, null)]
         public void OperationKey_OnlyRoutedConsumersAreMapped(string tool, string? action, string? expected)
         {
             Assert.Equal(expected, EngineRoutedOperations.EngineOperationKeyFor(tool, action));

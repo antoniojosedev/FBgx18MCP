@@ -313,7 +313,12 @@ namespace GxMcp.Worker.Services
                 ["object"] = new JObject
                 {
                     ["name"] = entry.Name, ["type"] = entry.Type, ["guid"] = entry.Guid, ["entityKey"] = entry.EntityKey,
-                    ["path"] = entry.Path, ["module"] = entry.Module, ["description"] = entry.Description,
+                    // `module` is the owning GeneXus Module (not a Folder); `parent`/`parentPath` are the
+                    // immediate container and its full path, the fields to use for a write-scope check (#651).
+                    ["path"] = entry.Path, ["module"] = entry.Module,
+                    ["parent"] = string.IsNullOrEmpty(entry.Parent) ? null : (JToken)entry.Parent,
+                    ["parentPath"] = ContainerPathOf(entry),
+                    ["description"] = entry.Description,
                     ["lastUpdate"] = entry.LastUpdate == DateTime.MinValue ? null : (JToken)entry.LastUpdate.ToString("o")
                 },
                 ["references"] = references,
@@ -321,6 +326,12 @@ namespace GxMcp.Worker.Services
             };
             if (dataModel != null) result["dataModel"] = dataModel;
             return McpResponse.Ok(code: "ObjectContextRetrieved", target: entry.Name, result: result);
+        }
+
+        private static JToken ContainerPathOf(SearchIndex.IndexEntry entry)
+        {
+            string path = IndexCacheService.CanonicalParentFolderPath(entry);
+            return string.IsNullOrEmpty(path) ? null : (JToken)path;
         }
 
         /// <summary>

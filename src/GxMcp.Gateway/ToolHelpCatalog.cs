@@ -615,7 +615,8 @@ namespace GxMcp.Gateway
             ["genexus_object_context"] =
                 "# genexus_object_context\n\n" +
                 "Read-only context of one object in one call.\n\n" +
-                "Selectors as `genexus_impact`. Returns `object` (identity from the index, no SDK open), `references.callers`/`callees` (depth 1, 100 nodes by default; `fieldTrust` partial with an empty list means not read, `read:false`), and `dataModel` (the ER diagram for a Transaction/Table, the index tables otherwise) or the reason it was omitted in `suppressed[]` with the call that unlocks it.\n",
+                "Selectors as `genexus_impact`. Returns `object` (identity from the index, no SDK open), `references.callers`/`callees` (depth 1, 100 nodes by default; `fieldTrust` partial with an empty list means not read, `read:false`), and `dataModel` (the ER diagram for a Transaction/Table, the index tables otherwise) or the reason it was omitted in `suppressed[]` with the call that unlocks it.\n" +
+                "Location fields of `object`: `path` is the full KB Explorer path; `parent` is the immediate container (a Module or a Folder) and `parentPath` its full path (`Root Module/<container>`). `module` is the owning GeneXus **Module**, not a Folder: an object inside a Folder reports the Module that holds the Folder (often `Root Module`), and an object inside a real Module reports that Module. Check write scope with `parentPath`/`path`, never with `module`; `genexus_list_objects pathPrefix` matches the same container path.\n",
 
             ["genexus_data_view"] =
                 "# genexus_data_view\n\n" +
