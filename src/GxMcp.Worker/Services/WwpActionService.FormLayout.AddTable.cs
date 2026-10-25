@@ -357,7 +357,8 @@ namespace GxMcp.Worker.Services
             List<XElement> tables = persisted.Descendants().Where(e => Is(e, "table")
                 && string.Equals(Attr(e, "name"), tableName, StringComparison.OrdinalIgnoreCase)).ToList();
             if (tables.Count != 1)
-                return NotConfirmed("The re-read PatternInstance contains table '" + tableName + "' " + tables.Count + " time(s) instead of once.");
+                return NotConfirmed("The re-read PatternInstance contains table '" + tableName + "' " + tables.Count + " time(s) instead of once. "
+                    + DescribePersistedContainer(persisted, containerPath));
             XElement table = tables[0];
             if (!string.Equals(ContainerPath(table.Parent), containerPath, StringComparison.OrdinalIgnoreCase))
                 return NotConfirmed("The re-read table '" + tableName + "' is under '" + ContainerPath(table.Parent) + "' instead of '" + containerPath + "'.");
@@ -392,6 +393,19 @@ namespace GxMcp.Worker.Services
                     forbidden.Add(new KeyValuePair<XElement, string>(source, identifier));
             }
             return VerifyOrderedLists(planned.Root, persisted.Root, plannedTable, table, requiredIdentifier: tableName, forbidden: forbidden);
+        }
+
+        // What the container looks like after the save, so a table the pattern dropped can be
+        // told apart from one it renamed or listed under another code (issue #638).
+        private static string DescribePersistedContainer(XDocument persisted, string containerPath)
+        {
+            XElement container = persisted.Descendants().FirstOrDefault(e => Is(e, "table")
+                && string.Equals(ContainerPath(e), containerPath, StringComparison.OrdinalIgnoreCase));
+            if (container == null) return "The container '" + containerPath + "' is not in the re-read PatternInstance.";
+            string children = string.Join(", ", container.Elements().Select(e => e.Name.LocalName
+                + (SiblingIdentity(e).Length > 0 ? " '" + SiblingIdentity(e) + "'" : string.Empty)));
+            return "The re-read container '" + containerPath + "' holds [" + children + "] with childrenOrderedList '"
+                + (string)container.Attribute("childrenOrderedList") + "'.";
         }
 
         internal static JObject VerifyAddedTableProjection(string webForm, JObject plan)
