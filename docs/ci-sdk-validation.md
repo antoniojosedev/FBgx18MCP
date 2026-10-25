@@ -19,6 +19,19 @@ Required runner environment:
 - `GXMCP_TEST_FIXTURE` — attestation manifest matching that KB, as required by
   [`live-kb-test-harness.md`](live-kb-test-harness.md).
 
+To serve one job from a licensed machine, run
+`scripts/ci/start-sdk-runner.ps1 -RunnerDirectory <actions-runner dir> -KbPath <disposable KB> -FixturePath <manifest>`
+(add `-PreflightOnly` to check without registering). Before it registers an ephemeral `gx-sdk-18` runner and sets
+the variables above, it checks the three things that failed the lane on a real runner:
+
+- the manifest matches the KB on disk. A GeneXus open can rewrite the `.gxw`, so a manifest goes stale after a live
+  run; pick the one for the current revision or regenerate it with `scripts/new-live-fixture-manifest.ps1`;
+- a port in 55100..55199 can be bound. Windows can reserve that range with nothing listening on it
+  (`netsh int ipv4 show excludedportrange protocol=tcp`);
+- the .NET SDK for the job is already in `<runner>\dotnet-ci`, fetched with `curl.exe`. `setup-dotnet` installs into
+  `DOTNET_INSTALL_DIR`, the runner user usually cannot write `C:\Program Files\dotnet`, and its PowerShell download
+  of the SDK zip can stall for half an hour.
+
 The job runs `scripts/ci/sdk-validation.ps1`. It first runs
 `scripts/validate-gx-sdk.ps1` against `config/sdk-compatibility.json`, then compares
 the real Release rebuild warning baseline and runs the existing live Gateway/Worker validation. The script creates an

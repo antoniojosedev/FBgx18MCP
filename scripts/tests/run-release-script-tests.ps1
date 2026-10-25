@@ -8,6 +8,7 @@ $tests = @(
     'test-live-build-all.ps1',
     'test-live-fixture-manifest.ps1',
     'test-live.test.ps1',
+    'test-start-sdk-runner.ps1',
     'test-release-entrypoint.ps1',
     'test-release-issues.ps1',
     'test-release-contract.ps1',
