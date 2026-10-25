@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 mod kb_facts;
 mod live_rows;
+mod model_pin;
 mod model_reads;
 mod prefetch;
 mod writes;

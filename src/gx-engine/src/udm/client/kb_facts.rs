@@ -1,6 +1,10 @@
 //! Facts read from the stored Knowledge Base: name, guids, attributes, subtypes, tables, translations and properties.
 
 use super::live_rows::{decode_hex_value, parse_live_int, parse_live_rows};
+use super::model_pin::{
+    attribute_facts_sql, design_system_name_sql, language_names_sql, stored_model_properties_sql,
+    subtype_groups_sql, table_keys_sql,
+};
 use super::*;
 
 impl UdmClient {
@@ -84,15 +88,14 @@ impl UdmClient {
         Ok(guids)
     }
 
-    /// The Attributes of the Knowledge Base, by declared name: the entity id and whether the latest
-    /// version stores a title of its own (`Title`, `Description`, `ContextualTitle` or `ColumnTitle`),
+    /// The Attributes of this client's Design model, by declared name: the entity id and whether the version
+    /// the model holds stores a title of its own (`Title`, `Description`, `ContextualTitle` or `ColumnTitle`),
     /// which replaces the title GeneXus derives from the name. An in-memory client has none.
     pub fn attribute_facts(&self) -> Result<BTreeMap<String, AttributeFacts>, String> {
         if !self.is_live() {
             return Ok(BTreeMap::new());
         }
-        let sql = "SET NOCOUNT ON; SELECT v.EntityId, v.EntityVersionName, ISNULL(DATALENGTH(v.EntityVersionProperties), 0), CONVERT(VARCHAR(MAX), CAST(v.EntityVersionProperties AS VARBINARY(MAX)), 2) FROM EntityVersion v JOIN EntityType t ON t.EntityTypeId = v.EntityTypeId AND t.EntityTypeName = 'Attribute' WHERE v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = v.EntityTypeId AND l.EntityId = v.EntityId)";
-        let raw = self.execute_live_sql(sql)?;
+        let raw = self.execute_live_sql(&attribute_facts_sql(self.design_model_id()))?;
         let mut facts = BTreeMap::new();
         for row in parse_live_rows(&raw, 4)? {
             let id = parse_live_int(row[0], "EntityId")?;
@@ -114,24 +117,14 @@ impl UdmClient {
         Ok(facts)
     }
 
-    /// The description of the subtype group each attribute belongs to, by attribute name: the
-    /// latest version of every `Group` and the attributes its cross-references name, in any model.
-    /// An attribute in more than one group is left out. An in-memory client has none.
+    /// The description of the subtype group each attribute belongs to, by attribute name: the version of
+    /// every `Group` and attribute this client's Design model holds, and the cross-references that model
+    /// stores. An attribute in more than one group is left out. An in-memory client has none.
     pub fn subtype_groups(&self) -> Result<BTreeMap<String, String>, String> {
         if !self.is_live() {
             return Ok(BTreeMap::new());
         }
-        let latest = |alias: &str| {
-            format!(
-                "{alias}.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = {alias}.EntityTypeId AND l.EntityId = {alias}.EntityId)"
-            )
-        };
-        let sql = format!(
-            "SET NOCOUNT ON; SELECT DISTINCT a.EntityVersionName, ISNULL(DATALENGTH(g.EntityVersionDescription), 0), CONVERT(VARCHAR(MAX), CAST(g.EntityVersionDescription AS VARBINARY(MAX)), 2) FROM ModelCrossReference x JOIN EntityType gt ON gt.EntityTypeId = x.FromEntityTypeId AND gt.EntityTypeName = 'Group' JOIN EntityType at ON at.EntityTypeId = x.ToEntityTypeId AND at.EntityTypeName = 'Attribute' JOIN EntityVersion g ON g.EntityTypeId = x.FromEntityTypeId AND g.EntityId = x.FromEntityId JOIN EntityVersion a ON a.EntityTypeId = x.ToEntityTypeId AND a.EntityId = x.ToEntityId WHERE {} AND {}",
-            latest("g"),
-            latest("a")
-        );
-        let raw = self.execute_live_sql(&sql)?;
+        let raw = self.execute_live_sql(&subtype_groups_sql(self.design_model_id()))?;
         let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for row in parse_live_rows(&raw, 3)? {
             let declared = parse_live_int(row[1], "DATALENGTH(EntityVersionDescription)")?;
@@ -154,14 +147,13 @@ impl UdmClient {
             .collect())
     }
 
-    /// The `TablePK` of each Table, by name, when every model stores the same one. A table the
-    /// models disagree on is left out. An in-memory client has none.
+    /// The `TablePK` of each Table of this client's Design model, by name. A table the model stores
+    /// with two different keys is left out. An in-memory client has none.
     pub fn table_keys(&self) -> Result<BTreeMap<String, u32>, String> {
         if !self.is_live() {
             return Ok(BTreeMap::new());
         }
-        let sql = "SET NOCOUNT ON; SELECT DISTINCT v.EntityVersionName, m.TablePK FROM ModelEntityToTable m JOIN EntityType t ON t.EntityTypeId = m.EntityTypeId AND t.EntityTypeName = 'Table' JOIN EntityVersion v ON v.EntityTypeId = m.EntityTypeId AND v.EntityId = m.EntityId WHERE v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = v.EntityTypeId AND l.EntityId = v.EntityId)";
-        let raw = self.execute_live_sql(sql)?;
+        let raw = self.execute_live_sql(&table_keys_sql(self.design_model_id()))?;
         let mut seen: BTreeMap<String, Vec<u32>> = BTreeMap::new();
         for row in parse_live_rows(&raw, 2)? {
             let key = parse_live_int(row[1], "TablePK")?;
@@ -218,14 +210,13 @@ impl UdmClient {
             .collect()
     }
 
-    /// The names of the Knowledge Base's `Language` objects (the latest version of each), sorted. An
-    /// in-memory client has none.
+    /// The names of the `Language` objects of this client's Design model (the version it holds of each),
+    /// sorted. An in-memory client has none.
     pub fn language_names(&self) -> Result<Vec<String>, String> {
         if !self.is_live() {
             return Ok(Vec::new());
         }
-        let sql = "SET NOCOUNT ON; SELECT v.EntityId, v.EntityVersionName FROM EntityVersion v JOIN EntityType t ON t.EntityTypeId = v.EntityTypeId AND t.EntityTypeName = 'Language' WHERE v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = v.EntityTypeId AND l.EntityId = v.EntityId)";
-        let raw = self.execute_live_sql(sql)?;
+        let raw = self.execute_live_sql(&language_names_sql(self.design_model_id()))?;
         let mut names: Vec<String> = parse_live_rows(&raw, 2)?
             .into_iter()
             .map(|row| row[1].trim().to_string())
@@ -234,9 +225,10 @@ impl UdmClient {
         Ok(names)
     }
 
-    /// The stored values of the named model properties (`Property: <name>` entities), by name, from every
-    /// model and entity that stores one. A property the Knowledge Base never stored is absent: GeneXus then
-    /// uses the generator default. Two different stored values for one name are an error, not a choice.
+    /// The stored values of the named model properties (`Property: <name>` entities), by name, from this
+    /// client's Design model and the environments below it, for every entity that stores one. A property the
+    /// model never stored is absent: GeneXus then uses the generator default. Two different stored values for
+    /// one name are an error, not a choice.
     pub fn stored_model_properties(
         &self,
         names: &[&str],
@@ -254,9 +246,7 @@ impl UdmClient {
             .map(|name| format!("'Property: {name}'"))
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "SET NOCOUNT ON; SELECT SUBSTRING(p.EntityVersionName, 11, 200), ISNULL(m.ModelEntityPropertyValue, '') FROM ModelEntityProperty m JOIN EntityVersion p ON p.EntityId = m.ModelEntityPropertyId AND p.EntityVersionName IN ({list}) JOIN EntityType t ON t.EntityTypeId = p.EntityTypeId AND t.EntityTypeName = 'Udm.Types.Property'"
-        );
+        let sql = stored_model_properties_sql(self.design_model_id(), &list);
         let raw = self.execute_live_sql(&sql)?;
         let mut values = BTreeMap::new();
         for row in parse_live_rows(&raw, 2)? {
@@ -276,7 +266,7 @@ impl UdmClient {
 
 impl UdmClient {
     /// The name of the theme (DesignSystem) the web generator uses: the `Theme` property the generating
-    /// environment stores, else the one it inherits from the Design model. `None` when no model stores one:
+    /// environment of this client's Design model stores, else the one it inherits from the Design model. `None` when no model stores one:
     /// GeneXus then uses a built-in default the engine does not resolve. Environments that would generate
     /// with different themes are an error, since the engine cannot tell which one builds.
     pub fn default_web_theme(&self) -> Result<Option<String>, String> {
@@ -287,8 +277,9 @@ impl UdmClient {
         let props = "CAST(v.EntityVersionProperties AS NVARCHAR(MAX))";
         let start = format!("CHARINDEX('{MARK}', {props})");
         let sql = format!(
-            "SET NOCOUNT ON; SELECT v.EntityId, ISNULL(m.ModelParentId, 0), CASE WHEN {start} > 0 THEN SUBSTRING({props}, {start} + {len}, CHARINDEX('</Value>', {props}, {start}) - {start} - {len}) ELSE '' END FROM EntityVersion v JOIN EntityType t ON t.EntityTypeId = v.EntityTypeId AND t.EntityTypeName = 'Udm.Types.Model' LEFT JOIN UdmModel m ON m.ModelId = v.EntityId WHERE v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = v.EntityTypeId AND l.EntityId = v.EntityId)",
-            len = MARK.len()
+            "SET NOCOUNT ON; SELECT v.EntityId, ISNULL(m.ModelParentId, 0), CASE WHEN {start} > 0 THEN SUBSTRING({props}, {start} + {len}, CHARINDEX('</Value>', {props}, {start}) - {start} - {len}) ELSE '' END FROM EntityVersion v JOIN EntityType t ON t.EntityTypeId = v.EntityTypeId AND t.EntityTypeName = 'Udm.Types.Model' JOIN UdmModel m ON m.ModelId = v.EntityId WHERE (m.ModelId = {model} OR m.ModelParentId = {model}) AND v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = v.EntityTypeId AND l.EntityId = v.EntityId)",
+            len = MARK.len(),
+            model = self.design_model_id()
         );
         let raw = self.execute_live_sql(&sql)?;
         let rows = parse_live_rows(&raw, 3)?
@@ -306,9 +297,7 @@ impl UdmClient {
         };
         let (type_guid, entity_id) = parse_theme_reference(&reference)?;
         // `type_guid` is validated hex and dashes, `entity_id` a number: neither can break out of the literal.
-        let sql = format!(
-            "SET NOCOUNT ON; SELECT v.EntityVersionName FROM EntityVersion v JOIN EntityType t ON t.EntityTypeId = v.EntityTypeId AND t.EntityTypeName = 'DesignSystem' JOIN Entity g ON g.EntityTypeId = 1 AND g.EntityId = t.EntityTypeId AND LOWER(CONVERT(VARCHAR(36), g.EntityGuid)) = '{type_guid}' WHERE v.EntityId = {entity_id} AND v.EntityVersionId = (SELECT MAX(l.EntityVersionId) FROM EntityVersion l WHERE l.EntityTypeId = v.EntityTypeId AND l.EntityId = v.EntityId)"
-        );
+        let sql = design_system_name_sql(self.design_model_id(), &type_guid, entity_id);
         let raw = self.execute_live_sql(&sql)?;
         match parse_live_rows(&raw, 1)?.as_slice() {
             [row] if !row[0].trim().is_empty() => Ok(Some(row[0].trim().to_string())),
