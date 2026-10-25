@@ -4,7 +4,12 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')]
-    [string]$Version
+    [string]$Version,
+
+    # Carry Engine.Backend/Fallback/TimeoutSeconds of the existing publish\config.json
+    # into the regenerated one. Off by default so a packaged build never inherits a
+    # developer's local choice; the build warns whenever an Engine section is dropped.
+    [switch]$PreserveEngineConfig
 )
 
 Set-StrictMode -Version Latest
@@ -16,6 +21,7 @@ $gatewayProject = Join-Path $root "src\GxMcp.Gateway\GxMcp.Gateway.csproj"
 $workerProject = Join-Path $root "src\GxMcp.Worker\GxMcp.Worker.csproj"
 . (Join-Path $root "scripts\gx-version-catalog.ps1")
 $gxCatalog = Get-GxVersionCatalog -Root $root
+. (Join-Path $root "scripts\publish-config.ps1")
 
 function Fail-Build([string]$message, [int]$exitCode = 1) {
     Write-Host "[build] $message" -ForegroundColor Red
@@ -109,6 +115,9 @@ Start-Sleep -Seconds 1
 $ErrorActionPreference = "Stop"
 
 # 1. Clean Publish Directory
+# Read the previous Engine section first: the clean step below deletes the file the
+# direct-exe launcher and start_mcp.bat resolve their Engine settings from.
+$previousEngineSection = Read-PublishEngineSection -ConfigPath (Join-Path $publishDir "config.json")
 if (Test-Path $publishDir) {
     Write-Host "   > Cleaning publish directory..."
     Get-ChildItem -Path "$publishDir\*" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -208,25 +217,14 @@ Write-Host "   > Skipping Definitions/ copy - resolved at runtime from GeneXus i
 #    This file is only a fallback for a bare manual run. It deliberately contains
 #    no KB catalog or startup default; KB selection is an explicit session action.
 Write-Host "   > Writing sanitized neutral fallback config.json to publish..."
-$defaultConfig = @{
-    ConfigSchemaVersion = 2
-    GatewayMode = "stdio-isolated"
-    GeneXus = @{
-        InstallationPath = $artifactGxPath
-        WorkerExecutable = "worker\\GxMcp.Worker.exe"
-    }
-    Server = @{
-        HttpPort = 0
-        McpStdio = $true
-        SessionIdleTimeoutMinutes = 10
-        WorkerIdleTimeoutMinutes = 5
-        EmitStructuredContent = $false
-        TerseResponses = $true
-    }
-    Environment = @{
-        ResolutionPolicy = "strict"
-    }
-} | ConvertTo-Json -Depth 4
+$engineResolution = Resolve-PublishEngineSection -PreviousSection $previousEngineSection -Preserve:$PreserveEngineConfig
+foreach ($engineWarning in $engineResolution.Warnings) {
+    Write-Host "[build] WARNING: $engineWarning" -ForegroundColor Yellow
+}
+if ($null -ne $engineResolution.Section) {
+    Write-Host "   > Preserving Engine section from the previous publish config.json ($(@($engineResolution.Section.Keys) -join ', '))" -ForegroundColor Gray
+}
+$defaultConfig = New-PublishConfigJson -ArtifactGxPath $artifactGxPath -EngineSection $engineResolution.Section
 Set-Content "$publishDir\config.json" $defaultConfig
 
 # 6. Generate start_mcp.bat

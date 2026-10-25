@@ -43,7 +43,14 @@ storage facts behind the read path are recorded in
 
 ## Enabling it
 
-`config.json` (all documents):
+`config.json` (all documents). A direct-exe launcher (`GENEXUS_MCP_GATEWAY_EXE`) or
+`start_mcp.bat` reads `publish\config.json` of the checkout, **not** the root
+`config.json`, unless the client sets `GX_CONFIG_PATH`. `build.ps1` regenerates
+`publish\config.json` without an `Engine` section: pass `-PreserveEngineConfig`
+(`install.ps1` always does) to carry `Engine.Backend`, `Engine.Fallback` and
+`Engine.TimeoutSeconds` over; `Engine.Executable` is machine-specific and is always
+dropped with a warning. Without the switch the build warns that the section was
+discarded.
 
 | Key | Values | Default | Meaning |
 | :--- | :--- | :--- | :--- |
