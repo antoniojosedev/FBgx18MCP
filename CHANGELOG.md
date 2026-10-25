@@ -11,6 +11,9 @@
 
 ### Fixed
 
+- [#652](https://github.com/lennix1337/Genexus18MCP/issues/652): `genexus_search_source` no longer reports an interrupted scan as a finished one. A `Timeout`/`Cancelled` result is now `status:"partial"` (was `"ok"`) and carries `complete:false`, `partial:true`, `truncated:true`, `incompleteReason`, `scannedObjects`, `indexStatus`, `hits` (alongside `partialHits`) and an `incompleteHint` stating that an empty list is not proof of absence. `objectName` also accepts an array of names (joined as the documented comma-separated list) instead of failing validation.
+- [#655](https://github.com/lennix1337/Genexus18MCP/issues/655): argument validation failures put the whole diagnosis in `error.message` (it used to be a fixed sentence, so clients that show only `message` lost it): every violation names the field, the received value and the accepted values/type; an unknown argument lists the accepted argument names; `violations[]` gains `received`/`accepted`. Covers the `validate:"none"`, `action:"build"` + `mode`, and `action:"read"` calls on `genexus_structure`/`genexus_properties`.
+
 ### Internal
 
 ## v4.0.1 - 2026-10-21
