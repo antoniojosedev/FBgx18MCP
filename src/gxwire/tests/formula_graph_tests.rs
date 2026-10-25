@@ -12,7 +12,11 @@ use std::fs;
 use std::path::PathBuf;
 
 fn kb_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("gxwire_f501_graph_{}_{}", std::process::id(), label));
+    let dir = std::env::temp_dir().join(format!(
+        "gxwire_f501_graph_{}_{}",
+        std::process::id(),
+        label
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -55,9 +59,11 @@ fn formula_call_becomes_a_defines_formula_edge() {
         .count();
 
     assert_eq!(
-        formulas, 1,
+        formulas,
+        1,
         "the attribute must reach the Procedure through a DefinesFormula edge; callers of the Procedure were {:?}",
-        graph.get_callers(proc_id)
+        graph
+            .get_callers(proc_id)
             .iter()
             .map(|(from, kind, _)| (graph.get_node(*from).map(|n| n.name.clone()), kind.as_str()))
             .collect::<Vec<_>>()
