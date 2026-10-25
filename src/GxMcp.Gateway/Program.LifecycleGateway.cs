@@ -360,14 +360,19 @@ namespace GxMcp.Gateway
                 if (envelope == null || envelope["error"] != null) return null;
 
                 JToken? token = envelope["result"] ?? envelope;
+                // Issue #656: never adopt another Worker task's payload as this task's result.
                 if (token is JObject payload)
-                    return IsMissingWorkerLifecycleResult(payload) ? null : (JObject)payload.DeepClone();
+                    return IsMissingWorkerLifecycleResult(payload)
+                        || !McpRouter.ResultBelongsToWorkerTask(payload, null, taskId)
+                        ? null : (JObject)payload.DeepClone();
                 if (token is JValue value && value.Type == JTokenType.String)
                 {
                     try
                     {
                         JObject parsed = JObject.Parse(value.Value<string>() ?? string.Empty);
-                        return IsMissingWorkerLifecycleResult(parsed) ? null : parsed;
+                        return IsMissingWorkerLifecycleResult(parsed)
+                            || !McpRouter.ResultBelongsToWorkerTask(parsed, null, taskId)
+                            ? null : parsed;
                     }
                     catch { return null; }
                 }

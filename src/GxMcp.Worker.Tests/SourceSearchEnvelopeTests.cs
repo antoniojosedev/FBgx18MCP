@@ -174,14 +174,46 @@ namespace GxMcp.Worker.Tests
             });
             var obj = JObject.Parse(json);
 
-            Assert.Equal("ok", obj["status"]?.ToString());
+            // Issues #652: an interrupted scan is not a valid negative answer. It must
+            // never carry the "ok" status of a completed search, and must say so in-band.
+            Assert.Equal("partial", obj["status"]?.ToString());
             Assert.Equal("Timeout", obj["code"]?.ToString());
+            Assert.False(obj["result"]?["complete"]?.ToObject<bool>());
+            Assert.True(obj["result"]?["partial"]?.ToObject<bool>());
+            Assert.True(obj["result"]?["truncated"]?.ToObject<bool>());
+            Assert.Equal("timeout", obj["result"]?["incompleteReason"]?.ToString());
+            Assert.NotNull(obj["result"]?["hits"]);
+            Assert.NotNull(obj["result"]?["scannedObjects"]);
+            Assert.Equal("Ready", obj["result"]?["indexStatus"]?.ToString());
+            Assert.Contains("NOT", obj["result"]?["incompleteHint"]?.ToString());
             Assert.NotNull(obj["result"]?["partialHits"]);
             Assert.NotNull(obj["result"]?["totalScanned"]);
             Assert.NotNull(obj["result"]?["totalObjects"]);
             Assert.NotNull(obj["result"]?["coverage"]?["requestedParts"]);
             Assert.NotNull(obj["result"]?["partExecution"]?["requestedParts"]);
             Assert.True(obj["result"]?["sliceContinuation"]?.ToObject<bool>() ?? false);
+            AssertMarkedIncomplete(obj, "Timeout");
+        }
+
+        /// <summary>
+        /// #652: a scan that stopped early carries the fields a completed search carries, so a
+        /// caller that reads <c>hits</c> and <c>partial</c> cannot take what was found so far for
+        /// the whole answer.
+        /// </summary>
+        internal static void AssertMarkedIncomplete(JObject envelope, string code)
+        {
+            Assert.Equal(code, envelope["code"]?.ToString());
+            var result = (JObject)envelope["result"];
+            Assert.True(result["partial"]?.ToObject<bool>());
+            Assert.False(result["complete"]?.ToObject<bool>());
+            Assert.True(result["truncated"]?.ToObject<bool>());
+            Assert.NotNull(result["scannedObjects"]);
+            Assert.Equal("Ready", result["indexStatus"]?.ToString());
+            Assert.Contains("does NOT mean the text is absent", result["incompleteHint"]?.ToString());
+            Assert.Contains("cursor=nextCursor", result["incompleteHint"]?.ToString());
+            // `hits` is what a client reads; it must carry the same hits as `partialHits`.
+            Assert.NotNull(result["hits"]);
+            Assert.True(JToken.DeepEquals(result["partialHits"], result["hits"]));
         }
     }
 }

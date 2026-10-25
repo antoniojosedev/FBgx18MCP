@@ -1151,11 +1151,24 @@ namespace GxMcp.Worker.Services
                 {
                     entry.Path = InferLegacyPath(entry);
                 }
+            }
 
-                if (string.IsNullOrWhiteSpace(entry.ParentFolderPath))
-                {
-                    entry.ParentFolderPath = ComposeParentFolderPath(entry.ParentPath);
-                }
+            NormalizeParentFolderPaths(index);
+        }
+
+        /// <summary>
+        /// Rewrites every entry's <c>ParentFolderPath</c> to its canonical value. A snapshot or
+        /// lite-walk checkpoint written before #650 carries the doubled "Root Module/Root Module/..."
+        /// prefix; reading it back unrepaired would keep <c>pathPrefix</c> blind to those objects
+        /// until a full re-index.
+        /// </summary>
+        internal static void NormalizeParentFolderPaths(SearchIndex index)
+        {
+            if (index?.Objects == null) return;
+            foreach (var entry in index.Objects.Values)
+            {
+                if (entry == null) continue;
+                entry.ParentFolderPath = SearchIndex.InternShared(CanonicalParentFolderPath(entry));
             }
         }
 
@@ -1204,7 +1217,7 @@ namespace GxMcp.Worker.Services
         // "Root Module" so callers can pathPrefix-filter by the same string they
         // see in the GeneXus IDE. Empty hierarchy.ParentPath means object lives
         // directly under DesignModel -> we surface "Root Module" as the folder.
-        private static string ComposeParentFolderPath(string hierarchyParentPath)
+        internal static string ComposeParentFolderPath(string hierarchyParentPath)
         {
             if (string.IsNullOrWhiteSpace(hierarchyParentPath))
                 return "Root Module";
@@ -1213,6 +1226,34 @@ namespace GxMcp.Worker.Services
                 hierarchyParentPath.StartsWith("Root Module/", StringComparison.OrdinalIgnoreCase))
                 return hierarchyParentPath;
             return "Root Module/" + hierarchyParentPath;
+        }
+
+        /// <summary>
+        /// The folder path an entry is listed and filtered under. The stored
+        /// <c>ParentFolderPath</c> wins unless it is blank or has the signature of the #650 defect
+        /// ("Root Module/" + a <c>ParentPath</c> that already starts at the Root Module); a
+        /// genuinely nested module that is itself called "Root Module" does not have that
+        /// signature and is left alone.
+        /// </summary>
+        internal static string CanonicalParentFolderPath(SearchIndex.IndexEntry entry)
+        {
+            if (entry == null) return string.Empty;
+            string stored = entry.ParentFolderPath;
+            if (string.IsNullOrWhiteSpace(stored))
+            {
+                return entry.ParentPath == null ? string.Empty : ComposeParentFolderPath(entry.ParentPath);
+            }
+
+            string parentPath = entry.ParentPath;
+            if (!string.IsNullOrWhiteSpace(parentPath)
+                && (parentPath.Equals("Root Module", StringComparison.OrdinalIgnoreCase)
+                    || parentPath.StartsWith("Root Module/", StringComparison.OrdinalIgnoreCase))
+                && stored.Equals("Root Module/" + parentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return parentPath;
+            }
+
+            return stored;
         }
 
         private string InferLegacyPath(SearchIndex.IndexEntry entry)
@@ -1708,6 +1749,9 @@ namespace GxMcp.Worker.Services
 
                     var index = SearchIndex.FromJson(ReadGzippedText(Path.Combine(slot, "body.json.gz")));
                     if (index == null || index.Objects == null || index.Objects.Count == 0) return null;
+                    // Resumed lite entries are reused verbatim by the walk, so a checkpoint written
+                    // before #650 must be repaired here or its doubled folder paths survive the resume.
+                    NormalizeParentFolderPaths(index);
                     Logger.Info($"[LITE-RESUME] checkpoint loaded processed={metadata.ProcessedCount} objects={index.Objects.Count} capturedAtUtc={captured:o}");
                     return new LiteWalkCheckpoint
                     {

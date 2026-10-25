@@ -349,20 +349,38 @@ pub fn rebuild_all(
         return Err(findings.errors.join("; "));
     }
 
-    // Phase 2: Parallel C# & Project Code Emission
-    let (emitted_files, main_csproj_path, emit_ms) = emission_phase(
-        &manifest,
-        output_dir,
-        worker_concurrency,
-        options,
-        &mut findings,
-    )?;
-
-    // Phase 3: Parallel Compilation Driver (`dotnet build`)
-    let (compile_ms, built) = if !options.skip_compile {
-        compile_phase(&main_csproj_path, worker_concurrency, &mut findings)
+    // A closure build starts at `Main` of its entry. When classification left nothing to generate (the
+    // entry is stored as not main and nothing reaches it, so the SDK does not generate it), that class does
+    // not exist: emitting a project that starts there only fails `dotnet build` with CS1555 (#675).
+    let nothing_to_generate = manifest.procedures.is_empty()
+        && manifest.transactions.is_empty()
+        && manifest.sdts.is_empty()
+        && manifest.webpanels.is_empty();
+    let (emitted_files, emit_ms, compile_ms, built) = if options.startup_object.is_some()
+        && nothing_to_generate
+    {
+        findings.warnings.push(
+            "nothing to generate: the closure entry is not targeted (see not_targeted_objects), so no project was emitted or compiled"
+                .to_string(),
+        );
+        (Vec::new(), 0, 0, false)
     } else {
-        (0, false)
+        // Phase 2: Parallel C# & Project Code Emission
+        let (emitted_files, main_csproj_path, emit_ms) = emission_phase(
+            &manifest,
+            output_dir,
+            worker_concurrency,
+            options,
+            &mut findings,
+        )?;
+
+        // Phase 3: Parallel Compilation Driver (`dotnet build`)
+        let (compile_ms, built) = if !options.skip_compile {
+            compile_phase(&main_csproj_path, worker_concurrency, &mut findings)
+        } else {
+            (0, false)
+        };
+        (emitted_files, emit_ms, compile_ms, built)
     };
 
     let total_ms = total_start.elapsed().as_millis() as u64;

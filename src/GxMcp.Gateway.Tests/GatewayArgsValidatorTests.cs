@@ -356,5 +356,16 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains(result.Violations, v => v.Path == "limit" && v.Suggestion == "maxResults");
             Assert.DoesNotContain(result.Violations, v => v.Path == "kbAlias");
         }
+
+        // #655: read verbs point at the get actions.
+        [Theory]
+        [InlineData("read", new[] { "get", "set", "move" }, "get")]
+        [InlineData("read", new[] { "get_visual", "add", "remove" }, "get_visual")]
+        [InlineData("fetch", new[] { "inspect", "set" }, "inspect")]
+        [InlineData("read", new[] { "set", "move" }, null)]
+        public void DidYouMean_ReadVerbsPointAtTheGetActions(string input, string[] candidates, string? expected)
+        {
+            Assert.Equal(expected, DidYouMean.Suggest(input, candidates));
+        }
     }
 }

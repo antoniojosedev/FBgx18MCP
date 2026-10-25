@@ -488,19 +488,16 @@ namespace GxMcp.Gateway
                 // clients faster feedback on typos / missing required fields.
                 if (!string.IsNullOrEmpty(toolName))
                 {
+                    GatewayArgsValidator.NormalizeStringListArguments(toolName, args);
                     var validationResult = GatewayArgsValidator.Validate(toolName, args);
                     if (!validationResult.Ok)
                     {
-                        var firstViolation = validationResult.Violations[0];
-                        string hint = firstViolation.Actual == "missing"
-                            ? $"Required field '{firstViolation.Path}' is missing — expected {firstViolation.Expected}."
-                            : firstViolation.Actual == "unknown argument"
-                                ? $"Unknown argument '{firstViolation.Path}'."
-                                : $"Field '{firstViolation.Path}': expected {firstViolation.Expected}, got {firstViolation.Actual}.";
-                        if (!string.IsNullOrEmpty(firstViolation.Suggestion))
-                        {
-                            hint += $" Did you mean '{firstViolation.Suggestion}'?";
-                        }
+                        // Name the field, the received value and the accepted values for
+                        // EVERY violation, in hint and in message: clients that show only
+                        // error.message must still be able to correct the call (#655).
+                        string hint = GatewayArgsValidator.Describe(validationResult.Violations);
+                        string validationMessage =
+                            $"Arguments for tool '{toolName}' failed schema validation: {hint}";
 
                         var violationsArr = new Newtonsoft.Json.Linq.JArray(
                             validationResult.Violations.Select(v =>
@@ -511,6 +508,8 @@ namespace GxMcp.Gateway
                                     ["expected"] = v.Expected,
                                     ["actual"] = v.Actual
                                 };
+                                if (v.Received != null) vo["received"] = v.Received;
+                                if (v.Accepted != null) vo["accepted"] = new JArray(v.Accepted);
                                 if (!string.IsNullOrEmpty(v.Suggestion)) vo["suggestion"] = v.Suggestion;
                                 return vo;
                             }));
@@ -526,7 +525,7 @@ namespace GxMcp.Gateway
                                 ["error"] = new JObject
                                 {
                                     ["code"] = "InvalidArgs",
-                                    ["message"] = $"Arguments for tool '{toolName}' failed schema validation.",
+                                    ["message"] = validationMessage,
                                     ["hint"] = hint,
                                     ["violations"] = violationsArr
                                 }
@@ -537,7 +536,7 @@ namespace GxMcp.Gateway
                             ["error"] = new JObject
                             {
                                 ["code"] = "InvalidArgs",
-                                ["message"] = $"Arguments for tool '{toolName}' failed schema validation.",
+                                ["message"] = validationMessage,
                                 ["hint"] = hint,
                                 ["nextSteps"] = new JArray
                                 {

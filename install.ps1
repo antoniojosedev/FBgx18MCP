@@ -246,7 +246,7 @@ if ($PSBoundParameters.ContainsKey("GeneXusPath")) {
 $config.GeneXus.InstallationPath = Get-ExistingPathOrPrompt "GeneXus installation path" $config.GeneXus.InstallationPath
 
 Write-Step "[1/2] Building gateway and worker"
-& (Join-Path $root "build.ps1")
+& (Join-Path $root "build.ps1") -PreserveEngineConfig
 if ($LASTEXITCODE -ne 0) {
     Fail "Build failed."
 }

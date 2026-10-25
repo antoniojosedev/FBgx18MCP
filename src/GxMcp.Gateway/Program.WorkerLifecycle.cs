@@ -1088,6 +1088,11 @@ namespace GxMcp.Gateway
             string? part = args?["part"]?.ToString();
             if (string.Equals(toolName, "genexus_edit", StringComparison.OrdinalIgnoreCase))
             {
+                // The router edits Source when `part` is omitted (ObjectRouter), so the
+                // budget must follow the same default; otherwise the same edit gets 60s
+                // instead of 180s and is cut off mid-write (#656).
+                if (string.IsNullOrWhiteSpace(part)) part = "Source";
+
                 if (string.Equals(part, "Layout", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(part, "WebForm", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(part, "Source", StringComparison.OrdinalIgnoreCase) ||
