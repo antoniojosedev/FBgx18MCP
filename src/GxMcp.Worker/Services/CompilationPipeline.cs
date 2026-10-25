@@ -190,7 +190,8 @@ namespace GxMcp.Worker.Services
                     ?? request["queueLifecycle"]?.ToObject<bool?>();
                 bool queueLifecycle = requestedQueueLifecycle ?? true;
 
-                if (action == "Specify") return _buildService.Specify(target, queueLifecycle);
+                // Issue #654: lifecycle action=specify must answer for the current source or refuse.
+                if (action == "Specify") return _buildService.Specify(target, queueLifecycle, refuseStaleEnvironmentCopy: true);
 
                 if (action == "CompileCheck") return _buildService.CompileCheck(
                     target,

@@ -428,6 +428,70 @@ namespace GxMcp.Worker.Tests
             Assert.False(InProcessBuildRunner.IsEnvironmentCopyStale(built, built.AddMinutes(5)));
         }
 
+        // Issue #654: lifecycle action=specify reported the diagnostics of the last build's
+        // environment copy as if they described the current source. It must refuse instead.
+        [Fact]
+        public void Lifecycle_specify_refuses_targets_changed_since_the_last_build()
+        {
+            var lines = new List<(string Line, bool IsError)>();
+
+            bool refused = InProcessBuildRunner.ApplyStaleEnvironmentCopyPolicy(
+                refuseStaleEnvironmentCopy: true, new[] { "SampleProc", "OtherProc" },
+                (line, isError) => lines.Add((line, isError)));
+
+            Assert.True(refused);
+            var emitted = Assert.Single(lines);
+            Assert.True(emitted.IsError);
+            Assert.Contains(InProcessBuildRunner.StaleSpecifyRefusalCode, emitted.Line);
+            Assert.Contains("SampleProc", emitted.Line);
+            Assert.Contains("OtherProc", emitted.Line);
+            Assert.Contains("changed since the last build", emitted.Line);
+            Assert.True(InProcessBuildRunner.IsStaleSpecifyRefusal(emitted.Line));
+        }
+
+        [Fact]
+        public void Inline_save_validation_still_specifies_a_stale_copy_and_only_warns()
+        {
+            var lines = new List<(string Line, bool IsError)>();
+
+            bool refused = InProcessBuildRunner.ApplyStaleEnvironmentCopyPolicy(
+                refuseStaleEnvironmentCopy: false, new[] { "SampleProc" },
+                (line, isError) => lines.Add((line, isError)));
+
+            Assert.False(refused);
+            var emitted = Assert.Single(lines);
+            Assert.False(emitted.IsError);
+            Assert.Contains("changed since the last build: SampleProc", emitted.Line);
+            Assert.False(InProcessBuildRunner.IsStaleSpecifyRefusal(emitted.Line));
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void Nothing_is_reported_when_no_target_changed_since_the_last_build(bool refuse)
+        {
+            var lines = new List<string>();
+
+            bool refused = InProcessBuildRunner.ApplyStaleEnvironmentCopyPolicy(
+                refuse, new string[0], (line, isError) => lines.Add(line));
+
+            Assert.False(refused);
+            Assert.Empty(lines);
+        }
+
+        [Fact]
+        public void Only_the_lifecycle_specify_route_asks_for_the_stale_refusal()
+        {
+            string pipeline = GxMcp.TestSupport.RepoSource.WithoutComments(
+                GxMcp.TestSupport.RepoSource.Read("src", "GxMcp.Worker", "Services", "CompilationPipeline.cs"));
+            Assert.Contains("_buildService.Specify(target, queueLifecycle, refuseStaleEnvironmentCopy: true)", pipeline);
+
+            string build = GxMcp.TestSupport.RepoSource.WithoutComments(
+                GxMcp.TestSupport.RepoSource.Read("src", "GxMcp.Worker", "Services", "BuildService.cs"));
+            Assert.Contains("public string Specify(string target) => Specify(target, queueLifecycle: true, refuseStaleEnvironmentCopy: false);", build);
+            Assert.Contains("refuseStaleEnvironmentCopy: status.RefuseStaleEnvironmentCopy", build);
+        }
+
         [Fact]
         public void Object_missing_from_the_environment_copy_is_stale()
         {
