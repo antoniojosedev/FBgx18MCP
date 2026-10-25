@@ -24,6 +24,11 @@
 ### Internal
 
 - `scripts/publish-config.ps1` holds the publish config generation; `scripts/tests/test-build-publish-config.ps1` executes the `build.ps1` clean/config steps and fails on the previous `build.ps1`.
+- `scripts/workwith_persistence_smoke.ps1` now removes the filter attribute and the condition it created, on the success path and on the failure path ([#645](https://github.com/lennix1337/Genexus18MCP/issues/645)). The attribute name is normalized once and an attribute that already exists stops the run before any write; `$filterWritten` is set before `add_filter_attribute`; the cleanup reads `list_filters` itself and passes only the exact condition text the run sent in `removeConditions` (an unlisted referencing condition is a cleanup failure, `FilterAttributeReferencedByConditions`). On success it removes the filter attribute, the optional action, restarts the Worker once and asserts both are absent before comparing the filter projection with the baseline; on failure a single finalizer cleans up without an extra restart and keeps the primary error. The summary carries `durability`, `cleanup` (`pass`/`unverified`/`fail`/`not_attempted`) and `outcome`, is written once, and the header, precondition, PASS message, `demonstrates`, `doesNotCover` and `EXIT CODES` no longer describe the pre-#586 state. The optional action lane can still leave its action behind when the run fails, and the cleanup is not a pristine restoration of the KB.
+
+### Internal
+
+- Static and fake-Gateway tests (`scripts/tests/test-workwith-persistence-smoke.ps1`, `scripts/tests/test-workwith-persistence-smoke-fake-gateway.ps1`) pin the smoke's cleanup, ownership guard, single finalizer and exit codes, including a mutation check that removes the cleanup call; they are registered in `run-release-script-tests.ps1`. They are not live GeneXus evidence.
 
 ## v4.0.1 - 2026-10-21
 
