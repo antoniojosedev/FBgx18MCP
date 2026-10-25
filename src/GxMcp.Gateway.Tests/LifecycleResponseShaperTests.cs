@@ -49,6 +49,18 @@ namespace GxMcp.Gateway.Tests
             Assert.True(obj["truncated"]!.Value<bool>());
         }
 
+        // Issue #656: "30 errors" next to a 10-entry list read as a contradiction because
+        // nothing said how many entries were left out.
+        [Fact]
+        public void Compact_True_ReportsTotalShownAndOmittedErrors()
+        {
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(MakeBuildStatus(30, 5), compact: true));
+
+            Assert.Equal(30, obj["totalErrors"]!.Value<int>());
+            Assert.Equal(10, obj["shownErrors"]!.Value<int>());
+            Assert.Equal(20, obj["omittedErrors"]!.Value<int>());
+        }
+
         [Fact]
         public void Compact_True_DedupsRepeatedWarning()
         {

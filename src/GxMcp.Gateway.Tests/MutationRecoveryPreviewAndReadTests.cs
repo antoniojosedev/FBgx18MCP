@@ -110,6 +110,38 @@ namespace GxMcp.Gateway.Tests
             Assert.False(timeout["error"]?["retryable"]?.Value<bool>());
         }
 
+        // Issue #656: a timed-out write used to say only retryable=false and reReadRequired,
+        // with no persistence field at all, so a caller could read the short envelope as
+        // "nothing happened" and re-send the patch (duplicating the block when it had landed).
+        [Fact]
+        public void WriteThatTimesOutStatesThatItsPersistenceIsUnknown()
+        {
+            var registry = new MutationRecoveryRegistry();
+            var timeout = new JObject { ["error"] = new JObject { ["retryable"] = true } };
+
+            Assert.True(Program.RegisterTimeoutRecoveryFence(
+                registry, Kb, "genexus_edit", Edit(null), "op-write", timeout));
+
+            Assert.Equal(JTokenType.Null, timeout["persisted"]?.Type);
+            Assert.Equal("Indeterminate", timeout["commitState"]?.Value<string>());
+            Assert.False(timeout["retrySafe"]?.Value<bool>());
+            Assert.True(timeout["reconciliationRequired"]?.Value<bool>());
+            Assert.False(timeout["rereadConfirmed"]?.Value<bool>());
+        }
+
+        [Fact]
+        public void PreviewThatTimesOutIsNotReportedAsAnUnknownCommit()
+        {
+            var registry = new MutationRecoveryRegistry();
+            var timeout = new JObject { ["error"] = new JObject { ["retryable"] = true } };
+
+            Assert.False(Program.RegisterTimeoutRecoveryFence(
+                registry, Kb, "genexus_edit", Edit(dryRun: true), "op-preview", timeout));
+
+            Assert.Null(timeout["persisted"]);
+            Assert.Null(timeout["commitState"]);
+        }
+
         [Fact]
         public void ActionlessToolOutsideTheExplicitPreviewListKeepsTheFenceOnDryRun()
         {

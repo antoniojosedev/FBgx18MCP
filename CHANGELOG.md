@@ -11,6 +11,10 @@
 
 ### Fixed
 
+- A read after a successful `genexus_edit` no longer returns the pre-edit source. A write dropped the Worker's per-object read caches but not the ObjectReader response cache (keyed by request, with no object-identity index), so a plain read, notably the whole-object read, replayed the old payload until its TTL expired; every write now drops it too. `refresh: true` already bypassed it. ([#653](https://github.com/lennix1337/Genexus18MCP/issues/653))
+- `genexus_lifecycle action=specify` no longer reports the last build's diagnostics as if they described the current source. GeneXus specifies the environment's copy of an object, which only a build refreshes; a target changed since its last build is now refused with `SpecifyStaleEnvironmentCopy` (`failureOrigin: stale_environment_copy`, nothing specified) and a hint to run `action=build`. The inline `validationMode=specify` of an edit is unchanged and keeps reporting `staleEnvironmentCopy`. ([#654](https://github.com/lennix1337/Genexus18MCP/issues/654))
+- A `genexus_edit` that ends without an answer now states that its outcome is unknown: the timeout envelope carries `persisted: null`, `commitState: Indeterminate`, `retrySafe: false` and `reconciliationRequired: true` instead of omitting every persistence field. An edit without `part` (the router edits Source) is now given the same 180s budget as `part: Source` instead of the 60s default that cut it off mid-write. `genexus_lifecycle action=result` names the job it answers (`jobId`, `workerTaskId`), refuses a stored payload stamped with another Worker task (`ResultJobMismatch`), and reports `totalErrors`, `shownErrors`, `omittedErrors` and `truncated` (the Worker keeps the first 50 error lines; the rest are in `fullLogPath`); compact status carries the same counts. The cause of the ~55s stall itself and of the reported cross-job payload was not reproduced. ([#656](https://github.com/lennix1337/Genexus18MCP/issues/656))
+
 ### Internal
 
 ## v4.0.1 - 2026-10-21
