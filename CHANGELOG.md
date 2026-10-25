@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- **A tool call with no Worker route no longer fails with the opaque "Tool conversion produced no worker command.", and `doctor` explains an empty KB catalog.** The Gateway error now names the tool and action (`code: TOOL_ROUTE_NOT_FOUND`) with a hint; `genexus_kb action=open path=<KB root>` is covered by a regression test showing it opens a KB when the config declares no `Environment.KBs`/`KBPath` (strict and legacy policy). `genexus-mcp doctor` `kb_path_exists`/`kb_shape` now name the config file and state that explicit-path `open` still works without a configured KB. https://github.com/lennix1337/Genexus18MCP/issues/662
+
 ### Internal
 
 ## v4.0.1 - 2026-10-21

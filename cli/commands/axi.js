@@ -1062,6 +1062,11 @@ async function handleDoctor(options, ctx) {
     const kbPath = data.kbPath;
     const gxPath = data.gxPath;
     const kbExists = !!(kbPath && fs.existsSync(kbPath));
+    // A missing configured KB only removes the startup default: genexus_kb action=open
+    // with an explicit path opens a KB without any Environment.KBPath/KBs entry (#662).
+    const noKbPathDetail = `No KB path is configured${data.configPath ? ` in ${data.configPath}` : ''} (Environment.KBPath or Environment.KBs). ` +
+        'This only removes the startup default: genexus_kb action=open path=<KB root> still opens a KB without it. ' +
+        'Declare one with `genexus-mcp init --kb "<kbPath>"` to open a KB automatically.';
     const gxExecutable = gxPath && ['genexus.exe', 'gx.exe', 'gxw32.exe']
         .find((name) => fs.existsSync(path.join(gxPath, name)));
     const gxExeExists = !!gxExecutable;
@@ -1159,9 +1164,9 @@ async function handleDoctor(options, ctx) {
         },
         // A KB path configured but absent on disk is fatal — the worker can't open a KB
         // that doesn't exist. Only when no KB is configured at all do we soften to warn.
-        { id: 'kb_path_exists', status: kbExists ? 'pass' : (kbPath ? 'fail' : 'warn'), detail: kbExists ? 'Configured KB path exists.' : (kbPath ? `Configured KB path does not exist: ${kbPath}` : 'No KB path is configured.') },
+        { id: 'kb_path_exists', status: kbExists ? 'pass' : (kbPath ? 'fail' : 'warn'), detail: kbExists ? 'Configured KB path exists.' : (kbPath ? `Configured KB path does not exist: ${kbPath}` : noKbPathDetail) },
         { id: 'kb_catalog', status: kbCatalogCheck.status, detail: kbCatalogCheck.detail },
-        { id: 'kb_shape', status: data.kbLooksValid ? 'pass' : 'warn', detail: data.kbLooksValid ? 'KB folder shape looks valid.' : 'KB markers were not found in configured KB path.' },
+        { id: 'kb_shape', status: data.kbLooksValid ? 'pass' : 'warn', detail: data.kbLooksValid ? 'KB folder shape looks valid.' : (kbPath ? 'KB markers were not found in configured KB path.' : 'No KB path is configured, so no KB markers were checked.') },
         // Same logic for the GeneXus install: missing the configured executable at a path
         // guarantees a worker crash on first MCP call. Promote from warn to fail so init
         // exits non-zero and the caller (install.ps1, AI client) actually sees the problem.
