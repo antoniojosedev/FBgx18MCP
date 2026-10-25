@@ -886,6 +886,19 @@ namespace GxMcp.Gateway
             return entry.DrainComplete;
         }
 
+        /// <summary>
+        /// Test helper: ends the drain set by <see cref="SetDrainingForTest"/> in the order
+        /// DrainAndReplaceAsync uses: Draining is cleared before DrainComplete is signalled, so a
+        /// released waiter sees an entry that is no longer draining.
+        /// </summary>
+        internal void CompleteDrainForTest(string alias)
+        {
+            if (!_entries.TryGetValue(alias.ToLowerInvariant(), out var entry))
+                throw new InvalidOperationException($"No entry for alias '{alias}'.");
+            entry.Draining = false;
+            entry.DrainComplete.TrySetResult(true);
+        }
+
         /// <summary>Returns true when the entry for <paramref name="alias"/> exists and Draining==true.</summary>
         internal bool IsDrainingForTest(string alias) =>
             _entries.TryGetValue(alias.ToLowerInvariant(), out var e) && e.Draining;
