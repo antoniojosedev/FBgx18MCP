@@ -444,38 +444,42 @@ user clearly asks to re-point without compiling (e.g. “só reapontar”, “se
 rebuild”, “sem build”, “não recompile”). Ambiguous or incomplete requests
 default to `.\install.ps1`.
 
-**Engine backend override (fork-owned, until upstream fixes it):** this checkout
-deliberately runs with `Engine.Backend=sdk` in `publish\config.json`, keeping the
-experimental `gx-engine` out of the way. `build.ps1` empties `publish/` and
-regenerates that file without an `Engine` section (`build.ps1:112-116`,
-`:207-230`); `install.ps1` and `release.ps1` both go through it, so any direct
-run silently restores the upstream default (`gxengine`). Environment variables
-are not an escape hatch: strict documents reject `GXMCP_ENGINE_*` at load.
+**Engine backend override (upstream #649, verified on this checkout
+2026-10-25):** this checkout deliberately runs with `Engine.Backend=sdk` in
+`publish\config.json`, keeping the experimental `gx-engine` out of the way.
+Upstream now carries the section across the rebuild instead of discarding it:
+`build.ps1 -PreserveEngineConfig` keeps `Engine.Backend`, `Engine.Fallback` and
+`Engine.TimeoutSeconds` (never `Engine.Executable`, which is machine-specific),
+and `install.ps1` passes the switch, so `.\install.ps1` preserves the choice on
+its own. A plain `build.ps1` still drops the section, but it now warns and names
+the switch instead of doing it silently; `release.ps1` calls `build.ps1` without
+the switch, so a release build returns to `gxengine` with that warning.
+Environment variables are not an escape hatch: strict documents reject
+`GXMCP_ENGINE_*` at load. Evidence: the upstream #649 guard
+(`scripts/tests/test-build-publish-config.ps1`) passes, and the build's real
+clean/config steps executed against this checkout's `publish\config.json` kept
+`Engine.Backend=sdk` with the switch and dropped it with the warning without it.
 
-Therefore, while the upstream entry points remain unfixed:
-
-- Wherever this block says to run `.\build.ps1` or `.\install.ps1`, run
-  `pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1` instead (add
-  `-Install` for the install path, `-EngineBackend` to change the choice and
-  `-InstallerArgs` for install switches). The wrapper propagates the entry
-  point's exit code and only then reapplies the backend.
-- After any direct `build.ps1`, `install.ps1` or `release.ps1` run by the user
-  or another tool, run
-  `pwsh -NoProfile -File scripts\Set-GxMcpLocalEngineBackend.ps1` and confirm
-  `Engine.Backend` in `publish\config.json`. Do not leave the tree on
-  `gxengine` by omission.
-- Do not “fix” this with `GXMCP_ENGINE_BACKEND`; adjust the file only. The
-  upstream gap is reported, and per fork policy neither `build.ps1` nor
-  `install.ps1` is patched here.
+- `.\install.ps1` no longer needs a wrapper. Run
+  `build.ps1 -PreserveEngineConfig` when invoking the build directly;
+  `pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1` (`-Install`,
+  `-EngineBackend`, `-InstallerArgs`) remains valid and re-applies the backend
+  after the entry point.
+- After a direct `build.ps1` without the switch, or after `release.ps1`, confirm
+  `Engine.Backend` in `publish\config.json` and run
+  `pwsh -NoProfile -File scripts\Set-GxMcpLocalEngineBackend.ps1` if it fell back
+  to `gxengine`.
+- Do not “fix” this with `GXMCP_ENGINE_BACKEND`; adjust the file only. Per fork
+  policy neither `build.ps1` nor `install.ps1` is patched here.
 
 For local-checkout work in this fork, **prefer** the rows below over matrix
 rows that recommend `npx … clients add` / `npx … clients` / `npx … doctor`:
 
 | Scenario (checkout) | Use this instead of the npx matrix rows |
 |---|---|
-| **Default:** install / update / refresh MCP harnesses (after sync or otherwise) | `pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1 -Install` at repo root (wraps `.\install.ps1`) |
+| **Default:** install / update / refresh MCP harnesses (after sync or otherwise) | `.\install.ps1` at repo root (it passes `-PreserveEngineConfig`); `pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1 -Install` is the equivalent wrapper |
 | Explicit no-rebuild re-point of **all** writable harnesses | From repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --all-clients` |
-| Stale / wrong launcher (one client) | Prefer the wrapper's `-Install` form; or same env + `node cli\run.js clients add --clients <id>` only if the user forbade rebuild |
+| Stale / wrong launcher (one client) | Prefer `.\install.ps1`; or the same env + `node cli\run.js clients add --clients <id>` only if the user forbade rebuild |
 | Post-sync validation | From repo root: `node cli\run.js clients --format json` and `node cli\run.js doctor --mcp-smoke --format json` (**same** CLI/env as install) |
 
 Acceptance for a harness refresh: every registered writable client lists that
