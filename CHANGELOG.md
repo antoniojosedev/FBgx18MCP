@@ -7,6 +7,8 @@
 
 ### Added
 
+- `genexus_object_context` `object` now reports `parent` (the immediate Module or Folder) and `parentPath` (its full path, e.g. `Root Module/<container>`) next to `path` and `module`. `module` is unchanged: it stays the owning GeneXus Module, so an object inside a Folder reports the Module that holds the Folder. The tool help says to check write scope with `parentPath`/`path`, not `module` ([#651](https://github.com/lennix1337/Genexus18MCP/issues/651)).
+
 ### Changed
 
 - `build.ps1` accepts `-PreserveEngineConfig` to carry `Engine.Backend`, `Engine.Fallback` and `Engine.TimeoutSeconds` of the previous `publish\config.json` into the regenerated one (`install.ps1` passes it); without it the build now warns that the `Engine` section was discarded. `Engine.Executable` is machine-specific and is never carried over. https://github.com/lennix1337/Genexus18MCP/issues/649
@@ -20,6 +22,7 @@
 - `gxwire` is formatted and clippy-clean (`-D warnings`), and CI now gates `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` for it; `src/gxwire/Cargo.lock` is tracked so `--locked` is meaningful. https://github.com/lennix1337/Genexus18MCP/issues/659
 - `docs/environment_variables.md` documented `GXMCP_ENGINE_BACKEND` as defaulting to `sdk`; the default is `gxengine` (admitted builds and type-only queries; `auto` = builds only, `sdk` = engine off). `docs/engine_backend.md` now states which `config.json` the direct-exe launcher reads. https://github.com/lennix1337/Genexus18MCP/issues/646
 - `build.ps1` no longer silently drops an `Engine` section from `publish\config.json` that the direct-exe launcher and `start_mcp.bat` read. https://github.com/lennix1337/Genexus18MCP/issues/649
+- `genexus_list_objects` `pathPrefix` returned only part of a module (1 of 6 objects) as a complete result. The lite index walk and the runtime-SDK list built `parentFolderPath` as `Root Module/` + a hierarchy path that already starts at the Root Module, storing `Root Module/Root Module/<module>`, so only entries rebuilt after an edit matched. Both now use one compose helper, persisted snapshots and lite-walk checkpoints are repaired on load, and the filter and the listed `parentFolderPath` use the canonical value. Both reads are served by the SDK Worker; gx-engine answers only the type-only `genexus_query` (name/type) and has no path or module data ([#650](https://github.com/lennix1337/Genexus18MCP/issues/650)).
 
 ### Internal
 

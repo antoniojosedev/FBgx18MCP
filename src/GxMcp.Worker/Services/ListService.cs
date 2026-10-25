@@ -320,7 +320,7 @@ namespace GxMcp.Worker.Services
                     if (!string.IsNullOrEmpty(invokerPathPrefix))
                     {
                         entries = entries.Where(e =>
-                            PathPrefixMatches(e.ParentFolderPath, invokerPathPrefix));
+                            PathPrefixMatches(IndexCacheService.CanonicalParentFolderPath(e), invokerPathPrefix));
                     }
 
                     // v2.6.8: temporal filters (Since inclusive, ModifiedBefore exclusive).
@@ -438,7 +438,7 @@ namespace GxMcp.Worker.Services
                             entry.Module ?? string.Empty,
                             entry.Path ?? string.Empty,
                             entry.ParentPath ?? string.Empty,
-                            entry.ParentFolderPath ?? string.Empty,
+                            IndexCacheService.CanonicalParentFolderPath(entry),
                             verbose,
                             entry.LastUpdate,
                             entry.CreatedAt,
@@ -607,12 +607,9 @@ namespace GxMcp.Worker.Services
                 {
                     filteredObjects = filteredObjects.Where(x =>
                     {
-                        // ParentPath here is hierarchy.ParentPath (without "Root Module").
-                        // Synthesize the same Root-Module-prefixed string used by ParentFolderPath.
-                        var pp = x.Hierarchy.ParentPath ?? string.Empty;
-                        string folderPath = string.IsNullOrEmpty(pp)
-                            ? "Root Module"
-                            : "Root Module/" + pp;
+                        // hierarchy.ParentPath already starts at the Root Module when the SDK reports it
+                        // as a container; the shared compose never doubles that prefix (#650).
+                        string folderPath = IndexCacheService.ComposeParentFolderPath(x.Hierarchy.ParentPath);
                         return PathPrefixMatches(folderPath, invokerPathPrefix);
                     });
                 }
@@ -670,9 +667,7 @@ namespace GxMcp.Worker.Services
                 for (int i = startRuntime; i < endRuntime; i++)
                 {
                     var item = orderedRuntime[i];
-                    var runtimeParentFolderPath = string.IsNullOrEmpty(item.Hierarchy.ParentPath)
-                        ? "Root Module"
-                        : "Root Module/" + item.Hierarchy.ParentPath;
+                    var runtimeParentFolderPath = IndexCacheService.ComposeParentFolderPath(item.Hierarchy.ParentPath);
                     DateTime rtLastUpdate = default(DateTime);
                     DateTime rtCreatedAt = default(DateTime);
                     string rtLastModifiedBy = null;
