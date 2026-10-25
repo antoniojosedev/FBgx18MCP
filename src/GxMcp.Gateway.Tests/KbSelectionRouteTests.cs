@@ -91,6 +91,29 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("customer", JObject.Parse(File.ReadAllText(fixture.ConfigPath))["Environment"]?["DefaultKb"]?.ToString());
         }
 
+        // #683: pool actions take `kb` as the alias, as the schema and help say.
+        [Theory]
+        [InlineData("close", "alias")]
+        [InlineData("set_persistent_default", "defaultKb")]
+        public async Task PoolAction_AcceptsKbAsTheAlias(string action, string aliasField)
+        {
+            using var fixture = RouteFixture.Create();
+
+            var response = await fixture.CallAsync("stdio", action, alias: null, kb: "orders");
+
+            var payload = fixture.Payload(response);
+            Assert.True(response["result"]?["isError"]?.Value<bool>() != true, payload.ToString());
+            Assert.Equal("orders", payload[aliasField]?.ToString());
+        }
+
+        [Fact]
+        public async Task Close_WithoutAliasOrKb_NamesBothParameters()
+        {
+            using var fixture = RouteFixture.Create();
+            var response = await fixture.CallAsync("stdio", "close", null);
+            Assert.Equal("Missing 'alias' (or 'kb') for action=close.", fixture.Payload(response)["error"]?.ToString());
+        }
+
         private sealed class RouteFixture : IDisposable
         {
             private readonly IDisposable _state;
@@ -127,10 +150,11 @@ namespace GxMcp.Gateway.Tests
                 return new RouteFixture(directory, configPath, Program.ConfigureRouteStateForTest(config, configPath));
             }
 
-            internal async Task<JObject> CallAsync(string session, string action, string? alias, bool? persist = null)
+            internal async Task<JObject> CallAsync(string session, string action, string? alias, bool? persist = null, string? kb = null)
             {
                 var arguments = new JObject { ["action"] = action };
                 if (alias != null) arguments["alias"] = alias;
+                if (kb != null) arguments["kb"] = kb;
                 if (persist.HasValue) arguments["persist"] = persist.Value;
                 return (await Program.ProcessMcpRequest(new JObject
                 {
