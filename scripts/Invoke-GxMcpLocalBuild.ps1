@@ -4,11 +4,12 @@
 Builds (or installs) this checkout and reapplies the local Engine.Backend.
 
 .DESCRIPTION
-Fork-local wrapper. build.ps1 and install.ps1 both regenerate publish/ from
-scratch, which drops any local Engine.Backend override. This wrapper runs the
-requested entry point and then reapplies the choice through
-Set-GxMcpLocalEngineBackend.ps1, so the published config ends up with the
-backend you asked for.
+Fork-local wrapper. build.ps1 regenerates publish/ from scratch; since upstream
+#649 it keeps the Engine section only with -PreserveEngineConfig (install.ps1
+passes it, a plain build.ps1 warns and drops it). This wrapper runs the requested
+entry point and then reapplies the choice through
+Set-GxMcpLocalEngineBackend.ps1, so the published config ends up with the backend
+you asked for whichever entry point ran.
 
 The upstream entry point is invoked as a child process and its exit code is
 propagated unchanged; a failed build never leaves a patched config behind.

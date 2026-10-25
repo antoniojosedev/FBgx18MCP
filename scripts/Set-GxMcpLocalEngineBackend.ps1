@@ -4,11 +4,13 @@
 Reapplies the local Engine.Backend choice to the generated publish config.
 
 .DESCRIPTION
-Fork-local helper. build.ps1 wipes publish/ and regenerates publish/config.json
-from a neutral template that has no Engine section, so a local Engine.Backend
-choice (for example "sdk" to keep the engine out of the way) is lost on every
-build. This helper merges exactly one setting - Engine.Backend - into the
-freshly generated file and leaves every other key untouched.
+Fork-local helper. A plain build.ps1 (without -PreserveEngineConfig) wipes
+publish/ and regenerates publish/config.json from a neutral template that has no
+Engine section, so a local Engine.Backend choice (for example "sdk" to keep the
+engine out of the way) is lost when the build runs directly; install.ps1 passes
+the switch and keeps the section. This helper merges exactly one setting -
+Engine.Backend - into the freshly generated file and leaves every other key
+untouched.
 
 Engine environment variables are not an alternative for strict documents: the
 Gateway rejects GXMCP_ENGINE_* at load time there, so the file is the only
