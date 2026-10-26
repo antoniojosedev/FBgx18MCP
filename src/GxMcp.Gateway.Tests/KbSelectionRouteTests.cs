@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using GxMcp.TestSupport;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
@@ -91,27 +92,64 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("customer", JObject.Parse(File.ReadAllText(fixture.ConfigPath))["Environment"]?["DefaultKb"]?.ToString());
         }
 
-        // #683: pool actions take `kb` as the alias, as the schema and help say.
+        // #683, #689: pool actions take `kb` as the alias, as the schema and help say.
         [Theory]
         [InlineData("close", "alias")]
+        [InlineData("select", "selectedKb")]
+        [InlineData("set_session_default", "selectedKb")]
         [InlineData("set_persistent_default", "defaultKb")]
+        [InlineData("set_default", "defaultKb")]
         public async Task PoolAction_AcceptsKbAsTheAlias(string action, string aliasField)
         {
             using var fixture = RouteFixture.Create();
+            string session = "pool-route-" + Guid.NewGuid().ToString("N");
 
-            var response = await fixture.CallAsync("stdio", action, alias: null, kb: "orders");
+            var response = await fixture.CallAsync(session, action, alias: null, kb: "orders");
 
             var payload = fixture.Payload(response);
             Assert.True(response["result"]?["isError"]?.Value<bool>() != true, payload.ToString());
             Assert.Equal("orders", payload[aliasField]?.ToString());
         }
 
-        [Fact]
-        public async Task Close_WithoutAliasOrKb_NamesBothParameters()
+        [Theory]
+        [InlineData("close")]
+        [InlineData("set_persistent_default")]
+        [InlineData("set_default")]
+        public async Task AliasActions_WithoutAliasOrKb_NameBothParameters(string action)
         {
             using var fixture = RouteFixture.Create();
-            var response = await fixture.CallAsync("stdio", "close", null);
-            Assert.Equal("Missing 'alias' (or 'kb') for action=close.", fixture.Payload(response)["error"]?.ToString());
+            var response = await fixture.CallAsync("stdio", action, null);
+            Assert.Equal($"Missing 'alias' (or 'kb') for action={action}.", fixture.Payload(response)["error"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData("select")]
+        [InlineData("set_session_default")]
+        public async Task SelectActions_WithoutAliasKbOrPath_NameEveryAcceptedParameter(string action)
+        {
+            using var fixture = RouteFixture.Create();
+            string session = "select-missing-" + Guid.NewGuid().ToString("N");
+
+            var response = await fixture.CallAsync(session, action, null);
+
+            Assert.Equal($"The 'alias' (or 'kb') or 'path' parameter is required for '{action}'.",
+                fixture.Payload(response)["error"]?.ToString());
+        }
+
+        // #689: the schema is what the caller reads to build the call, so it names every pool
+        // action that takes `kb` in place of `alias` (the theory above exercises the same list).
+        [Theory]
+        [InlineData("kb")]
+        [InlineData("alias")]
+        public void GenexusKbSchema_NamesEveryPoolActionThatTakesKbInPlaceOfAlias(string field)
+        {
+            var tool = JArray.Parse(RepoSource.Read("src", "GxMcp.Gateway", "tool_definitions.json"))
+                .OfType<JObject>().Single(t => (string?)t["name"] == "genexus_kb");
+            string description = (string?)tool["inputSchema"]?["properties"]?[field]?["description"] ?? "";
+
+            foreach (string action in new[] { "close", "select", "set_session_default", "set_persistent_default", "set_default" })
+                Assert.True(description.Contains(action, StringComparison.Ordinal),
+                    $"genexus_kb.{field} must name '{action}': {description}");
         }
 
         private sealed class RouteFixture : IDisposable

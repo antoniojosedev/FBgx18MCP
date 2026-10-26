@@ -400,20 +400,29 @@ namespace GxMcp.Worker.Services
 
         private static void AddXmlChildren(XElement tab, JArray children)
         {
-            if (children == null || children.Count == 0) return;
-            var direct = children.OfType<JObject>().ToList();
+            // The pattern declares exactly one `table` per `tab` (TabTransaction, TabGrid, TabTabular and TabView alike) and the
+            // engine creates it together with the tab, so a tab without children still holds an empty table (#552, #595).
+            var direct = children?.OfType<JObject>().ToList() ?? new List<JObject>();
+            if (direct.Count == 0)
+            {
+                tab.Add(new XElement(tab.GetDefaultNamespace() + "table"));
+                return;
+            }
             if (direct.All(c => string.Equals(c["type"]?.ToString(), "table", StringComparison.OrdinalIgnoreCase)))
             {
-                foreach (JObject child in direct) tab.Add(BuildXmlControl(child));
+                if (direct.Count > 1) throw SingleTableTab();
+                tab.Add(BuildXmlControl(direct[0]));
                 return;
             }
 
-            // WWP tabs accept tables directly. A flat typed list is a convenience
-            // contract and is wrapped in the canonical responsive table.
+            // A flat typed list is a convenience contract and is wrapped in the canonical responsive table.
             var table = new XElement(tab.GetDefaultNamespace() + "table", new XAttribute("type", "Responsive"));
             foreach (JObject child in direct) table.Add(BuildXmlControl(child));
             tab.Add(table);
         }
+
+        private static WwpTabException SingleTableTab()
+            => new WwpTabException("InvalidWwpChild", "A tab holds a single table (the pattern declares one table per tab): send one table child, or a flat list of controls, and nest further tables inside it.");
 
         private static XElement BuildXmlControl(JObject control)
         {
@@ -427,15 +436,9 @@ namespace GxMcp.Worker.Services
                 string basicType = control["basicType"]?.ToString() ?? "VarChar";
                 element = new XElement(ns + "variable",
                     new XAttribute("name", name), new XAttribute("dataType", "Basic"),
-                    new XAttribute("defaultDataType", "Basic"), new XAttribute("basicType", basicType),
-                    new XAttribute("defaultBasicType", basicType));
-                SetPair(element, "description", control["description"]);
-                SetPair(element, "basicCLength", control["length"]);
-                SetPair(element, "basicDecimals", control["decimals"]);
-                SetPair(element, "controlType", control["controlType"]);
-                SetPair(element, "controlValues", control["controlValues"]);
-                SetPair(element, "controlEmptyItem", control["controlEmptyItem"]);
-                SetPair(element, "controlEmptyItemText", control["controlEmptyItemText"]);
+                    new XAttribute("defaultDataType", "Basic"));
+                foreach (KeyValuePair<string, object> attribute in VariableAttributes(control, basicType))
+                    SetPair(element, attribute.Key, new JValue(VariableAttributeText(attribute.Value)));
             }
             else if (type.Equals("userAction", StringComparison.OrdinalIgnoreCase))
             {
@@ -447,7 +450,8 @@ namespace GxMcp.Worker.Services
             {
                 element = new XElement(ns + "table", new XAttribute("type", "Responsive"));
                 SetSingle(element, "name", control["name"]);
-                SetPair(element, "numberOfColumns", control["columns"]);
+                if (ChildNumber(control["columns"], "columns", 1) is int columns)
+                    SetPair(element, "numberOfColumns", new JValue(columns.ToString(System.Globalization.CultureInfo.InvariantCulture)));
                 SetPair(element, "themeClass", control["themeClass"]);
                 foreach (JObject child in (control["children"] as JArray ?? new JArray()).OfType<JObject>())
                     element.Add(BuildXmlControl(child));
@@ -518,7 +522,7 @@ namespace GxMcp.Worker.Services
         {
             object root = GetProperty(part, "RootElement");
             if (root == null) return TabError("WwpNativeRootUnavailable", "PatternInstance RootElement is unavailable.");
-            object tabs = Walk(root).FirstOrDefault(e => NativeType(e).Equals("tabs", StringComparison.OrdinalIgnoreCase));
+            object tabs = Walk(root).FirstOrDefault(IsNativeTabsContainer);
             object synthesisContainer = null;
             if (tabs == null && operation == "add_tab")
             {
@@ -607,6 +611,12 @@ namespace GxMcp.Worker.Services
         private static bool IsNativeTab(object element) =>
             IsTabElement(NativeType(element)) || IsTabElement(NativeElementXml(element)?.Name.LocalName);
 
+        // The container is the child element named `tabs`; its element type is the form's own (Tabs, TabsTransaction, TabsView),
+        // so matching the type alone never found the tabs a Transaction already had (#552).
+        private static bool IsNativeTabsContainer(object element) =>
+            string.Equals(GetProperty(element, "Name")?.ToString(), "tabs", StringComparison.OrdinalIgnoreCase)
+            || NativeType(element).Equals("tabs", StringComparison.OrdinalIgnoreCase);
+
         private static bool IsNativeAttribute(object element) =>
             NativeType(element).Equals("attribute", StringComparison.OrdinalIgnoreCase)
             || NativeElementXml(element)?.Name.LocalName.Equals("attribute", StringComparison.OrdinalIgnoreCase) == true;
@@ -629,18 +639,38 @@ namespace GxMcp.Worker.Services
 
         private static void AddNativeChildren(object tab, JArray children, object scope, List<string> requestedAttributes)
         {
-            if (children == null || children.Count == 0) return;
-            List<JObject> typed = children.OfType<JObject>().ToList();
-            if (typed.All(c => string.Equals(c["type"]?.ToString(), "table", StringComparison.OrdinalIgnoreCase)))
+            // The engine creates the single table of a tab together with the tab (CreateChildElement answers a tab that already
+            // holds it), and a second one is refused: the requested table is configured in place. A model that does not create it
+            // gets one added (#552, #595).
+            List<JObject> typed = children?.OfType<JObject>().ToList() ?? new List<JObject>();
+            if (typed.Count == 0) return;
+            bool tables = typed.All(c => string.Equals(c["type"]?.ToString(), "table", StringComparison.OrdinalIgnoreCase));
+            if (tables && typed.Count > 1) throw SingleTableTab();
+            object table = NativeChildren(tab).FirstOrDefault(IsNativeTable);
+            bool created = table == null;
+            if (created) table = CreateNativeChild(tab, "table");
+            if (tables)
+                ConfigureNativeTable(table, typed[0], scope, requestedAttributes);
+            else
             {
-                foreach (JObject child in typed) AttachNativeControl(tab, child, scope, requestedAttributes);
-                return;
+                SetNativeAttribute(table, "type", "Responsive");
+                SetNativeAttribute(table, "defaultType", "Responsive");
+                foreach (JObject child in typed) AttachNativeControl(table, child, scope, requestedAttributes);
             }
-            object table = CreateNativeChild(tab, "table");
-            SetNativeAttribute(table, "type", "Responsive");
-            SetNativeAttribute(table, "defaultType", "Responsive");
-            foreach (JObject child in typed) AttachNativeControl(table, child, scope, requestedAttributes);
-            ExecuteElementCommand(tab, table, "AddElementCommand", null);
+            if (created) ExecuteElementCommand(tab, table, "AddElementCommand", null);
+        }
+
+        // The attributes and nested controls of a requested table, set on a table that already exists in the tree.
+        private static void ConfigureNativeTable(object table, JObject control, object scope, List<string> requestedAttributes)
+        {
+            SetNativePair(table, "type", "Responsive");
+            SetNativeAttributeIf(table, "name", control["name"]);
+            // numberOfColumns is a number in the pattern: the text form fails its cast when the table is read back.
+            if (ChildNumber(control["columns"], "columns", 1) is int columns)
+                SetNativeNumberPair(table, "numberOfColumns", columns);
+            SetNativePair(table, "themeClass", control["themeClass"]);
+            foreach (JObject nested in (control["children"] as JArray ?? new JArray()).OfType<JObject>())
+                AttachNativeControl(table, nested, scope, requestedAttributes);
         }
 
         // Native twin of MoveFormAttributesIntoTab: the existing element is moved from its
@@ -684,14 +714,14 @@ namespace GxMcp.Worker.Services
                 string basicType = control["basicType"]?.ToString() ?? "VarChar";
                 SetNativeAttribute(child, "name", name);
                 SetNativePair(child, "dataType", "Basic");
-                SetNativePair(child, "basicType", basicType);
-                SetNativePair(child, "description", control["description"]);
-                SetNativePair(child, "basicCLength", control["length"]);
-                SetNativePair(child, "basicDecimals", control["decimals"]);
-                SetNativePair(child, "controlType", control["controlType"]);
-                SetNativePair(child, "controlValues", control["controlValues"]);
-                SetNativePair(child, "controlEmptyItem", control["controlEmptyItem"]);
-                SetNativePair(child, "controlEmptyItemText", control["controlEmptyItemText"]);
+                foreach (KeyValuePair<string, object> attribute in VariableAttributes(control, basicType))
+                {
+                    // The sizes are numbers and the empty-item flag is a bool in the pattern: the text form fails its cast when
+                    // the variable is read back.
+                    if (attribute.Value is int number) SetNativeNumberPair(child, attribute.Key, number);
+                    else if (attribute.Value is bool flag) SetNativeBoolPair(child, attribute.Key, flag);
+                    else SetNativePair(child, attribute.Key, (string)attribute.Value);
+                }
             }
             else if (type == "userAction")
             {
@@ -715,12 +745,7 @@ namespace GxMcp.Worker.Services
             }
             else
             {
-                SetNativePair(child, "type", "Responsive");
-                SetNativeAttributeIf(child, "name", control["name"]);
-                SetNativePair(child, "numberOfColumns", control["columns"]);
-                SetNativePair(child, "themeClass", control["themeClass"]);
-                foreach (JObject nested in (control["children"] as JArray ?? new JArray()).OfType<JObject>())
-                    AttachNativeControl(child, nested, scope, requestedAttributes);
+                ConfigureNativeTable(child, control, scope, requestedAttributes);
             }
             ExecuteElementCommand(parent, child, "AddElementCommand", null);
         }
@@ -777,8 +802,86 @@ namespace GxMcp.Worker.Services
 
         private static void SetNativePair(object element, string name, JToken value)
         {
-            if (value == null) return;
+            if (IsAbsent(value)) return;
             SetNativePair(element, name, value.ToString());
+        }
+
+        // The engine leaves out of the stored element any value that is the attribute's own default in the pattern
+        // (WorkWithPlusInstance.xml), together with its default* twin: Numeric for basicType, the default lengths and decimals,
+        // the default control type and empty-item values. A request that states the default is therefore not expected back.
+        private static readonly Dictionary<string, string> PatternDefaults = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["basicType"] = "Numeric",
+            ["basicCLength"] = "40",
+            ["basicLength"] = "4",
+            ["basicLVCLength"] = "2097152",
+            ["basicDecimals"] = "0",
+            ["controlType"] = "<default>",
+            ["controlEmptyItem"] = "False",
+            ["controlEmptyItemText"] = "GX_EmptyItemText"
+        };
+
+        internal static bool IsPatternDefault(string attribute, string value)
+            => PatternDefaults.TryGetValue(attribute, out string standard) && string.Equals(standard, value, StringComparison.OrdinalIgnoreCase);
+
+        internal static bool IsDefaultBasicType(string basicType) => IsPatternDefault("basicType", basicType);
+
+        // The attributes a `variable` child states, with the type each has in the pattern (text, int or bool), minus the ones that are
+        // the pattern's default. The dryRun plan and the native write both read this list, so they cannot disagree on what is expected
+        // back, and a value the write would refuse is refused by the plan first.
+        internal static List<KeyValuePair<string, object>> VariableAttributes(JObject control, string basicType)
+        {
+            var attributes = new List<KeyValuePair<string, object>>();
+            void Add(string name, object value)
+            {
+                if (value == null || IsPatternDefault(name, VariableAttributeText(value))) return;
+                attributes.Add(new KeyValuePair<string, object>(name, value));
+            }
+            string Text(string name) => IsAbsent(control[name]) ? null : control[name].ToString();
+            Add("basicType", basicType);
+            Add("description", Text("description"));
+            Add(LengthAttributeFor(basicType), ChildNumber(control["length"], "length"));
+            Add("basicDecimals", ChildNumber(control["decimals"], "decimals"));
+            Add("controlType", Text("controlType"));
+            Add("controlValues", Text("controlValues"));
+            Add("controlEmptyItem", ChildBool(control["controlEmptyItem"], "controlEmptyItem"));
+            Add("controlEmptyItemText", Text("controlEmptyItemText"));
+            return attributes;
+        }
+
+        private static string VariableAttributeText(object value)
+            => value is bool flag ? (flag ? "True" : "False") : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
+
+        private static bool? ChildBool(JToken value, string name)
+        {
+            if (IsAbsent(value)) return null;
+            if (value.Type == JTokenType.Boolean) return value.Value<bool>();
+            if (bool.TryParse(value.ToString(), out bool parsed)) return parsed;
+            throw new WwpTabException("InvalidWwpChild", name + " must be true or false.");
+        }
+
+        // The attribute that holds the length of a Basic variable: it depends on the type (WorkWithPlusInstance.xml, VarTypeDef).
+        internal static string LengthAttributeFor(string basicType)
+        {
+            if (string.Equals(basicType, "Numeric", StringComparison.OrdinalIgnoreCase)) return "basicLength";
+            if (string.Equals(basicType, "LongVarChar", StringComparison.OrdinalIgnoreCase)) return "basicLVCLength";
+            return "basicCLength";
+        }
+
+        // An explicit null from a client means the same as leaving the value out.
+        private static bool IsAbsent(JToken value) => value == null || value.Type == JTokenType.Null;
+
+        // A number of a child control, read the same way by the dryRun plan and by the native write, so that a value the write would
+        // refuse is refused by the plan too, before the lock and the snapshot.
+        private static int? ChildNumber(JToken value, string name, int minimum = int.MinValue)
+        {
+            if (IsAbsent(value)) return null;
+            var style = minimum > 0 ? System.Globalization.NumberStyles.None : System.Globalization.NumberStyles.AllowLeadingSign;
+            if (!int.TryParse(value.ToString(), style, System.Globalization.CultureInfo.InvariantCulture, out int number) || number < minimum)
+                throw new WwpTabException("InvalidWwpChild", minimum == int.MinValue
+                    ? name + " must be an integer."
+                    : "A table child's " + name + " must be an integer of at least " + minimum + ".");
+            return number;
         }
 
         private static void SetNativePair(object element, string name, string value)
@@ -791,7 +894,7 @@ namespace GxMcp.Worker.Services
 
         private static void SetNativeAttributeIf(object element, string name, JToken value)
         {
-            if (value != null) SetNativeAttribute(element, name, value.ToString());
+            if (!IsAbsent(value)) SetNativeAttribute(element, name, value.ToString());
         }
 
         private static void SetNativeAttribute(object element, string name, string value)
@@ -844,9 +947,30 @@ namespace GxMcp.Worker.Services
         {
             object attributes = GetProperty(element, "Attributes");
             if (attributes == null) return null;
-            MethodInfo getter = attributes.GetType().GetMethod("GetPropertyValueString", new[] { typeof(string) });
-            try { return getter?.Invoke(attributes, new object[] { name })?.ToString(); }
+            string text;
+            try
+            {
+                MethodInfo getter = attributes.GetType().GetMethod("GetPropertyValueString", new[] { typeof(string) });
+                text = getter?.Invoke(attributes, new object[] { name })?.ToString();
+            }
             catch { return null; }
+
+            // A reference attribute (`attribute`, `domain`, ...) holds the KB object itself, and the bag's text form of an
+            // object is its CLR type name. The pattern serialises the reference as <type GUID>-<name> (what the XML shows and
+            // every caller compares against), so a native attribute element was never matched by its attribute (#595).
+            if (text != null && text.IndexOf('.') > 0 && text.IndexOf(' ') < 0 && text.IndexOf('-') < 0)
+            {
+                try
+                {
+                    MethodInfo raw = attributes.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                        .FirstOrDefault(m => m.Name == "GetPropertyValue" && !m.IsGenericMethod
+                            && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType == typeof(string));
+                    if (raw?.Invoke(attributes, new object[] { name }) is KBObject referenced)
+                        return GxObjectReference(referenced);
+                }
+                catch { }
+            }
+            return text;
         }
 
         private static object GetProperty(object value, string name)
@@ -1108,12 +1232,15 @@ namespace GxMcp.Worker.Services
             catch { return false; }
         }
 
+        // A tab is an `item` of the form's tab control and carries its name in `itemControlName`; every other control
+        // names itself with controlName/name/id. Without `itemControlName` no tab was ever found in a real projection, so
+        // add_tab/move_tab failed to confirm it and remove_tab "confirmed" an absence it could not see (#552).
         private static XElement FindWebFormNamedElement(XDocument document, string name)
         {
             if (string.IsNullOrWhiteSpace(name)) return null;
             return document.Root.DescendantsAndSelf().FirstOrDefault(e => e.Attributes().Any(a =>
                 (a.Name.LocalName.Equals("ControlName", StringComparison.OrdinalIgnoreCase)
-                 || a.Name.LocalName.Equals("controlName", StringComparison.OrdinalIgnoreCase)
+                 || a.Name.LocalName.Equals("itemControlName", StringComparison.OrdinalIgnoreCase)
                  || a.Name.LocalName.Equals("name", StringComparison.OrdinalIgnoreCase)
                  || a.Name.LocalName.Equals("id", StringComparison.OrdinalIgnoreCase))
                 && string.Equals(a.Value, name, StringComparison.OrdinalIgnoreCase)));
@@ -1157,10 +1284,10 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrWhiteSpace(result)) throw new WwpTabException("InvalidWwpChild", type + " requires " + property + ".");
             return result;
         }
-        private static void SetSingle(XElement element, string name, JToken value) { if (value != null) element.SetAttributeValue(name, value.ToString()); }
+        private static void SetSingle(XElement element, string name, JToken value) { if (!IsAbsent(value)) element.SetAttributeValue(name, value.ToString()); }
         private static void SetPair(XElement element, string name, JToken value)
         {
-            if (value == null) return;
+            if (IsAbsent(value)) return;
             string text = value.Type == JTokenType.Boolean ? (value.ToObject<bool>() ? "True" : "False") : value.ToString();
             element.SetAttributeValue(name, text);
             element.SetAttributeValue("default" + char.ToUpperInvariant(name[0]) + name.Substring(1), text);

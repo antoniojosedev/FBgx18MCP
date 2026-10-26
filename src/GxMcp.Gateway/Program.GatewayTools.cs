@@ -252,7 +252,7 @@ namespace GxMcp.Gateway
                             string? alias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
                             string? path = args?["path"]?.ToString();
                             if (string.IsNullOrWhiteSpace(alias) && string.IsNullOrWhiteSpace(path))
-                                throw new ArgumentException("The 'alias' or 'path' parameter is required for 'select'.");
+                                throw new ArgumentException($"The 'alias' (or 'kb') or 'path' parameter is required for '{action}'.");
 
                             string resolvedAlias;
                             string? resolvedPath = null;
@@ -318,7 +318,7 @@ namespace GxMcp.Gateway
                         {
                             string? alias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
                             if (string.IsNullOrWhiteSpace(alias))
-                                throw new ArgumentException($"Missing 'alias' for action={action}.");
+                                throw new ArgumentException($"Missing 'alias' (or 'kb') for action={action}.");
 
                             bool isLegacySetDefault = string.Equals(action, "set_default", StringComparison.OrdinalIgnoreCase);
                             bool persist = isLegacySetDefault ? (args?["persist"]?.ToObject<bool?>() ?? true) : true;
