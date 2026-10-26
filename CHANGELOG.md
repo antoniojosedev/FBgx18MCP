@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Release: the release manifest verifier now rejects a `publish/config.json` that is not the neutral build output (an `Engine` section or a KB catalog), so `-SkipBuild`, preflight reuse, `resumeRelease` and a tolerated build failure can no longer ship a config written for a local run ([#682](https://github.com/lennix1337/Genexus18MCP/issues/682)).
+
 ### Internal
 
 ## v4.0.2 - 2026-10-25
