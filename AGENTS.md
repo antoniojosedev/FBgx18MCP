@@ -158,6 +158,15 @@ a modified state — it is not user data, and a lane that needs to reproduce a
 write, a rollback or a persistence failure should use one rather than asking
 for a KB.
 
+The paths below are this maintainer's machine, not a requirement: the portable
+rule is the `teste` name. The release preflight resolves its live KB as
+`GXMCP_TEST_KB` first, then (single-major mode only) autodetects
+`C:\KBs\KBTeste` for GeneXus 18, `C:\KBs\KBTeste17` for 17 and
+`C:\KBs\KBTeste<major>` otherwise (`Get-GxMcpLocalLiveKbPath` in
+`scripts/release-contract.ps1`). With no KB found the live gate is skipped,
+unless `-RequireLive` or Build All evidence is required, which make it fail. See
+`docs/environment_variables.md`.
+
 | Path | GeneXus major | Notes |
 | :--- | :--- | :--- |
 | `C:\KBs\KBTeste` | 18 | Largest (~1,800 files); the default target for SDK-level read/write lanes |
@@ -383,8 +392,11 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   cache rules in `docs/agent_playbook.md`.
 - Do not claim completion without fresh validation. Review the final diff for
   scope, logic, edge cases, compatibility, security, tests, and docs.
-- Do not commit, push, merge, release, deploy, or close an issue unless the
-  user explicitly asks. Issue closure requires a released fix and release link.
+- Pull requests are always allowed upstream: create a branch, commit to it,
+  push it and open or update the PR without asking. This fork works directly on
+  `main`, so the stricter rule applies here: do not commit, push, merge,
+  release, deploy, or close an issue unless the user explicitly asks. Issue
+  closure requires a released fix and release link.
 - When creating issues, submit them to the upstream repository
   (`lennix1337/Genexus18MCP`), with a preference for Brazilian Portuguese
   (`pt-BR`).

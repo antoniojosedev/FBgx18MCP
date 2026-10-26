@@ -19,6 +19,14 @@ REQUIRED = {
 }
 PROTOCOLS = {"2025-11-25", "2026-07-28"}
 PROVENANCE = "gxmcp-sbom.json"
+# Keys build.ps1 writes into the neutral publish/config.json (New-PublishConfigJson
+# in scripts/publish-config.ps1). Anything else, such as an Engine section kept
+# for a local run or a KB catalog, is machine-specific and must not ship (#682).
+NEUTRAL_CONFIG_KEYS = {
+    "": {"ConfigSchemaVersion", "GatewayMode", "GeneXus", "Server", "Environment"},
+    "GeneXus": {"InstallationPath", "WorkerExecutable"},
+    "Environment": {"ResolutionPolicy"},
+}
 
 
 def fail(message: str) -> int:
@@ -32,6 +40,30 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def publish_config_problem(path: Path) -> str | None:
+    """Return why publish/config.json is not the neutral build output, or None."""
+    try:
+        config = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return f"config.json is not valid JSON: {exc}"
+    if not isinstance(config, dict):
+        return "config.json must be a JSON object"
+    for section, allowed in NEUTRAL_CONFIG_KEYS.items():
+        node = config.get(section) if section else config
+        if node is None:
+            continue
+        if not isinstance(node, dict):
+            return f"config.json {section} must be an object"
+        extra = sorted(set(node) - allowed)
+        if extra:
+            names = ", ".join(f"{section}.{key}" if section else key for key in extra)
+            return (
+                f"config.json is not the neutral build output; unexpected {names}. "
+                "Rebuild publish/ with build.ps1 (without -PreserveEngineConfig) before releasing."
+            )
+    return None
 
 
 def main() -> int:
@@ -121,6 +153,12 @@ def main() -> int:
     schema_entry = next(entry for entry in entries if entry["path"] == "tool_definitions.json")
     if manifest.get("schemaSha256", "").lower() != schema_entry["sha256"].lower():
         return fail("schemaSha256 does not match tool_definitions.json")
+
+    config_path = root / "config.json"
+    if config_path.is_file():
+        problem = publish_config_problem(config_path)
+        if problem:
+            return fail(problem)
 
     if args.archive:
         archive_path = args.archive.resolve()
