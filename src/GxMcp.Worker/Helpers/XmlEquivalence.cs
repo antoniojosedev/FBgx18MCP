@@ -410,21 +410,40 @@ namespace GxMcp.Worker.Helpers
             new System.Text.RegularExpressions.Regex(@"^[A-Za-z][A-Za-z0-9_]*$",
                 System.Text.RegularExpressions.RegexOptions.Compiled);
 
+        // A class attribute holds a space-separated list of classes (e.g. themeClass="A B C").
+        private static readonly char[] ClassListSeparators = { ' ', '\t', '\r', '\n' };
+
         /// <summary>
-        /// True when one side of a class-attribute diff is a symbolic theme name
-        /// (e.g. "Attribute", "TableGrid", "ErrorViewer") and the other is the
-        /// SDK-resolved <c>&lt;guid&gt;-&lt;int&gt;</c> form. Both refer to the
-        /// same theme class — the verifier should NOT flag this as a write
+        /// True when the two values of a class-attribute diff differ only because
+        /// the SDK resolved symbolic theme names (e.g. "Attribute", "TableGrid",
+        /// "ErrorViewer") to their <c>&lt;guid&gt;-&lt;int&gt;</c> form. Both refer
+        /// to the same theme class — the verifier should NOT flag this as a write
         /// rejection.
+        /// A value may list several classes: both sides must list the same number
+        /// of classes, and each position must be equal (ignoring case) or a
+        /// symbolic name against a resolved <c>&lt;guid&gt;-&lt;int&gt;</c>. At least
+        /// one position must be such a resolution; two different GUIDs at the same
+        /// position, or a different number of classes, remain a real difference.
         /// </summary>
         private static bool IsSymbolicVsGuidClassPair(string left, string right)
         {
             if (string.IsNullOrEmpty(left) || string.IsNullOrEmpty(right)) return false;
-            bool leftSym = SymbolicClassRx.IsMatch(left);
-            bool rightSym = SymbolicClassRx.IsMatch(right);
-            bool leftGuid = GuidSuffixedClassRx.IsMatch(left);
-            bool rightGuid = GuidSuffixedClassRx.IsMatch(right);
-            return (leftSym && rightGuid) || (leftGuid && rightSym);
+            string[] leftClasses = left.Split(ClassListSeparators, StringSplitOptions.RemoveEmptyEntries);
+            string[] rightClasses = right.Split(ClassListSeparators, StringSplitOptions.RemoveEmptyEntries);
+            if (leftClasses.Length == 0 || leftClasses.Length != rightClasses.Length) return false;
+
+            bool anyResolved = false;
+            for (int i = 0; i < leftClasses.Length; i++)
+            {
+                if (string.Equals(leftClasses[i], rightClasses[i], StringComparison.OrdinalIgnoreCase)) continue;
+                bool leftSym = SymbolicClassRx.IsMatch(leftClasses[i]);
+                bool rightSym = SymbolicClassRx.IsMatch(rightClasses[i]);
+                bool leftGuid = GuidSuffixedClassRx.IsMatch(leftClasses[i]);
+                bool rightGuid = GuidSuffixedClassRx.IsMatch(rightClasses[i]);
+                if (!((leftSym && rightGuid) || (leftGuid && rightSym))) return false;
+                anyResolved = true;
+            }
+            return anyResolved;
         }
 
         // Friction 2026-05-25 — attributes whose values are variable/attribute
