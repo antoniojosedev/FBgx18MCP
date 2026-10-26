@@ -536,10 +536,10 @@ namespace GxMcp.Gateway
                         }
                         case "close":
                         {
-                            string? alias = args?["alias"]?.ToString();
+                            string? alias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
                             if (string.IsNullOrWhiteSpace(alias))
                             {
-                                throw new ArgumentException("Missing 'alias' for action=close.");
+                                throw new ArgumentException("Missing 'alias' (or 'kb') for action=close.");
                             }
                             bool closed = _workerPool.Close(alias!);
                             InvalidateIndexStateForKb(alias!);
