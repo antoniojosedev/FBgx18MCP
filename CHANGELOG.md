@@ -15,6 +15,8 @@
 
 ### Internal
 
+- Docs: `AGENTS.md` and `docs/environment_variables.md` now state that the `C:\KBs\KBTeste*` live KBs are a local default, not a requirement, and how the release preflight resolves its live KB: `GXMCP_TEST_KB`, then single-major autodetection (`KBTeste`, `KBTeste17`, `KBTeste<major>`), then a skip that `-RequireLive`/`-RequireBuildAll` turn into a failure ([#684](https://github.com/lennix1337/Genexus18MCP/issues/684)).
+
 ## v4.0.2 - 2026-10-25
 
 
