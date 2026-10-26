@@ -11,11 +11,8 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
 {
-    // add_grid_variable (#638): one presentation-variable column in an existing grid, written the way WorkWithPlus's own
-    // wizard (and the variable grid of add_grid) writes it. WorkWithPlus keys a grid variable by its name and types it with
-    // the dataType/basicType/length attributes of its Variable element; it defines no reference attribute and the SDK gives
-    // a variable no GUID, so the column is identified by the variable name. A variable the owning object already declares
-    // decides the type; an undeclared one is created by the pattern from the explicit type.
+    // add_grid_variable (#638): preview a presentation-variable column keyed by name and typed from its declaration
+    // or explicit arguments. Writes remain blocked until the requested column can be verified in the projected WebForm.
     public sealed partial class WwpActionService
     {
         private string RunAddGridVariableOperation(string target, KBObject requestedObject, KBObject instance,
@@ -54,140 +51,9 @@ namespace GxMcp.Worker.Services
                     ["sdkOperation"] = "PatternInstance.RootElement + CreateChildElement(gridVariable) + AddElementCommand/InsertElementCommand"
                 });
 
-            lock (WriteService.AcquirePerTargetLock(target))
-            {
-                KBObject lockedTarget = _objects.FindObject(target) ?? requestedObject;
-                string currentXml = _patterns.ReadPatternPartXml(lockedTarget, "PatternInstance", PatternRegistry.WorkWithPlusPatternId,
-                    out KBObject currentInstance, out _);
-                if (currentInstance == null || string.IsNullOrWhiteSpace(currentXml))
-                    return BuildWwpInstanceNotResolvable(target);
-                // The part is resolved from the instance that was read (issue #638): resolving it from
-                // the requested host yields another copy of the WorkWithPlus object, and saving one copy
-                // with the other's part persists nothing.
-                _patterns.BuildPatternPartEnvelope(currentInstance, "PatternInstance", currentXml, PatternRegistry.WorkWithPlusPatternId,
-                    out currentInstance, out KBObjectPart currentPart);
-                if (currentInstance == null || currentPart == null || string.IsNullOrWhiteSpace(currentXml))
-                    return BuildWwpInstanceNotResolvable(target);
-
-                string currentVersion = WriteService.ComputeContentVersionToken(currentInstance, currentXml);
-                if (!string.IsNullOrWhiteSpace(expectedVersion) && !string.Equals(expectedVersion, currentVersion, StringComparison.Ordinal))
-                    return BuildWwpStaleObject(target, expectedVersion, currentVersion,
-                        "The WorkWithPlus PatternInstance changed after the caller's read/dry-run; no grid variable was added.");
-
-                KBObject parent = WwpProjectionHelper.ResolveHostParent(currentInstance, _objects, currentXml);
-                DeclaredVariable lockedDeclared = FindDeclaredVariable(new[] { parent, requestedObject, currentInstance }, variableName);
-                XDocument lockedBefore = XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace);
-                XDocument lockedAfter = XDocument.Parse(currentXml, LoadOptions.PreserveWhitespace);
-                JObject lockedMutation = ApplyAddGridVariableXml(lockedAfter, args, lockedDeclared);
-                if (lockedMutation["error"] != null)
-                    return McpResponse.Err(code: lockedMutation["code"]?.ToString() ?? "WwpGridVariableInvalid",
-                        message: lockedMutation["error"].ToString(), target: target, extra: lockedMutation);
-                JObject planError = PlanGridVariable(args, lockedDeclared, out GridVariablePlan plan);
-                if (planError != null)
-                    return McpResponse.Err(code: planError["code"]?.ToString() ?? "WwpGridVariableInvalid",
-                        message: planError["error"].ToString(), target: target, extra: planError);
-
-                string parentWebFormBefore = ReadPart(parent, "WebForm");
-                byte[] nativeBytes = ReadPartBytes(currentPart);
-                SnapshotBundle snapshots = CaptureSnapshots(currentInstance, currentXml, parent, parentWebFormBefore);
-                string applyOnSaveBefore = ReadObjectProperty(currentInstance, "SDPlus_Editor_Apply_On_Save");
-                if (WwpSnapshotsIncomplete(nativeBytes, parent, parentWebFormBefore, snapshots))
-                    return McpResponse.Err(code: "WwpSnapshotRequired",
-                        message: "Exact PatternInstance and parent WebForm snapshots were not available; no grid variable was added.",
-                        target: target, extra: new JObject { ["snapshot"] = snapshots.ToJson(), ["persisted"] = false });
-
-                bool persistenceStarted = false;
-                try
-                {
-                    JObject nativeMutation = ApplyNativeAddGridVariable(currentPart, lockedBefore, args, plan);
-                    if (nativeMutation["error"] != null)
-                        throw new WwpTabException(nativeMutation["code"]?.ToString() ?? "WwpNativeMutationRejected", nativeMutation["error"].ToString());
-
-                    persistenceStarted = true;
-                    SaveNativePattern(currentInstance, currentPart);
-                    bool applyOnSaveReenabled = WwpApplyOnSaveHelper.TryEnable(currentInstance);
-                    string persistedXml = _patterns.ReadPatternPartXml(currentInstance, "PatternInstance", PatternRegistry.WorkWithPlusPatternId,
-                        out KBObject persistedInstance, out _);
-                    if (string.IsNullOrWhiteSpace(persistedXml))
-                        throw new WwpTabException("WwpGridVariableNotPersisted", "The SDK save completed, but the PatternInstance could not be re-read.");
-
-                    XDocument persistedDocument = XDocument.Parse(persistedXml, LoadOptions.PreserveWhitespace);
-                    JObject verification = VerifyAddGridVariable(lockedBefore, persistedDocument, args, plan);
-                    if (verification["confirmed"]?.ToObject<bool?>() != true)
-                        throw new WwpTabException("WwpGridVariableNotPersisted", verification["error"]?.ToString() ?? "The requested grid variable was not confirmed after re-read.");
-
-                    string applyOnSaveAfter = ReadObjectProperty(persistedInstance ?? currentInstance, "SDPlus_Editor_Apply_On_Save");
-                    if (IsFalse(applyOnSaveAfter))
-                        throw new WwpTabException("WwpApplyOnSaveDisabled", "SDPlus_Editor_Apply_On_Save became False after the native grid variable save.");
-
-                    if (!WwpProjectionHelper.TryProjectHostOntoParent(parent, persistedInstance ?? currentInstance))
-                        throw new WwpTabException("WwpProjectionFailed", "The PatternInstance persisted, but the WorkWithPlus SDK did not project the parent WebForm.");
-                    string projectedWebForm = ReadPart(parent, "WebForm");
-                    if (string.IsNullOrWhiteSpace(projectedWebForm) || string.Equals(NormalizeText(projectedWebForm), NormalizeText(parentWebFormBefore), StringComparison.Ordinal))
-                        throw new WwpTabException("WwpProjectionNotConfirmed", "The parent WebForm did not change after projection.");
-
-                    // The projection declares an undeclared variable in the owning object; reported, not enforced:
-                    // the column is persisted and projected, and the declaration is the owning object's business.
-                    DeclaredVariable afterDeclared = FindDeclaredVariable(new[] { parent, requestedObject, persistedInstance ?? currentInstance }, plan.Name);
-
-                    WriteService.NotePerTargetWrite(target);
-                    var added = new JObject
-                    {
-                        ["instance"] = persistedInstance?.Name ?? currentInstance.Name,
-                        ["parent"] = parent.Name,
-                        ["operation"] = "add_grid_variable",
-                        ["variable"] = plan.Name,
-                        ["caption"] = plan.Caption,
-                        ["typeSource"] = plan.TypeSource,
-                        ["column"] = lockedMutation,
-                        ["diff"] = new JObject { ["before"] = Project(lockedBefore), ["after"] = Project(persistedDocument) },
-                        ["versionToken"] = WriteService.ComputeContentVersionToken(persistedInstance ?? currentInstance, persistedXml),
-                        ["persisted"] = true,
-                        ["saved"] = true,
-                        ["patternReReadConfirmed"] = true,
-                        ["webFormProjectionConfirmed"] = true,
-                        ["variableDeclared"] = afterDeclared != null,
-                        ["applyOnSaveReenabled"] = applyOnSaveReenabled,
-                        ["mutationMode"] = "native-pattern-sdk",
-                        ["sdkOperation"] = "PatternInstance.RootElement + CreateChildElement(gridVariable) + AddElementCommand/InsertElementCommand",
-                        ["snapshot"] = snapshots.ToJson(),
-                        ["rollbackPerformed"] = false,
-                        ["lifecycleExecuted"] = false,
-                        ["specified"] = false,
-                        ["generated"] = false,
-                        ["built"] = false
-                    };
-                    if (afterDeclared == null)
-                        added["warning"] = "Variable '&" + plan.Name + "' is not declared in " + parent.TypeDescriptor?.Name + " '" + parent.Name
-                            + "' after the projection; if the form shows it, declare it with genexus_variable action=add.";
-                    return McpResponse.Ok(target: target, code: "WwpGridVariableAdded", result: added);
-                }
-                catch (Exception ex)
-                {
-                    WwpTabException typed = ex as WwpTabException;
-                    JObject rollback = rollbackOnFailure
-                        ? RestoreSnapshots(currentInstance, currentPart, nativeBytes, currentXml, parent, parentWebFormBefore, applyOnSaveBefore)
-                        : new JObject { ["performed"] = false, ["skipped"] = true, ["exact"] = false };
-                    ExceptionRoot.Log("[WWP-GRIDVARIABLE] failed", ex);
-                    return McpResponse.Err(code: typed?.Code ?? "WwpGridVariableFailed", message: ExceptionRoot.Message(ex),
-                        target: target, extra: new JObject
-                        {
-                            ["exceptionType"] = ExceptionRoot.Unwrap(ex)?.GetType().Name,
-                            ["failureTrace"] = ExceptionRoot.FailureTrace(ex),
-                            ["persisted"] = false,
-                            ["saved"] = false,
-                            ["partialPersistenceDetected"] = persistenceStarted,
-                            ["patternReReadConfirmed"] = false,
-                            ["webFormProjectionConfirmed"] = false,
-                            ["rollback"] = rollback,
-                            ["rollbackPerformed"] = rollbackOnFailure,
-                            ["stateRestoredExactly"] = rollback["exact"]?.DeepClone() ?? false,
-                            ["snapshot"] = snapshots.ToJson(),
-                            ["rollbackOnFailure"] = rollbackOnFailure,
-                            ["lifecycleExecuted"] = false
-                        });
-                }
-            }
+            return McpResponse.Err(code: "WwpProjectionVerificationUnavailable",
+                message: "add_grid_variable writes are disabled because the requested variable cannot yet be verified in the projected WebForm. Use dryRun to inspect the plan; no changes were made.",
+                target: target, extra: new JObject { ["persisted"] = false, ["saved"] = false });
         }
 
         internal static DeclaredVariable FindDeclaredVariable(IEnumerable<KBObject> hosts, string name)

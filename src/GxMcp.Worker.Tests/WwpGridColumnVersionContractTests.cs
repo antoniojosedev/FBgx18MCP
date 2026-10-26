@@ -55,7 +55,7 @@ namespace GxMcp.Worker.Tests
             int stale = router.IndexOf("if (!IsExpectedVersion(expectedVersion, versionToken))", StringComparison.Ordinal);
 
             Assert.True(guard >= 0 && route > guard, "add_grid_variable must be routed after the version guard");
-            // The writer compares the version itself (before the preview and under the lock), so the generic compare comes after.
+            // The preview checks the version itself, so the generic compare comes after.
             Assert.True(stale > route, "the generic stale compare must not run before the add_grid_variable writer");
         }
     }
