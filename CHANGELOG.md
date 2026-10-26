@@ -11,6 +11,27 @@
 
 ### Fixed
 
+### Internal
+
+## v4.0.3 - 2026-10-26
+
+
+### Tracked issues
+
+- [#682](https://github.com/lennix1337/Genexus18MCP/issues/682) — [Bug] release.ps1 pode empacotar publish\config.json não neutro (reuso/resume)
+- [#683](https://github.com/lennix1337/Genexus18MCP/issues/683) — [Bug/DX] genexus_kb action=close exige 'alias' mas o help manda usar 'kb'
+- [#684](https://github.com/lennix1337/Genexus18MCP/issues/684) — [Docs] AGENTS.md e o default de autodetecção fixam C:\KBs\KBTeste* como alvo canônico
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
+### Changed
+
+### Fixed
+
 - **`genexus_wwp` `add_grid_variable`** previews name-based grid variables; real writes are refused as `WwpProjectionVerificationUnavailable` until the requested column can be verified in the projected WebForm. WorkWithPlus keys a grid variable by its `name` and types it with `dataType`/`basicType`/length, and the SDK gives a variable no GUID, so the `GUID-Name` `variableReference` the action asked for could never be read: `list` answered `variables: []` for objects that declare variables and every variable was refused as `GridVariableIdentityNotFound`. The column is now identified by the variable name and typed from the declaration the owning object already has (Character, VarChar, Numeric with its length and decimals, Date, DateTime, Boolean, ..., or the attribute/domain it is based on); an explicit `basicType`/`length` that disagrees is refused as `GridVariableTypeMismatch`, a structured or collection variable as `GridVariableTypeUnsupported`, and an undeclared variable needs `basicType` (and `length`) or is refused as `GridVariableTypeRequired`. The dry-run plan preserves the native column typing; no real mutation is attempted. `list` returns each declared variable with its `type`, `length`/`decimals`, the WorkWithPlus `basicType` it maps to, what it is `basedOn` and `gridColumn`; `variableReference` is optional and ignored (a value must be the name or end with `-<name>`); `gridPath` also takes the grid's name (`Grid1`) as given to `add_grid`; a `dryRun` no longer needs `baseVersion` (it returns the token a write must pin); an explicit `null` for `length`, `decimals` or `readOnly` means the same as leaving it out ([#638](https://github.com/lennix1337/Genexus18MCP/issues/638)).
 - **`genexus_wwp` `move_control`** moves `attribute` elements on a real WorkWithPlus package, and an `attribute` child of `add_tab`/`add_table` moves the attribute already on the form instead of adding a duplicate: the native attribute reference was read as the CLR type name of the attribute object, so no attribute element was ever matched ([#595](https://github.com/lennix1337/Genexus18MCP/issues/595)).
 - **`genexus_wwp` `add_tab`, `move_tab` and `remove_tab`** work on the Transaction form of a real WorkWithPlus package. A tab always holds its single `table`, which the engine creates together with the tab: the requested state now includes it, a table child configures it instead of adding a second one (more than one table child is refused as `InvalidWwpChild`), the form's existing `tabs` container is found whatever its element type (`TabsTransaction`), and the projected WebForm is checked through the `itemControlName` a tab item carries, so `remove_tab` no longer "confirms" an absence it could not see ([#552](https://github.com/lennix1337/Genexus18MCP/issues/552), [#595](https://github.com/lennix1337/Genexus18MCP/issues/595)).
