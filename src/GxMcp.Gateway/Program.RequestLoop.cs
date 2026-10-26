@@ -36,6 +36,14 @@ namespace GxMcp.Gateway
                 .ConfigureAwait(false);
         }
 
+        // Gateway-only handlers that read `kb` themselves: worker reload, and the
+        // genexus_kb pool actions (select/set_*/close) that take `kb` as the alias.
+        // Environment actions forward to the single-KB worker, so they still strip it.
+        private static bool KeepsKbArgument(string? toolName, string? action)
+            => string.Equals(toolName, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(toolName, OperationClassifier.KbTool, StringComparison.OrdinalIgnoreCase)
+                    && !OperationClassifier.IsKbEnvironmentAction(toolName, action));
+
         private static JObject BuildStableKbContextError(string code, string message)
         {
             string hint = string.Equals(code, "KB_LEASE_EXPIRED", StringComparison.OrdinalIgnoreCase)
@@ -225,9 +233,9 @@ namespace GxMcp.Gateway
                             var argsObj = paramsObj?["arguments"] as JObject;
                             kbArg = argsObj?["kb"]?.ToString() ?? argsObj?["kbAlias"]?.ToString() ?? argsObj?["alias"]?.ToString();
                             // Strip `kb` from worker-bound args (worker is single-KB scoped),
-                            // but keep it for gateway-only reload so lease bypass and the
-                            // explicit target remain available to the orchestrator below.
-                            if (!string.Equals(toolNameForResolver, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase))
+                            // but keep it for gateway-only reload and KB pool actions so the
+                            // explicit target stays available to the gateway handler.
+                            if (!KeepsKbArgument(toolNameForResolver, resolverAction))
                             {
                                 argsObj?.Remove("kb");
                                 argsObj?.Remove("kbAlias");
@@ -342,7 +350,8 @@ namespace GxMcp.Gateway
                 {
                     // Meta-tools still strip any stray `kb` arg (cosmetic) and leave _currentKb null.
                     var argsObj = (request["params"] as JObject)?["arguments"] as JObject;
-                    argsObj?.Remove("kb");
+                    if (!KeepsKbArgument(toolNameForResolver, resolverAction))
+                        argsObj?.Remove("kb");
                     _currentKb.Value = null;
                 }
             }

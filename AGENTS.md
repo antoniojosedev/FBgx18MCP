@@ -158,6 +158,15 @@ a modified state — it is not user data, and a lane that needs to reproduce a
 write, a rollback or a persistence failure should use one rather than asking
 for a KB.
 
+The paths below are this maintainer's machine, not a requirement: the portable
+rule is the `teste` name. The release preflight resolves its live KB as
+`GXMCP_TEST_KB` first, then (single-major mode only) autodetects
+`C:\KBs\KBTeste` for GeneXus 18, `C:\KBs\KBTeste17` for 17 and
+`C:\KBs\KBTeste<major>` otherwise (`Get-GxMcpLocalLiveKbPath` in
+`scripts/release-contract.ps1`). With no KB found the live gate is skipped,
+unless `-RequireLive` or Build All evidence is required, which make it fail. See
+`docs/environment_variables.md`.
+
 | Path | GeneXus major | Notes |
 | :--- | :--- | :--- |
 | `C:\KBs\KBTeste` | 18 | Largest (~1,800 files); the default target for SDK-level read/write lanes |
