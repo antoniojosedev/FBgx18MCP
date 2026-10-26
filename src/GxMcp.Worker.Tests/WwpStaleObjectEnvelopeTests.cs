@@ -199,6 +199,7 @@ namespace GxMcp.Worker.Tests
             foreach (string file in new[]
             {
                 "WwpActionService.Grid.cs",
+                "WwpActionService.GridVariable.cs",
                 "WwpActionService.Tables.cs",
                 "WwpActionService.Tabs.cs",
                 "WwpActionService.FormActions.cs",
@@ -228,6 +229,7 @@ namespace GxMcp.Worker.Tests
             foreach (string file in new[]
             {
                 "WwpActionService.Grid.cs",
+                "WwpActionService.GridVariable.cs",
                 "WwpActionService.Tables.cs",
                 "WwpActionService.Tabs.cs",
                 "WwpActionService.FormActions.cs",
@@ -253,6 +255,7 @@ namespace GxMcp.Worker.Tests
         [InlineData("WwpActionService.AddGrid.cs", "private string RunAddGridOperation(")]
         [InlineData("WwpActionService.FormLayout.cs", "private string RunFormLayoutOperation(")]
         [InlineData("WwpActionService.Grid.cs", "private string RunGridAttributeOperation(")]
+        [InlineData("WwpActionService.GridVariable.cs", "private string RunAddGridVariableOperation(")]
         [InlineData("WwpActionService.Tables.cs", "private string RunTableTypeOperation(")]
         [InlineData("WwpActionService.Tabs.cs", "private string RunTabOperation(")]
         [InlineData("WwpActionService.WebComponentReplacement.cs", "private string RunWebComponentReplacementOperation(")]

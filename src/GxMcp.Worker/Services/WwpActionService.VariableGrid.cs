@@ -32,7 +32,6 @@ namespace GxMcp.Worker.Services
             if (!(args["columns"] is JArray array) || array.Count == 0)
                 return Error("MissingGridColumns", "columns must contain {variable, basicType, description, readOnly, length, decimals} objects.");
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string[] basicTypes = { "Numeric", "Character", "VarChar", "LongVarChar", "Date", "DateTime", "Boolean", "GUID", "Image", "Audio", "Video", "Blob" };
             foreach (JToken entry in array)
             {
                 var column = entry as JObject;
@@ -40,31 +39,48 @@ namespace GxMcp.Worker.Services
                 if (column?["variable"]?.Type != JTokenType.String || string.IsNullOrEmpty(name) || !Regex.IsMatch(name, "^[A-Za-z_][A-Za-z0-9_]*$"))
                     return Error("InvalidGridColumn", "Every variable column requires a variable identifier.");
                 if (!seen.Add(name)) return Error("DuplicateGridColumn", "Variable '" + name + "' appears more than once.");
-                if (column.Properties().Any(p => !new[] { "variable", "basicType", "description", "readOnly", "length", "decimals" }.Contains(p.Name)))
-                    return Error("InvalidGridColumn", "Unsupported variable-column property.");
-                if (column["description"] != null && column["description"].Type != JTokenType.String)
-                    return Error("InvalidGridColumn", "description must be a string.");
-                string basicType = basicTypes.FirstOrDefault(t => string.Equals(t, column["basicType"]?.ToString(), StringComparison.OrdinalIgnoreCase));
-                if (basicType == null) return Error("InvalidGridVariableType", "Every variable column requires a supported basicType.");
-                bool sized = basicType == "Numeric" || basicType == "Character" || basicType == "VarChar" || basicType == "LongVarChar";
-                JToken lengthToken = column["length"];
-                if ((sized && lengthToken == null) || (lengthToken != null && (lengthToken.Type != JTokenType.Integer
-                    || !int.TryParse(lengthToken.ToString(), out int size) || size <= 0)) || (!sized && lengthToken != null))
-                    return Error("InvalidGridVariableLength", "length must be a positive integer for Numeric/Character/VarChar/LongVarChar only.");
-                JToken decimals = column["decimals"];
-                if (decimals != null && (basicType != "Numeric" || decimals.Type != JTokenType.Integer
-                    || !int.TryParse(decimals.ToString(), out int scale) || scale < 0 || scale >= lengthToken.Value<int>()))
-                    return Error("InvalidGridVariableDecimals", "decimals must be non-negative and smaller than Numeric length.");
-                if (column["readOnly"] != null && column["readOnly"].Type != JTokenType.Boolean)
-                    return Error("InvalidGridVariableReadOnly", "readOnly must be true or false.");
-                var variable = new XElement("gridVariable", new XAttribute("name", name),
-                    new XAttribute("description", column["description"]?.ToString() ?? name),
-                    new XAttribute("dataType", "Basic"), new XAttribute("basicType", basicType),
-                    new XAttribute("readOnly", column["readOnly"]?.Value<bool>() == false ? "False" : "True"));
-                if (sized) variable.SetAttributeValue(basicType == "Numeric" ? "basicLength" : basicType == "LongVarChar" ? "basicLVCLength" : "basicCLength", lengthToken.ToString());
-                if (basicType == "Numeric") variable.SetAttributeValue("basicDecimals", decimals?.ToString() ?? "0");
+                JObject invalid = ParseVariableColumnSpec(column, out XElement variable);
+                if (invalid != null) return invalid;
                 columns.Add(new GridColumn { Item = name, Description = Attr(variable, "description"), Variable = variable });
             }
+            return null;
+        }
+
+        /// <summary>
+        /// One variable column the way WorkWithPlus's own wizard writes it: a <c>gridVariable</c> keyed by <c>name</c> whose
+        /// <c>Basic</c> type is spelled out. Shared by the variable grid of <c>add_grid</c> and by <c>add_grid_variable</c>, so a
+        /// column added to an existing grid is exactly what a new grid would have been given.
+        /// </summary>
+        internal static JObject ParseVariableColumnSpec(JObject column, out XElement variable)
+        {
+            variable = null;
+            string[] basicTypes = { "Numeric", "Character", "VarChar", "LongVarChar", "Date", "DateTime", "Boolean", "GUID", "Image", "Audio", "Video", "Blob" };
+            string name = column?["variable"]?.ToString()?.Trim().TrimStart('&');
+            if (column?["variable"]?.Type != JTokenType.String || string.IsNullOrEmpty(name) || !Regex.IsMatch(name, "^[A-Za-z_][A-Za-z0-9_]*$"))
+                return Error("InvalidGridColumn", "Every variable column requires a variable identifier.");
+            if (column.Properties().Any(p => !new[] { "variable", "basicType", "description", "readOnly", "length", "decimals" }.Contains(p.Name)))
+                return Error("InvalidGridColumn", "Unsupported variable-column property.");
+            if (column["description"] != null && column["description"].Type != JTokenType.String)
+                return Error("InvalidGridColumn", "description must be a string.");
+            string basicType = basicTypes.FirstOrDefault(t => string.Equals(t, column["basicType"]?.ToString(), StringComparison.OrdinalIgnoreCase));
+            if (basicType == null) return Error("InvalidGridVariableType", "Every variable column requires a supported basicType.");
+            bool sized = basicType == "Numeric" || basicType == "Character" || basicType == "VarChar" || basicType == "LongVarChar";
+            JToken lengthToken = column["length"];
+            if ((sized && lengthToken == null) || (lengthToken != null && (lengthToken.Type != JTokenType.Integer
+                || !int.TryParse(lengthToken.ToString(), out int size) || size <= 0)) || (!sized && lengthToken != null))
+                return Error("InvalidGridVariableLength", "length must be a positive integer for Numeric/Character/VarChar/LongVarChar only.");
+            JToken decimals = column["decimals"];
+            if (decimals != null && (basicType != "Numeric" || decimals.Type != JTokenType.Integer
+                || !int.TryParse(decimals.ToString(), out int scale) || scale < 0 || scale >= lengthToken.Value<int>()))
+                return Error("InvalidGridVariableDecimals", "decimals must be non-negative and smaller than Numeric length.");
+            if (column["readOnly"] != null && column["readOnly"].Type != JTokenType.Boolean)
+                return Error("InvalidGridVariableReadOnly", "readOnly must be true or false.");
+            variable = new XElement("gridVariable", new XAttribute("name", name),
+                new XAttribute("description", column["description"]?.ToString() ?? name),
+                new XAttribute("dataType", "Basic"), new XAttribute("basicType", basicType),
+                new XAttribute("readOnly", column["readOnly"]?.Value<bool>() == false ? "False" : "True"));
+            if (sized) variable.SetAttributeValue(basicType == "Numeric" ? "basicLength" : basicType == "LongVarChar" ? "basicLVCLength" : "basicCLength", lengthToken.ToString());
+            if (basicType == "Numeric") variable.SetAttributeValue("basicDecimals", decimals?.ToString() ?? "0");
             return null;
         }
 
@@ -119,10 +135,7 @@ namespace GxMcp.Worker.Services
                     object variable = CreateNativeChild(grid, "gridVariable");
                     foreach (XAttribute attribute in column.Variable.Attributes())
                     {
-                        object value = attribute.Name.LocalName == "readOnly" ? (object)(attribute.Value == "True")
-                            : attribute.Name.LocalName.StartsWith("basic", StringComparison.Ordinal) && attribute.Name.LocalName != "basicType"
-                                ? int.Parse(attribute.Value, CultureInfo.InvariantCulture) : (object)attribute.Value;
-                        if (!PatternSemanticAttributeWriter.ApplySemanticAttributeObject(variable, attribute.Name.LocalName, value))
+                        if (!PatternSemanticAttributeWriter.ApplySemanticAttributeObject(variable, attribute.Name.LocalName, ToNativeColumnValue(attribute, null)))
                             throw new WwpTabException("WwpAttributeRejected", "WorkWithPlus rejected variable property '" + attribute.Name.LocalName + "'.");
                     }
                     ExecuteElementCommand(grid, variable, "AddElementCommand", null);
