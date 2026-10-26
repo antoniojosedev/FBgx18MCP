@@ -361,6 +361,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'v3 execution plan tests failed.' }
           python -m unittest discover -s scripts/tests -p "test_validate_tool_contracts.py" -v
           if ($LASTEXITCODE -ne 0) { throw 'tool contract tests failed.' }
+          python -m unittest discover -s scripts/tests -p "test_verify_release_manifest.py" -v
+          if ($LASTEXITCODE -ne 0) { throw 'release manifest verifier tests failed.' }
 
       - name: LLM contract smoke
         shell: pwsh

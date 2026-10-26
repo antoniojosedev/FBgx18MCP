@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Release: the release manifest verifier now rejects a `publish/config.json` that is not the neutral build output (an `Engine` section or a KB catalog), so `-SkipBuild`, preflight reuse, `resumeRelease` and a tolerated build failure can no longer ship a config written for a local run ([#682](https://github.com/lennix1337/Genexus18MCP/issues/682)).
 - `genexus_kb` `close`, `select`, `set_session_default`, `set_persistent_default` and `set_default` now accept `kb` as the alias, as the schema and help describe. The request loop stripped `kb` before these gateway-only pool actions ran, so `close` with `kb` failed with "Missing 'alias'" and the existing `alias ?? kb` fallbacks never fired. Environment actions still strip it before forwarding to the Worker. The `alias` description and `close` help now name the parameter. ([#683](https://github.com/lennix1337/Genexus18MCP/issues/683))
 
 ### Internal

@@ -33,8 +33,9 @@ function Read-PublishEngineSection {
 # Returns @{ Section = <ordered hashtable or $null>; Warnings = <string[]> }.
 # Without -Preserve the section is discarded and the warning says so; with
 # -Preserve only the behavioral keys that still validate are kept. Executable is
-# machine-specific and release.ps1 zips publish\ (including config.json) without
-# inspecting it, so it is never carried over.
+# machine-specific, so it is never carried over. A release refuses any Engine
+# section: scripts/verify-release-manifest.py only accepts the neutral keys
+# written by New-PublishConfigJson (#682).
 function Resolve-PublishEngineSection {
     [CmdletBinding()]
     param(

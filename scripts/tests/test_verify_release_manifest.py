@@ -127,7 +127,7 @@ class ReleaseManifestTests(unittest.TestCase):
             archive_path.unlink(missing_ok=True)
             shutil.rmtree(root, ignore_errors=True)
 
-
+    def test_working_tree_source_commit_is_rejected(self):
         root = self._fixture()
         try:
             manifest_path = root / "gxmcp-manifest.json"
@@ -180,6 +180,61 @@ class ReleaseManifestTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(0, result.returncode, result.stderr)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    NEUTRAL_CONFIG = {
+        "ConfigSchemaVersion": 2,
+        "GatewayMode": "stdio-isolated",
+        "GeneXus": {"InstallationPath": "C:\\GeneXus18", "WorkerExecutable": "worker\\GxMcp.Worker.exe"},
+        "Server": {"HttpPort": 0, "McpStdio": True},
+        "Environment": {"ResolutionPolicy": "strict"},
+    }
+
+    def _verify_with_config(self, config):
+        root = self._fixture()
+        try:
+            (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), str(root), "--version", "3.0.0-rc.1"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_neutral_publish_config_is_accepted(self):
+        result = self._verify_with_config(self.NEUTRAL_CONFIG)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_publish_config_with_engine_section_is_rejected(self):
+        # Issue #682: a reused publish/ (-SkipBuild, preflight reuse, resume) can
+        # still carry Engine.Backend=sdk written for a local run.
+        result = self._verify_with_config({**self.NEUTRAL_CONFIG, "Engine": {"Backend": "sdk"}})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("config.json", result.stderr)
+        self.assertIn("Engine", result.stderr)
+
+    def test_publish_config_with_kb_catalog_is_rejected(self):
+        config = json.loads(json.dumps(self.NEUTRAL_CONFIG))
+        config["Environment"]["KBs"] = {"Local": {"Path": "C:\\KBs\\Customer"}}
+        result = self._verify_with_config(config)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Environment.KBs", result.stderr)
+
+    def test_publish_config_must_be_json(self):
+        root = self._fixture()
+        try:
+            (root / "config.json").write_text("{not json", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(root), "--version", "3.0.0-rc.1"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("config.json", result.stderr)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
