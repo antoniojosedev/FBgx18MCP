@@ -565,6 +565,21 @@ namespace GxMcp.Gateway
         // ToolLatencyStats.Record, so nothing ever checked which phase was mapped to
         // which field. Reaching this method is how a test can assert that a Worker's
         // reported queue delay surfaces as queue delay - see QueuePhaseMappingTests.
+        /// <summary>
+        /// Issue #692: a Worker tool failure arrives as a JSON-RPC <c>result</c> whose
+        /// envelope has <c>status=error</c>, not as a JSON-RPC <c>error</c>; it was
+        /// counted and logged as <c>result=success</c>.
+        /// </summary>
+        internal static string ClassifyToolLatencyResult(JObject? response)
+        {
+            if (response?["error"] != null) return "error";
+            if (response?["result"] is JObject result
+                && (string.Equals(result["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase)
+                    || (result["isError"]?.Type == JTokenType.Boolean && result["isError"]!.Value<bool>())))
+                return "error";
+            return "success";
+        }
+
         internal static void RecordToolLatency(
             string toolName,
             DateTime createdAtUtc,
@@ -600,7 +615,7 @@ namespace GxMcp.Gateway
                 if (resultClassOverride != null)
                     resultClass = resultClassOverride;
                 else
-                    resultClass = response?["error"] != null ? "error" : "success";
+                    resultClass = ClassifyToolLatencyResult(response);
                 ToolLatencyStats.Record(
                     toolName,
                     ms,

@@ -331,13 +331,30 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return Models.McpResponse.Err(
-                    code: "LayoutReadException",
-                    message: ex.Message,
-                    hint: "Inspect the object type and retry; if the KB is closed reopen it first.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Verify the object exists and has a visual part.")),
-                    target: target);
+                return LayoutReadFailure(target, ex);
             }
+        }
+
+        /// <summary>
+        /// Issue #692: a get_tree issued right after KB open failed with the reflection
+        /// wrapper's generic "target of an invocation" message, hiding the SDK cause.
+        /// Report and log the root exception instead.
+        /// </summary>
+        internal static string LayoutReadFailure(string target, Exception ex)
+        {
+            ExceptionRoot.Log("[LAYOUT-READ] failed for '" + target + "'", ex);
+            Exception root = ExceptionRoot.Unwrap(ex) ?? ex;
+            return Models.McpResponse.Err(
+                code: "LayoutReadException",
+                message: root.Message,
+                hint: "Inspect the object type and retry; if the KB is closed reopen it first.",
+                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Verify the object exists and has a visual part.")),
+                target: target,
+                extra: new JObject
+                {
+                    ["exceptionType"] = root.GetType().Name,
+                    ["failureTrace"] = ExceptionRoot.FailureTrace(ex)
+                });
         }
 
         public string FindControls(string target, string propertyName = null, string query = null, int limit = 200)
