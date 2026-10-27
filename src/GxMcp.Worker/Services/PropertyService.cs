@@ -1355,21 +1355,7 @@ namespace GxMcp.Worker.Services
             }
             catch { }
 
-            Type targetType = null;
-            try
-            {
-                if (descriptor.Definition?.Type is Type definitionType) targetType = definitionType;
-            }
-            catch { }
-            if (targetType == null)
-            {
-                try
-                {
-                    object current = descriptor.Value;
-                    if (current != null) targetType = current.GetType();
-                }
-                catch { }
-            }
+            Type targetType = ResolvePropertyEntryType((object)descriptor);
 
             // A WebPanelReference (e.g. MasterPage) is set by object name through a typed
             // adapter (SetWebPanelReferenceProperty), not by scalar conversion.
@@ -1633,14 +1619,30 @@ namespace GxMcp.Worker.Services
         internal static bool IsWebPanelReferenceType(Type type)
             => type != null && typeof(global::Artech.Genexus.Common.CustomTypes.WebPanelReference).IsAssignableFrom(type);
 
-        private static Type GetPropertyTargetType(dynamic container, string name)
+        internal static Type GetPropertyTargetType(dynamic container, string name)
         {
             try
             {
-                dynamic entry = ResolvePropertyEntry(container, name);
-                if (entry == null) return null;
-                try { if (entry.Definition?.Type is Type t) return t; } catch { }
-                try { object cur = entry.Value; if (cur != null) return cur.GetType(); } catch { }
+                return ResolvePropertyEntryType((object)ResolvePropertyEntry(container, name));
+            }
+            catch { return null; }
+        }
+
+        // The declared type of a property entry: its Definition.Type, else the current value's
+        // type. An SDK Artech.Common.Properties.Property has no Definition, so an unset value
+        // (null) left the type unknown and the raw string was stored into a typed property such
+        // as DirectoryType, which does not persist (#701); its descriptor still carries the type.
+        internal static Type ResolvePropertyEntryType(object entry)
+        {
+            if (entry == null) return null;
+            dynamic d = entry;
+            try { if (d.Definition?.Type is Type definitionType) return definitionType; } catch { }
+            try { object current = d.Value; if (current != null) return current.GetType(); } catch { }
+            try
+            {
+                if (entry.GetType().GetProperty("Context")?.GetValue(entry) is System.ComponentModel.ITypeDescriptorContext context
+                    && context.PropertyDescriptor?.PropertyType is Type declared && declared != typeof(object))
+                    return declared;
             }
             catch { }
             return null;
@@ -2058,31 +2060,7 @@ namespace GxMcp.Worker.Services
         {
             coerced = rawValue;
             Type targetType = null;
-
-            // Prefer the Definition.Type from the existing property entry; fall back to the
-            // runtime type of the current Value.
-            try
-            {
-                dynamic existing = ResolvePropertyEntry(container, propName);
-                if (existing != null)
-                {
-                    try
-                    {
-                        var defType = existing.Definition?.Type;
-                        if (defType is Type t1) targetType = t1;
-                    }
-                    catch { }
-                    if (targetType == null)
-                    {
-                        try
-                        {
-                            object curVal = existing.Value;
-                            if (curVal != null) targetType = curVal.GetType();
-                        }
-                        catch { }
-                    }
-                }
-            }
+            try { targetType = ResolvePropertyEntryType((object)ResolvePropertyEntry(container, propName)); }
             catch { }
 
             if (targetType == null || targetType == typeof(string)) return false;
@@ -2090,7 +2068,7 @@ namespace GxMcp.Worker.Services
             return TryConvertToType(rawValue, targetType, out coerced);
         }
 
-        private static bool TryConvertToType(string raw, Type targetType, out object converted)
+        internal static bool TryConvertToType(string raw, Type targetType, out object converted)
         {
             converted = raw;
             if (targetType == null) return false;
@@ -2137,7 +2115,17 @@ namespace GxMcp.Worker.Services
                     if (Guid.TryParse(raw, out Guid gv)) { converted = gv; return true; }
                     return false;
                 }
-                converted = Convert.ChangeType(raw, underlying ?? targetType);
+                // SDK custom types (DirectoryType, FileType, ...) declare a string
+                // TypeConverter; IConvertible-based ChangeType cannot build them (#701).
+                Type effectiveType = underlying ?? targetType;
+                if (!typeof(IConvertible).IsAssignableFrom(effectiveType))
+                {
+                    var converter = System.ComponentModel.TypeDescriptor.GetConverter(effectiveType);
+                    if (converter == null || !converter.CanConvertFrom(typeof(string))) return false;
+                    converted = converter.ConvertFromInvariantString(raw ?? string.Empty);
+                    return converted != null;
+                }
+                converted = Convert.ChangeType(raw, effectiveType);
                 return true;
             }
             catch
