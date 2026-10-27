@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- **`genexus_layout` `add_printblock`, `rename_printblock` and `delete_printblock`, and `genexus_create` (`ObjectCreated`), say whether the store holds the change.** The check after the commit read back through the instance the write had just changed, so a success could not tell "saved" from "only in this Worker's memory", and a Worker that exited afterwards (for example on its idle timeout) could take such a change with it without any error having been returned ([#692](https://github.com/lennix1337/Genexus18MCP/issues/692)). The check now reloads the object with the SDK cache invalidated and resolves it by identity, so a change the store does not hold is refused as `AddPrintBlockVerificationFailed`, `RenamePrintBlockVerificationFailed` or `DeletePrintBlockVerificationFailed`, and the result carries `saved` and `persistedVerified`: `true` only when the reload found the change, `null` (never `true`) with `verification` giving the reason when the reload was unavailable. The Worker log no longer calls a change "staged in memory" when the caller saves it right after. The data loss on idle shutdown reported in the issue was not reproduced and its cause is still open; this makes such a loss visible at call time.
 ### Internal
 
 ## v4.0.3 - 2026-10-26
