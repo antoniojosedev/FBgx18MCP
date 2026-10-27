@@ -347,7 +347,7 @@ namespace GxMcp.Worker.Services
             return Models.McpResponse.Err(
                 code: "LayoutReadException",
                 message: root.Message,
-                hint: "Inspect the object type and retry; if the KB is closed reopen it first.",
+                hint: "The SDK failed while reading this layout. exceptionType and failureTrace name the cause, and the Worker log has a [LAYOUT-READ] line.",
                 nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Verify the object exists and has a visual part.")),
                 target: target,
                 extra: new JObject
