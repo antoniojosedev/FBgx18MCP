@@ -72,6 +72,14 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void DeletePrintBlock_DoesNotConfirmAnUnreadableReload()
+        {
+            string src = RepoSource.Read("src", "GxMcp.Worker", "Services", "LayoutService.cs");
+            string deletion = SourceAssert.MethodBody(src, "public string DeletePrintBlock(");
+            Assert.Matches(@"LoadVisualContext\(refreshedObj, target, VisualSurface.Report\);\s*if \(refreshed.Error != null\) return refreshed.Error;", deletion);
+        }
+
+        [Fact]
         public void TheReloadIsTheObjectServiceFreshByIdentityResolution()
         {
             string src = RepoSource.Read("src", "GxMcp.Worker", "Services", "ObjectService.cs");
