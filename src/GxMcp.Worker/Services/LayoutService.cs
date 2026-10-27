@@ -1357,7 +1357,8 @@ namespace GxMcp.Worker.Services
                 // Read-back through a reloaded object to prove the block is really gone from the store (#692).
                 var refreshedObj = ReloadForVerification(obj, target, out bool freshReload, out string freshUnavailable);
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
-                bool stillThere = refreshed.Error == null && refreshed.Document != null
+                if (refreshed.Error != null) return refreshed.Error;
+                bool stillThere = refreshed.Document != null
                     && ContainsPrintBlock(refreshed.Document, printBlockName);
                 if (stillThere)
                 {
