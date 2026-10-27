@@ -5268,7 +5268,7 @@
             "type": "string"
           },
           "basicType": {
-            "description": "add_grid_variable: Character or VarChar…",
+            "description": "add_grid_variable: basic type, only…",
             "type": "string"
           },
           "before": {
@@ -5475,7 +5475,7 @@
             "type": "string"
           },
           "length": {
-            "description": "add_grid_variable: Character/VarChar…",
+            "description": "add_grid_variable: length, only when…",
             "minimum": 1,
             "type": "integer"
           },
@@ -5606,11 +5606,11 @@
             "type": "string"
           },
           "variable": {
-            "description": "add_grid_variable: presentation…",
+            "description": "add_grid_variable: dryRun only; writes…",
             "type": "string"
           },
           "variableReference": {
-            "description": "add_grid_variable: the variable's own…",
+            "description": "Deprecated, optional: the column is…",
             "type": "string"
           },
           "versionToken": {

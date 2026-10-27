@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "checks": {
+    "lint-setup": {
+      "description": "CLI setup and lint contract tests",
+      "argv": ["node", "--test", "scripts/lint.test.js"],
+      "timeoutMs": 120000
+    },
+    "wwp-grid-refusal": {
+      "description": "Preview-only grid variable refusal and remaining native writer ownership contracts",
+      "argv": ["dotnet", "test", "src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj", "--no-restore", "--nologo", "-v:minimal", "-m:1", "--filter", "FullyQualifiedName~WwpStaleObjectEnvelopeTests|FullyQualifiedName~WwpGridVariableProjectionRefusalTests"],
+      "timeoutMs": 120000
+    },
+    "integration-preflight": {
+      "description": "Canonical PR integration gates against the fetched origin/main; no SDK KB writes or publication",
+      "argv": ["pwsh", "-NoProfile", "-File", "scripts/integration-preflight.ps1", "-BaseRef", "origin/main"],
+      "timeoutMs": 600000
+    }
+  }
+}

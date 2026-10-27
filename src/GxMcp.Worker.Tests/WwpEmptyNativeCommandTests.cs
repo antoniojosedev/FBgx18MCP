@@ -58,12 +58,20 @@ namespace GxMcp.Worker.Tests
         // MoveElement is the one call that changes a Parent (Remove + ChangeParentCommand + Add).
         internal sealed class Element
         {
-            public Element(string type)
+            private readonly string _name;
+
+            public Element(string type, string name = null)
             {
                 Type = type;
+                _name = name;
                 Children = new Children(this);
             }
             public string Type { get; }
+            // The child element name in its parent (`tabs`) as the SDK reports it, while Type is the element type
+            // of the form (`TabsTransaction`).
+            public string Name => _name ?? Type;
+            // The real engine hands out a `tab` that already holds its single mandatory `table`.
+            public bool EngineCreatesTabTable { get; set; }
             public Element Parent { get; set; }
             public Attributes Attributes { get; } = new Attributes();
             public Children Children { get; }
@@ -89,7 +97,13 @@ namespace GxMcp.Worker.Tests
             private readonly Element _owner;
             public Children(Element owner) { _owner = owner; }
             public List<Element> Items { get; } = new List<Element>();
-            public Element CreateChildElement(string type) => new Element(type) { Parent = _owner };
+            public Element CreateChildElement(string type)
+            {
+                var child = new Element(type) { Parent = _owner, EngineCreatesTabTable = _owner.EngineCreatesTabTable };
+                if (type == "tab" && _owner.EngineCreatesTabTable)
+                    child.Children.Items.Add(new Element("table") { Parent = child, EngineCreatesTabTable = true });
+                return child;
+            }
             public IEnumerator GetEnumerator() => Items.GetEnumerator();
         }
     }

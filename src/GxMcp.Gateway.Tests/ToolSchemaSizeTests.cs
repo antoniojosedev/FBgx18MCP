@@ -246,7 +246,11 @@ namespace GxMcp.Gateway.Tests
             // ~39621 tokens. The v3.16.0 budget of 39000 needs ~2500 more characters out of
             // descriptions whose remaining text is not duplicated elsewhere in the schema, so the
             // budget stays at 39700 (~79 headroom) instead of cutting guidance clients rely on.
-            Assert.True(approxTokens < 39700, $"tool_definitions.json is ~{approxTokens} tokens; budget 39700.");
+            // Issue #689 + #638: 39700 -> 39800 for genexus_kb's `kb`/`alias` descriptions naming the five pool
+            // actions that take `kb` in place of `alias` (close, select, set_session_default, set_persistent_default,
+            // set_default) and genexus_wwp's `gridPath` taking the grid's name. The schema is what the caller reads to
+            // build the call, so a description that omits the actions is the defect. Measured ~39745 tokens; ~55 headroom.
+            Assert.True(approxTokens < 39800, $"tool_definitions.json is ~{approxTokens} tokens; budget 39800.");
         }
 
         [Theory]

@@ -388,7 +388,7 @@ namespace GxMcp.Worker.Tests
                 ["position"] = 1,
                 ["children"] = new JArray
                 {
-                    new JObject { ["type"] = "variable", ["name"] = "Choice", ["basicType"] = "VarChar", ["length"] = 40, ["description"] = "Choice" },
+                    new JObject { ["type"] = "variable", ["name"] = "Choice", ["basicType"] = "VarChar", ["length"] = 50, ["description"] = "Choice" },
                     new JObject { ["type"] = "userAction", ["name"] = "Send", ["caption"] = "Send now" }
                 }
             });
@@ -399,7 +399,7 @@ namespace GxMcp.Worker.Tests
             XElement table = tabs[1].Element("table");
             Assert.Equal("Responsive", (string)table.Attribute("type"));
             Assert.Equal("Choice", (string)table.Element("variable").Attribute("name"));
-            Assert.Equal("40", (string)table.Element("variable").Attribute("basicCLength"));
+            Assert.Equal("50", (string)table.Element("variable").Attribute("basicCLength"));
             Assert.Equal("Send", (string)table.Element("userAction").Attribute("name"));
             Assert.Null(table.Attribute("childrenOrderedList"));
         }
@@ -627,6 +627,115 @@ namespace GxMcp.Worker.Tests
             Assert.True(WwpActionService.WebFormContainsEventForTests("<form><button event='On.Send'/></form>", "Send"));
         }
 
+        // The real WorkWithPlus projection writes a tab as an `item` of the form's tab control, named by
+        // `itemControlName` (proved on a Transaction host, 16.2): no other attribute names it.
+        private const string RealTabControl =
+            "<GxMultiForm><tab controlName='GXUITabsPanel_'>" +
+            "<item id='e7ad' itemControlName='TabInfo' caption='Info'><table id='d0c1' controlName='UnnamedTable3' /></item>" +
+            "<item id='130c' itemControlName='TabCompany' caption='Company'><table id='e1dd' controlName='UnnamedTable2' /></item>" +
+            "</tab></GxMultiForm>";
+
+        [Fact]
+        public void WebFormProjectionFindsATabByItsItemControlName()
+        {
+            JObject expected = new JObject { ["tabs"] = new JArray
+            {
+                new JObject { ["controlName"] = "TabInfo", ["children"] = new JArray() },
+                new JObject { ["controlName"] = "TabCompany", ["children"] = new JArray() }
+            } };
+
+            JObject added = WwpActionService.VerifyWebFormProjectionForTests(RealTabControl, expected, "add_tab", "TabCompany");
+
+            Assert.True(added["confirmed"].Value<bool>());
+            Assert.True(added["targetPresent"].Value<bool>());
+            Assert.True(added["orderConfirmed"].Value<bool>());
+        }
+
+        [Fact]
+        public void WebFormProjectionOfARemovedTabSeesTheItemThatIsStillThere()
+        {
+            JObject expected = new JObject { ["tabs"] = new JArray { new JObject { ["controlName"] = "TabInfo", ["children"] = new JArray() } } };
+
+            JObject stillThere = WwpActionService.VerifyWebFormProjectionForTests(RealTabControl, expected, "remove_tab", "TabCompany");
+            JObject gone = WwpActionService.VerifyWebFormProjectionForTests(RealTabControl, expected, "remove_tab", "TabGone");
+
+            Assert.False(stillThere["confirmed"].Value<bool>());
+            Assert.True(gone["confirmed"].Value<bool>());
+        }
+
+        [Fact]
+        public void WebFormProjectionOfTabsInTheWrongOrderIsNotConfirmed()
+        {
+            JObject expected = new JObject { ["tabs"] = new JArray
+            {
+                new JObject { ["controlName"] = "TabCompany", ["children"] = new JArray() },
+                new JObject { ["controlName"] = "TabInfo", ["children"] = new JArray() }
+            } };
+
+            JObject result = WwpActionService.VerifyWebFormProjectionForTests(RealTabControl, expected, "move_tab", "TabCompany");
+
+            Assert.False(result["confirmed"].Value<bool>());
+            Assert.False(result["orderConfirmed"].Value<bool>());
+        }
+
+        // The pattern declares exactly one `table` per `tab` and the engine creates it with the tab, so the plan a tab is
+        // verified against holds it too (#552, #595).
+        [Fact]
+        public void AddTab_WithoutChildrenHoldsTheMandatoryEmptyTable()
+        {
+            var doc = XDocument.Parse("<instance><transaction><table name='TableContent'/></transaction></instance>");
+            JObject result = WwpActionService.ApplyTabXml(doc, "add_tab", new JObject { ["controlName"] = "TabX", ["title"] = "X" });
+
+            Assert.Null(result["error"]);
+            XElement tab = doc.Descendants("tab").Single();
+            XElement table = tab.Elements().Single();
+            Assert.Equal("table", table.Name.LocalName);
+            Assert.Empty(table.Attributes());
+            Assert.Equal("table", (string)WwpActionService.ProjectTabsForTests(doc)["tabs"][0]["children"][0]["type"]);
+        }
+
+        [Fact]
+        public void AddTab_ASingleTableChildIsTheTabsTable()
+        {
+            var doc = XDocument.Parse("<instance><transaction><table name='TableContent'/></transaction></instance>");
+            JObject result = AddTab(doc, new JObject { ["type"] = "table", ["name"] = "Only", ["columns"] = 2 });
+
+            Assert.Null(result["error"]);
+            XElement table = doc.Descendants("tab").Single().Elements().Single();
+            Assert.Equal("Only", (string)table.Attribute("name"));
+            Assert.Equal("2", (string)table.Attribute("numberOfColumns"));
+        }
+
+        [Fact]
+        public void AddTab_MoreThanOneTableChildIsRefusedAndNothingIsAdded()
+        {
+            var doc = XDocument.Parse("<instance><transaction><table name='TableContent'/></transaction></instance>");
+            JObject result = AddTab(doc, new JObject { ["type"] = "table", ["name"] = "One" }, new JObject { ["type"] = "table", ["name"] = "Two" });
+
+            Assert.Equal("InvalidWwpChild", (string)result["code"]);
+            Assert.Contains("single table", (string)result["error"]);
+            Assert.Empty(doc.Descendants("tab"));
+        }
+
+        // The size of a Basic variable lives in the attribute its type names, and Numeric (the pattern's default type) is not stored.
+        [Theory]
+        [InlineData("VarChar", "basicCLength")]
+        [InlineData("Character", "basicCLength")]
+        [InlineData("Numeric", "basicLength")]
+        [InlineData("numeric", "basicLength")]
+        [InlineData("LongVarChar", "basicLVCLength")]
+        public void VariableChildrenSizeGoesInTheAttributeOfTheirType(string basicType, string lengthAttribute)
+        {
+            var doc = XDocument.Parse("<instance><transaction><table name='TableContent'/></transaction></instance>");
+            JObject result = AddTab(doc, new JObject { ["type"] = "variable", ["name"] = "v", ["basicType"] = basicType, ["length"] = 12 });
+
+            Assert.Null(result["error"]);
+            XElement variable = doc.Descendants("variable").Single();
+            Assert.Equal("12", (string)variable.Attribute(lengthAttribute));
+            Assert.Equal("12", (string)variable.Attribute("default" + char.ToUpperInvariant(lengthAttribute[0]) + lengthAttribute.Substring(1)));
+            Assert.Equal(basicType.Equals("Numeric", System.StringComparison.OrdinalIgnoreCase), variable.Attribute("basicType") == null);
+        }
+
         [Fact]
         public void WebFormProjectionDoesNotConfuseTabPrefixWithExactControlName()
         {
@@ -764,7 +873,7 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void AddGridVariable_RequiresIdentityAndPreservesColumnOrder()
+        public void AddGridVariable_NeedsATypeWhenUndeclaredAndPreservesColumnOrder()
         {
             var document = XDocument.Parse("<PatternInstance><grid><gridAttribute attribute='1-First'/></grid></PatternInstance>");
             JObject missing = WwpActionService.ApplyAddGridVariableXml(document, new JObject
@@ -772,12 +881,11 @@ namespace GxMcp.Worker.Tests
                 ["variable"] = "Selected",
                 ["caption"] = "Selected"
             });
-            Assert.Equal("GridVariableIdentityRequired", (string)missing["code"]);
+            Assert.Equal("GridVariableTypeRequired", (string)missing["code"]);
 
             JObject result = WwpActionService.ApplyAddGridVariableXml(document, new JObject
             {
                 ["variable"] = "Selected",
-                ["variableReference"] = "guid-Selected",
                 ["caption"] = "Selected",
                 ["basicType"] = "VarChar",
                 ["length"] = 40,
@@ -785,28 +893,11 @@ namespace GxMcp.Worker.Tests
             });
             Assert.Null(result["error"]);
             XElement added = document.Descendants("gridVariable").Single();
-            Assert.Equal("guid-Selected", (string)added.Attribute("variable"));
+            // WorkWithPlus keys the column by name; there is no reference attribute in the pattern.
+            Assert.Null(added.Attribute("variable"));
+            Assert.Equal("Selected", (string)added.Attribute("name"));
             Assert.Equal("40", (string)added.Attribute("basicCLength"));
             Assert.Equal("1-First", (string)document.Descendants("gridAttribute").First().Attribute("attribute"));
-        }
-
-        [Fact]
-        public void GridVariableVerificationRequiresTheRequestedGuidAndNameTogether()
-        {
-            const string requestedGuid = "11111111-1111-1111-1111-111111111111";
-            const string homonymGuid = "22222222-2222-2222-2222-222222222222";
-            string reference = requestedGuid + "-Selected";
-
-            Assert.False(WwpActionService.GridVariableIdentityMatches(
-                "Selected", null, "Selected", reference));
-            Assert.False(WwpActionService.GridVariableIdentityMatches(
-                "Selected", homonymGuid, "Selected", reference));
-            Assert.True(WwpActionService.GridVariableIdentityMatches(
-                "Selected", requestedGuid, "Selected", reference));
-            Assert.False(WwpActionService.GridVariableIdentityMatches(
-                "Other", requestedGuid, "Selected", reference));
-            Assert.False(WwpActionService.GridVariableIdentityMatches(
-                "Selected", requestedGuid, "Selected", requestedGuid));
         }
 
         [Fact]

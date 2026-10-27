@@ -11,12 +11,40 @@
 
 ### Fixed
 
+### Internal
+
+## v4.0.3 - 2026-10-26
+
+
+### Tracked issues
+
+- [#682](https://github.com/lennix1337/Genexus18MCP/issues/682) — [Bug] release.ps1 pode empacotar publish\config.json não neutro (reuso/resume)
+- [#683](https://github.com/lennix1337/Genexus18MCP/issues/683) — [Bug/DX] genexus_kb action=close exige 'alias' mas o help manda usar 'kb'
+- [#684](https://github.com/lennix1337/Genexus18MCP/issues/684) — [Docs] AGENTS.md e o default de autodetecção fixam C:\KBs\KBTeste* como alvo canônico
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **`genexus_wwp` `add_grid_variable`** previews name-based grid variables; real writes are refused as `WwpProjectionVerificationUnavailable` until the requested column can be verified in the projected WebForm. WorkWithPlus keys a grid variable by its `name` and types it with `dataType`/`basicType`/length, and the SDK gives a variable no GUID, so the `GUID-Name` `variableReference` the action asked for could never be read: `list` answered `variables: []` for objects that declare variables and every variable was refused as `GridVariableIdentityNotFound`. The column is now identified by the variable name and typed from the declaration the owning object already has (Character, VarChar, Numeric with its length and decimals, Date, DateTime, Boolean, ..., or the attribute/domain it is based on); an explicit `basicType`/`length` that disagrees is refused as `GridVariableTypeMismatch`, a structured or collection variable as `GridVariableTypeUnsupported`, and an undeclared variable needs `basicType` (and `length`) or is refused as `GridVariableTypeRequired`. The dry-run plan preserves the native column typing; no real mutation is attempted. `list` returns each declared variable with its `type`, `length`/`decimals`, the WorkWithPlus `basicType` it maps to, what it is `basedOn` and `gridColumn`; `variableReference` is optional and ignored (a value must be the name or end with `-<name>`); `gridPath` also takes the grid's name (`Grid1`) as given to `add_grid`; a `dryRun` no longer needs `baseVersion` (it returns the token a write must pin); an explicit `null` for `length`, `decimals` or `readOnly` means the same as leaving it out ([#638](https://github.com/lennix1337/Genexus18MCP/issues/638)).
+- **`genexus_wwp` `move_control`** moves `attribute` elements on a real WorkWithPlus package, and an `attribute` child of `add_tab`/`add_table` moves the attribute already on the form instead of adding a duplicate: the native attribute reference was read as the CLR type name of the attribute object, so no attribute element was ever matched ([#595](https://github.com/lennix1337/Genexus18MCP/issues/595)).
+- **`genexus_wwp` `add_tab`, `move_tab` and `remove_tab`** work on the Transaction form of a real WorkWithPlus package. A tab always holds its single `table`, which the engine creates together with the tab: the requested state now includes it, a table child configures it instead of adding a second one (more than one table child is refused as `InvalidWwpChild`), the form's existing `tabs` container is found whatever its element type (`TabsTransaction`), and the projected WebForm is checked through the `itemControlName` a tab item carries, so `remove_tab` no longer "confirms" an absence it could not see ([#552](https://github.com/lennix1337/Genexus18MCP/issues/552), [#595](https://github.com/lennix1337/Genexus18MCP/issues/595)).
+- **`genexus_wwp` `variable` children of `add_table` and `add_tab`** are written with numeric sizes (`length`, `decimals`) and `columns` as numbers, as the pattern declares them; the text form failed with "Specified cast is not valid" when the instance was read back. The length goes in the attribute its type names (`basicLength` for Numeric, `basicLVCLength` for LongVarChar), `controlEmptyItem` is stored as a boolean, an explicit `null` or a `children` list without objects is ignored, and a value the pattern itself defaults (Numeric, a 40-character VarChar/Character, a 4-digit Numeric, no decimals, the default control type) is not expected back, because the engine does not store it: the re-read check used to roll back a write that stated one. A bad `columns`, `length`, `decimals` or `controlEmptyItem` is now refused by the `dryRun`, as the write would ([#595](https://github.com/lennix1337/Genexus18MCP/issues/595)).
+- **A WorkWithPlus `PatternInstance` write is no longer rolled back when a layout control lists several theme classes.** The pre-commit verification tolerated the SDK resolving a symbolic theme class to its `<guid>-<int>` form only when the whole attribute value was a single class. A value such as `themeClass="Title IconBase IconKey"`, which the SDK rereads as `<guid>-1466 <guid>-12 <guid>-13`, was reported as a webForm difference (`PatternProjectionFailed`, `transactionRolledBack=true`) and nothing was saved. The comparison now works per class: both values must list the same number of classes, each position must be equal (ignoring case) or a symbolic name against a resolved `<guid>-<int>`, and at least one position must be such a resolution. Two different resolved classes at the same position, a different number of classes, a case-only difference, or an attribute outside the class family stay real differences.
 - Release: the release manifest verifier now rejects a `publish/config.json` that is not the neutral build output (an `Engine` section or a KB catalog), so `-SkipBuild`, preflight reuse, `resumeRelease` and a tolerated build failure can no longer ship a config written for a local run ([#682](https://github.com/lennix1337/Genexus18MCP/issues/682)).
 - `genexus_kb` `close`, `select`, `set_session_default`, `set_persistent_default` and `set_default` now accept `kb` as the alias, as the schema and help describe. The request loop stripped `kb` before these gateway-only pool actions ran, so `close` with `kb` failed with "Missing 'alias'" and the existing `alias ?? kb` fallbacks never fired. Environment actions still strip it before forwarding to the Worker. The `alias` description and `close` help now name the parameter. ([#683](https://github.com/lennix1337/Genexus18MCP/issues/683))
+- `genexus_kb` schema and validation errors now name the `kb` alias on every pool action that reads it. The `kb` and `alias` descriptions list `close`, `select`, `set_session_default`, `set_persistent_default` and `set_default`; `set_persistent_default` and `set_default` answer `Missing 'alias' (or 'kb') for action=<action>.`, and `select` and `set_session_default` say `The 'alias' (or 'kb') or 'path' parameter is required for '<action>'.` with the action actually called instead of the literal `select`. ([#689](https://github.com/lennix1337/Genexus18MCP/issues/689))
 
 ### Internal
 
 - Docs: `AGENTS.md` and `docs/environment_variables.md` now state that the `C:\KBs\KBTeste*` live KBs are a local default, not a requirement, and how the release preflight resolves its live KB: `GXMCP_TEST_KB`, then single-major autodetection (`KBTeste`, `KBTeste17`, `KBTeste<major>`), then a skip that `-RequireLive`/`-RequireBuildAll` turn into a failure ([#684](https://github.com/lennix1337/Genexus18MCP/issues/684)).
+- Tool schema budget: the token budget in `ToolSchemaSizeTests` goes from 39700 to 39800. The `genexus_kb` `kb` and `alias` descriptions now name the five pool actions that take `kb` in place of `alias`, and `genexus_wwp` `gridPath` says it takes the grid's name; the schema is the contract a caller reads, so a description that omits those actions was the defect. Measured ~39745 tokens ([#689](https://github.com/lennix1337/Genexus18MCP/issues/689), [#638](https://github.com/lennix1337/Genexus18MCP/issues/638)).
 
 ## v4.0.2 - 2026-10-25
 

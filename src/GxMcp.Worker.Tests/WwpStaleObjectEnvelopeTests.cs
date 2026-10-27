@@ -196,6 +196,7 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void TheReadResolveComparePrologueIsStillInlineByDecision()
         {
+            // add_grid_variable is preview-only; its no-write contract is pinned separately below.
             foreach (string file in new[]
             {
                 "WwpActionService.Grid.cs",
@@ -266,6 +267,20 @@ namespace GxMcp.Worker.Tests
             Assert.True(read >= 0 && guard > read && lookup > guard, file + ": resolved owner must be guarded before part lookup");
             Assert.Contains("out currentInstance, out KBObjectPart currentPart)", body);
             Assert.Contains("SaveNativePattern(currentInstance, currentPart)", body);
+        }
+
+        [Fact]
+        public void PreviewOnlyGridVariableDoesNotResolveOrSaveAWriteOwner()
+        {
+            string source = SourceAssert.NormaliseNewlines(RepoSource.WithoutComments(Read("WwpActionService.GridVariable.cs")));
+            string body = SourceAssert.MethodBody(source, "private string RunAddGridVariableOperation(");
+            Assert.Contains("if (dryRun)", body);
+            Assert.Contains("code: \"WwpProjectionVerificationUnavailable\"", body);
+            Assert.DoesNotContain("AcquirePerTargetLock", body);
+            Assert.DoesNotContain("ReadPatternPartXml", body);
+            Assert.DoesNotContain("BuildPatternPartEnvelope", body);
+            Assert.DoesNotContain("SaveNativePattern", body);
+            Assert.DoesNotContain("ApplyNativeAddGridVariable", body);
         }
 
         private static string Read(string file)
