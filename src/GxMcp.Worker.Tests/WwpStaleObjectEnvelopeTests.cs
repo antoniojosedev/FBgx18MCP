@@ -196,10 +196,10 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void TheReadResolveComparePrologueIsStillInlineByDecision()
         {
-            // add_grid_variable is preview-only; its no-write contract is pinned separately below.
             foreach (string file in new[]
             {
                 "WwpActionService.Grid.cs",
+                "WwpActionService.GridVariable.cs",
                 "WwpActionService.Tables.cs",
                 "WwpActionService.Tabs.cs",
                 "WwpActionService.FormActions.cs",
@@ -229,6 +229,7 @@ namespace GxMcp.Worker.Tests
             foreach (string file in new[]
             {
                 "WwpActionService.Grid.cs",
+                "WwpActionService.GridVariable.cs",
                 "WwpActionService.Tables.cs",
                 "WwpActionService.Tabs.cs",
                 "WwpActionService.FormActions.cs",
@@ -254,6 +255,7 @@ namespace GxMcp.Worker.Tests
         [InlineData("WwpActionService.AddGrid.cs", "private string RunAddGridOperation(")]
         [InlineData("WwpActionService.FormLayout.cs", "private string RunFormLayoutOperation(")]
         [InlineData("WwpActionService.Grid.cs", "private string RunGridAttributeOperation(")]
+        [InlineData("WwpActionService.GridVariable.cs", "private string RunAddGridVariableOperation(")]
         [InlineData("WwpActionService.Tables.cs", "private string RunTableTypeOperation(")]
         [InlineData("WwpActionService.Tabs.cs", "private string RunTabOperation(")]
         [InlineData("WwpActionService.WebComponentReplacement.cs", "private string RunWebComponentReplacementOperation(")]
@@ -267,20 +269,6 @@ namespace GxMcp.Worker.Tests
             Assert.True(read >= 0 && guard > read && lookup > guard, file + ": resolved owner must be guarded before part lookup");
             Assert.Contains("out currentInstance, out KBObjectPart currentPart)", body);
             Assert.Contains("SaveNativePattern(currentInstance, currentPart)", body);
-        }
-
-        [Fact]
-        public void PreviewOnlyGridVariableDoesNotResolveOrSaveAWriteOwner()
-        {
-            string source = SourceAssert.NormaliseNewlines(RepoSource.WithoutComments(Read("WwpActionService.GridVariable.cs")));
-            string body = SourceAssert.MethodBody(source, "private string RunAddGridVariableOperation(");
-            Assert.Contains("if (dryRun)", body);
-            Assert.Contains("code: \"WwpProjectionVerificationUnavailable\"", body);
-            Assert.DoesNotContain("AcquirePerTargetLock", body);
-            Assert.DoesNotContain("ReadPatternPartXml", body);
-            Assert.DoesNotContain("BuildPatternPartEnvelope", body);
-            Assert.DoesNotContain("SaveNativePattern", body);
-            Assert.DoesNotContain("ApplyNativeAddGridVariable", body);
         }
 
         private static string Read(string file)
