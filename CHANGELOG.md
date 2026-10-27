@@ -9,6 +9,25 @@
 
 ### Changed
 
+### Fixed
+
+### Internal
+
+## v4.0.4 - 2026-10-27
+
+
+### Tracked issues
+
+- [#701](https://github.com/lennix1337/Genexus18MCP/issues/701) — [Bug] genexus_properties set rejects File extraction directory values
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
+### Changed
+
 - **Generated configurations now use the 30-minute Worker idle timeout that the Gateway already defaults to.** `install.ps1`, `scripts/publish-config.ps1` and the CLI `init`/neutral config wrote `Server.WorkerIdleTimeoutMinutes: 5`, the shared-host broker fell back to 60 minutes when `Server` was absent, and the README and troubleshooting guide documented 60. The Gateway's 30-minute default is the source of truth for all of them. Existing `config.json` files keep the value they already have ([#692](https://github.com/lennix1337/Genexus18MCP/issues/692)).
 
 ### Fixed
