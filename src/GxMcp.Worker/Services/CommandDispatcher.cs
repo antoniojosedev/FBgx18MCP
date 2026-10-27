@@ -634,6 +634,22 @@ namespace GxMcp.Worker.Services
             catch { return false; }
         }
 
+        /// <summary>
+        /// Reads that load object parts and must hold <see cref="SdkGate"/> for the whole
+        /// dispatch. Issue #692: a layout read issued right after KB open ran beside the
+        /// post-open delta refresh and failed in the SDK; it now serializes with it, like
+        /// source reads already did. Layout writes are not listed here; they keep their own
+        /// scopes.
+        /// </summary>
+        internal static bool RequiresSdkGateForRead(string method, string action)
+        {
+            if (string.Equals(method, "read", StringComparison.OrdinalIgnoreCase)) return true;
+            if (!string.Equals(method, "layout", StringComparison.OrdinalIgnoreCase)) return false;
+            return string.Equals(action, "GetTree", StringComparison.Ordinal)
+                || string.Equals(action, "FindControls", StringComparison.Ordinal)
+                || string.Equals(action, "InspectSurface", StringComparison.Ordinal);
+        }
+
         public string Dispatch(string line)
         {
             JObject req0;
@@ -706,7 +722,7 @@ namespace GxMcp.Worker.Services
                 // Part initialization mutates SDK-wide definitions even for reads.
                 // Writers acquire the gate in WriteService, before their post-write
                 // async specification/preview orchestration runs outside that scope.
-                bool sourceRead = string.Equals(method0, "read", StringComparison.OrdinalIgnoreCase);
+                bool sourceRead = RequiresSdkGateForRead(method0, request["action"]?.ToString());
                 using (sourceRead ? SdkGate.Enter() : null)
                     raw = DispatchInternal(request);
                 JToken token = GxMcp.Worker.Helpers.McpResponseNormalizer.NormalizeToken(

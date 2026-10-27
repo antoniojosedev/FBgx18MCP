@@ -175,6 +175,13 @@ namespace GxMcp.Gateway
                 // 3. Exactly 1 KB open (B) but configured default is A (A != B) -> KB_CONTEXT_REQUIRED (DefaultConflict).
                 // 4. >1 KBs open without selection -> KB_AMBIGUOUS.
                 // 5. 0 KBs open -> never auto-open declared KB; KB_CONTEXT_REQUIRED (<=1 declared) or KB_AMBIGUOUS (>1 declared).
+                // Issue #692: an idle-timeout exit drops the live Worker but not the KB the
+                // user opened (only an explicit close forgets it). With no live Worker, the
+                // durably opened KBs stand in for the open set, so the next call respawns
+                // the Worker instead of failing with "No Knowledge Base is open".
+                if (openKbs.Count == 0 && knownKbs != null && knownKbs.Count > 0)
+                    openKbs = knownKbs;
+
                 if (openKbs.Count == 1)
                 {
                     var sole = openKbs.First();

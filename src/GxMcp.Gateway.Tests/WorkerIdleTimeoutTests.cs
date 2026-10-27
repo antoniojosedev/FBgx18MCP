@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace GxMcp.Gateway.Tests
@@ -31,6 +33,42 @@ namespace GxMcp.Gateway.Tests
             // Server is null by default; the ctor fallback must still yield 30, not 0/crash.
             var worker = new WorkerProcess(new Configuration(), new KbHandle("test", "C:\\fake\\path"));
             Assert.Equal(TimeSpan.FromMinutes(30), worker.IdleTimeoutForTest);
+        }
+
+        [Fact]
+        public void SharedHostBroker_NullServer_UsesTheSameDefault()
+        {
+            // Issue #692: the broker's absent-Server fallback was 60 while an isolated
+            // Worker used 30, so the effective idle window depended on the sharing mode.
+            Assert.Equal(30 * 60 * 1000, SharedWorkerHostLauncher.ResolveIdleTimeoutMs(new Configuration()));
+        }
+
+        [Theory]
+        [InlineData("cli/lib/config.js", @"WorkerIdleTimeoutMinutes:\s*(\d+)", 2)]
+        [InlineData("install.ps1", @"WorkerIdleTimeoutMinutes\s*=\s*(\d+)", 1)]
+        [InlineData("scripts/publish-config.ps1", @"WorkerIdleTimeoutMinutes\s*=\s*(\d+)", 1)]
+        public void GeneratedConfigs_WriteTheCodeDefault(string relativePath, string pattern, int expectedCount)
+        {
+            // Issue #692: the installers wrote 5 minutes while the code default is 30, so
+            // a standard install reaped the Worker six times sooner than documented.
+            string text = File.ReadAllText(Path.Combine(FindRepoRoot(), relativePath));
+            var matches = Regex.Matches(text, pattern);
+            Assert.Equal(expectedCount, matches.Count);
+            foreach (Match match in matches)
+                Assert.Equal(new ServerConfig().WorkerIdleTimeoutMinutes, int.Parse(match.Groups[1].Value));
+        }
+
+        private static string FindRepoRoot()
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null)
+            {
+                if (File.Exists(Path.Combine(dir.FullName, "CHANGELOG.md"))
+                    && File.Exists(Path.Combine(dir.FullName, "install.ps1")))
+                    return dir.FullName;
+                dir = dir.Parent;
+            }
+            throw new DirectoryNotFoundException("repository root not found from " + AppContext.BaseDirectory);
         }
 
         [Fact]

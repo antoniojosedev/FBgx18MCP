@@ -106,7 +106,7 @@ function New-PublishConfigJson {
             HttpPort = 0
             McpStdio = $true
             SessionIdleTimeoutMinutes = 10
-            WorkerIdleTimeoutMinutes = 5
+            WorkerIdleTimeoutMinutes = 30
             EmitStructuredContent = $false
             TerseResponses = $true
         }

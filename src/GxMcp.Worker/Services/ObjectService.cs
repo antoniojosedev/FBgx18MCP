@@ -675,6 +675,20 @@ namespace GxMcp.Worker.Services
                     ["id"] = idStr
                 };
                 if (placementMeta != null) responsePayload["placement"] = placementMeta;
+
+                // Issue #692: an ObjectCreated that cannot say whether the store holds the object leaves the
+                // caller guessing. Only a cache-invalidated reload by identity counts as verified; an Attribute
+                // already went through that reload above, so its result is reused.
+                JToken attributeVerified = typedMeta?["attribute"]?["persistedVerified"];
+                if (attributeVerified != null && attributeVerified.Type == JTokenType.Boolean && attributeVerified.Value<bool>())
+                {
+                    PersistenceConfirmation.Annotate(responsePayload, true, null);
+                }
+                else
+                {
+                    KBObject reloaded = ReloadSavedObjectFresh(newObj, out string reloadUnavailable);
+                    PersistenceConfirmation.Annotate(responsePayload, reloaded != null, reloadUnavailable);
+                }
                 JObject metaObj = null;
                 if (typedMeta != null)
                 {
@@ -3872,6 +3886,33 @@ namespace GxMcp.Worker.Services
                 };
                 return null;
             }
+            return fresh;
+        }
+
+        /// <summary>
+        /// Issue #692: reloads a just-saved object from the store (SDK cache invalidated, resolved by native
+        /// identity) so a post-commit check reads what was persisted, not the in-memory instance the write
+        /// just changed. Returns null, with <paramref name="unavailableReason"/>, when no fresh instance can
+        /// be obtained; the caller then reports the check as unconfirmed instead of verified.
+        /// </summary>
+        internal KBObject ReloadSavedObjectFresh(KBObject saved, out string unavailableReason)
+        {
+            unavailableReason = null;
+            if (saved == null)
+            {
+                unavailableReason = "no saved object to reload";
+                return null;
+            }
+            KBObject fresh = null;
+            try { fresh = FindObjectFreshByIdentity(saved); }
+            catch (Exception ex)
+            {
+                Logger.Warn("ReloadSavedObjectFresh: fresh re-read of '" + saved.Name + "' failed: " + ex.Message);
+                unavailableReason = ex.Message;
+                return null;
+            }
+            if (fresh == null)
+                unavailableReason = _lastResolutionDiagnostic?["message"]?.ToString();
             return fresh;
         }
 
